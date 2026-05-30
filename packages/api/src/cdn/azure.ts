@@ -32,7 +32,8 @@ export const initializeAzureBlobService = async (): Promise<BlobServiceClient | 
       }
       return null;
     }
-    const url = `https://${accountName}.blob.core.windows.net`;
+    const endpointSuffix = process.env.AZURE_STORAGE_ENDPOINT_SUFFIX || 'core.windows.net';
+    const url = `https://${accountName}.blob.${endpointSuffix}`;
     const credential = new DefaultAzureCredential();
     const { BlobServiceClient } = await import('@azure/storage-blob');
     blobServiceClient = new BlobServiceClient(url, credential);
