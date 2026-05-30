@@ -1,10 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Skeleton } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import { useFileDownload, revokeDownloadURL, isProxyImageSource } from '~/data-provider';
 import store from '~/store';
-import { cn } from '~/utils';
 import Image from './Image';
 
 type ImageFileProps = {
@@ -15,62 +13,45 @@ type ImageFileProps = {
 };
 
 /**
- * Renders a chat image. For sources whose URLs require server-side auth (e.g.
- * private Azure Blob), the raw URL cannot be loaded by an `<img>` tag, so the
- * bytes are fetched through the authenticated download proxy and rendered from
- * a local `blob:` URL. All other sources render their URL directly.
+ * Renders a chat image. Sources whose URLs require server-side auth (e.g. private
+ * Azure Blob) cannot be loaded by an `<img>` tag. Such images render directly when
+ * the container is public; when the direct load fails, the bytes are fetched through
+ * the authenticated download proxy and rendered from a local `blob:` URL.
  */
 const ImageFile = ({ file, localPreview, className, alignRight = false }: ImageFileProps) => {
   const user = useRecoilValue(store.user);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const needsProxy = !localPreview && !!file.file_id && isProxyImageSource(file.source);
+  const canProxy = !localPreview && !!file.file_id && isProxyImageSource(file.source);
 
   const { refetch } = useFileDownload(user?.id ?? '', file.file_id ?? '', {
     source: file.source,
     direct: false,
   });
 
-  useEffect(() => {
-    if (!needsProxy) {
+  const loadViaProxy = useCallback(() => {
+    if (!canProxy || blobUrl) {
       return;
     }
-
-    let active = true;
-    let created: string | null = null;
     refetch().then((result) => {
-      if (!active || !result.data) {
-        return;
+      if (result.data) {
+        setBlobUrl(result.data);
       }
-      created = result.data;
-      setBlobUrl(result.data);
     });
+  }, [canProxy, blobUrl, refetch]);
 
-    return () => {
-      active = false;
-      revokeDownloadURL(created);
-    };
-  }, [needsProxy, file.file_id, refetch]);
-
-  const width = file.width ?? undefined;
-  const height = file.height ?? undefined;
-
-  if (needsProxy && !blobUrl) {
-    return (
-      <Skeleton
-        className={cn('mt-1 w-full max-w-lg rounded-lg', alignRight && 'ml-auto', className)}
-        style={width && height ? { aspectRatio: `${width} / ${height}` } : { height: '12rem' }}
-      />
-    );
-  }
+  useEffect(() => {
+    return () => revokeDownloadURL(blobUrl);
+  }, [blobUrl]);
 
   return (
     <Image
       imagePath={localPreview ?? blobUrl ?? file.filepath ?? ''}
       altText={file.filename ?? 'Uploaded Image'}
-      width={width}
-      height={height}
+      width={file.width ?? undefined}
+      height={file.height ?? undefined}
       className={className}
       alignRight={alignRight}
+      onError={canProxy && !blobUrl ? loadViaProxy : undefined}
     />
   );
 };
