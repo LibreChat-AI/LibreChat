@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { FileSources } from 'librechat-data-provider';
 import ImageFile from '../ImageFile';
 
@@ -11,11 +11,6 @@ jest.mock('recoil', () => ({
 }));
 
 jest.mock('~/store', () => ({ __esModule: true, default: { user: 'user' } }));
-
-jest.mock('~/utils', () => ({
-  cn: (...classes: unknown[]) =>
-    classes.filter((c): c is string => typeof c === 'string' && c.length > 0).join(' '),
-}));
 
 jest.mock('~/data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -31,15 +26,15 @@ jest.mock('~/data-provider', () => {
 
 jest.mock('../Image', () => ({
   __esModule: true,
-  default: ({ imagePath, altText }: { imagePath: string; altText: string }) => (
-    <div data-testid="image" data-src={imagePath} data-alt={altText} />
-  ),
-}));
-
-jest.mock('@librechat/client', () => ({
-  Skeleton: ({ className }: { className?: string }) => (
-    <div data-testid="skeleton" className={className} />
-  ),
+  default: ({
+    imagePath,
+    altText,
+    onError,
+  }: {
+    imagePath: string;
+    altText: string;
+    onError?: React.ReactEventHandler<HTMLImageElement>;
+  }) => <img data-testid="image" data-src={imagePath} alt={altText} onError={onError} />,
 }));
 
 describe('ImageFile', () => {
@@ -56,19 +51,22 @@ describe('ImageFile', () => {
     jest.clearAllMocks();
   });
 
-  it('proxies private azure blob images through the authenticated download endpoint', async () => {
+  it('renders the direct URL first and proxies a private azure blob only when the load fails', async () => {
     mockRefetch.mockResolvedValue({ data: 'blob:proxy-url' });
     render(<ImageFile file={azureFile} />);
 
-    expect(screen.getByTestId('skeleton')).toBeInTheDocument();
+    const img = screen.getByTestId('image');
+    expect(img).toHaveAttribute('data-src', azureFile.filepath);
+    expect(mockRefetch).not.toHaveBeenCalled();
+
+    fireEvent.error(img);
+
     expect(mockRefetch).toHaveBeenCalledTimes(1);
     expect(mockUseFileDownloadArgs).toHaveBeenCalledWith('user-1', 'file-1', {
       source: FileSources.azure_blob,
       direct: false,
     });
-
-    const img = await screen.findByTestId('image');
-    expect(img).toHaveAttribute('data-src', 'blob:proxy-url');
+    expect(await screen.findByTestId('image')).toHaveAttribute('data-src', 'blob:proxy-url');
   });
 
   it('renders direct-download sources from their URL without proxying', () => {
@@ -78,6 +76,7 @@ describe('ImageFile', () => {
       />,
     );
 
+    fireEvent.error(screen.getByTestId('image'));
     expect(mockRefetch).not.toHaveBeenCalled();
     expect(screen.getByTestId('image')).toHaveAttribute('data-src', 'https://signed.example/img');
   });
@@ -85,6 +84,7 @@ describe('ImageFile', () => {
   it('prefers a local preview and skips the proxy', () => {
     render(<ImageFile file={azureFile} localPreview="blob:local-preview" />);
 
+    fireEvent.error(screen.getByTestId('image'));
     expect(mockRefetch).not.toHaveBeenCalled();
     expect(screen.getByTestId('image')).toHaveAttribute('data-src', 'blob:local-preview');
   });
