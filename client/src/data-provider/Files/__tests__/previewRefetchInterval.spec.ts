@@ -18,6 +18,7 @@ import {
   _resetPreviewErrorCounter,
   fetchFilePreview,
   isDirectDownloadSource,
+  isProxyImageSource,
   previewRefetchInterval,
   revokeDownloadURL,
 } from '../queries';
@@ -106,6 +107,15 @@ describe('download URL helpers', () => {
     expect(isDirectDownloadSource(FileSources.local)).toBe(false);
     expect(isDirectDownloadSource(FileSources.firebase)).toBe(false);
     expect(isDirectDownloadSource(undefined)).toBe(false);
+  });
+
+  it('routes only auth-required object-storage sources through the proxy', () => {
+    expect(isProxyImageSource(FileSources.azure_blob)).toBe(true);
+    expect(isProxyImageSource(FileSources.s3)).toBe(false);
+    expect(isProxyImageSource(FileSources.cloudfront)).toBe(false);
+    expect(isProxyImageSource(FileSources.local)).toBe(false);
+    expect(isProxyImageSource(undefined)).toBe(false);
+    expect(isProxyImageSource(null)).toBe(false);
   });
 
   it('revokes only blob URLs', () => {
