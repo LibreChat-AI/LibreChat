@@ -17,7 +17,7 @@ import {
 import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
-import Image from '~/components/Chat/Messages/Content/Image';
+import ImageFile from '~/components/Chat/Messages/Content/ImageFile';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import ToolMermaidArtifact from './ToolMermaidArtifact';
 import ToolArtifactCard from './ToolArtifactCard';
@@ -403,7 +403,6 @@ const TextAttachment = memo(
 
 const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
   const [isLoaded, setIsLoaded] = useState(false);
-  const { width, height, filepath = null } = attachment as TFile & TAttachmentMetadata;
 
   useEffect(() => {
     setIsLoaded(false);
@@ -424,13 +423,7 @@ const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
         WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
-      <Image
-        altText={attachment.filename || 'attachment image'}
-        imagePath={filepath ?? ''}
-        width={width}
-        height={height}
-        className="mb-4"
-      />
+      <ImageFile file={attachment as TFile & TAttachmentMetadata} className="mb-4" />
     </div>
   );
 });
