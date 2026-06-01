@@ -44,6 +44,13 @@ jest.mock('~/components/Chat/Messages/Content/Image', () => ({
   default: ({ altText }: { altText?: string }) => <img alt={altText ?? ''} data-testid="image" />,
 }));
 
+jest.mock('~/components/Chat/Messages/Content/ImageFile', () => ({
+  __esModule: true,
+  default: ({ file }: { file?: { filename?: string } }) => (
+    <img alt={file?.filename ?? ''} data-testid="image" />
+  ),
+}));
+
 jest.mock('~/components/Messages/Content/Mermaid/Mermaid', () => ({
   __esModule: true,
   default: ({

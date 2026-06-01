@@ -13,7 +13,7 @@ import {
   renderAttachmentKey,
 } from './attachmentTypes';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
-import Image from '~/components/Chat/Messages/Content/Image';
+import ImageFile from '~/components/Chat/Messages/Content/ImageFile';
 import ToolMermaidArtifact from './ToolMermaidArtifact';
 import ToolArtifactCard from './ToolArtifactCard';
 import { useLocalize } from '~/hooks';
@@ -234,13 +234,7 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
         </div>
       )}
       {imageAttachments?.map((attachment, index) => (
-        <Image
-          width={attachment.width}
-          height={attachment.height}
-          key={renderAttachmentKey('image', attachment, index)}
-          altText={attachment.filename}
-          imagePath={attachment.filepath}
-        />
+        <ImageFile key={renderAttachmentKey('image', attachment, index)} file={attachment} />
       ))}
     </>
   );
