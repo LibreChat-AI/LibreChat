@@ -9,8 +9,16 @@ const {
   formatToolError,
   getHttpsProxyAgent,
   resolveFluxResultRequest,
+  resizeImageToFit,
 } = require('@librechat/api');
-const { FileContext, ContentTypes } = require('librechat-data-provider');
+const { FileContext, ContentTypes, mbToBytes } = require('librechat-data-provider');
+
+/**
+ * Agent-returned images are re-sent to the model as tool results on the next
+ * turn. Cap them at Anthropic's 5 MB per-image limit — the smallest among
+ * supported providers — so large generations don't break the conversation.
+ */
+const MAX_AGENT_IMAGE_BYTES = mbToBytes(5);
 
 const fluxApiJsonSchema = {
   type: 'object',
@@ -316,7 +324,8 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        const imageBuffer = await resizeImageToFit(Buffer.from(arrayBuffer), MAX_AGENT_IMAGE_BYTES);
+        const base64 = imageBuffer.toString('base64');
         const content = [
           {
             type: ContentTypes.IMAGE_URL,
@@ -541,7 +550,8 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        const imageBuffer = await resizeImageToFit(Buffer.from(arrayBuffer), MAX_AGENT_IMAGE_BYTES);
+        const base64 = imageBuffer.toString('base64');
         const content = [
           {
             type: ContentTypes.IMAGE_URL,
