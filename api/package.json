@@ -70,6 +70,7 @@
     "dedent": "^1.5.3",
     "dompurify": "^3.4.17",
     "dotenv": "^16.0.3",
+    "mongodb-client-encryption": "^6.4.0",
     "eventsource": "^3.0.2",
     "express": "^5.2.1",
     "express-mongo-sanitize": "^2.2.0",

@@ -8,7 +8,7 @@ export function createConversationModel(
   mongoose: typeof import('mongoose'),
 ): Model<t.IConversation> {
   applyTenantIsolation(convoSchema);
-  if (process.env.MEILI_HOST && process.env.MEILI_MASTER_KEY) {
+  if (process.env.MEILI_HOST && process.env.MEILI_MASTER_KEY && !process.env.CSFLE_ENABLED) {
     convoSchema.plugin(mongoMeili, {
       mongoose,
       host: process.env.MEILI_HOST,

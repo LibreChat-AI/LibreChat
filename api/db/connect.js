@@ -1,6 +1,8 @@
 require('dotenv').config();
 const { optionalEnabled, instrumentMongooseQueryMetrics } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
+const { buildAutoEncryptionOptions } = require('~/csfle/index');
+const { runStartupMigration } = require('~/csfle/manager');
 
 const mongoose = require('mongoose');
 const MONGO_URI = process.env.MONGO_URI;
@@ -49,6 +51,9 @@ async function connectDb() {
   if (!cached.promise || disconnected) {
     const opts = {
       bufferCommands: false,
+      ...(isEnabled(process.env.CSFLE_ENABLED)
+        ? { autoEncryption: await buildAutoEncryptionOptions(MONGO_URI) }
+        : {}),
       ...(maxPoolSize ? { maxPoolSize } : {}),
       ...(minPoolSize ? { minPoolSize } : {}),
       ...(maxConnecting ? { maxConnecting } : {}),
@@ -70,6 +75,15 @@ async function connectDb() {
     });
   }
   cached.conn = await cached.promise;
+
+  if (
+    isEnabled(process.env.CSFLE_ENABLED) &&
+    isEnabled(process.env.CSFLE_AUTO_MIGRATE) &&
+    !cached.migrationRan
+  ) {
+    cached.migrationRan = true;
+    await runStartupMigration(MONGO_URI);
+  }
 
   return cached.conn;
 }

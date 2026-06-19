@@ -6,7 +6,7 @@ import messageSchema from '~/schema/message';
 
 export function createMessageModel(mongoose: typeof import('mongoose')): Model<t.IMessage> {
   applyTenantIsolation(messageSchema);
-  if (process.env.MEILI_HOST && process.env.MEILI_MASTER_KEY) {
+  if (process.env.MEILI_HOST && process.env.MEILI_MASTER_KEY && !process.env.CSFLE_ENABLED) {
     messageSchema.plugin(mongoMeili, {
       mongoose,
       host: process.env.MEILI_HOST,
