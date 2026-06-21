@@ -56,19 +56,19 @@ Auth via **ADC / K8s Workload Identity** — no static service-account key.
 
 ## Mounted Paths
 
-Mount the `crypt_shared` library into the LibreChat container:
+`crypt_shared` (`mongo_crypt_v1.so`) is **bundled in the Docker image** at `/app/lib/mongo_crypt_v1.so` and `MONGO_CRYPT_SHARED_LIB_PATH` is set automatically. No host volume mount is required.
+
+To override with a different version, mount a replacement at the same path:
 
 ```yaml
-# nos-gpt-apps docker-compose snippet
+# nos-gpt-apps docker-compose snippet (optional override only)
 services:
   api:
     volumes:
       - ./lib/mongo_crypt_v1.so:/app/lib/mongo_crypt_v1.so:ro
-    environment:
-      - MONGO_CRYPT_SHARED_LIB_PATH=/app/lib/mongo_crypt_v1.so
 ```
 
-Download for Linux x86-64: https://www.mongodb.com/try/download/crypt-shared
+The bundled version is `enterprise-ubuntu2204-7.0.21` (SHA-256 pinned). Download page: https://www.mongodb.com/try/download/crypt-shared
 
 ---
 

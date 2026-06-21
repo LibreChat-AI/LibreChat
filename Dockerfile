@@ -1,11 +1,42 @@
 # v0.8.9
 
+# ── Stage 1: download crypt_shared ──────────────────────────────────────────
+# mongo_crypt_v1.so is the Automatic Encryption Shared Library required for
+# CSFLE.  Pinned to 7.0.21 with verified SHA-256 checksums (both amd64 and
+# arm64) for reproducible, supply-chain-safe builds.
+FROM alpine:3.21 AS crypt-shared
+
+ARG CRYPT_VERSION=7.0.21
+ARG CRYPT_BASE_URL=https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux
+
+# SHA-256 digests verified 2026-06-21
+ARG CRYPT_SHA256_AMD64=25190407f7131989fdd9c113ef0aa4c7ef618cccee024b35e8de0aeaf3f74764
+ARG CRYPT_SHA256_ARM64=81bbf9120dd00e856a36d5f8234c88b0fdd4c9d6677a327e9047a7483a9e88d0
+
+RUN apk add --no-cache curl tar && \
+    ARCH="$(uname -m)" && \
+    case "$ARCH" in \
+      x86_64)  MONGO_ARCH=x86_64;  EXPECTED_SHA256="$CRYPT_SHA256_AMD64" ;; \
+      aarch64) MONGO_ARCH=aarch64; EXPECTED_SHA256="$CRYPT_SHA256_ARM64" ;; \
+      *)       echo "Unsupported arch: $ARCH" && exit 1 ;; \
+    esac && \
+    URL="${CRYPT_BASE_URL}-${MONGO_ARCH}-enterprise-ubuntu2204-${CRYPT_VERSION}.tgz" && \
+    curl -fsSL "$URL" -o /tmp/crypt_shared.tgz && \
+    echo "${EXPECTED_SHA256}  /tmp/crypt_shared.tgz" | sha256sum -c - && \
+    mkdir -p /cryptlib /tmp/crypt_extract && \
+    tar -xzf /tmp/crypt_shared.tgz -C /tmp/crypt_extract && \
+    find /tmp/crypt_extract -name 'mongo_crypt_v1.so' -exec cp {} /cryptlib/mongo_crypt_v1.so \; && \
+    rm -rf /tmp/crypt_shared.tgz /tmp/crypt_extract
+
+# ── Stage 2: application ─────────────────────────────────────────────────────
 # Base node image
 FROM docker.io/library/node:24.22.3-alpine AS node
 
 RUN apk upgrade --no-cache
 RUN apk add --no-cache bash jemalloc
 RUN apk add --no-cache python3 py3-pip uv
+# gcompat provides glibc ABI compatibility so the glibc-built crypt_shared runs on Alpine musl
+RUN apk add --no-cache gcompat libgcc
 
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
@@ -23,6 +54,10 @@ ARG NPM_CI_ATTEMPTS=2
 
 RUN mkdir -p /app && chown node:node /app
 WORKDIR /app
+
+# Bundle crypt_shared so CSFLE works without a host mount
+COPY --from=crypt-shared --chown=node:node /cryptlib/mongo_crypt_v1.so /app/lib/mongo_crypt_v1.so
+ENV MONGO_CRYPT_SHARED_LIB_PATH=/app/lib/mongo_crypt_v1.so
 
 USER node
 
