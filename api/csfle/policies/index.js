@@ -3,13 +3,12 @@
 const crypto = require('crypto');
 const v1 = require('./v1');
 const v2 = require('./v2');
-const v3 = require('./v3');
 
 /**
  * Ordered list of all migration policies.
  * Add new policies here — never remove or reorder existing entries.
  */
-const POLICIES = Object.freeze([v1, v2, v3]);
+const POLICIES = Object.freeze([v1, v2]);
 
 /**
  * Returns all policies whose version is ≤ targetVersion.

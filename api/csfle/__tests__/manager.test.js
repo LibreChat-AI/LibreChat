@@ -131,7 +131,7 @@ describe('CSFLE Migration Manager', () => {
       await runMigrations({ mongoUri: uri, targetVersion: null });
 
       const records = await db.collection(MIGRATIONS_COLL).find({}).toArray();
-      expect(records.length).toBe(POLICIES.length);
+      expect(records.length).toBe(2); // v1 + v2
       for (const record of records) {
         expect(record.status).toBe(STATUS.APPLIED);
       }

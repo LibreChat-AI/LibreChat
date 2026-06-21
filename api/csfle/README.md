@@ -76,11 +76,10 @@ Download for Linux x86-64: https://www.mongodb.com/try/download/crypt-shared
 
 Migration policies are versioned, pure-data files in `api/csfle/policies/`:
 
-| File | Wave | Collections |
-|------|------|-------------|
-| `v1.js` | 1 — auth-critical | users, sessions, keys |
-| `v2.js` | 2 — content/privacy | messages, conversations |
-| `v3.js` | 3 — completeness | users (remaining), files |
+| File | Wave | Collections | Fields |
+|------|------|-------------|--------|
+| `v1.js` | 1 — credentials | sessions, keys | refreshTokenHash (Det.), value (Rand.) |
+| `v2.js` | 2 — content | messages, conversations | text, content (Rand.), title (Rand.) |
 
 Each policy defines an array of field descriptors:
 ```js
@@ -126,11 +125,9 @@ DEK alt-names (never rename after provisioning):
 
 | Alt-name | Covers |
 |----------|--------|
-| `dek-users` | users.email, openidId, googleId, name, username, avatar |
 | `dek-messages` | messages.text, messages.content |
 | `dek-convos` | conversations.title |
 | `dek-keys` | keys.value |
-| `dek-files` | files.filename, filepath |
 | `dek-sessions` | sessions.refreshTokenHash |
 
 ---
