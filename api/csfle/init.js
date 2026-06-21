@@ -1,7 +1,6 @@
 'use strict';
 
-const { ClientEncryption } = require('mongodb-client-encryption');
-const { MongoClient } = require('mongodb');
+const { ClientEncryption, MongoClient } = require('mongodb');
 const { logger } = require('@librechat/data-schemas');
 const { buildKmsProviders } = require('./provider');
 const { DEK_NAMES } = require('./deks');
