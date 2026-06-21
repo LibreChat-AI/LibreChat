@@ -29,22 +29,24 @@ RUN apk add --no-cache curl tar && \
     rm -rf /tmp/crypt_shared.tgz /tmp/crypt_extract
 
 # ── Stage 2: application ─────────────────────────────────────────────────────
-# Base node image
-FROM docker.io/library/node:24.22.3-alpine AS node
+# Debian Bookworm (glibc) is required: mongo_crypt_v1.so uses glibc symbols
+# (e.g. pthread_cond_clockwait) that Alpine's musl/gcompat layer does not provide.
+FROM docker.io/library/node:24.22.3-bookworm-slim AS node
 
-RUN apk upgrade --no-cache
-RUN apk add --no-cache bash jemalloc
-RUN apk add --no-cache python3 py3-pip uv
-# gcompat provides glibc ABI compatibility so the glibc-built crypt_shared runs on Alpine musl
-RUN apk add --no-cache gcompat libgcc
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libjemalloc2 \
+      python3 \
+    && ln -s "$(find /usr/lib -name 'libjemalloc.so.2' -print -quit)" /usr/local/lib/libjemalloc.so.2 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set environment variable to use jemalloc
-ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2
 # Disable dependency installation analytics before any npm lifecycle scripts run.
 ENV SCARF_ANALYTICS=false
 
 # Add `uv` for extended MCP support
-COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-alpine /usr/local/bin/uv /usr/local/bin/uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-bookworm /usr/local/bin/uv /usr/local/bin/uvx /bin/
 RUN uv --version
 
 # Set configurable max-old-space-size with default
