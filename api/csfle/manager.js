@@ -15,22 +15,29 @@ const STATUS = Object.freeze({ APPLIED: 'applied', FAILED: 'failed', PENDING: 'p
  * Returns true when a BSON value is already CSFLE-encrypted
  * (Binary subtype 6 — the FLE2 ciphertext subtype).
  *
+ * Handles both bson v4 (`sub_type`) and v5+ (`subType`) property names.
+ *
  * @param {unknown} value
  * @returns {boolean}
  */
 function isEncrypted(value) {
-  return (
-    value != null &&
-    typeof value === 'object' &&
-    value._bsontype === 'Binary' &&
-    value.sub_type === 6
-  );
+  if (value == null || typeof value !== 'object') return false;
+  // bson v4 uses sub_type; v5+ uses subType — check both for compatibility
+  const subType = value.sub_type ?? value.subType;
+  return value._bsontype === 'Binary' && subType === 6;
 }
 
 /**
  * Back-fills a single collection for a policy: reads plaintext docs through
  * the plain client and re-saves them through the encrypted client so the
  * driver applies automatic field-level encryption.
+ *
+ * Uses a DB-level `$not: { $type: 'binData' }` filter so only plaintext docs
+ * are fetched, which means empty strings (`""`) are included while
+ * already-encrypted BinData blobs are excluded naturally.
+ *
+ * Uses `updateOne + $set` (not `replaceOne`) to update only the target fields
+ * without touching any other document fields.
  *
  * @param {import('mongodb').Collection} rawColl   Plain view.
  * @param {import('mongodb').Collection} encColl   Encrypted-client view.
@@ -39,44 +46,52 @@ function isEncrypted(value) {
  * @returns {Promise<{ migrated: number, skipped: number, errors: number }>}
  */
 async function backfillCollection(rawColl, encColl, fields, { dryRun, batchSize }) {
+  // Only fetch documents where at least one target field is present and not yet
+  // a BinData blob.  $ne: null ensures we don't try to encrypt null values, but
+  // empty strings ('') are correctly included because '' !== null.
+  const filter = {
+    $or: fields.map((f) => ({
+      [f]: { $exists: true, $not: { $type: 'binData' }, $ne: null },
+    })),
+  };
+
+  const projection = { _id: 1, ...Object.fromEntries(fields.map((f) => [f, 1])) };
+  const cursor = rawColl.find(filter, { projection, batchSize });
+
   let migrated = 0;
   let skipped = 0;
   let errors = 0;
 
-  const projection = { _id: 1, ...Object.fromEntries(fields.map((f) => [f, 1])) };
-  const cursor = rawColl.find({}, { projection });
-
   try {
-    let batch = [];
-
-    const flush = async () => {
-      if (!batch.length) return;
-      if (dryRun) {
-        migrated += batch.length;
-        batch = [];
-        return;
-      }
-      for (const doc of batch) {
-        try {
-          await encColl.replaceOne({ _id: doc._id }, doc);
-        } catch (err) {
-          logger.error(`[CSFLE manager] replaceOne failed for _id=${doc._id}: ${err.message}`);
-          errors++;
+    for await (const doc of cursor) {
+      const $set = {};
+      for (const f of fields) {
+        const val = doc[f];
+        if (val !== undefined && val !== null && !isEncrypted(val)) {
+          $set[f] = val;
         }
       }
-      migrated += batch.length;
-      batch = [];
-    };
 
-    for await (const doc of cursor) {
-      if (!fields.some((f) => doc[f] != null && !isEncrypted(doc[f]))) {
+      if (Object.keys($set).length === 0) {
         skipped++;
         continue;
       }
-      batch.push(doc);
-      if (batch.length >= batchSize) await flush();
+
+      if (dryRun) {
+        migrated++;
+        continue;
+      }
+
+      try {
+        // updateOne + $set so only the encrypted fields are touched;
+        // all other document fields (conversationId, sender, etc.) are preserved.
+        await encColl.updateOne({ _id: doc._id }, { $set });
+        migrated++;
+      } catch (err) {
+        logger.error(`[CSFLE manager] updateOne failed for _id=${doc._id}: ${err.message}`);
+        errors++;
+      }
     }
-    await flush();
   } finally {
     await cursor.close();
   }
@@ -125,7 +140,8 @@ async function applyPolicy(encDb, rawDb, policy, opts) {
     totalStats.errors += stats.errors;
   }
 
-  const finalStatus = opts.dryRun ? STATUS.PENDING : STATUS.APPLIED;
+  const finalStatus =
+    opts.dryRun ? STATUS.PENDING : totalStats.errors === 0 ? STATUS.APPLIED : STATUS.FAILED;
   await migrationsColl.updateOne(
     { version: policy.version },
     { $set: { status: finalStatus, appliedAt: new Date(), stats: totalStats } },
@@ -160,6 +176,8 @@ async function runMigrations({ mongoUri, targetVersion = null, dryRun = false, b
 
     await migrationsColl.createIndex({ version: 1 }, { unique: true });
 
+    const forceRemigrate = process.env.CSFLE_FORCE_REMIGRATE === 'true';
+
     for (const policy of pending) {
       const existing = await migrationsColl.findOne({ version: policy.version });
 
@@ -172,8 +190,13 @@ async function runMigrations({ mongoUri, targetVersion = null, dryRun = false, b
               'Policy fields were modified after initial application — this is dangerous in production.',
           );
         }
-        logger.debug(`[CSFLE manager] v${policy.version} already applied — skipping`);
-        continue;
+        if (!forceRemigrate) {
+          logger.debug(`[CSFLE manager] v${policy.version} already applied — skipping`);
+          continue;
+        }
+        logger.warn(
+          `[CSFLE manager] FORCE_REMIGRATE=true — re-running v${policy.version} to encrypt any remaining plaintext docs`,
+        );
       }
 
       logger.info(`[CSFLE manager] Applying v${policy.version}: ${policy.description}`);
@@ -211,7 +234,8 @@ async function runStartupMigration(mongoUri) {
 
   logger.info(
     `[CSFLE manager] Auto-migrate starting (policy=${startupPolicy}` +
-      `${targetVersion != null ? `, target=v${targetVersion}` : ''})`,
+      `${targetVersion != null ? `, target=v${targetVersion}` : ''}` +
+      `${process.env.CSFLE_FORCE_REMIGRATE === 'true' ? ', force-remigrate=true' : ''})`,
   );
 
   try {
