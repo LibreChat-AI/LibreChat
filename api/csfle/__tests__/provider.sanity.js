@@ -8,7 +8,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { loadGcpCredentials, buildKmsProviders } = require('../provider');
+const { loadGcpCredentials, buildKmsProviders, normalisePemToBase64 } = require('../provider');
 
 let passed = 0;
 let failed = 0;
@@ -197,8 +197,10 @@ assert('uses ADC when no file vars set', () => {
   });
 });
 
-assert('injects explicit credentials when key file is set', () => {
-  const p = tmpFile(JSON.stringify({ client_email: 'sa@p.iam', private_key: 'GCPPK' }));
+assert('injects explicit credentials when key file is set (bare base64 key)', () => {
+  // Bare base64 (no PEM headers) — should pass through unchanged
+  const bareKey = Buffer.from('fake-rsa-key-bytes').toString('base64');
+  const p = tmpFile(JSON.stringify({ client_email: 'sa@p.iam', private_key: bareKey }));
   cleanup.push(p);
   withEnv({
     GCP_KMS_PROJECT_ID: 'my-project',
@@ -208,7 +210,53 @@ assert('injects explicit credentials when key file is set', () => {
   }, () => {
     const result = buildKmsProviders();
     assertEqual(result.kmsProviders.gcp.email, 'sa@p.iam');
-    assertEqual(result.kmsProviders.gcp.privateKey, 'GCPPK');
+    assertEqual(result.kmsProviders.gcp.privateKey, bareKey);
+  });
+});
+
+// -----------------------------------------------------------------------
+console.log('\nnormalisePemToBase64()');
+
+assert('strips PEM header/footer and newlines from a standard GCP private_key', () => {
+  // Simulate a real GCP service account JSON private_key value
+  const payload = Buffer.from('fake-rsa-key-bytes-long-enough').toString('base64');
+  const pem = `-----BEGIN RSA PRIVATE KEY-----\n${payload}\n-----END RSA PRIVATE KEY-----\n`;
+  const result = normalisePemToBase64(pem, 'test');
+  assertEqual(result, payload);
+});
+
+assert('handles PRIVATE KEY (PKCS8) header variant', () => {
+  const payload = Buffer.from('pkcs8-key-bytes').toString('base64');
+  const pem = `-----BEGIN PRIVATE KEY-----\n${payload}\n-----END PRIVATE KEY-----`;
+  assertEqual(normalisePemToBase64(pem, 'test'), payload);
+});
+
+assert('passes through bare base64 unchanged', () => {
+  const bare = Buffer.from('already-base64').toString('base64');
+  assertEqual(normalisePemToBase64(bare, 'test'), bare);
+});
+
+assert('handles literal \\n escape sequences in JSON private_key (as parsed by JSON.parse)', () => {
+  // GCP JSON files use literal \n escape sequences; JSON.parse turns them into real newlines
+  const payload = Buffer.from('escaped-newline-key').toString('base64');
+  const rawFromJson = `-----BEGIN RSA PRIVATE KEY-----\n${payload}\n-----END RSA PRIVATE KEY-----\n`;
+  assertEqual(normalisePemToBase64(rawFromJson, 'test'), payload);
+});
+
+assert('throws when result is empty after stripping', () => {
+  assertThrows(() => normalisePemToBase64('-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----', 'test'), /empty after stripping/);
+});
+
+// end-to-end: loadGcpCredentials returns normalised key from PEM file
+assert('loadGcpCredentials returns stripped base64 when key file contains PEM private_key', () => {
+  const payload = Buffer.from('pem-rsa-bytes-for-e2e-test').toString('base64');
+  const pem = `-----BEGIN RSA PRIVATE KEY-----\n${payload}\n-----END RSA PRIVATE KEY-----\n`;
+  const p = tmpFile(JSON.stringify({ client_email: 'pem@proj.iam', private_key: pem }));
+  cleanup.push(p);
+  withEnv({ CSFLE_GCP_SERVICE_ACCOUNT_FILE: p, GOOGLE_SERVICE_KEY_FILE: undefined }, () => {
+    const creds = loadGcpCredentials();
+    assertEqual(creds.email, 'pem@proj.iam');
+    assertEqual(creds.privateKey, payload); // PEM stripped, bare base64
   });
 });
 

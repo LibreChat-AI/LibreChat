@@ -3,16 +3,60 @@
 const fs = require('fs');
 
 /**
+ * Normalises a GCP service-account `private_key` value for libmongocrypt.
+ *
+ * libmongocrypt's `kmsProviders.gcp.privateKey` expects a **bare base64**
+ * payload — no PEM headers, no newlines.  Standard GCP JSON key files ship
+ * with a full PEM block (`-----BEGIN RSA PRIVATE KEY-----\n...\n-----END...`).
+ *
+ * This function:
+ *   1. Strips `-----BEGIN ... KEY-----` / `-----END ... KEY-----` lines.
+ *   2. Removes all whitespace (newlines, spaces, `\r`).
+ *   3. Validates the result decodes to a non-empty buffer.
+ *
+ * If the value is already bare base64 it passes through unchanged.
+ *
+ * @param {string} raw  Value of `private_key` from the service-account JSON.
+ * @param {string} context  Human-readable source for error messages.
+ * @returns {string} Bare base64 private key payload.
+ */
+function normalisePemToBase64(raw, context) {
+  // Strip PEM header/footer lines and collapse all whitespace.
+  const base64 = raw
+    .replace(/-----BEGIN[^-]*-----/g, '')
+    .replace(/-----END[^-]*-----/g, '')
+    .replace(/\s+/g, '');
+
+  if (!base64) {
+    throw new Error(`[CSFLE] ${context}: private_key is empty after stripping PEM headers`);
+  }
+
+  let buf;
+  try {
+    buf = Buffer.from(base64, 'base64');
+  } catch (_) {
+    throw new Error(`[CSFLE] ${context}: private_key is not valid base64`);
+  }
+
+  if (buf.length === 0) {
+    throw new Error(`[CSFLE] ${context}: private_key decoded to empty buffer — invalid key`);
+  }
+
+  return base64;
+}
+
+/**
  * Resolves the GCP service account JSON file path from env vars and returns
- * the `client_email` + `private_key` fields libmongocrypt needs.
+ * the `client_email` + normalised `privateKey` fields libmongocrypt needs.
  *
  * Resolution order (when GCP_KMS_PROJECT_ID is set):
  *   1. CSFLE_GCP_SERVICE_ACCOUNT_FILE
  *   2. GOOGLE_SERVICE_KEY_FILE  (shared with other app GCP integrations)
  *   3. Neither set → return null (caller falls back to ADC / Workload Identity)
  *
- * Throws with an explicit message when a path is configured but the file
- * cannot be read or is missing the required fields.
+ * Throws with an explicit message including the env var name and file path when
+ * the file cannot be read, is invalid JSON, is missing required fields, or the
+ * private key cannot be normalised to bare base64.
  *
  * @returns {{ email: string, privateKey: string } | null}
  */
@@ -25,35 +69,31 @@ function loadGcpCredentials() {
   const sourceVar = process.env.CSFLE_GCP_SERVICE_ACCOUNT_FILE
     ? 'CSFLE_GCP_SERVICE_ACCOUNT_FILE'
     : 'GOOGLE_SERVICE_KEY_FILE';
+  const context = `GCP service account file at ${filePath} (from ${sourceVar})`;
 
   let raw;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch (err) {
-    throw new Error(
-      `[CSFLE] Cannot read GCP service account file at ${filePath} ` +
-        `(from ${sourceVar}): ${err.message}`,
-    );
+    throw new Error(`[CSFLE] Cannot read ${context}: ${err.message}`);
   }
 
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    throw new Error(`[CSFLE] ${context} is not valid JSON: ${err.message}`);
+  }
+
+  const { client_email: email, private_key: rawPrivateKey } = parsed;
+
+  if (!email || !rawPrivateKey) {
     throw new Error(
-      `[CSFLE] GCP service account file at ${filePath} (from ${sourceVar}) ` +
-        `is not valid JSON: ${err.message}`,
+      `[CSFLE] ${context} is missing required fields: client_email and/or private_key`,
     );
   }
 
-  const { client_email: email, private_key: privateKey } = parsed;
-
-  if (!email || !privateKey) {
-    throw new Error(
-      `[CSFLE] GCP service account file at ${filePath} (from ${sourceVar}) ` +
-        'is missing required fields: client_email and/or private_key',
-    );
-  }
+  const privateKey = normalisePemToBase64(rawPrivateKey, context);
 
   return { email, privateKey };
 }
@@ -64,6 +104,7 @@ function loadGcpCredentials() {
  * GCP mode (when GCP_KMS_PROJECT_ID is set):
  *   - If CSFLE_GCP_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_KEY_FILE is set,
  *     reads the JSON key file and supplies explicit credentials to libmongocrypt.
+ *     The private_key PEM value is automatically normalised to bare base64.
  *   - Otherwise falls back to ADC / Workload Identity (kmsProviders.gcp = {}).
  *
  * Local mode (dev / CI):
@@ -111,4 +152,4 @@ function buildKmsProviders() {
   };
 }
 
-module.exports = { buildKmsProviders, loadGcpCredentials };
+module.exports = { buildKmsProviders, loadGcpCredentials, normalisePemToBase64 };
