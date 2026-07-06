@@ -2,7 +2,7 @@
 
 const { logger } = require('@librechat/data-schemas');
 const { buildKmsProviders } = require('./provider');
-const { buildSchemaFromPolicies } = require('./policies');
+const { buildSchemaMap } = require('./fields');
 const { bootstrapKeyVault } = require('./init');
 const { MongoClient } = require('mongodb');
 const { DEK_NAMES } = require('./deks');
@@ -11,7 +11,7 @@ let cachedOptions = null;
 
 /**
  * Builds (and caches) the autoEncryption options for MongoClient / Mongoose.
- * On first call: bootstraps __keyVault + DEKs, then fetches DEK IDs.
+ * On first call: bootstraps __keyVault + DEK, then fetches DEK IDs.
  *
  * @param {string} mongoUri
  * @returns {Promise<import('mongodb').AutoEncryptionOptions>}
@@ -44,7 +44,7 @@ async function buildAutoEncryptionOptions(mongoUri) {
     await rawClient.close();
   }
 
-  const schemaMap = buildSchemaFromPolicies(dekIds, dbName);
+  const schemaMap = buildSchemaMap(dekIds, dbName);
 
   const opts = {
     keyVaultNamespace,

@@ -6,9 +6,6 @@
  */
 const DEK_NAMES = Object.freeze({
   MESSAGES: 'dek-messages',
-  CONVOS: 'dek-convos',
-  KEYS: 'dek-keys',
-  SESSIONS: 'dek-sessions',
 });
 
 module.exports = { DEK_NAMES };

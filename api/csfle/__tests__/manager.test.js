@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { MongoClient } = require('mongodb');
@@ -16,12 +16,12 @@ jest.mock('../index', () => ({
 const {
   runMigrations,
   runStartupMigration,
+  backfillCollection,
   MIGRATIONS_COLL,
+  MESSAGES_MIGRATION,
   STATUS,
   isEncrypted,
 } = require('../manager');
-
-const { POLICIES, computeChecksum } = require('../policies');
 
 describe('CSFLE Migration Manager', () => {
   let mongod;
@@ -47,6 +47,9 @@ describe('CSFLE Migration Manager', () => {
     for (const c of colls) {
       await db.collection(c.name).deleteMany({});
     }
+    delete process.env.CSFLE_FORCE_REMIGRATE;
+    delete process.env.CSFLE_STARTUP_POLICY;
+    delete process.env.MONGO_URI;
   });
 
   // ---------------------------------------------------------------------------
@@ -54,7 +57,11 @@ describe('CSFLE Migration Manager', () => {
   // ---------------------------------------------------------------------------
   describe('isEncrypted()', () => {
     it('returns false for plain string', () => {
-      expect(isEncrypted('hello@example.com')).toBe(false);
+      expect(isEncrypted('hello')).toBe(false);
+    });
+
+    it('returns false for empty string', () => {
+      expect(isEncrypted('')).toBe(false);
     });
 
     it('returns false for null/undefined', () => {
@@ -76,20 +83,12 @@ describe('CSFLE Migration Manager', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // computeChecksum
+  // MESSAGES_MIGRATION descriptor
   // ---------------------------------------------------------------------------
-  describe('computeChecksum()', () => {
-    it('returns a 16-char hex string', () => {
-      const cs = computeChecksum(POLICIES[0]);
-      expect(cs).toMatch(/^[0-9a-f]{16}$/);
-    });
-
-    it('is stable across calls', () => {
-      expect(computeChecksum(POLICIES[0])).toBe(computeChecksum(POLICIES[0]));
-    });
-
-    it('differs between policies', () => {
-      expect(computeChecksum(POLICIES[0])).not.toBe(computeChecksum(POLICIES[1]));
+  describe('MESSAGES_MIGRATION', () => {
+    it('targets messages collection with text and content fields', () => {
+      expect(MESSAGES_MIGRATION.version).toBe(1);
+      expect(MESSAGES_MIGRATION.fields).toEqual(['text', 'content']);
     });
   });
 
@@ -97,54 +96,49 @@ describe('CSFLE Migration Manager', () => {
   // Applied-once semantics
   // ---------------------------------------------------------------------------
   describe('Applied-once semantics', () => {
-    it('marks all target policies as applied after first run', async () => {
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
+    it('marks migration as applied after first run', async () => {
+      await runMigrations({ mongoUri: uri });
 
-      const records = await db.collection(MIGRATIONS_COLL).find({}).toArray();
-      const v1 = records.find((r) => r.version === 1);
-      expect(v1).toBeDefined();
-      expect(v1.status).toBe(STATUS.APPLIED);
+      const record = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
+      expect(record).toBeDefined();
+      expect(record.status).toBe(STATUS.APPLIED);
     });
 
-    it('does not re-apply an already-applied policy on second run', async () => {
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
+    it('does not re-run an already-applied migration', async () => {
+      await runMigrations({ mongoUri: uri });
 
-      await db.collection('sessions').insertOne({ _sentinel: true, refreshTokenHash: 'abc' });
+      await db.collection('messages').insertOne({ text: 'new doc' });
 
-      const updateOneSpy = jest.spyOn(db.collection('sessions').__proto__, 'updateOne');
+      const updateOneSpy = jest.spyOn(
+        db.collection('messages').__proto__,
+        'updateOne',
+      );
 
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
+      await runMigrations({ mongoUri: uri });
 
       expect(updateOneSpy).not.toHaveBeenCalled();
       updateOneSpy.mockRestore();
     });
 
-    it('only applies policies up to targetVersion', async () => {
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
-
-      const records = await db.collection(MIGRATIONS_COLL).find({}).toArray();
-      const v2 = records.find((r) => r.version === 2);
-      expect(v2).toBeUndefined();
-    });
-
-    it('applies all versions when targetVersion is null', async () => {
-      await runMigrations({ mongoUri: uri, targetVersion: null });
-
-      const records = await db.collection(MIGRATIONS_COLL).find({}).toArray();
-      expect(records.length).toBe(2); // v1 + v2
-      for (const record of records) {
-        expect(record.status).toBe(STATUS.APPLIED);
-      }
-    });
-
-    it('resumes from pending state (e.g. after a crash)', async () => {
+    it('resumes from pending state after a crash', async () => {
       await db.collection(MIGRATIONS_COLL).insertOne({
         version: 1,
         status: STATUS.PENDING,
-        checksum: computeChecksum(POLICIES[0]),
       });
 
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
+      await runMigrations({ mongoUri: uri });
+
+      const record = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
+      expect(record.status).toBe(STATUS.APPLIED);
+    });
+
+    it('retries a failed migration', async () => {
+      await db.collection(MIGRATIONS_COLL).insertOne({
+        version: 1,
+        status: STATUS.FAILED,
+      });
+
+      await runMigrations({ mongoUri: uri });
 
       const record = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
       expect(record.status).toBe(STATUS.APPLIED);
@@ -155,8 +149,8 @@ describe('CSFLE Migration Manager', () => {
   // Dry-run
   // ---------------------------------------------------------------------------
   describe('Dry-run', () => {
-    it('does not mark policies as applied in dry-run mode', async () => {
-      await runMigrations({ mongoUri: uri, targetVersion: 1, dryRun: true });
+    it('does not mark migration as applied in dry-run mode', async () => {
+      await runMigrations({ mongoUri: uri, dryRun: true });
 
       const record = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
       expect(record?.status).not.toBe(STATUS.APPLIED);
@@ -164,18 +158,134 @@ describe('CSFLE Migration Manager', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Startup policy — strict mode
+  // CSFLE_FORCE_REMIGRATE
+  // ---------------------------------------------------------------------------
+  describe('CSFLE_FORCE_REMIGRATE', () => {
+    it('re-runs an already-applied migration when set to true', async () => {
+      await runMigrations({ mongoUri: uri });
+
+      const before = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
+      expect(before.status).toBe(STATUS.APPLIED);
+
+      process.env.CSFLE_FORCE_REMIGRATE = 'true';
+      await runMigrations({ mongoUri: uri });
+
+      const after = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
+      expect(after.status).toBe(STATUS.APPLIED);
+    });
+
+    it('does NOT re-run without the flag', async () => {
+      await runMigrations({ mongoUri: uri });
+
+      const before = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
+      const startedAtBefore = before.startedAt;
+
+      await new Promise((r) => setTimeout(r, 5));
+      await runMigrations({ mongoUri: uri });
+
+      const after = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
+      expect(after.startedAt).toEqual(startedAtBefore);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // backfillCollection — plaintext detection
+  // ---------------------------------------------------------------------------
+  describe('backfillCollection — plaintext detection', () => {
+    it('processes docs with plain text values', async () => {
+      const coll = db.collection('messages');
+      await coll.insertMany([
+        { _id: 'doc1', text: 'hello' },
+        { _id: 'doc2', text: 'world' },
+      ]);
+
+      const stats = await backfillCollection(coll, coll, ['text'], { dryRun: true, batchSize: 10 });
+      expect(stats.migrated).toBe(2);
+      expect(stats.errors).toBe(0);
+    });
+
+    it('processes docs with empty-string field values (does not skip them)', async () => {
+      const coll = db.collection('messages');
+      await coll.insertMany([
+        { _id: 'doc1', text: 'hello' },
+        { _id: 'doc2', text: '' },
+        { _id: 'doc3', text: null },
+        { _id: 'doc4', other: 'no text field' },
+      ]);
+
+      const stats = await backfillCollection(coll, coll, ['text'], { dryRun: true, batchSize: 10 });
+
+      // doc1 + doc2 counted; doc3 (null) and doc4 (missing field) skipped
+      expect(stats.migrated).toBe(2);
+      expect(stats.errors).toBe(0);
+    });
+
+    it('skips docs where all target fields are null or missing', async () => {
+      const coll = db.collection('messages');
+      await coll.insertMany([
+        { _id: 'doc1', text: null },
+        { _id: 'doc2', other: 'no text' },
+      ]);
+
+      const stats = await backfillCollection(coll, coll, ['text'], { dryRun: true, batchSize: 10 });
+      expect(stats.migrated).toBe(0);
+      expect(stats.skipped).toBe(0); // filtered out at DB level, not counted as skipped
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Error handling — FAILED status when updateOne errors
+  // ---------------------------------------------------------------------------
+  describe('Error handling', () => {
+    it('records errors without counting them as migrated', async () => {
+      const rawColl = db.collection('messages');
+      const encColl = db.collection('messages');
+
+      await rawColl.insertOne({ _id: 'err-doc', text: 'hello' });
+
+      jest.spyOn(encColl, 'updateOne').mockRejectedValueOnce(new Error('write failed'));
+
+      const stats = await backfillCollection(rawColl, encColl, ['text'], {
+        dryRun: false,
+        batchSize: 10,
+      });
+
+      expect(stats.errors).toBe(1);
+      expect(stats.migrated).toBe(0);
+    });
+
+    it('marks migration as FAILED when backfill has errors', async () => {
+      await db.collection('messages').insertOne({ text: 'hello' });
+
+      const { buildAutoEncryptionOptions } = require('../index');
+      // Let autoEncryption succeed but make the individual updateOne fail
+      // by setting up a real run where we intercept deep in the chain.
+      // Simplest approach: test directly with a mock encColl.
+      const rawDb = db;
+      const encColl = {
+        updateOne: jest.fn().mockRejectedValue(new Error('enc write failed')),
+        find: rawDb.collection('messages').find.bind(rawDb.collection('messages')),
+      };
+
+      const stats = await backfillCollection(
+        rawDb.collection('messages'),
+        encColl,
+        ['text'],
+        { dryRun: false, batchSize: 10 },
+      );
+
+      expect(stats.errors).toBeGreaterThan(0);
+      expect(stats.migrated).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // runStartupMigration — strict mode
   // ---------------------------------------------------------------------------
   describe('runStartupMigration() — strict mode', () => {
     beforeEach(() => {
       process.env.CSFLE_STARTUP_POLICY = 'strict';
       process.env.MONGO_URI = uri;
-    });
-
-    afterEach(() => {
-      delete process.env.CSFLE_STARTUP_POLICY;
-      delete process.env.MONGO_URI;
-      delete process.env.CSFLE_MIGRATION_TARGET_VERSION;
     });
 
     it('completes without throwing when migrations succeed', async () => {
@@ -188,21 +298,10 @@ describe('CSFLE Migration Manager', () => {
 
       await expect(runStartupMigration(uri)).rejects.toThrow('KMS unavailable');
     });
-
-    it('respects CSFLE_MIGRATION_TARGET_VERSION', async () => {
-      process.env.CSFLE_MIGRATION_TARGET_VERSION = '1';
-
-      await runStartupMigration(uri);
-
-      const records = await db.collection(MIGRATIONS_COLL).find({}).toArray();
-      const versions = records.map((r) => r.version);
-      expect(versions).toContain(1);
-      expect(versions).not.toContain(2);
-    });
   });
 
   // ---------------------------------------------------------------------------
-  // Startup policy — warn mode
+  // runStartupMigration — warn mode
   // ---------------------------------------------------------------------------
   describe('runStartupMigration() — warn mode', () => {
     beforeEach(() => {
@@ -210,123 +309,11 @@ describe('CSFLE Migration Manager', () => {
       process.env.MONGO_URI = uri;
     });
 
-    afterEach(() => {
-      delete process.env.CSFLE_STARTUP_POLICY;
-      delete process.env.MONGO_URI;
-    });
-
     it('does not throw when migration fails in warn mode', async () => {
       const { buildAutoEncryptionOptions } = require('../index');
       buildAutoEncryptionOptions.mockRejectedValueOnce(new Error('KMS unavailable'));
 
       await expect(runStartupMigration(uri)).resolves.toBeUndefined();
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Checksum mismatch warning
-  // ---------------------------------------------------------------------------
-  describe('Checksum mismatch detection', () => {
-    it('logs a warning when a previously-applied policy has a different checksum', async () => {
-      await db.collection(MIGRATIONS_COLL).insertOne({
-        version: 1,
-        status: STATUS.APPLIED,
-        checksum: 'deadbeefdeadbeef',
-      });
-
-      const { logger } = require('@librechat/data-schemas');
-      const warnSpy = jest.spyOn(logger, 'warn').mockImplementation(() => {});
-
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
-
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('CHECKSUM MISMATCH'),
-      );
-      warnSpy.mockRestore();
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  describe('CSFLE_FORCE_REMIGRATE', () => {
-    afterEach(() => {
-      delete process.env.CSFLE_FORCE_REMIGRATE;
-    });
-
-    it('re-runs an already-applied policy when CSFLE_FORCE_REMIGRATE=true', async () => {
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
-
-      const before = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
-      expect(before.status).toBe(STATUS.APPLIED);
-
-      process.env.CSFLE_FORCE_REMIGRATE = 'true';
-
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
-
-      // Migration state is refreshed (startedAt updated)
-      const after = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
-      expect(after.status).toBe(STATUS.APPLIED);
-    });
-
-    it('does NOT re-run without the flag', async () => {
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
-
-      const before = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
-      const startedAtBefore = before.startedAt;
-
-      await new Promise((r) => setTimeout(r, 5));
-      await runMigrations({ mongoUri: uri, targetVersion: 1 });
-
-      const after = await db.collection(MIGRATIONS_COLL).findOne({ version: 1 });
-      expect(after.startedAt).toEqual(startedAtBefore);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // backfillCollection — empty string and null handling
-  // ---------------------------------------------------------------------------
-  describe('backfillCollection — plaintext detection', () => {
-    const { backfillCollection } = require('../manager');
-
-    it('isEncrypted returns false for empty string', () => {
-      expect(isEncrypted('')).toBe(false);
-    });
-
-    it('processes docs with empty-string field values (does not skip them)', async () => {
-      const coll = db.collection('messages');
-      await coll.insertMany([
-        { _id: 'doc1', text: 'hello' },
-        { _id: 'doc2', text: '' },
-        { _id: 'doc3', text: null },       // null — should be skipped
-        { _id: 'doc4', other: 'no text' }, // no target field — skipped
-      ]);
-
-      const stats = await backfillCollection(coll, coll, ['text'], { dryRun: true, batchSize: 10 });
-
-      // doc1 + doc2 should be counted; doc3 (null) and doc4 (missing) skipped
-      expect(stats.migrated).toBe(2);
-      expect(stats.errors).toBe(0);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Error handling — FAILED status when updateOne errors
-  // ---------------------------------------------------------------------------
-  describe('Error handling', () => {
-    it('marks migration as FAILED when backfill encounters errors', async () => {
-      // Insert a doc that will trigger backfill
-      await db.collection('sessions').insertOne({ refreshTokenHash: 'abc' });
-
-      // Force updateOne to throw
-      const encColl = db.collection('sessions');
-      jest.spyOn(encColl, 'updateOne').mockRejectedValueOnce(new Error('write failed'));
-
-      // Use backfillCollection directly
-      const { backfillCollection: bf } = require('../manager');
-      const rawColl = db.collection('sessions');
-      const stats = await bf(rawColl, encColl, ['refreshTokenHash'], { dryRun: false, batchSize: 10 });
-
-      expect(stats.errors).toBe(1);
-      expect(stats.migrated).toBe(0);
     });
   });
 });

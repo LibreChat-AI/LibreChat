@@ -1,107 +1,150 @@
-# CSFLE Integration Contract
+﻿# CSFLE Integration — api/csfle
 
-This document is the **interface boundary** between LibreChat and nos-gpt-apps.
-
-| Owns | Scope |
-|------|-------|
-| **LibreChat** | Application code: policy definitions, schema map, key vault bootstrap, migration manager, startup hook |
-| **nos-gpt-apps** | Runtime: docker-compose wiring, KMS credentials, `crypt_shared` library, standalone migration runner |
+LibreChat encrypts sensitive message fields at the MongoDB driver layer using
+**Client-Side Field Level Encryption (CSFLE)**.  Encryption and decryption happen
+transparently in the application process — MongoDB never sees plaintext for the
+protected fields.
 
 ---
 
-## Environment Variables
+## Encrypted fields
 
-### Required
+| Collection | Field | Type | Algorithm |
+|---|---|---|---|
+| `messages` | `text` | string | Random |
+| `messages` | `content` | array | Random |
 
-| Variable | Description |
-|----------|-------------|
-| `CSFLE_ENABLED` | Set `true` to activate CSFLE. When absent/false no other CSFLE vars are read. |
-| `MONGO_URI` | Standard MongoDB URI (already required). |
+Random encryption means ciphertext differs on every write. Equality queries on
+these fields are not supported (and not used by LibreChat).
 
-### Startup migration
+---
+
+## Prerequisites
+
+- `mongodb-client-encryption` npm package (already in `api/package.json`).
+- `crypt_shared` or `mongocryptd` to handle BSON transformation locally.
+  **Recommended:** use `crypt_shared` — it is bundled in the Docker image at
+  `/app/lib/mongo_crypt_v1.so` with `MONGO_CRYPT_SHARED_LIB_PATH` pre-set.
+
+---
+
+## Environment variables
+
+### Core flags
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `CSFLE_AUTO_MIGRATE` | `false` | When `true`, LibreChat runs unapplied migration policies at startup before serving requests. |
-| `CSFLE_STARTUP_POLICY` | `strict` | `strict` — abort startup on migration failure (recommended). `warn` — log and continue. |
-| `CSFLE_MIGRATION_TARGET_VERSION` | *(all)* | Limit auto-migration to policies ≤ this version. Leave empty to apply all. |
+|---|---|---|
+| `CSFLE_ENABLED` | — | Set `true` to activate CSFLE. When absent/false no other CSFLE vars are read. |
+| `CSFLE_AUTO_MIGRATE` | `false` | When `true`, backfills existing plaintext docs at startup. |
+| `CSFLE_STARTUP_POLICY` | `strict` | `strict` — abort startup on failure. `warn` — log and continue. |
+| `CSFLE_FORCE_REMIGRATE` | — | Set `true` to re-run the migration even if already applied (single-use). |
 
-### KMS — production (GCP, Workload Identity)
+### Key vault
+
+| Variable | Default | Description |
+|---|---|---|
+| `MONGO_CSFLE_KEY_VAULT_NAMESPACE` | `<dbName>.__keyVault` | Override when the DB name differs. |
+
+### Crypto backend
+
+| Variable | Description |
+|---|---|
+| `MONGO_CRYPT_SHARED_LIB_PATH` | Path to `crypt_shared` inside the container. Pre-set to `/app/lib/mongo_crypt_v1.so` in the Docker image. |
+| `MONGOCRYPTD_URI` | Fallback if `MONGO_CRYPT_SHARED_LIB_PATH` is not set. |
+| `MONGOCRYPTD_BYPASS_SPAWN` | Set `true` when mongocryptd is managed externally. |
+
+### KMS — local dev / CI
+
+```sh
+# Generate a 96-byte local master key (base64):
+node -e "console.log(require('crypto').randomBytes(96).toString('base64'))"
+```
+
+| Variable | Description |
+|---|---|
+| `MONGO_CSFLE_LOCAL_MASTER_KEY` | Base64-encoded 96-byte key. Used when `GCP_KMS_PROJECT_ID` is not set. |
+
+### KMS — production (GCP Cloud KMS + Workload Identity)
 
 | Variable | Example |
-|----------|---------|
+|---|---|
 | `GCP_KMS_PROJECT_ID` | `nos-gpt-prod` |
 | `GCP_KMS_LOCATION` | `europe-west1` |
 | `GCP_KMS_KEY_RING` | `nos-gpt-mongodb-csfle` |
 | `GCP_KMS_KEY_NAME` | `nos-gpt-csfle-cmk` |
 
-Auth via **ADC / K8s Workload Identity** — no static service-account key.
-
-### KMS — local dev
-
-| Variable | Description |
-|----------|-------------|
-| `MONGO_CSFLE_LOCAL_MASTER_KEY` | Base64-encoded 96-byte key. Generate: `node -e "console.log(require('crypto').randomBytes(96).toString('base64'))"` |
-
-### Crypto backend
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MONGO_CSFLE_KEY_VAULT_NAMESPACE` | `<dbName>.__keyVault` | Override when the DB name differs from the default. |
-| `MONGO_CRYPT_SHARED_LIB_PATH` | *(empty)* | Absolute path to `crypt_shared` inside the container. Strongly recommended — no sidecar required. |
-| `MONGOCRYPTD_URI` | `mongodb://127.0.0.1:27020` | Fallback if `MONGO_CRYPT_SHARED_LIB_PATH` is not set. |
-| `MONGOCRYPTD_BYPASS_SPAWN` | `false` | Set `true` when mongocryptd is managed externally. |
+Auth via **ADC / K8s Workload Identity** — no static service-account key needed.
 
 ---
 
-## Mounted Paths
+## Local dev setup
 
-`crypt_shared` (`mongo_crypt_v1.so`) is **bundled in the Docker image** at `/app/lib/mongo_crypt_v1.so` and `MONGO_CRYPT_SHARED_LIB_PATH` is set automatically. No host volume mount is required.
+1. Generate a local master key and add it to your `.env`:
+   ```sh
+   node -e "console.log(require('crypto').randomBytes(96).toString('base64'))"
+   # → paste as MONGO_CSFLE_LOCAL_MASTER_KEY=<base64>
+   ```
 
-To override with a different version, mount a replacement at the same path:
+2. Enable CSFLE in `.env`:
+   ```
+   CSFLE_ENABLED=true
+   CSFLE_AUTO_MIGRATE=true
+   CSFLE_STARTUP_POLICY=warn
+   MONGO_CSFLE_LOCAL_MASTER_KEY=<your-base64-key>
+   ```
 
-```yaml
-# nos-gpt-apps docker-compose snippet (optional override only)
-services:
-  api:
-    volumes:
-      - ./lib/mongo_crypt_v1.so:/app/lib/mongo_crypt_v1.so:ro
+3. Start LibreChat normally. On first startup the app will:
+   - Create the `__keyVault` collection and `dek-messages` DEK.
+   - Backfill any existing plaintext `messages.text` / `messages.content` docs.
+
+---
+
+## Google Cloud KMS setup
+
+1. Create a KMS key ring and key in `europe-west1`.
+2. Grant the service account / Workload Identity `roles/cloudkms.cryptoKeyEncrypterDecrypter`.
+3. Set the four `GCP_KMS_*` env vars (no `MONGO_CSFLE_LOCAL_MASTER_KEY` needed).
+4. Set `CSFLE_ENABLED=true`.
+
+---
+
+## Startup flow
+
+```
+connectDb()                              (api/db/connect.js)
+  │
+  ├─ CSFLE_ENABLED=true
+  │    buildAutoEncryptionOptions()
+  │      bootstrapKeyVault()            ← creates __keyVault + dek-messages (idempotent)
+  │      fetch DEK UUID from keyVault
+  │      buildSchemaMap()               ← messages.text + messages.content schema
+  │    mongoose.connect(uri, { autoEncryption })
+  │
+  └─ CSFLE_AUTO_MIGRATE=true && !cached.migrationRan
+       runStartupMigration(mongoUri)    (api/csfle/manager.js)
+         │
+         ├─ check __csfle_migrations for version=1
+         ├─ if APPLIED and !FORCE_REMIGRATE → skip
+         │
+         └─ backfillCollection(messages, ['text','content'])
+              for each plaintext doc: updateOne + $set
+              mark APPLIED / FAILED in __csfle_migrations
+              │
+              on error:
+                strict → throw (startup aborts)
+                warn   → log, continue
 ```
 
-The bundled version is `enterprise-ubuntu2204-7.0.21` (SHA-256 pinned). Download page: https://www.mongodb.com/try/download/crypt-shared
-
 ---
 
-## Policy System
+## Migration state
 
-Migration policies are versioned, pure-data files in `api/csfle/policies/`:
-
-| File | Wave | Collections | Fields |
-|------|------|-------------|--------|
-| `v1.js` | 1 — credentials | sessions, keys | refreshTokenHash (Det.), value (Rand.) |
-| `v2.js` | 2 — content | messages, conversations | text, content (Rand.), title (Rand.) |
-
-Each policy defines an array of field descriptors:
-```js
-{ collection, field, bsonType, dek, algorithm }
-```
-
-**Rules:**
-- Never remove or reorder an existing policy once applied to production.
-- Never edit a policy's `fields` array after it has been applied — the manager detects checksum mismatches.
-- Add new policies (v4, v5…) for future schema changes.
-
----
-
-## Migration State
-
-Applied policies are tracked in `__csfle_migrations` (same database):
+Applied migrations are tracked in `__csfle_migrations` (same database):
 
 ```js
 {
-  version:     Number,   // policy version
-  description: String,   // human-readable label
-  checksum:    String,   // SHA-256 prefix of policy.fields (tamper detection)
+  version:     1,
+  description: 'Backfill messages.text and messages.content with CSFLE encryption',
   status:      'applied' | 'failed' | 'pending',
   startedAt:   Date,
   appliedAt:   Date,
@@ -109,84 +152,47 @@ Applied policies are tracked in `__csfle_migrations` (same database):
 }
 ```
 
-Behaviour:
 - `applied` → skip on next run (idempotent).
-- `pending` → retry (handles crash recovery).
-- `failed`  → retry.
-- Checksum mismatch on an applied record → warns; does not re-run.
+- `pending` / `failed` → retry on next run (crash recovery).
+
+To re-run after a bug fix: set `CSFLE_FORCE_REMIGRATE=true`, restart once, then remove it.
 
 ---
 
-## Key Vault Bootstrap
+## Verifying encryption
 
-LibreChat bootstraps `__keyVault` and the 6 DEKs **automatically on first startup** with `CSFLE_ENABLED=true`. The operation is idempotent.
+In MongoDB Compass or mongosh with a raw (non-CSFLE) client, encrypted docs show
+`text` and `content` as `BinData(6, ...)`. Plaintext values indicate the migration
+has not yet run or `CSFLE_ENABLED` is not set in the app.
 
-DEK alt-names (never rename after provisioning):
-
-| Alt-name | Covers |
-|----------|--------|
-| `dek-messages` | messages.text, messages.content |
-| `dek-convos` | conversations.title |
-| `dek-keys` | keys.value |
-| `dek-sessions` | sessions.refreshTokenHash |
-
----
-
-## Startup Flow
-
-```
-connectDb()                              (api/db/connect.js)
-  │
-  ├─ if CSFLE_ENABLED=true
-  │    buildAutoEncryptionOptions()      ← bootstraps __keyVault + 6 DEKs (idempotent)
-  │    mongoose.connect(uri, { autoEncryption })
-  │
-  └─ if CSFLE_AUTO_MIGRATE=true && !cached.migrationRan
-       runStartupMigration(mongoUri)     (api/csfle/manager.js)
-         │
-         ├─ reads CSFLE_STARTUP_POLICY  (strict | warn, default: strict)
-         ├─ reads CSFLE_MIGRATION_TARGET_VERSION  (optional)
-         │
-         └─ runMigrations()
-              for each unapplied policy:
-                mark PENDING in __csfle_migrations
-                backfillCollection() — replaceOne through encrypted client
-                mark APPLIED in __csfle_migrations
-              │
-              on error:
-                strict → throw (process exits, startup aborts)
-                warn   → logger.warn, continue
+```js
+// mongosh — check a sample message
+db.messages.findOne({}, { text: 1, content: 1 })
+// Encrypted:  { text: BinData(6,"..."), content: BinData(6,"...") }
+// Plaintext:  { text: "hello world", content: [...] }
 ```
 
 ---
 
-## Migration Invocation
+## MeiliSearch
 
-Set `CSFLE_AUTO_MIGRATE=true` in the LibreChat container env. The manager runs at startup, applies all unapplied policies, and tracks state in `__csfle_migrations`. No manual invocation required.
+`messages.text` and `messages.content` are encrypted — MeiliSearch receives
+`BinData` and cannot index these fields. LibreChat skips the MeiliSearch plugin
+for the `messages` model when `CSFLE_ENABLED=true`. Full-text search will not
+work on message content while CSFLE is enabled.
 
-For phased rollout, set `CSFLE_MIGRATION_TARGET_VERSION=1` to apply Wave 1 only on first deploy, then remove the limit in a subsequent release.
-
----
-
-## MeiliSearch (Wave 2 blocker)
-
-Encrypting `messages.text`, `messages.content`, and `conversations.title` produces BinData that MeiliSearch cannot index.
-
-**nos-gpt-apps must** clear `MEILI_HOST` / `MEILI_MASTER_KEY` before enabling Wave 2, or deploy a decrypt-proxy before the MeiliSearch indexer.
-
-LibreChat model factories already skip the MeiliSearch plugin when `CSFLE_ENABLED=true`.
+**nos-gpt-apps** should clear `MEILI_HOST` / `MEILI_MASTER_KEY` when deploying
+with CSFLE, or deploy a decrypt-proxy before the MeiliSearch indexer.
 
 ---
 
 ## What lives where
 
 | Artifact | Repo |
-|----------|------|
-| `api/csfle/` module | **LibreChat** — application code, versioned with schema |
-| `api/db/connect.js` patch | **LibreChat** — connection setup + startup hook |
+|---|---|
+| `api/csfle/` module | **LibreChat** — application code |
+| `api/db/connect.js` patch | **LibreChat** — connection + startup hook |
 | `docker-compose.csfle.yml` | **nos-gpt-apps** |
-| Standalone migration runner | **nos-gpt-apps** |
-| `crypt_shared` library binary | **nos-gpt-apps** |
+| `crypt_shared` library binary | bundled in LibreChat Docker image |
 | GCP KMS credentials / Workload Identity | **nos-gpt-apps** |
 | Deployment smoke tests | **nos-gpt-apps** |
-| `pymongocrypt` patch for nos-gpt-cleaner | nos-gpt-cleaner repo |
