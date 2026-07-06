@@ -72,8 +72,14 @@ node -e "console.log(require('crypto').randomBytes(96).toString('base64'))"
 | `GCP_KMS_LOCATION` | `europe-west1` |
 | `GCP_KMS_KEY_RING` | `nos-gpt-mongodb-csfle` |
 | `GCP_KMS_KEY_NAME` | `nos-gpt-csfle-cmk` |
+| `CSFLE_GCP_SERVICE_ACCOUNT_FILE` | `/run/secrets/csfle-sa.json` *(optional)* |
 
-Auth via **ADC / K8s Workload Identity** — no static service-account key needed.
+**GCP auth resolution order** (when `GCP_KMS_PROJECT_ID` is set):
+1. `CSFLE_GCP_SERVICE_ACCOUNT_FILE` — path to a GCP service account JSON key file (preferred)
+2. `GOOGLE_SERVICE_KEY_FILE` — fallback to the shared GCP key file used by other app integrations
+3. Neither set → **ADC / K8s Workload Identity** (recommended in production, no file needed)
+
+The JSON file must contain `client_email` and `private_key`. If a path is configured but the file is missing, unreadable, or malformed, LibreChat throws an explicit startup error naming the env var and path.
 
 ---
 
@@ -103,8 +109,28 @@ Auth via **ADC / K8s Workload Identity** — no static service-account key neede
 
 1. Create a KMS key ring and key in `europe-west1`.
 2. Grant the service account / Workload Identity `roles/cloudkms.cryptoKeyEncrypterDecrypter`.
-3. Set the four `GCP_KMS_*` env vars (no `MONGO_CSFLE_LOCAL_MASTER_KEY` needed).
+3. Set the four `GCP_KMS_*` env vars.
 4. Set `CSFLE_ENABLED=true`.
+
+**Auth options** (mutually exclusive, use one):
+
+- **K8s Workload Identity / ADC** *(recommended in production)* — leave `CSFLE_GCP_SERVICE_ACCOUNT_FILE` and `GOOGLE_SERVICE_KEY_FILE` unset. libmongocrypt picks up credentials from the environment automatically.
+- **Service account JSON file** *(local docker / CI)* — mount the key file into the container and set `CSFLE_GCP_SERVICE_ACCOUNT_FILE=/path/to/sa.json`.
+
+```yaml
+# nos-gpt-apps docker-compose example — GCP key file mount
+services:
+  api:
+    environment:
+      CSFLE_ENABLED: "true"
+      GCP_KMS_PROJECT_ID: "nos-gpt-prod"
+      GCP_KMS_LOCATION: "europe-west1"
+      GCP_KMS_KEY_RING: "nos-gpt-mongodb-csfle"
+      GCP_KMS_KEY_NAME: "nos-gpt-csfle-cmk"
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: "/run/secrets/csfle-sa.json"
+    volumes:
+      - ./secrets/csfle-sa.json:/run/secrets/csfle-sa.json:ro
+```
 
 ---
 
