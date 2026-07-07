@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const { MongoClient } = require('mongodb');
 const { logger } = require('@librechat/data-schemas');
@@ -140,7 +140,7 @@ async function runMigrations({ mongoUri, dryRun = false, batchSize = 100 }) {
 
     if (existing?.status === STATUS.APPLIED && forceRemigrate) {
       logger.warn(
-        '[CSFLE manager] FORCE_REMIGRATE=true — re-running to encrypt any remaining plaintext docs',
+        '[CSFLE manager] CSFLE_FORCE_REMIGRATE=true — re-running to encrypt any remaining plaintext docs',
       );
     }
 

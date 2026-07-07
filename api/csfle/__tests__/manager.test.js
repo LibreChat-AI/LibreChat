@@ -110,7 +110,7 @@ describe('CSFLE Migration Manager', () => {
       await db.collection('messages').insertOne({ text: 'new doc' });
 
       const updateOneSpy = jest.spyOn(
-        db.collection('messages').__proto__,
+        Object.getPrototypeOf(db.collection('messages')),
         'updateOne',
       );
 

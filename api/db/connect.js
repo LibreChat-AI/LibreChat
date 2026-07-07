@@ -67,8 +67,15 @@ async function connectDb() {
       // useFindAndModify: true,
       // useCreateIndex: true
     };
+    const { autoEncryption: _autoEncryption, ...loggableOpts } = opts;
     logger.info('Mongo Connection options');
-    logger.info(JSON.stringify(opts, null, 2));
+    logger.info(
+      JSON.stringify(
+        _autoEncryption ? { ...loggableOpts, autoEncryption: '[REDACTED]' } : loggableOpts,
+        null,
+        2,
+      ),
+    );
     mongoose.set('strictQuery', true);
     cached.promise = mongoose.connect(MONGO_URI, opts).then((mongoose) => {
       return mongoose;
@@ -82,7 +89,12 @@ async function connectDb() {
     !cached.migrationRan
   ) {
     cached.migrationRan = true;
-    await runStartupMigration(MONGO_URI);
+    try {
+      await runStartupMigration(MONGO_URI);
+    } catch (err) {
+      cached.migrationRan = false;
+      throw err;
+    }
   }
 
   return cached.conn;

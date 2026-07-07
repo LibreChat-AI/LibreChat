@@ -31,13 +31,11 @@ function normalisePemToBase64(raw, context) {
     throw new Error(`[CSFLE] ${context}: private_key is empty after stripping PEM headers`);
   }
 
-  let buf;
-  try {
-    buf = Buffer.from(base64, 'base64');
-  } catch (_) {
-    throw new Error(`[CSFLE] ${context}: private_key is not valid base64`);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+    throw new Error(`[CSFLE] ${context}: private_key contains non-base64 characters`);
   }
 
+  const buf = Buffer.from(base64, 'base64');
   if (buf.length === 0) {
     throw new Error(`[CSFLE] ${context}: private_key decoded to empty buffer — invalid key`);
   }
@@ -114,6 +112,10 @@ function loadGcpCredentials() {
  */
 function buildKmsProviders() {
   if (process.env.GCP_KMS_PROJECT_ID) {
+    if (!process.env.GCP_KMS_KEY_NAME) {
+      throw new Error('[CSFLE] GCP_KMS_KEY_NAME is required when GCP_KMS_PROJECT_ID is set');
+    }
+
     const creds = loadGcpCredentials();
 
     return {
