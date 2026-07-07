@@ -124,7 +124,7 @@ function buildKmsProviders() {
       masterKey: {
         projectId: process.env.GCP_KMS_PROJECT_ID,
         location: process.env.GCP_KMS_LOCATION || 'europe-west1',
-        keyRing: process.env.GCP_KMS_KEY_RING || 'nos-gpt-mongodb-csfle',
+        keyRing: process.env.GCP_KMS_KEY_RING || 'mongodb-csfle',
         keyName: process.env.GCP_KMS_KEY_NAME,
       },
     };

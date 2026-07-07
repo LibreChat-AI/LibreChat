@@ -68,10 +68,10 @@ node -e "console.log(require('crypto').randomBytes(96).toString('base64'))"
 
 | Variable | Example |
 |---|---|
-| `GCP_KMS_PROJECT_ID` | `nos-gpt-prod` |
+| `GCP_KMS_PROJECT_ID` | `librechat-prod` |
 | `GCP_KMS_LOCATION` | `europe-west1` |
-| `GCP_KMS_KEY_RING` | `nos-gpt-mongodb-csfle` |
-| `GCP_KMS_KEY_NAME` | `nos-gpt-csfle-cmk` |
+| `GCP_KMS_KEY_RING` | `mongodb-csfle` |
+| `GCP_KMS_KEY_NAME` | `csfle-cmk` |
 | `CSFLE_GCP_SERVICE_ACCOUNT_FILE` | `/run/secrets/csfle-sa.json` *(optional)* |
 
 **GCP auth resolution order** (when `GCP_KMS_PROJECT_ID` is set):
@@ -118,15 +118,15 @@ The JSON file must contain `client_email` and `private_key`. If a path is config
 - **Service account JSON file** *(local docker / CI)* — mount the key file into the container and set `CSFLE_GCP_SERVICE_ACCOUNT_FILE=/path/to/sa.json`.
 
 ```yaml
-# nos-gpt-apps docker-compose example — GCP key file mount
+# docker-compose example — GCP key file mount
 services:
   api:
     environment:
       CSFLE_ENABLED: "true"
-      GCP_KMS_PROJECT_ID: "nos-gpt-prod"
+      GCP_KMS_PROJECT_ID: "librechat-prod"
       GCP_KMS_LOCATION: "europe-west1"
-      GCP_KMS_KEY_RING: "nos-gpt-mongodb-csfle"
-      GCP_KMS_KEY_NAME: "nos-gpt-csfle-cmk"
+      GCP_KMS_KEY_RING: "mongodb-csfle"
+      GCP_KMS_KEY_NAME: "csfle-cmk"
       CSFLE_GCP_SERVICE_ACCOUNT_FILE: "/run/secrets/csfle-sa.json"
     volumes:
       - ./secrets/csfle-sa.json:/run/secrets/csfle-sa.json:ro
@@ -207,18 +207,4 @@ db.messages.findOne({}, { text: 1, content: 1 })
 for the `messages` model when `CSFLE_ENABLED=true`. Full-text search will not
 work on message content while CSFLE is enabled.
 
-**nos-gpt-apps** should clear `MEILI_HOST` / `MEILI_MASTER_KEY` when deploying
-with CSFLE, or deploy a decrypt-proxy before the MeiliSearch indexer.
-
 ---
-
-## What lives where
-
-| Artifact | Repo |
-|---|---|
-| `api/csfle/` module | **LibreChat** — application code |
-| `api/db/connect.js` patch | **LibreChat** — connection + startup hook |
-| `docker-compose.csfle.yml` | **nos-gpt-apps** |
-| `crypt_shared` library binary | bundled in LibreChat Docker image |
-| GCP KMS credentials / Workload Identity | **nos-gpt-apps** |
-| Deployment smoke tests | **nos-gpt-apps** |
