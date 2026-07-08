@@ -1,13 +1,7 @@
 import React, { useRef, useState, useMemo, useCallback } from 'react';
 import { useRecoilState } from 'recoil';
 import * as Ariakit from '@ariakit/react';
-import {
-  FileSearch,
-  ImageUpIcon,
-  FileType2Icon,
-  FileImageIcon,
-  TerminalSquareIcon,
-} from 'lucide-react';
+import { FileSearch, ImageUpIcon, FileType2Icon, TerminalSquareIcon } from 'lucide-react';
 import {
   FileUpload,
   TooltipAnchor,
@@ -16,13 +10,11 @@ import {
   SharePointIcon,
 } from '@librechat/client';
 import {
-  Providers,
   EToolResources,
   EModelEndpoint,
   isPermissiveMimeConfig,
   defaultAgentCapabilities,
   bedrockDocumentExtensions,
-  isDocumentSupportedProvider,
 } from 'librechat-data-provider';
 import type { EndpointFileConfig, TConversation } from 'librechat-data-provider';
 import type { ExtendedFile, FileSetter } from '~/common';
@@ -38,7 +30,7 @@ import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcut
 import { SharePointPickerDialog } from '~/components/SharePoint';
 import { useGetStartupConfig } from '~/data-provider';
 import { ephemeralAgentByConvoId } from '~/store';
-import { MenuItemProps } from '~/common';
+import { MenuItemProps, isEphemeralAgent } from '~/common';
 import { cn } from '~/utils';
 
 type FileUploadType =
@@ -64,12 +56,9 @@ interface AttachFileMenuProps {
 
 const AttachFileMenu = ({
   agentId,
-  endpoint,
   disabled,
-  endpointType,
   conversationId,
   endpointFileConfig,
-  useResponsesApi,
   files,
   setFiles,
   setFilesLoading,
@@ -109,10 +98,18 @@ const AttachFileMenu = ({
    * */
   const capabilities = useAgentCapabilities(agentsConfig?.capabilities ?? defaultAgentCapabilities);
 
-  const { fileSearchAllowedByAgent, codeAllowedByAgent, provider } = useAgentToolPermissions(
+  const { fileSearchAllowedByAgent, codeAllowedByAgent } = useAgentToolPermissions(
     agentId,
     ephemeralAgent,
   );
+
+  // company: align the "+" menu with useUploadOptions' drag/paste rule — in direct/ephemeral
+  // chats the tool destinations are offerable regardless of toggle state (selecting one enables
+  // the ephemeral capability via onClick); only saved agents gate on their actual tools
+  // (see COMPANY.md)
+  const isSavedAgent = agentId != null && agentId !== '' && !isEphemeralAgent(agentId);
+  const fileSearchOfferable = !isSavedAgent || fileSearchAllowedByAgent;
+  const codeOfferable = !isSavedAgent || codeAllowedByAgent;
 
   const handleUploadClick = useCallback(
     (fileType?: FileUploadType) => {
@@ -120,8 +117,10 @@ const AttachFileMenu = ({
         return;
       }
       inputRef.current.value = '';
+      // company: 'image' never widens to a permissive accept — "Add Photos" stays images-only (see COMPANY.md)
       if (
         fileType !== undefined &&
+        fileType !== 'image' &&
         isPermissiveMimeConfig(endpointFileConfig?.supportedMimeTypes)
       ) {
         inputRef.current.accept = '';
@@ -152,50 +151,16 @@ const AttachFileMenu = ({
     const createMenuItems = (onAction: (fileType?: FileUploadType) => void) => {
       const items: MenuItemProps[] = [];
 
-      let currentProvider = provider || endpoint;
-
-      // This will be removed in a future PR to formally normalize Providers comparisons to be case insensitive
-      if (currentProvider?.toLowerCase() === Providers.OPENROUTER) {
-        currentProvider = Providers.OPENROUTER;
-      }
-
-      const isAzureWithResponsesApi =
-        (currentProvider === EModelEndpoint.azureOpenAI ||
-          endpointType === EModelEndpoint.azureOpenAI) &&
-        useResponsesApi === true;
-
-      if (
-        isDocumentSupportedProvider(endpointType) ||
-        isDocumentSupportedProvider(currentProvider) ||
-        isAzureWithResponsesApi
-      ) {
-        items.push({
-          label: localize('com_ui_upload_provider'),
-          onClick: () => {
-            setToolResource(undefined);
-            let fileType: Exclude<FileUploadType, 'image' | 'document'> = 'image_document';
-            if (currentProvider === Providers.GOOGLE || currentProvider === Providers.OPENROUTER) {
-              fileType = 'image_document_video_audio';
-            } else if (
-              currentProvider === Providers.BEDROCK ||
-              endpointType === EModelEndpoint.bedrock
-            ) {
-              fileType = 'image_document_extended';
-            }
-            onAction(fileType);
-          },
-          icon: <FileImageIcon className="icon-md" />,
-        });
-      } else {
-        items.push({
-          label: localize('com_ui_upload_image_input'),
-          onClick: () => {
-            setToolResource(undefined);
-            onAction('image');
-          },
-          icon: <ImageUpIcon className="icon-md" />,
-        });
-      }
+      // company: single "Add Photos" item replaces upstream's provider/image branching —
+      // provider uploads are images-only regardless of provider (see COMPANY.md)
+      items.push({
+        label: localize('com_ui_add_photos'),
+        onClick: () => {
+          setToolResource(undefined);
+          onAction('image');
+        },
+        icon: <ImageUpIcon className="icon-md" />,
+      });
 
       if (capabilities.contextEnabled) {
         items.push({
@@ -208,7 +173,7 @@ const AttachFileMenu = ({
         });
       }
 
-      if (capabilities.fileSearchEnabled && fileSearchAllowedByAgent) {
+      if (capabilities.fileSearchEnabled && fileSearchOfferable) {
         items.push({
           label: localize('com_ui_upload_file_search'),
           onClick: () => {
@@ -223,9 +188,10 @@ const AttachFileMenu = ({
         });
       }
 
-      if (capabilities.codeEnabled && codeAllowedByAgent) {
+      if (capabilities.codeEnabled && codeOfferable) {
         items.push({
-          label: localize('com_ui_upload_code_environment'),
+          // company: renamed from com_ui_upload_code_environment (see COMPANY.md)
+          label: localize('com_ui_add_files'),
           onClick: () => {
             setToolResource(EToolResources.execute_code);
             setEphemeralAgent((prev) => ({
@@ -260,16 +226,12 @@ const AttachFileMenu = ({
     return localItems;
   }, [
     localize,
-    endpoint,
-    provider,
-    endpointType,
     capabilities,
-    useResponsesApi,
     handleUploadClick,
     setEphemeralAgent,
     sharePointEnabled,
-    codeAllowedByAgent,
-    fileSearchAllowedByAgent,
+    codeOfferable,
+    fileSearchOfferable,
     setIsSharePointDialogOpen,
   ]);
 

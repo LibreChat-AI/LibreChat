@@ -1,22 +1,8 @@
 import React, { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { OGDialog, OGDialogTemplate } from '@librechat/client';
-import {
-  ImageUpIcon,
-  FileSearch,
-  FileType2Icon,
-  FileImageIcon,
-  TerminalSquareIcon,
-} from 'lucide-react';
-import {
-  Providers,
-  inferMimeType,
-  EToolResources,
-  EModelEndpoint,
-  isBedrockDocumentType,
-  defaultAgentCapabilities,
-  isDocumentSupportedProvider,
-} from 'librechat-data-provider';
+import { ImageUpIcon, FileSearch, FileType2Icon, TerminalSquareIcon } from 'lucide-react';
+import { inferMimeType, EToolResources, defaultAgentCapabilities } from 'librechat-data-provider';
 import {
   useAgentToolPermissions,
   useAgentCapabilities,
@@ -25,6 +11,7 @@ import {
 } from '~/hooks';
 import { ephemeralAgentByConvoId } from '~/store';
 import { useDragDropContext } from '~/Providers';
+import { isEphemeralAgent } from '~/common';
 
 interface DragDropModalProps {
   onOptionSelect: (option: EToolResources | undefined) => void;
@@ -48,84 +35,44 @@ const DragDropModal = ({ onOptionSelect, setShowModal, files, isVisible }: DragD
    * Use definition for agents endpoint for ephemeral agents
    * */
   const capabilities = useAgentCapabilities(agentsConfig?.capabilities ?? defaultAgentCapabilities);
-  const { conversationId, agentId, endpoint, endpointType, useResponsesApi } = useDragDropContext();
+  const { conversationId, agentId } = useDragDropContext();
   const ephemeralAgent = useRecoilValue(ephemeralAgentByConvoId(conversationId ?? ''));
-  const { fileSearchAllowedByAgent, codeAllowedByAgent, provider } = useAgentToolPermissions(
+  const { fileSearchAllowedByAgent, codeAllowedByAgent } = useAgentToolPermissions(
     agentId,
     ephemeralAgent,
   );
 
+  // company: tool destinations are offerable in ephemeral (non-saved-agent) chats regardless of
+  // toggle state — selecting one enables the toggle; saved agents gate on their tools (see COMPANY.md)
+  const isSavedAgent = agentId != null && agentId !== '' && !isEphemeralAgent(agentId);
+  const fileSearchOfferable = !isSavedAgent || fileSearchAllowedByAgent;
+  const codeOfferable = !isSavedAgent || codeAllowedByAgent;
+
   const options = useMemo(() => {
     const _options: FileOption[] = [];
-    let currentProvider = provider || endpoint;
-
-    // This will be removed in a future PR to formally normalize Providers comparisons to be case insensitive
-    if (currentProvider?.toLowerCase() === Providers.OPENROUTER) {
-      currentProvider = Providers.OPENROUTER;
-    }
 
     /** Helper to get inferred MIME type for a file */
     const getFileType = (file: File) => inferMimeType(file.name, file.type);
 
-    const isAzureWithResponsesApi =
-      (currentProvider === EModelEndpoint.azureOpenAI ||
-        endpointType === EModelEndpoint.azureOpenAI) &&
-      useResponsesApi === true;
-
-    // Check if provider supports document upload
-    if (
-      isDocumentSupportedProvider(endpointType) ||
-      isDocumentSupportedProvider(currentProvider) ||
-      isAzureWithResponsesApi
-    ) {
-      const supportsImageDocVideoAudio =
-        currentProvider === EModelEndpoint.google || currentProvider === Providers.OPENROUTER;
-      const isBedrock =
-        currentProvider === Providers.BEDROCK || endpointType === EModelEndpoint.bedrock;
-
-      const isValidProviderFile = (file: File): boolean => {
-        const type = getFileType(file);
-        if (supportsImageDocVideoAudio) {
-          return (
-            type?.startsWith('image/') ||
-            type?.startsWith('video/') ||
-            type?.startsWith('audio/') ||
-            type === 'application/pdf'
-          );
-        }
-        if (isBedrock) {
-          return type?.startsWith('image/') || isBedrockDocumentType(type);
-        }
-        return type?.startsWith('image/') || type === 'application/pdf';
-      };
-
-      const validFileTypes = files.every(isValidProviderFile);
-
-      _options.push({
-        label: localize('com_ui_upload_provider'),
-        value: undefined,
-        icon: <FileImageIcon className="icon-md" />,
-        condition: validFileTypes,
-      });
-    } else {
-      // Only show image upload option if all files are images and provider doesn't support documents
-      _options.push({
-        label: localize('com_ui_upload_image_input'),
-        value: undefined,
-        icon: <ImageUpIcon className="icon-md" />,
-        condition: files.every((file) => getFileType(file)?.startsWith('image/')),
-      });
-    }
-    if (capabilities.fileSearchEnabled && fileSearchAllowedByAgent) {
+    // company: single images-only "Add Photos" option replaces upstream's provider/image
+    // branching — provider uploads are images-only regardless of provider (see COMPANY.md)
+    _options.push({
+      label: localize('com_ui_add_photos'),
+      value: undefined,
+      icon: <ImageUpIcon className="icon-md" />,
+      condition: files.every((file) => getFileType(file)?.startsWith('image/')),
+    });
+    if (capabilities.fileSearchEnabled && fileSearchOfferable) {
       _options.push({
         label: localize('com_ui_upload_file_search'),
         value: EToolResources.file_search,
         icon: <FileSearch className="icon-md" />,
       });
     }
-    if (capabilities.codeEnabled && codeAllowedByAgent) {
+    if (capabilities.codeEnabled && codeOfferable) {
       _options.push({
-        label: localize('com_ui_upload_code_environment'),
+        // company: renamed from com_ui_upload_code_environment (see COMPANY.md)
+        label: localize('com_ui_add_files'),
         value: EToolResources.execute_code,
         icon: <TerminalSquareIcon className="icon-md" />,
       });
@@ -139,17 +86,7 @@ const DragDropModal = ({ onOptionSelect, setShowModal, files, isVisible }: DragD
     }
 
     return _options;
-  }, [
-    files,
-    localize,
-    provider,
-    endpoint,
-    endpointType,
-    capabilities,
-    useResponsesApi,
-    codeAllowedByAgent,
-    fileSearchAllowedByAgent,
-  ]);
+  }, [files, localize, capabilities, codeOfferable, fileSearchOfferable]);
 
   if (!isVisible) {
     return null;

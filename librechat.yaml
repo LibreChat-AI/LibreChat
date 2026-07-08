@@ -1,0 +1,890 @@
+# For more information, see the Configuration Guide:
+# https://www.librechat.ai/docs/configuration/librechat_yaml
+
+# Configuration version (required)
+version: 1.3.13
+
+# Cache settings: Set to true to enable caching
+cache: true
+
+# File storage configuration
+# Single strategy for all file types (legacy format, still supported)
+# fileStrategy: "s3"
+
+# Granular file storage strategies (new format - recommended)
+# Allows different storage strategies for different file types
+# fileStrategy:
+#   avatar: "s3"        # Storage for user/agent avatar images
+#   image: "firebase"   # Storage for uploaded images in chats
+#   document: "local"   # Storage for document uploads (PDFs, text files, etc.)
+
+# Available strategies: "local", "s3", "firebase", "azure_blob", "cloudfront"
+# If not specified, defaults to "local" for all file types
+# You can mix and match strategies based on your needs:
+# - Use S3 for avatars for fast global access
+# - Use Firebase for images with automatic optimization
+# - Use local storage for documents for privacy/compliance
+# - Use CloudFront for CDN-accelerated delivery (requires S3 + cloudfront config below)
+
+# CloudFront CDN Configuration (optional)
+# Use when fileStrategy: "cloudfront" or fileStrategies includes cloudfront
+# Requires: AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_BUCKET_NAME
+# For signed cookies and direct download URLs: CLOUDFRONT_KEY_PAIR_ID, CLOUDFRONT_PRIVATE_KEY
+# cloudfront:
+#   domain: "https://cdn.example.com"       # CloudFront domain (CNAME recommended for cookies)
+#   distributionId: "E1234ABCD"             # Required if invalidateOnDelete is true
+#   invalidateOnDelete: false               # Create cache invalidation on file delete
+#   imageSigning: "none"                    # "none" (public) | "cookies" (signed cookies)
+#   # When imageSigning: "cookies", API + CloudFront must share a parent domain.
+#   # Cookies are path-scoped to inline assets only:
+#   #   /i/... private uploaded/generated images, user-scoped
+#   #   /a/... tenant-visible avatars, tenant-scoped when tenantId is present
+#   # Downloads, documents, uploads, and code outputs stay outside /i and /a and
+#   # use backend-authorized signed URLs instead of signed cookies.
+#   #   API: api.example.com, CloudFront CNAME: cdn.example.com, cookieDomain: ".example.com"
+#   cookieDomain: ".example.com"            # Required for "cookies" - shared parent domain
+#   cookieExpiry: 1800                      # Cookie lifetime in seconds (max: 604800 / 7 days, default: 1800 / 30 min)
+#   urlExpiry: 3600                         # Signed CloudFront download URL lifetime in seconds
+#   # Optional multi-region S3/CloudFront layout. Default: false.
+#   # When enabled, new object keys include:
+#   #   /i/r/{storageRegion}/t/{tenantId}/images/{userId}/{file}   (private inline images)
+#   #   /a/r/{storageRegion}/t/{tenantId}/avatars/{userId}/{file}  (tenant-visible avatars)
+#   #   /r/{storageRegion}/t/{tenantId}/{basePath}/{userId}/{file} (non-inline files)
+#   # storageRegion defaults to AWS_REGION when omitted, but only affects new keys
+#   # when includeRegionInPath is true. Existing files are not moved automatically.
+#   # LibreChat does not configure CloudFront origins, Route53, or regional routing.
+#   storageRegion: "us-east-2"
+#   includeRegionInPath: false
+#   # Direct-download filename/content-type overrides require the CloudFront cache/origin
+#   # request policy to forward and cache on response-content-disposition and
+#   # response-content-type query strings to S3.
+#   # Recommended for download paths: attach a CloudFront response headers policy
+#   # with X-Content-Type-Options: nosniff and CSP default-src 'none'.
+
+# Skill sync configuration (optional)
+# GitHub tokens are referenced from environment variables. Put the token in
+# `.env`, then reference it here with `token: '${GITHUB_SKILLS_TOKEN}'`. Use a
+# GitHub fine-grained personal access token scoped to the selected repository
+# with read-only Contents and Metadata permissions.
+# skillSync:
+#   github:
+#     enabled: false
+#     intervalMinutes: 60
+#     runOnStartup: true
+#     sources:
+#       - id: librechat-skills
+#         owner: your-org
+#         repo: your-skills-repo
+#         ref: main
+#         paths:
+#           - skills
+#         # Number of directory levels below each configured path to scan for
+#         # `SKILL.md`. Use 2 for repos shaped like `skills/<category>/<skill>`.
+#         skillDiscoveryDepth: 2
+#         token: '${GITHUB_SKILLS_TOKEN}'
+#         # Optional. Owns the mirrored skills under the given tenant so they are
+#         # created and shared within that tenant. Required for visibility when
+#         # tenant isolation is enabled. Omit for single-tenant deployments.
+#         # Treat as immutable per source id: changing (or adding/removing) the
+#         # tenantId later leaves previously mirrored skills in the old tenant,
+#         # where this source's sync can no longer see or clean them up. To move a
+#         # source between tenants, delete its mirrored skills in the old tenant
+#         # first, or use a new source id for the new tenant.
+#         # tenantId: your-tenant-id
+
+# Custom interface configuration
+interface:
+  customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # Enable/disable file search as a chatarea selection (default: true)
+  # Note: This setting does not disable the Agents File Search Capability.
+  # To disable the Agents Capability, see the Agents Endpoint configuration instead.
+  fileSearch: true
+  # Privacy policy settings
+  privacyPolicy:
+    externalUrl: 'https://librechat.ai/privacy-policy'
+    openNewTab: true
+
+  # Terms of service
+  termsOfService:
+    externalUrl: 'https://librechat.ai/tos'
+    openNewTab: true
+    modalAcceptance: true
+    modalTitle: 'Terms of Service for LibreChat'
+    modalContent: |
+      # Terms and Conditions for LibreChat
+
+      *Effective Date: February 18, 2024*
+
+      Welcome to LibreChat, the informational website for the open-source AI chat platform, available at https://librechat.ai. These Terms of Service ("Terms") govern your use of our website and the services we offer. By accessing or using the Website, you agree to be bound by these Terms and our Privacy Policy, accessible at https://librechat.ai//privacy.
+
+      ## 1. Ownership
+
+      Upon purchasing a package from LibreChat, you are granted the right to download and use the code for accessing an admin panel for LibreChat. While you own the downloaded code, you are expressly prohibited from reselling, redistributing, or otherwise transferring the code to third parties without explicit permission from LibreChat.
+
+      ## 2. User Data
+
+      We collect personal data, such as your name, email address, and payment information, as described in our Privacy Policy. This information is collected to provide and improve our services, process transactions, and communicate with you.
+
+      ## 3. Non-Personal Data Collection
+
+      The Website uses cookies to enhance user experience, analyze site usage, and facilitate certain functionalities. By using the Website, you consent to the use of cookies in accordance with our Privacy Policy.
+
+      ## 4. Use of the Website
+
+      You agree to use the Website only for lawful purposes and in a manner that does not infringe the rights of, restrict, or inhibit anyone else's use and enjoyment of the Website. Prohibited behavior includes harassing or causing distress or inconvenience to any person, transmitting obscene or offensive content, or disrupting the normal flow of dialogue within the Website.
+
+      ## 5. Governing Law
+
+      These Terms shall be governed by and construed in accordance with the laws of the United States, without giving effect to any principles of conflicts of law.
+
+      ## 6. Changes to the Terms
+
+      We reserve the right to modify these Terms at any time. We will notify users of any changes by email. Your continued use of the Website after such changes have been notified will constitute your consent to such changes.
+
+      ## 7. Contact Information
+
+      If you have any questions about these Terms, please contact us at contact@librechat.ai.
+
+      By using the Website, you acknowledge that you have read these Terms of Service and agree to be bound by them.
+
+  modelSelect: true
+  parameters: true
+  presets: true
+  prompts:
+    use: true
+    create: true
+    share: false
+    public: false
+  bookmarks: true
+  multiConvo: true
+  agents:
+    use: true
+    create: true
+    share: false
+    public: false
+  peoplePicker:
+    users: true
+    groups: true
+    roles: true
+  marketplace:
+    use: false
+  fileCitations: true
+  # Tools pinned to the prompt bar by default for all users.
+  # Only seeds the initial state — once a user pins/unpins a tool, their choice is kept.
+  # Valid tool keys: artifacts, execute_code, web_search, file_search, skills.
+  # Use 'mcp' (or a specific MCP server name) to pin the MCP servers dropdown.
+  # When omitted, tools start unpinned and the MCP dropdown keeps its default (pinned).
+  # defaultPinnedTools:
+  #   - 'artifacts'
+  #   - 'execute_code'
+  #   - 'mcp'
+  # Remote Agents configuration
+  # Controls user permissions for remote agents with external API support
+  # remoteAgents:
+  #   use: false
+  #   create: false
+  #   share: false
+  #   public: false
+  # MCP Servers configuration example
+  # Shared Links configuration
+  # Controls user permissions for shared links (e.g. sharing conversations via link)
+  # sharedLinks:
+  #   create: false
+  #   share: true
+  #   public: true # Allows users to toggle "share with everyone" for their links. Whether anonymous access is permitted is controlled by ALLOW_SHARED_LINKS_PUBLIC.
+  #   snapshotFiles: true # Snapshot files referenced by a shared chat so viewers can preview/download them via the link. Enabled by default; the SHARED_LINKS_SNAPSHOT_FILES env var overrides this.
+  # mcpServers:
+  # Controls user permissions for MCP (Model Context Protocol) server management
+  # - use: Allow users to use configured MCP servers
+  # - create: Allow users to create and manage new MCP servers
+  # - share: Allow users to share MCP servers with other users
+  # - public: Allow users to share MCP servers publicly (with everyone)
+
+  # Creation / edit MCP server config Dialog config example
+  # trustCheckbox:
+  #   label:
+  #     en: 'I understand and I want to continue'
+  #     de: 'Ich verstehe und möchte fortfahren'
+  #     de-DE: 'Ich verstehe und möchte fortfahren' # You can narrow translation to regions like (de-DE or de-CH)
+  #   subLabel:
+  #     en: |
+  #       Librechat hasn't reviewed this MCP server. Attackers may attempt to steal your data or trick the model into taking unintended actions, including destroying data. <a href="https://google.de" target="_blank"><strong>Learn more.</strong></a>
+  #     de: |
+  #       LibreChat hat diesen MCP-Server nicht überprüft. Angreifer könnten versuchen, Ihre Daten zu stehlen oder das Modell zu unbeabsichtigten Aktionen zu verleiten, einschließlich der Zerstörung von Daten. <a href="https://google.de" target="_blank"><strong>Mehr erfahren.</strong></a>
+
+  # Temporary chat retention period in hours (default: 720, min: 1, max: 8760)
+  # temporaryChatRetention: 1
+  # Retention mode: "all" applies expiry to all data types, "temporary" (default) only to temporary chats
+  # Before switching from "all" back to "temporary", remove retention deadlines from non-temporary data
+  # that should stop expiring:
+  # db.conversations.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })
+  # db.messages.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })
+  # MongoDB does not drop superseded indexes automatically. After upgrading, old Meili indexes
+  # such as "_meiliIndex_1_expiredAt_1" can be dropped from conversations/messages once the new
+  # "_meiliIndex_1_isTemporary_1_expiredAt_1" indexes exist.
+  # retentionMode: "temporary"
+  # Set retainAgentFiles to true to keep persistent agent resource files from expiring under
+  # retentionMode: "all"; non-agent files still expire.
+  # retainAgentFiles: false
+
+# Example Cloudflare turnstile (optional)
+#turnstile:
+#  siteKey: "your-site-key-here"
+#  options:
+#    language: "auto"    # "auto" or an ISO 639-1 language code (e.g. en)
+#    size: "normal"      # Options: "normal", "compact", "flexible", or "invisible"
+
+# Example Registration Object Structure (optional)
+registration:
+  socialLogins: ['github', 'google', 'discord', 'openid', 'facebook', 'apple', 'saml']
+  # allowedDomains:
+  # - "gmail.com"
+
+# Example Balance settings
+# balance:
+#   enabled: false
+#   startBalance: 20000
+#   autoRefillEnabled: false
+#   refillIntervalValue: 30
+#   refillIntervalUnit: 'days'
+#   refillAmount: 10000
+
+# Example Transactions settings
+# Controls whether to save transaction records to the database
+# Default is true (enabled)
+#transactions:
+#  enabled: false
+# Note: If balance.enabled is true, transactions will always be enabled
+# regardless of this setting to ensure balance tracking works correctly
+
+# speech:
+#   tts:
+#     openai:
+#       url: ''
+#       apiKey: '${TTS_API_KEY}'
+#       model: ''
+#       voices: ['']
+
+#
+#   stt:
+#     openai:
+#       url: ''
+#       apiKey: '${STT_API_KEY}'
+#       model: ''
+
+# rateLimits:
+#   fileUploads:
+#     ipMax: 100
+#     ipWindowInMinutes: 60  # Rate limit window for file uploads per IP
+#     userMax: 50
+#     userWindowInMinutes: 60  # Rate limit window for file uploads per user
+#   conversationsImport:
+#     ipMax: 100
+#     ipWindowInMinutes: 60  # Rate limit window for conversation imports per IP
+#     userMax: 50
+#     userWindowInMinutes: 60  # Rate limit window for conversation imports per user
+
+# Agent Actions domain restrictions (OpenAPI spec validation)
+# SECURITY: If not configured, SSRF targets are blocked (localhost, private IPs, .internal/.local TLDs).
+# Prefer `allowedAddresses` for permitting internal targets — adding a private IP to
+# `allowedDomains` switches the field into strict-whitelist mode and blocks every
+# public destination not also listed.
+# Supports wildcards: '*.example.com' and protocol/port restrictions: 'https://api.example.com:8443'
+actions:
+  allowedDomains:
+    - 'swapi.dev'
+    - 'librechat.ai'
+    - 'google.com'
+    # - 'http://10.225.26.25:7894'  # Internal IP with protocol/port (uncomment if needed)
+  # `allowedAddresses` is an SSRF exemption list, NOT a strict whitelist.
+  # Hostname/IP + port pairs listed here bypass the default-deny block for that
+  # one private/loopback/link-local service. Public domains continue to work
+  # normally — listing private targets here does not restrict access to anything else.
+  #
+  # Entries must include a port: `host:port`, `private.ip:port`, or `[ipv6]:port`.
+  # Do not use URLs, paths, CIDR ranges, bare hosts/IPs, or public IP literals.
+  # Public IP literals are rejected at config load (the field is scoped to
+  # private IP space; public IPs aren't SSRF targets).
+  #
+  # NOTE on hostnames: a hostname entry trusts whatever IP that name resolves to
+  # on the listed port. If DNS for that name is hijacked or rotated to a different
+  # private IP, the exemption follows. Only list hostnames whose DNS you control.
+  # Prefer literal IPs when you can.
+  # allowedAddresses:
+  #   - 'host.docker.internal:11434'
+  #   - '127.0.0.1:11434'
+  #   - '10.0.0.5:8080'
+
+# Custom endpoint baseURL exemption list
+# SECURITY: User-provided baseURLs (`baseURL: 'user_provided'`) are validated against
+# the same SSRF block as Actions and MCP. If your users legitimately point at private
+# services (self-hosted Ollama, internal LLM gateway, etc.), list those hostname/IP
+# + port pairs here so the validator allows them through. Public destinations are
+# unaffected.
+#
+# Entries must include a port: `host:port`, `private.ip:port`, or `[ipv6]:port`.
+# Do not use URLs, paths, CIDR ranges, bare hosts/IPs, or public IP literals.
+# Hostname entries trust whatever IP they resolve to on the listed port — only
+# list names whose DNS you control.
+# endpoints:
+#   allowedAddresses:
+#     - 'localhost:11434'
+#     - '127.0.0.1:11434'
+#     - 'ollama:11434'
+#     - '10.0.0.5:8080'
+
+# MCP Server domain restrictions for remote transports (SSE, WebSocket, HTTP)
+# SECURITY: If not configured, SSRF targets are blocked (localhost, private IPs, .internal/.local TLDs).
+# Prefer `allowedAddresses` for permitting internal targets — adding a private host to
+# `allowedDomains` switches the field into strict-whitelist mode and blocks every
+# public destination not also listed.
+# Supports wildcards: '*.example.com' matches 'api.example.com', 'staging.example.com', etc.
+# Supports protocol/port restrictions: 'https://api.example.com:8443' restricts to specific protocol/port.
+# mcpSettings:
+#   allowedDomains:
+#     - 'host.docker.internal'    # Docker host access (required for Docker setups)
+#     - 'localhost'               # Local development
+#     - '*.example.com'           # Wildcard subdomain
+#     - 'https://secure.api.com'  # Protocol-restricted
+#     - 'http://internal:8080'    # Protocol and port restricted
+#   # allowedAddresses is an SSRF exemption list (private-IP-space only).
+#   # Hostname/IP + port pairs listed here bypass the default-deny block for that
+#   # one private service; public destinations remain reachable. Useful when you
+#   # want default SSRF protection AND specific internal MCP servers. Entries must
+#   # include a port (`host:port`, `private.ip:port`, or `[ipv6]:port`) and must
+#   # not be URLs, paths, CIDR ranges, bare hosts/IPs, or public IP literals.
+#   # Hostname entries trust whatever IP they resolve to on the listed port.
+#   allowedAddresses:
+#     - 'host.docker.internal:8080'
+#     - '127.0.0.1:8080'
+
+# Example MCP Servers Object Structure
+# mcpServers:
+#   everything:
+#     # type: sse # type can optionally be omitted
+#     url: http://localhost:3001/sse
+#     # proxy: "${MCP_PROXY_URL}"  # optional outbound proxy (http/https/socks/socks5)
+#     timeout: 60000  # 1 minute timeout for this server, this is the default timeout for MCP servers.
+#   puppeteer:
+#     type: stdio
+#     command: npx
+#     args:
+#       - -y
+#       - "@modelcontextprotocol/server-puppeteer"
+#     timeout: 300000  # 5 minutes timeout for this server
+#   filesystem:
+#     # type: stdio
+#     command: npx
+#     args:
+#       - -y
+#       - "@modelcontextprotocol/server-filesystem"
+#       - /home/user/LibreChat/
+#     iconPath: /home/user/LibreChat/client/public/assets/logo.svg
+#   mcp-obsidian:
+#     command: npx
+#     args:
+#       - -y
+#       - "mcp-obsidian"
+#       - /path/to/obsidian/vault
+
+# Definition of custom endpoints
+endpoints:
+  # assistants:
+  #   disableBuilder: false # Disable Assistants Builder Interface by setting to `true`
+  #   pollIntervalMs: 3000  # Polling interval for checking assistant updates
+  #   timeoutMs: 180000  # Timeout for assistant operations
+  #   # Should only be one or the other, either `supportedIds` or `excludedIds`
+  #   supportedIds: ["asst_supportedAssistantId1", "asst_supportedAssistantId2"]
+  #   # excludedIds: ["asst_excludedAssistantId"]
+  #   # Only show assistants that the user created or that were created externally (e.g. in Assistants playground).
+  #   # privateAssistants: false # Does not work with `supportedIds` or `excludedIds`
+  #   # (optional) Models that support retrieval, will default to latest known OpenAI models that support the feature
+  #   retrievalModels: ["gpt-4-turbo-preview"]
+  #   # (optional) Assistant Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
+  #   capabilities: ["code_interpreter", "retrieval", "actions", "tools", "image_vision"]
+  agents:
+    # (optional) Default recursion depth for agents, defaults to 25
+    recursionLimit: 50
+    # (optional) Max recursion depth for agents, defaults to 25
+    maxRecursionLimit: 100
+    # (optional) Disable the builder interface for agents
+    disableBuilder: false
+    # (optional) When conversation titles are generated:
+    #   immediate (default): generate as soon as the request is made, in parallel
+    #     with the response, from the user's first message (title appears within ~1-2s).
+    #   final: defer generation until the full response completes (legacy behavior).
+    # Set under `endpoints.all` instead to apply as the global default for all endpoints.
+    titleTiming: immediate
+    # (optional) Maximum total citations to include in agent responses, defaults to 30
+    maxCitations: 30
+    # (optional) Maximum citations per file to include in agent responses, defaults to 7
+    maxCitationsPerFile: 7
+    # (optional) Minimum relevance score for sources to be included in responses, defaults to 0.45 (45% relevance threshold)
+    # Set to 0.0 to show all sources (no filtering), or higher like 0.7 for stricter filtering
+    minRelevanceScore: 0.45
+    # (optional) Cap the number of active accessible skills shown in the model-visible catalog.
+    # Useful for large organizations where many department-specific skills may be available.
+    skills:
+      maxCatalogSkills: 20
+    # (optional) Agent Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
+    # company: intentionally trimmed set (spec 5.1) — "context" must NEVER be re-added
+    # ("Upload as Text" stays removed). Per spec 5.2, DELETE "file_search" from this list
+    # + restart the backend to remove "Upload for File Search" once the Code Interpreter
+    # API is deployed. See COMPANY.md.
+    capabilities: ["deferred_tools", "execute_code", "file_search", "actions", "tools"]
+
+  # (optional) Custom request headers for the built-in OpenAI / Google endpoints.
+  # Forwarded on every request to the provider (or an AI gateway / reverse proxy
+  # in front of it) while keeping provider-native request shaping intact. Values
+  # support env vars (${VAR}), user fields ({{LIBRECHAT_USER_*}}), and request-body
+  # fields ({{LIBRECHAT_BODY_CONVERSATIONID}}). Set the same `headers:` block under
+  # `endpoints.all` to apply globally across endpoints (endpoint values win on key
+  # collisions). NOTE: send metadata headers like these only behind a gateway that
+  # consumes them — native provider APIs ignore unknown headers.
+  # openAI:
+  #   headers:
+  #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+  # google:
+  #   headers:
+  #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+
+  # Anthropic endpoint configuration with Vertex AI support
+  # Use this to run Anthropic Claude models through Google Cloud Vertex AI
+  # anthropic:
+  #   # (optional) Stream rate limiting in milliseconds
+  #   streamRate: 20
+  #   # (optional) Title model for conversation titles
+  #   titleModel: claude-3.5-haiku  # Use the visible model name (key from models config)
+  #   # (optional) Custom request headers, same placeholder resolution as above.
+  #   # Useful for correlating reverse-proxied requests by conversation, since an
+  #   # unknown header is simply ignored by the native Anthropic API.
+  #   headers:
+  #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+  #     X-Conversation-Id: '{{LIBRECHAT_BODY_CONVERSATIONID}}'
+  #
+  #   # Vertex AI Configuration - enables running Claude models via Google Cloud
+  #   # This is similar to Azure OpenAI but for Anthropic models on Google Cloud
+  #   # Vertex AI is automatically enabled when this config section is present
+  #   vertex:
+  #     # Vertex AI region (optional, defaults to 'us-east5')
+  #     # Available regions: us-east5, us-central1, europe-west1, europe-west4, asia-southeast1
+  #     # Multi-region endpoints: us, eu, global
+  #     region: "us-east5"
+  #     # Path to Google service account key file (optional)
+  #     # If not specified, uses GOOGLE_SERVICE_KEY_FILE env var or default path (api/data/auth.json)
+  #     # The project_id is automatically extracted from the service key file
+  #     # serviceKeyFile: "/path/to/service-account.json"
+  #     # Google Cloud Project ID (optional) - auto-detected from service key file
+  #     # Only specify if you need to override the project_id in your service key
+  #     # projectId: "${VERTEX_PROJECT_ID}"
+  #
+  #     # ============================================================================
+  #     # Model Configuration - Set Visible Model Names and Deployment Mappings
+  #     # Similar to Azure OpenAI model naming pattern
+  #     # ============================================================================
+  #
+  #     # Option 1: Simple array (legacy format - model name = deployment name)
+  #     # Use this if you want the technical model IDs to show in the UI
+  #     # models:
+  #     #   - "claude-fable-5"
+  #     #   - "claude-opus-4-8"
+  #     #   - "claude-sonnet-4-6"
+  #     #   - "claude-3-7-sonnet-20250219"
+  #     #   - "claude-3-5-sonnet-v2@20241022"
+  #     #   - "claude-3-5-haiku@20241022"
+  #
+  #     # Option 2: Object format with custom visible names (RECOMMENDED)
+  #     # The key is the visible model name shown in the UI (can be any name you want)
+  #     # The deploymentName is the actual Vertex AI model ID used for API calls
+  #     # You can use friendly names (avoid spaces for cleaner YAML) or technical IDs as keys
+  #     models:
+  #       claude-fable-5:
+  #         deploymentName: claude-fable-5
+  #       claude-opus-4.8:
+  #         deploymentName: claude-opus-4-8
+  #       claude-opus-4.5:
+  #         deploymentName: claude-opus-4-5@20251101
+  #       claude-sonnet-4:
+  #         deploymentName: claude-sonnet-4-6
+  #       claude-3.7-sonnet:
+  #         deploymentName: claude-3-7-sonnet-20250219
+  #       claude-3.5-sonnet:
+  #         deploymentName: claude-3-5-sonnet-v2@20241022
+  #       claude-3.5-haiku:
+  #         deploymentName: claude-3-5-haiku@20241022
+  #
+  #     # Option 3: Mixed format with default deploymentName
+  #     # Set a default deploymentName and use boolean values for models
+  #     # deploymentName: claude-sonnet-4-6
+  #     # models:
+  #     #   claude-sonnet-4: true  # Will use the default deploymentName
+  #     #   claude-3.5-haiku:
+  #     #     deploymentName: claude-3-5-haiku@20241022  # Override for this model
+
+  custom:
+    # Anthropic-compatible Example (native `/v1/messages` API)
+    # Set `provider: anthropic` to use the native Anthropic client instead of the
+    # default OpenAI-compatible one — for Anthropic itself or Anthropic-compatible
+    # gateways (e.g. AI gateways, OpenCode Zen). The `baseURL` must be the API root
+    # the Anthropic SDK appends `/v1/messages` to. List models explicitly: model
+    # auto-fetch uses the OpenAI `/models` convention and is not used for this provider.
+    - name: 'Claude-Compatible'
+      provider: 'anthropic'
+      apiKey: '${ANTHROPIC_API_KEY}'
+      baseURL: 'https://api.anthropic.com'
+      # (optional) headers forwarded on every request (e.g. for a reverse proxy);
+      # values support the same placeholders as built-in endpoints.
+      headers:
+        anthropic-version: '2023-06-01'
+      models:
+        default:
+          - 'claude-sonnet-4-5'
+          - 'claude-opus-4-5'
+        fetch: false
+      titleConvo: true
+      titleModel: 'claude-sonnet-4-5'
+      modelDisplayLabel: 'Claude (Compatible)'
+
+    # Groq Example
+    - name: 'groq'
+      apiKey: '${GROQ_API_KEY}'
+      baseURL: 'https://api.groq.com/openai/v1/'
+      models:
+        default:
+          - 'llama3-70b-8192'
+          - 'llama3-8b-8192'
+          - 'llama2-70b-4096'
+          - 'mixtral-8x7b-32768'
+          - 'gemma-7b-it'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mixtral-8x7b-32768'
+      modelDisplayLabel: 'groq'
+
+    # Mistral AI Example
+    - name: 'Mistral' # Unique name for the endpoint
+      # For `apiKey` and `baseURL`, you can use environment variables that you define.
+      # recommended environment variables:
+      apiKey: '${MISTRAL_API_KEY}'
+      baseURL: 'https://api.mistral.ai/v1'
+
+      # Models configuration
+      models:
+        # List of default models to use. At least one value is required.
+        default: ['mistral-tiny', 'mistral-small', 'mistral-medium']
+        # Fetch option: Set to true to fetch models from API.
+        fetch: true # Defaults to false.
+
+      # Optional configurations
+
+      # Title Conversation setting
+      titleConvo: true # Set to true to enable title conversation
+
+      # Title Method: Choose between "completion" or "functions".
+      # titleMethod: "completion"  # Defaults to "completion" if omitted.
+
+      # Title Model: Specify the model to use for titles.
+      titleModel: 'mistral-tiny' # Defaults to "gpt-3.5-turbo" if omitted.
+
+      # Summarize setting: Set to true to enable summarization.
+      # summarize: false
+
+      # Summary Model: Specify the model to use if summarization is enabled.
+      # summaryModel: "mistral-tiny"  # Defaults to "gpt-3.5-turbo" if omitted.
+
+      # The label displayed for the AI model in messages.
+      modelDisplayLabel: 'Mistral' # Default is "AI" when not set.
+
+      # Add additional parameters to the request. Default params will be overwritten.
+      # addParams:
+      # safe_prompt: true # This field is specific to Mistral AI: https://docs.mistral.ai/api/
+
+      # Drop Default params parameters from the request. See default params in guide linked below.
+      # NOTE: For Mistral, it is necessary to drop the following parameters or you will encounter a 422 Error:
+      dropParams: ['stop', 'user', 'frequency_penalty', 'presence_penalty']
+
+    # OpenRouter Example
+    - name: 'OpenRouter'
+      # For `apiKey` and `baseURL`, you can use environment variables that you define.
+      # recommended environment variables:
+      apiKey: '${OPENROUTER_KEY}'
+      baseURL: 'https://openrouter.ai/api/v1'
+      headers:
+        x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
+      models:
+        default: ['meta-llama/llama-3-70b-instruct']
+        fetch: true
+      titleConvo: true
+      titleModel: 'meta-llama/llama-3-70b-instruct'
+      # Recommended: Drop the stop parameter from the request as Openrouter models use a variety of stop tokens.
+      dropParams: ['stop']
+      modelDisplayLabel: 'OpenRouter'
+
+    # Helicone Example
+    - name: 'Helicone'
+      # For `apiKey` and `baseURL`, you can use environment variables that you define.
+      # recommended environment variables:
+      apiKey: '${HELICONE_KEY}'
+      baseURL: 'https://ai-gateway.helicone.ai'
+      headers:
+        x-librechat-body-parentmessageid: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}'
+      models:
+        default:
+          ['gpt-4o-mini', 'claude-4.5-sonnet', 'llama-3.1-8b-instruct', 'gemini-2.5-flash-lite']
+        fetch: true
+      titleConvo: true
+      titleModel: 'gpt-4o-mini'
+      modelDisplayLabel: 'Helicone'
+      iconURL: https://marketing-assets-helicone.s3.us-west-2.amazonaws.com/helicone.png
+
+    # Portkey AI Example
+    - name: 'Portkey'
+      apiKey: 'dummy'
+      baseURL: 'https://api.portkey.ai/v1'
+      headers:
+        x-portkey-api-key: '${PORTKEY_API_KEY}'
+        x-portkey-virtual-key: '${PORTKEY_OPENAI_VIRTUAL_KEY}'
+      models:
+        default: ['gpt-4o-mini', 'gpt-4o', 'chatgpt-4o-latest']
+        fetch: true
+      titleConvo: true
+      titleModel: 'current_model'
+      summarize: false
+      summaryModel: 'current_model'
+      modelDisplayLabel: 'Portkey'
+      iconURL: https://images.crunchbase.com/image/upload/c_pad,f_auto,q_auto:eco,dpr_1/rjqy7ghvjoiu4cd1xjbf
+
+  # AWS Bedrock Example
+  # Note: Bedrock endpoint is configured via environment variables
+  # bedrock:
+  #   # Models Configuration
+  #   # Specify which models are available (equivalent to BEDROCK_AWS_MODELS env variable)
+  #   models:
+  #     - "anthropic.claude-3-7-sonnet-20250219-v1:0"
+  #     - "anthropic.claude-3-5-sonnet-20241022-v2:0"
+  #
+  #   # Inference Profiles Configuration
+  #   # Maps model IDs to their inference profile ARNs
+  #   # IMPORTANT: The model ID (key) MUST be a valid AWS Bedrock model ID that you've added to the models list above
+  #   # The ARN (value) is the inference profile you wish to map to for that model
+  #   # Both the model ID and ARN are sent to AWS - the model ID for validation/metadata, the ARN for routing
+  #   inferenceProfiles:
+  #     "us.anthropic.claude-sonnet-4-6": "${BEDROCK_INFERENCE_PROFILE_CLAUDE_SONNET}"
+  #     "anthropic.claude-3-7-sonnet-20250219-v1:0": "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abc123"
+  #
+  #   # Guardrail Configuration
+  #   guardrailConfig:
+  #     guardrailIdentifier: "your-guardrail-id"
+  #     guardrailVersion: "1"
+  #
+  #     # Trace behavior for debugging (optional)
+  #     # - "enabled": Include basic trace information about guardrail assessments
+  #     # - "enabled_full": Include comprehensive trace details (recommended for debugging)
+  #     # - "disabled": No trace information (default)
+  #     # Trace output is logged to application log files for compliance auditing
+  #     trace: "enabled"
+# Example modelSpecs configuration showing grouping options
+# The 'group' field organizes model specs in the UI selector:
+# - If 'group' matches an endpoint name (e.g., "openAI", "groq"), the spec appears nested under that endpoint
+# - If 'group' is a custom name (doesn't match any endpoint), it creates a separate collapsible section
+# - If 'group' is omitted, the spec appears as a standalone item at the top level
+#
+# The 'groupIcon' field sets an icon for custom groups:
+# - Only needs to be set on one spec per group (first one is used)
+# - Can be a URL or a built-in endpoint key (e.g., "openAI", "anthropic", "groq")
+# modelSpecs:
+#   list:
+#     # Example 1: Nested under an endpoint (grouped with openAI endpoint)
+#     - name: "gpt-4o"
+#       label: "GPT-4 Optimized"
+#       description: "Most capable GPT-4 model with multimodal support"
+#       # default: true      # Hard admin default; takes precedence over prior user choices
+#       # softDefault: true  # First-time default only; skipped after a user selects a model/spec/agent
+#       group: "openAI"  # String value matching the endpoint name
+#       preset:
+#         endpoint: "openAI"
+#         model: "gpt-4o"
+#       # Skills can be enabled per model spec. Use true for the user's active
+#       # accessible skill catalog, false to force skills off, or a name list as
+#       # a strict allowlist for catalog, manual, and always-apply resolution.
+#       # skills: ["brand-guidelines", "code-review"]
+#       # Subagents can be enabled per model spec. `allowSelf: true` lets the
+#       # ephemeral agent spawn a fresh isolated copy of itself for focused work.
+#       # subagents:
+#       #   enabled: true
+#       #   allowSelf: true
+#       #   agent_ids: []
+#
+#     # Example 2: Nested under a custom endpoint (grouped with groq endpoint)
+#     - name: "llama3-70b-8192"
+#       label: "Llama 3 70B"
+#       description: "Fastest inference available - great for quick responses"
+#       group: "groq"  # String value matching your custom endpoint name from endpoints.custom
+#       preset:
+#         endpoint: "groq"
+#         model: "llama3-70b-8192"
+#
+#     # Example 3: Custom group with icon (creates a separate collapsible section)
+#     - name: "coding-assistant"
+#       label: "Coding Assistant"
+#       description: "Specialized for coding tasks"
+#       group: "my-assistants"  # Custom string - doesn't match any endpoint, so creates its own group
+#       groupIcon: "https://example.com/icons/assistants.png"  # Icon URL for the group
+#       preset:
+#         endpoint: "openAI"
+#         model: "gpt-4o"
+#         instructions: "You are an expert coding assistant..."
+#         temperature: 0.3
+#
+#     - name: "writing-assistant"
+#       label: "Writing Assistant"
+#       description: "Specialized for creative writing"
+#       group: "my-assistants"  # Same custom group name - both specs appear in same section
+#       # No need to set groupIcon again - the first spec's icon is used
+#       preset:
+#         endpoint: "anthropic"
+#         model: "claude-sonnet-4"
+#         instructions: "You are a creative writing expert..."
+#
+#     # Example 4: Custom group using built-in icon key
+#     - name: "fast-models"
+#       label: "Fast Response Model"
+#       group: "Fast Models"
+#       groupIcon: "groq"  # Uses the built-in Groq icon
+#       preset:
+#         endpoint: "groq"
+#         model: "llama3-8b-8192"
+#
+#     # Example 5: Standalone (no group - appears at top level)
+#     - name: "general-assistant"
+#       label: "General Assistant"
+#       description: "General purpose assistant"
+#       # No 'group' field - appears as standalone item at top level (not nested)
+#       # hideBadgeRow: true  # Optional: hides the tool badge row for this spec
+#       preset:
+#         endpoint: "openAI"
+#         model: "gpt-4o-mini"
+
+# fileConfig:
+#   endpoints:
+#     assistants:
+#       fileLimit: 5
+#       fileSizeLimit: 10  # Maximum size for an individual file in MB
+#       totalSizeLimit: 50  # Maximum total size for all files in a single request in MB
+#       supportedMimeTypes:
+#         - "image/.*"
+#         - "application/pdf"
+#     openAI:
+#       disabled: true  # Disables file uploading to the OpenAI endpoint
+#     default:
+#       totalSizeLimit: 20
+#     YourCustomEndpointName:
+#       fileLimit: 2
+#       fileSizeLimit: 5
+#   serverFileSizeLimit: 100  # Global server file size limit in MB
+#   avatarSizeLimit: 2  # Limit for user avatar image size in MB
+#   imageGeneration: # Image Gen settings, either percentage or px
+#     percentage: 100
+#     px: 1024
+#   # Client-side image resizing to prevent upload errors
+#   clientImageResize:
+#     enabled: false  # Enable/disable client-side image resizing (default: false)
+#     maxWidth: 1900  # Maximum width for resized images (default: 1900)
+#     maxHeight: 1900  # Maximum height for resized images (default: 1900)
+#     quality: 0.92  # JPEG quality for compression (0.0-1.0, default: 0.92)
+# # See the Custom Configuration Guide for more information on Assistants Config:
+# # https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/assistants_endpoint
+
+# Web Search Configuration (optional)
+# webSearch:
+#   # Jina Reranking Configuration
+#   jinaApiKey: '${JINA_API_KEY}'  # Your Jina API key
+#   jinaApiUrl: '${JINA_API_URL}'  # Custom Jina API URL (optional, defaults to https://api.jina.ai/v1/rerank)
+#   # Other rerankers
+#   cohereApiKey: '${COHERE_API_KEY}'
+#   # Search providers
+#   serperApiKey: '${SERPER_API_KEY}'
+#   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'
+#   searxngApiKey: '${SEARXNG_API_KEY}'
+#   # Tavily (search provider and/or scraper)
+#   tavilyApiKey: '${TAVILY_API_KEY}'
+#   # Content scrapers
+#   firecrawlApiKey: '${FIRECRAWL_API_KEY}'
+#   firecrawlApiUrl: '${FIRECRAWL_API_URL}'
+#
+# Tavily as both search and scraper provider example:
+# webSearch:
+#   searchProvider: tavily
+#   scraperProvider: tavily
+#   tavilyApiKey: '${TAVILY_API_KEY}'
+#   # Optional: custom API URLs (defaults to https://api.tavily.com/search and https://api.tavily.com/extract)
+#   # tavilySearchUrl: '${TAVILY_SEARCH_URL}'
+#   # tavilyExtractUrl: '${TAVILY_EXTRACT_URL}'
+#   tavilySearchOptions:
+#     searchDepth: basic        # 'basic', 'advanced', 'fast', or 'ultra-fast' (default: basic)
+#     maxResults: 5             # 1-20 results per search (default: 5)
+#     topic: general            # 'general', 'news', or 'finance'
+#     # includeAnswer: basic    # Include answer summary: true, 'basic', or 'advanced'
+#     # includeRawContent: markdown # Include raw content: true, 'markdown', or 'text'
+#     # includeImages: true     # Include images in results
+#     # includeFavicon: true    # Include favicon URL for each result
+#     # chunksPerSource: 3      # Chunks per source, only with 'advanced' depth (1-3)
+#     # safeSearch: false       # Override Tavily safe_search filtering (true is enterprise-only)
+#     # includeDomains:         # Restrict search to specific domains (max 300)
+#     #   - 'example.com'
+#     #   - 'docs.example.com'
+#     # excludeDomains:         # Exclude specific domains from results (max 150)
+#     #   - 'spam.com'
+#     # timeRange: week         # 'day', 'week', 'month', or 'year'
+#     # timeout: 15000          # HTTP request timeout in milliseconds (max 120000)
+#   tavilyScraperOptions:
+#     extractDepth: basic       # 'basic' (1 credit/5 URLs) or 'advanced' (2 credits/5 URLs, more thorough)
+#     # includeImages: false    # Include images extracted from URLs
+#     # includeFavicon: false   # Include favicon URL for each result
+#     # format: markdown        # 'markdown' (default) or 'text' (plain text, may increase latency)
+#     # timeout: 15000          # HTTP request timeout in milliseconds (max 120000); Tavily Extract receives seconds clamped to 1-60
+
+# Memory configuration for user memories
+# memory:
+#   # (optional) Disable memory functionality
+#   disabled: false
+#   # (optional) Restrict memory keys to specific values to limit memory storage and improve consistency
+#   validKeys: ["preferences", "work_info", "personal_info", "skills", "interests", "context"]
+#   # (optional) Maximum token limit for stored memory values
+#   tokenLimit: 10000
+#   # (optional) Maximum tokens from recent chat sent to the memory agent before truncation
+#   maxInputTokens: 12000
+#   # (optional) Enable personalization features (defaults to true if memory is configured)
+#   # When false, users will not see the Personalization tab in settings
+#   personalize: true
+#   # (optional) Memory agent configuration for automatic memory updates from chat messages.
+#   # If omitted, users can still create, edit, delete, and reference memories manually.
+#   agent:
+#     # Explicitly enables automatic memory updates from chat messages.
+#     enabled: true
+#     # Option 1: Use existing agent by ID
+#     id: "your-memory-agent-id"
+#     # Option 2: Define agent inline
+#     # provider: "openai"
+#     # model: "gpt-4o-mini"
+#     # instructions: "You are a memory management assistant. Store and manage user information accurately."
+#     # model_parameters:
+#     #   temperature: 0.1
+
+# Reject chat messages whose text matches credential-shaped patterns
+# before they reach moderation, the model, or persistence. Filter
+# types live under `messageFilter.<type>`; today only `pii` ships, but
+# the namespace is structured so future filter types can plug in.
+# Omit the whole section to disable.
+# messageFilter:
+#   pii:
+#     # (optional) Pick a subset of the starter catalog by id; omit to
+#     # enable all starters (sk_prefix, bearer_header, api_key_header).
+#     starterPatterns: [sk_prefix, bearer_header, api_key_header]
+#     # (optional) Operator-defined patterns. Each entry needs id,
+#     # label, and a JavaScript-flavor regex; the regex is validated
+#     # at config load time.
+#     customPatterns:
+#       - id: anthropic_api_key
+#         label: Anthropic API key
+#         regex: "sk-ant-[A-Za-z0-9_-]{20,}"

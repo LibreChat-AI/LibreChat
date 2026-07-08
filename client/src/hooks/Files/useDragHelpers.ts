@@ -137,8 +137,13 @@ export default function useDragHelpers() {
         contextEnabled;
 
       if (!shouldShowModal) {
-        // Fallback: directly handle files without showing modal
-        handleFilesRef.current(item.files);
+        // company: upstream directly routed the files to the provider here; provider
+        // attachments are images-only ("Add Photos"), and !shouldShowModal implies the
+        // files are not all images — block instead of uploading (see COMPANY.md)
+        showToast({
+          message: localize('com_error_files_unsupported'),
+          status: 'error',
+        });
         return;
       }
       setDraggedFiles(item.files);

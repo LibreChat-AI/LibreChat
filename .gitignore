@@ -72,7 +72,8 @@ bower_components/
 .flooignore
 
 #config file
-librechat.yaml
+# company: librechat.yaml is committed in this fork — it is the live company config
+# (upstream ignores it; see COMPANY.md)
 librechat.yml
 
 # Environment

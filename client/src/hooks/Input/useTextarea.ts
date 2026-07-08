@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react';
 import debounce from 'lodash/debounce';
 import { useRecoilValue, useRecoilState } from 'recoil';
+import { useToastContext } from '@librechat/client';
+import { inferMimeType } from 'librechat-data-provider';
 import type { TEndpointOption } from 'librechat-data-provider';
 import type { KeyboardEvent } from 'react';
 import {
@@ -43,6 +45,7 @@ export default function useTextarea({
   placeholder?: string;
 }) {
   const localize = useLocalize();
+  const { showToast } = useToastContext();
   const getSender = useGetSender();
   const isComposing = useRef(false);
   const agentsMap = useAgentsMapContext();
@@ -285,10 +288,25 @@ export default function useTextarea({
           });
           timestampedFiles.push(newFile);
         }
-        handleFiles(timestampedFiles);
+        // company: pasted files go to the provider ("Add Photos"), which is images-only —
+        // block non-image pastes instead of uploading them (see COMPANY.md)
+        const imageFiles = timestampedFiles.filter((file) =>
+          inferMimeType(file.name, file.type)?.startsWith('image/'),
+        );
+        if (imageFiles.length !== timestampedFiles.length) {
+          showToast({
+            message: localize('com_error_files_unsupported'),
+            status: 'error',
+          });
+        }
+        if (imageFiles.length > 0) {
+          handleFiles(imageFiles);
+        } else {
+          setFilesLoading(false);
+        }
       }
     },
-    [handleFiles, setFilesLoading, textAreaRef],
+    [handleFiles, setFilesLoading, textAreaRef, showToast, localize],
   );
 
   return {
