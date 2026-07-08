@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Inline sanity test for api/csfle/provider.js
  * Run: node api/csfle/__tests__/provider.sanity.js
  * No dependencies on jest or mongodb — uses only core Node.js.

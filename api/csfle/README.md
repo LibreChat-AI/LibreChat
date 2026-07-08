@@ -1,4 +1,4 @@
-﻿# CSFLE Integration — api/csfle
+# CSFLE Integration — api/csfle
 
 LibreChat encrypts sensitive message fields at the MongoDB driver layer using
 **Client-Side Field Level Encryption (CSFLE)**.  Encryption and decryption happen
