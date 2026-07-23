@@ -78,6 +78,7 @@ export const fullMimeTypesList = [
   'image/svg',
   'image/svg+xml',
   'message/rfc822',
+  'application/vnd.ms-outlook',
   // Video formats
   'video/mp4',
   'video/avi',
@@ -369,6 +370,8 @@ export const supportedMimeTypes = [
   /^image\/(svg|svg\+xml)$/,
   /** .eml email files */
   /^message\/rfc822$/,
+  /** .msg Outlook email files */
+  /^application\/vnd\.ms-outlook$/,
 ];
 
 export const codeInterpreterMimeTypes = [
@@ -426,6 +429,7 @@ export const codeTypeMapping: { [key: string]: string } = {
   cljc: 'text/plain', // .cljc - Clojure common source
   elm: 'text/plain', // .elm - Elm source
   eml: 'message/rfc822', // .eml - Email message (RFC 822)
+  msg: 'application/vnd.ms-outlook', // .msg - Outlook email message
   erl: 'text/plain', // .erl - Erlang source
   hrl: 'text/plain', // .hrl - Erlang header
   ex: 'text/plain', // .ex - Elixir source
@@ -525,6 +529,8 @@ export const mimeTypeAliases: Readonly<Record<string, string>> = {
   'application/x-shellscript': 'application/x-sh',
   /** libmagic, i.e. `file --mime-type` */
   'text/x-shellscript': 'application/x-sh',
+  /** Some Windows clients with Outlook installed report .msg as x-msg */
+  'application/x-msg': 'application/vnd.ms-outlook',
 };
 
 /**
@@ -895,6 +901,7 @@ const documentMimeExtensions: ReadonlyArray<readonly [string, readonly string[]]
   ['text/html', ['.html', '.htm']],
   ['text/calendar', ['.ics']],
   ['message/rfc822', ['.eml']],
+  ['application/vnd.ms-outlook', ['.msg']],
 ];
 
 /** Preferred extension for a known document MIME type, including its leading dot. */

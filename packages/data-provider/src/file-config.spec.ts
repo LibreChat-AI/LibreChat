@@ -115,6 +115,25 @@ describe('inferMimeType', () => {
     expect(baseFileConfig.checkType(normalized)).toBe(true);
   });
 
+  it('should infer application/vnd.ms-outlook from extension when browser type is empty', () => {
+    expect(inferMimeType('email.msg', '')).toBe('application/vnd.ms-outlook');
+  });
+
+  it('should pass through application/vnd.ms-outlook when browser reports it', () => {
+    expect(inferMimeType('email.msg', 'application/vnd.ms-outlook')).toBe(
+      'application/vnd.ms-outlook',
+    );
+  });
+
+  it('should normalize application/x-msg to application/vnd.ms-outlook', () => {
+    expect(inferMimeType('email.msg', 'application/x-msg')).toBe('application/vnd.ms-outlook');
+  });
+
+  it('should produce a type accepted by checkType for .msg files', () => {
+    const normalized = inferMimeType('test.msg', '');
+    expect(baseFileConfig.checkType(normalized)).toBe(true);
+  });
+
   it('infers Office MIME types from extension when the browser reports none', () => {
     expect(inferMimeType('legacy.doc', '')).toBe('application/msword');
     expect(inferMimeType('report.docx', '')).toBe(
@@ -226,6 +245,10 @@ describe('supportedMimeTypes', () => {
   it('message/rfc822 (.eml) flows through supportedMimeTypes', () => {
     expect(checkSupported('message/rfc822')).toBe(true);
   });
+
+  it('application/vnd.ms-outlook (.msg) flows through supportedMimeTypes', () => {
+    expect(checkSupported('application/vnd.ms-outlook')).toBe(true);
+  });
 });
 
 describe('documentParserMimeTypes', () => {
@@ -251,6 +274,8 @@ describe('documentParserMimeTypes', () => {
     'application/vnd.oasis.opendocument.graphics',
     'text/plain',
     'image/png',
+    // .msg is accepted for upload but, like .eml, is not routed to the document parser
+    'application/vnd.ms-outlook',
   ])('does not match OCR-only or unsupported type: %s', (mimeType) => {
     expect(check(mimeType)).toBe(false);
   });
