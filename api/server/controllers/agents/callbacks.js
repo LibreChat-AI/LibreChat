@@ -20,7 +20,9 @@ const {
 const {
   sendEvent,
   getModelEndUsage,
+  getBalanceConfig,
   computeUsageCostUSD,
+  getTransactionsConfig,
   GenerationJobManager,
   waitForGenerationSettled,
   writeAttachmentEvent,
@@ -41,6 +43,54 @@ const {
   stampCommandExecutor,
   writeGuarded,
 } = require('@librechat/api');
+
+/** LibreChat convention: 1,000,000 token credits = 1 USD. */
+const CREDITS_PER_USD = 1_000_000;
+
+/**
+ * Bills a provider cost an MCP tool reported for itself (result `_meta.cost`) against the
+ * user's balance, so spend that happens outside the LLM - image generation, transcription,
+ * a paid search API - is accounted for like token spend instead of being invisible.
+ *
+ * Recorded through `spendTokens` with a 1 credit-per-token rate, so the USD figure maps
+ * straight onto credits and shows up in `transactions` with the tool as the model label.
+ * No-ops unless the deployment has balance or transactions enabled, and ignores a missing
+ * or non-positive amount.
+ */
+async function recordToolCost({ req, cost, toolName, metadata }) {
+  const userId = req?.user?.id;
+  const usd = Number(cost?.usd);
+  if (!userId || !Number.isFinite(usd) || usd <= 0) {
+    return null;
+  }
+  const appConfig = req?.config;
+  const balance = getBalanceConfig(appConfig);
+  const transactions = getTransactionsConfig(appConfig);
+  if (!balance?.enabled && transactions?.enabled === false) {
+    return null;
+  }
+  const model = cost.model || toolName;
+  const credits = Math.round(usd * CREDITS_PER_USD);
+  /* Lazy require: pulling ~/models at module load creates a circular dependency
+   * (models/index.js) that breaks this module's consumers. */
+  const { spendTokens } = require('~/models');
+  await spendTokens(
+    {
+      user: userId,
+      model,
+      conversationId: metadata?.thread_id,
+      messageId: metadata?.run_id,
+      context: 'mcp_tool',
+      balance,
+      transactions,
+      endpointTokenConfig: { [model]: { prompt: 1, completion: 1 } },
+    },
+    { completionTokens: credits },
+  );
+  logger.debug('[recordToolCost] Billed MCP tool cost', { userId, model, usd, credits });
+  return null;
+}
+
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
 const { preflightCodeOutputBatch } = require('~/server/services/Files/Code/preflight');
@@ -928,6 +978,20 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
       return;
     }
 
+    if (output.artifact.cost) {
+      artifactPromises.push(
+        recordToolCost({
+          req,
+          cost: output.artifact.cost,
+          toolName: output.name,
+          metadata,
+        }).catch((error) => {
+          logger.error('[recordToolCost] Error billing MCP tool cost:', error);
+          return null;
+        }),
+      );
+    }
+
     if (output.artifact[Tools.file_search]) {
       artifactPromises.push(
         (async () => {
@@ -1299,6 +1363,20 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
 
     if (!output.artifact) {
       return;
+    }
+
+    if (output.artifact.cost) {
+      artifactPromises.push(
+        recordToolCost({
+          req,
+          cost: output.artifact.cost,
+          toolName: output.name,
+          metadata,
+        }).catch((error) => {
+          logger.error('[recordToolCost] Error billing MCP tool cost:', error);
+          return null;
+        }),
+      );
     }
 
     if (output.artifact[Tools.file_search]) {
