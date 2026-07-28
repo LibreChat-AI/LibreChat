@@ -55,6 +55,12 @@ export const webSearchAuth = {
       jinaApiUrl: 0 as const,
     },
     cohere: { cohereApiKey: 1 as const },
+    custom: {
+      customRerankerApiUrl: 1 as const,
+      customRerankerModel: 1 as const,
+      /** Optional (0) */
+      customRerankerApiKey: 0 as const,
+    },
   },
 };
 
@@ -95,6 +101,7 @@ export const webSearchUrlApiKeys: ReadonlyMap<TWebSearchKeys, TWebSearchKeys> = 
   ['tavilySearchUrl', 'tavilyApiKey'],
   ['tavilyExtractUrl', 'tavilyApiKey'],
   ['keenableApiUrl', 'keenableApiKey'],
+  ['customRerankerApiUrl', 'customRerankerApiKey'],
 ]);
 
 /** Every web search URL that receives an API key, and every key sent to one. */
@@ -242,6 +249,9 @@ export function loadWebSearchConfig(
   const jinaApiKey = config?.jinaApiKey ?? '${JINA_API_KEY}';
   const jinaApiUrl = config?.jinaApiUrl ?? '${JINA_API_URL}';
   const cohereApiKey = config?.cohereApiKey ?? '${COHERE_API_KEY}';
+  const customRerankerApiUrl = config?.customRerankerApiUrl ?? '${CUSTOM_RERANKER_API_URL}';
+  const customRerankerApiKey = config?.customRerankerApiKey ?? '${CUSTOM_RERANKER_API_KEY}';
+  const customRerankerModel = config?.customRerankerModel ?? '${CUSTOM_RERANKER_MODEL}';
   const safeSearch = config?.safeSearch ?? SafeSearchTypes.MODERATE;
   const rerankerType = config?.rerankerType;
   const searxngSearchOptions = config?.searxngSearchOptions && {
@@ -256,6 +266,9 @@ export function loadWebSearchConfig(
     jinaApiKey,
     jinaApiUrl,
     cohereApiKey,
+    customRerankerApiUrl,
+    customRerankerApiKey,
+    customRerankerModel,
     serperApiKey,
     searxngApiKey,
     tavilyApiKey,
