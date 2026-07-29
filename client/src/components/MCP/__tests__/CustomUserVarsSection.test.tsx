@@ -32,6 +32,27 @@ describe('CustomUserVarsSection', () => {
     expect(input).toHaveAttribute('data-1p-ignore', 'true');
   });
 
+  it('marks optional variables in the label and leaves required ones unmarked', () => {
+    render(
+      <CustomUserVarsSection
+        serverName="test-server"
+        fields={{
+          api_key: { title: 'My API Key', description: 'Your API key' },
+          own_token: {
+            title: 'Own Token',
+            description: 'Overrides the shared account',
+            optional: true,
+          },
+        }}
+        onSave={jest.fn()}
+        onRevoke={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Own Token').textContent).toContain('com_ui_optional');
+    expect(screen.getByText('My API Key').textContent).not.toContain('com_ui_optional');
+  });
+
   it('renders non-sensitive fields as unmasked text while keeping secrets masked', () => {
     render(
       <CustomUserVarsSection

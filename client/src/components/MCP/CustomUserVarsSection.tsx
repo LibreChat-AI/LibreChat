@@ -15,6 +15,8 @@ export interface CustomUserVarConfig {
   description?: string;
   /** Whether the field holds a secret and should be masked (defaults to masked when omitted). */
   sensitive?: boolean;
+  /** Whether the value overrides a working default and may be left blank. */
+  optional?: boolean;
 }
 
 interface CustomUserVarsSectionProps {
@@ -53,7 +55,13 @@ function AuthField({ name, config, hasValue, control, errors, autoFocus }: AuthF
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <Label htmlFor={name} className="text-sm font-medium">
-          {config.title} <span className="sr-only">({statusText})</span>
+          {config.title}
+          {config.optional === true && (
+            <span className="ml-1 font-normal text-text-secondary">
+              {localize('com_ui_optional')}
+            </span>
+          )}
+          <span className="sr-only">({statusText})</span>
         </Label>
         <div aria-hidden="true">
           {hasValue ? (
