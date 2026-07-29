@@ -57,7 +57,7 @@ function AuthField({ name, config, hasValue, control, errors, autoFocus }: AuthF
         <Label htmlFor={name} className="text-sm font-medium">
           {config.title}
           {config.optional === true && (
-            <span className="ml-1 font-normal text-text-secondary">
+            <span className="text-text-secondary ml-1 font-normal">
               {localize('com_ui_optional')}
             </span>
           )}
