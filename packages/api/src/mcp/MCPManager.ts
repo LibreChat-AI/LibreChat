@@ -1490,6 +1490,7 @@ Please follow these instructions when using tools from the respective MCP server
     serverConfig: providedConfig,
     toolName,
     provider,
+    providerIsOpenAICompatible,
     toolArguments,
     options,
     tokenMethods,
@@ -1518,6 +1519,12 @@ Please follow these instructions when using tools from the respective MCP server
     serverConfig?: t.ParsedServerConfig;
     toolName: string;
     provider: t.Provider;
+    /**
+     * Whether `provider` speaks the OpenAI message format. Custom endpoints are
+     * OpenAI-compatible by definition but arrive under their own name, which
+     * `formatToolContent` cannot infer on its own.
+     */
+    providerIsOpenAICompatible?: boolean;
     toolArguments?: Record<string, unknown>;
     options?: RequestOptions;
     requestBody?: RequestBody;
@@ -2244,6 +2251,7 @@ Please follow these instructions when using tools from the respective MCP server
             provider,
             appCompatible
               ? {
+                  openAICompatible: providerIsOpenAICompatible,
                   serverName,
                   toolName,
                   resourceUri: resourceMeta?.uri,
@@ -2252,7 +2260,7 @@ Please follow these instructions when using tools from the respective MCP server
                   toolArgs: toolArguments,
                   mcpApps: admittedMCPApps,
                 }
-              : { mcpApps: admittedMCPApps },
+              : { mcpApps: admittedMCPApps, openAICompatible: providerIsOpenAICompatible },
           ),
           toolResult?.isError === true,
         );
