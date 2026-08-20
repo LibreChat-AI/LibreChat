@@ -1,4 +1,5 @@
 import type { AnthropicClientOptions } from '@librechat/agents';
+import type { Agent } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody, RunLLMConfig } from '~/types';
 import { resolveHeaders } from './env';
@@ -111,18 +112,21 @@ export function resolveModelHeaders({
   user,
   tenantId,
   body,
+  agent,
   customUserVars,
 }: {
   headers: Record<string, string> | undefined;
   user?: Partial<IUser> | { id: string };
   tenantId?: string;
   body?: RequestBody;
+  agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
 }): Record<string, string> {
   const resolved = resolveHeaders({
     headers,
     user,
     body,
+    agent,
     customUserVars,
     stripUnresolved: true,
   });
@@ -165,6 +169,7 @@ export function resolveConfigHeaders({
   user,
   tenantId,
   body,
+  agent,
   customUserVars,
 }: {
   /** Partial: this only reads the three provider header carriers, so
@@ -176,6 +181,7 @@ export function resolveConfigHeaders({
   /** Authoritative request tenant used only for model-header templates. */
   tenantId?: string;
   body?: RequestBody;
+  agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
 }): void {
   if (llmConfig == null) {
@@ -186,7 +192,7 @@ export function resolveConfigHeaders({
     if (resolvedHeaderMaps.has(headers)) {
       return headers;
     }
-    const resolved = resolveModelHeaders({ headers, user, tenantId, body, customUserVars });
+    const resolved = resolveModelHeaders({ headers, user, tenantId, body, agent, customUserVars });
     resolvedHeaderMaps.add(resolved);
     return resolved;
   };
