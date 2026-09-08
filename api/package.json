@@ -1,6 +1,6 @@
 {
   "name": "@librechat/backend",
-  "version": "v0.8.8-rc4",
+  "version": "v0.8.8",
   "description": "",
   "scripts": {
     "start": "echo 'please run this from the root directory'",
