@@ -250,9 +250,9 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   /** Read by the mount effect below, which must not re-run as the user types. */
   const restoredCodeRef = useRef(restoredCode);
   /* The session a save was started in. Its callbacks outlive the editor, so
-   * they compare this against the live session before writing the buffer or
-   * submitting a queued edit: a pane the user closed must not mutate anything
-   * or leave its text behind for the next session. */
+   * they compare this against the live session before touching anything: the
+   * buffer, the queued edit and the shared save lock all belong to whoever is
+   * editing now, and a pane the user closed is not it. */
   const mutationSessionRef = useRef(codeSession.current);
   const isStaleSession = () => codeSession.current !== mutationSessionRef.current;
 
@@ -266,15 +266,15 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     onSuccess: (_data, vars) => {
       isMutatingRef.current = false;
       currentUpdateRef.current = null;
-      setIsMutating(false);
-      setCurrentUpdate(null);
-      setFailedContent(null);
-
       const pending = pendingUpdateRef.current;
       pendingUpdateRef.current = null;
       if (isStaleSession()) {
         return;
       }
+      setIsMutating(false);
+      setCurrentUpdate(null);
+      setFailedContent(null);
+
       const currentTarget = getArtifactEditTarget(artifactRef.current);
       if (
         pending == null ||
@@ -291,22 +291,20 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       }
     },
     onError: (error) => {
-      const status = getResponseStatus(error);
-      if (status === 400 && currentUpdateRef.current != null) {
-        setFailedContent(currentUpdateRef.current);
-        failedContentRef.current = currentUpdateRef.current;
-      }
+      const attempted = currentUpdateRef.current;
+      isMutatingRef.current = false;
+      currentUpdateRef.current = null;
       const pending = pendingUpdateRef.current;
       pendingUpdateRef.current = null;
       if (isStaleSession()) {
-        isMutatingRef.current = false;
-        currentUpdateRef.current = null;
-        setIsMutating(false);
-        setCurrentUpdate(null);
         return;
       }
-      isMutatingRef.current = false;
-      currentUpdateRef.current = null;
+
+      const status = getResponseStatus(error);
+      if (status === 400 && attempted != null) {
+        setFailedContent(attempted);
+        failedContentRef.current = attempted;
+      }
       setIsMutating(false);
       setCurrentUpdate(null);
 
@@ -383,6 +381,18 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
 
   runMutationRef.current = runMutation;
 
+  /** The value this component last wrote into the model, held until the change
+   *  event it produces arrives. */
+  const programmaticValueRef = useRef<string | null>(null);
+  const writeModelValue = useCallback((ed: editor.IStandaloneCodeEditor, value: string) => {
+    const model = ed.getModel();
+    if (!model || model.getValue() === value) {
+      return;
+    }
+    programmaticValueRef.current = value;
+    model.setValue(value);
+  }, []);
+
   const debouncedMutation = useMemo(
     () =>
       debounce((code: string) => {
@@ -413,6 +423,27 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     if (isMutating) {
       return;
     }
+
+    /* An edit typed while the lock was held is queued here, and normally the
+     * callbacks of the save holding the lock send it. Those callbacks belong
+     * to whichever editor started that save, so when the lock was taken by a
+     * previous session — or released with it — nobody else will: this editor
+     * sends its own queued edit as soon as the lock is free. */
+    const queued = pendingUpdateRef.current;
+    if (queued != null) {
+      pendingUpdateRef.current = null;
+      const currentTarget = getArtifactEditTarget(artifactRef.current);
+      if (
+        currentTarget != null &&
+        isSameArtifactTarget(queued, currentTarget) &&
+        queued.code.trim() !== queued.original.trim()
+      ) {
+        setCurrentCodeRef.current(queued.code, artifactRef.current.id);
+        runMutationRef.current(queued.code, queued.original);
+        return;
+      }
+    }
+
     const inherited = inheritedBufferRef.current;
     if (
       inherited == null ||
@@ -473,7 +504,12 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   /* Selecting another artifact and coming back has to land on this artifact's
    * own text: its unsaved buffer when it has one, the persisted content
    * otherwise. Writing the persisted content over a retained edit would queue
-   * that content behind the edit and quietly undo it. */
+   * that content behind the edit and quietly undo it.
+   *
+   * A retained buffer is also sent here. Its own debounce was cancelled when
+   * the selection moved away, so this is where that edit finally becomes a
+   * save — and it is sent for the artifact it belongs to, which is the one on
+   * screen again. */
   useEffect(() => {
     if (artifact.id === prevArtifactId.current) {
       return;
@@ -486,27 +522,42 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     prevContentRef.current = nextValue ?? '';
     const ed = monacoRef.current;
     if (ed && nextValue != null) {
-      ed.getModel()?.setValue(nextValue);
+      writeModelValue(ed, nextValue);
     }
-  }, [artifact.id, artifact.content, monacoRef]);
+    if (restored != null && restored !== (artifact.content ?? '')) {
+      runMutationRef.current(restored);
+    }
+  }, [artifact.id, artifact.content, monacoRef, writeModelValue]);
 
   useEffect(() => {
     if (prevReadOnly.current && !readOnly && artifact.content != null) {
       const ed = monacoRef.current;
       if (ed) {
-        ed.getModel()?.setValue(artifact.content);
+        writeModelValue(ed, artifact.content);
         prevContentRef.current = artifact.content;
       }
     }
     prevReadOnly.current = readOnly;
-  }, [readOnly, artifact.content, monacoRef]);
+  }, [readOnly, artifact.content, monacoRef, writeModelValue]);
 
+  /* Monaco reports a write this component made through `onChange` like any
+   * other edit. Treating it as typing would key the shared buffer to the
+   * artifact now on screen and drop the unsaved text another artifact is
+   * holding, so the value written here is recognised and consumed. */
   const handleChange = useCallback(
     (value: string | undefined) => {
-      if (value === undefined || readOnly) {
+      if (value === undefined) {
+        return;
+      }
+      const programmatic = programmaticValueRef.current;
+      programmaticValueRef.current = null;
+      if (readOnly) {
         return;
       }
       prevContentRef.current = value;
+      if (programmatic != null && value === programmatic) {
+        return;
+      }
       setCurrentCode(value, artifactRef.current.id);
       if (value.length > 0) {
         debouncedMutation(value);

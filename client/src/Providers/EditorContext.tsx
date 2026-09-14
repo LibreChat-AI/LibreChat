@@ -23,6 +23,10 @@ interface MutationContextType {
  * its queued edit — so they compare the session they were started in against
  * this live counter. It is a mutable object rather than a value because the
  * comparison happens after the reader's last render.
+ *
+ * Ending a session also releases the save lock it took: the request that took
+ * it is no longer anyone's to wait for, and its callbacks leave the lock alone
+ * precisely because it now belongs to the next session.
  */
 interface CodeContextType {
   currentCode?: string;
@@ -56,6 +60,7 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   const endCodeSession = useCallback(() => {
     codeSession.current += 1;
     setCodeBuffer({});
+    setIsMutating(false);
   }, []);
 
   const mutationValue = useMemo(() => ({ isMutating, setIsMutating }), [isMutating]);
