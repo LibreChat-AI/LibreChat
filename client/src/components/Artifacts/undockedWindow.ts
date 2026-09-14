@@ -150,11 +150,20 @@ export function prepareUndockedDocument(source: Document, target: Document): HTM
   base.href = source.baseURI;
   target.head.appendChild(base);
 
+  /* A mirrored `<link>` is fetched, so the popup would paint its default white
+   * canvas for that moment — jarring against a dark app. The host's resolved
+   * surface serves as the `var()` fallback until the sheet arrives, after
+   * which the real token (and any theme change) takes over. */
+  const hostSurface =
+    source.defaultView
+      ?.getComputedStyle(source.documentElement)
+      .getPropertyValue('--surface-primary')
+      .trim() ?? '';
   const layout = target.createElement('style');
   layout.dataset.undockedArtifacts = 'layout';
   layout.textContent = [
     'html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }',
-    'body { background-color: rgb(var(--surface-primary)); }',
+    `body { background-color: rgb(var(--surface-primary${hostSurface === '' ? '' : `, ${hostSurface}`})); }`,
     `#${ROOT_ELEMENT_ID} { display: flex; height: 100%; width: 100%; overflow: hidden; }`,
   ].join('\n');
   target.head.appendChild(layout);

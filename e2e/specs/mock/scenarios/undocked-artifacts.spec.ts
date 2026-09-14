@@ -73,12 +73,17 @@ test.describe('undocked artifacts pane', () => {
     const pane = popup.locator(UNDOCKED_PANE);
 
     /* A portal carries nodes, not the document that styled them: an unstyled
-     * pane would render transparent and collapsed. */
-    const background = await pane.evaluate(
-      (node) => node.ownerDocument.defaultView?.getComputedStyle(node).backgroundColor ?? '',
-    );
-    expect(background).not.toBe('');
-    expect(background).not.toBe('rgba(0, 0, 0, 0)');
+     * pane would render transparent and collapsed. The mirrored sheet is a
+     * fetch, so the painted canvas is what settles, not what renders first. */
+    await expect
+      .poll(
+        () =>
+          pane.evaluate(
+            (node) => node.ownerDocument.defaultView?.getComputedStyle(node).backgroundColor ?? '',
+          ),
+        { timeout: 15000 },
+      )
+      .not.toBe('rgba(0, 0, 0, 0)');
     const paneBox = await pane.boundingBox();
     expect(paneBox).not.toBeNull();
     expect(paneBox!.height).toBeGreaterThan(200);
@@ -122,10 +127,13 @@ test.describe('undocked artifacts pane', () => {
     await openHtmlArtifact(page);
     const popup = await undock(page);
 
-    /* Keyboard path: the button pressed in the window disappears with it. */
+    /* Keyboard path: the button pressed in the window disappears with it, so
+     * the press resolves against a page that is already gone. */
     const dockButton = popup.getByRole('button', { name: DOCK });
     await dockButton.focus();
-    await popup.keyboard.press('Enter');
+    const closed = popup.waitForEvent('close');
+    await popup.keyboard.press('Enter').catch(() => undefined);
+    await closed;
 
     const undockButton = page.getByRole('button', { name: UNDOCK });
     await expect(undockButton).toBeVisible({ timeout: 20000 });
