@@ -4,6 +4,10 @@ import { renderHook, act } from '@testing-library/react';
 import type { Artifact } from '~/common';
 import { artifactsActiveTab } from '~/components/Artifacts/state';
 
+/* Referenced only when `useCodeState` is called, so the mock factory running
+ * before this initializes is fine. */
+const mockSetCurrentCode = jest.fn();
+
 /** Mock dependencies */
 jest.mock('~/Providers', () => ({
   useArtifactsContext: jest.fn(),
@@ -13,6 +17,10 @@ jest.mock('~/utils', () => ({
   logger: {
     log: jest.fn(),
   },
+}));
+
+jest.mock('~/Providers/EditorContext', () => ({
+  useCodeState: () => ({ setCurrentCode: mockSetCurrentCode }),
 }));
 
 /** Mock store before importing */
@@ -643,6 +651,9 @@ describe('useArtifacts', () => {
       expect(mockResetArtifacts).toHaveBeenCalled();
       expect(mockResetCurrentArtifactId).toHaveBeenCalled();
       expect(getDefaultStore().get(artifactsActiveTab)).toBe('preview');
+      /* A buffer kept past the close would come back on the next open and be
+       * submitted by the drain, so closing has to discard it. */
+      expect(mockSetCurrentCode).toHaveBeenCalledWith(undefined, undefined);
       expect(logger.log).toHaveBeenCalledWith('artifacts_visibility', 'Unmounting artifacts');
     });
 
@@ -660,6 +671,7 @@ describe('useArtifacts', () => {
 
       expect(mockResetArtifacts).not.toHaveBeenCalled();
       expect(mockResetCurrentArtifactId).not.toHaveBeenCalled();
+      expect(mockSetCurrentCode).not.toHaveBeenCalledWith(undefined, undefined);
       expect(getDefaultStore().get(artifactsActiveTab)).toBe('code');
     });
   });

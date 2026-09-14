@@ -1,14 +1,14 @@
 import { useEffect, useLayoutEffect } from 'react';
-import { useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
+import { useAtom, useSetAtom } from 'jotai';
 import {
   mirrorDocumentStyles,
   mirrorDocumentTheme,
   persistBounds,
   relayFrameMessages,
 } from './undockedWindow';
-import { undockedArtifacts } from './state';
+import { artifactsDockFocusRequest, undockedArtifacts } from './state';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -31,6 +31,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
   const artifacts = useRecoilValue(store.artifactsState);
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
   const [detached, setDetached] = useAtom(undockedArtifacts);
+  const setDockFocusRequest = useSetAtom(artifactsDockFocusRequest);
 
   useLayoutEffect(() => {
     if (detached == null) {
@@ -53,15 +54,19 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
     const closeWithOpener = () => detachedWindow.close();
     /* A window the user closes through the browser reports zeroes by the time
      * the cleanup runs, so its size and position are read while it still has
-     * them — otherwise the remembered bounds only ever track Dock. */
+     * them — otherwise the remembered bounds only ever track Dock. Closing the
+     * window is a dock the user asked for, so the pane that takes over picks
+     * focus up exactly as it does for the Dock control. */
     const rememberAndRedock = () => {
       persistBounds(detachedWindow, window.localStorage);
+      setDockFocusRequest(true);
       redock();
     };
     detachedWindow.addEventListener('pagehide', rememberAndRedock);
     window.addEventListener('pagehide', closeWithOpener);
     const closedPoll = window.setInterval(() => {
       if (detachedWindow.closed) {
+        setDockFocusRequest(true);
         redock();
       }
     }, CLOSED_POLL_MS);
@@ -80,7 +85,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
        * next artifact opens in the side panel. */
       redock();
     };
-  }, [detached, setDetached]);
+  }, [detached, setDetached, setDockFocusRequest]);
 
   const artifactTitle =
     (currentArtifactId != null ? artifacts?.[currentArtifactId]?.title : null) ??

@@ -382,25 +382,32 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * before the pane changed hosts lives in the buffer and has never been sent.
    * The request its previous instance started keeps its own callbacks — React
    * Query holds them on the mutation, not on the observer — so this instance
-   * must not guess at that request's state or resubmit against a `original`
+   * must not guess at that request's state or resubmit against an `original`
    * it may already have replaced. It waits for the shared flag to go idle and
-   * submits then, once, for a buffer that still differs from what was saved. */
+   * submits then, once.
+   *
+   * Only the buffer this instance inherited at mount is drained. A buffer
+   * picked up by navigating back to an artifact belongs to an editor that is
+   * still alive and will send it itself; submitting it here would race that
+   * editor's own `setValue`. */
+  const inheritedBufferRef = useRef<string | null>(restoredCode ?? null);
   const drainedBufferRef = useRef<string | null>(null);
   useEffect(() => {
     if (isMutating) {
       return;
     }
-    const restored = restoredCodeRef.current;
-    if (restored == null || restored === (artifactRef.current.content ?? '')) {
+    const inherited = inheritedBufferRef.current;
+    if (
+      inherited == null ||
+      inherited === (artifactRef.current.content ?? '') ||
+      drainedBufferRef.current === inherited
+    ) {
       return;
     }
-    if (drainedBufferRef.current === restored) {
-      return;
-    }
-    drainedBufferRef.current = restored;
-    prevContentRef.current = restored;
-    runMutationRef.current(restored);
-  }, [artifact.id, isMutating]);
+    drainedBufferRef.current = inherited;
+    prevContentRef.current = inherited;
+    runMutationRef.current(inherited);
+  }, [isMutating]);
 
   /**
    * Streaming: use model.applyEdits() to append new content.
@@ -446,6 +453,10 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     ed.revealLine(model.getLineCount());
   }, [artifact.content, readOnly, monacoRef]);
 
+  /* Selecting another artifact and coming back has to land on this artifact's
+   * own text: its unsaved buffer when it has one, the persisted content
+   * otherwise. Writing the persisted content over a retained edit would queue
+   * that content behind the edit and quietly undo it. */
   useEffect(() => {
     if (artifact.id === prevArtifactId.current) {
       return;
@@ -453,10 +464,12 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     prevArtifactId.current = artifact.id;
     pendingUpdateRef.current = null;
     setFailedContent(null);
-    prevContentRef.current = artifact.content ?? '';
+    const restored = restoredCodeRef.current;
+    const nextValue = restored ?? artifact.content;
+    prevContentRef.current = nextValue ?? '';
     const ed = monacoRef.current;
-    if (ed && artifact.content != null) {
-      ed.getModel()?.setValue(artifact.content);
+    if (ed && nextValue != null) {
+      ed.getModel()?.setValue(nextValue);
     }
   }, [artifact.id, artifact.content, monacoRef]);
 

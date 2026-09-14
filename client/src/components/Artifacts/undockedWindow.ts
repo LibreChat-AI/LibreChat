@@ -381,6 +381,10 @@ export function relayFrameMessages(source: Window, detached: Window): () => void
   return () => detached.removeEventListener('message', relay);
 }
 
+/** Cross-realm: the popup's elements are not the host's `HTMLElement`. */
+const isFocusable = (node: Element | null): node is HTMLElement =>
+  node != null && typeof (node as HTMLElement).focus === 'function';
+
 /**
  * The pre-Clipboard-API copy, run in a chosen document.
  *
@@ -396,7 +400,11 @@ export function copyWithinDocument(target: Document, text: string): boolean {
   field.setAttribute('aria-hidden', 'true');
   field.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
   target.body.appendChild(field);
+  /* The element belongs to the popup's realm, so the host's `HTMLElement` is
+   * not its constructor and `instanceof` would quietly refuse to restore the
+   * user's place. Test the capability instead. */
   const activeElement = target.activeElement;
+  const focusable = isFocusable(activeElement) ? activeElement : null;
   try {
     field.select();
     field.setSelectionRange(0, text.length);
@@ -405,8 +413,6 @@ export function copyWithinDocument(target: Document, text: string): boolean {
     return false;
   } finally {
     field.remove();
-    if (activeElement instanceof HTMLElement) {
-      activeElement.focus();
-    }
+    focusable?.focus();
   }
 }

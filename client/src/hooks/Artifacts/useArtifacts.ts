@@ -1,8 +1,9 @@
 import { useMemo, useEffect, useRef } from 'react';
-import { useAtom } from 'jotai';
+import { useAtom, useSetAtom } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import { useRecoilCallback, useRecoilState, useRecoilValue, useResetRecoilState } from 'recoil';
-import { artifactsActiveTab } from '~/components/Artifacts/state';
+import { artifactsActiveTab, artifactsDockFocusRequest } from '~/components/Artifacts/state';
+import { useCodeState } from '~/Providers/EditorContext';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
 import { useArtifactsContext } from '~/Providers';
 import { logger } from '~/utils';
@@ -141,6 +142,8 @@ export default function useArtifacts() {
   /* Pane state, not instance state: the pane is remounted when it changes
    * hosts, and the tab the user was on has to come with it. */
   const [activeTab, setActiveTab] = useAtom(artifactsActiveTab);
+  const setDockFocusRequest = useSetAtom(artifactsDockFocusRequest);
+  const { setCurrentCode } = useCodeState();
   const { isSubmitting, latestMessageId, latestMessageText, conversationId } =
     useArtifactsContext();
 
@@ -190,9 +193,12 @@ export default function useArtifacts() {
     const resetState = () => {
       resetArtifacts();
       resetCurrentArtifactId();
-      /* The tab outlives a host move but not the session: the next artifact
-       * opens on the default view, as it did when the tab was local state. */
+      /* The tab and the editor buffer outlive a host move but not the session:
+       * the next artifact opens on the default view, with its own text, as it
+       * did when both lived in the pane instance. */
       setActiveTab('preview');
+      setCurrentCode(undefined, undefined);
+      setDockFocusRequest(false);
       prevConversationIdRef.current = conversationId;
       lastRunMessageIdRef.current = null;
       lastContentRef.current = null;
@@ -213,7 +219,15 @@ export default function useArtifacts() {
       logger.log('artifacts_visibility', 'Unmounting artifacts');
       resetState();
     };
-  }, [conversationId, isPaneClosed, resetArtifacts, resetCurrentArtifactId, setActiveTab]);
+  }, [
+    conversationId,
+    isPaneClosed,
+    resetArtifacts,
+    resetCurrentArtifactId,
+    setActiveTab,
+    setCurrentCode,
+    setDockFocusRequest,
+  ]);
 
   /**
    * Read currentArtifactId in effects without subscribing as a dependency.
