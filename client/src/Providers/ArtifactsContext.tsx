@@ -9,6 +9,11 @@ export interface ArtifactsContextValue {
   latestMessageId: string | null;
   latestMessageText: string;
   conversationId: string | null;
+  /** Whether this host offers opening the pane in its own window. The pane
+   *  consumes the deployment's `interface.artifactUndocking` rather than
+   *  reading config itself: the host already knows, and only the host knows
+   *  whether a window it would have to render is available at all. */
+  canUndock: boolean;
 }
 
 const ArtifactsContext = createContext<ArtifactsContextValue | undefined>(undefined);
@@ -33,6 +38,7 @@ export function ArtifactsProvider({ children, value }: ArtifactsProviderProps) {
       conversationId: conversationId ?? null,
       latestMessageText: chatLatestMessageText,
       latestMessageId: latestMessage?.messageId ?? null,
+      canUndock: true,
     }),
     [isSubmitting, chatLatestMessageText, latestMessage?.messageId, conversationId],
   );

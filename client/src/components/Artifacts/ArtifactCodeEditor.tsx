@@ -232,7 +232,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   const { resolvedMode, highContrast } = useContext(ThemeContext);
   const { isSubmitting } = useArtifactsContext();
   const readOnly = (externalReadOnly ?? false) || isSubmitting;
-  const { currentCode, codeArtifactId, setCurrentCode } = useCodeState();
+  const { currentCode, codeArtifactId, setCurrentCode, codeSession } = useCodeState();
   /* The pane is remounted when it changes hosts (side panel, mobile sheet,
    * undocked window). The buffer outlives that remount, so unsaved text is
    * restored here instead of falling back to the persisted content. */
@@ -249,6 +249,12 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   const runMutationRef = useRef<(code: string, original?: string) => void>(() => {});
   /** Read by the mount effect below, which must not re-run as the user types. */
   const restoredCodeRef = useRef(restoredCode);
+  /* The session a save was started in. Its callbacks outlive the editor, so
+   * they compare this against the live session before writing the buffer or
+   * submitting a queued edit: a pane the user closed must not mutate anything
+   * or leave its text behind for the next session. */
+  const mutationSessionRef = useRef(codeSession.current);
+  const isStaleSession = () => codeSession.current !== mutationSessionRef.current;
 
   const editArtifact = useEditArtifact({
     onMutate: (vars) => {
@@ -266,6 +272,9 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
 
       const pending = pendingUpdateRef.current;
       pendingUpdateRef.current = null;
+      if (isStaleSession()) {
+        return;
+      }
       const currentTarget = getArtifactEditTarget(artifactRef.current);
       if (
         pending == null ||
@@ -289,6 +298,13 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       }
       const pending = pendingUpdateRef.current;
       pendingUpdateRef.current = null;
+      if (isStaleSession()) {
+        isMutatingRef.current = false;
+        currentUpdateRef.current = null;
+        setIsMutating(false);
+        setCurrentUpdate(null);
+        return;
+      }
       isMutatingRef.current = false;
       currentUpdateRef.current = null;
       setIsMutating(false);
@@ -353,6 +369,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         return;
       }
 
+      mutationSessionRef.current = codeSession.current;
       setCurrentCodeRef.current(code, art.id);
       editArtifactRef.current.mutate({
         index: target.index,
@@ -361,7 +378,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         updated: code,
       });
     },
-    [readOnly],
+    [codeSession, readOnly],
   );
 
   runMutationRef.current = runMutation;

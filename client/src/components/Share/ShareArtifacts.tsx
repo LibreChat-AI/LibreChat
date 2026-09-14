@@ -13,7 +13,9 @@ import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistry
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { ArtifactsProvider, EditorProvider } from '~/Providers';
+import { useGetSharedStartupConfig } from '~/data-provider';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
+import { useShareContext } from '~/Providers';
 import { getLatestText } from '~/utils';
 import store from '~/store';
 
@@ -69,6 +71,13 @@ export function ShareArtifactsContainer({
    * cleanup keeps it while the pane only changes hosts. */
   useArtifactsRegistryLifetime();
 
+  const { shareId } = useShareContext();
+  const { data: sharedStartupConfig } = useGetSharedStartupConfig(shareId, {
+    enabled: typeof shareId === 'string' && shareId !== '',
+  });
+  /* Absent config reads as enabled, which is the default and today's pane. */
+  const canUndock = sharedStartupConfig?.interface?.artifactUndocking !== false;
+
   const artifactsContextValue = useMemo<ArtifactsContextValue | null>(() => {
     const latestMessage =
       Array.isArray(messages) && messages.length > 0 ? messages[messages.length - 1] : null;
@@ -84,8 +93,9 @@ export function ShareArtifactsContainer({
       latestMessageId: latestMessage.messageId ?? null,
       latestMessageText,
       conversationId: conversationId ?? null,
+      canUndock,
     };
-  }, [messages, conversationId]);
+  }, [messages, conversationId, canUndock]);
 
   const hasSelectedArtifact = currentArtifactId != null && artifacts?.[currentArtifactId] != null;
   const hasAutoOpenableArtifact = Object.values(artifacts ?? {}).some(

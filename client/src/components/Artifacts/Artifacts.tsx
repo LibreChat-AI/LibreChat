@@ -19,9 +19,9 @@ import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
+import { useArtifactsContext, useShareContext, useMutationState } from '~/Providers';
 import { artifactsDockFocusRequest, undockedArtifacts } from './state';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useShareContext, useMutationState } from '~/Providers';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
 import { useFocusTrap, useLocalize } from '~/hooks';
 import DownloadArtifact from './DownloadArtifact';
@@ -38,6 +38,9 @@ export default function Artifacts() {
   const localize = useLocalize();
   const { isMutating } = useMutationState();
   const { isSharedConvo } = useShareContext();
+  /* A deployment can keep the docked pane: the host resolves
+   * `interface.artifactUndocking` and passes the answer in. */
+  const { canUndock } = useArtifactsContext();
   const [detached, setDetached] = useAtom(undockedArtifacts);
   const [dockFocusRequest, setDockFocusRequest] = useAtom(artifactsDockFocusRequest);
   const isUndocked = detached != null;
@@ -601,7 +604,7 @@ export default function Artifacts() {
               ) : (
                 <DownloadArtifact artifact={currentArtifact} />
               )}
-              {!isMobile && (
+              {!isMobile && canUndock && (
                 <Button
                   ref={undockButtonRef}
                   size="icon"

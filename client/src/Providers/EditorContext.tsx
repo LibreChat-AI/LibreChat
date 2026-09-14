@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useMemo, useCallback, useRef } from 'react';
 
 /**
  * Mutation state context - for components that need to know about save/edit status
@@ -16,11 +16,20 @@ interface MutationContextType {
  * The buffer carries the artifact it belongs to. The pane is remounted when it
  * changes hosts (side panel, mobile sheet, undocked window), so whether the
  * buffer is this artifact's unsaved text cannot be decided from a mount.
+ *
+ * `codeSession` is the editing session the buffer belongs to. A save keeps its
+ * callbacks after the editor that started it is gone, and those callbacks
+ * would otherwise write the buffer a closed session just cleared and submit
+ * its queued edit — so they compare the session they were started in against
+ * this live counter. It is a mutable object rather than a value because the
+ * comparison happens after the reader's last render.
  */
 interface CodeContextType {
   currentCode?: string;
   codeArtifactId?: string;
   setCurrentCode: (code: string | undefined, artifactId?: string) => void;
+  codeSession: { current: number };
+  endCodeSession: () => void;
 }
 
 const MutationContext = createContext<MutationContextType | undefined>(undefined);
@@ -35,6 +44,7 @@ const CodeContext = createContext<CodeContextType | undefined>(undefined);
 export function EditorProvider({ children }: { children: React.ReactNode }) {
   const [isMutating, setIsMutating] = useState(false);
   const [codeBuffer, setCodeBuffer] = useState<{ code?: string; artifactId?: string }>({});
+  const codeSession = useRef(0);
 
   const setCurrentCode = useCallback((code: string | undefined, artifactId?: string) => {
     setCodeBuffer((previous) => ({
@@ -43,14 +53,21 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const endCodeSession = useCallback(() => {
+    codeSession.current += 1;
+    setCodeBuffer({});
+  }, []);
+
   const mutationValue = useMemo(() => ({ isMutating, setIsMutating }), [isMutating]);
   const codeValue = useMemo(
     () => ({
       currentCode: codeBuffer.code,
       codeArtifactId: codeBuffer.artifactId,
       setCurrentCode,
+      codeSession,
+      endCodeSession,
     }),
-    [codeBuffer, setCurrentCode],
+    [codeBuffer, endCodeSession, setCurrentCode],
   );
 
   return (

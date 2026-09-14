@@ -143,7 +143,7 @@ export default function useArtifacts() {
    * hosts, and the tab the user was on has to come with it. */
   const [activeTab, setActiveTab] = useAtom(artifactsActiveTab);
   const setDockFocusRequest = useSetAtom(artifactsDockFocusRequest);
-  const { setCurrentCode } = useCodeState();
+  const { endCodeSession } = useCodeState();
   const { isSubmitting, latestMessageId, latestMessageText, conversationId } =
     useArtifactsContext();
 
@@ -195,9 +195,11 @@ export default function useArtifacts() {
       resetCurrentArtifactId();
       /* The tab and the editor buffer outlive a host move but not the session:
        * the next artifact opens on the default view, with its own text, as it
-       * did when both lived in the pane instance. */
+       * did when both lived in the pane instance. Ending the code session also
+       * tells a save still in flight that its callbacks have nothing to
+       * restore here. */
       setActiveTab('preview');
-      setCurrentCode(undefined, undefined);
+      endCodeSession();
       setDockFocusRequest(false);
       prevConversationIdRef.current = conversationId;
       lastRunMessageIdRef.current = null;
@@ -225,7 +227,7 @@ export default function useArtifacts() {
     resetArtifacts,
     resetCurrentArtifactId,
     setActiveTab,
-    setCurrentCode,
+    endCodeSession,
     setDockFocusRequest,
   ]);
 

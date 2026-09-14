@@ -19,6 +19,7 @@ jest.mock('@librechat/client', () => ({
 jest.mock('~/Providers', () => ({
   useMutationState: () => ({ isMutating: false }),
   useShareContext: () => ({ isSharedConvo: false }),
+  useArtifactsContext: () => ({ canUndock: true }),
 }));
 
 jest.mock('~/hooks', () => ({

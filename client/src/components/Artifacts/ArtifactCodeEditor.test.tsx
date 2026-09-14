@@ -52,7 +52,11 @@ jest.mock('~/Providers/EditorContext', () => {
     },
     useCodeState: () => {
       const [currentCode, setCurrentCode] = ReactModule.useState('');
-      return { currentCode, setCurrentCode };
+      const codeSession = ReactModule.useRef(0);
+      const endCodeSession = ReactModule.useCallback(() => {
+        codeSession.current += 1;
+      }, []);
+      return { currentCode, setCurrentCode, codeSession, endCodeSession };
     },
   };
 });

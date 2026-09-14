@@ -78,6 +78,7 @@ jest.mock('~/hooks/Artifacts/useArtifactsRegistryLifetime', () => ({
 
 jest.mock('~/data-provider', () => ({
   useDeleteFilesMutation: () => ({ mutateAsync: jest.fn() }),
+  useGetStartupConfig: () => ({ data: undefined }),
   useParentSubagentsQuery: (conversationId: string, config?: unknown, isSubmitting?: boolean) =>
     mockUseParentSubagentsQuery(conversationId, config, isSubmitting),
 }));

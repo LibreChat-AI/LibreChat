@@ -5,12 +5,12 @@ import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-pr
 import type { ExtendedFile } from '~/common';
 import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
+import { useDeleteFilesMutation, useGetStartupConfig } from '~/data-provider';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
-import { useDeleteFilesMutation } from '~/data-provider';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
 import { useSetFilesToDelete } from '~/hooks';
@@ -52,6 +52,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
 
   const setFilesToDelete = useSetFilesToDelete();
 
+  const { data: startupConfig } = useGetStartupConfig();
   const { mutateAsync } = useDeleteFilesMutation({
     onSuccess: (result) => {
       console.log('Temporary Files deleted');
@@ -103,6 +104,11 @@ export default function Presentation({ children }: { children: React.ReactNode }
     mutateAsync({ files });
   }, [mutateAsync]);
 
+  /* The deployment's answer about the undocked window, resolved once by the
+   * host and handed to the pane. */
+  const canUndock = startupConfig?.interface?.artifactUndocking !== false;
+  const artifactsProviderValue = useMemo(() => ({ canUndock }), [canUndock]);
+
   const artifactsElement = useMemo(() => {
     if (
       artifactsVisibility === true &&
@@ -110,7 +116,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
       Object.keys(artifacts ?? {}).length > 0
     ) {
       return (
-        <ArtifactsProvider>
+        <ArtifactsProvider value={artifactsProviderValue}>
           <Suspense fallback={null}>
             <Artifacts />
           </Suspense>
@@ -118,7 +124,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
       );
     }
     return null;
-  }, [artifactsVisibility, artifacts, currentArtifactId]);
+  }, [artifactsVisibility, artifacts, currentArtifactId, artifactsProviderValue]);
 
   /* The two panels are mutually exclusive only while they compete for the same
    * slot. Undocked, the artifacts pane is in its own window and the side panel
