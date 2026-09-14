@@ -388,7 +388,6 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     }
     prevContentRef.current = restored;
     runMutationRef.current(restored);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artifact.id]);
 
   /**

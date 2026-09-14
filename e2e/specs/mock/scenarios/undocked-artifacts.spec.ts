@@ -141,6 +141,11 @@ test.describe('undocked artifacts pane', () => {
 
     const popup = await undock(page);
 
+    /* Landing back on the preview would read as the edit having been lost. */
+    await expect(popup.getByRole('radio', { name: 'Code' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
     await expect(popup.locator(`${UNDOCKED_PANE} #artifacts-code`)).toContainText('undock-edit', {
       timeout: 30000,
     });

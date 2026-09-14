@@ -1,6 +1,8 @@
-import { useMemo, useState, useEffect, useRef } from 'react';
+import { useMemo, useEffect, useRef } from 'react';
+import { useAtom } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import { useRecoilCallback, useRecoilState, useRecoilValue, useResetRecoilState } from 'recoil';
+import { artifactsActiveTab } from '~/components/Artifacts/state';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
 import { useArtifactsContext } from '~/Providers';
 import { logger } from '~/utils';
@@ -136,7 +138,9 @@ const hasEnclosedArtifact = (messageText: string): boolean => {
 };
 
 export default function useArtifacts() {
-  const [activeTab, setActiveTab] = useState('preview');
+  /* Pane state, not instance state: the pane is remounted when it changes
+   * hosts, and the tab the user was on has to come with it. */
+  const [activeTab, setActiveTab] = useAtom(artifactsActiveTab);
   const { isSubmitting, latestMessageId, latestMessageText, conversationId } =
     useArtifactsContext();
 
@@ -276,6 +280,7 @@ export default function useArtifacts() {
     latestMessageId,
     latestMessageText,
     orderedArtifactIds,
+    setActiveTab,
     setCurrentArtifactId,
   ]);
 
@@ -294,7 +299,7 @@ export default function useArtifacts() {
       hasEnclosedArtifactRef.current = true;
       hasAutoSwitchedToCodeRef.current = false;
     }
-  }, [isSubmitting, latestMessageText]);
+  }, [isSubmitting, latestMessageText, setActiveTab]);
 
   useEffect(() => {
     if (latestMessageId !== lastRunMessageIdRef.current) {

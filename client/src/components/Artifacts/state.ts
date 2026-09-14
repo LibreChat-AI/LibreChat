@@ -19,3 +19,10 @@ export interface UndockedArtifactsTarget {
 export const undockedArtifacts = atom<UndockedArtifactsTarget | null>(null);
 
 export const artifactsUndocked = atom((get) => get(undockedArtifacts) != null);
+
+/**
+ * Which tab the pane is showing. The pane is a new instance in every host, so
+ * a user who undocks while reading code has to arrive in the window on the
+ * code tab — with the text they were typing — rather than back on the preview.
+ */
+export const artifactsActiveTab = atom<string>('preview');

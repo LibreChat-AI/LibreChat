@@ -1,6 +1,8 @@
+import { getDefaultStore } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import { renderHook, act } from '@testing-library/react';
 import type { Artifact } from '~/common';
+import { artifactsActiveTab } from '~/components/Artifacts/state';
 
 /** Mock dependencies */
 jest.mock('~/Providers', () => ({
@@ -101,6 +103,9 @@ describe('useArtifacts', () => {
         return stablePaneCallback;
       },
     );
+    /* The tab is pane state in a module-global store now, so one test's switch
+     * would otherwise be the next test's starting point. */
+    getDefaultStore().set(artifactsActiveTab, 'preview');
   });
 
   afterEach(() => {
