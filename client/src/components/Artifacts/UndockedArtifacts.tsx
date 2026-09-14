@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
+import { Toast } from '@librechat/client';
 import { useAtom, useSetAtom } from 'jotai';
+import * as RadixToast from '@radix-ui/react-toast';
 import {
   mirrorDocumentStyles,
   mirrorDocumentTheme,
@@ -102,5 +104,16 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
     return null;
   }
 
-  return createPortal(children, detached.root);
+  /* The app's toast surface lives in the opener's document, which the user is
+   * not looking at while the pane is undocked. A Radix provider of its own
+   * gives every toast raised inside this window a viewport inside it, and the
+   * toast state is shared, so the same notice shows wherever the user is. */
+  return createPortal(
+    <RadixToast.Provider>
+      {children}
+      <Toast />
+      <RadixToast.Viewport className="pointer-events-none fixed inset-x-0 top-0 z-[1000] mx-auto my-2 flex max-w-[560px] flex-col items-stretch justify-start" />
+    </RadixToast.Provider>,
+    detached.root,
+  );
 }

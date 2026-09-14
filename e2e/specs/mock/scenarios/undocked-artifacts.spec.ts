@@ -209,6 +209,30 @@ test.describe('undocked artifacts pane', () => {
     await expect(popup.getByRole('menuitem', { name: 'Export as SVG', exact: true })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: 'Export as SVG', exact: true })).toHaveCount(0);
   });
+
+  test('a failure raised in the window is reported there @scenario:undocked-pane-reports-failures-in-its-own-window', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    await openHtmlArtifact(page);
+    const popup = await undock(page);
+
+    /* Take both clipboard paths away inside the window, which is what a
+     * non-secure context with a refused selection copy looks like. */
+    await popup.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: () => Promise.reject(new Error('denied')) },
+      });
+      document.execCommand = () => false;
+    });
+
+    await popup.getByRole('button', { name: 'Copy' }).click();
+
+    /* The app's toast viewport lives in the chat tab, which the user is not
+     * looking at: the notice has to appear in the window they are. */
+    await expect(popup.getByText('Failed to copy to clipboard')).toBeVisible({ timeout: 15000 });
+  });
 });
 
 test.describe('artifacts sheet on a phone', () => {
