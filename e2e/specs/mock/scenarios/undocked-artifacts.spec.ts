@@ -88,8 +88,9 @@ test.describe('undocked artifacts pane', () => {
     expect(paneBox).not.toBeNull();
     expect(paneBox!.height).toBeGreaterThan(200);
 
-    /* The preview lives in the window too, in its own frame. */
-    await expect(pane.locator('iframe')).toHaveCount(1);
+    /* The preview lives in the window too, in its own frame. The runtime
+     * bundler compiles it there, which on a loaded machine takes a while. */
+    await expect(pane.locator('iframe')).toHaveCount(1, { timeout: 30000 });
     await expect(popup.getByRole('button', { name: 'Refresh' })).toBeVisible();
   });
 
