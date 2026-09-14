@@ -1,5 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { useSetAtom } from 'jotai';
 import { useRecoilValue, useResetRecoilState } from 'recoil';
+import { artifactsActiveTab } from '~/components/Artifacts/state';
 import store from '~/store';
 
 /**
@@ -22,7 +24,15 @@ export default function useArtifactsRegistryLifetime(): void {
   const conversationId = useRecoilValue(store.conversationIdByIndex(0));
   const resetArtifacts = useResetRecoilState(store.artifactsState);
   const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
+  const setActiveTab = useSetAtom(artifactsActiveTab);
   const prevConversationIdRef = useRef<string | null>(null);
+
+  /** The pane's view state belongs to the session the registry belongs to. */
+  const endSession = useCallback(() => {
+    resetArtifacts();
+    resetCurrentArtifactId();
+    setActiveTab('preview');
+  }, [resetArtifacts, resetCurrentArtifactId, setActiveTab]);
 
   useEffect(() => {
     const prev = prevConversationIdRef.current;
@@ -31,15 +41,8 @@ export default function useArtifactsRegistryLifetime(): void {
     if (prev == null || prev === next) {
       return;
     }
-    resetArtifacts();
-    resetCurrentArtifactId();
-  }, [conversationId, resetArtifacts, resetCurrentArtifactId]);
+    endSession();
+  }, [conversationId, endSession]);
 
-  useEffect(
-    () => () => {
-      resetArtifacts();
-      resetCurrentArtifactId();
-    },
-    [resetArtifacts, resetCurrentArtifactId],
-  );
+  useEffect(() => () => endSession(), [endSession]);
 }

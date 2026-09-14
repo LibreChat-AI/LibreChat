@@ -190,6 +190,9 @@ export default function useArtifacts() {
     const resetState = () => {
       resetArtifacts();
       resetCurrentArtifactId();
+      /* The tab outlives a host move but not the session: the next artifact
+       * opens on the default view, as it did when the tab was local state. */
+      setActiveTab('preview');
       prevConversationIdRef.current = conversationId;
       lastRunMessageIdRef.current = null;
       lastContentRef.current = null;
@@ -210,7 +213,7 @@ export default function useArtifacts() {
       logger.log('artifacts_visibility', 'Unmounting artifacts');
       resetState();
     };
-  }, [conversationId, isPaneClosed, resetArtifacts, resetCurrentArtifactId]);
+  }, [conversationId, isPaneClosed, resetArtifacts, resetCurrentArtifactId, setActiveTab]);
 
   /**
    * Read currentArtifactId in effects without subscribing as a dependency.

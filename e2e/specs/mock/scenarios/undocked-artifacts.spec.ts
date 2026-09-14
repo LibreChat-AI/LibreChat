@@ -115,6 +115,23 @@ test.describe('undocked artifacts pane', () => {
     await expect(page.getByRole('button', { name: UNDOCK })).toBeVisible();
   });
 
+  test('docking hands focus to the control that replaces it @scenario:docking-returns-focus-to-the-pane-control', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    await openHtmlArtifact(page);
+    const popup = await undock(page);
+
+    /* Keyboard path: the button pressed in the window disappears with it. */
+    const dockButton = popup.getByRole('button', { name: DOCK });
+    await dockButton.focus();
+    await popup.keyboard.press('Enter');
+
+    const undockButton = page.getByRole('button', { name: UNDOCK });
+    await expect(undockButton).toBeVisible({ timeout: 20000 });
+    await expect(undockButton).toBeFocused();
+  });
+
   test('unsaved editor text moves with the pane @scenario:unsaved-artifact-edits-survive-undocking', async ({
     page,
   }) => {

@@ -110,35 +110,31 @@ export function ShareArtifactsContainer({
     }
   };
 
+  /* One provider around every branch, mounted whether the pane is open or
+   * not: it owns the editor buffer the pane carries between hosts, and moving
+   * it in and out would remount the transcript under it — losing the reader's
+   * scroll position every time the artifact overlay opens. */
+  let content: React.ReactNode;
   if (!shouldRenderArtifacts || !artifactsContextValue) {
-    return <>{mainContent}</>;
-  }
-
-  /* One provider around every host: the pane is remounted when it moves
-   * between the panel, the mobile overlay and the undocked window, and the
-   * editor buffer belongs to the pane's session rather than to its window. */
-  if (isUndocked) {
-    return (
-      <EditorProvider>
+    content = mainContent;
+  } else if (isUndocked) {
+    content = (
+      <>
         {mainContent}
         <UndockedArtifacts>
           <ShareArtifactsPanel contextValue={artifactsContextValue} />
         </UndockedArtifacts>
-      </EditorProvider>
+      </>
     );
-  }
-
-  if (isSmallScreen) {
-    return (
-      <EditorProvider>
+  } else if (isSmallScreen) {
+    content = (
+      <>
         {mainContent}
         <ShareArtifactsOverlay contextValue={artifactsContextValue} />
-      </EditorProvider>
+      </>
     );
-  }
-
-  return (
-    <EditorProvider>
+  } else {
+    content = (
       <ResizablePanelGroup
         orientation="horizontal"
         className="h-full w-full"
@@ -161,8 +157,10 @@ export function ShareArtifactsContainer({
           <ShareArtifactsPanel contextValue={artifactsContextValue} />
         </ResizablePanel>
       </ResizablePanelGroup>
-    </EditorProvider>
-  );
+    );
+  }
+
+  return <EditorProvider>{content}</EditorProvider>;
 }
 
 interface ShareArtifactsPanelProps {

@@ -9,6 +9,7 @@ const mockFileDownload = jest.fn();
 const mockAttachmentOptions = jest.fn();
 let mockFileKey = 'index.html';
 let mockCurrentCode: string | undefined;
+let mockCodeArtifactId: string | undefined;
 
 jest.mock('~/hooks', () => ({
   useLocalize:
@@ -23,7 +24,7 @@ jest.mock('~/hooks/Artifacts/useArtifactProps', () => ({
 }));
 
 jest.mock('~/Providers/EditorContext', () => ({
-  useCodeState: () => ({ currentCode: mockCurrentCode }),
+  useCodeState: () => ({ currentCode: mockCurrentCode, codeArtifactId: mockCodeArtifactId }),
 }));
 
 const mockShowToast = jest.fn();
@@ -113,6 +114,7 @@ describe('DownloadArtifact', () => {
   beforeEach(() => {
     mockFileKey = 'index.html';
     mockCurrentCode = undefined;
+    mockCodeArtifactId = undefined;
     mockFileDownload.mockReset();
     mockShowToast.mockReset();
     // The attachment helper resolves to `true` when a file was delivered.
@@ -161,6 +163,7 @@ describe('DownloadArtifact', () => {
   ])('names %s download with title %s', async (type, title, fileKey, language, expected) => {
     mockFileKey = fileKey;
     mockCurrentCode = 'edited content';
+    mockCodeArtifactId = htmlArtifact.id;
     render(<DownloadArtifact artifact={{ ...htmlArtifact, type, title, language }} />);
     await act(async () => {
       fireEvent.click(screen.getByRole('button'));
@@ -181,6 +184,7 @@ describe('DownloadArtifact', () => {
     async (title) => {
       mockFileKey = 'content.md';
       mockCurrentCode = '# New **migration** [plan](https://example.com) for `migrate_users.py`';
+      mockCodeArtifactId = htmlArtifact.id;
       render(
         <DownloadArtifact
           artifact={{ ...htmlArtifact, type: 'text/markdown', title, content: '# Old heading' }}
@@ -301,6 +305,7 @@ describe('DownloadArtifact', () => {
         text: 'Prefix\n\n…[truncated]',
         filepath: '/api/files/code/output/large.py',
       });
+      mockCodeArtifactId = artifact!.id;
       render(<DownloadArtifact artifact={artifact!} />);
       await act(async () => {
         fireEvent.click(screen.getByRole('button'));
@@ -320,6 +325,7 @@ describe('DownloadArtifact', () => {
         text: 'Prefix\n\n…[truncated]',
         filepath: '/api/files/code/output/large.py',
       });
+      mockCodeArtifactId = artifact!.id;
       render(<DownloadArtifact artifact={artifact!} />);
       await act(async () => {
         fireEvent.click(screen.getByRole('button'));
@@ -330,6 +336,26 @@ describe('DownloadArtifact', () => {
       expect(blob.size).toBe(edit.length);
     },
   );
+
+  /* The buffer outlives a pane remount, so the next artifact must not be
+   * exported with the previous artifact's edits under its own name. */
+  it('ignores an edit that belongs to another artifact', async () => {
+    mockCurrentCode = 'edits for the other artifact';
+    mockCodeArtifactId = 'llm-artifact-other';
+    render(
+      <DownloadArtifact artifact={{ ...htmlArtifact, content: '<h1>mine</h1>', title: 'Mine' }} />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button'));
+    });
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    const content = await new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsText(blob);
+    });
+    expect(content).toBe('<h1>mine</h1>');
+  });
 
   it('names a truncated preview distinctly when the original route is unavailable', async () => {
     const artifact = fileToArtifact({
@@ -469,6 +495,7 @@ describe('DownloadArtifact', () => {
       source: FileSources.execute_code,
       user: 'user-1',
     });
+    mockCodeArtifactId = artifact!.id;
     render(<DownloadArtifact artifact={artifact!} />);
     await act(async () => {
       fireEvent.click(screen.getByRole('button'));

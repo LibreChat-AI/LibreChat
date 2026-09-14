@@ -632,31 +632,35 @@ describe('useArtifacts', () => {
   });
 
   describe('cleanup on unmount', () => {
-    it('should reset artifacts when the pane closed', () => {
+    it('should reset artifacts and the tab when the pane closed', () => {
       (useRecoilValue as jest.Mock).mockReturnValue({});
 
-      const { unmount } = renderHook(() => useArtifacts());
+      const { result, unmount } = renderHook(() => useArtifacts());
+      act(() => result.current.setActiveTab('code'));
 
       unmount();
 
       expect(mockResetArtifacts).toHaveBeenCalled();
       expect(mockResetCurrentArtifactId).toHaveBeenCalled();
+      expect(getDefaultStore().get(artifactsActiveTab)).toBe('preview');
       expect(logger.log).toHaveBeenCalledWith('artifacts_visibility', 'Unmounting artifacts');
     });
 
     /* Moving the pane to another host — mobile sheet, undocked window —
      * unmounts one instance and mounts another while the pane stays open;
-     * wiping the registry then would close the pane the user was moving. */
-    it('keeps the artifacts when the pane is only changing hosts', () => {
+     * wiping the registry or the tab then would undo the move the user made. */
+    it('keeps the artifacts and the tab when the pane is only changing hosts', () => {
       (useRecoilValue as jest.Mock).mockReturnValue({});
       paneSnapshot.artifactsVisibility = true;
       paneSnapshot.currentArtifactId = 'artifact-1';
 
-      const { unmount } = renderHook(() => useArtifacts());
+      const { result, unmount } = renderHook(() => useArtifacts());
+      act(() => result.current.setActiveTab('code'));
       unmount();
 
       expect(mockResetArtifacts).not.toHaveBeenCalled();
       expect(mockResetCurrentArtifactId).not.toHaveBeenCalled();
+      expect(getDefaultStore().get(artifactsActiveTab)).toBe('code');
     });
   });
 

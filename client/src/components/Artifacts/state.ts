@@ -26,3 +26,10 @@ export const artifactsUndocked = atom((get) => get(undockedArtifacts) != null);
  * code tab — with the text they were typing — rather than back on the preview.
  */
 export const artifactsActiveTab = atom<string>('preview');
+
+/**
+ * Set when the user docks from the window's own toolbar. That button goes away
+ * with the window it lived in, so the pane that takes over has to pick focus
+ * up again — a keyboard user would otherwise land back on the document.
+ */
+export const artifactsDockFocusRequest = atom(false);

@@ -19,6 +19,7 @@ import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
 import { openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
+import { artifactsDockFocusRequest, undockedArtifacts } from './state';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useShareContext, useMutationState } from '~/Providers';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
@@ -26,7 +27,6 @@ import { useFocusTrap, useLocalize } from '~/hooks';
 import DownloadArtifact from './DownloadArtifact';
 import ArtifactVersion from './ArtifactVersion';
 import MermaidExport from './Mermaid/Export';
-import { undockedArtifacts } from './state';
 import ArtifactTabs from './ArtifactTabs';
 import { cn, logger } from '~/utils';
 import store from '~/store';
@@ -39,7 +39,9 @@ export default function Artifacts() {
   const { isMutating } = useMutationState();
   const { isSharedConvo } = useShareContext();
   const [detached, setDetached] = useAtom(undockedArtifacts);
+  const [dockFocusRequest, setDockFocusRequest] = useAtom(artifactsDockFocusRequest);
   const isUndocked = detached != null;
+  const undockButtonRef = useRef<HTMLButtonElement>(null);
   /* The undocked window is its own viewport: the host's width says nothing
    * about it, and a bottom sheet — backdrop, drag handle, no dock action — is
    * not what a window wants to be. */
@@ -212,6 +214,8 @@ export default function Artifacts() {
 
   const toggleUndock = useCallback(() => {
     if (isUndocked) {
+      /* This button goes away with its window; the docked pane picks focus up. */
+      setDockFocusRequest(true);
       setDetached(null);
       return;
     }
@@ -225,7 +229,21 @@ export default function Artifacts() {
       return;
     }
     setDetached({ window: opened, root: prepareUndockedDocument(document, opened.document) });
-  }, [isUndocked, localize, setDetached, showToast]);
+  }, [isUndocked, localize, setDetached, setDockFocusRequest, showToast]);
+
+  /* Docking replaces the window's toolbar with the side panel's: move focus to
+   * the control that took the place of the one the user just pressed. */
+  useEffect(() => {
+    if (!dockFocusRequest || isUndocked) {
+      return;
+    }
+    const control = undockButtonRef.current;
+    if (control == null) {
+      return;
+    }
+    control.focus();
+    setDockFocusRequest(false);
+  }, [dockFocusRequest, isUndocked, setDockFocusRequest]);
 
   useFocusTrap(panelRef, isMobile && isVisible && !isClosing, closeArtifacts);
 
@@ -579,6 +597,7 @@ export default function Artifacts() {
               )}
               {!isMobile && (
                 <Button
+                  ref={undockButtonRef}
                   size="icon"
                   variant="ghost"
                   className="h-9 w-9"

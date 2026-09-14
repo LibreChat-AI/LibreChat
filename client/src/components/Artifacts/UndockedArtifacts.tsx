@@ -51,7 +51,14 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
     ];
 
     const closeWithOpener = () => detachedWindow.close();
-    detachedWindow.addEventListener('pagehide', redock);
+    /* A window the user closes through the browser reports zeroes by the time
+     * the cleanup runs, so its size and position are read while it still has
+     * them — otherwise the remembered bounds only ever track Dock. */
+    const rememberAndRedock = () => {
+      persistBounds(detachedWindow, window.localStorage);
+      redock();
+    };
+    detachedWindow.addEventListener('pagehide', rememberAndRedock);
     window.addEventListener('pagehide', closeWithOpener);
     const closedPoll = window.setInterval(() => {
       if (detachedWindow.closed) {
@@ -62,7 +69,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
     return () => {
       window.clearInterval(closedPoll);
       window.removeEventListener('pagehide', closeWithOpener);
-      detachedWindow.removeEventListener('pagehide', redock);
+      detachedWindow.removeEventListener('pagehide', rememberAndRedock);
       for (const dispose of teardown) {
         dispose();
       }

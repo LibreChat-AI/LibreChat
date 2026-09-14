@@ -380,15 +380,24 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
 
   /* A remount cancels the debounce mid-flight, so text the user typed just
    * before the pane changed hosts would live in the editor and never persist.
-   * Hand the restored buffer to the mutation once on mount. */
+   * The request the previous instance started can no longer report back — its
+   * mutation observer went with it — so the shared "mutating" flag it left
+   * behind is stale, and leaving it set would queue this text behind a
+   * completion that never arrives. Release it, then hand over the buffer. */
   useEffect(() => {
+    const inheritedMutation = isMutatingRef.current && !editArtifactRef.current.isLoading;
+    if (inheritedMutation) {
+      isMutatingRef.current = false;
+      currentUpdateRef.current = null;
+      setIsMutating(false);
+    }
     const restored = restoredCodeRef.current;
     if (restored == null || restored === (artifactRef.current.content ?? '')) {
       return;
     }
     prevContentRef.current = restored;
     runMutationRef.current(restored);
-  }, [artifact.id]);
+  }, [artifact.id, setIsMutating]);
 
   /**
    * Streaming: use model.applyEdits() to append new content.
