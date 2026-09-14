@@ -30,12 +30,13 @@ jest.mock('recoil', () => {
     useRecoilValue: jest.fn(),
     useRecoilState: jest.fn(),
     useResetRecoilState: jest.fn(),
+    useRecoilCallback: jest.fn(),
   };
 });
 
 /** Import mocked functions after mocking */
 import { useArtifactsContext } from '~/Providers';
-import { useRecoilValue, useRecoilState, useResetRecoilState } from 'recoil';
+import { useRecoilValue, useRecoilState, useRecoilCallback, useResetRecoilState } from 'recoil';
 import { logger } from '~/utils';
 import useArtifacts from '../useArtifacts';
 
@@ -60,6 +61,15 @@ describe('useArtifacts', () => {
     latestMessageText: '',
     conversationId: 'conv-1',
   };
+  /** What a fresh snapshot reports while the hook's cleanup runs. */
+  const paneSnapshot: Record<string, unknown> = {
+    artifactsVisibility: false,
+    currentArtifactId: null,
+  };
+  /** `useRecoilCallback` hands back one stable callback; a mock that returned a
+   *  new function per render would re-run every effect that depends on it. */
+  let builtPaneCallback: () => unknown = () => undefined;
+  const stablePaneCallback = () => builtPaneCallback();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -77,6 +87,20 @@ describe('useArtifacts', () => {
       }
       return jest.fn();
     });
+    paneSnapshot.artifactsVisibility = false;
+    paneSnapshot.currentArtifactId = null;
+    (useRecoilCallback as jest.Mock).mockImplementation(
+      (build: (iface: unknown) => () => unknown) => {
+        builtPaneCallback = build({
+          snapshot: {
+            getLoadable: (atom: { key: string }) => ({
+              valueMaybe: () => paneSnapshot[atom.key],
+            }),
+          },
+        });
+        return stablePaneCallback;
+      },
+    );
   });
 
   afterEach(() => {
@@ -603,7 +627,7 @@ describe('useArtifacts', () => {
   });
 
   describe('cleanup on unmount', () => {
-    it('should reset artifacts when unmounting', () => {
+    it('should reset artifacts when the pane closed', () => {
       (useRecoilValue as jest.Mock).mockReturnValue({});
 
       const { unmount } = renderHook(() => useArtifacts());
@@ -613,6 +637,21 @@ describe('useArtifacts', () => {
       expect(mockResetArtifacts).toHaveBeenCalled();
       expect(mockResetCurrentArtifactId).toHaveBeenCalled();
       expect(logger.log).toHaveBeenCalledWith('artifacts_visibility', 'Unmounting artifacts');
+    });
+
+    /* Moving the pane to another host — mobile sheet, undocked window —
+     * unmounts one instance and mounts another while the pane stays open;
+     * wiping the registry then would close the pane the user was moving. */
+    it('keeps the artifacts when the pane is only changing hosts', () => {
+      (useRecoilValue as jest.Mock).mockReturnValue({});
+      paneSnapshot.artifactsVisibility = true;
+      paneSnapshot.currentArtifactId = 'artifact-1';
+
+      const { unmount } = renderHook(() => useArtifacts());
+      unmount();
+
+      expect(mockResetArtifacts).not.toHaveBeenCalled();
+      expect(mockResetCurrentArtifactId).not.toHaveBeenCalled();
     });
   });
 

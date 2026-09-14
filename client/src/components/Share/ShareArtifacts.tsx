@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useMemo } from 'react';
+import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import {
   useMediaQuery,
@@ -8,6 +9,8 @@ import {
 } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { ArtifactsContextValue } from '~/Providers';
+import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
+import { artifactsUndocked } from '~/components/Artifacts/state';
 import { ArtifactsProvider, EditorProvider } from '~/Providers';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
 import { getLatestText } from '~/utils';
@@ -59,6 +62,7 @@ export function ShareArtifactsContainer({
   const artifactsVisibility = useRecoilValue(store.artifactsVisibility);
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
   const isSmallScreen = useMediaQuery('(max-width: 1023px)');
+  const isUndocked = useAtomValue(artifactsUndocked);
   const [artifactPanelSize, setArtifactPanelSize] = useState(getInitialArtifactPanelSize);
 
   const artifactsContextValue = useMemo<ArtifactsContextValue | null>(() => {
@@ -104,6 +108,17 @@ export function ShareArtifactsContainer({
 
   if (!shouldRenderArtifacts || !artifactsContextValue) {
     return <>{mainContent}</>;
+  }
+
+  if (isUndocked) {
+    return (
+      <>
+        {mainContent}
+        <UndockedArtifacts>
+          <ShareArtifactsPanel contextValue={artifactsContextValue} />
+        </UndockedArtifacts>
+      </>
+    );
   }
 
   if (isSmallScreen) {

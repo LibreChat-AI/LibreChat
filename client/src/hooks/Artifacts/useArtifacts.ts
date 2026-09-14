@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { Constants } from 'librechat-data-provider';
-import { useRecoilState, useRecoilValue, useResetRecoilState } from 'recoil';
+import { useRecoilCallback, useRecoilState, useRecoilValue, useResetRecoilState } from 'recoil';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
 import { useArtifactsContext } from '~/Providers';
 import { logger } from '~/utils';
@@ -165,6 +165,23 @@ export default function useArtifacts() {
   const lastRunMessageIdRef = useRef<string | null>(null);
   const prevConversationIdRef = useRef<string | null>(null);
 
+  /**
+   * Whether the pane is closing for good rather than moving. The pane changes
+   * hosts — side panel, mobile sheet, undocked window — by unmounting one
+   * instance and mounting another, and clearing the registry on that unmount
+   * would close the pane the user was moving. Closing clears visibility and
+   * the focused id first, so a fresh snapshot distinguishes the two; the
+   * component's own render props cannot, because the parent stops rendering
+   * it before it sees the new values.
+   */
+  const isPaneClosed = useRecoilCallback(
+    ({ snapshot }) =>
+      () =>
+        snapshot.getLoadable(store.artifactsVisibility).valueMaybe() !== true ||
+        snapshot.getLoadable(store.currentArtifactId).valueMaybe() == null,
+    [],
+  );
+
   useEffect(() => {
     const resetState = () => {
       resetArtifacts();
@@ -181,12 +198,15 @@ export default function useArtifacts() {
       resetState();
     }
     prevConversationIdRef.current = conversationId;
-    /** Resets artifacts when unmounting */
+    /** Resets artifacts when the pane closes */
     return () => {
+      if (!isPaneClosed()) {
+        return;
+      }
       logger.log('artifacts_visibility', 'Unmounting artifacts');
       resetState();
     };
-  }, [conversationId, resetArtifacts, resetCurrentArtifactId]);
+  }, [conversationId, isPaneClosed, resetArtifacts, resetCurrentArtifactId]);
 
   /**
    * Read currentArtifactId in effects without subscribing as a dependency.

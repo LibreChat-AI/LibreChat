@@ -1,8 +1,10 @@
 import React from 'react';
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Artifacts from './Artifacts';
 import store from '~/store';
+import { getDefaultStore } from 'jotai';
+import { undockedArtifacts } from './state';
 
 const mockUseArtifacts = jest.fn();
 let mockIsMobile = false;
@@ -336,5 +338,82 @@ describe('Artifacts panel accessibility', () => {
     await waitFor(() => expect(opener).toHaveFocus());
 
     opener.remove();
+  });
+
+  describe('undocking', () => {
+    const jotaiStore = getDefaultStore();
+    let openSpy: jest.SpyInstance<Window | null>;
+
+    beforeEach(() => {
+      act(() => jotaiStore.set(undockedArtifacts, null));
+      openSpy = jest.spyOn(window, 'open');
+    });
+
+    afterEach(() => {
+      openSpy.mockRestore();
+      act(() => jotaiStore.set(undockedArtifacts, null));
+    });
+
+    it('opens a window from the click and offers to dock back', async () => {
+      const detached = {
+        focus: jest.fn(),
+        closed: false,
+        document: document.implementation.createHTMLDocument(''),
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+        close: jest.fn(),
+      } as unknown as Window;
+      openSpy.mockReturnValue(detached);
+
+      render(
+        <RecoilRoot>
+          <Artifacts />
+        </RecoilRoot>,
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'com_ui_undock_artifacts' }));
+
+      expect(openSpy).toHaveBeenCalledWith(
+        '',
+        expect.stringContaining('librechat-artifacts'),
+        expect.any(String),
+      );
+      expect(jotaiStore.get(undockedArtifacts)?.window).toBe(detached);
+      expect(
+        await screen.findByRole('button', { name: 'com_ui_dock_artifacts' }),
+      ).toBeInTheDocument();
+    });
+
+    /* A blocked popup must leave the pane where it is, not hide it in a window
+     * that never opened. */
+    it('stays docked when the browser blocks the window', async () => {
+      openSpy.mockReturnValue(null);
+
+      render(
+        <RecoilRoot>
+          <Artifacts />
+        </RecoilRoot>,
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: 'com_ui_undock_artifacts' }));
+
+      expect(jotaiStore.get(undockedArtifacts)).toBeNull();
+      expect(screen.getByRole('button', { name: 'com_ui_undock_artifacts' })).toBeInTheDocument();
+    });
+
+    it('has no undock action on the mobile sheet', async () => {
+      mockIsMobile = true;
+
+      render(
+        <RecoilRoot>
+          <Artifacts />
+        </RecoilRoot>,
+      );
+
+      await screen.findByRole('dialog', { name: 'Diagram' });
+      expect(
+        screen.queryByRole('button', { name: 'com_ui_undock_artifacts' }),
+      ).not.toBeInTheDocument();
+    });
   });
 });

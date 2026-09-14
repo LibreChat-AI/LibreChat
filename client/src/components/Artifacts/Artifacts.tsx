@@ -1,13 +1,24 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useSetRecoilState, useResetRecoilState } from 'recoil';
-import { Button, Spinner, useMediaQuery, Radio } from '@librechat/client';
-import { Code, Maximize2, Minimize2, Play, RefreshCw, X } from 'lucide-react';
+import { Button, Spinner, useMediaQuery, Radio, useToastContext } from '@librechat/client';
+import {
+  Code,
+  Maximize2,
+  Minimize2,
+  PanelRight,
+  PictureInPicture2,
+  Play,
+  RefreshCw,
+  X,
+} from 'lucide-react';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
+import { openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useShareContext, useMutationState } from '~/Providers';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
@@ -15,6 +26,7 @@ import { useFocusTrap, useLocalize } from '~/hooks';
 import DownloadArtifact from './DownloadArtifact';
 import ArtifactVersion from './ArtifactVersion';
 import MermaidExport from './Mermaid/Export';
+import { undockedArtifacts } from './state';
 import ArtifactTabs from './ArtifactTabs';
 import { cn, logger } from '~/utils';
 import store from '~/store';
@@ -26,11 +38,16 @@ export default function Artifacts() {
   const localize = useLocalize();
   const { isMutating } = useMutationState();
   const { isSharedConvo } = useShareContext();
-  const isMobile = useMediaQuery('(max-width: 868px)');
+  const [detached, setDetached] = useAtom(undockedArtifacts);
+  const isUndocked = detached != null;
+  /* The undocked window is its own viewport: the host's width says nothing
+   * about it, and a bottom sheet — backdrop, drag handle, no dock action — is
+   * not what a window wants to be. */
+  const isMobile = useMediaQuery('(max-width: 868px)') && !isUndocked;
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const previewRef = useRef<SandpackPreviewRef>();
   const artifactContainerRef = useRef<HTMLDivElement>(null);
-  const fullscreenPortalRef = useRef<HTMLDivElement>(null);
+  const [fullscreenPortal, setFullscreenPortal] = useState<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const [isVisible, setIsVisible] = useState(false);
@@ -50,6 +67,10 @@ export default function Artifacts() {
   const dragStartHeight = useRef(90);
   const setArtifactsVisible = useSetRecoilState(store.artifactsVisibility);
   const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
+  const { showToast } = useToastContext();
+  /* Radix portals default to the host document's body, which is the wrong
+   * window once undocked — and the wrong stacking context in fullscreen. */
+  const overlayPortal = isFullscreen || isUndocked ? (fullscreenPortal ?? undefined) : undefined;
 
   const allTabOptions = useMemo(
     () => [
@@ -81,15 +102,19 @@ export default function Artifacts() {
     };
   }, [isMobile]);
 
+  /* Undocked, the pane lives in the popup's document: its fullscreen element
+   * and its change events belong to that document, not the host's. The
+   * container only exists once mounted, hence the dependency. */
   useEffect(() => {
+    const ownerDocument = artifactContainerRef.current?.ownerDocument ?? document;
     const handleFullscreenChange = () => {
       const container = artifactContainerRef.current;
-      setIsFullscreen(container !== null && document.fullscreenElement === container);
+      setIsFullscreen(container !== null && ownerDocument.fullscreenElement === container);
     };
 
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
+    ownerDocument.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => ownerDocument.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [isMounted]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -181,6 +206,23 @@ export default function Artifacts() {
     setArtifactsVisible,
   ]);
 
+  const toggleUndock = useCallback(() => {
+    if (isUndocked) {
+      setDetached(null);
+      return;
+    }
+    /* Opened straight from the click: popup permission follows user activation,
+     * and an effect would spend it. The container is prepared here too, so the
+     * pane can render into it on the very commit this state change causes —
+     * a commit with the pane unmounted would reset the artifact registry. */
+    const opened = openUndockedWindow(window);
+    if (opened == null) {
+      showToast({ status: 'error', message: localize('com_ui_undock_artifacts_blocked') });
+      return;
+    }
+    setDetached({ window: opened, root: prepareUndockedDocument(document, opened.document) });
+  }, [isUndocked, localize, setDetached, showToast]);
+
   useFocusTrap(panelRef, isMobile && isVisible && !isClosing, closeArtifacts);
 
   /* Office artifacts have no source view, and source-code artifacts have
@@ -230,10 +272,22 @@ export default function Artifacts() {
     if (!content) {
       return;
     }
-    copy(content, { format: 'text/plain' });
+    /* `copy-to-clipboard` runs `execCommand` against the host document, which
+     * is in the background while the undocked window has focus — and an
+     * unfocused document copies nothing. Use the focused window's clipboard. */
+    const detachedClipboard = isUndocked
+      ? panelRef.current?.ownerDocument.defaultView?.navigator.clipboard
+      : undefined;
+    if (detachedClipboard != null) {
+      detachedClipboard.writeText(content).catch((error) => {
+        logger.error('Failed to copy artifact from the undocked window:', error);
+      });
+    } else {
+      copy(content, { format: 'text/plain' });
+    }
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 3000);
-  }, [currentArtifact?.content]);
+  }, [currentArtifact?.content, isUndocked]);
 
   const handleDragStart = (e: React.PointerEvent) => {
     setIsDragging(true);
@@ -478,7 +532,7 @@ export default function Artifacts() {
                 <ArtifactVersion
                   currentIndex={currentIndex}
                   totalVersions={orderedArtifactIds.length}
-                  portalElement={isFullscreen ? fullscreenPortalRef.current : undefined}
+                  portalElement={overlayPortal}
                   onVersionChange={(index) => {
                     const target = orderedArtifactIds[index];
                     if (target) {
@@ -490,7 +544,7 @@ export default function Artifacts() {
               <CopyButton
                 isCopied={isCopied}
                 iconOnly
-                portalElement={isFullscreen ? fullscreenPortalRef.current : undefined}
+                portalElement={overlayPortal}
                 onClick={handleCopyArtifact}
               />
               {/* Mermaid diagrams route every download through the export
@@ -500,10 +554,27 @@ export default function Artifacts() {
                 <MermaidExport
                   artifact={currentArtifact}
                   exportData={mermaidExportData}
-                  portalElement={isFullscreen ? fullscreenPortalRef.current : undefined}
+                  portalElement={overlayPortal}
                 />
               ) : (
                 <DownloadArtifact artifact={currentArtifact} />
+              )}
+              {!isMobile && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-9 w-9"
+                  onClick={toggleUndock}
+                  aria-label={localize(
+                    isUndocked ? 'com_ui_dock_artifacts' : 'com_ui_undock_artifacts',
+                  )}
+                >
+                  {isUndocked ? (
+                    <PanelRight size={16} aria-hidden="true" />
+                  ) : (
+                    <PictureInPicture2 size={16} aria-hidden="true" />
+                  )}
+                </Button>
               )}
               <Button
                 size="icon"
@@ -559,7 +630,7 @@ export default function Artifacts() {
           )}
         </div>
         <div
-          ref={fullscreenPortalRef}
+          ref={setFullscreenPortal}
           className="z-[101]"
           data-testid="artifact-fullscreen-portal"
         />
