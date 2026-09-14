@@ -1,34 +1,30 @@
 import React, { useEffect } from 'react';
 import { ThemeContext } from '@librechat/client';
 import { render, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { editor } from 'monaco-editor';
 import type { Artifact } from '~/common';
-import { EditorProvider, useCodeState, useMutationState } from '~/Providers/EditorContext';
+import { EditorProvider, useCodeState } from '~/Providers/EditorContext';
 import { ArtifactCodeEditor } from '../ArtifactCodeEditor';
-
-interface MutationVars {
-  updated: string;
-  messageId: string;
-  index: number;
-  original?: string;
-}
-
-interface MutationHandlers {
-  onMutate?: (vars: MutationVars) => void;
-  onSuccess?: (data: unknown, vars: MutationVars) => void;
-  onError?: (error?: unknown) => void;
-}
 
 interface MonacoEditorProps {
   onChange?: (value: string | undefined) => void;
 }
 
 const editorProps: MonacoEditorProps = {};
-const handlers: MutationHandlers = {};
 
-const mockMutate = jest.fn((vars: MutationVars) => {
-  handlers.onMutate?.(vars);
-});
+/** One save at a time, settled by the test the way the server would. */
+let inFlight: { resolve: (value: unknown) => void; reject: (error: unknown) => void } | null = null;
+const mockEditArtifact = jest.fn(
+  (vars: unknown) =>
+    new Promise((resolve, reject) => {
+      inFlight = {
+        resolve: () =>
+          resolve({ ...(vars as object), content: '', text: '', conversationId: null }),
+        reject,
+      };
+    }),
+);
 
 jest.mock('@monaco-editor/react', () => ({
   __esModule: true,
@@ -42,13 +38,9 @@ jest.mock('~/Providers', () => ({
   useArtifactsContext: () => ({ isSubmitting: false }),
 }));
 
-jest.mock('~/data-provider', () => ({
-  useEditArtifact: (given: MutationHandlers) => {
-    handlers.onMutate = given.onMutate;
-    handlers.onSuccess = given.onSuccess;
-    handlers.onError = given.onError;
-    return { mutate: mockMutate };
-  },
+jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
+  dataService: { editArtifact: (vars: unknown) => mockEditArtifact(vars) },
 }));
 
 const artifactA: Artifact = {
@@ -75,12 +67,10 @@ const artifactB: Artifact = {
  */
 const createModel = (initial: string) => {
   let value = initial;
-  const writes: string[] = [];
   const model = {
     getValue: () => value,
     setValue: (next: string) => {
       value = next;
-      writes.push(next);
       editorProps.onChange?.(next);
     },
     getLineCount: () => 1,
@@ -92,55 +82,68 @@ const createModel = (initial: string) => {
     getModel: () => model,
     revealLine: jest.fn(),
   } as unknown as editor.IStandaloneCodeEditor;
-  return { ed, writes, read: () => value };
+  return { ed, read: () => value };
 };
 
 type Session = {
   endCodeSession: () => void;
-  setIsMutating: (next: boolean) => void;
   buffer: { code?: string; artifactId?: string };
 };
 
-const session: Session = {
-  endCodeSession: () => {},
-  setIsMutating: () => {},
-  buffer: {},
-};
+const session: Session = { endCodeSession: () => {}, buffer: {} };
 
 /** Publishes the shared editing state the pane's hosts drive. */
 function SessionProbe() {
   const { currentCode, codeArtifactId, endCodeSession } = useCodeState();
-  const { setIsMutating } = useMutationState();
   useEffect(() => {
     session.endCodeSession = endCodeSession;
-    session.setIsMutating = setIsMutating;
     session.buffer = { code: currentCode, artifactId: codeArtifactId };
   });
   return null;
 }
 
+/**
+ * The provider sits above the pane's hosts, so closing the pane unmounts the
+ * editor while the session state and any running save stay where they are.
+ */
 const renderEditor = (initial: Artifact, monacoRef: React.MutableRefObject<any>) => {
   let current = initial;
+  let paneOpen = true;
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
   const tree = () => (
-    <ThemeContext.Provider
-      value={
-        { resolvedMode: 'dark', highContrast: false } as React.ContextType<typeof ThemeContext>
-      }
-    >
-      <EditorProvider>
-        <SessionProbe />
-        <ArtifactCodeEditor artifact={current} monacoRef={monacoRef} />
-      </EditorProvider>
-    </ThemeContext.Provider>
+    <QueryClientProvider client={client}>
+      <ThemeContext.Provider
+        value={
+          { resolvedMode: 'dark', highContrast: false } as React.ContextType<typeof ThemeContext>
+        }
+      >
+        <EditorProvider>
+          <SessionProbe />
+          {paneOpen ? <ArtifactCodeEditor artifact={current} monacoRef={monacoRef} /> : null}
+        </EditorProvider>
+      </ThemeContext.Provider>
+    </QueryClientProvider>
   );
   const utils = render(tree());
+  const rerender = () =>
+    act(() => {
+      utils.rerender(tree());
+    });
   return {
     ...utils,
     select: (next: Artifact) => {
       current = next;
-      act(() => {
-        utils.rerender(tree());
-      });
+      rerender();
+    },
+    closePane: () => {
+      paneOpen = false;
+      rerender();
+    },
+    reopenPane: () => {
+      paneOpen = true;
+      rerender();
     },
   };
 };
@@ -157,14 +160,22 @@ const settleDebounce = () => {
   });
 };
 
+/** Let the mutation's own promise chain and React Query's notify batch run. */
+const flush = async () => {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    jest.advanceTimersByTime(1);
+    await Promise.resolve();
+  });
+};
+
 describe('ArtifactCodeEditor unsaved text across a selection change', () => {
   beforeEach(() => {
     jest.useFakeTimers();
-    mockMutate.mockClear();
+    mockEditArtifact.mockClear();
+    inFlight = null;
     editorProps.onChange = undefined;
-    handlers.onMutate = undefined;
-    handlers.onSuccess = undefined;
-    handlers.onError = undefined;
   });
 
   afterEach(() => {
@@ -181,10 +192,10 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     view.select(artifactB);
 
     expect(session.buffer).toEqual({ code: 'EDITED-A', artifactId: 'artifact-a' });
-    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockEditArtifact).not.toHaveBeenCalled();
   });
 
-  it('restores that text and saves it when the artifact is selected again', () => {
+  it('restores that text and saves it when the artifact is selected again', async () => {
     const { ed, read } = createModel('CONTENT-A');
     const monacoRef = { current: ed } as React.MutableRefObject<any>;
     const view = renderEditor(artifactA, monacoRef);
@@ -194,69 +205,86 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     expect(read()).toBe('CONTENT-B');
 
     view.select(artifactA);
+    await flush();
 
     expect(read()).toBe('EDITED-A');
-    expect(mockMutate).toHaveBeenCalledWith({
-      index: 0,
-      messageId: 'msg-a',
-      original: 'CONTENT-A',
-      updated: 'EDITED-A',
-    });
-  });
-
-  it('sends an edit queued behind a save the session no longer owns', () => {
-    const { ed } = createModel('CONTENT-A');
-    const monacoRef = { current: ed } as React.MutableRefObject<any>;
-    renderEditor(artifactA, monacoRef);
-
-    /* A save started before this editor existed still holds the lock. */
-    act(() => {
-      session.setIsMutating(true);
-    });
-
-    type('EDITED-WHILE-LOCKED');
-    settleDebounce();
-    expect(mockMutate).not.toHaveBeenCalled();
-
-    act(() => {
-      session.endCodeSession();
-    });
-
-    expect(mockMutate).toHaveBeenCalledWith({
-      index: 0,
-      messageId: 'msg-a',
-      original: 'CONTENT-A',
-      updated: 'EDITED-WHILE-LOCKED',
-    });
+    expect(mockEditArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'msg-a', original: 'CONTENT-A', updated: 'EDITED-A' }),
+    );
   });
 
   /* The save that held the lock has already replaced the content the queued
    * edit was typed against, so sending that stale `original` would have the
    * endpoint reject the newest text. */
-  it('sends a queued edit against the content the finished save left', () => {
+  it('sends a queued edit against the content the finished save left', async () => {
     const { ed } = createModel('CONTENT-A');
     const monacoRef = { current: ed } as React.MutableRefObject<any>;
     const view = renderEditor(artifactA, monacoRef);
 
-    act(() => {
-      session.setIsMutating(true);
-    });
-
-    type('EDITED-LATE');
+    type('FIRST-EDIT');
     settleDebounce();
-    expect(mockMutate).not.toHaveBeenCalled();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
 
-    /* The in-flight save lands: the artifact now holds its updated content. */
-    view.select({ ...artifactA, content: 'SAVED-A', lastUpdateTime: 1 });
+    /* Typed while the first save is still running: queued, not sent. */
+    type('SECOND-EDIT');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    /* The save lands and the artifact takes the content it wrote. */
+    view.select({ ...artifactA, content: 'FIRST-EDIT', lastUpdateTime: 1 });
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId: 'msg-a',
+        original: 'FIRST-EDIT',
+        updated: 'SECOND-EDIT',
+      }),
+    );
+  });
+
+  /* The save is the request's, not the session's: a pane closed mid-save must
+   * neither release it nor let the next session write over it. */
+  it('waits for a save the closed session started before sending the next edit', async () => {
+    const { ed } = createModel('CONTENT-A');
+    const monacoRef = { current: ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('EDIT-BEFORE-CLOSE');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    /* The pane is closed and reopened while that save is still running. */
     act(() => {
-      session.setIsMutating(false);
+      session.endCodeSession();
     });
+    view.closePane();
+    view.reopenPane();
+    type('EDIT-AFTER-REOPEN');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
 
-    expect(mockMutate).toHaveBeenCalledWith({
-      index: 0,
-      messageId: 'msg-a',
-      original: 'SAVED-A',
-      updated: 'EDITED-LATE',
+    view.select({ ...artifactA, content: 'EDIT-BEFORE-CLOSE', lastUpdateTime: 1 });
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
     });
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId: 'msg-a',
+        original: 'EDIT-BEFORE-CLOSE',
+        updated: 'EDIT-AFTER-REOPEN',
+      }),
+    );
   });
 });

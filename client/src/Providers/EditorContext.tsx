@@ -1,12 +1,19 @@
 import React, { createContext, useContext, useState, useMemo, useCallback, useRef } from 'react';
+import { useIsMutating } from '@tanstack/react-query';
+import { MutationKeys } from 'librechat-data-provider';
 
 /**
  * Mutation state context - for components that need to know about save/edit status
  * Separated from code state to prevent unnecessary re-renders
+ *
+ * The state is the request's, not a flag anyone sets: a save outlives the
+ * editor that started it — React Query keeps it — and an editor that appears
+ * while one is running has to see it. Reading the mutation cache makes "a save
+ * is in flight" true exactly while one is, so no session can release a lock it
+ * does not hold and none can be left behind by a pane the user closed.
  */
 interface MutationContextType {
   isMutating: boolean;
-  setIsMutating: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 /**
@@ -24,9 +31,8 @@ interface MutationContextType {
  * this live counter. It is a mutable object rather than a value because the
  * comparison happens after the reader's last render.
  *
- * Ending a session also releases the save lock it took: the request that took
- * it is no longer anyone's to wait for, and its callbacks leave the lock alone
- * precisely because it now belongs to the next session.
+ * Ending a session leaves a running save alone: the request is not the
+ * session's to cancel, and nothing waits on a flag it could clear.
  */
 interface CodeContextType {
   currentCode?: string;
@@ -46,7 +52,7 @@ const CodeContext = createContext<CodeContextType | undefined>(undefined);
  * - CodeContext: for code content (changes on every keystroke)
  */
 export function EditorProvider({ children }: { children: React.ReactNode }) {
-  const [isMutating, setIsMutating] = useState(false);
+  const isMutating = useIsMutating({ mutationKey: [MutationKeys.editArtifact] }) > 0;
   const [codeBuffer, setCodeBuffer] = useState<{ code?: string; artifactId?: string }>({});
   const codeSession = useRef(0);
 
@@ -60,10 +66,9 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   const endCodeSession = useCallback(() => {
     codeSession.current += 1;
     setCodeBuffer({});
-    setIsMutating(false);
   }, []);
 
-  const mutationValue = useMemo(() => ({ isMutating, setIsMutating }), [isMutating]);
+  const mutationValue = useMemo(() => ({ isMutating }), [isMutating]);
   const codeValue = useMemo(
     () => ({
       currentCode: codeBuffer.code,

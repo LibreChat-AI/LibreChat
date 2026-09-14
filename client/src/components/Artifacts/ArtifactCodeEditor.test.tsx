@@ -46,10 +46,7 @@ jest.mock('@monaco-editor/react', () => ({
 jest.mock('~/Providers/EditorContext', () => {
   const ReactModule = jest.requireActual<typeof import('react')>('react');
   return {
-    useMutationState: () => {
-      const [isMutating, setIsMutating] = ReactModule.useState(false);
-      return { isMutating, setIsMutating };
-    },
+    useMutationState: () => ({ isMutating: false }),
     useCodeState: () => {
       const [currentCode, setCurrentCode] = ReactModule.useState('');
       const codeSession = ReactModule.useRef(0);

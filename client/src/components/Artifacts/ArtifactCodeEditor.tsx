@@ -238,7 +238,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * restored here instead of falling back to the persisted content. */
   const restoredCode = codeArtifactId === artifact.id ? currentCode : undefined;
   const [currentUpdate, setCurrentUpdate] = useState<string | null>(null);
-  const { isMutating, setIsMutating } = useMutationState();
+  const { isMutating } = useMutationState();
   const [failedContent, setFailedContent] = useState<string | null>(null);
   const artifactRef = useRef(artifact);
   const isMutatingRef = useRef(isMutating);
@@ -250,9 +250,10 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   /** Read by the mount effect below, which must not re-run as the user types. */
   const restoredCodeRef = useRef(restoredCode);
   /* The session a save was started in. Its callbacks outlive the editor, so
-   * they compare this against the live session before touching anything: the
-   * buffer, the queued edit and the shared save lock all belong to whoever is
-   * editing now, and a pane the user closed is not it. */
+   * they compare this against the live session before touching the buffer or
+   * submitting a queued edit: both belong to whoever is editing now, and a
+   * pane the user closed is not it. The save itself is left alone — it is the
+   * request's to finish, and `isMutating` reports it until it does. */
   const mutationSessionRef = useRef(codeSession.current);
   const isStaleSession = () => codeSession.current !== mutationSessionRef.current;
 
@@ -260,18 +261,17 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     onMutate: (vars) => {
       isMutatingRef.current = true;
       currentUpdateRef.current = vars.updated;
-      setIsMutating(true);
       setCurrentUpdate(vars.updated);
     },
     onSuccess: (_data, vars) => {
-      isMutatingRef.current = false;
       currentUpdateRef.current = null;
-      const pending = pendingUpdateRef.current;
-      pendingUpdateRef.current = null;
+      /* A save that outlived its session reports to nobody: the buffer and any
+       * queued edit belong to whoever is editing now. */
       if (isStaleSession()) {
         return;
       }
-      setIsMutating(false);
+      const pending = pendingUpdateRef.current;
+      pendingUpdateRef.current = null;
       setCurrentUpdate(null);
       setFailedContent(null);
 
@@ -292,20 +292,18 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     },
     onError: (error) => {
       const attempted = currentUpdateRef.current;
-      isMutatingRef.current = false;
       currentUpdateRef.current = null;
-      const pending = pendingUpdateRef.current;
-      pendingUpdateRef.current = null;
       if (isStaleSession()) {
         return;
       }
+      const pending = pendingUpdateRef.current;
+      pendingUpdateRef.current = null;
 
       const status = getResponseStatus(error);
       if (status === 400 && attempted != null) {
         setFailedContent(attempted);
         failedContentRef.current = attempted;
       }
-      setIsMutating(false);
       setCurrentUpdate(null);
 
       const currentTarget = getArtifactEditTarget(artifactRef.current);
