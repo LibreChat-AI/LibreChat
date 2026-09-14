@@ -52,7 +52,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
 
   const setFilesToDelete = useSetFilesToDelete();
 
-  const { data: startupConfig } = useGetStartupConfig();
+  const { data: startupConfig, isSuccess: hasStartupConfig } = useGetStartupConfig();
   const { mutateAsync } = useDeleteFilesMutation({
     onSuccess: (result) => {
       console.log('Temporary Files deleted');
@@ -105,8 +105,11 @@ export default function Presentation({ children }: { children: React.ReactNode }
   }, [mutateAsync]);
 
   /* The deployment's answer about the undocked window, resolved once by the
-   * host and handed to the pane. */
-  const canUndock = startupConfig?.interface?.artifactUndocking !== false;
+   * host and handed to the pane. Until the config has actually answered the
+   * capability is unknown, and offering the control then would both let a user
+   * undock a pane the deployment forbids and take the Dock control away from
+   * them when the answer arrived. */
+  const canUndock = hasStartupConfig && startupConfig?.interface?.artifactUndocking !== false;
   const artifactsProviderValue = useMemo(() => ({ canUndock }), [canUndock]);
 
   const artifactsElement = useMemo(() => {

@@ -604,7 +604,10 @@ export default function Artifacts() {
               ) : (
                 <DownloadArtifact artifact={currentArtifact} />
               )}
-              {!isMobile && canUndock && (
+              {/* A capability that turns off while the pane is out there must
+                  not take away the only way back, so an undocked pane always
+                  keeps the control that docks it. */}
+              {!isMobile && (canUndock || isUndocked) && (
                 <Button
                   ref={undockButtonRef}
                   size="icon"

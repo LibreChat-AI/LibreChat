@@ -72,11 +72,17 @@ export function ShareArtifactsContainer({
   useArtifactsRegistryLifetime();
 
   const { shareId } = useShareContext();
-  const { data: sharedStartupConfig } = useGetSharedStartupConfig(shareId, {
-    enabled: typeof shareId === 'string' && shareId !== '',
-  });
-  /* Absent config reads as enabled, which is the default and today's pane. */
-  const canUndock = sharedStartupConfig?.interface?.artifactUndocking !== false;
+  const { data: sharedStartupConfig, isSuccess: hasSharedConfig } = useGetSharedStartupConfig(
+    shareId,
+    {
+      enabled: typeof shareId === 'string' && shareId !== '',
+    },
+  );
+  /* An absent field reads as enabled, which is the default and today's pane,
+   * but only once the config has answered: offering the control while the
+   * request is still in flight would let a viewer undock a pane the
+   * deployment forbids, and the answer would then strand it. */
+  const canUndock = hasSharedConfig && sharedStartupConfig?.interface?.artifactUndocking !== false;
 
   const artifactsContextValue = useMemo<ArtifactsContextValue | null>(() => {
     const latestMessage =

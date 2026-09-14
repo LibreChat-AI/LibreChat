@@ -16,10 +16,12 @@ jest.mock('@librechat/client', () => ({
     query === '(prefers-reduced-motion: reduce)' ? mockPrefersReducedMotion : mockIsMobile,
 }));
 
+let mockCanUndock = true;
+
 jest.mock('~/Providers', () => ({
   useMutationState: () => ({ isMutating: false }),
   useShareContext: () => ({ isSharedConvo: false }),
-  useArtifactsContext: () => ({ canUndock: true }),
+  useArtifactsContext: () => ({ canUndock: mockCanUndock }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -97,6 +99,7 @@ describe('Artifacts panel accessibility', () => {
   beforeEach(() => {
     mockIsMobile = false;
     mockPrefersReducedMotion = false;
+    mockCanUndock = true;
     mockUseArtifacts.mockReturnValue({
       activeTab: 'code',
       setActiveTab: jest.fn(),
@@ -415,6 +418,51 @@ describe('Artifacts panel accessibility', () => {
       expect(
         screen.queryByRole('button', { name: 'com_ui_undock_artifacts' }),
       ).not.toBeInTheDocument();
+    });
+
+    it('offers no undock action where the deployment turned it off', async () => {
+      mockCanUndock = false;
+
+      render(
+        <RecoilRoot>
+          <Artifacts />
+        </RecoilRoot>,
+      );
+
+      await screen.findByTestId('artifact-content');
+      expect(
+        screen.queryByRole('button', { name: 'com_ui_undock_artifacts' }),
+      ).not.toBeInTheDocument();
+    });
+
+    /* Losing the capability while the pane is out there must not strand it in
+     * a window with no way back. */
+    it('keeps the dock action when the capability goes away while undocked', async () => {
+      const detached = {
+        focus: jest.fn(),
+        closed: false,
+        document: document.implementation.createHTMLDocument(''),
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+        close: jest.fn(),
+      } as unknown as Window;
+      act(() =>
+        jotaiStore.set(undockedArtifacts, {
+          window: detached,
+          root: document.createElement('div'),
+        }),
+      );
+      mockCanUndock = false;
+
+      render(
+        <RecoilRoot>
+          <Artifacts />
+        </RecoilRoot>,
+      );
+
+      expect(
+        await screen.findByRole('button', { name: 'com_ui_dock_artifacts' }),
+      ).toBeInTheDocument();
     });
   });
 });

@@ -233,6 +233,27 @@ test.describe('undocked artifacts pane', () => {
      * looking at: the notice has to appear in the window they are. */
     await expect(popup.getByText('Failed to copy to clipboard')).toBeVisible({ timeout: 15000 });
   });
+
+  /* The capability is a deployment choice, and a viewer must not be able to
+   * act on it before the deployment has answered. */
+  test('a deployment can keep the pane docked @scenario:a-deployment-can-turn-undocking-off', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    await page.route('**/api/config', async (route) => {
+      const response = await route.fetch();
+      const config = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...config, interface: { ...config.interface, artifactUndocking: false } },
+      });
+    });
+
+    const panel = await openHtmlArtifact(page);
+
+    await expect(panel.getByRole('button', { name: 'Copy' })).toBeVisible();
+    await expect(panel.getByRole('button', { name: UNDOCK })).toHaveCount(0);
+  });
 });
 
 test.describe('artifacts sheet on a phone', () => {
