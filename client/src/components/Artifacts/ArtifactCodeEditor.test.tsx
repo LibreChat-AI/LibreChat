@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, act } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeContext, highContrastDarkTheme, highContrastLightTheme } from '@librechat/client';
 import type { Monaco } from '@monaco-editor/react';
 import type { IThemeRGB } from '@librechat/client';
@@ -102,17 +103,22 @@ const renderEditor = (initial: Artifact = artifact, initialAppearance = defaultA
   const monacoRef: React.MutableRefObject<editor.IStandaloneCodeEditor | null> = { current: null };
   let currentArtifact = initial;
   let currentAppearance = initialAppearance;
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
   const tree = () => (
-    <ThemeContext.Provider
-      value={
-        {
-          resolvedMode: currentAppearance.resolvedMode,
-          highContrast: currentAppearance.highContrast,
-        } as React.ContextType<typeof ThemeContext>
-      }
-    >
-      <ArtifactCodeEditor artifact={currentArtifact} monacoRef={monacoRef} />
-    </ThemeContext.Provider>
+    <QueryClientProvider client={client}>
+      <ThemeContext.Provider
+        value={
+          {
+            resolvedMode: currentAppearance.resolvedMode,
+            highContrast: currentAppearance.highContrast,
+          } as React.ContextType<typeof ThemeContext>
+        }
+      >
+        <ArtifactCodeEditor artifact={currentArtifact} monacoRef={monacoRef} />
+      </ThemeContext.Provider>
+    </QueryClientProvider>
   );
   const utils = render(tree());
   const rerenderWith = (next: Artifact) => {

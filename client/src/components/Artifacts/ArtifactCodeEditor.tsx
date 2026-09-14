@@ -1,7 +1,10 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback, useContext } from 'react';
 import debounce from 'lodash/debounce';
 import MonacoEditor from '@monaco-editor/react';
+import { useQueryClient } from '@tanstack/react-query';
+import { MutationKeys } from 'librechat-data-provider';
 import { ThemeContext, highContrastDarkTheme, highContrastLightTheme } from '@librechat/client';
+import type { QueryClient } from '@tanstack/react-query';
 import type { Monaco } from '@monaco-editor/react';
 import type { IThemeRGB } from '@librechat/client';
 import type { editor } from 'monaco-editor';
@@ -220,6 +223,35 @@ function isSameMutationTarget(target: ArtifactEditTarget, vars: ArtifactMutation
   return target.messageId === vars.messageId && target.index === vars.index;
 }
 
+/**
+ * The text the most recent successful save wrote for this artifact, which is
+ * what the server now holds. The registry catches up only when the edited
+ * message propagates, so an edit sent between those two moments has to be
+ * rebased on the request's own record rather than on `artifact.content`.
+ */
+function getSavedContent(queryClient: QueryClient, target: ArtifactEditTarget): string | undefined {
+  /** Mutation ids increase, so the highest one is the most recent save. */
+  let latestId = -1;
+  let latest: string | undefined;
+  for (const mutation of queryClient
+    .getMutationCache()
+    .findAll({ mutationKey: [MutationKeys.editArtifact] })) {
+    const vars = mutation.state.variables as ArtifactMutationVars | undefined;
+    if (
+      mutation.state.status !== 'success' ||
+      vars == null ||
+      !isSameMutationTarget(target, vars)
+    ) {
+      continue;
+    }
+    if (mutation.mutationId > latestId) {
+      latestId = mutation.mutationId;
+      latest = vars.updated;
+    }
+  }
+  return latest;
+}
+
 export const ArtifactCodeEditor = function ArtifactCodeEditor({
   artifact,
   monacoRef,
@@ -230,6 +262,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   readOnly?: boolean;
 }) {
   const { resolvedMode, highContrast } = useContext(ThemeContext);
+  const queryClient = useQueryClient();
   const { isSubmitting } = useArtifactsContext();
   const readOnly = (externalReadOnly ?? false) || isSubmitting;
   const { currentCode, codeArtifactId, setCurrentCode, codeSession } = useCodeState();
@@ -422,43 +455,50 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       return;
     }
 
-    /* An edit typed while the lock was held is queued here, and normally the
-     * callbacks of the save holding the lock send it. Those callbacks belong
-     * to whichever editor started that save, so when the lock was taken by a
-     * previous session — or released with it — nobody else will: this editor
-     * sends its own queued edit as soon as the lock is free.
+    /* An edit typed while a save was in flight is queued here, and normally
+     * the callbacks of that save send it. Those callbacks belong to whichever
+     * editor started it, so when the save was started by a previous session
+     * nobody else will: this editor sends its own queued edit as soon as the
+     * pipeline is idle.
      *
-     * The `original` captured when it was queued is what the artifact held
-     * before that save; by now the save has replaced it. The edit is sent
-     * against the content the artifact actually has, otherwise the endpoint
-     * rejects it and the newest text lives only in the buffer. */
+     * What that edit replaces is whatever the last save wrote, which is not
+     * necessarily `artifact.content` yet — the registry catches up when the
+     * edited message propagates. Sending either the content captured when the
+     * edit was queued or a registry that has not caught up has the endpoint
+     * reject the newest text, so the request's own record decides. */
     const queued = pendingUpdateRef.current;
     if (queued != null) {
       pendingUpdateRef.current = null;
       const currentTarget = getArtifactEditTarget(artifactRef.current);
-      if (
-        currentTarget != null &&
-        isSameArtifactTarget(queued, currentTarget) &&
-        queued.code.trim() !== (artifactRef.current.content ?? '').trim()
-      ) {
-        setCurrentCodeRef.current(queued.code, artifactRef.current.id);
-        runMutationRef.current(queued.code);
-        return;
+      if (currentTarget != null && isSameArtifactTarget(queued, currentTarget)) {
+        const original =
+          getSavedContent(queryClient, currentTarget) ??
+          artifactRef.current.content ??
+          queued.original;
+        if (queued.code.trim() !== original.trim()) {
+          setCurrentCodeRef.current(queued.code, artifactRef.current.id);
+          runMutationRef.current(queued.code, original);
+          return;
+        }
       }
     }
 
     const inherited = inheritedBufferRef.current;
-    if (
-      inherited == null ||
-      inherited === (artifactRef.current.content ?? '') ||
-      drainedBufferRef.current === inherited
-    ) {
+    if (inherited == null || drainedBufferRef.current === inherited) {
+      return;
+    }
+    const inheritedTarget = getArtifactEditTarget(artifactRef.current);
+    const inheritedOriginal =
+      (inheritedTarget != null ? getSavedContent(queryClient, inheritedTarget) : undefined) ??
+      artifactRef.current.content ??
+      '';
+    if (inherited === inheritedOriginal) {
       return;
     }
     drainedBufferRef.current = inherited;
     prevContentRef.current = inherited;
-    runMutationRef.current(inherited);
-  }, [isMutating]);
+    runMutationRef.current(inherited, inheritedOriginal);
+  }, [isMutating, queryClient]);
 
   /**
    * Streaming: use model.applyEdits() to append new content.

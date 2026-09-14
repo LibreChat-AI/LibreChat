@@ -219,7 +219,7 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
   it('sends a queued edit against the content the finished save left', async () => {
     const { ed } = createModel('CONTENT-A');
     const monacoRef = { current: ed } as React.MutableRefObject<any>;
-    const view = renderEditor(artifactA, monacoRef);
+    renderEditor(artifactA, monacoRef);
 
     type('FIRST-EDIT');
     settleDebounce();
@@ -232,8 +232,9 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     await flush();
     expect(mockEditArtifact).toHaveBeenCalledTimes(1);
 
-    /* The save lands and the artifact takes the content it wrote. */
-    view.select({ ...artifactA, content: 'FIRST-EDIT', lastUpdateTime: 1 });
+    /* The save lands. The registry still holds the pre-save content — it
+     * catches up only when the edited message propagates — so the queued edit
+     * has to be rebased on what the request wrote, not on what is on screen. */
     await act(async () => {
       inFlight?.resolve(undefined);
       await Promise.resolve();
@@ -272,7 +273,6 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     await flush();
     expect(mockEditArtifact).toHaveBeenCalledTimes(1);
 
-    view.select({ ...artifactA, content: 'EDIT-BEFORE-CLOSE', lastUpdateTime: 1 });
     await act(async () => {
       inFlight?.resolve(undefined);
       await Promise.resolve();
