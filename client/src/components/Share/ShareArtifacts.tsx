@@ -110,57 +110,49 @@ export function ShareArtifactsContainer({
     }
   };
 
-  /* One provider around every branch, mounted whether the pane is open or
-   * not: it owns the editor buffer the pane carries between hosts, and moving
-   * it in and out would remount the transcript under it — losing the reader's
-   * scroll position every time the artifact overlay opens. */
-  let content: React.ReactNode;
-  if (!shouldRenderArtifacts || !artifactsContextValue) {
-    content = mainContent;
-  } else if (isUndocked) {
-    content = (
-      <>
-        {mainContent}
-        <UndockedArtifacts>
-          <ShareArtifactsPanel contextValue={artifactsContextValue} />
-        </UndockedArtifacts>
-      </>
-    );
-  } else if (isSmallScreen) {
-    content = (
-      <>
-        {mainContent}
-        <ShareArtifactsOverlay contextValue={artifactsContextValue} />
-      </>
-    );
-  } else {
-    content = (
+  const paneContext = shouldRenderArtifacts ? artifactsContextValue : null;
+  const pane = paneContext != null ? <ShareArtifactsPanel contextValue={paneContext} /> : null;
+  const overlay = paneContext != null ? <ShareArtifactsOverlay contextValue={paneContext} /> : null;
+  const showDockedPanel = pane != null && !isUndocked && !isSmallScreen;
+
+  /* The transcript keeps one place in the tree through every state: React
+   * cannot preserve it across a change of ancestry, so opening the pane,
+   * undocking it or docking it again would each remount the conversation and
+   * throw away the reader's scroll position. Only the pane's host changes —
+   * a second resizable panel, a mobile overlay, or its own window — and the
+   * provider that owns the editor buffer stays mounted above all of them. */
+  return (
+    <EditorProvider>
       <ResizablePanelGroup
         orientation="horizontal"
         className="h-full w-full"
         onLayoutChanged={handleLayoutChanged}
       >
         <ResizablePanel
-          defaultSize={`${100 - normalizedArtifactSize}`}
+          defaultSize={`${showDockedPanel ? 100 - normalizedArtifactSize : 100}`}
           minSize="35"
           id="share-content"
         >
           {mainContent}
         </ResizablePanel>
-        <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
-        <ResizablePanel
-          defaultSize={`${normalizedArtifactSize}`}
-          minSize="20"
-          maxSize="60"
-          id="share-artifacts"
-        >
-          <ShareArtifactsPanel contextValue={artifactsContextValue} />
-        </ResizablePanel>
+        {showDockedPanel && (
+          <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
+        )}
+        {showDockedPanel && (
+          <ResizablePanel
+            defaultSize={`${normalizedArtifactSize}`}
+            minSize="20"
+            maxSize="60"
+            id="share-artifacts"
+          >
+            {pane}
+          </ResizablePanel>
+        )}
       </ResizablePanelGroup>
-    );
-  }
-
-  return <EditorProvider>{content}</EditorProvider>;
+      {pane != null && isUndocked && <UndockedArtifacts>{pane}</UndockedArtifacts>}
+      {pane != null && !isUndocked && isSmallScreen && overlay}
+    </EditorProvider>
+  );
 }
 
 interface ShareArtifactsPanelProps {

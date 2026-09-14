@@ -380,3 +380,33 @@ export function relayFrameMessages(source: Window, detached: Window): () => void
   detached.addEventListener('message', relay);
   return () => detached.removeEventListener('message', relay);
 }
+
+/**
+ * The pre-Clipboard-API copy, run in a chosen document.
+ *
+ * `copy-to-clipboard` always drives `document.execCommand` in the realm it was
+ * imported into — the host window — and an unfocused document copies nothing,
+ * so an undocked pane on a non-secure deployment needs the selection dance
+ * performed where the user actually is.
+ */
+export function copyWithinDocument(target: Document, text: string): boolean {
+  const field = target.createElement('textarea');
+  field.value = text;
+  field.setAttribute('readonly', '');
+  field.setAttribute('aria-hidden', 'true');
+  field.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
+  target.body.appendChild(field);
+  const activeElement = target.activeElement;
+  try {
+    field.select();
+    field.setSelectionRange(0, text.length);
+    return target.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    field.remove();
+    if (activeElement instanceof HTMLElement) {
+      activeElement.focus();
+    }
+  }
+}

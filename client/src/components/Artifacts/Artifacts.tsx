@@ -17,8 +17,8 @@ import {
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
+import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
-import { openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { artifactsDockFocusRequest, undockedArtifacts } from './state';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useShareContext, useMutationState } from '~/Providers';
@@ -295,22 +295,27 @@ export default function Artifacts() {
     if (!content) {
       return;
     }
-    /* `copy-to-clipboard` runs `execCommand` against the host document, which
-     * is in the background while the undocked window has focus — and an
-     * unfocused document copies nothing. Use the focused window's clipboard,
-     * and only claim success once something actually reached it. */
-    const detachedClipboard = isUndocked
-      ? panelRef.current?.ownerDocument.defaultView?.navigator.clipboard
-      : undefined;
+    /* Both clipboard paths have to act on the document the user is looking at:
+     * `copy-to-clipboard` drives `execCommand` on the host document, which is
+     * in the background while the undocked window has focus, and an unfocused
+     * document copies nothing. Success is claimed only once a write lands. */
+    const paneDocument = isUndocked ? panelRef.current?.ownerDocument : undefined;
     let copied = false;
-    if (detachedClipboard != null) {
+    const clipboard = paneDocument?.defaultView?.navigator.clipboard;
+    if (clipboard != null) {
       try {
-        await detachedClipboard.writeText(content);
+        await clipboard.writeText(content);
         copied = true;
       } catch (error) {
-        logger.error('Failed to copy artifact from the undocked window:', error);
+        logger.error('Failed to copy the artifact through the clipboard API:', error);
       }
-    } else {
+    }
+    if (!copied && paneDocument != null) {
+      /* No Clipboard API — a non-secure deployment — so fall back to the
+       * selection dance, run in the pane's document rather than the host's. */
+      copied = copyWithinDocument(paneDocument, content);
+    }
+    if (!copied && paneDocument == null) {
       copied = copy(content, { format: 'text/plain' });
     }
 

@@ -379,25 +379,28 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   }, [artifact.id, debouncedMutation]);
 
   /* A remount cancels the debounce mid-flight, so text the user typed just
-   * before the pane changed hosts would live in the editor and never persist.
-   * The request the previous instance started can no longer report back — its
-   * mutation observer went with it — so the shared "mutating" flag it left
-   * behind is stale, and leaving it set would queue this text behind a
-   * completion that never arrives. Release it, then hand over the buffer. */
+   * before the pane changed hosts lives in the buffer and has never been sent.
+   * The request its previous instance started keeps its own callbacks — React
+   * Query holds them on the mutation, not on the observer — so this instance
+   * must not guess at that request's state or resubmit against a `original`
+   * it may already have replaced. It waits for the shared flag to go idle and
+   * submits then, once, for a buffer that still differs from what was saved. */
+  const drainedBufferRef = useRef<string | null>(null);
   useEffect(() => {
-    const inheritedMutation = isMutatingRef.current && !editArtifactRef.current.isLoading;
-    if (inheritedMutation) {
-      isMutatingRef.current = false;
-      currentUpdateRef.current = null;
-      setIsMutating(false);
+    if (isMutating) {
+      return;
     }
     const restored = restoredCodeRef.current;
     if (restored == null || restored === (artifactRef.current.content ?? '')) {
       return;
     }
+    if (drainedBufferRef.current === restored) {
+      return;
+    }
+    drainedBufferRef.current = restored;
     prevContentRef.current = restored;
     runMutationRef.current(restored);
-  }, [artifact.id, setIsMutating]);
+  }, [artifact.id, isMutating]);
 
   /**
    * Streaming: use model.applyEdits() to append new content.
