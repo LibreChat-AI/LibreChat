@@ -232,9 +232,10 @@ export default function Artifacts() {
   }, [isUndocked, localize, setDetached, setDockFocusRequest, showToast]);
 
   /* Docking replaces the window's toolbar with the side panel's: move focus to
-   * the control that took the place of the one the user just pressed. */
+   * the control that took the place of the one the user just pressed. The
+   * control only exists once the pane has mounted, hence the dependency. */
   useEffect(() => {
-    if (!dockFocusRequest || isUndocked) {
+    if (!dockFocusRequest || isUndocked || !isMounted) {
       return;
     }
     const control = undockButtonRef.current;
@@ -243,7 +244,7 @@ export default function Artifacts() {
     }
     control.focus();
     setDockFocusRequest(false);
-  }, [dockFocusRequest, isUndocked, setDockFocusRequest]);
+  }, [dockFocusRequest, isMounted, isUndocked, setDockFocusRequest]);
 
   useFocusTrap(panelRef, isMobile && isVisible && !isClosing, closeArtifacts);
 
