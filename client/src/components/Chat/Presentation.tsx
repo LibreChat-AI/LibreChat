@@ -3,8 +3,8 @@ import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
-import useResetArtifactsOnConversationChange from '~/hooks/Artifacts/useResetArtifactsOnConversationChange';
 import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
@@ -41,7 +41,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
   const resetSelectedSubagent = useCallback(() => setSelectedSubagent(null), [setSelectedSubagent]);
   const previousConversationIdRef = useRef<string | null>(null);
 
-  useResetArtifactsOnConversationChange();
+  useArtifactsRegistryLifetime();
 
   useEffect(() => {
     const previous = previousConversationIdRef.current;
@@ -120,9 +120,14 @@ export default function Presentation({ children }: { children: React.ReactNode }
     return null;
   }, [artifactsVisibility, artifacts, currentArtifactId]);
 
+  /* The two panels are mutually exclusive only while they compete for the same
+   * slot. Undocked, the artifacts pane is in its own window and the side panel
+   * is free, so a child-activity panel opened there must survive. */
   useEffect(() => {
-    if (artifactsElement != null && selectedSubagent != null) resetSelectedSubagent();
-  }, [artifactsElement, resetSelectedSubagent, selectedSubagent]);
+    if (!isUndocked && artifactsElement != null && selectedSubagent != null) {
+      resetSelectedSubagent();
+    }
+  }, [artifactsElement, isUndocked, resetSelectedSubagent, selectedSubagent]);
 
   const subagentElement = useMemo(() => {
     if (

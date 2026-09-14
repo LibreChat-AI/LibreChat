@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useMemo } from 'react';
+import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 
 /**
  * Mutation state context - for components that need to know about save/edit status
@@ -11,11 +11,16 @@ interface MutationContextType {
 
 /**
  * Code state context - for components that need the current code content
- * Changes frequently (on every keystroke), so only subscribe if needed
+ * Changes frequently (on every keystroke), so only subscribe if needed.
+ *
+ * The buffer carries the artifact it belongs to. The pane is remounted when it
+ * changes hosts (side panel, mobile sheet, undocked window), so whether the
+ * buffer is this artifact's unsaved text cannot be decided from a mount.
  */
 interface CodeContextType {
   currentCode?: string;
-  setCurrentCode: React.Dispatch<React.SetStateAction<string | undefined>>;
+  codeArtifactId?: string;
+  setCurrentCode: (code: string | undefined, artifactId?: string) => void;
 }
 
 const MutationContext = createContext<MutationContextType | undefined>(undefined);
@@ -29,10 +34,24 @@ const CodeContext = createContext<CodeContextType | undefined>(undefined);
  */
 export function EditorProvider({ children }: { children: React.ReactNode }) {
   const [isMutating, setIsMutating] = useState(false);
-  const [currentCode, setCurrentCode] = useState<string | undefined>();
+  const [codeBuffer, setCodeBuffer] = useState<{ code?: string; artifactId?: string }>({});
+
+  const setCurrentCode = useCallback((code: string | undefined, artifactId?: string) => {
+    setCodeBuffer((previous) => ({
+      code,
+      artifactId: artifactId ?? (code === undefined ? undefined : previous.artifactId),
+    }));
+  }, []);
 
   const mutationValue = useMemo(() => ({ isMutating, setIsMutating }), [isMutating]);
-  const codeValue = useMemo(() => ({ currentCode, setCurrentCode }), [currentCode]);
+  const codeValue = useMemo(
+    () => ({
+      currentCode: codeBuffer.code,
+      codeArtifactId: codeBuffer.artifactId,
+      setCurrentCode,
+    }),
+    [codeBuffer, setCurrentCode],
+  );
 
   return (
     <MutationContext.Provider value={mutationValue}>

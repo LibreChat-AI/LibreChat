@@ -54,6 +54,9 @@ export default function Artifacts() {
   const [isClosing, setIsClosing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenEnabled, setFullscreenEnabled] = useState(
+    typeof document === 'undefined' ? false : document.fullscreenEnabled,
+  );
   const [isMounted, setIsMounted] = useState(false);
   const [height, setHeight] = useState(90);
   const [isDragging, setIsDragging] = useState(false);
@@ -107,6 +110,7 @@ export default function Artifacts() {
    * container only exists once mounted, hence the dependency. */
   useEffect(() => {
     const ownerDocument = artifactContainerRef.current?.ownerDocument ?? document;
+    setFullscreenEnabled(ownerDocument.fullscreenEnabled);
     const handleFullscreenChange = () => {
       const container = artifactContainerRef.current;
       setIsFullscreen(container !== null && ownerDocument.fullscreenElement === container);
@@ -267,27 +271,37 @@ export default function Artifacts() {
     }
   }, [activeTab, constrainedTab, currentArtifact?.id, setActiveTab]);
 
-  const handleCopyArtifact = useCallback(() => {
+  const handleCopyArtifact = useCallback(async () => {
     const content = currentArtifact?.content ?? '';
     if (!content) {
       return;
     }
     /* `copy-to-clipboard` runs `execCommand` against the host document, which
      * is in the background while the undocked window has focus — and an
-     * unfocused document copies nothing. Use the focused window's clipboard. */
+     * unfocused document copies nothing. Use the focused window's clipboard,
+     * and only claim success once something actually reached it. */
     const detachedClipboard = isUndocked
       ? panelRef.current?.ownerDocument.defaultView?.navigator.clipboard
       : undefined;
+    let copied = false;
     if (detachedClipboard != null) {
-      detachedClipboard.writeText(content).catch((error) => {
+      try {
+        await detachedClipboard.writeText(content);
+        copied = true;
+      } catch (error) {
         logger.error('Failed to copy artifact from the undocked window:', error);
-      });
+      }
     } else {
-      copy(content, { format: 'text/plain' });
+      copied = copy(content, { format: 'text/plain' });
+    }
+
+    if (!copied) {
+      showToast({ status: 'error', message: localize('com_ui_copy_failed') });
+      return;
     }
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 3000);
-  }, [currentArtifact?.content, isUndocked]);
+  }, [currentArtifact?.content, isUndocked, localize, showToast]);
 
   const handleDragStart = (e: React.PointerEvent) => {
     setIsDragging(true);
@@ -366,9 +380,13 @@ export default function Artifacts() {
       return;
     }
 
+    /* Undocked, the pane's fullscreen element and `exitFullscreen` belong to
+     * the popup's document; the host's would never match, so the minimize
+     * action would request fullscreen again instead of leaving it. */
+    const ownerDocument = container.ownerDocument;
     try {
-      if (document.fullscreenElement === container) {
-        await document.exitFullscreen();
+      if (ownerDocument.fullscreenElement === container) {
+        await ownerDocument.exitFullscreen();
         return;
       }
       await container.requestFullscreen();
@@ -508,7 +526,7 @@ export default function Artifacts() {
                   )}
                 </Button>
               )}
-              {(displayedTab === 'preview' || isFullscreen) && document.fullscreenEnabled && (
+              {(displayedTab === 'preview' || isFullscreen) && fullscreenEnabled && (
                 <Button
                   size="icon"
                   variant="ghost"

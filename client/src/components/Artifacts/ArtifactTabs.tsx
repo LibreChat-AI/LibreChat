@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef } from 'react';
+import { lazy, Suspense, useRef } from 'react';
 import { Spinner } from '@librechat/client';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
@@ -39,22 +39,13 @@ function MermaidArtifactTabs({
   onMermaidExportReady,
 }: Omit<ArtifactTabsProps, 'previewRef'>) {
   const localize = useLocalize();
-  const { currentCode, setCurrentCode } = useCodeState();
+  const { currentCode, codeArtifactId } = useCodeState();
   const monacoRef = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const lastIdRef = useRef<string | null>(null);
 
-  /* The reset below only lands after commit, so on the render that switches
-   * artifacts `currentCode` still holds the previous artifact's editor text.
-   * Ignore it until the reset catches up, or the freshly keyed renderer would
-   * mount showing (and exporting) the diagram we just navigated away from. */
-  const hasCurrentArtifactCode = lastIdRef.current === artifact.id;
-
-  useEffect(() => {
-    if (artifact.id !== lastIdRef.current) {
-      setCurrentCode(undefined);
-    }
-    lastIdRef.current = artifact.id;
-  }, [artifact.id, setCurrentCode]);
+  /* The buffer belongs to whichever artifact last wrote it: a freshly keyed
+   * renderer must not show (or export) the diagram we navigated away from,
+   * while a pane that remounted for another host keeps its unsaved text. */
+  const hasCurrentArtifactCode = codeArtifactId === artifact.id;
 
   const content = (hasCurrentArtifactCode ? currentCode : undefined) ?? artifact.content ?? '';
   const isReadOnly = isSharedConvo === true || artifact.index == null;

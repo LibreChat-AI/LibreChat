@@ -1,10 +1,10 @@
 import React from 'react';
 import { act, render } from '@testing-library/react';
 import { RecoilRoot, useRecoilCallback, useSetRecoilState } from 'recoil';
+import type { TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { Artifact } from '~/common';
-import type { TConversation } from 'librechat-data-provider';
-import useResetArtifactsOnConversationChange from '../useResetArtifactsOnConversationChange';
+import useArtifactsRegistryLifetime from '../useArtifactsRegistryLifetime';
 import store from '~/store';
 
 const buildArtifact = (id: string): Artifact => ({
@@ -26,7 +26,7 @@ interface HarnessHandle {
 }
 
 const Harness = ({ handleRef }: { handleRef: React.MutableRefObject<HarnessHandle | null> }) => {
-  useResetArtifactsOnConversationChange();
+  useArtifactsRegistryLifetime();
   const setConvo = useSetRecoilState(store.conversationByIndex(0));
   // useRecoilCallback's snapshot is read fresh at call time, so the test
   // sees the latest committed atom values rather than a stale render-time
@@ -76,7 +76,7 @@ const renderHarness = (initial: {
   return handleRef.current;
 };
 
-describe('useResetArtifactsOnConversationChange', () => {
+describe('useArtifactsRegistryLifetime', () => {
   it('does not reset on first render (no previous conversation to compare against)', () => {
     const handle = renderHarness({
       conversationId: 'conv-A',
@@ -125,5 +125,40 @@ describe('useResetArtifactsOnConversationChange', () => {
     });
     act(() => handle.setConversation('conv-A'));
     expect(handle.readArtifacts()).toEqual({});
+  });
+
+  /* The pane's own cleanup keeps the registry while it only changes hosts, so
+   * the host leaving the route is what has to clear it — otherwise the next
+   * route (a shared conversation, say) opens showing this chat's artifact. */
+  it('wipes the registry when the host unmounts', () => {
+    const handleRef: React.MutableRefObject<HarnessHandle | null> = { current: null };
+    const Host = () => {
+      useArtifactsRegistryLifetime();
+      return null;
+    };
+    const App = ({ hostMounted }: { hostMounted: boolean }) => (
+      <RecoilRoot
+        initializeState={(snapshot: MutableSnapshot) => {
+          snapshot.set(store.conversationByIndex(0), buildConversation('conv-A'));
+          snapshot.set(store.artifactsState, { 'art-1': buildArtifact('art-1') });
+          snapshot.set(store.currentArtifactId, 'art-1');
+        }}
+      >
+        <Harness handleRef={handleRef} />
+        {hostMounted && <Host />}
+      </RecoilRoot>
+    );
+
+    const { rerender } = render(<App hostMounted={true} />);
+    const handle = handleRef.current;
+    if (!handle) {
+      throw new Error('Harness did not attach handle');
+    }
+    expect(handle.readArtifacts()).toEqual({ 'art-1': buildArtifact('art-1') });
+
+    rerender(<App hostMounted={false} />);
+
+    expect(handle.readArtifacts()).toBeNull();
+    expect(handle.readCurrentId()).toBeNull();
   });
 });

@@ -232,7 +232,11 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   const { resolvedMode, highContrast } = useContext(ThemeContext);
   const { isSubmitting } = useArtifactsContext();
   const readOnly = (externalReadOnly ?? false) || isSubmitting;
-  const { setCurrentCode } = useCodeState();
+  const { currentCode, codeArtifactId, setCurrentCode } = useCodeState();
+  /* The pane is remounted when it changes hosts (side panel, mobile sheet,
+   * undocked window). The buffer outlives that remount, so unsaved text is
+   * restored here instead of falling back to the persisted content. */
+  const restoredCode = codeArtifactId === artifact.id ? currentCode : undefined;
   const [currentUpdate, setCurrentUpdate] = useState<string | null>(null);
   const { isMutating, setIsMutating } = useMutationState();
   const [failedContent, setFailedContent] = useState<string | null>(null);
@@ -243,6 +247,8 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   const failedContentRef = useRef(failedContent);
   const pendingUpdateRef = useRef<PendingUpdate | null>(null);
   const runMutationRef = useRef<(code: string, original?: string) => void>(() => {});
+  /** Read by the mount effect below, which must not re-run as the user types. */
+  const restoredCodeRef = useRef(restoredCode);
 
   const editArtifact = useEditArtifact({
     onMutate: (vars) => {
@@ -271,7 +277,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
 
       const original = isSameMutationTarget(pending, vars) ? vars.updated : pending.original;
       if (pending.code.trim() !== original.trim()) {
-        setCurrentCodeRef.current(pending.code);
+        setCurrentCodeRef.current(pending.code, artifactRef.current.id);
         runMutationRef.current(pending.code, original);
       }
     },
@@ -298,7 +304,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       }
 
       if (pending.code.trim() !== pending.original.trim()) {
-        setCurrentCodeRef.current(pending.code);
+        setCurrentCodeRef.current(pending.code, artifactRef.current.id);
         runMutationRef.current(pending.code, pending.original);
       }
     },
@@ -315,6 +321,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   editArtifactRef.current = editArtifact;
   setCurrentCodeRef.current = setCurrentCode;
   failedContentRef.current = failedContent;
+  restoredCodeRef.current = restoredCode;
 
   const runMutation = useCallback(
     (code: string, originalOverride?: string) => {
@@ -346,7 +353,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         return;
       }
 
-      setCurrentCodeRef.current(code);
+      setCurrentCodeRef.current(code, art.id);
       editArtifactRef.current.mutate({
         index: target.index,
         messageId: target.messageId,
@@ -370,6 +377,19 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   useEffect(() => {
     return () => debouncedMutation.cancel();
   }, [artifact.id, debouncedMutation]);
+
+  /* A remount cancels the debounce mid-flight, so text the user typed just
+   * before the pane changed hosts would live in the editor and never persist.
+   * Hand the restored buffer to the mutation once on mount. */
+  useEffect(() => {
+    const restored = restoredCodeRef.current;
+    if (restored == null || restored === (artifactRef.current.content ?? '')) {
+      return;
+    }
+    prevContentRef.current = restored;
+    runMutationRef.current(restored);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artifact.id]);
 
   /**
    * Streaming: use model.applyEdits() to append new content.
@@ -446,7 +466,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         return;
       }
       prevContentRef.current = value;
-      setCurrentCode(value);
+      setCurrentCode(value, artifactRef.current.id);
       if (value.length > 0) {
         debouncedMutation(value);
       }
@@ -571,7 +591,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         height="100%"
         language={readOnly ? 'plaintext' : language}
         theme={editorAppearance.theme}
-        defaultValue={artifact.content}
+        defaultValue={restoredCode ?? artifact.content}
         onChange={handleChange}
         beforeMount={handleBeforeMount}
         onMount={handleMount}

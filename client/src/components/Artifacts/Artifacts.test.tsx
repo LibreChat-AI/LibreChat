@@ -1,10 +1,10 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { undockedArtifacts } from './state';
 import Artifacts from './Artifacts';
 import store from '~/store';
-import { getDefaultStore } from 'jotai';
-import { undockedArtifacts } from './state';
 
 const mockUseArtifacts = jest.fn();
 let mockIsMobile = false;

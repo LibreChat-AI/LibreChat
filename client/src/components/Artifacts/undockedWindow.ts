@@ -25,6 +25,9 @@ const MIN_HEIGHT = 480;
 /** CSSOM rule insertion (Monaco's dynamic rules) mutates no DOM node, so the
  *  style observer never fires for it. Re-check the cheap signatures instead. */
 const RESYNC_INTERVAL_MS = 1000;
+/** Above this, a sheet is a compiled bundle: serialize its rules once per tick
+ *  and the mirror would cost more than the pane it is mirroring. */
+const MAX_SERIALIZED_RULES = 400;
 const STYLE_SELECTOR = 'style, link[rel~="stylesheet"]';
 const MIRRORED_ROOT_ATTRIBUTES = ['class', 'style', 'data-theme', 'lang', 'dir'];
 const ROOT_ELEMENT_ID = 'undocked-artifacts-root';
@@ -200,45 +203,50 @@ interface MirroredSheet {
   signature: string;
 }
 
-const ruleCount = (element: Element): number => {
+const readableRules = (element: Element): CSSRuleList | null => {
   try {
-    return (element as HTMLStyleElement).sheet?.cssRules.length ?? -1;
+    return (element as HTMLStyleElement).sheet?.cssRules ?? null;
   } catch {
     /* opaque cross-origin sheet */
-    return -1;
+    return null;
   }
 };
 
-const styleSignature = (element: Element): string => {
+const serializeRules = (rules: CSSRuleList): string => {
+  const parts: string[] = [];
+  for (let index = 0; index < rules.length; index += 1) {
+    parts.push(rules[index].cssText);
+  }
+  return parts.join('\n');
+};
+
+/**
+ * The text to clone, and a signature that changes whenever that text does.
+ *
+ * A sheet the page drives through the CSSOM (Monaco's dynamic rules, CSS-in-JS)
+ * can gain, lose or replace a rule without touching a single node, and its
+ * source text may stay empty or keep its length. Those sheets are small, so
+ * their serialized rules are both the content and the signature. A large sheet
+ * — the compiled Tailwind bundle — is only ever rewritten through its text
+ * node, which the mutation observer sees, so it is compared by cheap shape
+ * instead of being serialized every second.
+ */
+const styleSnapshot = (element: Element): { text: string; signature: string } => {
+  const text = element.textContent ?? '';
+  const rules = readableRules(element);
+  if (rules != null && rules.length <= MAX_SERIALIZED_RULES) {
+    const serialized = serializeRules(rules);
+    return { text: serialized === '' ? text : serialized, signature: `rules|${serialized}` };
+  }
+  return { text, signature: `text|${text.length}|${rules?.length ?? -1}` };
+};
+
+const sheetSnapshot = (element: Element): { text: string; signature: string } => {
   if (element.tagName === 'LINK') {
     const link = element as HTMLLinkElement;
-    return `link|${link.href}|${link.media}`;
+    return { text: '', signature: `link|${link.href}|${link.media}` };
   }
-  return `style|${element.textContent?.length ?? 0}|${ruleCount(element)}`;
-};
-
-/** Rules inserted through the CSSOM (Monaco's dynamic rules) leave the source
- *  text empty, and serializing a large sheet rule by rule is expensive, so read
- *  the text first and only walk the sheet when there is no text to copy. */
-const styleText = (element: HTMLStyleElement): string => {
-  const text = element.textContent ?? '';
-  if (text !== '') {
-    return text;
-  }
-  try {
-    const rules = element.sheet?.cssRules;
-    if (rules == null) {
-      return '';
-    }
-    const parts: string[] = [];
-    for (let index = 0; index < rules.length; index += 1) {
-      parts.push(rules[index].cssText);
-    }
-    return parts.join('\n');
-  } catch {
-    /* opaque cross-origin sheet: nothing readable to mirror */
-    return '';
-  }
+  return styleSnapshot(element);
 };
 
 const createClone = (element: Element, target: Document): HTMLStyleElement | HTMLLinkElement => {
@@ -260,7 +268,7 @@ const createClone = (element: Element, target: Document): HTMLStyleElement | HTM
   const source = element as HTMLStyleElement;
   const clone = target.createElement('style');
   clone.media = source.media;
-  clone.textContent = styleText(source);
+  clone.textContent = styleSnapshot(source).text;
   return clone;
 };
 
@@ -270,6 +278,9 @@ const createClone = (element: Element, target: Document): HTMLStyleElement | HTM
  */
 export function mirrorDocumentStyles(source: Document, target: Document): () => void {
   let mirrored: MirroredSheet[] = [];
+  /* Nodes the observer saw change: a rewrite that keeps the same text length
+   * is invisible to the signature, so the record decides instead. */
+  const touched = new Set<Element>();
 
   const sync = () => {
     const nodes = Array.from(source.querySelectorAll(STYLE_SELECTOR));
@@ -284,28 +295,40 @@ export function mirrorDocumentStyles(source: Document, target: Document): () => 
       mirrored = nodes.map((node) => {
         const clone = createClone(node, target);
         target.head.appendChild(clone);
-        return { source: node, clone, signature: styleSignature(node) };
+        return { source: node, clone, signature: sheetSnapshot(node).signature };
       });
+      touched.clear();
       return;
     }
 
     for (const entry of mirrored) {
-      const signature = styleSignature(entry.source);
-      if (signature === entry.signature) {
+      const { text, signature } = sheetSnapshot(entry.source);
+      if (signature === entry.signature && !touched.has(entry.source)) {
         continue;
       }
       entry.signature = signature;
       if (entry.clone.tagName === 'STYLE') {
-        (entry.clone as HTMLStyleElement).textContent = styleText(entry.source as HTMLStyleElement);
+        (entry.clone as HTMLStyleElement).textContent = text;
       } else {
         (entry.clone as HTMLLinkElement).href = (entry.source as HTMLLinkElement).href;
       }
     }
+    touched.clear();
   };
 
   sync();
 
-  const observer = new MutationObserver(sync);
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      const node = record.target;
+      const element = node instanceof Element ? node : node.parentElement;
+      const sheet = element?.closest(STYLE_SELECTOR);
+      if (sheet != null) {
+        touched.add(sheet);
+      }
+    }
+    sync();
+  });
   observer.observe(source.head, { childList: true, subtree: true, characterData: true });
   const interval = source.defaultView?.setInterval(sync, RESYNC_INTERVAL_MS);
 
@@ -318,6 +341,7 @@ export function mirrorDocumentStyles(source: Document, target: Document): () => 
       entry.clone.remove();
     }
     mirrored = [];
+    touched.clear();
   };
 }
 

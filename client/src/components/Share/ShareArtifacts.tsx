@@ -9,6 +9,7 @@ import {
 } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { ArtifactsContextValue } from '~/Providers';
+import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { ArtifactsProvider, EditorProvider } from '~/Providers';
@@ -64,6 +65,9 @@ export function ShareArtifactsContainer({
   const isSmallScreen = useMediaQuery('(max-width: 1023px)');
   const isUndocked = useAtomValue(artifactsUndocked);
   const [artifactPanelSize, setArtifactPanelSize] = useState(getInitialArtifactPanelSize);
+  /* Leaving the shared conversation clears the registry; the pane's own
+   * cleanup keeps it while the pane only changes hosts. */
+  useArtifactsRegistryLifetime();
 
   const artifactsContextValue = useMemo<ArtifactsContextValue | null>(() => {
     const latestMessage =
@@ -110,49 +114,54 @@ export function ShareArtifactsContainer({
     return <>{mainContent}</>;
   }
 
+  /* One provider around every host: the pane is remounted when it moves
+   * between the panel, the mobile overlay and the undocked window, and the
+   * editor buffer belongs to the pane's session rather than to its window. */
   if (isUndocked) {
     return (
-      <>
+      <EditorProvider>
         {mainContent}
         <UndockedArtifacts>
           <ShareArtifactsPanel contextValue={artifactsContextValue} />
         </UndockedArtifacts>
-      </>
+      </EditorProvider>
     );
   }
 
   if (isSmallScreen) {
     return (
-      <>
+      <EditorProvider>
         {mainContent}
         <ShareArtifactsOverlay contextValue={artifactsContextValue} />
-      </>
+      </EditorProvider>
     );
   }
 
   return (
-    <ResizablePanelGroup
-      orientation="horizontal"
-      className="h-full w-full"
-      onLayoutChanged={handleLayoutChanged}
-    >
-      <ResizablePanel
-        defaultSize={`${100 - normalizedArtifactSize}`}
-        minSize="35"
-        id="share-content"
+    <EditorProvider>
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="h-full w-full"
+        onLayoutChanged={handleLayoutChanged}
       >
-        {mainContent}
-      </ResizablePanel>
-      <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
-      <ResizablePanel
-        defaultSize={`${normalizedArtifactSize}`}
-        minSize="20"
-        maxSize="60"
-        id="share-artifacts"
-      >
-        <ShareArtifactsPanel contextValue={artifactsContextValue} />
-      </ResizablePanel>
-    </ResizablePanelGroup>
+        <ResizablePanel
+          defaultSize={`${100 - normalizedArtifactSize}`}
+          minSize="35"
+          id="share-content"
+        >
+          {mainContent}
+        </ResizablePanel>
+        <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
+        <ResizablePanel
+          defaultSize={`${normalizedArtifactSize}`}
+          minSize="20"
+          maxSize="60"
+          id="share-artifacts"
+        >
+          <ShareArtifactsPanel contextValue={artifactsContextValue} />
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </EditorProvider>
   );
 }
 
@@ -166,13 +175,11 @@ interface ShareArtifactsPanelProps {
 function ShareArtifactsPanel({ contextValue }: ShareArtifactsPanelProps) {
   return (
     <ArtifactsProvider value={contextValue}>
-      <EditorProvider>
-        <div className="flex h-full w-full border-l border-border-light bg-surface-primary shadow-2xl">
-          <Suspense fallback={null}>
-            <Artifacts />
-          </Suspense>
-        </div>
-      </EditorProvider>
+      <div className="flex h-full w-full border-l border-border-light bg-surface-primary shadow-2xl">
+        <Suspense fallback={null}>
+          <Artifacts />
+        </Suspense>
+      </div>
     </ArtifactsProvider>
   );
 }

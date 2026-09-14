@@ -63,7 +63,8 @@ describe('mirrorDocumentStyles', () => {
 
     const stop = mirrorDocumentStyles(document, target);
 
-    expect(target.head.querySelector('style')?.textContent).toBe('.mirrored { color: red; }');
+    expect(target.head.querySelector('style')?.textContent).toContain('.mirrored');
+    expect(target.head.querySelector('style')?.textContent).toContain('color: red');
     expect(target.head.querySelector('link')?.href).toContain('/assets/app.css');
 
     stop();
@@ -80,7 +81,22 @@ describe('mirrorDocumentStyles', () => {
     document.head.appendChild(lazyChunkStyle);
     await Promise.resolve();
 
-    expect(target.head.textContent).toContain('.lazy { color: blue; }');
+    expect(target.head.textContent).toContain('.lazy');
+    expect(target.head.textContent).toContain('color: blue');
+    stop();
+  });
+
+  /* A rewrite that keeps the text length and the rule count is invisible to
+   * any cheap signature, so the mutation record has to drive the refresh. */
+  it('mirrors a rewrite that changes no measurable shape', async () => {
+    const target = detachedDocument();
+    const stop = mirrorDocumentStyles(document, target);
+
+    host.textContent = '.mirrored { color: RED; }'.replace('RED', 'tan');
+    await Promise.resolve();
+
+    expect(target.head.textContent).toContain('color: tan');
+    expect(target.head.textContent).not.toContain('color: red');
     stop();
   });
 

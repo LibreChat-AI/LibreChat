@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
 import type { editor } from 'monaco-editor';
@@ -19,7 +19,7 @@ export default function SandboxArtifactTabs({
   previewRef: React.MutableRefObject<SandpackPreviewRef>;
   isSharedConvo?: boolean;
 }) {
-  const { currentCode, setCurrentCode } = useCodeState();
+  const { currentCode, codeArtifactId } = useCodeState();
   const { shareId } = useShareContext();
   const shouldUseSharedConfig =
     isSharedConvo === true && typeof shareId === 'string' && shareId.length > 0;
@@ -29,18 +29,11 @@ export default function SandboxArtifactTabs({
   });
   const resolvedStartupConfig = shouldUseSharedConfig ? sharedStartupConfig : startupConfig;
   const monacoRef = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const lastIdRef = useRef<string | null>(null);
 
-  /* The reset lands only after commit, so the render that switches artifacts
-   * still sees the previous artifact's editor text. */
-  const hasCurrentArtifactCode = lastIdRef.current === artifact.id;
-
-  useEffect(() => {
-    if (artifact.id !== lastIdRef.current) {
-      setCurrentCode(undefined);
-    }
-    lastIdRef.current = artifact.id;
-  }, [artifact.id, setCurrentCode]);
+  /* The buffer belongs to whichever artifact last wrote it, so a pane that
+   * remounted for another host keeps this artifact's unsaved text and another
+   * artifact's text is simply not ours. */
+  const hasCurrentArtifactCode = codeArtifactId === artifact.id;
 
   const { files, fileKey, template, sharedProps, deriveFiles } = useArtifactProps({ artifact });
   const editedCode = hasCurrentArtifactCode ? currentCode : undefined;

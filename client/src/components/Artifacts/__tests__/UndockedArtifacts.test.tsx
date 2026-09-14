@@ -1,9 +1,9 @@
-import { act, render, screen } from '@testing-library/react';
-import { Provider, createStore } from 'jotai';
 import { RecoilRoot } from 'recoil';
+import { Provider, createStore } from 'jotai';
+import { act, render, screen } from '@testing-library/react';
 import type { MutableSnapshot } from 'recoil';
-import UndockedArtifacts from '../UndockedArtifacts';
 import { prepareUndockedDocument } from '../undockedWindow';
+import UndockedArtifacts from '../UndockedArtifacts';
 import { undockedArtifacts } from '../state';
 import store from '~/store';
 
