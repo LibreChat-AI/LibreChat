@@ -428,7 +428,12 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
      * callbacks of the save holding the lock send it. Those callbacks belong
      * to whichever editor started that save, so when the lock was taken by a
      * previous session — or released with it — nobody else will: this editor
-     * sends its own queued edit as soon as the lock is free. */
+     * sends its own queued edit as soon as the lock is free.
+     *
+     * The `original` captured when it was queued is what the artifact held
+     * before that save; by now the save has replaced it. The edit is sent
+     * against the content the artifact actually has, otherwise the endpoint
+     * rejects it and the newest text lives only in the buffer. */
     const queued = pendingUpdateRef.current;
     if (queued != null) {
       pendingUpdateRef.current = null;
@@ -436,10 +441,10 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       if (
         currentTarget != null &&
         isSameArtifactTarget(queued, currentTarget) &&
-        queued.code.trim() !== queued.original.trim()
+        queued.code.trim() !== (artifactRef.current.content ?? '').trim()
       ) {
         setCurrentCodeRef.current(queued.code, artifactRef.current.id);
-        runMutationRef.current(queued.code, queued.original);
+        runMutationRef.current(queued.code);
         return;
       }
     }

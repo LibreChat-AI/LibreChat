@@ -28,8 +28,9 @@ export const artifactsUndocked = atom((get) => get(undockedArtifacts) != null);
 export const artifactsActiveTab = atom<string>('preview');
 
 /**
- * Set when the user docks from the window's own toolbar. That button goes away
- * with the window it lived in, so the pane that takes over has to pick focus
- * up again — a keyboard user would otherwise land back on the document.
+ * Set when the user moves the pane from its own toolbar, either way. That
+ * button goes away with the toolbar it lived in, so the pane that takes over
+ * has to pick focus up again — a keyboard user would otherwise land on the
+ * document of whichever window they were sent to.
  */
-export const artifactsDockFocusRequest = atom(false);
+export const artifactsPaneFocusRequest = atom(false);

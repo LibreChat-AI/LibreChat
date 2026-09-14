@@ -10,7 +10,7 @@ import {
   persistBounds,
   relayFrameMessages,
 } from './undockedWindow';
-import { artifactsDockFocusRequest, undockedArtifacts } from './state';
+import { artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -33,7 +33,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
   const artifacts = useRecoilValue(store.artifactsState);
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
   const [detached, setDetached] = useAtom(undockedArtifacts);
-  const setDockFocusRequest = useSetAtom(artifactsDockFocusRequest);
+  const setPaneFocusRequest = useSetAtom(artifactsPaneFocusRequest);
 
   useLayoutEffect(() => {
     if (detached == null) {
@@ -61,14 +61,14 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
      * focus up exactly as it does for the Dock control. */
     const rememberAndRedock = () => {
       persistBounds(detachedWindow, window.localStorage);
-      setDockFocusRequest(true);
+      setPaneFocusRequest(true);
       redock();
     };
     detachedWindow.addEventListener('pagehide', rememberAndRedock);
     window.addEventListener('pagehide', closeWithOpener);
     const closedPoll = window.setInterval(() => {
       if (detachedWindow.closed) {
-        setDockFocusRequest(true);
+        setPaneFocusRequest(true);
         redock();
       }
     }, CLOSED_POLL_MS);
@@ -87,7 +87,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
        * next artifact opens in the side panel. */
       redock();
     };
-  }, [detached, setDetached, setDockFocusRequest]);
+  }, [detached, setDetached, setPaneFocusRequest]);
 
   const artifactTitle =
     (currentArtifactId != null ? artifacts?.[currentArtifactId]?.title : null) ??

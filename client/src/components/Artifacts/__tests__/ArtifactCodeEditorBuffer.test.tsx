@@ -229,4 +229,34 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
       updated: 'EDITED-WHILE-LOCKED',
     });
   });
+
+  /* The save that held the lock has already replaced the content the queued
+   * edit was typed against, so sending that stale `original` would have the
+   * endpoint reject the newest text. */
+  it('sends a queued edit against the content the finished save left', () => {
+    const { ed } = createModel('CONTENT-A');
+    const monacoRef = { current: ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    act(() => {
+      session.setIsMutating(true);
+    });
+
+    type('EDITED-LATE');
+    settleDebounce();
+    expect(mockMutate).not.toHaveBeenCalled();
+
+    /* The in-flight save lands: the artifact now holds its updated content. */
+    view.select({ ...artifactA, content: 'SAVED-A', lastUpdateTime: 1 });
+    act(() => {
+      session.setIsMutating(false);
+    });
+
+    expect(mockMutate).toHaveBeenCalledWith({
+      index: 0,
+      messageId: 'msg-a',
+      original: 'SAVED-A',
+      updated: 'EDITED-LATE',
+    });
+  });
 });

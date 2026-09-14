@@ -20,7 +20,7 @@ import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
 import { useArtifactsContext, useShareContext, useMutationState } from '~/Providers';
-import { artifactsDockFocusRequest, undockedArtifacts } from './state';
+import { artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
 import { useFocusTrap, useLocalize } from '~/hooks';
@@ -42,7 +42,7 @@ export default function Artifacts() {
    * `interface.artifactUndocking` and passes the answer in. */
   const { canUndock } = useArtifactsContext();
   const [detached, setDetached] = useAtom(undockedArtifacts);
-  const [dockFocusRequest, setDockFocusRequest] = useAtom(artifactsDockFocusRequest);
+  const [paneFocusRequest, setPaneFocusRequest] = useAtom(artifactsPaneFocusRequest);
   const isUndocked = detached != null;
   const undockButtonRef = useRef<HTMLButtonElement>(null);
   /* The undocked window is its own viewport: the host's width says nothing
@@ -218,7 +218,7 @@ export default function Artifacts() {
   const toggleUndock = useCallback(() => {
     if (isUndocked) {
       /* This button goes away with its window; the docked pane picks focus up. */
-      setDockFocusRequest(true);
+      setPaneFocusRequest(true);
       setDetached(null);
       return;
     }
@@ -231,14 +231,18 @@ export default function Artifacts() {
       showToast({ status: 'error', message: localize('com_ui_undock_artifacts_blocked') });
       return;
     }
+    /* The same handoff the other way: the control the user pressed goes away
+     * with the docked toolbar, so focus follows the pane into the window it
+     * just opened instead of being left on that window's empty document. */
+    setPaneFocusRequest(true);
     setDetached({ window: opened, root: prepareUndockedDocument(document, opened.document) });
-  }, [isUndocked, localize, setDetached, setDockFocusRequest, showToast]);
+  }, [isUndocked, localize, setDetached, setPaneFocusRequest, showToast]);
 
-  /* Docking replaces the window's toolbar with the side panel's: move focus to
-   * the control that took the place of the one the user just pressed. The
-   * control only exists once the pane has mounted, hence the dependency. */
+  /* Moving the pane replaces one toolbar with the other: move focus to the
+   * control that took the place of the one the user just pressed. The control
+   * only exists once the pane has mounted, hence the dependency. */
   useEffect(() => {
-    if (!dockFocusRequest || isUndocked || !isMounted) {
+    if (!paneFocusRequest || !isMounted) {
       return;
     }
     const control = undockButtonRef.current;
@@ -246,8 +250,8 @@ export default function Artifacts() {
       return;
     }
     control.focus();
-    setDockFocusRequest(false);
-  }, [dockFocusRequest, isMounted, isUndocked, setDockFocusRequest]);
+    setPaneFocusRequest(false);
+  }, [paneFocusRequest, isMounted, setPaneFocusRequest]);
 
   useFocusTrap(panelRef, isMobile && isVisible && !isClosing, closeArtifacts);
 
