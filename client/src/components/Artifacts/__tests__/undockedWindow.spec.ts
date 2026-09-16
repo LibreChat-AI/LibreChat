@@ -1,12 +1,80 @@
 import {
+  defaultBounds,
   mirrorDocumentStyles,
   mirrorDocumentTheme,
+  openUndockedWindow,
   parseBounds,
+  persistBounds,
   prepareUndockedDocument,
   relayFrameMessages,
+  UNDOCKED_ARTIFACTS_BOUNDS_KEY,
 } from '../undockedWindow';
 
 const detachedDocument = () => document.implementation.createHTMLDocument('detached');
+
+/**
+ * A browser that denies Web Storage throws from the `localStorage` getter
+ * itself, not from `getItem`. Undocking has to fall back to default bounds,
+ * and docking back — which runs through the same persistence — has to finish,
+ * or the pane is stranded in a window with no way home.
+ */
+const windowWithDeniedStorage = (overrides: Partial<Window> = {}) => {
+  const denied = {
+    screen: { availWidth: 1600, availHeight: 1000 },
+    outerWidth: 1200,
+    outerHeight: 900,
+    screenX: 0,
+    screenY: 0,
+    open: jest.fn(() => ({ focus: jest.fn() })),
+    ...overrides,
+  };
+  Object.defineProperty(denied, 'localStorage', {
+    get() {
+      throw new DOMException('denied', 'SecurityError');
+    },
+  });
+  return denied as unknown as Window;
+};
+
+describe('undocking when the browser denies storage', () => {
+  it('opens the window at the default bounds instead of throwing', () => {
+    const source = windowWithDeniedStorage();
+
+    const opened = openUndockedWindow(source);
+
+    expect(opened).not.toBeNull();
+    const features = (source.open as jest.Mock).mock.calls[0][2] as string;
+    const { width, height } = defaultBounds(source);
+    expect(features).toContain(`width=${width}`);
+    expect(features).toContain(`height=${height}`);
+  });
+
+  it('lets the redock and teardown path finish without remembering bounds', () => {
+    const detached = {
+      outerWidth: 900,
+      outerHeight: 700,
+      screenX: 120,
+      screenY: 40,
+    } as unknown as Window;
+
+    expect(() => persistBounds(detached, windowWithDeniedStorage())).not.toThrow();
+  });
+
+  it('still remembers the bounds when storage is available', () => {
+    const detached = {
+      outerWidth: 900,
+      outerHeight: 700,
+      screenX: 120,
+      screenY: 40,
+    } as unknown as Window;
+
+    persistBounds(detached, window);
+
+    expect(window.localStorage.getItem(UNDOCKED_ARTIFACTS_BOUNDS_KEY)).toBe(
+      JSON.stringify({ width: 900, height: 700, left: 120, top: 40 }),
+    );
+  });
+});
 
 describe('parseBounds', () => {
   it('keeps a window that was left on a monitor at negative coordinates', () => {

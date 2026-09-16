@@ -184,11 +184,15 @@ test.describe('undocked artifacts pane', () => {
 
     const popup = await undock(page);
 
-    /* Landing back on the preview would read as the edit having been lost. */
-    await expect(popup.getByRole('radio', { name: 'Code' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    /* Landing back on the preview would read as the edit having been lost.
+     * Polled, because a tab reset lands a frame after the move and a
+     * first-match assertion would accept the frame before it. */
+    await expect
+      .poll(async () => popup.getByRole('radio', { name: 'Code' }).getAttribute('aria-checked'), {
+        timeout: 10000,
+      })
+      .toBe('true');
+    await expect(popup.locator(`${UNDOCKED_PANE} #artifacts-code`)).toBeVisible({ timeout: 30000 });
     await expect(popup.locator(`${UNDOCKED_PANE} #artifacts-code`)).toContainText('undock-edit', {
       timeout: 30000,
     });
@@ -271,6 +275,79 @@ test.describe('undocked artifacts pane', () => {
 
     await expect(panel.getByRole('button', { name: 'Copy' })).toBeVisible();
     await expect(panel.getByRole('button', { name: UNDOCK })).toHaveCount(0);
+  });
+
+  /* The tab is pane state, and the pane is a new instance in every host. A
+   * reset driven by the instance rather than by the artifact sends the user
+   * back to Preview on both transitions, which reads as their code being gone.
+   * Asserting the settled tab matters: the reset lands a frame after the move,
+   * so a first-match assertion can pass on the frame before it. */
+  test('the pane keeps the code tab across both host changes @scenario:the-code-tab-survives-a-host-change', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const panel = await openHtmlArtifact(page);
+
+    await panel.getByRole('radio', { name: 'Code' }).click();
+    await expect(panel.locator('#artifacts-code')).toBeVisible({ timeout: 30000 });
+
+    const popup = await undock(page);
+
+    const popupCodeTab = popup.getByRole('radio', { name: 'Code' });
+    await expect(popupCodeTab).toBeVisible({ timeout: 20000 });
+    await expect
+      .poll(async () => popupCodeTab.getAttribute('aria-checked'), { timeout: 10000 })
+      .toBe('true');
+    /* Visible, not merely present: the code pane stays mounted when the tab
+     * changes, so presence alone would not show which tab is on screen. */
+    await expect(popup.locator(`${UNDOCKED_PANE} #artifacts-code`)).toBeVisible({
+      timeout: 30000,
+    });
+
+    await popup.getByRole('button', { name: DOCK }).click();
+
+    const docked = page.getByRole('region', { name: HTML_ARTIFACT });
+    await expect(docked).toBeVisible({ timeout: 20000 });
+    const dockedCodeTab = docked.getByRole('radio', { name: 'Code' });
+    await expect
+      .poll(async () => dockedCodeTab.getAttribute('aria-checked'), { timeout: 10000 })
+      .toBe('true');
+    await expect(docked.locator('#artifacts-code')).toBeVisible({ timeout: 30000 });
+  });
+
+  /* Reading `localStorage` throws outright under a policy that denies Web
+   * Storage, so the remembered window bounds must not be on the path that
+   * decides whether the pane can move at all — in either direction. */
+  test('the pane still moves when the browser denies storage @scenario:undocking-works-when-storage-is-denied', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const panel = await openHtmlArtifact(page);
+
+    /* Denied after load: the app reads storage while booting, and the finding
+     * is about the undock and dock paths, not about starting up without it. */
+    await page.evaluate(() => {
+      Object.defineProperty(window, 'localStorage', {
+        configurable: true,
+        get() {
+          throw new DOMException('denied', 'SecurityError');
+        },
+      });
+    });
+
+    const [popup] = await Promise.all([
+      page.waitForEvent('popup'),
+      panel.getByRole('button', { name: UNDOCK }).click(),
+    ]);
+    await expect(popup.locator(UNDOCKED_PANE)).toBeVisible({ timeout: 20000 });
+    await expect(popup.getByRole('region', { name: HTML_ARTIFACT })).toBeVisible();
+
+    /* Persisting the bounds runs on the way home too, and a throw there would
+     * strand the pane in a window whose control the user just pressed. */
+    await popup.getByRole('button', { name: DOCK }).click();
+
+    await expect(page.getByRole('region', { name: HTML_ARTIFACT })).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole('button', { name: UNDOCK })).toBeVisible();
   });
 });
 

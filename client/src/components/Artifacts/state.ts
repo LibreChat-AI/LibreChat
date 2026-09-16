@@ -28,6 +28,15 @@ export const artifactsUndocked = atom((get) => get(undockedArtifacts) != null);
 export const artifactsActiveTab = atom<string>('preview');
 
 /**
+ * The artifact the pane last opened, which is what makes the tab reset above
+ * mean "a different artifact" rather than "a new pane instance". Changing host
+ * remounts the pane, so an instance-local ref would read the artifact already
+ * on screen as freshly opened and send the user back to the preview — losing
+ * the tab this atom exists to carry.
+ */
+export const artifactsOpenedArtifactId = atom<string | null>(null);
+
+/**
  * Set when the user moves the pane from its own toolbar, either way. That
  * button goes away with the toolbar it lived in, so the pane that takes over
  * has to pick focus up again — a keyboard user would otherwise land on the

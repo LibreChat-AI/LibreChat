@@ -60,7 +60,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
      * window is a dock the user asked for, so the pane that takes over picks
      * focus up exactly as it does for the Dock control. */
     const rememberAndRedock = () => {
-      persistBounds(detachedWindow, window.localStorage);
+      persistBounds(detachedWindow, window);
       setPaneFocusRequest(true);
       redock();
     };
@@ -81,7 +81,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
         dispose();
       }
       root.remove();
-      persistBounds(detachedWindow, window.localStorage);
+      persistBounds(detachedWindow, window);
       detachedWindow.close();
       /* Closing the pane while undocked is not a dock: clear the window so the
        * next artifact opens in the side panel. */

@@ -18,9 +18,9 @@ import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
+import { artifactsOpenedArtifactId, artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
 import { useArtifactsContext, useShareContext, useMutationState } from '~/Providers';
-import { artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import useArtifacts from '~/hooks/Artifacts/useArtifacts';
 import { useFocusTrap, useLocalize } from '~/hooks';
@@ -284,18 +284,28 @@ export default function Artifacts() {
    * shared state leaked it to the next artifact — after a `.py` (code-only)
    * every preview-capable row opened on Code while announcing a rendered
    * preview — so the tab is reset per artifact instead, and a manual choice
-   * survives only while that artifact stays open. */
-  const openedArtifactRef = useRef<string | null>(null);
+   * survives only while that artifact stays open. The marker is pane state
+   * for the same reason the tab is: changing host remounts the pane, and an
+   * instance ref would start empty and reset the tab of the artifact already
+   * on screen. */
+  const [openedArtifactId, setOpenedArtifactId] = useAtom(artifactsOpenedArtifactId);
   useEffect(() => {
     const openedId = currentArtifact?.id ?? null;
-    if (openedId === openedArtifactRef.current) {
+    if (openedId === openedArtifactId) {
       return;
     }
-    openedArtifactRef.current = openedId;
+    setOpenedArtifactId(openedId);
     if (openedId != null && constrainedTab == null && activeTab !== 'preview') {
       setActiveTab('preview');
     }
-  }, [activeTab, constrainedTab, currentArtifact?.id, setActiveTab]);
+  }, [
+    activeTab,
+    constrainedTab,
+    currentArtifact?.id,
+    openedArtifactId,
+    setActiveTab,
+    setOpenedArtifactId,
+  ]);
 
   const handleCopyArtifact = useCallback(async () => {
     const content = currentArtifact?.content ?? '';

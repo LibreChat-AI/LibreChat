@@ -2,7 +2,11 @@ import { useMemo, useEffect, useRef } from 'react';
 import { useAtom, useSetAtom } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import { useRecoilCallback, useRecoilState, useRecoilValue, useResetRecoilState } from 'recoil';
-import { artifactsActiveTab, artifactsPaneFocusRequest } from '~/components/Artifacts/state';
+import {
+  artifactsActiveTab,
+  artifactsOpenedArtifactId,
+  artifactsPaneFocusRequest,
+} from '~/components/Artifacts/state';
 import { useCodeState } from '~/Providers/EditorContext';
 import { isCodeOnlyArtifact } from '~/utils/artifacts';
 import { useArtifactsContext } from '~/Providers';
@@ -143,6 +147,7 @@ export default function useArtifacts() {
    * hosts, and the tab the user was on has to come with it. */
   const [activeTab, setActiveTab] = useAtom(artifactsActiveTab);
   const setPaneFocusRequest = useSetAtom(artifactsPaneFocusRequest);
+  const setOpenedArtifactId = useSetAtom(artifactsOpenedArtifactId);
   const { endCodeSession } = useCodeState();
   const { isSubmitting, latestMessageId, latestMessageText, conversationId } =
     useArtifactsContext();
@@ -199,6 +204,7 @@ export default function useArtifacts() {
        * tells a save still in flight that its callbacks have nothing to
        * restore here. */
       setActiveTab('preview');
+      setOpenedArtifactId(null);
       endCodeSession();
       setPaneFocusRequest(false);
       prevConversationIdRef.current = conversationId;
@@ -229,6 +235,7 @@ export default function useArtifacts() {
     setActiveTab,
     endCodeSession,
     setPaneFocusRequest,
+    setOpenedArtifactId,
   ]);
 
   /**

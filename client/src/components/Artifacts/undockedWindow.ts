@@ -82,23 +82,22 @@ export function defaultBounds(source: Window): UndockedWindowBounds {
   };
 }
 
-const readStorage = (storage: Storage | undefined, key: string): string | null => {
-  try {
-    return storage?.getItem(key) ?? null;
-  } catch {
-    return null;
-  }
-};
-
 /**
  * Opens (or refocuses) the popup that hosts the undocked pane. Returns `null`
  * when the browser blocked it, which is the caller's cue to tell the user.
  * Must run inside the click handler: popup permission follows user activation.
  */
 export function openUndockedWindow(source: Window): Window | null {
-  const bounds =
-    parseBounds(readStorage(source.localStorage, UNDOCKED_ARTIFACTS_BOUNDS_KEY)) ??
-    defaultBounds(source);
+  let stored: string | null = null;
+  try {
+    /* A policy that denies Web Storage throws from the `localStorage` getter
+     * itself, so the property is read inside the guard. Reaching for it at the
+     * call site would throw before any of this could fall back to defaults. */
+    stored = source.localStorage?.getItem(UNDOCKED_ARTIFACTS_BOUNDS_KEY) ?? null;
+  } catch {
+    stored = null;
+  }
+  const bounds = parseBounds(stored) ?? defaultBounds(source);
   const features = [
     'popup=yes',
     `width=${bounds.width}`,
@@ -115,8 +114,13 @@ export function openUndockedWindow(source: Window): Window | null {
   return opened;
 }
 
-/** Remembers where the user put the window so the next undock lands there. */
-export function persistBounds(detached: Window, storage: Storage | undefined): void {
+/**
+ * Remembers where the user put the window so the next undock lands there.
+ * Takes the opener rather than its `Storage`, because the `localStorage`
+ * getter throws under a policy that denies storage and this runs on the
+ * redock and teardown paths, which must finish.
+ */
+export function persistBounds(detached: Window, source: Window): void {
   try {
     const bounds: UndockedWindowBounds = {
       width: detached.outerWidth,
@@ -128,7 +132,7 @@ export function persistBounds(detached: Window, storage: Storage | undefined): v
     if (!isFiniteNumber(bounds.width) || bounds.width <= 0 || bounds.height <= 0) {
       return;
     }
-    storage?.setItem(UNDOCKED_ARTIFACTS_BOUNDS_KEY, JSON.stringify(bounds));
+    source.localStorage?.setItem(UNDOCKED_ARTIFACTS_BOUNDS_KEY, JSON.stringify(bounds));
   } catch {
     /* window already torn down, or storage denied */
   }
