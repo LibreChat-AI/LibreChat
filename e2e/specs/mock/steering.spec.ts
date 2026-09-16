@@ -34,9 +34,12 @@ const messageInput = (page: Page) => page.getByRole('textbox', { name: 'Message 
 const duringRunSendButton = (page: Page) => page.getByTestId('during-run-send-button');
 const queuedRows = (page: Page) => page.getByTestId('queued-message-row');
 const messageTurns = (page: Page) => messagesView(page).locator('.message-render');
-/** In-flight steers are anchored above the composer, not in the thread. */
-const inFlightSteers = (page: Page) => page.getByTestId('in-flight-steer');
-const appliedSteerParts = (page: Page) => messagesView(page).getByTestId('steer-part');
+/** In-flight steers render at the tail of the streaming reply. */
+const inFlightSteers = (page: Page) => page.getByTestId('pending-steers').getByRole('listitem');
+/** Applied (persisted) steer parts only: pending steers render their own
+ *  SteerPart inside the reply now, so exclude anything under `pending-steers`. */
+const appliedSteerParts = (page: Page) =>
+  messagesView(page).locator('[data-testid="steer-part"]:not([data-testid="pending-steers"] *)');
 
 type PersistedMessage = {
   messageId: string;
@@ -58,15 +61,17 @@ function isSteerRequest(response: Response) {
   );
 }
 
-/** Select the MCP server from the composer's ephemeral MCP dropdown. */
+/** Select the MCP server from the composer palette. */
 async function selectEphemeralMCP(page: Page) {
-  await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-  const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(MCP_SERVER_TITLE) });
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const serverItem = page
+    .getByRole('dialog', { name: 'Attach and tools' })
+    .getByRole('button', { name: new RegExp(`^${MCP_SERVER_TITLE}\\b`) });
   await expect(serverItem).toBeVisible();
   await serverItem.click();
-  await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+  await expect(serverItem).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: new RegExp(MCP_SERVER_TITLE) })).toBeVisible();
+  await expect(page.getByRole('listitem', { name: MCP_SERVER_TITLE, exact: true })).toBeVisible();
 }
 
 /** Establish a real conversation with a fast first turn so during-run actions
@@ -88,6 +93,15 @@ async function typeDuringRun(page: Page, text: string) {
 }
 
 test.describe('mid-run steering and queuing', () => {
+  /* The composer ships with Enter queueing during a run; these tests exercise
+     the steer route, so pin the during-run default to steering. Cmd/Ctrl+Enter
+     then carries the queue path, which the queue tests below rely on. */
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('duringRunDefaultAction', JSON.stringify('steer'));
+    });
+  });
+
   /**
    * The applied-steer contract (requires @librechat/agents ≥ 3.2.63, where
    * top-level `PostToolBatch` hook inputs carry no subagent-scope `agentId`):
@@ -493,8 +507,7 @@ test.describe('mid-run steering and queuing', () => {
     await expect(row).toBeVisible({ timeout: 15000 });
     await expect(row.getByRole('button', { name: 'Remove message', exact: true })).toBeVisible();
 
-    await row.getByRole('button', { name: 'More options', exact: true }).click();
-    const edit = page.getByRole('menuitem', { name: 'Edit message', exact: true });
+    const edit = row.getByRole('button', { name: 'Edit message', exact: true });
     await expect(edit).toBeVisible();
     await edit.click();
 

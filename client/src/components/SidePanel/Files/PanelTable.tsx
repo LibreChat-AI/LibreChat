@@ -1,5 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
-import { useSetRecoilState } from 'recoil';
+import { useState, useMemo, useRef } from 'react';
 import { ArrowUpLeft } from 'lucide-react';
 import {
   Table,
@@ -10,7 +9,6 @@ import {
   TableCell,
   FilterInput,
   TableHeader,
-  useToastContext,
 } from '@librechat/client';
 import {
   flexRender,
@@ -39,9 +37,9 @@ import {
 import type { TFile } from 'librechat-data-provider';
 import { useLocalize, useUpdateFiles, useGetAgentsConfig, useAgentCapabilities } from '~/hooks';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
-import { useFileMapContext, useChatContext } from '~/Providers';
-import { useGetFileConfig } from '~/data-provider';
-import { ephemeralAgentByConvoId } from '~/store';
+import useAttachExisting from '~/hooks/Files/useAttachExisting';
+import { useChatContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -90,153 +88,8 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
     },
   });
 
-  const fileMap = useFileMapContext();
-  const { showToast } = useToastContext();
   const { files, setFiles, conversation } = useChatContext();
-  const { data: fileConfig = null } = useGetFileConfig({
-    select: (data) => mergeFileConfig(data),
-  });
-  const { addFile } = useUpdateFiles(setFiles);
-  const setEphemeralAgent = useSetRecoilState(
-    ephemeralAgentByConvoId(conversation?.conversationId ?? Constants.NEW_CONVO),
-  );
-  const { agentsConfig } = useGetAgentsConfig();
-  const capabilities = useAgentCapabilities(agentsConfig?.capabilities ?? defaultAgentCapabilities);
-
-  const handleFileClick = useCallback(
-    (file: TFile) => {
-      if (!fileMap?.[file.file_id] || !conversation?.endpoint) {
-        showToast({
-          message: localize('com_ui_attach_error'),
-          status: 'error',
-        });
-        return;
-      }
-
-      const fileData = fileMap[file.file_id];
-      const endpoint = conversation.endpoint;
-      const endpointType = conversation.endpointType;
-
-      if (!fileData.source) {
-        return;
-      }
-
-      const isOpenAIStorage = checkOpenAIStorage(fileData.source);
-      const isAssistants = isAssistantsEndpoint(endpoint);
-
-      if (isOpenAIStorage && !isAssistants) {
-        showToast({
-          message: localize('com_ui_attach_error_openai'),
-          status: 'error',
-        });
-        return;
-      }
-
-      if (!isOpenAIStorage && isAssistants) {
-        showToast({
-          message: localize('com_ui_attach_warn_endpoint'),
-          status: 'warning',
-        });
-      }
-
-      const endpointFileConfig = getEndpointFileConfig({
-        fileConfig,
-        endpoint,
-        endpointType,
-      });
-
-      if (endpointFileConfig.disabled === true) {
-        showToast({
-          message: localize('com_ui_attach_error_disabled'),
-          status: 'error',
-        });
-        return;
-      }
-
-      if (endpointFileConfig.fileLimit && files.size >= endpointFileConfig.fileLimit) {
-        showToast({
-          message: `${localize('com_ui_attach_error_limit')} ${endpointFileConfig.fileLimit} files (${endpoint})`,
-          status: 'error',
-        });
-        return;
-      }
-
-      if (fileData.bytes >= (endpointFileConfig.fileSizeLimit ?? Number.MAX_SAFE_INTEGER)) {
-        showToast({
-          message: `${localize('com_ui_attach_error_size')} ${
-            (endpointFileConfig.fileSizeLimit ?? 0) / megabyte
-          } MB (${endpoint})`,
-          status: 'error',
-        });
-        return;
-      }
-
-      if (!defaultFileConfig.checkType(file.type, endpointFileConfig.supportedMimeTypes ?? [])) {
-        showToast({
-          message: `${localize('com_ui_attach_error_type')} ${file.type} (${endpoint})`,
-          status: 'error',
-        });
-        return;
-      }
-
-      if (endpointFileConfig.totalSizeLimit) {
-        const existing = files.get(fileData.file_id);
-        let currentTotalSize = 0;
-        for (const f of files.values()) {
-          currentTotalSize += f.size;
-        }
-        currentTotalSize -= existing?.size ?? 0;
-        if (currentTotalSize + fileData.bytes > endpointFileConfig.totalSizeLimit) {
-          showToast({
-            message: `${localize('com_ui_attach_error_total_size')} ${endpointFileConfig.totalSizeLimit / megabyte} MB (${endpoint})`,
-            status: 'error',
-          });
-          return;
-        }
-      }
-
-      /** Mirror `AttachFileMenu`: an embedded file is unreadable unless file search is on.
-       * The ephemeral flag governs direct chats only — a saved agent's own `tools` decide,
-       * so writing it there would be dead state the badge row still reflects. */
-      if (
-        fileData.embedded === true &&
-        capabilities.fileSearchEnabled &&
-        isEphemeralAgentId(conversation.agent_id)
-      ) {
-        setEphemeralAgent((prev) => ({
-          ...prev,
-          [EToolResources.file_search]: true,
-        }));
-      }
-
-      addFile({
-        progress: 1,
-        attached: true,
-        file_id: fileData.file_id,
-        filepath: fileData.filepath,
-        preview: fileData.filepath,
-        type: fileData.type,
-        height: fileData.height,
-        width: fileData.width,
-        filename: fileData.filename,
-        source: fileData.source,
-        size: fileData.bytes,
-        metadata: fileData.metadata,
-        llmDeliveryPath: fileData.llmDeliveryPath,
-      });
-    },
-    [
-      addFile,
-      files,
-      fileMap,
-      conversation,
-      localize,
-      showToast,
-      fileConfig,
-      setEphemeralAgent,
-      capabilities.fileSearchEnabled,
-    ],
-  );
+  const handleFileClick = useAttachExisting({ files, setFiles, conversation });
 
   const filenameFilter = table.getColumn('filename')?.getFilterValue() as string;
 

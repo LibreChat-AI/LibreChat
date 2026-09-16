@@ -245,6 +245,7 @@ export default function EditContentParts({
             overrideFiles: editedMessage.files,
             overrideManualSkills: editedMessage.manualSkills,
             overrideQuotes: editedMessage.quotes,
+            overrideReasoning: editedMessage.reasoningOverride ?? null,
             addedConvo: getAddedConvo() || undefined,
           },
         ) === false;
@@ -269,6 +270,7 @@ export default function EditContentParts({
               targetResponseMessageId: messageId,
               overrideManualSkills: parentMessage.manualSkills,
               overrideQuotes: parentMessage.quotes,
+              overrideReasoning: parentMessage.reasoningOverride ?? null,
               addedConvo: getAddedConvo() || undefined,
             },
           ) === false;
@@ -295,6 +297,7 @@ export default function EditContentParts({
               isEdited: true,
               overrideManualSkills: parentMessage.manualSkills,
               overrideQuotes: parentMessage.quotes,
+              overrideReasoning: parentMessage.reasoningOverride ?? null,
               addedConvo: getAddedConvo() || undefined,
             },
           ) === false;

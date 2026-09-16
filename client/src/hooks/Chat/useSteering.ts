@@ -15,6 +15,7 @@ import type {
   TConversation,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import type { CallbackInterface } from 'recoil';
 import type {
   RunEnd,
   PendingSteer,
@@ -23,6 +24,7 @@ import type {
   SettledQueuedTurnReceipt,
 } from '~/store/families';
 import type { AgentQueuedTurnReceipt, GenerationProtocolVersion } from '~/data-provider';
+import type { QueueSendLock } from '~/utils/queueIntent';
 import type { ExtendedFile, FileSetter } from '~/common';
 import {
   useCancelSteerMutation,
@@ -38,13 +40,23 @@ import {
 import {
   appendAppliedSteerIds,
   carriedSteerContext,
+  clearAllDrafts,
+  findLiveAskUserQuestion,
+  getPendingDraftId,
   insertQueuedOrigin,
   hydrateFileDeliveryMetadata,
   mergeRestagedQuotes,
 } from '~/utils';
+import {
+  getReasoningStateKey,
+  pendingReasoningOverrideFamily,
+} from '~/components/Chat/Input/Composer/state';
+import { hasQueuedIntent, acquireQueueSendLock, releaseQueueSendLock } from '~/utils/queueIntent';
+import { markComposerFilesTaken } from '~/utils/composerFiles';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import { useLatestMessage } from '~/hooks/Messages';
+import { insertQueuedMessage } from '~/utils/queue';
 import { useSetFilesToDelete } from '~/hooks/Files';
 import { useFileMapContext } from '~/Providers';
 import useLocalize from '~/hooks/useLocalize';
@@ -57,6 +69,7 @@ export type DuringRunAction = 'steer' | 'queue';
 export interface QueuedMessageContext {
   quotes?: string[];
   manualSkills?: string[];
+  reasoningOverride?: TMessage['reasoningOverride'];
   clientRequestId?: string;
   recoverySteerId?: string;
   expectedPredecessorCreatedAt?: number;
@@ -70,7 +83,7 @@ const QUEUE_USAGE_MAX_FILES = 10;
  * reconciliation path for exceptionally slow intermediaries. */
 const QUEUED_TURN_RECONCILIATION_MS = 60_000;
 
-type SteerErrorCode =
+export type SteerErrorCode =
   | 'NO_ACTIVE_RUN'
   | 'RUN_PAUSED'
   | 'RUN_REPLACED'
@@ -94,12 +107,12 @@ type SubmitSteerOptions = {
   generationProtocolVersion?: GenerationProtocolVersion;
 };
 
-function getSteerErrorCode(error: unknown): SteerErrorCode | undefined {
+export function getSteerErrorCode(error: unknown): SteerErrorCode | undefined {
   const response = (error as { response?: { data?: { code?: string } } } | undefined)?.response;
   return response?.data?.code;
 }
 
-function isDefiniteSteerRejection(error: unknown): boolean {
+export function isDefiniteSteerRejection(error: unknown): boolean {
   const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
   return (
     status != null &&
@@ -122,9 +135,102 @@ function isSameRunEpoch(a: RunEnd | null, b: RunEnd): boolean {
   return a.endedAt === b.endedAt;
 }
 
-/** True when the latest assistant message carries an unresolved tool approval —
- *  the run is (or is about to be) paused, so a steer POST would 409. */
-function hasLiveToolApproval(message: TMessage | null): boolean {
+/**
+ * Resolves a steer's 202 ACK against the applied-id set and the run's live
+ * state: on the common path the local chip is swapped for its server-assigned
+ * id (still `pending`, awaiting `on_steer_applied`). If an `on_steer_applied`
+ * event already beat the ACK, if the source generation was replaced, or if the
+ * run itself ended before the ACK landed, no later SSE event will ever resolve
+ * a `pending` chip, so the caller is told to route the words into the queue
+ * instead of stranding one.
+ *
+ * `ordinaryRunOver` is the caller's observation of ordinary terminal state
+ * (the visible pane is idle); epoch replacement is derived here so every
+ * caller applies the same rule.
+ *
+ * The single implementation for EVERY 202: the composer's own POST and an ACK
+ * originating outside it (`useSteerRecovery`'s retry, for a steer that already
+ * failed once) both resolve through this, instead of approximating each other.
+ *
+ * @returns true when the caller must route the steer into the queue.
+ */
+export function resolveAcknowledgedSteer(
+  { snapshot, set }: Pick<CallbackInterface, 'snapshot' | 'set'>,
+  conversationId: string,
+  localId: string,
+  steer: PendingSteer,
+  ordinaryRunOver: boolean,
+): boolean {
+  const applied = snapshot.getLoadable(store.appliedSteerIdsByConvoId(conversationId)).getValue();
+  const alreadyApplied = applied.includes(steer.steerId) || applied.includes(localId);
+  const alreadyAccepted = snapshot
+    .getLoadable(store.acceptedSteerClientIdsByConvoId(conversationId))
+    .getValue()
+    .includes(localId);
+  const activeEpoch = snapshot
+    .getLoadable(store.activeGenerationCreatedAtByConvoId(conversationId))
+    .getValue();
+  /** A replacement can already be submitting when an older generation's
+   * delayed 202 arrives. Ordinary submission state alone would re-mint the old
+   * chip after replacement reconciliation, with no old apply event left to
+   * settle it. Every POST reaching here captured a non-null source epoch before
+   * dispatch, so either a mismatch or a later clear proves that source
+   * generation is no longer active. */
+  const runReplaced =
+    steer.generationCreatedAt != null &&
+    (activeEpoch == null || steer.generationCreatedAt !== activeEpoch);
+  const runOver = ordinaryRunOver || runReplaced;
+  set(store.acceptedSteerClientIdsByConvoId(conversationId), (prev) =>
+    appendAppliedSteerIds(prev, [localId]),
+  );
+  set(store.pendingSteersByConvoId(conversationId), (prev) => {
+    const local = prev.find((item) => item.steerId === localId);
+    let acknowledged = steer;
+    if ((local?.preemptRevision ?? 0) > (steer.preemptRevision ?? 0)) {
+      const { preempt: _stalePreempt, ...withoutStaleLabel } = steer;
+      acknowledged = {
+        ...withoutStaleLabel,
+        ...(local?.preempt === true && { preempt: true }),
+        preemptRevision: local?.preemptRevision,
+      };
+    }
+    const next = prev.filter((item) => item.steerId !== localId);
+    // Upsert: an SSE reconnect may have reseeded the chip under the server id
+    // already; appending again would duplicate it.
+    const alreadySeeded = next.some((item) => item.steerId === steer.steerId);
+    return alreadyApplied || alreadyAccepted || runOver || alreadySeeded
+      ? next
+      : [...next, acknowledged];
+  });
+  /** `alreadyAccepted` can come from the correlation update that precedes the
+   * delayed HTTP response; it proves server ownership, not delivery. Once the
+   * source epoch is over/replaced we still must recover it. */
+  if (alreadyApplied || !runOver) {
+    return false;
+  }
+  // The server accepted but this run is already terminal. Its terminal close
+  // may have parked the item, so the caller must route it through the recovery
+  // converter (deterministic next-turn id), not an ordinary editable queue row.
+  return true;
+}
+
+/** True when the latest assistant message carries an unresolved tool approval:
+ *  the run is (or is about to be) paused, so a steer POST would 409.
+ *
+ *  Exported so the in-thread pending steers gate their escalation control on
+ *  the same predicate the composer does, rather than a second approximation. */
+export function hasLiveToolApproval(
+  messagesOrMessage: TMessage[] | TMessage | null | undefined,
+): boolean {
+  let message = Array.isArray(messagesOrMessage) ? null : messagesOrMessage;
+  if (Array.isArray(messagesOrMessage)) {
+    for (let i = messagesOrMessage.length - 1; i >= 0; i--) {
+      if (messagesOrMessage[i].isCreatedByUser === false) {
+        message = messagesOrMessage[i];
+        break;
+      }
+    }
+  }
   if (message?.isCreatedByUser !== false) {
     return false;
   }
@@ -328,6 +434,9 @@ function reconcileServerQueuedTurns(
           receipt.manualSkills.length > 0 && {
             manualSkills: receipt.manualSkills,
           }),
+        ...(receipt.reasoningOverride != null && {
+          reasoningOverride: receipt.reasoningOverride,
+        }),
         ...(receipt.priority === true && { priority: true }),
         server: {
           id: receipt.queuedTurnId,
@@ -371,6 +480,18 @@ function reconcileServerQueuedTurns(
   return [...retained, ...projected].sort(compareQueuedMessages);
 }
 
+/**
+ * The ONE during-run pause predicate. Both an unresolved tool approval and a
+ * live `ask_user_question` suspend the generation while keeping its submission
+ * slot occupied, so a steer POST would 409 in either case.
+ *
+ * Shared by the composer and the in-thread pending steers so a control is
+ * never enabled on one surface while the other correctly refuses.
+ */
+export function hasLiveRunPause(messages: TMessage[] | undefined): boolean {
+  return hasLiveToolApproval(messages) || findLiveAskUserQuestion(messages) != null;
+}
+
 export interface UseSteeringParams {
   /** Consume the actual storage key selected by the composer’s autosave owner. */
   consumeDraft: () => void;
@@ -379,13 +500,13 @@ export interface UseSteeringParams {
   conversation: TConversation | null;
   isSubmitting: boolean;
   answerModeActive: boolean;
-  /** Composer attachments — consumed into queued items (steering is text-only). */
+  /** Composer attachments: consumed into queued items (steering is text-only). */
   files?: Map<string, ExtendedFile>;
   setFiles?: FileSetter;
   /** Uploads still in flight: during-run submits are held like the send button. */
   filesLoading?: boolean;
   /** Submits text (and optional attachments/quotes/skills) as a normal new
-   *  turn. Overrides are always explicit — a queued item is the FULL
+   *  turn. Overrides are always explicit; a queued item is the FULL
    *  submission context, so absent fields must send as empty, never vacuum
    *  the composer. Returns `false` when `ask` refused without sending
    *  (in-flight guard, history not cached yet) so callers can restore
@@ -402,8 +523,8 @@ export interface UseSteeringParams {
 /**
  * The composer's during-run brain: decides what Enter does while a run is
  * generating (steer vs queue, per the user preference and run state), owns the
- * pending-steer / queued-message chip state, and implements the three actions
- * — steer (POST + optimistic chip), queue (client-side), and interrupt & send
+ * pending-steer / queued-message chip state, and implements the three actions:
+ * steer (POST + optimistic chip), queue (client-side), and interrupt & send
  * (abort, then auto-send via the one-shot drain override).
  */
 export default function useSteering({
@@ -420,6 +541,7 @@ export default function useSteering({
   stopGenerating,
 }: UseSteeringParams) {
   const localize = useLocalize();
+  const reasoningStore = useStore();
   const { showToast } = useToastContext();
   const jotaiStore = useStore();
   const fileMap = useFileMapContext();
@@ -444,7 +566,9 @@ export default function useSteering({
   /** v1 gates the during-run UI to the primary composer, like the HITL popover. */
   const enabled = steerable && index === 0;
   const queueKey = hasRealConvoId ? conversationId : Constants.NEW_CONVO;
+  const reasoningStateKey = getReasoningStateKey(conversationId, index);
   const queuedMessages = useRecoilValue(store.queuedMessagesByConvoId(queueKey));
+  const pendingReasoningOverride = useAtomValue(pendingReasoningOverrideFamily(reasoningStateKey));
   const setQueuedMessages = useSetRecoilState(store.queuedMessagesByConvoId(queueKey));
   const knownClientRequestIds = useMemo(
     () =>
@@ -693,15 +817,27 @@ export default function useSteering({
   );
   /** `ask()` does not flip `isSubmitting` until the submission effect renders.
    * Two queued-row clicks in the same browser task would otherwise both remove
-   * their items and the second submission could overwrite the first. */
-  const idleSendInFlightRef = useRef(false);
+   * their items and the second submission could overwrite the first; and the
+   * run-end drain, which submits into the SAME pane slot, cannot see a ref that
+   * lives in this hook. The claim is shared with `useQueueDrain` and keyed by
+   * pane, because the contended resource is `isSubmittingFamily(index)`. */
+  const sendLockKey = String(index);
+  const idleSendLockRef = useRef<QueueSendLock | null>(null);
   const pendingSteers = useRecoilValue(store.pendingSteersByConvoId(queueKey));
 
-  useEffect(() => {
-    if (!isSubmitting) {
-      idleSendInFlightRef.current = false;
-    }
-  }, [isSubmitting]);
+  /** Held only until the pane's submission state moves or it changes chat: past
+   * either, both callers gate on `isSubmitting` directly and the claim is spent.
+   *
+   * Released from a cleanup rather than an effect body, because React runs every
+   * cleanup in a commit before any effect body: this can never free a slot the
+   * drain's effect claimed in the same commit. */
+  useEffect(
+    () => () => {
+      releaseQueueSendLock(idleSendLockRef.current);
+      idleSendLockRef.current = null;
+    },
+    [isSubmitting, sendLockKey, queueKey],
+  );
 
   /** Keep logical queue origins through the 202 ACK. They are needed to
    * reconstruct FIFO if several accepted queue items later return as terminal
@@ -740,7 +876,7 @@ export default function useSteering({
   const pausedOnApproval =
     enabled && isSubmitting ? answerModeActive || (liveMessageState?.approval ?? false) : false;
 
-  /** Whether a steer can reach the live run right now — independent of the
+  /** Whether a steer can reach the live run right now, independent of the
    *  user's default action, so the per-send menu can always override to
    *  steer when it's genuinely available. */
   const canSteer = hasRealConvoId && canControlGeneration && !pausedOnApproval;
@@ -751,7 +887,7 @@ export default function useSteering({
   /** Steering needs a live server-side job; degrade to queue otherwise. */
   const effectiveAction: DuringRunAction = canSteer ? defaultAction : 'queue';
 
-  /** Live submission state for POST callbacks — the closure value can be
+  /** Live submission state for POST callbacks: the closure value can be
    *  stale by the time the steer response arrives. */
   const isSubmittingRef = useRef(isSubmitting);
   isSubmittingRef.current = isSubmitting;
@@ -759,17 +895,14 @@ export default function useSteering({
   visibleConversationRef.current = conversationId;
 
   /**
-   * How each conversation's last run ended, kept because `useQueueDrain`
-   * CONSUMES the one-shot signal — by the time a reclaim resolves it is already
-   * gone. Every subscriber renders before the drain's effect nulls it, so the
-   * outcome is captured first. Both carriers are watched: the index signal, and
-   * the copy parked under the conversation when the run ended while the user
-   * was looking elsewhere.
+   * The most recent run end seen for a conversation: either the live one for
+   * this pane's index, or the copy parked under the conversation when the run
+   * ended while the user was looking elsewhere.
    *
    * Keyed by conversation because this hook is REUSED across chats: a single
    * slot would answer for whichever chat is on screen when the reclaim lands,
    * not the one the words belong to. An entry is dropped once that conversation
-   * starts another run — an older end no longer describes what is happening.
+   * starts another run; an older end no longer describes what is happening.
    */
   const runEnd = useRecoilValue(store.runEndByIndex(index));
   const parkedRunEnd = useRecoilValue(store.pendingRunEndByConvoId(queueKey));
@@ -811,73 +944,25 @@ export default function useSteering({
   );
 
   /**
-   * Resolves the 202 ACK against the applied-id set: `on_steer_applied` rides
-   * the SSE and can land BEFORE the HTTP response, in which case its removal
-   * already passed — minting a `pending` chip here would strand it forever.
-   * An ACK landing AFTER the run ended (final/abort/error already processed,
-   * server queue drained or dropped) converts straight to a queued follow-up:
-   * no later event will ever resolve a `pending` chip for a finished run.
+   * The composer's 202 ACK, resolved by the SHARED implementation so it cannot
+   * drift from the one `useSteerRecovery` uses for a retry's ACK.
+   *
+   * All this call site contributes is its observation of ordinary terminal
+   * state: this hook instance survives navigation, so the visible pane's idle
+   * flag says nothing about an off-screen origin run, and terminal state may
+   * only be inferred while the callback still belongs to the visible chat.
+   * Epoch replacement is derived inside the resolver for every caller.
    */
   const acknowledgeSteer = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (convoId: string, localId: string, steer: PendingSteer): boolean => {
-        const applied = snapshot.getLoadable(store.appliedSteerIdsByConvoId(convoId)).getValue();
-        const alreadyApplied = applied.includes(steer.steerId) || applied.includes(localId);
-        const alreadyAccepted = snapshot
-          .getLoadable(store.acceptedSteerClientIdsByConvoId(convoId))
-          .getValue()
-          .includes(localId);
-        const activeEpoch = snapshot
-          .getLoadable(store.activeGenerationCreatedAtByConvoId(convoId))
-          .getValue();
-        /** A replacement can already be submitting when an older generation's
-         * delayed 202 arrives. `isSubmitting` alone would re-mint the old chip
-         * after replacement reconciliation, with no old apply event left to
-         * settle it. Every POST reaching this callback captured a non-null
-         * source epoch before dispatch, so either a mismatch or a later clear
-         * proves that source generation is no longer active. */
-        const runReplaced =
-          steer.generationCreatedAt != null &&
-          (activeEpoch == null || steer.generationCreatedAt !== activeEpoch);
-        // This hook instance survives navigation. The visible pane's idle flag
-        // says nothing about an off-screen origin run, so only infer ordinary
-        // terminal state while the callback still belongs to the visible chat.
-        const runOver =
-          runReplaced || (visibleConversationRef.current === convoId && !isSubmittingRef.current);
-        set(store.acceptedSteerClientIdsByConvoId(convoId), (prev) =>
-          appendAppliedSteerIds(prev, [localId]),
-        );
-        set(store.pendingSteersByConvoId(convoId), (prev) => {
-          const local = prev.find((item) => item.steerId === localId);
-          let acknowledged = steer;
-          if ((local?.preemptRevision ?? 0) > (steer.preemptRevision ?? 0)) {
-            const { preempt: _stalePreempt, ...withoutStaleLabel } = steer;
-            acknowledged = {
-              ...withoutStaleLabel,
-              ...(local?.preempt === true && { preempt: true }),
-              preemptRevision: local?.preemptRevision,
-            };
-          }
-          const next = prev.filter((item) => item.steerId !== localId);
-          // Upsert: an SSE reconnect may have reseeded the chip under the
-          // server id already — appending again would duplicate it.
-          const alreadySeeded = next.some((item) => item.steerId === steer.steerId);
-          return alreadyApplied || alreadyAccepted || runOver || alreadySeeded
-            ? next
-            : [...next, acknowledged];
-        });
-        /** `alreadyAccepted` can come from the correlation update that precedes
-         * the delayed HTTP response; it proves server ownership, not delivery.
-         * Once the source epoch is over/replaced we still must recover it. */
-        if (alreadyApplied || !runOver) {
-          return false;
-        }
-        // The server accepted but this visible run is already terminal. Its
-        // terminal close may have parked the item, so the caller must route it
-        // through the recovery converter (deterministic next-turn id), not an
-        // ordinary editable queue row.
-        return true;
-      },
+    (cbInterface) =>
+      (convoId: string, localId: string, steer: PendingSteer): boolean =>
+        resolveAcknowledgedSteer(
+          cbInterface,
+          convoId,
+          localId,
+          steer,
+          visibleConversationRef.current === convoId && !isSubmittingRef.current,
+        ),
     [],
   );
 
@@ -972,6 +1057,7 @@ export default function useSteering({
           files?: TMessage['files'];
           quotes?: string[];
           manualSkills?: string[];
+          reasoningOverride?: TMessage['reasoningOverride'];
           /** Set when the files were ALREADY queued/steered: their TTL was
            *  held when they first entered the queue (or at the steer 202). */
           skipUsageMark?: boolean;
@@ -1020,11 +1106,12 @@ export default function useSteering({
             options.manualSkills.length > 0 && {
               manualSkills: options.manualSkills,
             }),
+          ...(options?.reasoningOverride != null && {
+            reasoningOverride: options.reasoningOverride,
+          }),
           ...(options?.front && { priority: true }),
         };
-        set(store.queuedMessagesByConvoId(queueKey), (prev) =>
-          [...prev, item].sort(compareQueuedMessages),
-        );
+        set(store.queuedMessagesByConvoId(queueKey), (prev) => insertQueuedMessage(prev, item));
         if (options?.skipUsageMark !== true) {
           markQueuedFilesUsage(options?.files);
         }
@@ -1051,6 +1138,9 @@ export default function useSteering({
                 item.manualSkills.length > 0 && {
                   manualSkills: item.manualSkills,
                 }),
+              ...(item.reasoningOverride != null && {
+                reasoningOverride: item.reasoningOverride,
+              }),
               ...(item.priority === true && { priority: true }),
               ...(item.expectedPredecessorCreatedAt != null && {
                 expectedPredecessorCreatedAt: item.expectedPredecessorCreatedAt,
@@ -1121,12 +1211,21 @@ export default function useSteering({
 
   /** Consumes completed composer attachments into message file refs (clearing
    *  the composer) so they pair with THIS queued message instead of gluing
-   *  onto whatever `ask` vacuums up next. */
+   *  onto whatever `ask` vacuums up next.
+   *
+   *  Cleared by id through a FUNCTIONAL update, never by assigning an empty
+   *  map: uploads dispatch their own functional updates, so a flat overwrite
+   *  drops an attachment the user started after this read, and the upload's
+   *  next callback puts it back on top of the emptied map. Removing exactly
+   *  the ids taken leaves any newer upload alone, and marking them consumed
+   *  stops a late callback for one of THESE files resurrecting it. */
   const takeComposerFiles = useCallback((): TMessage['files'] => {
     if (files == null || files.size === 0 || setFiles == null) {
       return undefined;
     }
-    const taken = Array.from(files.values()).map((file) => ({
+    const staged = Array.from(files.values());
+    const takenIds = staged.map((file) => file.file_id);
+    const taken = staged.map((file) => ({
       file_id: file.file_id,
       filepath: file.filepath,
       type: file.type ?? '',
@@ -1138,7 +1237,14 @@ export default function useSteering({
       bytes: file.size,
       llmDeliveryPath: file.llmDeliveryPath,
     }));
-    setFiles(new Map());
+    markComposerFilesTaken(takenIds);
+    setFiles((previous) => {
+      const remaining = new Map(previous);
+      for (const id of takenIds) {
+        remaining.delete(id);
+      }
+      return remaining;
+    });
     setFilesToDelete({});
     return taken;
   }, [files, setFiles, setFilesToDelete]);
@@ -1155,18 +1261,25 @@ export default function useSteering({
         const manualSkills = snapshot
           .getLoadable(store.pendingManualSkillsByConvoId(conversationId))
           .getValue();
+        const reasoningOverride = reasoningStore.get(
+          pendingReasoningOverrideFamily(reasoningStateKey),
+        );
         if (quotes.length > 0) {
           reset(store.pendingQuotesByConvoId(conversationId));
         }
         if (manualSkills.length > 0) {
           reset(store.pendingManualSkillsByConvoId(conversationId));
         }
+        if (reasoningOverride != null) {
+          reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), undefined);
+        }
         return {
           ...(quotes.length > 0 && { quotes }),
           ...(manualSkills.length > 0 && { manualSkills }),
+          ...(reasoningOverride != null && { reasoningOverride }),
         };
       },
-    [conversationId],
+    [conversationId, reasoningStateKey, reasoningStore],
   );
 
   /** Quotes-only drain for composer-origin steers: the excerpts ride the steer
@@ -1235,6 +1348,18 @@ export default function useSteering({
     [],
   );
 
+  /** Consumes the composer's autosaved draft once its text has been taken into
+   *  a steer or queued item. The composer clears via the form's `reset()`,
+   *  which is programmatic and never fires the `input` event `useAutoSave`
+   *  listens on, so the draft would outlive the submit. It is keyed under
+   *  this pane's pending draft key here (every caller is gated on
+   *  `duringRunActive`, which requires `isSubmitting` and rules out the
+   *  answer-mode draft key), and run end migrates a surviving pending draft
+   *  onto the conversation and restores it, resurfacing text the user already
+   *  sent. */
+  const takeComposerDraft = useCallback(() => {
+    clearAllDrafts(getPendingDraftId(index));
+  }, [index]);
   const removeQueued = useRecoilCallback(
     ({ set }) =>
       (id: string) => {
@@ -1262,6 +1387,60 @@ export default function useSteering({
           set(store.queuedMessagesByConvoId(queueKey), next);
         }
         return found;
+      },
+    [queueKey],
+  );
+
+  /**
+   * Moves a queued message to another place in the queue. The drain always
+   * takes the head, so the order of this list is the order the messages will be
+   * sent in: reordering it is the only way to change which one goes next
+   * without sending or deleting anything.
+   *
+   * Addressed by id rather than by the index the caller is holding, which a
+   * drain can invalidate between the drag starting and the drop landing.
+   */
+  const reorderQueued = useRecoilCallback(
+    ({ set }) =>
+      (id: string, targetIndex: number) => {
+        set(store.queuedMessagesByConvoId(queueKey), (prev) => {
+          const from = prev.findIndex((item) => item.id === id);
+          const to = Math.min(Math.max(targetIndex, 0), prev.length - 1);
+          if (from === -1 || from === to) {
+            return prev;
+          }
+          const next = prev.slice();
+          const [moved] = next.splice(from, 1);
+          next.splice(to, 0, moved);
+          return next;
+        });
+      },
+    [queueKey],
+  );
+
+  /**
+   * Puts the queue back in a remembered order, for a drag the user abandoned.
+   * Ids that have since drained are skipped rather than resurrected, and
+   * anything queued mid-drag keeps its place at the back.
+   */
+  const restoreQueuedOrder = useRecoilCallback(
+    ({ set }) =>
+      (ids: readonly string[]) => {
+        set(store.queuedMessagesByConvoId(queueKey), (prev) => {
+          const byId = new Map(prev.map((item) => [item.id, item]));
+          const restored: QueuedMessage[] = [];
+          for (const id of ids) {
+            const item = byId.get(id);
+            if (item != null) {
+              restored.push(item);
+              byId.delete(id);
+            }
+          }
+          if (restored.length === 0) {
+            return prev;
+          }
+          return [...restored, ...byId.values()];
+        });
       },
     [queueKey],
   );
@@ -1469,7 +1648,7 @@ export default function useSteering({
    *
    * A signal for a DIFFERENT conversation is not that proof. The index slot is
    * shared, and the drain parks a foreign signal under its own conversation and
-   * then only inspects the active one's queue — this item would never be looked
+   * then only inspects the active one's queue; this item would never be looked
    * at. Park ours alongside it.
    */
   const rearmDrain = useRecoilCallback(
@@ -1483,6 +1662,23 @@ export default function useSteering({
         set(store.pendingRunEndByConvoId(convoId), end);
       },
     [index],
+  );
+
+  /**
+   * Re-post the last completion this conversation saw, for the callers that put
+   * words back into the queue after a round-trip. The drain's signal is
+   * one-shot and may well have been spent while that round-trip was in flight,
+   * on a queue where every row was either absent or spoken for. Only a clean
+   * completion counts: an aborted or errored run never drains.
+   */
+  const rewakeDrain = useCallback(
+    (convoId: string) => {
+      const lastRunEnd = runEndsRef.current.get(convoId);
+      if (lastRunEnd?.outcome === 'completed') {
+        rearmDrain(convoId, lastRunEnd);
+      }
+    },
+    [rearmDrain],
   );
 
   /** Restore a server-owned steer as the same queued follow-up and wake a
@@ -1512,12 +1708,9 @@ export default function useSteering({
           generationProtocolVersion: steer.generationProtocolVersion,
         },
       );
-      const lastRunEnd = runEndsRef.current.get(conversationId);
-      if (lastRunEnd?.outcome === 'completed') {
-        rearmDrain(conversationId, lastRunEnd);
-      }
+      rewakeDrain(conversationId);
     },
-    [conversationId, convertSteersToQueued, rearmDrain],
+    [conversationId, convertSteersToQueued, rewakeDrain],
   );
 
   const armDrainAfterAbort = useRecoilCallback(
@@ -1566,7 +1759,7 @@ export default function useSteering({
       const localId = opts?.clientSteerId ?? `local-${v4()}`;
       /** The true submission time, carried through the ACK and failure chips so
        *  a later conversion sorts this steer by when it was SENT, not when its
-       *  202 landed — otherwise a draft queued during the round-trip would drain
+       *  202 landed; otherwise a draft queued during the round-trip would drain
        *  ahead of a steer submitted before it. */
       const createdAt = opts?.createdAt ?? Date.now();
       /** If the steer loses its race with run finalization, its normal-send
@@ -1608,10 +1801,7 @@ export default function useSteering({
         } else {
           enqueue(trimmed, { id: localId, createdAt, files, ...context });
         }
-        const lastRunEnd = runEndsRef.current.get(conversationId);
-        if (lastRunEnd?.outcome === 'completed') {
-          rearmDrain(conversationId, lastRunEnd);
-        }
+        rewakeDrain(conversationId);
       };
       if (opts?.queuedOrigin != null) {
         registerQueuedOrigin(opts.queuedOrigin);
@@ -1729,10 +1919,10 @@ export default function useSteering({
                 if (code === 'NO_ACTIVE_RUN') {
                   // The run finished before the steer landed. While the final SSE
                   // is still settling, `ask()`'s in-flight guard would drop a
-                  // direct send — queue it so the run-end drain fires it instead.
+                  // direct send: queue it so the run-end drain fires it instead.
                   // The explicit empty array stops `ask` from vacuuming composer
                   // files staged for a DIFFERENT draft. A refused send (`false`)
-                  // falls back to the queue too — the chip is already gone, so
+                  // falls back to the queue too: the chip is already gone, so
                   // dropping the text here would lose it silently.
                   replaceSteerChip(conversationId, localId, null);
                   if (
@@ -1753,7 +1943,7 @@ export default function useSteering({
                   // The rejection can land AFTER the final SSE consumed the
                   // run-end signal (common on an unsupported SDK near run end):
                   // queueing then has nothing left to drain it, so mirror the
-                  // NO_ACTIVE_RUN fallback and send once submission settled —
+                  // NO_ACTIVE_RUN fallback and send once submission settled:
                   // queueing the refusal instead of dropping the text.
                   if (originStillVisible && !isSubmittingRef.current) {
                     if (sendNow(trimmed, files ?? [], fallbackContext) === false) {
@@ -1854,7 +2044,7 @@ export default function useSteering({
       sendNow,
       enqueue,
       restoreQueued,
-      rearmDrain,
+      rewakeDrain,
       registerQueuedOrigin,
       isSteerAcceptedOrSettled,
       showToast,
@@ -1876,6 +2066,16 @@ export default function useSteering({
       if (trimmed.length === 0 || filesLoading || !canSteer) {
         return false;
       }
+      /** A live steer cannot change the provider request already in flight.
+       * Preserve a staged reasoning choice as a full queued turn. */
+      if (pendingReasoningOverride != null) {
+        enqueue(trimmed, {
+          files: takeComposerFiles(),
+          ...takeComposerContext(),
+        });
+        takeComposerDraft();
+        return true;
+      }
       const consumed = submitSteer(trimmed, takeComposerFiles(), takeComposerQuotes(), {
         preempt,
       });
@@ -1884,7 +2084,17 @@ export default function useSteering({
       }
       return consumed;
     },
-    [filesLoading, canSteer, takeComposerFiles, takeComposerQuotes, takeComposerDraft, submitSteer],
+    [
+      filesLoading,
+      canSteer,
+      pendingReasoningOverride,
+      enqueue,
+      takeComposerFiles,
+      takeComposerContext,
+      takeComposerQuotes,
+      takeComposerDraft,
+      submitSteer,
+    ],
   );
 
   /** Composer-originated queue: carries the composer's attachments, quote
@@ -1914,7 +2124,7 @@ export default function useSteering({
       context?: QueuedMessageContext,
       opts?: SubmitSteerOptions,
     ) => {
-      /** A failed interrupt-steer must retry AS an interrupt — resubmitting it
+      /** A failed interrupt-steer must retry AS an interrupt; resubmitting it
        *  as an ordinary steer would silently let generation run on. */
       submitSteer(text, steerFiles, context, {
         ...opts,
@@ -1938,7 +2148,7 @@ export default function useSteering({
    * Routed through the shared conversion rather than `enqueue` so it obeys the
    * same invariant as the leftover-steer path: the item keeps its ORIGINAL id
    * and `createdAt`, so a steer accepted before a later follow-up still drains
-   * ahead of it — a fresh `Date.now()` would sort it last.
+   * ahead of it; a fresh `Date.now()` would sort it last.
    *
    * The reclaim is a round-trip, so the run can end while it is in flight and
    * the drain can consume its one-shot run-end signal against an empty queue,
@@ -1967,12 +2177,9 @@ export default function useSteering({
           skipUsageMark: true,
         });
       }
-      const lastRunEnd = runEndsRef.current.get(conversationId);
-      if (lastRunEnd?.outcome === 'completed') {
-        rearmDrain(conversationId, lastRunEnd);
-      }
+      rewakeDrain(conversationId);
     },
-    [conversationId, enqueue, rearmDrain, restoreQueued],
+    [conversationId, enqueue, rewakeDrain, restoreQueued],
   );
 
   /** Convert a failed/unsent steer chip into a queued follow-up. */
@@ -1995,7 +2202,7 @@ export default function useSteering({
   );
 
   /** Chip action: send a queued message into the live run instead. Keys on
-   *  steer availability, not the default action — a queue-preferring user
+   *  steer availability, not the default action: a queue-preferring user
    *  clicking send-now explicitly asked to inject into the live run. The
    *  item's attachments ride the steer; its quotes/skills travel as the
    *  restore context so a degraded steer requeues/sends with them intact.
@@ -2003,19 +2210,27 @@ export default function useSteering({
    *  boundary; it only means something on the live-run path. */
   const sendLocalQueuedNow = useCallback(
     (item: QueuedMessage, opts?: { preempt?: boolean }) => {
+      if (hasQueuedIntent(item.id)) {
+        return;
+      }
       /** In answer mode (and any other submission-owned non-steerable state)
        * there is no immediate path. Refuse before touching queue state so a
        * stale/direct caller cannot perform the old remove-and-restore no-op. */
       if (isSubmitting && (!duringRunActive || !canSteer || item.recoverySteerId != null)) {
         return;
       }
-      /** UI callers always find the item; a stale/direct caller has no original
-       *  neighbours, so restoration falls back to the queue's priority split. */
-      const origin = takeQueued(item.id) ?? {
-        item,
-        beforeIds: [],
-        afterIds: [],
-      };
+      /** Keep request-scoped reasoning on a new generation; injecting this
+       * item into the active run would silently ignore the selection. */
+      if (duringRunActive && item.reasoningOverride != null) {
+        return;
+      }
+      /* No fallback to the captured item: the only way it is missing is that
+         something else already took it, likely the run-end drain moments before
+         this click landed. Re-sending it would send the same words twice. */
+      const origin = takeQueued(item.id);
+      if (origin == null) {
+        return;
+      }
       const taken = origin.item;
       if (duringRunActive && canSteer) {
         const consumed = submitSteer(
@@ -2033,11 +2248,18 @@ export default function useSteering({
         return;
       }
       if (!isSubmitting) {
-        if (idleSendInFlightRef.current) {
+        const lock = acquireQueueSendLock(sendLockKey);
+        if (lock == null) {
           restoreQueued(origin);
           return;
         }
-        idleSendInFlightRef.current = true;
+        idleSendLockRef.current = lock;
+        const releaseLock = () => {
+          releaseQueueSendLock(lock);
+          if (idleSendLockRef.current === lock) {
+            idleSendLockRef.current = null;
+          }
+        };
         // Explicit (possibly empty) overrides: the queued item is the full
         // submission context, never the composer's staged files/quotes/picks.
         let accepted: false | void;
@@ -2045,19 +2267,20 @@ export default function useSteering({
           accepted = sendNow(taken.text, taken.files ?? [], {
             quotes: taken.quotes,
             manualSkills: taken.manualSkills,
+            reasoningOverride: taken.reasoningOverride,
             clientRequestId: taken.clientRequestId,
             recoverySteerId: taken.recoverySteerId,
             expectedPredecessorCreatedAt: taken.expectedPredecessorCreatedAt,
             queuedMessageOrigin: origin,
           });
         } catch (error) {
-          idleSendInFlightRef.current = false;
+          releaseLock();
           restoreQueued(origin);
           throw error;
         }
         if (accepted === false) {
-          idleSendInFlightRef.current = false;
-          // `ask` refused without sending — restore the chip so the user's
+          releaseLock();
+          // `ask` refused without sending: restore the chip so the user's
           // text is never silently dropped (mirrors useQueueDrain).
           restoreQueued(origin);
         } else {
@@ -2076,6 +2299,7 @@ export default function useSteering({
       submitSteer,
       isSubmitting,
       sendNow,
+      sendLockKey,
       restoreQueued,
       releaseQueuedOrigin,
     ],
@@ -2084,6 +2308,12 @@ export default function useSteering({
   const queuedActionClaimsRef = useRef(new Set<string>());
   const sendQueuedNow = useCallback(
     (item: QueuedMessage, opts?: { preempt?: boolean }) => {
+      /* A reasoning override belongs to the next provider request and cannot
+         be injected into the one already running. Refuse before cancelling a
+         durable server row, so it keeps its crash-safe ownership. */
+      if (duringRunActive && item.reasoningOverride != null) {
+        return;
+      }
       if (item.server == null) {
         sendLocalQueuedNow(item, opts);
         return;
@@ -2102,7 +2332,7 @@ export default function useSteering({
           queuedActionClaimsRef.current.delete(item.id);
         });
     },
-    [discardQueued, sendLocalQueuedNow],
+    [duringRunActive, discardQueued, sendLocalQueuedNow],
   );
 
   /** Abort the current run and auto-send this text once the abort settles. */
@@ -2136,7 +2366,7 @@ export default function useSteering({
 
   /**
    * Interrupt & steer: the same POST, queue, chip lifecycle and degradation
-   * ladder as an ordinary steer — the only difference is that the server asks
+   * ladder as an ordinary steer: the only difference is that the server asks
    * the generating replica to seal its model stream at the next
    * provider-safe boundary instead of waiting for a tool step. The partial
    * answer is kept and generation resumes in the same message.
@@ -2144,12 +2374,12 @@ export default function useSteering({
    * Falls back to `interruptAndSend` ONLY before a conversation exists:
    * steering needs a server-side job, so `submitSteer` hard-refuses without a
    * real conversationId, and an always-visible button would otherwise be dead
-   * for the entire first turn — exactly when a user most wants to stop a long
+   * for the entire first turn, exactly when a user most wants to stop a long
    * answer.
    *
    * A run paused on tool approval refuses outright instead. `canSteer` is
    * false there too, but routing that into `interruptAndSend` would hard-abort
-   * the run and discard the partial answer — the exact opposite of what this
+   * the run and discard the partial answer: the exact opposite of what this
    * action promises. The standalone button is disabled while paused; the
    * keyboard and hovercard paths reach here, so the guard lives here.
    */
@@ -2160,6 +2390,9 @@ export default function useSteering({
         return false;
       }
       if (!hasRealConvoId) {
+        return interruptAndSend(trimmed);
+      }
+      if (pendingReasoningOverride != null) {
         return interruptAndSend(trimmed);
       }
       const consumed = submitSteer(trimmed, takeComposerFiles(), takeComposerQuotes(), {
@@ -2175,6 +2408,7 @@ export default function useSteering({
       pausedOnApproval,
       canControlGeneration,
       hasRealConvoId,
+      pendingReasoningOverride,
       interruptAndSend,
       takeComposerFiles,
       takeComposerQuotes,
@@ -2190,7 +2424,7 @@ export default function useSteering({
         return false;
       }
       if (effectiveAction === 'steer') {
-        /** Only the DEFAULT route honours the preference — the explicit Steer
+        /** Only the DEFAULT route honours the preference: the explicit Steer
          *  row and the Ctrl/Cmd+Enter alternate stay non-preempting, or they
          *  would become indistinguishable from Interrupt & steer. */
         return steerFromComposer(text, steerInterruptsByDefault);
@@ -2206,7 +2440,7 @@ export default function useSteering({
     ],
   );
 
-  /** Memoized so consumers like `memo(PendingSteerChips)` can bail on the
+  /** Memoized so consumers like `memo(Bar)` and `memo(Queue)` can bail on the
    * `steering` prop; a fresh literal here would defeat them every render. */
   return useMemo(
     () => ({
@@ -2231,6 +2465,9 @@ export default function useSteering({
       enqueue,
       removeQueued,
       discardQueued,
+      rewakeDrain,
+      reorderQueued,
+      restoreQueuedOrder,
       sendQueuedNow,
       interruptAndSend,
       interruptSteer,
@@ -2257,6 +2494,9 @@ export default function useSteering({
       enqueue,
       removeQueued,
       discardQueued,
+      rewakeDrain,
+      reorderQueued,
+      restoreQueuedOrder,
       sendQueuedNow,
       interruptAndSend,
       interruptSteer,

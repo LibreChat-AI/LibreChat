@@ -353,6 +353,35 @@ export const eThinkingLevelSchema = z.nativeEnum(ThinkingLevel);
 export const eReasoningModeSchema = z.nativeEnum(ReasoningMode);
 export const eReasoningContextSchema = z.nativeEnum(ReasoningContext);
 
+export const reasoningOverrideSchema = z.discriminatedUnion('key', [
+  z
+    .object({
+      key: z.literal('reasoning_effort'),
+      value: eReasoningEffortSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('effort'),
+      value: eAnthropicEffortSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('thinkingLevel'),
+      value: eThinkingLevelSchema,
+    })
+    .strict(),
+  z
+    .object({
+      key: z.literal('thinkingBudget'),
+      value: z.number().int().min(-1).max(200000),
+    })
+    .strict(),
+]);
+
+export type TReasoningOverride = z.infer<typeof reasoningOverrideSchema>;
+
 export const defaultAssistantFormValues = {
   assistant: '',
   id: '',
@@ -979,6 +1008,8 @@ export const tMessageSchema = z.object({
    * request time and counted in the user message token count.
    */
   quotes: z.array(z.string()).optional(),
+  /** Request-scoped reasoning selection that produced this user turn. */
+  reasoningOverride: reasoningOverrideSchema.optional(),
 });
 
 /**

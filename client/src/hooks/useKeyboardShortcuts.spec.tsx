@@ -2,19 +2,21 @@ import copy from 'copy-to-clipboard';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, act, cleanup, renderHook } from '@testing-library/react';
-import type { TConversation } from 'librechat-data-provider';
+import { render, act, cleanup, renderHook, fireEvent, screen } from '@testing-library/react';
+import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
 import useKeyboardShortcuts, {
   isOverridden,
   effectiveBinding,
   useShortcutHint,
+  useShortcutActions,
   getShortcutDisplay,
   getShortcutAriaKey,
   useShortcutDisplay,
   useShortcutAriaKey,
 } from './useKeyboardShortcuts';
+import { ReasoningControl } from '~/components/Chat/Input/Reasoning';
 import store from '~/store';
 
 jest.mock('copy-to-clipboard', () => ({
@@ -28,7 +30,6 @@ jest.mock('./useNewConvo', () => ({
 }));
 
 const STORAGE_KEY = 'customKeyboardShortcuts';
-const copyMock = copy as jest.MockedFunction<typeof copy>;
 let queryClient: QueryClient;
 
 function buildConversation(conversationId: string, title: string): TConversation {
@@ -59,6 +60,7 @@ function renderHarness(
   conversation?: TConversation,
   route = '/c/test-convo',
   initialize?: (snapshot: MutableSnapshot) => void,
+  children?: ReactNode,
 ) {
   const initializeState = (snapshot: MutableSnapshot) => {
     if (conversation) {
@@ -66,15 +68,21 @@ function renderHarness(
     }
     initialize?.(snapshot);
   };
-  return render(<Harness />, {
-    wrapper: ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>
-        <RecoilRoot initializeState={initializeState}>
-          <MemoryRouter initialEntries={[route]}>{children}</MemoryRouter>
-        </RecoilRoot>
-      </QueryClientProvider>
-    ),
-  });
+  return render(
+    <>
+      <Harness />
+      {children}
+    </>,
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>
+          <RecoilRoot initializeState={initializeState}>
+            <MemoryRouter initialEntries={[route]}>{children}</MemoryRouter>
+          </RecoilRoot>
+        </QueryClientProvider>
+      ),
+    },
+  );
 }
 
 beforeEach(() => {
@@ -107,7 +115,49 @@ function appendResponseCopyButton(onClick: () => void) {
   document.body.appendChild(button);
 }
 
-function appendEscalationButton(surface: 'bubble' | 'queued', active = false) {
+/** A composer form carrying the stop control the way `ChatForm` renders it:
+ *  visible when it owns the action slot, hidden behind the during-run send
+ *  button while the user types a steer. */
+function appendComposerForm({ hidden = false }: { hidden?: boolean } = {}) {
+  const onClick = jest.fn();
+  const form = document.createElement('form');
+  const textarea = document.createElement('textarea');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.testid = 'stop-generation-button';
+  if (hidden) {
+    button.style.display = 'none';
+  }
+  button.addEventListener('click', onClick);
+  form.append(textarea, button);
+  document.body.appendChild(form);
+  return { form, textarea, onClick };
+}
+
+/** A composer form carrying the palette disclosure the upload shortcut clicks.
+ *  Identified by test id rather than by `id`, which two mounted composers
+ *  cannot share. */
+function appendPaletteForm({ uploadShortcut = true }: { uploadShortcut?: boolean } = {}) {
+  const onClick = jest.fn();
+  const form = document.createElement('form');
+  const textarea = document.createElement('textarea');
+  const anchor = document.createElement('button');
+  anchor.type = 'button';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.testid = 'composer-palette-button';
+  button.dataset.uploadShortcut = String(uploadShortcut);
+  button.addEventListener('click', onClick);
+  form.append(textarea, anchor, button);
+  document.body.appendChild(form);
+  return { form, textarea, anchor, onClick };
+}
+
+function appendEscalationButton(
+  surface: 'bubble' | 'queued',
+  active = false,
+  parent: HTMLElement = document.body,
+) {
   const onClick = jest.fn();
   const button = document.createElement('button');
   button.dataset.escalateSteer = surface;
@@ -115,8 +165,18 @@ function appendEscalationButton(surface: 'bubble' | 'queued', active = false) {
     button.dataset.escalateSteerActive = 'true';
   }
   button.addEventListener('click', onClick);
-  document.body.appendChild(button);
+  parent.appendChild(button);
   return { button, onClick };
+}
+
+function appendPortalFocus(paneIndex: number, tag: 'button' | 'input' = 'button') {
+  const portal = document.createElement('div');
+  portal.dataset.chatPanePortal = String(paneIndex);
+  const focusTarget = document.createElement(tag);
+  portal.appendChild(focusTarget);
+  document.body.appendChild(portal);
+  focusTarget.focus();
+  return focusTarget;
 }
 
 describe('binding resolution helpers', () => {
@@ -338,6 +398,44 @@ describe('global shortcut dispatch', () => {
     expect(newest.onClick).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps escalation inside the pane containing keyboard focus', () => {
+    renderHarness();
+    const focusedPane = document.createElement('section');
+    const otherPane = document.createElement('section');
+    focusedPane.dataset.chatPane = '0';
+    otherPane.dataset.chatPane = '1';
+    const textarea = document.createElement('textarea');
+    const focused = appendEscalationButton('bubble', false, focusedPane);
+    const other = appendEscalationButton('bubble', true, otherPane);
+    focusedPane.appendChild(textarea);
+    document.body.append(focusedPane, otherPane);
+    textarea.focus();
+
+    const event = dispatchKey({ key: '.', ctrlKey: true, shiftKey: true }, textarea);
+
+    expect(focused.onClick).toHaveBeenCalledTimes(1);
+    expect(other.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('keeps escalation scoped while focus is inside a portaled palette', () => {
+    renderHarness();
+    const firstPane = document.createElement('section');
+    const secondPane = document.createElement('section');
+    firstPane.dataset.chatPane = '0';
+    secondPane.dataset.chatPane = '1';
+    const first = appendEscalationButton('bubble', true, firstPane);
+    const second = appendEscalationButton('bubble', false, secondPane);
+    document.body.append(firstPane, secondPane);
+    const focusTarget = appendPortalFocus(1, 'input');
+
+    const event = dispatchKey({ key: '.', ctrlKey: true, shiftKey: true }, focusTarget);
+
+    expect(second.onClick).toHaveBeenCalledTimes(1);
+    expect(first.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('dispatches the escalation shortcut by physical key on a non-US layout', () => {
     renderHarness();
     const escalation = appendEscalationButton('bubble');
@@ -439,6 +537,163 @@ describe('clipboard shortcuts', () => {
     const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
 
     expect(copyMock).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('stop generating shortcut', () => {
+  it('stops the run of the pane the user is focused in', () => {
+    renderHarness();
+    const first = appendComposerForm();
+    const second = appendComposerForm();
+    second.textarea.focus();
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true }, second.textarea);
+
+    expect(second.onClick).toHaveBeenCalledTimes(1);
+    expect(first.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('stops through the hidden control while the during-run send button owns the slot', () => {
+    renderHarness();
+    const other = appendComposerForm();
+    const focused = appendComposerForm({ hidden: true });
+    focused.textarea.focus();
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true }, focused.textarea);
+
+    expect(focused.onClick).toHaveBeenCalledTimes(1);
+    expect(other.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('stops the owning pane while focus is inside its portaled palette', () => {
+    renderHarness();
+    const first = appendComposerForm();
+    const second = appendComposerForm();
+    first.form.dataset.chatPane = '0';
+    second.form.dataset.chatPane = '1';
+    const focusTarget = appendPortalFocus(1, 'input');
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true }, focusTarget);
+
+    expect(second.onClick).toHaveBeenCalledTimes(1);
+    expect(first.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('stops only the secondary pane from its numeric reasoning input and slider', () => {
+    const setting = {
+      key: 'thinkingBudget',
+      label: 'com_endpoint_thinking_budget',
+      type: 'number',
+      range: { min: -1, positiveMin: 128, max: 32768, step: 128 },
+    } as SettingDefinition;
+    let stop: (() => boolean | void) | undefined;
+    function NumericReasoning() {
+      stop = useShortcutActions().find((action) => action.id === 'stopGenerating')?.run;
+      return (
+        <ReasoningControl
+          index={1}
+          setting={setting}
+          value={{ key: 'thinkingBudget', value: 4096 }}
+          onChange={jest.fn()}
+        />
+      );
+    }
+    renderHarness(undefined, '/c/test-convo', undefined, <NumericReasoning />);
+    const first = appendComposerForm();
+    const second = appendComposerForm();
+    first.form.dataset.chatPane = '0';
+    second.form.dataset.chatPane = '1';
+    fireEvent.click(screen.getByRole('button', { name: /Reasoning for next message/ }));
+
+    for (const role of ['spinbutton', 'slider']) {
+      const control = screen.getByRole(role);
+      control.focus();
+      act(() => {
+        expect(stop?.()).toBe(true);
+      });
+    }
+
+    expect(second.onClick).toHaveBeenCalledTimes(2);
+    expect(first.onClick).not.toHaveBeenCalled();
+  });
+
+  it('does not prevent the event when nothing is generating', () => {
+    renderHarness();
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true });
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('upload file shortcut', () => {
+  /* Focus sits on a button rather than the textarea: `uploadFile` is not in
+     EDITING_ALLOWED_SHORTCUTS, so the chord is filtered out entirely while the
+     caret is in a composer. Pane resolution matters for the focus that is left,
+     anywhere in a pane that is not an editing context. */
+  it('opens the palette of the pane the user is focused in', () => {
+    renderHarness();
+    const first = appendPaletteForm();
+    const second = appendPaletteForm();
+    second.anchor.focus();
+
+    const event = dispatchKey({ key: 'u', ctrlKey: true, shiftKey: true }, second.anchor);
+
+    expect(second.onClick).toHaveBeenCalledTimes(1);
+    expect(first.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('opens the owning palette while focus is inside its portal', () => {
+    renderHarness();
+    const first = appendPaletteForm();
+    const second = appendPaletteForm();
+    first.form.dataset.chatPane = '0';
+    second.form.dataset.chatPane = '1';
+    const focusTarget = appendPortalFocus(1);
+
+    const event = dispatchKey({ key: 'u', ctrlKey: true, shiftKey: true }, focusTarget);
+
+    expect(second.onClick).toHaveBeenCalledTimes(1);
+    expect(first.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('opens the palette while the caret is in a composer', () => {
+    renderHarness();
+    const only = appendPaletteForm();
+    only.textarea.focus();
+
+    const event = dispatchKey({ key: 'u', ctrlKey: true, shiftKey: true }, only.textarea);
+
+    expect(only.onClick).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('falls back to the document when focus sits outside any composer', () => {
+    renderHarness();
+    const only = appendPaletteForm();
+
+    const event = dispatchKey({ key: 'u', ctrlKey: true, shiftKey: true });
+
+    expect(only.onClick).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not cancel dictation or fall through to another pane', () => {
+    renderHarness();
+    const other = appendPaletteForm();
+    const dictating = appendPaletteForm({ uploadShortcut: false });
+    dictating.anchor.focus();
+
+    const event = dispatchKey({ key: 'u', ctrlKey: true, shiftKey: true }, dictating.anchor);
+
+    expect(dictating.onClick).not.toHaveBeenCalled();
+    expect(other.onClick).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
 });

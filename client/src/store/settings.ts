@@ -62,10 +62,12 @@ const localStorageAtoms = {
 
   // Chat settings
   enterToSend: atomWithLocalStorage('enterToSend', true),
-  /** What Enter does while a run is generating: steer (inject mid-run) or queue (send after). */
+  /** What Enter does while a reply is generating. Queue by default: injecting
+   *  into a reply the user is still reading is the surprising choice, so it is
+   *  the opt-in one. */
   duringRunDefaultAction: atomWithLocalStorage<'steer' | 'queue'>(
     'duringRunDefaultAction',
-    'steer',
+    'queue',
   ),
   /**
    * Whether a steer interrupts generation at the next safe boundary instead of
@@ -114,6 +116,9 @@ const localStorageAtoms = {
    * drawer covers the screen and the swipe closes it.
    */
   mobileDrawerStrip: atomWithLocalStorage('mobileDrawerStrip', false),
+  /** The line of keyboard hints under the composer. Off by default: it is
+   *  discovery copy, and the shortcuts it names stay available either way. */
+  showComposerTips: atomWithLocalStorage('showComposerTips', false),
   showFooter: atomWithLocalStorage('showFooter', true),
 
   // Commands settings

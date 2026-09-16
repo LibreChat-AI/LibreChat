@@ -192,6 +192,21 @@ describe('useSteerConvert', () => {
     ]);
   });
 
+  it('keeps a local v2 failure ordinary when no server receipt exists', () => {
+    const { result } = setup();
+    act(() => {
+      result.current.convert(
+        CONVO_ID,
+        [{ steerId: 'local-failure', text: 'queue locally', createdAt: 1 }],
+        { generationProtocolVersion: 2, bindRecoverySource: false },
+      );
+    });
+
+    expect(result.current.queue).toEqual([
+      { id: 'local-failure', text: 'queue locally', createdAt: 1 },
+    ]);
+  });
+
   it('correlates a terminal leftover that arrives before the 202 ACK', () => {
     const original = {
       id: 'queue-before-ack',
@@ -294,6 +309,44 @@ describe('useSteerConvert', () => {
       result.current.convert(CONVO_ID, [{ steerId: 'old', text: 'older steer', createdAt: 50 }]);
     });
     expect(result.current.queue.map((item) => item.id)).toEqual(['urgent', 'old']);
+  });
+
+  /* The rail can be reordered by hand, and that order decides what sends next.
+     A conversion arriving afterwards may only place its own items; sorting the
+     whole list would quietly restore the order the messages were written in. */
+  it('leaves a hand-reordered queue in the order the user left it', () => {
+    const { result } = setup(({ set }) => {
+      set(store.pendingSteersByConvoId(CONVO_ID), [
+        { steerId: 'srv-late', text: 'converted', status: 'pending' as const, createdAt: 9 },
+      ]);
+      // As if the user had dragged the newest message to the front.
+      set(store.queuedMessagesByConvoId(CONVO_ID), [
+        { id: 'm3', text: 'third, promoted', createdAt: 3 },
+        { id: 'm1', text: 'first', createdAt: 1 },
+        { id: 'm2', text: 'second', createdAt: 2 },
+      ]);
+    });
+    act(() => {
+      result.current.convert(CONVO_ID, [{ steerId: 'srv-late', text: 'converted', createdAt: 9 }]);
+    });
+    expect(result.current.queue.map((item) => item.id)).toEqual(['m3', 'm1', 'm2', 'srv-late']);
+  });
+
+  it('still places a converted steer ahead of messages written after it', () => {
+    const { result } = setup(({ set }) => {
+      set(store.pendingSteersByConvoId(CONVO_ID), [
+        { steerId: 'srv-early', text: 'accepted first', status: 'pending' as const, createdAt: 1 },
+      ]);
+      set(store.queuedMessagesByConvoId(CONVO_ID), [
+        { id: 'later', text: 'queued afterwards', createdAt: 5 },
+      ]);
+    });
+    act(() => {
+      result.current.convert(CONVO_ID, [
+        { steerId: 'srv-early', text: 'accepted first', createdAt: 1 },
+      ]);
+    });
+    expect(result.current.queue.map((item) => item.id)).toEqual(['srv-early', 'later']);
   });
 
   it('is idempotent across double delivery (abort response + final SSE event)', () => {

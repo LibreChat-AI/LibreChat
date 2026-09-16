@@ -170,6 +170,11 @@ jest.mock('../ParallelContent', () => ({
   ),
 }));
 
+jest.mock('../Parts/PendingSteers', () => ({
+  __esModule: true,
+  default: () => <div data-testid="pending-steers" />,
+}));
+
 import ContentParts from '../ContentParts';
 
 const baseProps = {
@@ -188,7 +193,7 @@ beforeEach(() => {
     .mockImplementation((parts) => parts.map((part) => ({ type: 'single', part })));
 });
 
-describe('ContentParts — interim skill cards', () => {
+describe('ContentParts: interim skill cards', () => {
   it('renders stateful workspace changes once at message level', () => {
     const content: TMessageContentParts[] = [
       { type: ContentTypes.TEXT, text: 'done' } as TMessageContentParts,
@@ -308,7 +313,7 @@ describe('ContentParts — interim skill cards', () => {
   });
 });
 
-describe('ContentParts — thinking-dot header alignment', () => {
+describe('ContentParts: thinking-dot header alignment', () => {
   const submittingProps = { ...baseProps, isSubmitting: true, isLatestMessage: true };
   const memoryAttachment = {
     type: Tools.memory,
@@ -363,7 +368,7 @@ describe('ContentParts — thinking-dot header alignment', () => {
   });
 });
 
-describe('ContentParts — post-steer author re-attribution', () => {
+describe('ContentParts: post-steer author re-attribution', () => {
   const steerPart = {
     type: ContentTypes.STEER,
     steer: 'go left',
@@ -728,7 +733,7 @@ describe('ContentParts — activity phase state', () => {
   });
 });
 
-describe('ContentParts — settled content identity across compaction', () => {
+describe('ContentParts: settled content identity across compaction', () => {
   /** Mirrors a captured run: the aggregator leaves holes at the source indexes
    *  of steps that produced nothing, and `finalHandler` swaps in the server's
    *  compacted array. Without the streamed-index stamp every index-derived key
@@ -969,5 +974,30 @@ describe('ContentParts — settled content identity across compaction', () => {
       'data-animate-entrance',
       'true',
     );
+  });
+});
+
+/* The pending block belongs to the latest reply. A late failed receipt can
+   arrive after submission state clears, and its recovery controls must remain. */
+describe('ContentParts: pending steers', () => {
+  const withGate = (over: Partial<typeof baseProps> & { conversationId?: string }) =>
+    render(<ContentParts {...baseProps} {...over} />);
+
+  it('shows them on the last message while a run is live', () => {
+    withGate({ isLast: true, isSubmitting: true, conversationId: 'convo-1' });
+    expect(screen.getByTestId('pending-steers')).toBeInTheDocument();
+  });
+
+  it('keeps late recovery controls on the last message after the run finishes', () => {
+    withGate({ isLast: true, isSubmitting: false, conversationId: 'convo-1' });
+    expect(screen.getByTestId('pending-steers')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['an earlier message', { isLast: false, isSubmitting: true, conversationId: 'convo-1' }],
+    ['no conversation yet', { isLast: true, isSubmitting: true, conversationId: undefined }],
+  ])('shows nothing for %s', (_label, over) => {
+    withGate(over);
+    expect(screen.queryByTestId('pending-steers')).not.toBeInTheDocument();
   });
 });

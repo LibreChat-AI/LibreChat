@@ -74,36 +74,39 @@ export async function selectModelSpec(page: Page, label: string) {
   await expect(trigger).toContainText(label);
 }
 
-/** Enable the ephemeral Skills capability from the composer tool menu. */
+/** Toggle a built-in tool row on from the composer palette and wait for its chip. */
+async function enableBuiltinTool(page: Page, label: string) {
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const row = page
+    .getByRole('dialog', { name: 'Attach and tools' })
+    .getByRole('button', { name: label, exact: true });
+  await expect(row).toBeVisible();
+  await row.click();
+  await expect(row).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(
+    page.getByTestId('composer-active-builtin').filter({ hasText: label }),
+  ).toBeVisible();
+}
+
+/** Enable the ephemeral Skills capability from the composer palette. */
 export async function enableSkills(page: Page) {
-  await page.getByRole('button', { name: 'Tools Options' }).click();
-  await page.getByTestId('tools-menu-skills').click();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('button', { name: 'Skills' })).toBeVisible();
+  await enableBuiltinTool(page, 'Skills');
 }
 
-/** Enable the ephemeral Memory capability from the composer tool menu. */
+/** Enable the ephemeral Memory capability from the composer palette. */
 export async function enableMemory(page: Page) {
-  await page.getByRole('button', { name: 'Tools Options' }).click();
-  await page.getByTestId('tools-menu-memory').click();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('checkbox', { name: 'Memory' })).toBeVisible();
+  await enableBuiltinTool(page, 'Memory');
 }
 
-/** Enable the ephemeral Code Interpreter (execute_code) capability from the tool menu. */
+/** Enable the ephemeral Code Interpreter (execute_code) capability from the palette. */
 export async function enableCodeInterpreter(page: Page) {
-  await page.getByRole('button', { name: 'Tools Options' }).click();
-  await page.getByTestId('tools-menu-run-code').click();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('checkbox', { name: 'Run Code' })).toBeVisible();
+  await enableBuiltinTool(page, 'Run Code');
 }
 
-/** Enable the ephemeral File Search capability from the composer tool menu. */
+/** Enable the ephemeral File Search capability from the composer palette. */
 export async function enableFileSearch(page: Page) {
-  await page.getByRole('button', { name: 'Tools Options' }).click();
-  await page.getByTestId('tools-menu-file-search').click();
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('checkbox', { name: 'File Search' })).toBeVisible();
+  await enableBuiltinTool(page, 'File Search');
 }
 
 /** The conversation messages container. */

@@ -1,7 +1,7 @@
 import React from 'react';
 import { getDefaultStore } from 'jotai';
-import { Constants } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { Constants, ReasoningEffort } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
 import type {
@@ -11,6 +11,12 @@ import type {
   SettledQueuedTurnReceipt,
 } from '~/store/families';
 import { revealedQueuedTurnFamily } from '~/store/steer';
+import {
+  claimQueuedIntent,
+  releaseQueuedIntent,
+  acquireQueueSendLock,
+  releaseQueueSendLock,
+} from '~/utils/queueIntent';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';
 
@@ -36,6 +42,7 @@ function setup(
     setNewConvoQueue?: (value: QueuedMessage[]) => void;
     setSettledReceipts?: (value: SettledQueuedTurnReceipt[]) => void;
     setInterruptFlag?: (value: DrainAfterAbort | false) => void;
+    queueRef?: { current: QueuedMessage[] };
     queue?: QueuedMessage[];
     newConvoQueue?: QueuedMessage[];
     settledReceipts?: SettledQueuedTurnReceipt[];
@@ -46,6 +53,9 @@ function setup(
     setters.setRunEnd = useSetRecoilState(store.runEndByIndex(INDEX));
     setters.setIsSubmitting = useSetRecoilState(store.isSubmittingFamily(INDEX));
     setters.setQueue = useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID));
+    setters.queueRef = {
+      current: useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID)),
+    };
     setters.setNewConvoQueue = useSetRecoilState(
       store.queuedMessagesByConvoId(Constants.NEW_CONVO),
     );
@@ -82,6 +92,7 @@ const emptyOverrides = expect.objectContaining({
   overrideFiles: [],
   overrideQuotes: [],
   overrideManualSkills: [],
+  overrideReasoning: null,
   overrideQueuedMessageOrigin: expect.any(Object),
 });
 
@@ -725,13 +736,14 @@ describe('useQueueDrain', () => {
     expect(sent).toEqual(['only-once']);
   });
 
-  it('passes carried quotes + manual skills through as overrides', async () => {
+  it('passes carried quotes, skills, and reasoning through as overrides', async () => {
     const { ask, setters } = setup(({ set }) => {
       set(store.queuedMessagesByConvoId(CONVO_ID), [
         {
           ...queuedMessage('q1', 'with context'),
           quotes: ['quoted excerpt'],
           manualSkills: ['skill-1'],
+          reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
         },
       ]);
     });
@@ -747,6 +759,7 @@ describe('useQueueDrain', () => {
         overrideFiles: [],
         overrideQuotes: ['quoted excerpt'],
         overrideManualSkills: ['skill-1'],
+        overrideReasoning: { key: 'reasoning_effort', value: ReasoningEffort.high },
         overrideQueuedMessageOrigin: expect.any(Object),
       }),
     );
@@ -965,6 +978,26 @@ describe('useQueueDrain', () => {
     );
   });
 
+  it('preserves a manually reordered NEW_CONVO queue during migration', async () => {
+    const { ask, setters } = setup(({ set }) => {
+      set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), [
+        { id: 'second', text: 'send this first', createdAt: 2 },
+        { id: 'first', text: 'send this second', createdAt: 1 },
+      ]);
+      set(store.queuedMessagesByConvoId(CONVO_ID), [
+        { id: 'third', text: 'send this third', createdAt: 3 },
+      ]);
+    });
+
+    act(() => {
+      setters.setRunEnd!(runEnd({ startedAsNewConvo: true }));
+    });
+
+    await waitFor(() =>
+      expect(ask).toHaveBeenCalledWith({ text: 'send this first' }, emptyOverrides),
+    );
+  });
+
   it('keeps an interrupt queued after URL resolution ahead of pre-migration follow-ups', async () => {
     const { ask, setters } = setup(({ set }) => {
       set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), [
@@ -1109,5 +1142,99 @@ describe('useQueueDrain', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  /* Edit and Remove on the rail hand a row's words to the composer across an
+     await, and the run end can land inside that gap. Dequeuing there sent the
+     very message the user was in the middle of taking back. */
+  describe('rows the rail has claimed', () => {
+    afterEach(() => {
+      releaseQueuedIntent('q-claimed');
+      releaseQueuedIntent('q-only');
+    });
+
+    it('skips a claimed row and sends the next one instead', async () => {
+      claimQueuedIntent('q-claimed');
+      const { ask, setters } = setup(({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [
+          queuedMessage('q-claimed', 'being taken back'),
+          queuedMessage('q-next', 'still wanted'),
+        ]);
+      });
+
+      act(() => {
+        setters.setRunEnd!(runEnd());
+      });
+      await waitFor(() =>
+        expect(ask).toHaveBeenCalledWith({ text: 'still wanted' }, emptyOverrides),
+      );
+      expect(ask).toHaveBeenCalledTimes(1);
+    });
+
+    it('restores a refused skipped row after its claimed predecessor', async () => {
+      claimQueuedIntent('q-claimed');
+      const { ask, setters } = setup(({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [
+          queuedMessage('q-claimed', 'being taken back'),
+          queuedMessage('q-next', 'temporarily refused'),
+          queuedMessage('q-tail', 'still last'),
+        ]);
+      });
+      ask.mockReturnValue(false);
+
+      act(() => {
+        setters.setRunEnd!(runEnd());
+      });
+
+      await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(setters.queueRef?.current.map((item) => item.id)).toEqual([
+          'q-claimed',
+          'q-next',
+          'q-tail',
+        ]),
+      );
+    });
+
+    it('sends nothing when the only queued row is claimed', async () => {
+      claimQueuedIntent('q-only');
+      const { ask, setters } = setup(({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [queuedMessage('q-only', 'mine for now')]);
+      });
+
+      act(() => {
+        setters.setRunEnd!(runEnd());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(ask).not.toHaveBeenCalled();
+    });
+  });
+
+  /* `isSubmitting` is a render-old read on both sides, so the rail's own Send
+     now can already have called `ask` for this pane in the current task. */
+  it('refuses to drain while a queued send holds the pane', async () => {
+    const held = acquireQueueSendLock(String(INDEX));
+    const { ask, setters } = setup(({ set }) => {
+      set(store.queuedMessagesByConvoId(CONVO_ID), [queuedMessage('q-lock', 'after the hold')]);
+    });
+
+    act(() => {
+      setters.setRunEnd!(runEnd());
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(ask).not.toHaveBeenCalled();
+
+    /* The signal was never consumed, so the queue is reconsidered rather than
+       dropped as soon as the pane's submission state moves again. */
+    releaseQueueSendLock(held);
+    act(() => {
+      setters.setIsSubmitting!(true);
+    });
+    act(() => {
+      setters.setIsSubmitting!(false);
+    });
+    await waitFor(() =>
+      expect(ask).toHaveBeenCalledWith({ text: 'after the hold' }, emptyOverrides),
+    );
   });
 });

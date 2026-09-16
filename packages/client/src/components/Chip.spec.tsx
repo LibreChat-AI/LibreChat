@@ -3,6 +3,16 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { Chip } from './Chip';
 
 describe('Chip', () => {
+  it('renders a theme-aware surface tone for non-status context', () => {
+    render(<Chip tone="surface">Context</Chip>);
+
+    expect(screen.getByText('Context').parentElement).toHaveClass(
+      'border-border-light',
+      'bg-surface-secondary',
+      'text-text-secondary',
+    );
+  });
+
   it('renders semantic tone classes', () => {
     render(<Chip tone="info">Search result</Chip>);
 

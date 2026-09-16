@@ -299,6 +299,11 @@ export const EDITING_ALLOWED_SHORTCUTS: ReadonlySet<ShortcutActionId> = new Set(
   'submitMessage',
   'escalateSteer',
   'uploadFile',
+  /* The composer keeps focus across a send, so this is where a user reads the
+     hint naming it and where they press it. Filtering it out as an editing
+     chord made the one shortcut the composer advertises the one that did
+     nothing; it is a no-op whenever no reply is running. */
+  'stopGenerating',
 ]);
 
 export type ShortcutAction = ShortcutDefinition & {
@@ -504,6 +509,7 @@ export function useShortcutActions(): ShortcutAction[] {
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
   const { setSidebarOpen, toggleSidebar } = useSidebarToggle();
   const setShowShortcutsDialog = useSetRecoilState(store.showShortcutsDialog);
+  const setShowFilesDialog = useSetRecoilState(store.showFilesDialog);
   const setIsTemporary = useSetRecoilState(store.isTemporary);
   const setDeleteTarget = useSetRecoilState(store.keyboardDeleteTarget);
   const hasAccessToTemporaryChat = useHasAccess({
@@ -603,10 +609,36 @@ export function useShortcutActions(): ShortcutAction[] {
     return copy(text.trim(), { format: 'text/plain' });
   }, []);
 
-  const handleStopGenerating = useCallback(
-    () => clickElement('[data-testid="stop-generation-button"]'),
-    [],
-  );
+  const getFocusedChatPane = useCallback((): HTMLElement | null => {
+    const activeElement = document.activeElement as HTMLElement | null;
+    const directPane = activeElement?.closest<HTMLElement>('[data-chat-pane]');
+    if (directPane != null) {
+      return directPane;
+    }
+    const portaledPane = activeElement?.closest<HTMLElement>('[data-chat-pane-portal]');
+    const paneIndex = portaledPane?.dataset.chatPanePortal;
+    if (paneIndex != null && /^\d+$/.test(paneIndex)) {
+      return document.querySelector<HTMLElement>(`[data-chat-pane="${paneIndex}"]`);
+    }
+    return activeElement?.closest<HTMLElement>('form') ?? null;
+  }, []);
+
+  const handleStopGenerating = useCallback(() => {
+    /* Both split panes can be generating at once, each advertising this
+       shortcut under its own composer; stop the run the user is focused in
+       rather than always the first pane's. The composer keeps its stop control
+       mounted (hidden) whenever the during-run send button takes the visible
+       slot, so typing a steer never costs the focused form its match. The
+       document-wide fallback is for focus that sits outside any composer. */
+    const focusedPane = getFocusedChatPane();
+    const scoped = focusedPane?.querySelector<HTMLElement>(
+      '[data-testid="stop-generation-button"]',
+    );
+    if (scoped != null) {
+      return clickTarget(scoped);
+    }
+    return clickElement('[data-testid="stop-generation-button"]');
+  }, [getFocusedChatPane]);
 
   const handleRegenerateResponse = useCallback(
     () => clickElement('[data-testid="regenerate-generation-button"]'),
@@ -618,15 +650,15 @@ export function useShortcutActions(): ShortcutAction[] {
    *  button's semantics. A waiting steer bubble beats a queued follow-up (it
    *  is closer to the run); newest-last matches how both stacks append. */
   const handleEscalateSteer = useCallback(() => {
-    const active = document.querySelector<HTMLButtonElement>('[data-escalate-steer-active="true"]');
+    const focusedPane = getFocusedChatPane();
+    const scope: ParentNode = focusedPane ?? document;
+    const active = scope.querySelector<HTMLButtonElement>('[data-escalate-steer-active="true"]');
     if (clickTarget(active)) {
       return true;
     }
 
     const pick = (surface: string) => {
-      const list = document.querySelectorAll<HTMLButtonElement>(
-        `[data-escalate-steer="${surface}"]`,
-      );
+      const list = scope.querySelectorAll<HTMLButtonElement>(`[data-escalate-steer="${surface}"]`);
       for (let i = list.length - 1; i >= 0; i--) {
         if (!isUnavailableElement(list[i])) {
           return list[i];
@@ -635,7 +667,7 @@ export function useShortcutActions(): ShortcutAction[] {
       return null;
     };
     return clickTarget(pick('bubble') ?? pick('queued'));
-  }, []);
+  }, [getFocusedChatPane]);
 
   const handleEditLastMessage = useCallback(() => {
     const userTurns = document.querySelectorAll('.user-turn');
@@ -710,12 +742,33 @@ export function useShortcutActions(): ShortcutAction[] {
   ]);
 
   const handleUploadFile = useCallback(() => {
+    /* Same resolution as the stop shortcut, and for the same reason: both
+       split panes mount a composer advertising this shortcut, so attach to the
+       one the user is focused in rather than always the first in the document.
+       The document-wide lookups behind it cover focus sitting outside any
+       composer, and `#attach-file` is the single-instance legacy control. */
+    const focusedPane = getFocusedChatPane();
+    const scoped = focusedPane?.querySelector<HTMLElement>(
+      '[data-testid="composer-palette-button"]',
+    );
+    if (scoped != null) {
+      /* During dictation this disclosure becomes Cancel. The upload shortcut
+         must remain a no-op instead of discarding the focused pane's take, and
+         must not fall through to a different pane. */
+      if (scoped.dataset.uploadShortcut !== 'true') {
+        return false;
+      }
+      return clickTarget(scoped);
+    }
     const btn =
+      document.querySelector<HTMLElement>(
+        '[data-testid="composer-palette-button"][data-upload-shortcut="true"]',
+      ) ??
       document.querySelector<HTMLButtonElement>('#attach-file-menu-button') ??
       document.querySelector<HTMLButtonElement>('#attach-file-button') ??
       document.querySelector<HTMLButtonElement>('#attach-file');
     return clickTarget(btn);
-  }, []);
+  }, [getFocusedChatPane]);
 
   const handleArchiveConversation = useCallback(() => {
     const convoId = conversation?.conversationId;
@@ -825,7 +878,12 @@ export function useShortcutActions(): ShortcutAction[] {
   const handleOpenPrompts = useCallback(() => handleOpenPanel('prompts'), [handleOpenPanel]);
   const handleOpenMemories = useCallback(() => handleOpenPanel('memories'), [handleOpenPanel]);
   const handleOpenParameters = useCallback(() => handleOpenPanel('parameters'), [handleOpenPanel]);
-  const handleOpenFiles = useCallback(() => handleOpenPanel('files'), [handleOpenPanel]);
+  /* The file manager moved out of the side panel and into a dialog, so there is
+     no `nav-panel-files` button left for `handleOpenPanel` to find. */
+  const handleOpenFiles = useCallback(() => {
+    setShowFilesDialog(true);
+    return true;
+  }, [setShowFilesDialog]);
   const handleOpenBookmarks = useCallback(() => handleOpenPanel('bookmarks'), [handleOpenPanel]);
   const handleOpenMCP = useCallback(() => handleOpenPanel('mcp-builder'), [handleOpenPanel]);
 

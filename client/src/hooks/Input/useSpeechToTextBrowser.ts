@@ -6,10 +6,13 @@ import SpeechRecognitionImport, { useSpeechRecognition } from 'react-speech-reco
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
+/** `abortListening` stays optional: it is not part of what makes a module a
+ *  usable controller, so a build without it must still count as supported. */
 type SpeechRecognitionController = Pick<
   typeof SpeechRecognitionImport,
   'startListening' | 'stopListening'
->;
+> &
+  Partial<Pick<typeof SpeechRecognitionImport, 'abortListening'>>;
 type SpeechRecognitionModule = Partial<SpeechRecognitionController> & {
   default?: Partial<SpeechRecognitionController>;
 };
@@ -28,6 +31,7 @@ const SpeechRecognition = hasSpeechRecognitionController(speechRecognitionModule
 const useSpeechToTextBrowser = (
   setText: (text: string) => void,
   onTranscriptionComplete: (text: string) => void,
+  onTranscriptionSettled: () => void,
 ) => {
   const localize = useLocalize();
   const { showToast } = useToastContext();
@@ -89,7 +93,7 @@ const useSpeechToTextBrowser = (
     };
   }, [setText, onTranscriptionComplete, resetTranscript, finalTranscript, autoSendText]);
 
-  const toggleListening = useCallback(() => {
+  const startRecording = useCallback(() => {
     if (!browserSupportsSpeechRecognition) {
       showToast({
         message: sttExternal
@@ -118,18 +122,13 @@ const useSpeechToTextBrowser = (
       return;
     }
 
-    if (isListening === true) {
-      SpeechRecognition.stopListening();
-    } else {
-      SpeechRecognition.startListening({
-        language: languageSTT,
-        continuous: autoTranscribeAudio,
-      });
-    }
+    SpeechRecognition.startListening({
+      language: languageSTT,
+      continuous: autoTranscribeAudio,
+    });
   }, [
     autoTranscribeAudio,
     browserSupportsSpeechRecognition,
-    isListening,
     isMicrophoneAvailable,
     languageSTT,
     localize,
@@ -137,11 +136,44 @@ const useSpeechToTextBrowser = (
     sttExternal,
   ]);
 
+  const stopRecording = useCallback(async () => {
+    try {
+      if (hasSpeechRecognitionController(SpeechRecognition)) {
+        await SpeechRecognition.stopListening();
+      }
+    } finally {
+      onTranscriptionSettled();
+    }
+  }, [onTranscriptionSettled]);
+
+  /**
+   * Drops the take without emitting a transcript. `abortListening` discards the
+   * recogniser's buffered result, and the pending auto-send timer is cleared so
+   * a transcript that already landed cannot fire after the user cancelled.
+   */
+  const abortListening = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    lastTranscript.current = null;
+    lastInterim.current = null;
+    if (hasSpeechRecognitionController(SpeechRecognition)) {
+      if (typeof SpeechRecognition.abortListening === 'function') {
+        SpeechRecognition.abortListening();
+      } else {
+        SpeechRecognition.stopListening();
+      }
+    }
+    resetTranscript();
+  }, [resetTranscript]);
+
   return {
     isListening,
     isLoading: false,
-    startRecording: toggleListening,
-    stopRecording: toggleListening,
+    startRecording,
+    stopRecording,
+    abortRecording: abortListening,
   };
 };
 

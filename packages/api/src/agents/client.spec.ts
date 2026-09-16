@@ -3,10 +3,12 @@ import { Providers, StandardGraph } from '@librechat/agents';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { ContentTypes, DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
+import type { ServerRequest } from '~/types';
 import {
   collectToolCallIds,
   countRetainedToolTokens,
   createCachedTokenCounter,
+  payloadParser,
   prependQuotes,
   prependFileContext,
   applyAttachmentOnlyText,
@@ -184,6 +186,68 @@ describe('collectToolCallIds', () => {
       ]),
     ).toEqual(new Set(['call_1']));
     expect(collectToolCallIds(undefined)).toEqual(new Set());
+  });
+});
+describe('payloadParser reasoning override persistence', () => {
+  it('returns the base value while the runtime endpoint option uses the override', () => {
+    const req = {
+      body: {
+        endpointOption: {
+          model_parameters: { model: 'gpt-5.1', reasoning_effort: 'high' },
+        },
+      },
+      reasoningOverrideBase: {
+        key: 'reasoning_effort',
+        hadValue: true,
+        value: 'low',
+      },
+    } as unknown as ServerRequest;
+
+    expect(payloadParser({ req, endpoint: 'openAI' })).toEqual({
+      model: 'gpt-5.1',
+      reasoning_effort: 'low',
+    });
+    expect(req.body.endpointOption?.model_parameters?.reasoning_effort).toBe('high');
+  });
+
+  it('omits a transient override when no base value existed', () => {
+    const req = {
+      body: {
+        endpointOption: {
+          model_parameters: { model: 'gpt-5.1', reasoning_effort: 'high' },
+        },
+      },
+      reasoningOverrideBase: {
+        key: 'reasoning_effort',
+        hadValue: false,
+      },
+    } as unknown as ServerRequest;
+
+    expect(payloadParser({ req, endpoint: 'openAI' })).toEqual({ model: 'gpt-5.1' });
+    expect(req.body.endpointOption?.model_parameters?.reasoning_effort).toBe('high');
+  });
+
+  it('restores the conversation thinking switch after a coupled Claude override', () => {
+    const req = {
+      body: {
+        endpointOption: {
+          model_parameters: { model: 'claude-sonnet-4-6', effort: 'max', thinking: true },
+        },
+      },
+      reasoningOverrideBase: {
+        key: 'effort',
+        hadValue: true,
+        value: 'low',
+        thinkingHadValue: true,
+        thinkingValue: false,
+      },
+    } as unknown as ServerRequest;
+
+    expect(payloadParser({ req, endpoint: 'anthropic' })).toEqual({
+      model: 'claude-sonnet-4-6',
+      effort: 'low',
+      thinking: false,
+    });
   });
 });
 

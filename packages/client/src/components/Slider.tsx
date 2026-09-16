@@ -6,6 +6,7 @@ type SliderProps = React.ComponentPropsWithoutRef<typeof SliderPrimitive.Root> &
   className?: string;
   onDoubleClick?: () => void;
   'aria-describedby'?: string;
+  'aria-valuetext'?: string;
 } & (
     | { 'aria-label': string; 'aria-labelledby'?: never }
     | { 'aria-labelledby': string; 'aria-label'?: never }
@@ -21,6 +22,7 @@ const Slider: React.ForwardRefExoticComponent<SliderProps & React.RefAttributes<
         'aria-labelledby': ariaLabelledBy,
         'aria-label': ariaLabel,
         'aria-describedby': ariaDescribedBy,
+        'aria-valuetext': ariaValueText,
         ...props
       },
       ref,
@@ -50,6 +52,7 @@ const Slider: React.ForwardRefExoticComponent<SliderProps & React.RefAttributes<
             'aria-labelledby': ariaLabelledBy,
             'aria-label': ariaLabel,
             'aria-describedby': ariaDescribedBy,
+            'aria-valuetext': ariaValueText,
           }}
         />
       </SliderPrimitive.Root>

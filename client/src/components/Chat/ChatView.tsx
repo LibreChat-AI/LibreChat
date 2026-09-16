@@ -21,6 +21,7 @@ import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } fr
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
+import { composerLiftFamily } from './Input/Composer/state';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import Footer, { useConfiguredFooter } from './Footer';
 import { AskAnswerHostProvider } from './ask/state';
@@ -62,6 +63,9 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
    *  composer's clearance has to account for the bar when it does — including
    *  before the config answers, so a cold load does not jump. */
   const configuredFooter = useConfiguredFooter();
+
+  /** Room an open composer popover needs below the composer; see the atom. */
+  const composerLift = useAtomValue(composerLiftFamily(index));
 
   const methods = useForm<ChatFormValues>({
     defaultValues: { text: '' },
@@ -170,6 +174,12 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                   />
                   <>
                     <div
+                      data-chat-pane={index}
+                      style={
+                        isLandingPage && composerLift > 0
+                          ? { transform: `translateY(-${composerLift}px)` }
+                          : undefined
+                      }
                       className={cn(
                         'flex flex-col',
                         isLandingPage

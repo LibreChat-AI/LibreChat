@@ -19,6 +19,7 @@ import type {
   TAgentQueuedTurnFileRef,
   TAgentQueuedTurnReceipt,
   TFile,
+  TReasoningOverride,
 } from 'librechat-data-provider';
 import type { AgentQueuedTurnLifecycle } from './queuedTurns';
 import type { SteerFileFetcher } from './steering/request';
@@ -86,6 +87,7 @@ function receipt(
     ...(turn.files != null && { files: turn.files }),
     ...(turn.quotes != null && { quotes: turn.quotes }),
     ...(turn.manualSkills != null && { manualSkills: turn.manualSkills }),
+    ...(turn.reasoningOverride != null && { reasoningOverride: turn.reasoningOverride }),
     priority: turn.priority,
     ...(turn.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: turn.expectedPredecessorCreatedAt,
@@ -132,6 +134,13 @@ function uniqueStrings(values: readonly string[] | undefined): string[] | undefi
   return values == null ? undefined : [...new Set(values)];
 }
 
+function sameReasoningOverride(
+  left: TReasoningOverride | undefined,
+  right: TReasoningOverride | undefined,
+): boolean {
+  return left?.key === right?.key && left?.value === right?.value;
+}
+
 function matchesReplayIntent(
   turn: AgentQueuedTurnRecord,
   input: {
@@ -139,6 +148,7 @@ function matchesReplayIntent(
     clientRequestId: string;
     files?: readonly TAgentQueuedTurnFileRef[];
     manualSkills?: readonly string[];
+    reasoningOverride?: TReasoningOverride;
     expectedPredecessorCreatedAt?: number;
   },
   text: string,
@@ -154,6 +164,7 @@ function matchesReplayIntent(
     ) &&
     sameStrings(turn.quotes, quotes) &&
     sameStrings(turn.manualSkills, uniqueStrings(input.manualSkills)) &&
+    sameReasoningOverride(turn.reasoningOverride, input.reasoningOverride) &&
     turn.expectedPredecessorCreatedAt === input.expectedPredecessorCreatedAt
   );
 }
@@ -338,6 +349,7 @@ export async function handleAgentQueuedTurnEnqueue(
       ...(resolvedFiles.files != null && { files: resolvedFiles.files }),
       ...(quotes != null && { quotes }),
       ...(input.manualSkills != null && { manualSkills: input.manualSkills }),
+      ...(input.reasoningOverride != null && { reasoningOverride: input.reasoningOverride }),
       priority: false,
       ...(input.expectedPredecessorCreatedAt != null && {
         expectedPredecessorCreatedAt: input.expectedPredecessorCreatedAt,

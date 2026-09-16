@@ -189,7 +189,17 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     );
 
     if (parentMessage && parentMessage.isCreatedByUser) {
-      ask({ ...parentMessage }, { isContinued: true, isRegenerate: true, isEdited: true });
+      ask(
+        { ...parentMessage },
+        {
+          isContinued: true,
+          isRegenerate: true,
+          isEdited: true,
+          overrideManualSkills: parentMessage.manualSkills,
+          overrideQuotes: parentMessage.quotes,
+          overrideReasoning: parentMessage.reasoningOverride ?? null,
+        },
+      );
     } else {
       console.error(
         'Failed to regenerate the message: parentMessage not found, or not created by user.',

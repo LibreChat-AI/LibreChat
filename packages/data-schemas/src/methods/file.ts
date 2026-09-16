@@ -134,6 +134,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     filter: FilterQuery<IMongoFile>,
     _sortOptions?: Record<string, SortOrder> | null,
     selectFields?: Record<string, 0 | 1> | string | null,
+    limit?: number | null,
   ) => Promise<IMongoFile[] | null>;
   getExpiredFiles: (limit?: number, options?: ExpiredFileQueryOptions) => Promise<IMongoFile[]>;
   incrementFileDeletionAttempts: (file_id: string) => Promise<number>;
@@ -363,13 +364,14 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
    * @param filter - The filter criteria to apply
    * @param _sortOptions - Optional sort parameters
    * @param selectFields - Fields to include/exclude in the query results. Default excludes the 'text' field
-   * @param options - Additional query options (userId, agentId for ACL)
+   * @param limit - Optional max number of documents to return (newest first)
    * @returns A promise that resolves to an array of file documents
    */
   async function getFiles(
     filter: FilterQuery<IMongoFile>,
     _sortOptions?: Record<string, SortOrder> | null,
     selectFields?: string | Record<string, 0 | 1> | null | undefined,
+    limit?: number | null,
   ): Promise<IMongoFile[] | null> {
     const File = mongoose.models.File as Model<IMongoFile>;
     const sortOptions = { updatedAt: -1 as SortOrder, ..._sortOptions };
@@ -378,6 +380,9 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       query.select(selectFields);
     } else {
       query.select({ text: 0 });
+    }
+    if (limit != null && limit > 0) {
+      query.limit(limit);
     }
     return await query.sort(sortOptions).lean<IMongoFile[]>();
   }

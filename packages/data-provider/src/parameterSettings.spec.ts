@@ -1,10 +1,14 @@
 import type { SettingDefinition } from './generate';
 import {
+  paramSettings,
+  resolveReasoningSetting,
+  resolveReasoningSettingForTarget,
+  isReasoningOverrideSupported,
   applyModelAwareDefaults,
   resolveDropParamsUIKeys,
-  paramSettings,
 } from './parameterSettings';
-import { EModelEndpoint, Providers } from './types';
+import { BedrockProviders, EModelEndpoint, Providers } from './types';
+import { ReasoningEffort } from './schemas';
 
 const googleParams = paramSettings[EModelEndpoint.google] as SettingDefinition[];
 const anthropicParams = paramSettings[EModelEndpoint.anthropic] as SettingDefinition[];
@@ -129,6 +133,193 @@ describe('applyModelAwareDefaults', () => {
       max: 24576,
       positiveMin: 0,
     });
+  });
+});
+
+describe('resolveReasoningSetting', () => {
+  it('selects qualitative reasoning effort for OpenAI reasoning models', () => {
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-5.6',
+        settings: paramSettings[EModelEndpoint.openAI] ?? [],
+      })?.key,
+    ).toBe('reasoning_effort');
+  });
+
+  it('hides the control for known non-reasoning OpenAI models', () => {
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-4o',
+        settings: paramSettings[EModelEndpoint.openAI] ?? [],
+      }),
+    ).toBeUndefined();
+  });
+
+  it('uses the configured Azure capability for administrator-defined deployment names', () => {
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model: 'production-reasoning-west',
+        settings: paramSettings[EModelEndpoint.azureOpenAI] ?? [],
+      })?.key,
+    ).toBe('reasoning_effort');
+  });
+
+  it('keeps custom OpenAI-compatible models capability-driven', () => {
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.custom,
+        model: 'qwen3.8-max',
+        settings: paramSettings[EModelEndpoint.custom] ?? [],
+      })?.key,
+    ).toBe('reasoning_effort');
+  });
+
+  it('uses effort for adaptive Claude and a token budget for manual-thinking Claude', () => {
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.anthropic,
+        model: 'claude-sonnet-4.6',
+        settings: paramSettings[EModelEndpoint.anthropic] ?? [],
+      })?.key,
+    ).toBe('effort');
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.anthropic,
+        model: 'claude-3-7-sonnet-latest',
+        settings: paramSettings[EModelEndpoint.anthropic] ?? [],
+      })?.key,
+    ).toBe('thinkingBudget');
+  });
+
+  it('uses thinking level for Gemini 3 and a token budget for Gemini 2.5', () => {
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.google,
+        model: 'gemini-3.5-flash',
+        settings: paramSettings[EModelEndpoint.google] ?? [],
+      })?.key,
+    ).toBe('thinkingLevel');
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.google,
+        model: 'gemini-2.5-pro',
+        settings: paramSettings[EModelEndpoint.google] ?? [],
+      })?.key,
+    ).toBe('thinkingBudget');
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.google,
+        model: 'gemini-1.5-pro',
+        settings: paramSettings[EModelEndpoint.google] ?? [],
+      }),
+    ).toBeUndefined();
+  });
+
+  it('uses the Bedrock provider-specific settings surface', () => {
+    const endpoint = `${EModelEndpoint.bedrock}-${BedrockProviders.Moonshot}`;
+    expect(
+      resolveReasoningSetting({
+        endpoint,
+        model: 'moonshot.kimi-k2.5',
+        settings: paramSettings[endpoint] ?? [],
+      })?.key,
+    ).toBe('reasoning_effort');
+  });
+
+  it('supports Bedrock Claude but hides non-reasoning Bedrock families', () => {
+    const anthropicEndpoint = `${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}`;
+    expect(
+      resolveReasoningSetting({
+        endpoint: anthropicEndpoint,
+        model: 'anthropic.claude-sonnet-4-6-v1:0',
+        settings: paramSettings[anthropicEndpoint] ?? [],
+      })?.key,
+    ).toBe('effort');
+
+    const metaEndpoint = `${EModelEndpoint.bedrock}-${BedrockProviders.Meta}`;
+    expect(
+      resolveReasoningSetting({
+        endpoint: metaEndpoint,
+        model: 'meta.llama4-maverick-instruct-v1:0',
+        settings: paramSettings[metaEndpoint] ?? [],
+      }),
+    ).toBeUndefined();
+  });
+
+  it('normalizes the production-shaped bare Bedrock endpoint before selecting Claude reasoning', () => {
+    const settings = paramSettings[`${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}`] ?? [];
+    expect(
+      resolveReasoningSetting({
+        endpoint: EModelEndpoint.bedrock,
+        model: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+        settings,
+      })?.key,
+    ).toBe('thinkingBudget');
+  });
+});
+
+describe('resolveReasoningSettingForTarget', () => {
+  it('uses a custom-backed agent default parameter surface', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: 'ClaudeProxy',
+        model: 'claude-sonnet-4-6',
+        isAgent: true,
+        defaultParamsEndpoint: EModelEndpoint.anthropic,
+      })?.key,
+    ).toBe('effort');
+  });
+
+  it('prefers a custom endpoint default over the generic custom surface', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.custom,
+        model: 'claude-sonnet-4-6',
+        defaultParamsEndpoint: EModelEndpoint.anthropic,
+      })?.key,
+    ).toBe('effort');
+  });
+
+  it('merges a deployment-owned reasoning definition into provider defaults', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.custom,
+        model: 'deployment-model',
+        paramDefinitions: [
+          {
+            key: 'reasoning_effort',
+            type: 'enum',
+            options: ['low', 'high'],
+          } as SettingDefinition,
+        ],
+      })?.options,
+    ).toEqual(['low', 'high']);
+  });
+});
+
+describe('isReasoningOverrideSupported', () => {
+  it('rejects a stale key and a model-specific value outside its range', () => {
+    const setting = {
+      key: 'thinkingBudget',
+      type: 'number',
+      range: { min: -1, positiveMin: 128, max: 32768, step: 128 },
+    } as SettingDefinition;
+
+    expect(
+      isReasoningOverrideSupported(
+        { key: 'reasoning_effort', value: ReasoningEffort.high },
+        setting,
+      ),
+    ).toBe(false);
+    expect(isReasoningOverrideSupported({ key: 'thinkingBudget', value: 64000 }, setting)).toBe(
+      false,
+    );
+    expect(isReasoningOverrideSupported({ key: 'thinkingBudget', value: 32768 }, setting)).toBe(
+      true,
+    );
   });
 });
 

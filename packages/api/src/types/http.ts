@@ -3,6 +3,7 @@ import type {
   CodeEnvironmentMode,
   CodeWorkspaceSelection,
   TEndpointOption,
+  TReasoningOverride,
   Agents,
 } from 'librechat-data-provider';
 import type { IUser, AppConfig, IConversation } from '@librechat/data-schemas';
@@ -23,6 +24,7 @@ export type RequestBody = {
   imageDetail?: Agents.ImageDetail;
   key?: string;
   endpointOption?: Partial<TEndpointOption>;
+  reasoningOverride?: TReasoningOverride;
   /** Browser IANA timezone used to resolve local-time prompt variables (e.g. `{{current_datetime}}`). */
   timezone?: string;
   codeApprovalMode?: CodeApprovalMode;
@@ -42,4 +44,12 @@ export type ServerRequest = Request<unknown, unknown, RequestBody> & {
   resolvedConversation?: Partial<IConversation> | null;
   /** Passport strategy that populated req.user for this request. */
   authStrategy?: string;
+  /** Trusted snapshot used to keep a request-scoped override out of saved conversation defaults. */
+  reasoningOverrideBase?: {
+    key: TReasoningOverride['key'];
+    hadValue: boolean;
+    value?: unknown;
+    thinkingHadValue?: boolean;
+    thinkingValue?: unknown;
+  };
 };

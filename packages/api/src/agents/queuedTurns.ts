@@ -644,6 +644,7 @@ function createAgentQueuedTurnResolver({
       ...(claim.files != null && { files: claim.files }),
       ...(claim.quotes != null && { quotes: claim.quotes }),
       ...(claim.manualSkills != null && { manualSkills: claim.manualSkills }),
+      ...(claim.reasoningOverride != null && { reasoningOverride: claim.reasoningOverride }),
       admissionSource: {
         source: AGENT_QUEUED_TURN_SOURCE,
         sourceId: claim.queuedTurnId,

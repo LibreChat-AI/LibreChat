@@ -11,8 +11,12 @@ const { logger } = require('@librechat/data-schemas');
 const {
   EndpointURLs,
   EModelEndpoint,
+  ReasoningParameterFormat,
   isAgentsEndpoint,
   parseCompactConvo,
+  reasoningOverrideSchema,
+  resolveReasoningSettingForTarget,
+  isReasoningOverrideSupported,
   getDefaultParamsEndpoint,
 } = require('librechat-data-provider');
 const azureAssistants = require('~/server/services/Endpoints/azureAssistants');
@@ -69,6 +73,14 @@ async function buildEndpointOption(req, res, next) {
 
   const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
 
+  const reasoningOverrideResult =
+    req.body.reasoningOverride == null
+      ? null
+      : reasoningOverrideSchema.safeParse(req.body.reasoningOverride);
+  if (reasoningOverrideResult?.success === false) {
+    return handleError(res, { text: 'Invalid reasoning override' });
+  }
+
   let parsedBody;
   try {
     parsedBody = parseCompactConvo({
@@ -84,6 +96,7 @@ async function buildEndpointOption(req, res, next) {
 
   const appConfig = req.config;
   let appliedModelSpecPrivateFields = new Set();
+  let enforcedModelSpecFields = new Set();
   if (appConfig.modelSpecs?.list?.length && appConfig.modelSpecs?.enforce) {
     /** @type {{ list: TModelSpec[] }}*/
     const { list } = appConfig.modelSpecs;
@@ -114,6 +127,7 @@ async function buildEndpointOption(req, res, next) {
       });
     }
     const { modelSpec: currentModelSpec } = modelSpecResolution;
+    enforcedModelSpecFields = new Set(Object.keys(currentModelSpec.preset));
 
     try {
       const result = applyModelSpecPreset({
@@ -179,6 +193,66 @@ async function buildEndpointOption(req, res, next) {
     // TODO: use object params
     req.body = req.body || {}; // Express 5: ensure req.body exists
     req.body.endpointOption = await builder(endpoint, parsedBody, endpointType);
+
+    const reasoningOverride = reasoningOverrideResult?.data;
+    if (reasoningOverride != null) {
+      if (
+        appliedModelSpecPrivateFields.has(reasoningOverride.key) ||
+        enforcedModelSpecFields.has(reasoningOverride.key)
+      ) {
+        return handleError(res, { text: 'Invalid reasoning override' });
+      }
+      const loadedAgent = await req.body.endpointOption.agent;
+      const effectiveEndpoint =
+        loadedAgent?.provider ?? req.body.endpointOption.endpointType ?? endpointType ?? endpoint;
+      const effectiveModel =
+        loadedAgent?.model ?? req.body.endpointOption.model_parameters?.model ?? parsedBody.model;
+      const customEndpointKey = isAgents ? effectiveEndpoint : endpoint;
+      const customParams = endpointsConfig?.[customEndpointKey]?.customParams;
+      if (customParams?.reasoningFormat === ReasoningParameterFormat.disabled) {
+        return handleError(res, { text: 'Invalid reasoning override' });
+      }
+      const customSettings = customParams?.paramDefinitions;
+      const supportedSetting = resolveReasoningSettingForTarget({
+        endpoint: effectiveEndpoint,
+        model: effectiveModel,
+        isAgent: isAgents,
+        defaultParamsEndpoint: customParams?.defaultParamsEndpoint ?? defaultParamsEndpoint,
+        paramDefinitions: customSettings,
+      });
+
+      if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
+        return handleError(res, { text: 'Invalid reasoning override' });
+      }
+      const modelParameters = req.body.endpointOption.model_parameters ?? {};
+      const enablesThinking =
+        reasoningOverride.key === 'effort' ||
+        reasoningOverride.key === 'thinkingLevel' ||
+        reasoningOverride.key === 'thinkingBudget';
+      req.reasoningOverrideBase =
+        req.reasoningOverrideBase?.key === reasoningOverride.key
+          ? req.reasoningOverrideBase
+          : {
+              key: reasoningOverride.key,
+              hadValue: Object.prototype.hasOwnProperty.call(
+                modelParameters,
+                reasoningOverride.key,
+              ),
+              value: modelParameters[reasoningOverride.key],
+              ...(enablesThinking && {
+                thinkingHadValue: Object.prototype.hasOwnProperty.call(modelParameters, 'thinking'),
+                thinkingValue: modelParameters.thinking,
+              }),
+            };
+      req.body.endpointOption = {
+        ...req.body.endpointOption,
+        model_parameters: {
+          ...modelParameters,
+          [reasoningOverride.key]: reasoningOverride.value,
+          ...(enablesThinking && { thinking: true }),
+        },
+      };
+    }
 
     if (req.body.files && !isAgents) {
       req.body.endpointOption.attachments = updateFilesUsage(req.body.files, undefined, {

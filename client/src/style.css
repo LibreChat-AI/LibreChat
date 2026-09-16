@@ -138,7 +138,7 @@
   --markdown-font-size: 1rem;
 }
 
-/* transitions-dev tokens — semantic names shared by every t-* class below. */
+/* transitions-dev tokens: semantic names shared by every t-* class below. */
 :root {
   --resize-dur: 300ms;
   --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -154,7 +154,7 @@
   --avatar-ease-out: cubic-bezier(0.34, 3.85, 0.64, 1);
 }
 
-/* Icon swap — cross-fade two icons sharing a slot. */
+/* Icon swap: cross-fade two icons sharing a slot. */
 .t-icon-swap {
   position: relative;
   display: inline-grid;
@@ -186,7 +186,7 @@
   }
 }
 
-/* Avatar group hover — distance-falloff lift on a horizontal row. */
+/* Avatar group hover: distance-falloff lift on a horizontal row. */
 .t-avatar {
   transform-origin: center;
   transform: translateY(var(--shift, 0px)) scale(var(--scale-active, 1));
@@ -2604,6 +2604,117 @@ html[data-input-modality='keyboard']
 .animate-popover-top-left[data-enter] {
   opacity: 1;
   transform: scale(1) translate(0, 0);
+}
+
+/**
+ * Composer popovers. Its own curve rather than `animate-popover`'s: these are
+ * large surfaces, and the shared 150ms ease-in-out reads as a snap at that size.
+ * Decelerating hard from the first frame and then settling is what makes a panel
+ * feel placed rather than switched on. Leaving is quicker than entering, so
+ * dismissing never feels like waiting.
+ */
+.animate-composer-popover {
+  /* Ariakit resolves this to the edge nearest the trigger, so the panel grows
+     out of the button whether it opens below or flips above. `animate-popover`
+     pins the origin to the top and translates down, which is right one way
+     round and backwards the other. */
+  transform-origin: var(--popover-transform-origin, top center);
+  opacity: 0;
+  transform: scale(0.94);
+  transition:
+    opacity 190ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform, opacity;
+}
+.animate-composer-popover[data-enter] {
+  opacity: 1;
+  transform: scale(1);
+}
+.animate-composer-popover[data-leave] {
+  transition-duration: 120ms, 140ms;
+}
+
+/**
+ * Palette list. `.scrollbar-hover` fades its thumb in on pointer-over, so on a
+ * list this dense the scrollbar reads as appearing out of nowhere, and where
+ * the platform draws classic rather than overlay scrollbars, a gutter that only
+ * exists while the thumb does shifts every row sideways under the cursor. The
+ * thumb stays drawn and the gutter stays reserved; the class is only applied
+ * when the list actually overflows, so a short list keeps its full width.
+ *
+ * Standard properties only, deliberately: styling `::-webkit-scrollbar` opts an
+ * element out of overlay scrollbars altogether, which would spend 8px of gutter
+ * on the platforms that never had the problem.
+ */
+.composer-palette-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1)) transparent;
+  scrollbar-gutter: stable;
+}
+/** Trigger glyphs that turn as their popover opens, on the same curve. */
+.animate-composer-icon {
+  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/**
+ * The palette growing or shrinking as its list rearranges. The rows themselves
+ * are moved from `Palette.tsx`, which plays each one back to where it was after
+ * the list has been redrawn; a re-inserted node drops any transition it was
+ * about to run, and starring an entry re-inserts every row it passed. The
+ * panel's own height has no such problem: the list box is never re-inserted.
+ */
+.composer-palette-rows .ReactVirtualized__Grid {
+  transition: height 260ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+/* Held for the frame a search redraws in: the list is being replaced rather
+   than rearranged there, and growing into its new size reads as the panel
+   lagging behind the typing. */
+.composer-palette-instant .ReactVirtualized__Grid {
+  transition-duration: 0s;
+}
+@keyframes composer-palette-row {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-composer-palette-row {
+  animation: composer-palette-row 200ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+@keyframes composer-palette-row-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* Accelerating away, unlike everything else here: the shared decelerating curve
+   spends this beat almost entirely at zero, leaving the rows gone well before
+   the list starts closing over them. */
+.animate-composer-palette-row-out {
+  animation: composer-palette-row-out 110ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave],
+  .animate-composer-icon,
+  .composer-palette-rows .ReactVirtualized__Grid {
+    transition-duration: 1ms;
+  }
+  .animate-composer-palette-row,
+  .animate-composer-palette-row-out {
+    animation-duration: 1ms;
+  }
+  .animate-composer-popover,
+  .animate-composer-popover[data-enter],
+  .animate-composer-popover[data-leave] {
+    transform: none;
+  }
 }
 
 /** Note: ensure KaTeX can spread across visible space */

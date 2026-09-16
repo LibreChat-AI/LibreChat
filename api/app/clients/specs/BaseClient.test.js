@@ -3513,6 +3513,35 @@ describe('BaseClient', () => {
       expect(userSave[0].text).toBe('Just a question');
       expect(userSave[0].quotes).toBeUndefined();
     });
+
+    test('persists only a validated request-scoped reasoning override on the user turn', async () => {
+      TestClient.options.req = {
+        body: { reasoningOverride: { key: 'reasoning_effort', value: 'high' } },
+      };
+      TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+      await TestClient.sendMessage('Think carefully');
+
+      const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+        ([message]) => message.isCreatedByUser === true,
+      );
+      expect(userSave[0].reasoningOverride).toEqual({
+        key: 'reasoning_effort',
+        value: 'high',
+      });
+    });
+
+    test('drops an invalid request-scoped reasoning override from message metadata', async () => {
+      TestClient.options.req = {
+        body: { reasoningOverride: { key: 'model', value: 'secret-model' } },
+      };
+      TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+      await TestClient.sendMessage('Do not trust this');
+
+      const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+        ([message]) => message.isCreatedByUser === true,
+      );
+      expect(userSave[0].reasoningOverride).toBeUndefined();
+    });
   });
 
   describe('mergeEditedContent phase boundaries', () => {

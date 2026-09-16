@@ -1,6 +1,11 @@
 import { randomUUID, createHash } from 'crypto';
-import { openAIBaseSchema, googleBaseSchema, anthropicBaseSchema } from 'librechat-data-provider';
-import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
+import {
+  openAIBaseSchema,
+  googleBaseSchema,
+  anthropicBaseSchema,
+  reasoningOverrideSchema,
+} from 'librechat-data-provider';
+import type { Agents, TReasoningOverride, TToolApprovalPolicy } from 'librechat-data-provider';
 import type { ToolPolicyConfig } from '@librechat/agents';
 import type { MCPToolAlias } from '~/tools/classification';
 
@@ -458,6 +463,9 @@ export const RESUME_CONTEXT_KEYS = [
   // different skill's tools (manualSkills isn't covered by the fingerprint). Replay-only.
   // (alwaysAppliedSkills is NOT here — it's resolved server-side from the DB, not req.body.)
   'manualSkills',
+  // The one-shot reasoning selection is generation-determining and must
+  // survive a HITL continuation across reloads/replicas.
+  'reasoningOverride',
   // Graph-determining for ephemeral agents: `loadEphemeralAgent` encodes the agent id
   // (and thus the LangGraph node name / HITL checkpoint namespace) from
   // `sender = modelLabel ?? modelSpec.label ?? …`. `modelLabel` is stripped from the
@@ -473,6 +481,14 @@ export const RESUME_CONTEXT_KEYS = [
 export type ResumeContext = Partial<Record<(typeof RESUME_CONTEXT_KEYS)[number], unknown>> & {
   /** Resolved model params captured at pause (sanitized); replayed by the resume route. */
   model_parameters?: Record<string, unknown>;
+  /** Original conversation values hidden from the provider runtime override. */
+  reasoningOverrideBase?: {
+    key: TReasoningOverride['key'];
+    hadValue: boolean;
+    value?: unknown;
+    thinkingHadValue?: boolean;
+    thinkingValue?: unknown;
+  };
 };
 
 /** Exact (lowercased) parameter keys that carry credentials or server transport config. */
@@ -692,6 +708,17 @@ export function captureResumeModelParameters(
     for (const key of RESUME_PARAM_KEYS) {
       if (body[key] !== undefined) {
         captured[key] = sanitizeParamValue(body[key], 1);
+      }
+    }
+    const reasoningOverride = reasoningOverrideSchema.safeParse(body.reasoningOverride);
+    if (reasoningOverride.success) {
+      captured[reasoningOverride.data.key] = reasoningOverride.data.value;
+      if (
+        reasoningOverride.data.key === 'effort' ||
+        reasoningOverride.data.key === 'thinkingLevel' ||
+        reasoningOverride.data.key === 'thinkingBudget'
+      ) {
+        captured.thinking = true;
       }
     }
   }

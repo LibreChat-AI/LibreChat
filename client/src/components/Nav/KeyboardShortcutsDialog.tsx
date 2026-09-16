@@ -1,6 +1,6 @@
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import { Plus, X } from 'lucide-react';
-import { useRecoilState } from 'recoil';
+import { useRecoilState, useRecoilValue } from 'recoil';
 import {
   Label,
   Switch,
@@ -23,6 +23,29 @@ import store from '~/store';
 type GroupedBindings = Record<string, ShortcutBindingInfo[]>;
 
 const PANELS_GROUP = 'com_shortcut_group_panels';
+
+const PLAIN_ENTER: ShortcutBinding = {
+  meta: false,
+  ctrl: false,
+  alt: false,
+  shift: false,
+  key: 'Enter',
+};
+
+/**
+ * What the composer actually submits on. With "Enter to send" active, plain
+ * Enter is the submit key and the registered modifier chord writes a newline
+ * there instead, so advertising the chord would name an action it does not
+ * perform where the user would reach for it. The binding itself is untouched:
+ * only its presentation follows the preference, so rebinding and conflict
+ * detection still operate on the real chord.
+ */
+function displayedBinding(info: ShortcutBindingInfo, enterToSend: boolean): ShortcutBinding | null {
+  if (info.id !== 'submitMessage' || info.isCustom || !enterToSend) {
+    return info.binding;
+  }
+  return PLAIN_ENTER;
+}
 
 function EditingRow({
   info,
@@ -110,7 +133,11 @@ function ShortcutRow({
 }) {
   const localize = useLocalize();
   const label = localize(info.labelKey as TranslationKeys);
-  const displayKeys = useMemo(() => bindingDisplayKeys(info.binding, isMac), [info.binding]);
+  const enterToSend = useRecoilValue<boolean>(store.enterToSend);
+  const displayKeys = useMemo(
+    () => bindingDisplayKeys(displayedBinding(info, enterToSend), isMac),
+    [info, enterToSend],
+  );
   const editAriaLabel = localize('com_shortcut_edit_aria', { 0: label });
   const isUnset = displayKeys.length === 0;
 

@@ -62,6 +62,13 @@ const showShortcutsDialog = atom<boolean>({
   default: false,
 });
 
+/** The file manager is a dialog reached from the account menu rather than a
+ *  side panel, so the shortcut that opens it needs a way in from anywhere. */
+const showFilesDialog = atom<boolean>({
+  key: 'showFilesDialog',
+  default: false,
+});
+
 export type KeyboardDeleteTarget = {
   conversationId: string;
   title: string;
@@ -99,6 +106,7 @@ export default {
   queriesEnabled,
   isEditingBadges,
   showShortcutsDialog,
+  showFilesDialog,
   keyboardDeleteTarget,
   customShortcuts,
   shortcutsEnabled,

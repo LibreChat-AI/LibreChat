@@ -71,23 +71,43 @@ const AGENT_TOOL_RESOURCE_KEYS = new Set([
 const isAgentToolResourceKey = (toolResource) =>
   typeof toolResource === 'string' && AGENT_TOOL_RESOURCE_KEYS.has(toolResource);
 
+/** Cap for `?limit=` so a recent-files palette request cannot request unbounded
+ *  history. Unbounded list (no limit) stays available for the files panel. */
+const FILES_LIST_LIMIT_MAX = 100;
+
 router.get('/', async (req, res) => {
   try {
     const appConfig = req.config;
-    const files = await db.getFiles({ user: req.user.id });
+    const rawLimit = Number(req.query.limit);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.floor(rawLimit), FILES_LIST_LIMIT_MAX)
+        : undefined;
+    /** Already sorted by `updatedAt` desc in `getFiles`; a limit returns the
+     *  most recently touched files without loading the full history. */
+    const files = await db.getFiles({ user: req.user.id }, null, null, limit);
+    /** `refreshS3FileUrls` copies rather than mutating, so the refreshed rows
+     *  only reach the client if its return value is the one sent. Falls back to
+     *  the original list whenever no refresh ran or one failed. */
+    let responseFiles = files;
     if (appConfig.fileStrategy === FileSources.s3) {
       try {
         const cache = getLogStores(CacheKeys.S3_EXPIRY_INTERVAL);
         const alreadyChecked = await cache.get(req.user.id);
         if (!alreadyChecked) {
-          await refreshS3FileUrls(files, db.batchUpdateFiles);
-          await cache.set(req.user.id, true, Time.THIRTY_MINUTES);
+          responseFiles = await refreshS3FileUrls(files, db.batchUpdateFiles);
+          /** Only mark the user-wide interval after a full list: a limited
+           *  palette request refreshes only the newest rows, and caching that
+           *  would leave older signed URLs stale for the files panel. */
+          if (limit == null) {
+            await cache.set(req.user.id, true, Time.THIRTY_MINUTES);
+          }
         }
       } catch (error) {
         logger.warn('[/files] Error refreshing S3 file URLs:', error);
       }
     }
-    res.status(200).send(files);
+    res.status(200).send(responseFiles);
   } catch (error) {
     logger.error('[/files] Error getting files:', error);
     res.status(400).json({ message: 'Error in request', error: error.message });

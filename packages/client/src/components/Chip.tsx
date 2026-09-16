@@ -6,7 +6,7 @@ import { IconButton } from './IconButton';
 import { cn } from '~/utils';
 
 type ChipVariantProps = {
-  tone?: 'neutral' | 'info' | 'success' | 'warning' | 'error' | null;
+  tone?: 'surface' | 'neutral' | 'info' | 'success' | 'warning' | 'error' | null;
   size?: 'sm' | 'md' | 'theme' | null;
   shape?: 'round' | 'theme' | null;
 };
@@ -16,6 +16,7 @@ const chipVariants: (props?: ChipVariantProps & ClassProp) => string = cva(
   {
     variants: {
       tone: {
+        surface: 'border-border-light bg-surface-secondary text-text-secondary',
         neutral: 'border-status-neutral-border bg-status-neutral-subtle text-status-neutral',
         info: 'border-status-info-border bg-status-info-subtle text-status-info',
         success: 'border-status-success-border bg-status-success-subtle text-status-success',

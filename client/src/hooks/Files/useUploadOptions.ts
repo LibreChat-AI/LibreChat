@@ -1,7 +1,6 @@
 import { useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import {
-  Tools,
   Constants,
   mergeFileConfig,
   isAgentsEndpoint,
@@ -10,13 +9,13 @@ import {
 } from 'librechat-data-provider';
 import type { EToolResources } from 'librechat-data-provider';
 import useAgentToolPermissions from '~/hooks/Agents/useAgentToolPermissions';
+import { getViableUploadOptions, getUploadToolAllowances } from '~/utils';
 import useAgentCapabilities from '~/hooks/Agents/useAgentCapabilities';
 import { getViableUploadOptions, isUnifiedUploadMode } from '~/utils';
 import useGetAgentsConfig from '~/hooks/Agents/useGetAgentsConfig';
 import { useGetFileConfig } from '~/data-provider';
 import { ephemeralAgentByConvoId } from '~/store';
 import { useDragDropContext } from '~/Providers';
-import { isEphemeralAgent } from '~/common';
 
 /**
  * Resolves which upload destinations a file set can be routed to, plus whether uploads are
@@ -42,13 +41,7 @@ export default function useUploadOptions() {
   /** Destination checks read this config, so callers can tell "not viable" from "not known yet". */
   const isConfigPending = !isFileConfigLoaded && !isFileConfigError && !isFileConfigPaused;
 
-  /**
-   * Tools are offerable unless a saved agent omits them; in direct/ephemeral chats selecting
-   * one enables the ephemeral capability, matching the original drag-and-drop behavior.
-   */
-  const isSavedAgent = agentId != null && agentId !== '' && !isEphemeralAgent(agentId);
-  const fileSearchAllowedByAgent = !isSavedAgent || (tools?.includes(Tools.file_search) ?? false);
-  const codeAllowedByAgent = !isSavedAgent || (tools?.includes(Tools.execute_code) ?? false);
+  const { fileSearchAllowedByAgent, codeAllowedByAgent } = getUploadToolAllowances(agentId, tools);
 
   /* An agent conversation carries endpoint `agents`, but its file policy belongs to the
    * provider it runs on, which is the entry a named custom endpoint configures. Resolved

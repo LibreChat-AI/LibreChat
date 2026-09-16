@@ -20,6 +20,7 @@ import {
   removeUsageAtoms,
 } from '~/store/usage';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import type { PendingSteer } from '~/store/families';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;
 
@@ -301,7 +302,10 @@ jest.mock('librechat-data-provider', () => {
   };
 });
 
-import useResumableSSE from '~/hooks/SSE/useResumableSSE';
+import useResumableSSE, {
+  selectLocalSteersForQueue,
+  ABORT_SWEEP_STATUSES,
+} from '~/hooks/SSE/useResumableSSE';
 import useSSE from '~/hooks/SSE/useSSE';
 
 const CONV_ID = 'conv-abc-123';
@@ -892,7 +896,7 @@ describe('useResumableSSE', () => {
     expect(mockConvertSteersToQueued).toHaveBeenCalledWith(CONV_ID, parked, {
       generationProtocolVersion: 1,
     });
-    // The true outcome is unknown — the run-end signal must release parked
+    // The true outcome is unknown: the run-end signal must release parked
     // interrupt flags WITHOUT auto-sending queued messages.
     expect(mockSetRunEnd).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: CONV_ID, outcome: 'aborted' }),
@@ -5370,5 +5374,133 @@ describe('useResumableSSE - sync response identity', () => {
     ]);
     expect(updatedMessages[1]?.parentMessageId).toBe('assigned-user-id');
     unmount();
+  });
+});
+
+/**
+ * `convertLocalSteersToQueued` (the `final` handler and the intentional-close
+ * `abort` listener both call it, alongside the two failure-terminal paths
+ * covered above) is a thin `useRecoilCallback` wrapper: read the conversation's
+ * chips, run them through this selection, hand the result to `useSteerConvert`.
+ * This file's `useRecoilCallback: () => jest.fn()` mock (see above, "the
+ * hook's steer-chip/queue callbacks need a RecoilRoot; these tests render
+ * bare") makes that wrapper, and every other recoil-callback in this hook
+ * (`resolveSteerChip`, `seedSteerChips` included; neither has a direct test
+ * in this file either), inert: calling it from the `final`/`abort` source
+ * lines is invisible to `mockConvertSteersToQueued` assertions here, since the
+ * mock discards the real closure before it can ever call through. Covering
+ * the selection logic directly (this is the exact piece of logic finding 3
+ * was about: which statuses survive a run end) rather than faking a
+ * RecoilRoot-backed integration around the rest of this large hook's mocks.
+ *
+ * The `statuses` parameter pins a second contract: the `final` handler and
+ * the two error/404 terminals call `convertLocalSteersToQueued` with no
+ * override (default `pending || failed`, the run is genuinely over), while
+ * the intentional-close `abort` listener passes `{ statuses: ['failed'] }`
+ * because that listener also fires on navigation away while the run
+ * CONTINUES server-side: a server-ACK'd `pending` chip must be left alone
+ * there, not swept into the queue as a duplicate of the server's own injection.
+ */
+describe('selectLocalSteersForQueue', () => {
+  const chip = (over: Partial<PendingSteer> = {}): PendingSteer => ({
+    steerId: 's1',
+    text: 'default text',
+    status: 'pending',
+    createdAt: 1,
+    ...over,
+  });
+
+  it('final/error-path selection (default statuses) includes pending and failed chips, excluding sending', () => {
+    const chips = [
+      chip({ steerId: 'p1', status: 'pending' }),
+      chip({ steerId: 'f1', status: 'failed' }),
+      chip({ steerId: 'sending-1', status: 'sending' }),
+    ];
+    expect(selectLocalSteersForQueue(chips).map((steer) => steer.steerId)).toEqual(['p1', 'f1']);
+  });
+
+  it('abort-path selection (statuses: ["failed"]) sweeps only failed chips, leaving pending alone', () => {
+    // The abort listener fires on navigation away while the run CONTINUES
+    // server-side: a `pending` chip already has a server id and will be
+    // injected by the server regardless, so sweeping it here too would make
+    // `useQueueDrain` resend the same words as a duplicate turn at run end.
+    const chips = [
+      chip({ steerId: 'p1', status: 'pending' }),
+      chip({ steerId: 'f1', status: 'failed' }),
+      chip({ steerId: 'sending-1', status: 'sending' }),
+    ];
+    expect(selectLocalSteersForQueue(chips, ['failed']).map((steer) => steer.steerId)).toEqual([
+      'f1',
+    ]);
+  });
+
+  it('converts a failed local chip present at a run-end path into a queueable item', () => {
+    // The leak finding 3 was about: a `failed` chip carries a local-* id the
+    // server never reports, so `data.pendingSteers`/the abort response can
+    // never carry it: this selection is the ONLY place left that can catch
+    // it before the `final`/`abort` paths hand off to `useSteerConvert`.
+    const failed = chip({ steerId: 'local-failed', status: 'failed', text: 'redo this' });
+    expect(selectLocalSteersForQueue([failed])).toEqual([
+      expect.objectContaining({ steerId: 'local-failed', text: 'redo this', createdAt: 1 }),
+    ]);
+  });
+
+  it('does not sweep a sending chip: its own POST callback owns it', () => {
+    // Converting it here too would race that callback: a late ACK's re-add
+    // in `resolveAcknowledgedSteer` could then double-queue the same words.
+    const sending = chip({ steerId: 'in-flight', status: 'sending' });
+    expect(selectLocalSteersForQueue([sending])).toEqual([]);
+  });
+
+  it('preserves uncertain deliveries for explicit same-id recovery', () => {
+    const legacy = chip({
+      steerId: 'legacy-uncertain',
+      status: 'failed',
+      deliveryUncertain: true,
+      generationProtocolVersion: 1,
+    });
+    const modern = chip({
+      steerId: 'modern-uncertain',
+      status: 'failed',
+      deliveryUncertain: true,
+      generationProtocolVersion: 2,
+    });
+
+    expect(selectLocalSteersForQueue([legacy, modern])).toEqual([]);
+    expect(selectLocalSteersForQueue([legacy], ABORT_SWEEP_STATUSES)).toEqual([]);
+  });
+
+  it('carries files only when present', () => {
+    const withFiles = chip({
+      steerId: 'p2',
+      files: [{ file_id: 'f1', filename: 'a.png' }],
+    });
+    const withoutFiles = chip({ steerId: 'p3' });
+    const [withResult, withoutResult] = selectLocalSteersForQueue([withFiles, withoutFiles]);
+    expect(withResult.files).toEqual(withFiles.files);
+    expect(withoutResult.files).toBeUndefined();
+  });
+
+  describe('the abort sweep', () => {
+    /* The abort path is the one terminal where the run may still be live on the
+       server, so a chip it has already ACK'd must be left for it to inject. */
+    it('sweeps only what never reached the server', () => {
+      expect([...ABORT_SWEEP_STATUSES]).toEqual(['failed']);
+    });
+
+    it("leaves an ACK'd chip alone where the default sweep would take it", () => {
+      const chips = [
+        chip({ steerId: 'acked', status: 'pending' }),
+        chip({ steerId: 'never-sent', status: 'failed' }),
+      ];
+      expect(selectLocalSteersForQueue(chips, ABORT_SWEEP_STATUSES).map((s) => s.steerId)).toEqual([
+        'never-sent',
+      ]);
+      /* Where the run has genuinely ended, both are swept. */
+      expect(selectLocalSteersForQueue(chips).map((s) => s.steerId)).toEqual([
+        'acked',
+        'never-sent',
+      ]);
+    });
   });
 });

@@ -55,6 +55,9 @@ const restoreResumeContext = async (req, res, next) => {
       const job = await GenerationJobManager.getJob(streamId);
       const resumeContext = job?.metadata?.pendingAction?.resumeContext;
       applyResumeContext(req.body, resumeContext);
+      if (resumeContext?.reasoningOverrideBase != null) {
+        req.reasoningOverrideBase = { ...resumeContext.reasoningOverrideBase };
+      }
       // Replay the paused turn's resolved model parameters. Ephemeral agents derive these
       // (temperature, max tokens, custom endpoint params) from the request body, which the
       // resume payload omits — without this the continuation runs with defaults. They're

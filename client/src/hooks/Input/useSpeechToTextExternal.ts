@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRecoilState } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { useSpeechToTextMutation } from '~/data-provider';
@@ -37,6 +37,7 @@ export const getBestSupportedMimeType = (
 const useSpeechToTextExternal = (
   setText: (text: string) => void,
   onTranscriptionComplete: (text: string) => void,
+  onTranscriptionSettled: () => void,
 ) => {
   const { showToast } = useToastContext();
   const audioStream = useRef<MediaStream | null>(null);
@@ -45,9 +46,20 @@ const useSpeechToTextExternal = (
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   const audioChunksRef = useRef<Blob[]>([]);
+  /** Read by the recorder's `stop` handler, which fires a tick after the call
+   *  that ended capture and cannot otherwise tell an abort from a stop. */
+  const abortedRef = useRef(false);
+  /** Cleared on unmount so a queued auto-send cannot fire into a gone composer. */
+  const autoSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Guards the async permission request: a stream that resolves after unmount
+   *  would otherwise hold the microphone open with nothing left to stop it. */
+  const isMountedRef = useRef(true);
+  /** The type the recorder was actually constructed with. `handleStop` runs
+   *  from a listener registered at start, so state read there is a render
+   *  behind and could pack the blob as a format the audio is not in. */
+  const audioMimeTypeRef = useRef<string>('');
   const [isListening, setIsListening] = useState(false);
   const [isRequestBeingMade, setIsRequestBeingMade] = useState(false);
-  const [audioMimeType, setAudioMimeType] = useState<string>(() => getBestSupportedMimeType());
 
   const [minDecibels] = useRecoilState(store.decibelValue);
   const [autoSendText] = useRecoilState(store.autoSendText);
@@ -57,12 +69,24 @@ const useSpeechToTextExternal = (
 
   const { mutate: processAudio, isLoading: isProcessing } = useSpeechToTextMutation({
     onSuccess: (data) => {
+      /* The request outlives the composer: react-query delivers this even after
+         unmount, and arming the auto-send here would submit a turn into a
+         conversation the user has already left. */
+      if (!isMountedRef.current) {
+        return;
+      }
+
       const extractedText = data.text;
       setText(extractedText);
       setIsRequestBeingMade(false);
+      onTranscriptionSettled();
 
       if (autoSendText > -1 && speechToText && extractedText.length > 0) {
-        setTimeout(() => {
+        if (autoSendTimerRef.current) {
+          clearTimeout(autoSendTimerRef.current);
+        }
+        autoSendTimerRef.current = setTimeout(() => {
+          autoSendTimerRef.current = null;
           onTranscriptionComplete(extractedText);
         }, autoSendText * 1000);
       }
@@ -73,6 +97,7 @@ const useSpeechToTextExternal = (
         status: 'error',
       });
       setIsRequestBeingMade(false);
+      onTranscriptionSettled();
     },
   });
 
@@ -100,6 +125,10 @@ const useSpeechToTextExternal = (
         audio: true,
         video: false,
       });
+      if (!isMountedRef.current) {
+        streamData?.getTracks().forEach((track) => track.stop());
+        return;
+      }
       audioStream.current = streamData ?? null;
     } catch {
       audioStream.current = null;
@@ -107,9 +136,16 @@ const useSpeechToTextExternal = (
   };
 
   const handleStop = () => {
+    if (abortedRef.current) {
+      abortedRef.current = false;
+      audioChunksRef.current = [];
+      cleanup();
+      return;
+    }
+
     if (audioChunksRef.current.length > 0) {
-      const audioBlob = new Blob(audioChunksRef.current, { type: audioMimeType });
-      const fileExtension = getFileExtension(audioMimeType);
+      const audioBlob = new Blob(audioChunksRef.current, { type: audioMimeTypeRef.current });
+      const fileExtension = getFileExtension(audioMimeTypeRef.current);
 
       audioChunksRef.current = [];
 
@@ -123,11 +159,16 @@ const useSpeechToTextExternal = (
       processAudio(formData);
     } else {
       showToast({ message: 'The audio was too short', status: 'warning' });
+      onTranscriptionSettled();
     }
   };
 
   const monitorSilence = (stream: MediaStream, stopRecording: () => void) => {
+    /* Held so it can be closed again: without this the ref below is never
+       assigned, its guard is always true, and every take leaves another audio
+       context open until the browser refuses to grant one. */
     const audioContext = new AudioContext();
+    audioContextRef.current = audioContext;
     const audioStreamSource = audioContext.createMediaStreamSource(stream);
     const analyser = audioContext.createAnalyser();
     analyser.minDecibels = minDecibels;
@@ -159,9 +200,27 @@ const useSpeechToTextExternal = (
     animationFrameIdRef.current = window.requestAnimationFrame(detectSound);
   };
 
+  /** Stops and drops the capture this hook owns; safe to call more than once. */
+  const releaseAudioStream = () => {
+    audioStream.current?.getTracks().forEach((track) => track.stop());
+    audioStream.current = null;
+  };
+
   const startRecording = async () => {
     if (isRequestBeingMade) {
       showToast({ message: 'A request is already being made. Please wait.', status: 'warning' });
+      return;
+    }
+
+    /* Checked before the microphone is requested, and here rather than in
+       `externalStartRecording`, so every caller — the mic button, the dictation
+       shortcut, an auto-start — is covered. A webview that exposes
+       `getUserMedia` without `MediaRecorder` would otherwise hold a live
+       capture that no Stop control can reach: construction throws after
+       permission is granted, `isListening` stays false, and the tracks run
+       until the composer unmounts. */
+    if (typeof MediaRecorder === 'undefined') {
+      showToast({ message: 'MediaRecorder is not supported in this browser', status: 'error' });
       return;
     }
 
@@ -172,11 +231,12 @@ const useSpeechToTextExternal = (
     if (audioStream.current) {
       try {
         audioChunksRef.current = [];
+        abortedRef.current = false;
         const bestMimeType = getBestSupportedMimeType();
-        setAudioMimeType(bestMimeType);
+        audioMimeTypeRef.current = bestMimeType;
 
         mediaRecorderRef.current = new MediaRecorder(audioStream.current, {
-          mimeType: audioMimeType,
+          mimeType: bestMimeType,
         });
         mediaRecorderRef.current.addEventListener('dataavailable', (event: BlobEvent) => {
           audioChunksRef.current.push(event.data);
@@ -188,10 +248,25 @@ const useSpeechToTextExternal = (
         }
         setIsListening(true);
       } catch (error) {
+        /* The recorder never started, so nothing else will release the stream:
+           `stopRecording` returns early without a recorder and unmount cleanup
+           is the only other path. Leaving it open keeps the microphone light on
+           behind a UI that offers no way to stop it. */
+        releaseAudioStream();
+        cleanup();
         showToast({ message: `Error starting recording: ${error}`, status: 'error' });
       }
     } else {
       showToast({ message: 'Microphone permission not granted', status: 'error' });
+    }
+  };
+
+  /** Releases the silence monitor's audio graph; safe to call more than once. */
+  const closeAudioContext = () => {
+    const context = audioContextRef.current;
+    audioContextRef.current = null;
+    if (context != null && context.state !== 'closed') {
+      void context.close().catch(() => undefined);
     }
   };
 
@@ -210,6 +285,7 @@ const useSpeechToTextExternal = (
         window.cancelAnimationFrame(animationFrameIdRef.current);
         animationFrameIdRef.current = null;
       }
+      closeAudioContext();
 
       setIsListening(false);
     } else {
@@ -218,11 +294,6 @@ const useSpeechToTextExternal = (
   };
 
   const externalStartRecording = () => {
-    if (typeof MediaRecorder === 'undefined') {
-      showToast({ message: 'MediaRecorder is not supported in this browser', status: 'error' });
-      return;
-    }
-
     if (isListening) {
       showToast({ message: 'Already listening. Please stop recording first.', status: 'warning' });
       return;
@@ -243,9 +314,75 @@ const useSpeechToTextExternal = (
     stopRecording();
   };
 
+  /**
+   * Drops the take without transcribing it. `handleStop` is where the audio is
+   * packed into a FormData and uploaded, so an abort has to reach it: the flag
+   * is what stops a discarded take from spending a transcription request.
+   */
+  const externalAbortRecording = () => {
+    abortedRef.current = true;
+    audioChunksRef.current = [];
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+    }
+
+    audioStream.current?.getTracks().forEach((track) => track.stop());
+    audioStream.current = null;
+
+    if (animationFrameIdRef.current !== null) {
+      window.cancelAnimationFrame(animationFrameIdRef.current);
+      animationFrameIdRef.current = null;
+    }
+    closeAudioContext();
+
+    setIsListening(false);
+  };
+
+  /* Navigating away mid-take ends neither path above: the recorder keeps
+     running, the microphone tracks stay live, the silence monitor keeps
+     scheduling frames, and the audio graph outlives the page that opened it.
+     Refs only, so the empty dependency list holds no stale closure. */
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+
+      if (autoSendTimerRef.current) {
+        clearTimeout(autoSendTimerRef.current);
+        autoSendTimerRef.current = null;
+      }
+
+      abortedRef.current = true;
+      audioChunksRef.current = [];
+
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop();
+      }
+      mediaRecorderRef.current = null;
+
+      audioStream.current?.getTracks().forEach((track) => track.stop());
+      audioStream.current = null;
+
+      if (animationFrameIdRef.current !== null) {
+        window.cancelAnimationFrame(animationFrameIdRef.current);
+        animationFrameIdRef.current = null;
+      }
+
+      const context = audioContextRef.current;
+      audioContextRef.current = null;
+      if (context != null && context.state !== 'closed') {
+        void context.close().catch(() => undefined);
+      }
+    };
+  }, []);
+
   return {
     isListening,
     externalStopRecording,
+    externalAbortRecording,
     externalStartRecording,
     isLoading: isProcessing,
   };

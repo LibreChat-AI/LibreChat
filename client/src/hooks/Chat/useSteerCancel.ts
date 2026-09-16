@@ -1,36 +1,22 @@
 import { useCallback } from 'react';
 import { useRecoilCallback, useRecoilValue } from 'recoil';
 import type { PendingSteer } from '~/store/families';
+import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useCancelSteerMutation } from '~/data-provider';
 import { appendAppliedSteerIds } from '~/utils';
 import store from '~/store';
 
-/**
- * `reclaimed` — the cancel beat the boundary; the words never entered the run.
- * `applied` — the steer already injected (or the run ended): the events own it.
- * `failed` — the POST failed, so the entry is restored and the server may still
- * inject it.
- */
 export type SteerCancelOutcome = 'reclaimed' | 'applied' | 'failed';
 
 /**
- * Asks the server to drop a steer before its injection boundary, touching no
- * chip state — the caller owns what happens to the words.
- *
- * A steer leaves the server queue only by injecting, so only `reclaimed` proves
- * the words never entered the run and are still the client's to re-home. Giving
- * an `applied` steer a second life (queueing it, editing it back into the
- * composer) would say the same thing twice; on `failed` the server may still
- * inject it, so its fate is unknown and it must be left alone.
+ * Asks the server to drop a steer before its injection boundary. Only a
+ * confirmed reclaim proves the words remain safe to move elsewhere.
  */
 export function useSteerReclaim(conversationId: string) {
   const cancelMutation = useCancelSteerMutation();
   const activeGenerationCreatedAt = useRecoilValue(
     store.activeGenerationCreatedAtByConvoId(conversationId),
   );
-  /** A confirmed reclaim is a terminal settlement too. Tombstone both ids so
-   * a final payload captured before the server discard cannot requeue it, and
-   * remove a recovered queue copy if the opposite ordering already occurred. */
   const settleReclaimed = useRecoilCallback(
     ({ set }) =>
       (steer: PendingSteer) => {
@@ -85,15 +71,26 @@ export function useSteerReclaim(conversationId: string) {
   );
 }
 
-/**
- * Cancels a steer still waiting on its injection boundary. The chip stays
- * visible until the request settles so capability/update events can still
- * patch its current server revision while cancel is in flight. Only a
- * confirmed reclaim removes it here. `removed:false` is ambiguous in the v1
- * protocol (already injected OR terminal conversion won), so the event path
- * must decide whether to remove or recover that entry without discarding its
- * client-only files/quotes/skills first.
- */
+export function useSteerMoveToQueue(conversationId: string) {
+  const reclaim = useSteerReclaim(conversationId);
+  const convertSteersToQueued = useSteerConvert();
+
+  return useCallback(
+    async (steer: PendingSteer): Promise<SteerCancelOutcome> => {
+      const outcome = await reclaim(steer);
+      if (outcome === 'reclaimed') {
+        convertSteersToQueued(conversationId, [steer], {
+          generationProtocolVersion: steer.generationProtocolVersion,
+          allowPreviouslyConvertedIds: [steer.steerId],
+          bindRecoverySource: false,
+        });
+      }
+      return outcome;
+    },
+    [conversationId, convertSteersToQueued, reclaim],
+  );
+}
+
 export default function useSteerCancel(conversationId: string) {
   const reclaim = useSteerReclaim(conversationId);
 

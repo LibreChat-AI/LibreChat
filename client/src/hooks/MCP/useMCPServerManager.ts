@@ -61,6 +61,20 @@ export interface MCPServerDefinition {
 // The init states (isInitializing, isCancellable, etc.) are stored in the global Jotai atom
 type PollIntervals = Record<string, NodeJS.Timeout | null>;
 
+export function selectInitializedMCPServer(
+  valuesRef: { current: string[] },
+  setValues: (values: string[]) => void,
+  serverName: string,
+) {
+  const currentValues = valuesRef.current ?? [];
+  if (currentValues.includes(serverName)) {
+    return;
+  }
+  const nextValues = [...currentValues, serverName];
+  valuesRef.current = nextValues;
+  setValues(nextValues);
+}
+
 export function useMCPServerManager({
   conversationId,
   storageContextKey,
@@ -167,10 +181,15 @@ export function useMCPServerManager({
     [],
   );
 
-  const reinitializeMutation = useReinitializeMCPServerMutation();
-  const cancelOAuthMutation = useCancelMCPOAuthMutation();
+  /* Destructured to the callables: react-query hands back a fresh result
+     object every render, and the callbacks below that depended on the whole
+     object were new identities each time, which is what kept this hook's
+     return, and `BadgeRowProvider`'s context value with it, changing on every
+     keystroke in the composer. */
+  const { mutateAsync: reinitializeServer } = useReinitializeMCPServerMutation();
+  const { mutate: cancelMCPOAuth } = useCancelMCPOAuthMutation();
 
-  const updateUserPluginsMutation = useUpdateUserPluginsMutation({
+  const { mutate: updateUserPlugins, isLoading: isUpdatingPlugins } = useUpdateUserPluginsMutation({
     onSuccess: async (_data, variables) => {
       const isRevoke = variables.action === 'uninstall';
       const message = isRevoke
@@ -333,7 +352,7 @@ export function useMCPServerManager({
             /** Flow completion is durable credential readiness, not proof that tool discovery
              * finished on this pod. Reinitialize once more through the normal API so the
              * selected server and its tools are usable before the UI reports success. */
-            const readiness = await reinitializeMutation.mutateAsync(serverName);
+            const readiness = await reinitializeServer(serverName);
             if (!isMCPReadyAfterOAuth(readiness)) {
               showToast({
                 message: getMCPReinitializeErrorMessage(readiness, localize),
@@ -385,10 +404,7 @@ export function useMCPServerManager({
               status: 'success',
             });
 
-            const currentValues = mcpValuesRef.current ?? [];
-            if (!currentValues.includes(serverName)) {
-              setMCPValues([...currentValues, serverName]);
-            }
+            selectInitializedMCPServer(mcpValuesRef, setMCPValues, serverName);
 
             await Promise.all([
               queryClient.invalidateQueries([QueryKeys.mcpServers]),
@@ -481,7 +497,7 @@ export function useMCPServerManager({
       timeoutId = setTimeout(pollOnce, getPollInterval(0));
       pollIntervalsRef.current[serverName] = timeoutId;
     },
-    [queryClient, showToast, localize, setMCPValues, cleanupServerState, reinitializeMutation],
+    [queryClient, showToast, localize, setMCPValues, cleanupServerState, reinitializeServer],
   );
 
   const initializeServer = useCallback(
@@ -490,10 +506,10 @@ export function useMCPServerManager({
        * attempt can never be mistaken for this attempt's outcome. */
       updateServerInitState(serverName, { isInitializing: true, connectionDeferred: false });
       try {
-        const response = await reinitializeMutation.mutateAsync(serverName);
+        const response = await reinitializeServer(serverName);
         /** Record whether this attempt deferred to a chat turn (request-scoped
-         * server) so consumers that didn't await this call — e.g. the agent
-         * builder behind the customUserVars config dialog — can react to it. */
+         * server) so consumers that didn't await this call (e.g. the agent
+         * builder behind the customUserVars config dialog) can react to it. */
         updateServerInitState(serverName, {
           connectionDeferred: Boolean(response.connectionDeferred),
         });
@@ -535,10 +551,8 @@ export function useMCPServerManager({
             status: 'success',
           });
 
-          const currentValues = mcpValues ?? [];
-          if (!currentValues.includes(serverName)) {
-            setMCPValues([...currentValues, serverName]);
-          }
+          selectInitializedMCPServer(mcpValuesRef, setMCPValues, serverName);
+
         }
         return response;
       } catch (error) {
@@ -552,12 +566,11 @@ export function useMCPServerManager({
     },
     [
       updateServerInitState,
-      reinitializeMutation,
+      reinitializeServer,
       startServerPolling,
       queryClient,
       showToast,
       localize,
-      mcpValues,
       cleanupServerState,
       setMCPValues,
     ],
@@ -565,7 +578,7 @@ export function useMCPServerManager({
 
   const cancelOAuthFlow = useCallback(
     (serverName: string) => {
-      cancelOAuthMutation.mutate(serverName, {
+      cancelMCPOAuth(serverName, {
         onSuccess: () => {
           cleanupServerState(serverName);
           Promise.all([
@@ -589,7 +602,7 @@ export function useMCPServerManager({
         },
       });
     },
-    [queryClient, cleanupServerState, showToast, localize, cancelOAuthMutation],
+    [queryClient, cleanupServerState, showToast, localize, cancelMCPOAuth],
   );
 
   const isInitializing = useCallback(
@@ -613,7 +626,7 @@ export function useMCPServerManager({
     [serverInitStates],
   );
 
-  /** Clear a recorded deferred outcome without starting a new attempt — used
+  /** Clear a recorded deferred outcome without starting a new attempt: used
    * before routing into the customUserVars config dialog so a stale flag from
    * an earlier attempt can't trigger consumers while the dialog is open. */
   const resetConnectionDeferred = useCallback(
@@ -662,10 +675,10 @@ export function useMCPServerManager({
           action: 'install',
           auth: authData,
         };
-        updateUserPluginsMutation.mutate(payload);
+        updateUserPlugins(payload);
       }
     },
-    [selectedToolForConfig, updateUserPluginsMutation],
+    [selectedToolForConfig, updateUserPlugins],
   );
 
   const handleConfigRevoke = useCallback(
@@ -676,11 +689,11 @@ export function useMCPServerManager({
           action: 'uninstall',
           auth: {},
         };
-        updateUserPluginsMutation.mutate(payload);
-        /** Deselection is now handled centrally in updateUserPluginsMutation.onSuccess */
+        updateUserPlugins(payload);
+        /** Deselection is now handled centrally in the mutation's onSuccess */
       }
     },
-    [selectedToolForConfig, updateUserPluginsMutation],
+    [selectedToolForConfig, updateUserPlugins],
   );
 
   /** Standalone revoke function for OAuth servers - doesn't require selectedToolForConfig */
@@ -691,9 +704,9 @@ export function useMCPServerManager({
         action: 'uninstall',
         auth: {},
       };
-      updateUserPluginsMutation.mutate(payload);
+      updateUserPlugins(payload);
     },
-    [updateUserPluginsMutation],
+    [updateUserPlugins],
   );
 
   const handleSave = useCallback(
@@ -822,7 +835,7 @@ export function useMCPServerManager({
       initialValues,
       onSave: handleSave,
       onRevoke: handleRevoke,
-      isSubmitting: updateUserPluginsMutation.isLoading,
+      isSubmitting: isUpdatingPlugins,
     };
   }, [
     selectedToolForConfig,
@@ -831,41 +844,77 @@ export function useMCPServerManager({
     handleDialogOpenChange,
     handleSave,
     handleRevoke,
-    updateUserPluginsMutation.isLoading,
+    isUpdatingPlugins,
   ]);
 
-  return {
-    availableMCPServers,
-    /** MCP servers filtered for chat menu selection (chatMenu !== false && !consumeOnly) */
-    selectableServers,
-    availableMCPServersMap: loadedServers,
-    isLoading,
-    connectionStatus,
-    initializeServer,
-    cancelOAuthFlow,
-    isInitializing,
-    isCancellable,
-    isConnectionDeferred,
-    resetConnectionDeferred,
-    getOAuthUrl,
-    mcpValues,
-    setMCPValues,
+  /* Memoized because `BadgeRowProvider` carries this straight into its context
+     value: a fresh object here changed that value on every keystroke in the
+     composer, rebuilding the palette's whole server catalog per character. */
+  return useMemo(
+    () => ({
+      availableMCPServers,
+      /** MCP servers filtered for chat menu selection (chatMenu !== false && !consumeOnly) */
+      selectableServers,
+      availableMCPServersMap: loadedServers,
+      isLoading,
+      connectionStatus,
+      initializeServer,
+      cancelOAuthFlow,
+      isInitializing,
+      isCancellable,
+      isConnectionDeferred,
+      resetConnectionDeferred,
+      getOAuthUrl,
+      mcpValues,
+      setMCPValues,
 
-    isPinned,
-    setIsPinned,
-    placeholderText,
-    toggleServerSelection,
-    localize,
+      isPinned,
+      setIsPinned,
+      placeholderText,
+      toggleServerSelection,
+      localize,
 
-    isConfigModalOpen,
-    handleDialogOpenChange,
-    selectedToolForConfig,
-    setSelectedToolForConfig,
-    handleSave,
-    handleRevoke,
-    revokeOAuthForServer,
-    getServerStatusIconProps,
-    getConfigDialogProps,
-    checkEffectivePermission,
-  };
+      isConfigModalOpen,
+      handleDialogOpenChange,
+      selectedToolForConfig,
+      setSelectedToolForConfig,
+      handleSave,
+      handleRevoke,
+      revokeOAuthForServer,
+      getServerStatusIconProps,
+      getConfigDialogProps,
+      checkEffectivePermission,
+    }),
+    [
+      availableMCPServers,
+      selectableServers,
+      loadedServers,
+      isLoading,
+      connectionStatus,
+      initializeServer,
+      cancelOAuthFlow,
+      isInitializing,
+      isCancellable,
+      isConnectionDeferred,
+      resetConnectionDeferred,
+      getOAuthUrl,
+      mcpValues,
+      setMCPValues,
+      isPinned,
+      setIsPinned,
+      placeholderText,
+      toggleServerSelection,
+      localize,
+      isConfigModalOpen,
+      handleDialogOpenChange,
+      selectedToolForConfig,
+      setSelectedToolForConfig,
+      handleSave,
+      handleRevoke,
+      revokeOAuthForServer,
+      getServerStatusIconProps,
+      getConfigDialogProps,
+      checkEffectivePermission,
+    ],
+  );
 }

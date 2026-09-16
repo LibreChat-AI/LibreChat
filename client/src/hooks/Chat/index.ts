@@ -13,5 +13,4 @@ export { default as useFocusChatEffect } from './useFocusChatEffect';
 export { default as useQueueDrain } from './useQueueDrain';
 export { default as useQueuedTurnReveal } from './useQueuedTurnReveal';
 export { default as useSteering } from './useSteering';
-export { default as useSteerCancel, useSteerReclaim } from './useSteerCancel';
 export { default as useSteerConvert } from './useSteerConvert';

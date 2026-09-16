@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { ReasoningEffort } from 'librechat-data-provider';
 import { AgentQueuedTurnLaneRetiredError } from '@librechat/data-schemas';
 import type { AgentQueuedTurnMethods, AgentQueuedTurnRecord } from '@librechat/data-schemas';
 import type { AgentQueuedTurnHttpDeps } from './queuedTurnHttp';
@@ -23,6 +24,7 @@ function turn(status: AgentQueuedTurnRecord['status']): AgentQueuedTurnRecord {
     status,
     priority: false,
     text: 'follow up',
+    reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
     attempts: status === 'admitted' ? 1 : 0,
     availableAt: new Date('2026-08-30T12:00:00Z'),
     createdAt: new Date('2026-08-30T12:00:00Z'),
@@ -35,6 +37,7 @@ function requestBody() {
     parentMessageId: 'assistant-1',
     clientRequestId: 'client-request-1',
     text: 'follow up',
+    reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
   };
 }
 
@@ -125,8 +128,44 @@ describe('Agent queued-turn HTTP admission receipts', () => {
       getAgentQueuedTurnByClientRequestId.mock.calls[0][0],
     );
     expect(enqueueAgentQueuedTurn).toHaveBeenCalledTimes(1);
+    expect(enqueueAgentQueuedTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      }),
+    );
     expect(methods.getConvo).toHaveBeenCalledTimes(1);
     expect(schedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an idempotent replay when only the reasoning override changes', async () => {
+    const existing = turn('queued');
+    const methods = {
+      getConvo: jest.fn(),
+      getAgentQueuedTurnByClientRequestId: jest.fn(async () => existing),
+      enqueueAgentQueuedTurn: jest.fn(),
+    };
+    const deps = {
+      methods: methods as unknown as AgentQueuedTurnMethods & {
+        getConvo: typeof methods.getConvo;
+      },
+      lifecycle: { schedule: jest.fn(), cancel: jest.fn() },
+    } satisfies AgentQueuedTurnHttpDeps;
+
+    await expect(
+      handleAgentQueuedTurnEnqueue(
+        { id: USER_ID },
+        {
+          ...requestBody(),
+          reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.low },
+        },
+        deps,
+      ),
+    ).resolves.toEqual({
+      status: 409,
+      body: { code: 'QUEUED_TURN_IDEMPOTENCY_CONFLICT' },
+    });
+    expect(methods.getConvo).not.toHaveBeenCalled();
+    expect(methods.enqueueAgentQueuedTurn).not.toHaveBeenCalled();
   });
 
   it('surfaces a dead receipt and lets the user dismiss its delivery', async () => {

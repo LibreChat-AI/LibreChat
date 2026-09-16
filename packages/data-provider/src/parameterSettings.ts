@@ -1,3 +1,5 @@
+import type { SettingDefinition, SettingsConfiguration } from './generate';
+import type { TReasoningOverride } from './schemas';
 import type { ResponsesApiRouting } from './types';
 import {
   Verbosity,
@@ -17,9 +19,10 @@ import {
   BedrockProviders,
   anthropicSettings,
 } from './types';
-import { SettingDefinition, SettingsConfiguration } from './generate';
+import { isOpus55Model, supportsPromptCache, supportsAdaptiveThinking } from './bedrock';
 import { resolveEffectiveUseResponsesApi } from './file-config';
-import { isOpus55Model, supportsPromptCache } from './bedrock';
+import { getModelKey, getSettingsKeys } from './schemas';
+import { clampSettingRange } from './generate';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -1306,6 +1309,159 @@ export const agentParamSettings: Record<string, SettingsConfiguration | undefine
   }
   return acc;
 }, {});
+
+const reasoningSettingKeys = [
+  'reasoning_effort',
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+] as const;
+
+export type ReasoningSettingKey = (typeof reasoningSettingKeys)[number];
+
+const findReasoningSetting = (
+  settings: SettingsConfiguration,
+  key: ReasoningSettingKey,
+): SettingDefinition | undefined => settings.find((setting) => setting.key === key);
+
+const isKnownOpenAIReasoningModel = (model: string): boolean =>
+  /(?:^|[/._-])(?:o[134](?:[-.]|$)|gpt[-.]?(?:[5-9]|\d{2,})(?:[-.]|$)|gpt[-.]?oss(?:[-.]|$))/i.test(
+    model,
+  );
+
+const isManualClaudeThinkingModel = (model: string): boolean =>
+  /claude-3[-.]7|claude-(?:sonnet|opus|haiku)-[4-9]|claude-[4-9](?:[-.][0-9]+)?-(?:sonnet|opus|haiku)/i.test(
+    model,
+  );
+
+/**
+ * Selects the request-scoped reasoning control supported by the active model.
+ * Custom and OpenRouter endpoints remain definition-driven because their model
+ * catalogs are deployment-owned and cannot be inferred safely from a name.
+ */
+export function resolveReasoningSetting({
+  endpoint,
+  model,
+  settings,
+}: {
+  endpoint: string;
+  model?: string | null;
+  settings: SettingsConfiguration;
+}): SettingDefinition | undefined {
+  if (!model) {
+    return undefined;
+  }
+
+  if (endpoint === EModelEndpoint.google) {
+    if (getGoogleThinkingBudgetBounds(model) != null) {
+      return findReasoningSetting(settings, 'thinkingBudget');
+    }
+    if (/gemini-(?:[3-9]|\d{2,})|gemma-(?:[4-9]|\d{2,})/i.test(model)) {
+      return findReasoningSetting(settings, 'thinkingLevel');
+    }
+    return undefined;
+  }
+
+  const isAnthropicEndpoint =
+    endpoint === EModelEndpoint.anthropic ||
+    endpoint === `${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}` ||
+    (endpoint === EModelEndpoint.bedrock &&
+      getModelKey(endpoint, model) === BedrockProviders.Anthropic);
+  if (isAnthropicEndpoint) {
+    if (supportsAdaptiveThinking(model)) {
+      return findReasoningSetting(settings, 'effort');
+    }
+    if (isManualClaudeThinkingModel(model)) {
+      return findReasoningSetting(settings, 'thinkingBudget');
+    }
+    return undefined;
+  }
+
+  if (endpoint === EModelEndpoint.azureOpenAI) {
+    /* Azure deployment names are administrator-defined and often contain no
+     * model-family signal. An explicit resolved parameter definition is the
+     * capability evidence available to this layer. */
+    return findReasoningSetting(settings, 'reasoning_effort');
+  }
+
+  if (endpoint === EModelEndpoint.openAI) {
+    return isKnownOpenAIReasoningModel(model)
+      ? findReasoningSetting(settings, 'reasoning_effort')
+      : undefined;
+  }
+
+  return reasoningSettingKeys.reduce<SettingDefinition | undefined>(
+    (resolved, key) => resolved ?? findReasoningSetting(settings, key),
+    undefined,
+  );
+}
+
+/** Builds the effective reasoning definition shared by the composer and the
+ * server. Custom definitions refine the provider defaults instead of replacing
+ * the rest of the settings list. */
+export function resolveReasoningSettingForTarget({
+  endpoint,
+  model,
+  isAgent = false,
+  defaultParamsEndpoint,
+  paramDefinitions,
+}: {
+  endpoint: string;
+  model?: string | null;
+  isAgent?: boolean;
+  defaultParamsEndpoint?: string | null;
+  paramDefinitions?: Partial<SettingDefinition>[] | null;
+}): SettingDefinition | undefined {
+  if (!model) {
+    return undefined;
+  }
+
+  const [combinedSettingsKey, endpointSettingsKey] = getSettingsKeys(endpoint, model);
+  const effectiveDefaultParamsEndpoint = defaultParamsEndpoint ?? endpointSettingsKey;
+  const baseSettings = isAgent
+    ? (agentParamSettings[combinedSettingsKey] ??
+      agentParamSettings[effectiveDefaultParamsEndpoint] ??
+      agentParamSettings[endpointSettingsKey] ??
+      paramSettings[combinedSettingsKey] ??
+      paramSettings[effectiveDefaultParamsEndpoint] ??
+      paramSettings[endpointSettingsKey] ??
+      [])
+    : (paramSettings[combinedSettingsKey] ??
+      paramSettings[effectiveDefaultParamsEndpoint] ??
+      paramSettings[endpointSettingsKey] ??
+      []);
+  const customSettingsByKey = new Map(
+    (paramDefinitions ?? []).flatMap((setting) =>
+      setting.key == null ? [] : ([[setting.key, setting]] as const),
+    ),
+  );
+  const settings = applyModelAwareDefaults(baseSettings, effectiveDefaultParamsEndpoint, model).map(
+    (setting) => {
+      const override = customSettingsByKey.get(setting.key);
+      return override == null ? setting : { ...setting, ...override };
+    },
+  );
+
+  return resolveReasoningSetting({ endpoint, model, settings });
+}
+
+/** Confirms that a stored one-shot override still belongs to the selected
+ * model and remains inside its advertised enum or numeric range. */
+export function isReasoningOverrideSupported(
+  reasoningOverride: TReasoningOverride,
+  setting: SettingDefinition | undefined,
+): boolean {
+  if (setting?.key !== reasoningOverride.key) {
+    return false;
+  }
+  if (typeof reasoningOverride.value === 'number') {
+    return (
+      setting.range == null ||
+      clampSettingRange(reasoningOverride.value, setting.range) === reasoningOverride.value
+    );
+  }
+  return setting.options == null || setting.options.includes(reasoningOverride.value);
+}
 
 /**
  * Resolves model-aware defaults for a settings configuration before rendering.

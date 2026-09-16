@@ -1,3 +1,4 @@
+import { ReasoningEffort } from 'librechat-data-provider';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
 import {
   resolveToolApprovalPolicy,
@@ -626,6 +627,19 @@ describe('captureResumeModelParameters', () => {
     ).toEqual({ thinking: false, effort: 'low' });
   });
 
+  test('the validated one-shot reasoning selection wins on resume and re-enables thinking', () => {
+    expect(
+      captureResumeModelParameters(
+        {
+          thinking: false,
+          effort: 'low',
+          reasoningOverride: { key: 'effort', value: 'max' },
+        },
+        { thinking: { type: 'adaptive' }, invocationKwargs: { output_config: { effort: 'max' } } },
+      ),
+    ).toEqual({ thinking: true, effort: 'max' });
+  });
+
   test('resolved params still fill gaps the body lacks (normalized to UI form)', () => {
     expect(
       captureResumeModelParameters(
@@ -805,6 +819,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       timezone: 'America/New_York',
       // Graph-determining: skill allowed-tools union into the tool set.
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       // Graph-determining: feeds the ephemeral agent id / checkpoint namespace (#14253).
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
@@ -823,6 +838,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       addedConvo: { agent_id: 'secondary' },
       timezone: 'America/New_York',
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
       codeEnvironmentMode: 'attached',

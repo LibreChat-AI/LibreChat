@@ -1,11 +1,21 @@
 import React from 'react';
-import { getDefaultStore } from 'jotai';
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { getDefaultStore, Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
-import { Constants, ContentTypes, EModelEndpoint, LocalStorageKeys } from 'librechat-data-provider';
+import {
+  Constants,
+  ContentTypes,
+  EModelEndpoint,
+  LocalStorageKeys,
+  ReasoningEffort,
+} from 'librechat-data-provider';
 import type { TConversation, TFile, TMessage } from 'librechat-data-provider';
 import type { QueuedMessage } from '~/store/families';
+import type { ExtendedFile } from '~/common';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
+import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
+import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
+import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import useSteering, { mergeQueuedTurnFileMetadata } from '../useSteering';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import useQueueDrain from '../useQueueDrain';
@@ -143,6 +153,19 @@ function useQueue(convoId: string) {
   return useRecoilValue(store.queuedMessagesByConvoId(convoId));
 }
 
+/** Puts a message in the queue and then sends it, which is the only order the
+ *  rail can produce: Send now is offered for a message the queue is holding. */
+function sendFromQueue(
+  current: {
+    steering: ReturnType<typeof useSteering>;
+    setQueue: (items: QueuedMessage[]) => void;
+  },
+  item: QueuedMessage,
+) {
+  current.setQueue([item]);
+  current.steering.sendQueuedNow(item);
+}
+
 describe('useSteering', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -198,10 +221,10 @@ describe('useSteering', () => {
   });
 
   describe('effectiveAction', () => {
-    it('defaults to steer during an active agents run', () => {
+    it('defaults to queue during an active agents run', () => {
       const { result } = setup();
       expect(result.current.duringRunActive).toBe(true);
-      expect(result.current.effectiveAction).toBe('steer');
+      expect(result.current.effectiveAction).toBe('queue');
     });
 
     it('honors the queue preference while keeping the steer override available', () => {
@@ -209,14 +232,16 @@ describe('useSteering', () => {
         set(store.duringRunDefaultAction, 'queue');
       });
       expect(result.current.effectiveAction).toBe('queue');
-      // The per-send menu can still override to steer — availability is
+      // The per-send menu can still override to steer: availability is
       // independent of the default action.
       expect(result.current.canSteer).toBe(true);
     });
 
     it('degrades to queue without a real conversation id', () => {
-      const { result } = setup({
-        conversationId: Constants.NEW_CONVO as string,
+      // Seed 'steer' so the assertion exercises the `canSteer ?` degrade
+      // guard itself, not just the (now default) queue value falling through.
+      const { result } = setup({ conversationId: Constants.NEW_CONVO as string }, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
       });
       expect(result.current.effectiveAction).toBe('queue');
     });
@@ -239,7 +264,11 @@ describe('useSteering', () => {
           ],
         } as unknown as TMessage,
       ];
-      const { result } = setup();
+      // Seed 'steer' so this proves the pausedOnApproval guard forces queue,
+      // not just that the default happens to already be queue.
+      const { result } = setup({}, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
+      });
       expect(result.current.pausedOnApproval).toBe(true);
       expect(result.current.effectiveAction).toBe('queue');
       expect(result.current.canSteer).toBe(false);
@@ -1451,7 +1480,7 @@ describe('useSteering', () => {
         set(store.runEndByIndex(0), runEnd('completed'));
       });
       act(() => {
-        // The drain ran against an empty queue and consumed the signal — the
+        // The drain ran against an empty queue and consumed the signal; the
         // outcome was already captured during render.
         result.current.consumeIndexSignal(null);
       });
@@ -1770,7 +1799,9 @@ describe('useSteering', () => {
 
   describe('submitDuringRun', () => {
     it('routes to the steer POST with an optimistic sending chip', () => {
-      const { result } = setup();
+      const { result } = setup({}, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
+      });
       let consumed = false;
       act(() => {
         consumed = result.current.submitDuringRun('steer this');
@@ -1797,7 +1828,11 @@ describe('useSteering', () => {
     });
 
     it('ignores empty submissions', () => {
-      const { result } = setup();
+      // Seed 'steer' so the mockMutate assertion actually exercises the
+      // steer path's blank-text guard, not the (now default) queue path.
+      const { result } = setup({}, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
+      });
       let consumed = true;
       act(() => {
         consumed = result.current.submitDuringRun('   ');
@@ -1947,7 +1982,7 @@ describe('useSteering', () => {
     /**
      * `canSteer` is false while paused, but routing that into
      * `interruptAndSend` would hard-abort the run and discard the partial
-     * answer — the opposite of what the action promises.
+     * answer: the opposite of what the action promises.
      */
     it('refuses while paused on tool approval instead of aborting', () => {
       mockMessages = [
@@ -1996,21 +2031,13 @@ describe('useSteering', () => {
       );
     });
 
-    it('retry resubmits a failed interrupt-steer AS an interrupt', () => {
-      const { result } = setup();
-      act(() => {
-        result.current.retrySteer('chip-1', 'retry me', undefined, undefined, {
-          preempt: true,
-        });
-      });
-      expect(mockMutate).toHaveBeenCalledWith(
-        expect.objectContaining({ text: 'retry me', preempt: true }),
-        expect.anything(),
-      );
-    });
+    /* Retry lives in `useSteerRecovery` now, which owns the chip actions the
+       thread's pending block renders; its own spec covers the preempt carry. */
 
     it('an ordinary steer does not preempt by default', () => {
-      const { result } = setup();
+      const { result } = setup({}, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
+      });
       act(() => {
         result.current.submitDuringRun('just steer');
       });
@@ -2022,6 +2049,7 @@ describe('useSteering', () => {
 
     it('steerInterruptsByDefault makes the default Enter route preempt', () => {
       const { result } = setup({}, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
         set(store.steerInterruptsByDefault, true);
       });
       act(() => {
@@ -2259,7 +2287,7 @@ describe('useSteering', () => {
       act(() => {
         acknowledge?.();
       });
-      // No pending chip may survive — its only removal event already passed.
+      // No pending chip may survive; its only removal event already passed.
       expect(result.current.chips).toEqual([]);
       expect(result.current.queue).toEqual([]);
     });
@@ -2428,7 +2456,7 @@ describe('useSteering', () => {
 
     it('carries the submit time through the ACK so the pending chip is not re-timestamped', () => {
       // A draft queued during the 202 round-trip must not drain ahead of a
-      // steer submitted before it — so the ACK'd chip keeps its SUBMIT time,
+      // steer submitted before it, so the ACK'd chip keeps its SUBMIT time,
       // not the (later) ACK time.
       const now = jest.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(9_000);
       try {
@@ -2515,7 +2543,7 @@ describe('useSteering', () => {
       });
       const { result } = setupWithState({}, ({ set }) => {
         // seedSteerChips already re-minted this chip from resumeState before
-        // the 202 ACK landed — the ACK must upsert, not append.
+        // the 202 ACK landed; the ACK must upsert, not append.
         set(store.pendingSteersByConvoId(CONVO_ID), [
           {
             steerId: 'srv-3',
@@ -2529,6 +2557,25 @@ describe('useSteering', () => {
         result.current.steering.submitSteer('reseeded');
       });
       expect(result.current.chips.filter((chip) => chip.steerId === 'srv-3')).toHaveLength(1);
+    });
+
+    it('leaves a queued row untouched while an edit or remove handoff owns it', () => {
+      const { result } = setupWithState();
+      act(() => {
+        result.current.steering.enqueue('claimed handoff');
+      });
+      const queued = result.current.queue[0];
+      expect(claimQueuedIntent(queued.id)).toBe(true);
+
+      try {
+        act(() => {
+          result.current.steering.sendQueuedNow(queued);
+        });
+        expect(result.current.queue).toEqual([queued]);
+        expect(mockMutate).not.toHaveBeenCalled();
+      } finally {
+        releaseQueuedIntent(queued.id);
+      }
     });
 
     it('restores the queued item (same id, original slot) when sendNow refuses', () => {
@@ -2557,7 +2604,7 @@ describe('useSteering', () => {
           afterIds: [second.id],
         },
       });
-      // `ask` refused without sending — the ORIGINAL item returns to its slot.
+      // `ask` refused without sending: the ORIGINAL item returns to its slot.
       expect(result.current.queue.map((item) => item.id)).toEqual([first.id, second.id]);
       expect(result.current.queue[0]).toEqual(first);
     });
@@ -2594,7 +2641,7 @@ describe('useSteering', () => {
           }),
         }),
       );
-      // The chip is already gone — a refused send must land in the queue, not drop.
+      // The chip is already gone: a refused send must land in the queue, not drop.
       expect(result.current.chips).toEqual([]);
       expect(result.current.queue).toEqual([
         expect.objectContaining({ text: 'refused words', files: steerFiles }),
@@ -2778,6 +2825,21 @@ describe('useSteering', () => {
       expect(mockMutate).not.toHaveBeenCalled();
     });
 
+    it('preserves a manual queue order when another message is enqueued', () => {
+      const first: QueuedMessage = { id: 'first', text: 'first', createdAt: 1 };
+      const second: QueuedMessage = { id: 'second', text: 'second', createdAt: 2 };
+      const { result } = setupWithState({}, ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [first, second]);
+      });
+
+      act(() => {
+        result.current.steering.reorderQueued(first.id, 1);
+        result.current.steering.enqueue('third', { id: 'third', createdAt: 3 });
+      });
+
+      expect(result.current.queue.map((item) => item.id)).toEqual(['second', 'first', 'third']);
+    });
+
     it('atomically discards a recovered source and downgrades its row in place', async () => {
       mockCancelSteer.mockResolvedValueOnce({
         removed: true,
@@ -2873,7 +2935,7 @@ describe('useSteering', () => {
       expect(discarded).toBe(false);
       expect(result.current.queue).toEqual([recovered]);
       expect(mockShowToast).toHaveBeenCalledWith({
-        message: 'Could not cancel the steering message — it may still reach the agent',
+        message: 'Could not cancel the steering message; it may still reach the agent',
         status: 'error',
       });
     });
@@ -3148,7 +3210,14 @@ describe('useSteering', () => {
     };
     const queuedFiles = [{ file_id: 'file-1', filepath: '/uploads/file-1.png', type: 'image/png' }];
 
-    function setupWithFiles(params: HookParams = {}, generationCreatedAt: number | null = 41) {
+    /** Steering is gated on the active-generation epoch, so seed it by default
+     *  or every steer here is refused as pre-epoch. `null` seeds nothing, which
+     *  is the pre-epoch case itself; an initializer seeds the epoch and then
+     *  whatever else that test needs. */
+    function setupWithFiles(
+      params: HookParams = {},
+      initialize?: ((snapshot: MutableSnapshot) => void) | null,
+    ) {
       const setFiles = jest.fn();
       const files = new Map([['file-1', composerFile]]) as unknown as NonNullable<
         Parameters<typeof useSteering>[0]['files']
@@ -3157,11 +3226,14 @@ describe('useSteering', () => {
       const stopGenerating = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <RecoilRoot
-          initializeState={({ set }) => {
-            if (generationCreatedAt != null) {
-              set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), generationCreatedAt);
-            }
-          }}
+          initializeState={
+            initialize === null
+              ? undefined
+              : (snapshot) => {
+                  snapshot.set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 41);
+                  initialize?.(snapshot);
+                }
+          }
         >
           {children}
         </RecoilRoot>
@@ -3190,7 +3262,9 @@ describe('useSteering', () => {
     }
 
     it('steers with the composer attachments as one unit', () => {
-      const { result, setFiles } = setupWithFiles();
+      const { result, setFiles } = setupWithFiles({}, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
+      });
       let consumed = false;
       act(() => {
         consumed = result.current.steering.submitDuringRun('look at this image');
@@ -3206,11 +3280,148 @@ describe('useSteering', () => {
         expect.anything(),
       );
       expect(result.current.queue).toEqual([]);
-      expect(setFiles).toHaveBeenCalledWith(new Map());
+      /* Functional, never a flat overwrite: uploads write through functional
+         updates of their own, and an assigned map races them. */
+      const clear = setFiles.mock.calls[0][0] as (
+        previous: Map<string, unknown>,
+      ) => Map<string, unknown>;
+      expect(typeof clear).toBe('function');
+      expect(clear(new Map([['file-1', composerFile]]))).toEqual(new Map());
+      /* Only the ids it took: anything staged since is left where it is. */
+      expect(clear(new Map<string, unknown>([['file-2', { file_id: 'file-2' }]]))).toEqual(
+        new Map([['file-2', { file_id: 'file-2' }]]),
+      );
+    });
+
+    /* An upload resolving between the read and the clear used to be reapplied
+       on top of the emptied map, so the attachment came back in the composer
+       and rode the user's next message as well. */
+    describe('uploads interleaved with a consuming submit', () => {
+      const extended = (file_id: string, progress: number): ExtendedFile => ({
+        file_id,
+        progress,
+        size: 128,
+        type: 'image/png',
+      });
+
+      function setupComposer() {
+        const sendNow = jest.fn();
+        const stopGenerating = jest.fn();
+        const observed: { files: Map<string, ExtendedFile> } = { files: new Map() };
+        let updates: ReturnType<typeof useUpdateFiles> | undefined;
+        let steering: ReturnType<typeof useSteering> | undefined;
+
+        /** Real composer state, so `useUpdateFiles` and `useSteering` write
+         *  through the same setter they share in `ChatForm`. */
+        const Composer = () => {
+          const [files, setFiles] = React.useState<Map<string, ExtendedFile>>(new Map());
+          observed.files = files;
+          updates = useUpdateFiles(setFiles);
+          steering = useSteering({
+            consumeDraft: jest.fn(),
+            index: 0,
+            conversationId: CONVO_ID,
+            conversation: agentsConversation,
+            isSubmitting: true,
+            answerModeActive: false,
+            files,
+            setFiles,
+            sendNow,
+            stopGenerating,
+          });
+          return null;
+        };
+
+        render(
+          <RecoilRoot initializeState={withActiveGeneration()}>
+            <Composer />
+          </RecoilRoot>,
+        );
+        return {
+          observed,
+          getUpdates: () => updates!,
+          getSteering: () => steering!,
+        };
+      }
+
+      it('ignores a late callback for an attachment the steer already took', () => {
+        const { observed, getUpdates, getSteering } = setupComposer();
+
+        act(() => getUpdates().addFile(extended('file-consumed', 0.4)));
+        expect(observed.files.has('file-consumed')).toBe(true);
+
+        act(() => {
+          getSteering().steerFromComposer('use this image');
+        });
+        expect(mockMutate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            files: [expect.objectContaining({ file_id: 'file-consumed' })],
+          }),
+          expect.anything(),
+        );
+        expect(observed.files.size).toBe(0);
+
+        act(() => getUpdates().replaceFile(extended('file-consumed', 1)));
+        expect(observed.files.size).toBe(0);
+      });
+
+      it('still accepts an upload the user starts after the steer', () => {
+        const { observed, getUpdates, getSteering } = setupComposer();
+
+        act(() => getUpdates().addFile(extended('file-first', 1)));
+        act(() => {
+          getSteering().steerFromComposer('first one');
+        });
+        expect(observed.files.size).toBe(0);
+
+        act(() => getUpdates().addFile(extended('file-second', 0.2)));
+        act(() => getUpdates().replaceFile(extended('file-second', 1)));
+        expect(observed.files.get('file-second')?.progress).toBe(1);
+      });
+
+      /* Re-attaching the same library file reuses its server id, so a
+         permanent mark would make that attachment silently impossible. */
+      it('accepts the same file again when it is deliberately re-attached', () => {
+        const { observed, getUpdates, getSteering } = setupComposer();
+
+        act(() => getUpdates().addFile(extended('file-library', 1)));
+        act(() => {
+          getSteering().steerFromComposer('about this one');
+        });
+        expect(observed.files.size).toBe(0);
+
+        act(() => getUpdates().addFile(extended('file-library', 1)));
+        expect(observed.files.has('file-library')).toBe(true);
+        act(() => getUpdates().replaceFile(extended('file-library', 0.9)));
+        expect(observed.files.get('file-library')?.progress).toBe(0.9);
+      });
+
+      /* The composer map the submit reads is a render-old snapshot: an upload
+         that started after it must not be wiped by the clear. */
+      it('leaves an attachment staged after the submit read the composer', () => {
+        const { observed, getUpdates, getSteering } = setupComposer();
+
+        act(() => getUpdates().addFile(extended('file-taken', 1)));
+        act(() => {
+          getUpdates().addFile(extended('file-newer', 0.3));
+          getSteering().steerFromComposer('take the first one');
+        });
+
+        expect(mockMutate).toHaveBeenCalledWith(
+          expect.objectContaining({ files: [expect.objectContaining({ file_id: 'file-taken' })] }),
+          expect.anything(),
+        );
+        expect(Array.from(observed.files.keys())).toEqual(['file-newer']);
+      });
     });
 
     it('holds during-run submits while uploads are in flight', () => {
-      const { result } = setupWithFiles({ filesLoading: true });
+      // Seed 'steer' so this covers steerFromComposer's own filesLoading
+      // guard; the queue-path guard is covered separately (queueFromComposer
+      // is exercised directly with filesLoading in the composer-draft tests).
+      const { result } = setupWithFiles({ filesLoading: true }, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
+      });
       let consumed = true;
       act(() => {
         consumed = result.current.steering.submitDuringRun('too early');
@@ -3233,10 +3444,26 @@ describe('useSteering', () => {
       expect(setFiles).not.toHaveBeenCalled();
     });
 
+    /* The drain can take the head between the click dispatching and the row
+       unmounting. Falling back to the captured item sent the same words twice. */
+    it('refuses to send a message the queue no longer holds', () => {
+      const { result, sendNow } = setupWithFiles({ isSubmitting: false });
+      act(() => {
+        result.current.steering.sendQueuedNow({
+          id: 'already-drained',
+          text: 'sent moments ago',
+          createdAt: Date.now(),
+        });
+      });
+      expect(sendNow).not.toHaveBeenCalled();
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(result.current.queue).toEqual([]);
+    });
+
     it('steers a queued media item with its own files during a live run', () => {
       const { result, sendNow } = setupWithFiles();
       act(() => {
-        result.current.steering.sendQueuedNow({
+        sendFromQueue(result.current, {
           id: 'q-media',
           text: 'media message',
           createdAt: Date.now(),
@@ -3259,7 +3486,7 @@ describe('useSteering', () => {
     it('sends a media item as a normal turn with its own files when idle', () => {
       const { result, sendNow } = setupWithFiles({ isSubmitting: false });
       act(() => {
-        result.current.steering.sendQueuedNow({
+        sendFromQueue(result.current, {
           id: 'q-media',
           text: 'media message',
           createdAt: Date.now(),
@@ -3312,7 +3539,9 @@ describe('useSteering', () => {
     });
 
     it('does not mark usage on the steer path (the 202 already marked)', () => {
-      const { result } = setupWithFiles();
+      const { result } = setupWithFiles({}, ({ set }) => {
+        set(store.duringRunDefaultAction, 'steer');
+      });
       act(() => {
         result.current.steering.submitDuringRun('steer with media');
       });
@@ -3322,7 +3551,7 @@ describe('useSteering', () => {
 
     it('restores an unchanged queued media item without re-marking its files', () => {
       // Paused on approval → steering unavailable while the run is live, so
-      // sendQueuedNow restores the item unchanged — its files were already marked.
+      // sendQueuedNow restores the item unchanged: its files were already marked.
       mockMessages = [
         {
           messageId: 'resp-1',
@@ -3363,11 +3592,16 @@ describe('useSteering', () => {
     function setupWithContext(
       params: HookParams = {},
       initialize?: (snapshot: MutableSnapshot) => void,
+      initialReasoning?: TMessage['reasoningOverride'],
     ) {
       const sendNow = jest.fn();
       const stopGenerating = jest.fn();
+      const reasoningStore = createStore();
+      reasoningStore.set(pendingReasoningOverrideFamily(CONVO_ID), initialReasoning);
       const wrapper = ({ children }: { children: React.ReactNode }) => (
-        <RecoilRoot initializeState={withActiveGeneration(initialize)}>{children}</RecoilRoot>
+        <JotaiProvider store={reasoningStore}>
+          <RecoilRoot initializeState={withActiveGeneration(initialize)}>{children}</RecoilRoot>
+        </JotaiProvider>
       );
       const rendered = renderHook(
         () => ({
@@ -3383,9 +3617,11 @@ describe('useSteering', () => {
             ...params,
           }),
           queue: useQueue(CONVO_ID),
+          setQueue: useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID)),
           chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
           pendingQuotes: useRecoilValue(store.pendingQuotesByConvoId(CONVO_ID)),
           pendingSkills: useRecoilValue(store.pendingManualSkillsByConvoId(CONVO_ID)),
+          pendingReasoning: useAtomValue(pendingReasoningOverrideFamily(CONVO_ID)),
           markApplied: useSetRecoilState(store.appliedSteerIdsByConvoId(CONVO_ID)),
         }),
         { wrapper },
@@ -3397,6 +3633,24 @@ describe('useSteering', () => {
       set(store.pendingQuotesByConvoId(CONVO_ID), ['quoted excerpt']);
       set(store.pendingManualSkillsByConvoId(CONVO_ID), ['skill-1']);
     };
+
+    it('queues rather than steering when reasoning is staged for a new generation', () => {
+      const { result } = setupWithContext({}, undefined, {
+        key: 'reasoning_effort',
+        value: ReasoningEffort.high,
+      });
+
+      act(() => {
+        result.current.steering.steerFromComposer('reason about this');
+      });
+
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(result.current.queue[0]).toMatchObject({
+        text: 'reason about this',
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      });
+      expect(result.current.pendingReasoning).toBeUndefined();
+    });
 
     it('queueFromComposer consumes staged quotes + skills into the queued item', () => {
       const { result } = setupWithContext({}, stageContext);
@@ -3492,6 +3746,29 @@ describe('useSteering', () => {
       );
     });
 
+    it('keeps a durable reasoning row untouched during a live run', () => {
+      const item: QueuedMessage = {
+        id: 'q-reasoning-live',
+        text: 'reason about this next',
+        createdAt: 1_000,
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+        server: { id: 'server-reasoning-live', status: 'queued', revision: 3 },
+      };
+      const { result, sendNow } = setupWithContext({}, ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [item]);
+      });
+
+      act(() => {
+        result.current.steering.sendQueuedNow(item);
+      });
+
+      expect(mockCancelQueuedTurn).not.toHaveBeenCalled();
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(sendNow).not.toHaveBeenCalled();
+      expect(result.current.queue).toEqual([item]);
+      expect(result.current.queue[0].server).toEqual(item.server);
+    });
+
     it('queues without quotes/skills fields when nothing is staged', () => {
       const { result } = setupWithContext();
       act(() => {
@@ -3504,17 +3781,19 @@ describe('useSteering', () => {
     it('sendQueuedNow passes the carried context to sendNow when idle', () => {
       const { result, sendNow } = setupWithContext({ isSubmitting: false });
       act(() => {
-        result.current.steering.sendQueuedNow({
+        sendFromQueue(result.current, {
           id: 'q-ctx',
           text: 'context send',
           createdAt: Date.now(),
           quotes: ['carried quote'],
           manualSkills: ['carried-skill'],
+          reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
         });
       });
       expect(sendNow).toHaveBeenCalledWith('context send', [], {
         quotes: ['carried quote'],
         manualSkills: ['carried-skill'],
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
         clientRequestId: undefined,
         recoverySteerId: undefined,
         expectedPredecessorCreatedAt: undefined,
@@ -3525,6 +3804,7 @@ describe('useSteering', () => {
             createdAt: expect.any(Number),
             quotes: ['carried quote'],
             manualSkills: ['carried-skill'],
+            reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
           },
           beforeIds: [],
           afterIds: [],
@@ -3540,7 +3820,7 @@ describe('useSteering', () => {
       });
       const { result } = setupWithContext();
       act(() => {
-        result.current.steering.sendQueuedNow({
+        sendFromQueue(result.current, {
           id: 'q-degraded',
           text: 'carried context',
           createdAt: Date.now(),
@@ -3911,7 +4191,7 @@ describe('useSteering', () => {
 
   describe('composer draft consumption', () => {
     /** `useAutoSave` drafts under PENDING_CONVO for the whole run, and the
-     *  composer clears via the form's programmatic `reset()` — which fires no
+     *  composer clears via the form's programmatic `reset()`, which fires no
      *  `input` event, so nothing else drops the draft. Left behind, run end
      *  migrates it onto the conversation and restores it into the textarea,
      *  resurfacing text the user already sent. */

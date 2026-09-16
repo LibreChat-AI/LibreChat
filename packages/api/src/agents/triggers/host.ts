@@ -1,6 +1,6 @@
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
-import type { TFile } from 'librechat-data-provider';
+import type { TFile, TReasoningOverride } from 'librechat-data-provider';
 import type {
   AgentContinueTriggerEnvelope,
   AgentFireTriggerEnvelope,
@@ -58,6 +58,7 @@ export type AgentTriggerContinuePreparation =
       files?: Partial<TFile>[];
       quotes?: string[];
       manualSkills?: string[];
+      reasoningOverride?: TReasoningOverride;
       /** Trusted source identity committed by execution enrollment before the
        * provider-start fence opens. */
       admissionSource?: AgentContinuationAdmissionSource;
@@ -670,6 +671,9 @@ async function startRun(
           }),
           ...(readyPreparation?.manualSkills != null && {
             manualSkills: readyPreparation.manualSkills,
+          }),
+          ...(readyPreparation?.reasoningOverride != null && {
+            reasoningOverride: readyPreparation.reasoningOverride,
           }),
           isContinued: false,
           isRegenerate: false,

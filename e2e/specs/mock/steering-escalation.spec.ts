@@ -21,8 +21,11 @@ const messageInput = (page: Page) => page.getByRole('textbox', { name: 'Message 
 const duringRunSendButton = (page: Page) => page.getByTestId('during-run-send-button');
 const queuedRows = (page: Page) => page.getByTestId('queued-message-row');
 const messageTurns = (page: Page) => messagesView(page).locator('.message-render');
-const inFlightSteers = (page: Page) => page.getByTestId('in-flight-steer');
-const appliedSteerParts = (page: Page) => messagesView(page).getByTestId('steer-part');
+const inFlightSteers = (page: Page) => page.getByTestId('pending-steers').getByRole('listitem');
+/** Applied (persisted) steer parts only: pending steers render their own
+ *  SteerPart inside the reply now, so exclude anything under `pending-steers`. */
+const appliedSteerParts = (page: Page) =>
+  messagesView(page).locator('[data-testid="steer-part"]:not([data-testid="pending-steers"] *)');
 
 function isSteerRequest(response: Response) {
   return (
@@ -74,6 +77,14 @@ async function expectModelContinuation(page: Page, label: string, steerText: str
  * a real interrupt rather than relabelling a chip.
  */
 test.describe('escalating waiting messages to an interrupt', () => {
+  /* The composer ships with Enter queueing during a run; escalation rides the
+     steer route, so pin the during-run default to steering. */
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('duringRunDefaultAction', JSON.stringify('steer'));
+    });
+  });
+
   /** `steerInterruptsByDefault` is a localStorage preference; the toggle test
    *  flips it, and a mid-test failure must not leak preempt-by-default into
    *  the rest of the serial suite. */
@@ -197,24 +208,23 @@ test.describe('escalating waiting messages to an interrupt', () => {
     expect(run.ok()).toBeTruthy();
     await expect(messagesView(page).getByText('chunk-010')).toBeVisible({ timeout: 15000 });
 
-    // A queued row hosts the overflow menu carrying the preference toggle.
+    // Park a queued row so the run is visibly still going while the
+    // preference flips.
     await typeDuringRun(page, queueText);
     await messageInput(page).press('ControlOrMeta+Enter');
     const row = queuedRows(page).filter({ hasText: queueText });
     await expect(row).toBeVisible({ timeout: 10000 });
 
-    // The toggle lives in the row menu's separated Preferences section.
-    await row.getByRole('button', { name: 'More options' }).click();
-    await expect(page.getByText('Preferences', { exact: true })).toBeVisible({ timeout: 5000 });
-    await page.getByRole('menuitem', { name: 'Always interrupt instead', exact: true }).click();
-
-    // Verify the preference flips while this row is guaranteed to remain
-    // parked. After the interrupt is submitted the run may seal and auto-drain
-    // the row before another locator action can observe it.
-    await row.getByRole('button', { name: 'More options' }).click();
-    await expect(
-      page.getByRole('menuitem', { name: 'Wait for tool steps instead', exact: true }),
-    ).toBeVisible({ timeout: 5000 });
+    // The during-run default lives in Settings > Chat as an ordinary switch.
+    await page.getByTestId('nav-user').click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await page.getByRole('tab', { name: 'Chat' }).click();
+    const interruptToggle = page.getByRole('switch', {
+      name: 'Steering interrupts generation',
+    });
+    await expect(interruptToggle).toBeVisible({ timeout: 5000 });
+    await interruptToggle.click();
+    await expect(interruptToggle).toHaveAttribute('aria-checked', 'true');
     await page.keyboard.press('Escape');
 
     // The toggle is live for the SAME run: plain Enter now routes the default

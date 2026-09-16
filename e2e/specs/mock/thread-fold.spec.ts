@@ -92,11 +92,12 @@ test.describe('thread fold regressions', () => {
 
     /** Queue mid-run, then escalate to an interrupt: the closest scripted
      *  reproduction of the incident's preempt churn (mid-stream seal, new
-     *  generation, resume-path cache writes). */
+     *  generation, resume-path cache writes). Enter queues by default during
+     *  a run; Ctrl/Cmd+Enter is the non-default action (steer). */
     const input = messageInput(page);
     await input.click();
     await input.fill(interruptText);
-    await input.press('ControlOrMeta+Enter');
+    await input.press('Enter');
     const row = page.getByTestId('queued-message-row').filter({ hasText: interruptText });
     await expect(row).toBeVisible({ timeout: 10000 });
 

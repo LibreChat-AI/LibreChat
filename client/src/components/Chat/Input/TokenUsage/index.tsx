@@ -224,6 +224,10 @@ function TokenUsageIndicator({
         unmountOnHide
         autoFocusOnShow={focusOnShow}
         finalFocus={disclosureRef}
+        /* Without this the gauge could not close its own popup: mousedown on
+           the trigger counts as "outside", so Ariakit hid the popup and the
+           button's own click immediately re-opened it. */
+        hideOnInteractOutside={(event) => !disclosureRef.current?.contains(event.target as Node)}
         aria-label={localize('com_ui_context_usage')}
         onPointerEnter={cancelTimers}
         onPointerLeave={(e) => {

@@ -41,8 +41,8 @@ import type {
   TContextUsageEvent,
   ChatStreamConnection,
 } from 'librechat-data-provider';
+import type { DrainAfterAbort, QueuedMessageOrigin, PendingSteer } from '~/store/families';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
-import type { DrainAfterAbort, QueuedMessageOrigin } from '~/store/families';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
@@ -156,7 +156,7 @@ const getStartGenerationStreamId = (data: unknown): string | null => {
 };
 
 /** The server returns `status: 'resumed'` when a duplicate start request was deduped to an
- *  already-running stream — the client must subscribe with resume=true to replay its state
+ *  already-running stream: the client must subscribe with resume=true to replay its state
  *  (prior content and any pending-action) rather than only receiving live events. */
 const isResumedStartResponse = (data: unknown): boolean =>
   data != null && typeof data === 'object' && (data as { status?: unknown }).status === 'resumed';
@@ -815,6 +815,60 @@ const mergeResumeMessages = (
   return [...nextMessages, userMessage, responseMessage];
 };
 
+/** Default sweep for a run that has genuinely ended (final/error/404): a
+ *  `pending` chip behind a server id that no `on_steer_applied` will ever
+ *  confirm, or a `failed` chip that never reached the server at all. Either
+ *  one left behind survives past this run end and renders under whatever
+ *  comes next, since `PendingSteers` reads the same atom keyed only by
+ *  conversation, not by run. */
+const RUN_ENDED_STATUSES: readonly PendingSteer['status'][] = ['pending', 'failed'];
+
+/** Sweep for an intentional abort, where the run may still be live
+ *  server-side: a server-ACK'd `pending` chip is injected regardless, so
+ *  sweeping it here would send the same words a second time as a queued turn. */
+export const ABORT_SWEEP_STATUSES: readonly PendingSteer['status'][] = ['failed'];
+
+/**
+ * Local chips with no injection-boundary event left to resolve them.
+ * `statuses` defaults to `RUN_ENDED_STATUSES` for terminals where the run is
+ * actually over; pass `['failed']` for a path (like intentional abort) where
+ * the run may still be live server-side and a server-ACK'd `pending` chip
+ * must be left alone: the server injects it regardless, and sweeping it here
+ * would resend the same words as a duplicate queued turn.
+ *
+ * `sending` chips are never included: they have their own in-flight POST
+ * whose `onSuccess`/`onError` will settle them, and sweeping them here too
+ * would race that callback, since a late ACK's re-add in
+ * `resolveAcknowledgedSteer` could then double-queue the same words.
+ * Uncertain failures are also excluded. Protocol v2 makes an explicit retry
+ * idempotent, but a local queue conversion would create a second submission.
+ */
+export function selectLocalSteersForQueue(
+  chips: PendingSteer[],
+  statuses: readonly PendingSteer['status'][] = RUN_ENDED_STATUSES,
+  /** Ids the caller has already routed elsewhere this run end; matched against
+   *  both ids a chip can be known by, since either may be the one excluded. */
+  excluded: ReadonlySet<string> = new Set(),
+): TPendingSteer[] {
+  const allowed = new Set(statuses);
+  return chips
+    .filter(
+      (steer) =>
+        allowed.has(steer.status) &&
+        steer.deliveryUncertain !== true &&
+        !excluded.has(steer.steerId) &&
+        (steer.clientSteerId == null || !excluded.has(steer.clientSteerId)),
+    )
+    .map((steer) => ({
+      steerId: steer.steerId,
+      ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
+      text: steer.text,
+      createdAt: steer.createdAt,
+      ...(steer.files && steer.files.length > 0 && { files: steer.files }),
+      ...(steer.queuedOrigin && { queuedOrigin: steer.queuedOrigin }),
+    }));
+}
+
 /**
  * Hook for resumable SSE streams.
  * Separates generation start (POST) from stream subscription (GET EventSource).
@@ -918,7 +972,7 @@ export default function useResumableSSE(
   const replacementHandoffRef = useRef(false);
   const optimisticStreamIdsRef = useRef(new Set<string>());
   const createdStreamIdsRef = useRef(new Set<string>());
-  /** Pending action whose tool-call content part hasn't rendered yet — retried
+  /** Pending action whose tool-call content part hasn't rendered yet, retried
    *  on the next frame so a fast pause-before-render race still attaches. */
   const pendingActionRetryRef = useRef<number | null>(null);
   /** EVERY steer retry frame, not only the newest one. Several steers can be
@@ -928,7 +982,7 @@ export default function useResumableSSE(
   const steerRetryFramesRef = useRef<Set<number>>(new Set());
   /** EVERY outstanding label-retry frame, not a single handle: labels fire
    *  two events per slot (reservation, then fill), so concurrent retry
-   *  chains are the norm — a single ref would let cleanup cancel only the
+   *  chains are the norm: a single ref would let cleanup cancel only the
    *  newest chain while the others kept running for up to 120 frames and
    *  could apply a stale label to a replacement generation that reuses the
    *  same response id (edits do). */
@@ -937,13 +991,13 @@ export default function useResumableSSE(
    * Set once a SYNC has replaced the response with the server's
    * completion-local snapshot, which discards the prefix an edited
    * resubmission retained. From that point incoming indices are absolute and
-   * `editPrefixLength` must no longer be applied — by run steps or labels.
+   * `editPrefixLength` must no longer be applied, by run steps or labels.
    */
   const editPrefixClearedRef = useRef(false);
   const editPrefixFirstPartFoldedRef = useRef(false);
   /** Generation the cleared-prefix state above belongs to, so it is dropped
    *  when a new generation starts rather than when a subscribe happens to be
-   *  live. Keyed by response message id — the stream id is the conversation
+   *  live. Keyed by response message id: the stream id is the conversation
    *  id and is therefore shared by every generation within it. */
   const prefixStateGenerationIdRef = useRef<string | null>(null);
 
@@ -1209,42 +1263,53 @@ export default function useResumableSSE(
    *  HTTP response consumes the same data as a fallback in useChatHelpers). */
   const convertSteersToQueued = useSteerConvert();
 
-  /** Error events carry no `pendingSteers` payload (the server drops its copy
-   *  on failure), but every acknowledged chip's text is local — convert them
-   *  to queued follow-ups so the user's words survive a failed run. `sending`
-   *  chips settle through their own POST callbacks (404 falls back to
-   *  queue/send) and `failed` chips keep their manual controls. */
+  /** Sweeps this conversation's local chips (see `selectLocalSteersForQueue`)
+   *  into queued follow-ups. Error events carry no `pendingSteers` payload of
+   *  their own (the server drops its copy on failure); this is the only
+   *  source of truth for those runs; the `final` and error/404 terminals call
+   *  it (default `statuses`, i.e. `pending || failed`) alongside their own
+   *  server-reported list as a backstop for `failed` chips, which never rode
+   *  that list at all. The intentional-abort path passes `statuses: ['failed']`
+   *  since the run may still be live server-side there (see its call site). */
   const convertLocalSteersToQueued = useRecoilCallback(
     ({ snapshot }) =>
       (
         conversationId: string,
         options?: {
           claimParked?: boolean;
+          statuses?: readonly PendingSteer['status'][];
           excludeSteerIds?: Iterable<string>;
           generationProtocolVersion?: GenerationProtocolVersion;
         },
       ) => {
         const chips = snapshot.getLoadable(store.pendingSteersByConvoId(conversationId)).getValue();
+        const generationProtocolVersion =
+          options?.generationProtocolVersion ??
+          snapshot
+            .getLoadable(store.activeGenerationProtocolVersionByConvoId(conversationId))
+            .getValue();
+        const activeStatuses = options?.statuses ?? RUN_ENDED_STATUSES;
         const excluded = new Set(options?.excludeSteerIds ?? []);
-        const settled = chips
-          .filter(
-            (steer) =>
-              steer.status === 'pending' &&
-              !excluded.has(steer.steerId) &&
-              (steer.clientSteerId == null || !excluded.has(steer.clientSteerId)),
-          )
-          .map((steer) => ({
-            steerId: steer.steerId,
-            ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
-            text: steer.text,
-            createdAt: steer.createdAt,
-            ...(steer.files && steer.files.length > 0 && { files: steer.files }),
-            ...(steer.queuedOrigin && { queuedOrigin: steer.queuedOrigin }),
-          }));
-        if (settled.length > 0) {
-          convertSteersToQueued(conversationId, settled, {
+        const accepted = selectLocalSteersForQueue(
+          chips,
+          activeStatuses.filter((status) => status === 'pending'),
+          excluded,
+        );
+        if (accepted.length > 0) {
+          convertSteersToQueued(conversationId, accepted, {
             claimParked: options?.claimParked,
-            generationProtocolVersion: options?.generationProtocolVersion,
+            generationProtocolVersion,
+          });
+        }
+        const failed = selectLocalSteersForQueue(
+          chips,
+          activeStatuses.filter((status) => status === 'failed'),
+          excluded,
+        );
+        if (failed.length > 0) {
+          convertSteersToQueued(conversationId, failed, {
+            generationProtocolVersion,
+            bindRecoverySource: false,
           });
         }
       },
@@ -1318,7 +1383,7 @@ export default function useResumableSSE(
 
   /**
    * Run steps and activity labels must resolve indices in ONE space, and the
-   * resume SYNC boundary that invalidates the edit prefix is owned here — so
+   * resume SYNC boundary that invalidates the edit prefix is owned here, so
    * this transport stamps its cleared state onto every dispatched
    * submission. `useStepHandler` reads the flag (alongside the captured
    * `editPrefixLength`) instead of measuring the live
@@ -1432,19 +1497,19 @@ export default function useResumableSSE(
       }
       /**
        * A NEW generation starts with its retained prefix intact, so the
-       * cleared-prefix state from a previous one must not carry over — the
+       * cleared-prefix state from a previous one must not carry over: the
        * hook outlives any single submission, and a later edited resubmission
        * would otherwise dispatch with no offset and overwrite the content it
        * kept.
        *
        * Keyed on `clientRequestId`, the per-submission uuid. Each of the
        * narrower keys tried before it crossed a real boundary:
-       *   - `isResume` — a submission whose POST succeeded but lost its
+       *   - `isResume`: a submission whose POST succeeded but lost its
        *     response retries and returns `resumed: true`, so a NEW generation
        *     arrives in resume mode and skipped the reset.
-       *   - the stream id — `request.js` sets `streamId = conversationId`, so
+       *   - the stream id: `request.js` sets `streamId = conversationId`, so
        *     every generation in a conversation shares it.
-       *   - the response message id — editing an assistant response reuses
+       *   - the response message id: editing an assistant response reuses
        *     that same id (`editedMessageId`), so re-editing one response
        *     produced the same key twice.
        * `clientRequestId` is minted per submission and forwarded unchanged on
@@ -1536,7 +1601,7 @@ export default function useResumableSSE(
        * rather than clobbering it.
        *
        * If the mapping is a no-op (the paused tool-call content part hasn't
-       * rendered yet — a pause-before-render race), retry on subsequent frames
+       * rendered yet, a pause-before-render race), retry on subsequent frames
        * so the approval still attaches. `ask_user_question` always applies (it
        * appends a synthetic part), so only `tool_approval` ever retries.
        */
@@ -1570,7 +1635,7 @@ export default function useResumableSSE(
           }
         };
         /** The pause card must attach to the same message state the stream
-         * produced — apply any queued delta before reading the cache, or the
+         * produced: apply any queued delta before reading the cache, or the
          * later flush would clobber the card (and `syncStepMessage` below
          * would sync a pre-delta copy). */
         flushPendingDeltas();
@@ -1758,7 +1823,7 @@ export default function useResumableSSE(
           return;
         }
         /** Edit-and-resubmit replays the kept prefix into the response before
-         *  the run starts, and the server indexes only the NEW content — so
+         *  the run starts, and the server indexes only the NEW content, so
          *  run steps offset by that prefix (`useStepHandler`). The label index
          *  is claimed in the same server-side space and needs the identical
          *  shift, or it lands inside the prefix and overwrites kept content.
@@ -1768,7 +1833,7 @@ export default function useResumableSSE(
          *  `initialResponse.content` with the server's completion-local
          *  snapshot, so its length no longer describes the retained prefix.
          *  Tool cards and the label heading them must land in one index
-         *  space — a label shifting differently from its tools would overwrite
+         *  space: a label shifting differently from its tools would overwrite
          *  another part, and a gap fill would miss its own reservation and
          *  leave the placeholder pending forever. */
         const prefixLength = editPrefixLength();
@@ -2106,6 +2171,11 @@ export default function useResumableSSE(
                 generationProtocolVersion,
               },
             );
+            // A `failed` chip never reached the server, so it never rides
+            // `data.pendingSteers` above; without this it survives a NORMAL
+            // completion and renders (with a live Retry) under the NEXT run's
+            // reply. Idempotent alongside the call above: both dedupe by id.
+            convertLocalSteersToQueued(finalConvoId);
             let finalHandled = false;
             try {
               finalHandler(data as TFinalResData, currentSubmission as EventSubmission);
@@ -2136,7 +2206,7 @@ export default function useResumableSSE(
               conversationId: runEndTarget.conversationId,
               // A Stop that lands before completion can arrive as a final with
               // `unfinished: true` and no `aborted` flag (request.js's
-              // wasAbortedBeforeComplete branch) — it must not auto-drain.
+              // wasAbortedBeforeComplete branch); it must not auto-drain.
               outcome: finalOutcome,
               startedAsNewConvo: runEndTarget.startedAsNewConvo,
               endedAt: Date.now(),
@@ -2302,11 +2372,11 @@ export default function useResumableSSE(
             if (data.resumeState?.contextUsage) {
               /** Already reconciled to the call's real prompt tokens server-side
                *  (GenerationJobManager.persistTokenUsage) when the snapshot's call
-               *  completed, so install it as-is — no client backfill reconcile. */
+               *  completed, so install it as-is: no client backfill reconcile. */
               contextHandler(data.resumeState.contextUsage, resumeSubmission);
             }
-            /** Output streamed before this resume is not re-delivered as deltas
-             *  — estimate it from the trailing aggregated content. This is
+            /** Output streamed before this resume is not re-delivered as deltas;
+             *  estimate it from the trailing aggregated content. This is
              *  needed even with a snapshot: the snapshot is pre-invoke, so the
              *  in-flight output it precedes rides on the live estimate.
              *  countTrailingOutputChars only counts output at the very end (0
@@ -2367,7 +2437,7 @@ export default function useResumableSSE(
                  * prefix an edited resubmission had retained: the snapshot is
                  * completion-local, indexed from zero. Every later event must
                  * therefore stop offsetting, or it writes past the end of the
-                 * shorter array — for an activity label that means the fill
+                 * shorter array: for an activity label that means the fill
                  * misses its own reservation and the placeholder never
                  * resolves. Preserving `oldContent` keeps the prefix, and with
                  * it the offset. Run steps and labels both read this.
@@ -2603,7 +2673,7 @@ export default function useResumableSSE(
               parentMessageId: data.parentMessageId,
               messageId: data.messageId,
             } as TMessage;
-            /** Legacy non-agent streams send cumulative text here — feed the
+            /** Legacy non-agent streams send cumulative text here; feed the
              *  live estimate like the content path above */
             const textSubmission = { ...currentSubmission, userMessage, initialResponse };
             currentSubmission = textSubmission;
@@ -3312,7 +3382,7 @@ export default function useResumableSSE(
           ) {
             if (isResume) {
               // A resumed subscribe attaches to an already-adopted stream (e.g. a deduped
-              // start request). A 404 means the job is gone — but the conversation may be
+              // start request). A 404 means the job is gone, but the conversation may be
               // persisted (the original completed and was cleaned up) or may never have
               // existed (the winner died before persisting). Don't guess: reconcile against
               // the server so a real conversation stays and a phantom is dropped.
@@ -3373,7 +3443,7 @@ export default function useResumableSSE(
           cancelSteerRetryFrames();
           closeStream();
           /** FLUSH (not cancel): the error card below is built from the cache
-           * tail, so queued tokens must land first — and a stale trailing
+           * tail, so queued tokens must land first, and a stale trailing
            * frame must never overwrite the error write. */
           flushPendingDeltas();
           removeActiveJob(currentStreamId);
@@ -3779,6 +3849,18 @@ export default function useResumableSSE(
          *  merge into the next response in this conversation. On a resume the
          *  collected usage is re-folded via backfillUsage, so nothing is lost. */
         resetLive({ ...currentSubmission, userMessage });
+        // No final/error event fires on this path, so it's the only place left
+        // to sweep a local `failed` chip; otherwise it survives this close and
+        // renders (with a live Retry) under whatever run starts next. `pending`
+        // chips are deliberately left alone here: this listener also fires on
+        // navigation away while the run CONTINUES server-side, so a
+        // server-ACK'd `pending` steer is not stranded: the server injects it
+        // regardless, and sweeping it into the queue too would resend the same
+        // words as a duplicate turn once `useQueueDrain` fires at run end.
+        convertLocalSteersToQueued(
+          currentSubmission.conversation?.conversationId ?? currentStreamId,
+          { statuses: ABORT_SWEEP_STATUSES },
+        );
       };
 
       connection = createSSETransport({ token }).reconnectToStream(
@@ -4584,7 +4666,7 @@ export default function useResumableSSE(
           // Optimistically add to active jobs
           addActiveJob(newStreamId);
           // Queue title generation if this is a new conversation (first message).
-          // Skip temporary conversations — the server never generates titles for
+          // Skip temporary conversations: the server never generates titles for
           // them, so polling would 404 indefinitely.
           const isNewConvo = isInitialNewConversation(submission);
           if (isNewConvo && !submission.isTemporary) {
@@ -4612,7 +4694,15 @@ export default function useResumableSSE(
       }
     };
 
-    initStream();
+    /* Fire-and-forget, but not silent: this sets the submitting flags before
+       it does any work, so a throw would leave the composer generating with no
+       stream, no final event and no way back but a reload. */
+    initStream().catch((error: unknown) => {
+      logger.error('[useResumableSSE] Failed to start the stream', error);
+      setIsSubmitting(false);
+      setShowStopButton(false);
+      setSubmission(null);
+    });
 
     /** The Set object itself is never reassigned, so this alias reads the
      *  LIVE frame ids at cleanup time (satisfies react-hooks/exhaustive-deps

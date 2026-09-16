@@ -30,9 +30,13 @@ const sharedDialogComponents = [
 ];
 
 describe('shared component color guardrail', () => {
-  it('keeps shared primitives free of direct palette utilities and hex colors', () => {
+  it('keeps shared primitives free of direct palette utilities and raw colors', () => {
     const directPalette =
-      /(?:bg|text|border|ring|from|via|to)-(?:gray|red|green|blue|purple|amber|yellow|orange|pink|indigo|violet|teal|cyan|slate|zinc|neutral|stone)-\d/;
+      /(?:bg|text|border|ring|from|via|to|fill|stroke)-(?:(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d|white\b|black\b)/;
+    /** Literal colors only: `rgb(var(--token))` reads the theme at paint time,
+     *  which is exactly what a shared primitive is supposed to do. */
+    const rawColor =
+      /#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{4}|[0-9a-f]{3})\b|(?:rgb|hsl)a?\((?!\s*var\()/i;
     /** Only CSS-legal hex lengths (3, 4, 6, 8). `{3,8}` also matched a five-
      *  digit issue reference in a comment — see the PR number in
      *  `OriginalDialog.tsx` — which reads as a color to a regex and to nobody
@@ -43,7 +47,7 @@ describe('shared component color guardrail', () => {
       const source = readFileSync(join(__dirname, '..', 'components', component), 'utf8');
 
       expect(source).not.toMatch(directPalette);
-      expect(source).not.toMatch(hexColor);
+      expect(source).not.toMatch(rawColor);
     });
 
     /** The guardrail still has to catch what it exists for. */

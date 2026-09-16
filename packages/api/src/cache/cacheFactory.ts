@@ -15,6 +15,7 @@ import { Time, CacheKeys } from 'librechat-data-provider';
 import { RedisStore as ConnectRedis } from 'connect-redis';
 import type { SendCommandFn } from 'rate-limit-redis';
 import { keyvRedisClient, ioredisClient, handleKeyvRedisError } from './redisClients';
+import { createClusterSafeSendCommand } from './limiterSendCommand';
 import { batchDeleteKeys, scanKeys } from './redisUtils';
 import {
   instrumentIORedisClient,
@@ -191,27 +192,36 @@ export const limiterCache = (prefix: string): RedisStore | undefined => {
   if (!cacheConfig.USE_REDIS) {
     return undefined;
   }
-  // Note: The `prefix` is applied by RedisStore internally to its key operations.
-  // The global REDIS_KEY_PREFIX is applied by ioredisClient's keyPrefix setting.
-  // Combined key format: `{REDIS_KEY_PREFIX}::{prefix}{identifier}`
+  // rate-limit-redis supplies uppercase command names to `call()`. In the
+  // pinned ioredis version, dynamic-command key metadata is case-sensitive,
+  // so those calls bypass the configured keyPrefix, including EVALSHA keys.
+  // Include the deployment prefix here exactly once.
   prefix = prefix.endsWith(':') ? prefix : `${prefix}:`;
+  const deploymentPrefix = cacheConfig.REDIS_KEY_PREFIX
+    ? `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`
+    : '';
+  const limiterPrefix = `${deploymentPrefix}${prefix}`;
 
   try {
-    const sendCommand: SendCommandFn = (async (...args: string[]) => {
+    const executeCommand = (async (...args: string[]) => {
       const redisClient = ioredisClient;
       if (redisClient == null) {
         throw new Error('Redis client not available');
       }
+      return await observeRedisOperation('ioredis', RedisUseCases.RATE_LIMIT, args[0], () =>
+        redisClient.call(args[0], ...args.slice(1)),
+      );
+    }) as SendCommandFn;
+    const clusterSafeCommand = createClusterSafeSendCommand(executeCommand);
+    const sendCommand: SendCommandFn = async (...args: string[]) => {
       try {
-        return await observeRedisOperation('ioredis', RedisUseCases.RATE_LIMIT, args[0], () =>
-          redisClient.call(args[0], ...args.slice(1)),
-        );
+        return await clusterSafeCommand(...args);
       } catch (err) {
         logger.error('Redis command execution failed:', err);
         throw err;
       }
-    }) as SendCommandFn;
-    return new RedisStore({ sendCommand, prefix });
+    };
+    return new RedisStore({ sendCommand, prefix: limiterPrefix });
   } catch (err) {
     logger.error(`Failed to create Redis rate limiter for prefix ${prefix}:`, err);
     return undefined;

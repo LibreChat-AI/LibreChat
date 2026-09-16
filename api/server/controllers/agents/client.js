@@ -4284,6 +4284,9 @@ class AgentClient extends BaseClient {
     // (apiKey, credentials) and gateway config — resume re-resolves those server-side.
     // (Saved agents source params from the DB record, so this is belt-and-suspenders.)
     const resumeContext = pickResumeContext(this.options.req?.body);
+    if (this.options.req?.reasoningOverrideBase != null) {
+      resumeContext.reasoningOverrideBase = { ...this.options.req.reasoningOverrideBase };
+    }
     const resumeModelParameters = captureResumeModelParameters(
       this.options.req?.body,
       this.options.agent?.model_parameters,

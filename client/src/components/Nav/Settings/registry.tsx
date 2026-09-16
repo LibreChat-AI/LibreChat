@@ -147,6 +147,17 @@ export const registry: SettingEntry[] = [
     }),
   },
   {
+    id: 'showComposerTips',
+    tab: GENERAL,
+    section: 'layout',
+    labelKey: 'com_nav_composer_tips',
+    Component: toggleControl({
+      stateAtom: store.showComposerTips,
+      localizationKey: 'com_nav_composer_tips',
+      switchId: 'showComposerTips',
+    }),
+  },
+  {
     id: 'showScrollButton',
     tab: GENERAL,
     section: 'layout',

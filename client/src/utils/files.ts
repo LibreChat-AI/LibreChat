@@ -7,6 +7,7 @@ import {
   SheetPaths,
 } from '@librechat/client';
 import {
+  Tools,
   megabyte,
   Providers,
   QueryKeys,
@@ -15,6 +16,7 @@ import {
   EToolResources,
   EModelEndpoint,
   retrievalMimeTypes,
+  isEphemeralAgentId,
   isBedrockDocumentType,
   isExplicitMimeConfig,
   codeInterpreterMimeTypes,
@@ -243,9 +245,31 @@ export function formatDate(dateString: string, isSmallScreen = false) {
 }
 
 /**
+ * Matches every `[QueryKeys.files, 'recent', limit]` cache entry regardless of
+ * the requested limit, so any writer that patches the plain `[QueryKeys.files]`
+ * list can keep the composer palette's recent-files list in step with it.
+ */
+export const isRecentFilesQueryKey = (queryKey: readonly unknown[]): boolean =>
+  queryKey[0] === QueryKeys.files && queryKey[1] === 'recent';
+
+/**
+ * The recent-files query is server-sorted and mounted with refetching off, so a
+ * new file only reaches it when something invalidates it explicitly.
+ */
+export const invalidateRecentFiles = (queryClient: QueryClient): void => {
+  queryClient.invalidateQueries({
+    predicate: (query) => isRecentFilesQueryKey(query.queryKey),
+  });
+};
+
+/**
  * Adds a file to the query cache
  */
 export function addFileToCache(queryClient: QueryClient, newfile: TFile) {
+  /* Ahead of the early returns below: the full list may not be cached at all
+     while the palette's recent list is, and that list still has to learn about
+     the new file. */
+  invalidateRecentFiles(queryClient);
   const currentFiles = queryClient.getQueryData<TFile[]>([QueryKeys.files]);
 
   if (!currentFiles) {
@@ -593,6 +617,34 @@ const isContextType = (type: string, fileConfig: FileConfig | null): boolean =>
     ...(fileConfig?.ocr?.supportedMimeTypes || []),
     ...(fileConfig?.stt?.supportedMimeTypes || []),
   ]);
+
+/**
+ * Which tool destinations an upload may be routed to, before the files
+ * themselves are considered.
+ *
+ * A saved agent's tool list is the authority: it can only receive uploads for
+ * the tools it was built with. Everywhere else the destination is offered
+ * whether or not the tool is currently switched on, because choosing it is what
+ * switches it on.
+ *
+ * Shared by the `+` menu and the drag-and-drop router so a file has the same
+ * destinations however it arrives.
+ */
+export interface UploadToolAllowances {
+  fileSearchAllowedByAgent: boolean;
+  codeAllowedByAgent: boolean;
+}
+
+export const getUploadToolAllowances = (
+  agentId: string | null | undefined,
+  tools: string[] | undefined,
+): UploadToolAllowances => {
+  const isSavedAgent = agentId != null && agentId !== '' && !isEphemeralAgentId(agentId);
+  return {
+    fileSearchAllowedByAgent: !isSavedAgent || (tools?.includes(Tools.file_search) ?? false),
+    codeAllowedByAgent: !isSavedAgent || (tools?.includes(Tools.execute_code) ?? false),
+  };
+};
 
 /**
  * Upload destinations a file set can be routed to, given the active endpoint and agent

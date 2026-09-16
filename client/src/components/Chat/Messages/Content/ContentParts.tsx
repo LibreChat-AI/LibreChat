@@ -40,6 +40,7 @@ import PendingSkillCall from './Parts/PendingSkillCall';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
 import { hasPendingApprovalInPart } from '~/utils';
 import EditContentParts from './EditContentParts';
+import PendingSteers from './Parts/PendingSteers';
 import { EmptyText, AgentUpdate } from './Parts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
@@ -1102,6 +1103,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
             );
           })}
           <WorkspaceChanges attachments={workspaceChanges} />
+          {isLast && conversationId != null && <PendingSteers conversationId={conversationId} />}
         </SearchContext.Provider>
       </ApprovalProvider>
     );
@@ -1146,6 +1148,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
           laneGroups={messageLaneGroups}
         />
         {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
+        {!nestedActivityPhase && isLast && conversationId != null && (
+          <PendingSteers conversationId={conversationId} />
+        )}
       </>
     );
     return nestedActivityPhase ? (
@@ -1217,6 +1222,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
           return nodes;
         })}
       {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
+      {!nestedActivityPhase && isLast && conversationId != null && (
+        <PendingSteers conversationId={conversationId} />
+      )}
     </SearchContext.Provider>
   );
   if (nestedActivityPhase) {

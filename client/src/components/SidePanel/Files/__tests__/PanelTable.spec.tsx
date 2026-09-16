@@ -85,6 +85,18 @@ jest.mock('~/hooks', () => ({
   }),
 }));
 
+/* The attach logic moved into `useAttachExisting`, which reaches its
+   dependencies by their own paths rather than through the `~/hooks` barrel. */
+jest.mock('~/hooks/useLocalize', () => ({
+  __esModule: true,
+  default: () => (key: string) => key,
+}));
+
+jest.mock('~/hooks/Files/useUpdateFiles', () => ({
+  __esModule: true,
+  default: () => ({ addFile: mockAddFile }),
+}));
+
 jest.mock('~/data-provider', () => ({
   useGetFileConfig: ({ select }: { select?: (d: unknown) => unknown }) => ({
     data: select != null ? select(mockRawFileConfig) : mockRawFileConfig,

@@ -4,7 +4,7 @@ import type { ClassProp } from 'class-variance-authority/types';
 import { cn } from '~/utils';
 
 type IconButtonVariantProps = {
-  variant?: 'default' | 'secondary' | 'ghost' | 'destructive' | null;
+  variant?: 'default' | 'primary' | 'secondary' | 'ghost' | 'destructive' | null;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'theme' | null;
   shape?: 'round' | 'square' | 'theme' | null;
 };
@@ -15,6 +15,7 @@ const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string
     variants: {
       variant: {
         default: 'bg-surface-secondary hover:bg-surface-hover',
+        primary: 'bg-surface-inverted text-text-inverted hover:bg-surface-inverted-hover',
         secondary: 'border border-border-light bg-surface-secondary hover:bg-surface-hover',
         ghost: 'bg-transparent hover:bg-surface-hover',
         destructive:
