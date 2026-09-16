@@ -8,6 +8,10 @@ interface:
   # Exercises the cost row in the context usage gauge (off by default).
   # Mock models price at the default rate, so synthetic usage yields a value.
   contextCost: true
+  # Enables the model-parameter surface, including the per-turn reasoning
+  # control in the composer. Mock Provider A resolves Anthropic's adaptive
+  # `effort` setting through its custom endpoint configuration below.
+  parameters: true
   # Grants MULTI_CONVO.USE so the composer's `+` command opens the added-model
   # popover. agent-skills-added.spec.ts drives that flow; without an explicit
   # value the permission falls through to the seeded role default and

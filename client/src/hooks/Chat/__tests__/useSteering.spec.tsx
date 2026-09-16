@@ -2935,7 +2935,7 @@ describe('useSteering', () => {
       expect(discarded).toBe(false);
       expect(result.current.queue).toEqual([recovered]);
       expect(mockShowToast).toHaveBeenCalledWith({
-        message: 'Could not cancel the steering message; it may still reach the agent',
+        message: 'Could not cancel the steering message — it may still reach the agent',
         status: 'error',
       });
     });

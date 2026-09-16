@@ -40,9 +40,7 @@ import {
 import {
   appendAppliedSteerIds,
   carriedSteerContext,
-  clearAllDrafts,
   findLiveAskUserQuestion,
-  getPendingDraftId,
   insertQueuedOrigin,
   hydrateFileDeliveryMetadata,
   mergeRestagedQuotes,

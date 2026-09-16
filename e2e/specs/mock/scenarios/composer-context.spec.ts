@@ -10,7 +10,6 @@ import {
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
   uniqueName,
-  uploadViaUnifiedButton,
 } from '../helpers';
 import { deleteConversations, deleteMessagesByConversation } from '../db';
 
@@ -21,6 +20,29 @@ async function cleanupConversation(page: Page) {
   }
   await deleteMessagesByConversation([conversationId]);
   await deleteConversations([conversationId]);
+}
+
+async function uploadViaComposerPalette(
+  page: Page,
+  file: { name: string; mimeType: string; content: string },
+) {
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+  const localUpload = palette.getByRole('button', { name: 'From Local Computer', exact: true });
+  await expect(localUpload).toBeVisible();
+
+  const [fileChooser] = await Promise.all([page.waitForEvent('filechooser'), localUpload.click()]);
+  const uploadResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/files' && response.request().method() === 'POST',
+    { timeout: 30000 },
+  );
+  await fileChooser.setFiles({
+    name: file.name,
+    mimeType: file.mimeType,
+    buffer: Buffer.from(file.content, 'utf8'),
+  });
+  return uploadResponse;
 }
 
 test.describe('composer context', () => {
@@ -67,7 +89,7 @@ test.describe('composer context', () => {
       const removedName = `${uniqueName('removed')}.md`;
       const tray = page.getByTestId('composer-tray');
 
-      const retainedUpload = await uploadViaUnifiedButton(page, {
+      const retainedUpload = await uploadViaComposerPalette(page, {
         name: retainedName,
         mimeType: 'text/markdown',
         content: '# retained staged file\n',
@@ -76,7 +98,7 @@ test.describe('composer context', () => {
       await expect(tray).toBeVisible();
       await expect(tray.getByRole('button', { name: retainedName, exact: true })).toBeVisible();
 
-      const removedUpload = await uploadViaUnifiedButton(page, {
+      const removedUpload = await uploadViaComposerPalette(page, {
         name: removedName,
         mimeType: 'text/markdown',
         content: '# removed before send\n',
@@ -125,8 +147,8 @@ test.describe('composer context', () => {
     test.setTimeout(120000);
     try {
       await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-      // Mock Provider A is custom-backed by the Anthropic parameter surface, so its
-      // composer renders the numeric Thinking Budget control for mock-model-a.
+      // Mock Provider A resolves the custom endpoint to Anthropic's adaptive
+      // `effort` setting, so the composer renders the compact effort slider.
       await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
       const thinkingButton = page.getByRole('button', { name: /^Reasoning for next message/ });
@@ -135,10 +157,10 @@ test.describe('composer context', () => {
       expect(resolvedDefaultLabel).toBeTruthy();
 
       await thinkingButton.click();
-      const thinkingDialog = page.getByRole('dialog', { name: 'Thinking Budget' });
+      const thinkingDialog = page.getByRole('dialog', { name: 'Effort' });
       await expect(thinkingDialog).toBeVisible();
       const thinkingSlider = thinkingDialog.getByRole('slider');
-      await thinkingSlider.press('Home');
+      await thinkingSlider.press('End');
       await expect(thinkingButton).not.toHaveAttribute('aria-label', resolvedDefaultLabel!);
       await page.keyboard.press('Escape');
 
@@ -147,10 +169,10 @@ test.describe('composer context', () => {
       );
       await sendMessageAndWaitForCompletion(page, 'E2E first scoped thinking turn');
       const firstBody = (await firstRequestPromise).postDataJSON() as {
-        userMessage?: { reasoningOverride?: { key?: string; value?: number } };
+        userMessage?: { reasoningOverride?: { key?: string; value?: string } };
       };
       expect(firstBody.userMessage?.reasoningOverride).toEqual(
-        expect.objectContaining({ key: 'thinkingBudget', value: expect.any(Number) }),
+        expect.objectContaining({ key: 'effort', value: 'max' }),
       );
       await expect(thinkingButton).toHaveAttribute('aria-label', resolvedDefaultLabel!);
 

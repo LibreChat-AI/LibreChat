@@ -151,7 +151,9 @@ function renderComposer({
         <Router>
           <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
             <DndProvider backend={HTML5Backend}>
-              <Harness />
+              <main>
+                <Harness />
+              </main>
             </DndProvider>
           </AuthContextProvider>
         </Router>
@@ -226,7 +228,7 @@ describe('ChatForm attachments', () => {
   test('does not steal focus when clicking the nested attachment icon', async () => {
     renderComposer();
     const textarea = await screen.findByTestId('text-input');
-    const trigger = screen.getByRole('button', { name: 'Attach File Options' });
+    const trigger = screen.getByTestId('composer-palette-button');
     expect(trigger).toBeEnabled();
     const icon = trigger.querySelector('svg');
     expect(icon).not.toBeNull();
@@ -235,19 +237,19 @@ describe('ChatForm attachments', () => {
     await userEvent.click(icon as SVGElement);
 
     expect(focus).not.toHaveBeenCalled();
-    expect(await screen.findByRole('menu', { name: 'Attach File Options' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Attach and tools' })).toBeInTheDocument();
   }, 20000);
 
   test('closes an open menu when the textarea is clicked', async () => {
     renderComposer();
     const textarea = await screen.findByTestId('text-input');
-    await userEvent.click(screen.getByRole('button', { name: 'Attach File Options' }));
-    expect(await screen.findByRole('menu', { name: 'Attach File Options' })).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('composer-palette-button'));
+    expect(await screen.findByRole('dialog', { name: 'Attach and tools' })).toBeInTheDocument();
 
     await userEvent.click(textarea);
 
     await waitFor(() =>
-      expect(screen.queryByRole('menu', { name: 'Attach File Options' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'Attach and tools' })).not.toBeInTheDocument(),
     );
     expect(textarea).toHaveFocus();
   }, 20000);
@@ -296,15 +298,11 @@ describe('ChatForm attachments', () => {
   test('returns focus to the textarea when removing a quote collapses the popup', async () => {
     renderComposer({ quotes: ['alpha', 'beta'] });
     const textarea = await screen.findByTestId('text-input');
-    // Hover opens this disclosure too; test the click path without a synthetic hover toggle.
-    await userEvent.click(screen.getByRole('button', { name: '2 selections' }), {
-      skipHover: true,
-    });
-    const popup = await screen.findByRole('dialog');
+    const firstChip = () => screen.getAllByTestId('composer-chip-quote')[0];
 
-    await userEvent.click(within(popup).getAllByRole('button', { name: 'Remove quote' })[0]);
+    await userEvent.click(within(firstChip()).getByRole('button', { name: 'Remove quote' }));
 
-    await waitFor(() => expect(screen.queryByTestId('quote-selections-popup')).toBeNull());
+    await waitFor(() => expect(screen.getAllByTestId('composer-chip-quote')).toHaveLength(1));
     expect(screen.getByText('beta')).toBeInTheDocument();
     expect(textarea).toHaveFocus();
   }, 20000);
@@ -312,35 +310,33 @@ describe('ChatForm attachments', () => {
   test('keeps focus inside the popup when removing a quote leaves several', async () => {
     renderComposer({ quotes: ['alpha', 'beta', 'gamma'] });
     await screen.findByTestId('text-input');
-    // Hover opens this disclosure too; test the click path without a synthetic hover toggle.
-    await userEvent.click(screen.getByRole('button', { name: '3 selections' }), {
-      skipHover: true,
-    });
-    const popup = await screen.findByRole('dialog');
+    const firstChip = () => screen.getAllByTestId('composer-chip-quote')[0];
 
-    await userEvent.click(within(popup).getAllByRole('button', { name: 'Remove quote' })[0]);
+    await userEvent.click(within(firstChip()).getByRole('button', { name: 'Remove quote' }));
 
-    await waitFor(() => expect(within(popup).getAllByRole('button')).toHaveLength(2));
-    expect(within(popup).getAllByRole('button', { name: 'Remove quote' })[0]).toHaveFocus();
+    await waitFor(() => expect(screen.getAllByTestId('composer-chip-quote')).toHaveLength(2));
+    expect(
+      within(screen.getAllByTestId('composer-chip-quote')[0]).getByRole('button', {
+        name: 'Remove quote',
+      }),
+    ).toHaveFocus();
   }, 20000);
 
   test('does not raise the keyboard when a quote removal collapses the popup on touch', async () => {
     const matchMedia = window.matchMedia;
-    window.matchMedia = jest
-      .fn()
-      .mockReturnValue({ matches: true }) as unknown as typeof matchMedia;
+    window.matchMedia = jest.fn().mockReturnValue({
+      matches: true,
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+    }) as unknown as typeof matchMedia;
     try {
       renderComposer({ quotes: ['alpha', 'beta'] });
       const textarea = await screen.findByTestId('text-input');
-      // Hover opens this disclosure too; test the click path without a synthetic hover toggle.
-      await userEvent.click(screen.getByRole('button', { name: '2 selections' }), {
-        skipHover: true,
-      });
-      const popup = await screen.findByRole('dialog');
+      const firstChip = () => screen.getAllByTestId('composer-chip-quote')[0];
 
-      await userEvent.click(within(popup).getAllByRole('button', { name: 'Remove quote' })[0]);
+      await userEvent.click(within(firstChip()).getByRole('button', { name: 'Remove quote' }));
 
-      await waitFor(() => expect(screen.queryByTestId('quote-selections-popup')).toBeNull());
+      await waitFor(() => expect(screen.getAllByTestId('composer-chip-quote')).toHaveLength(1));
       expect(textarea).not.toHaveFocus();
     } finally {
       window.matchMedia = matchMedia;

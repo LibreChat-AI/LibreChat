@@ -62,10 +62,14 @@ jest.mock('~/hooks/Input/useAttachItems', () => ({
     maxSelectionCount: 10,
   }),
 }));
-const mockMCPRefresh = jest.fn();
-jest.mock('~/hooks/MCP/useMCPRefresh', () => ({
-  useMCPRefresh: mockMCPRefresh,
-}));
+jest.mock('~/hooks/MCP/useMCPRefresh', () => {
+  const useMCPRefresh = jest.fn();
+  return { useMCPRefresh };
+});
+const mcpRefreshModule = jest.requireMock('~/hooks/MCP/useMCPRefresh') as {
+  useMCPRefresh: jest.Mock;
+};
+const mockMCPRefresh = mcpRefreshModule.useMCPRefresh;
 
 jest.mock('~/Providers', () => ({
   useBadgeRowContext: () => ({

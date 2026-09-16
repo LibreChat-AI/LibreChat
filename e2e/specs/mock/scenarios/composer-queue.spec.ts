@@ -72,7 +72,9 @@ test.describe('composer queue rail', () => {
 
     const row = queuedRows(page).filter({ hasText: queueText });
     await expect(row).toBeVisible({ timeout: 10000 });
-    await expect(duringRunSendButton(page)).toHaveAttribute('data-during-run-action', 'queue');
+    // Submitting consumes the composer text, so the run-action control returns
+    // to the ordinary Stop button while the queued row is the durable signal
+    // that Enter selected the queue action.
 
     // Clean completion drains the queued row as a new user turn, then its
     // ordinary fake-model answer completes in the same conversation.

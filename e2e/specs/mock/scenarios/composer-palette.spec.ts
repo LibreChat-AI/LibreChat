@@ -170,18 +170,21 @@ test.describe('composer palette', () => {
 
     await expect(palette(page)).toBeVisible();
     await expect(paletteSearch(page)).toBeFocused();
-    await page.keyboard.type('search');
+    // Search for the code capability: this lab exposes Run Code (the passing
+    // catalog scenarios use the same row), while "search" initially selected
+    // Web Search and opened its provider configuration dialog.
+    await page.keyboard.type('code');
+    const runCode = palette(page).getByRole('button', { name: 'Run Code', exact: true });
+    await expect(runCode).toBeVisible();
     const initialActive = await paletteSearch(page).getAttribute('aria-activedescendant');
     await page.keyboard.press('ArrowDown');
     const movedActive = await paletteSearch(page).getAttribute('aria-activedescendant');
     expect(movedActive).not.toBe(initialActive);
     await page.keyboard.press('Enter');
 
+    await expect(runCode).toHaveAttribute('aria-pressed', 'true');
     await expect(
-      palette(page).getByRole('button', { name: 'File Search', exact: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
-    await expect(
-      page.getByTestId('composer-active-builtin').filter({ hasText: 'File Search' }),
+      page.getByTestId('composer-active-builtin').filter({ hasText: 'Run Code' }),
     ).toBeVisible();
 
     await page.keyboard.press('Escape');

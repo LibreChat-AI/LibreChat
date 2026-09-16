@@ -90,6 +90,7 @@ export default function useQueueDrain(
    * slot: the rail's "Send now" reaches the same `ask` through the composer. */
   const sendLockKey = String(index);
   const sendLockRef = useRef<QueueSendLock | null>(null);
+  const revealLockRef = useRef(false);
   const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
   const ownQueue = useRecoilValue(
     store.queuedMessagesByConvoId(activeConversationId ?? Constants.NEW_CONVO),
@@ -388,11 +389,13 @@ export default function useQueueDrain(
    * Released from a cleanup rather than an effect body, because React runs every
    * cleanup in a commit before any effect body: a stale claim can never starve
    * the acquire below, and this release can never free a slot the composer's own
-   * queued send claimed in the same commit. */
+   * submission in the same commit.
+   */
   useEffect(
     () => () => {
       releaseQueueSendLock(sendLockRef.current);
       sendLockRef.current = null;
+      revealLockRef.current = false;
     },
     [isSubmitting, sendLockKey, activeConversationId],
   );
@@ -405,6 +408,11 @@ export default function useQueueDrain(
     ) {
       parkForeignRunEnd();
       return;
+    }
+    if (revealLockRef.current && revealedQueuedTurn == null) {
+      releaseQueueSendLock(sendLockRef.current);
+      sendLockRef.current = null;
+      revealLockRef.current = false;
     }
     if ((runEnd == null && parkedRunEnd == null) || isSubmitting) {
       return;
@@ -423,10 +431,12 @@ export default function useQueueDrain(
       return;
     }
     sendLockRef.current = lock;
+    revealLockRef.current = drained.kind === 'reveal';
     if (drained.kind === 'reveal') {
       if (revealQueuedTurn == null) {
         releaseQueueSendLock(lock);
         sendLockRef.current = null;
+        revealLockRef.current = false;
         return;
       }
       revealQueuedTurn(drained.item, drained.end);

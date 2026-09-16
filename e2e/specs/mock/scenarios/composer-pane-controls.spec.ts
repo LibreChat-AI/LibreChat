@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { cleanupAgent, uniqueAgentName } from '../agents.helpers';
+import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpers';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -29,11 +29,15 @@ test('stops a run from a portaled composer control @scenario:stop-from-a-portale
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
   const label = uniqueAgentName('portaled-stop');
-  const partialReply = page
-    .getByTestId('messages-view')
-    .getByText(new RegExp(`E2E slow reply ${label}`));
+  const messages = page.getByTestId('messages-view');
+  const partialReply = messages
+    .locator('.message-render')
+    .filter({ hasText: `E2E slow reply ${label}` })
+    .first();
   const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
   expect(run.ok()).toBeTruthy();
+  // The fake model emits this stable chunk marker while the response is still streaming.
+  await expect(messages.getByText('chunk-010')).toBeVisible({ timeout: 15000 });
   await expect(partialReply).toBeVisible({ timeout: 30000 });
 
   /*
@@ -133,11 +137,12 @@ async function createApprovalAgent(page: Page, name: string): Promise<AgentRespo
 }
 
 async function selectAgent(page: Page, agentName: string) {
-  const trigger = page.getByRole('button', { name: 'Select a model' }).first();
-  await trigger.click();
-  await page.getByRole('option', { name: 'My Agents' }).click();
-  await page.getByRole('option', { name: agentName, exact: true }).click();
-  await expect(trigger).toContainText(agentName);
+  const form = await openAgentBuilder(page);
+  await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
+  await page.getByRole('option', { name: agentName }).click();
+  await expect(form.getByLabel('Agent name')).toHaveValue(agentName);
+  await form.getByRole('button', { name: 'Select Agent' }).click();
+  await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 }
 
 /**

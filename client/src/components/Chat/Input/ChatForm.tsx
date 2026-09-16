@@ -557,6 +557,7 @@ const ChatForm = memo(function ChatForm({
     }
     return stopButton;
   }, [
+    consumeComposer,
     steering,
     textValue,
     methods,
@@ -608,13 +609,6 @@ const ChatForm = memo(function ChatForm({
       methods.control,
     ],
   );
-
-  /* The empty-conversation screen. Drives both how far the composer floats off
-     the bottom and whether the ambient tips under it are worth their row. */
-  const isLanding =
-    (conversationId == null || conversationId === Constants.NEW_CONVO) &&
-    !isSubmitting &&
-    (conversation?.messages?.length ?? 0) === 0;
 
   const baseClasses = useMemo(
     () =>
