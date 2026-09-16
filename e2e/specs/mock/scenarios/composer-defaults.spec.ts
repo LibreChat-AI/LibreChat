@@ -9,6 +9,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from '../helpers';
+import { ensureSidebarOnScreen } from './pinned.helpers';
 
 const MCP_SERVER_TITLE = 'E2E Memory';
 const PROVIDER_C = { label: 'Mock Provider C', model: 'mock-model-c' };
@@ -52,11 +53,8 @@ test.describe('composer defaults', () => {
     test.setTimeout(60000);
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await ensureSidebarOnScreen(page);
     const accountMenuButton = page.getByTestId('nav-user');
-    const openSidebarButton = page.getByRole('button', { name: 'Open sidebar', exact: true });
-    if (await openSidebarButton.isVisible().catch(() => false)) {
-      await openSidebarButton.click();
-    }
     await expect(accountMenuButton).toBeVisible();
     await accountMenuButton.click();
 
