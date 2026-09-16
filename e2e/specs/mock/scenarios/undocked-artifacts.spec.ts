@@ -27,6 +27,15 @@ const UNDOCK = 'Open in new window';
 const DOCK = 'Dock back to panel';
 const HTML_ARTIFACT = 'E2E HTML Artifact';
 const UNDOCKED_PANE = '#undocked-artifacts-root #artifact-viewer';
+/**
+ * The trigger row's accessible name carries its format badge and whether
+ * opening it renders a preview, alongside the title and the action — so it is
+ * matched on the title rather than spelled out here.
+ */
+const artifactTrigger = (page: Page, title: string) =>
+  messagesView(page).getByRole('button', {
+    name: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  });
 
 async function openHtmlArtifact(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
@@ -34,9 +43,7 @@ async function openHtmlArtifact(page: Page) {
   const response = await sendMessage(page, 'E2E_HTML_ARTIFACT_REPLY');
   expect(response.ok()).toBeTruthy();
 
-  await messagesView(page)
-    .getByRole('button', { name: `${HTML_ARTIFACT} Click to open`, exact: true })
-    .click();
+  await artifactTrigger(page, HTML_ARTIFACT).click();
   const panel = page.getByRole('region', { name: HTML_ARTIFACT });
   await expect(panel).toBeVisible();
   return panel;
@@ -173,9 +180,7 @@ test.describe('undocked artifacts pane', () => {
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await sendMessageAndWaitForCompletion(page, 'E2E_HTML_ARTIFACT_REPLY', { timeout: 60000 });
 
-    await messagesView(page)
-      .getByRole('button', { name: `${HTML_ARTIFACT} Click to open`, exact: true })
-      .click();
+    await artifactTrigger(page, HTML_ARTIFACT).click();
     const panel = page.getByRole('region', { name: HTML_ARTIFACT });
     await expect(panel).toBeVisible();
 
@@ -337,9 +342,7 @@ test.describe('artifacts sheet on a phone', () => {
     const response = await sendMessage(page, 'E2E_HTML_ARTIFACT_REPLY');
     expect(response.ok()).toBeTruthy();
 
-    await messagesView(page)
-      .getByRole('button', { name: `${HTML_ARTIFACT} Click to open`, exact: true })
-      .click();
+    await artifactTrigger(page, HTML_ARTIFACT).click();
 
     const sheet = page.getByRole('dialog', { name: HTML_ARTIFACT });
     await expect(sheet).toBeVisible();
