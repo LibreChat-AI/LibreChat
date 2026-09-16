@@ -7,6 +7,7 @@ import {
   Archive,
   ChevronRight,
   CircleHelp,
+  Files,
   Keyboard,
   LifeBuoy,
   LogOut,
@@ -163,6 +164,15 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
         <Menu.MenuItem onClick={() => setShowArchived(true)} className="select-item text-sm">
           <Archive className="icon-md" aria-hidden="true" />
           {localize('com_nav_archived_chats')}
+        </Menu.MenuItem>
+
+        <Menu.MenuItem
+          onClick={() => setShowFiles(true)}
+          className="select-item text-sm"
+          data-testid="nav-files"
+        >
+          <Files className="icon-md" aria-hidden="true" />
+          {localize('com_nav_my_files')}
         </Menu.MenuItem>
         <Menu.MenuItem
           onClick={() => setShowSettings(true)}
