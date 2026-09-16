@@ -285,3 +285,4 @@ export function sanitizeModelSpecs<T extends Partial<TSpecsConfig> | null | unde
   } as T;
 }
 export * from './reasoningOverride';
+export * from './persistedReasoningOverride';
