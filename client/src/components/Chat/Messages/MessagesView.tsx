@@ -24,7 +24,6 @@ import PendingTurn from './PendingTurn';
 import MessageNav from './MessageNav';
 import { cn } from '~/utils';
 import store from '~/store';
-import { composerOverlayCountFamily } from '~/components/Chat/Input/overlay';
 
 function MessagesViewContent({
   messagesTree: _messagesTree,
@@ -130,8 +129,6 @@ function MessagesViewContent({
      do float (an answer popover, a tool-approval review) are handled by
      ScrollButton through `composerOverlayCountFamily`. */
   const overlayConversationId = conversationId ?? Constants.NEW_CONVO;
-  const composerOverlayOpen =
-    useAtomValue(composerOverlayCountFamily(overlayConversationId)) > 0;
   return (
     <>
       <div className="relative flex-1 overflow-hidden overflow-y-auto">
@@ -150,15 +147,7 @@ function MessagesViewContent({
               overflowAnchor: mountWindow != null ? 'none' : undefined,
             }}
           >
-            <div
-              ref={contentRef}
-              className="flex flex-col pb-9 pt-14"
-              style={{
-                /* Keep the thread tail above the review panel while preserving
-                 * the panel's auto-open behavior and its independent controls. */
-                paddingBottom: composerOverlayOpen ? '70vh' : undefined,
-              }}
-            >
+            <div ref={contentRef} className="flex flex-col pb-9 pt-14">
               {(_messagesTree && _messagesTree.length == 0) || _messagesTree === null ? (
                 <div
                   className={cn(
