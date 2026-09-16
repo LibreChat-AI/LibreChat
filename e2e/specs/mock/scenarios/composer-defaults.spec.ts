@@ -53,6 +53,10 @@ test.describe('composer defaults', () => {
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     const accountMenuButton = page.getByTestId('nav-user');
+    const openSidebarButton = page.getByRole('button', { name: 'Open sidebar', exact: true });
+    if (await openSidebarButton.isVisible().catch(() => false)) {
+      await openSidebarButton.click();
+    }
     await expect(accountMenuButton).toBeVisible();
     await accountMenuButton.click();
 
