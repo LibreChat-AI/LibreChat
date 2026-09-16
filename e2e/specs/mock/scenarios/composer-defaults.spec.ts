@@ -54,7 +54,10 @@ test.describe('composer defaults', () => {
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await ensureSidebarOnScreen(page);
-    const accountMenuButton = page.getByTestId('nav-user');
+    const accountMenuButton =
+      (page.viewportSize()?.width ?? 1280) <= 768
+        ? page.locator('#mobile-drawer').getByTestId('nav-user')
+        : page.getByTestId('nav-user');
     await expect(accountMenuButton).toBeVisible();
     await accountMenuButton.click();
 
