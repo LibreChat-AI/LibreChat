@@ -5,6 +5,7 @@ const {
   logAxiosError,
   getSafeErrorMetadata,
   getApprovalTtlMs,
+  handleFileListRequest,
   refreshS3FileUrls,
   handleFilesUsageRequest,
   buildDeleteFilesResponse,
@@ -24,9 +25,7 @@ const {
   resolveDownloadPath,
 } = require('@librechat/api');
 const {
-  Time,
   isUUID,
-  CacheKeys,
   FileSources,
   ResourceType,
   EModelEndpoint,
@@ -55,8 +54,8 @@ const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { getRoleByName } = require('~/models');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { cleanFileName, getContentDisposition } = require('~/server/utils/files');
-const { getLogStores } = require('~/cache');
 const { Readable } = require('stream');
+const { getLogStores } = require('~/cache');
 const db = require('~/models');
 
 const router = express.Router();
@@ -71,42 +70,22 @@ const AGENT_TOOL_RESOURCE_KEYS = new Set([
 const isAgentToolResourceKey = (toolResource) =>
   typeof toolResource === 'string' && AGENT_TOOL_RESOURCE_KEYS.has(toolResource);
 
-/** Cap for `?limit=` so a recent-files palette request cannot request unbounded
- *  history. Unbounded list (no limit) stays available for the files panel. */
-const FILES_LIST_LIMIT_MAX = 100;
-
+/** Register the list endpoint as a thin adapter around the shared file-list policy. */
 router.get('/', async (req, res) => {
   try {
-    const appConfig = req.config;
-    const rawLimit = Number(req.query.limit);
-    const limit =
-      Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.min(Math.floor(rawLimit), FILES_LIST_LIMIT_MAX)
-        : undefined;
-    /** Already sorted by `updatedAt` desc in `getFiles`; a limit returns the
-     *  most recently touched files without loading the full history. */
-    const files = await db.getFiles({ user: req.user.id }, null, null, limit);
-    /** `refreshS3FileUrls` copies rather than mutating, so the refreshed rows
-     *  only reach the client if its return value is the one sent. Falls back to
-     *  the original list whenever no refresh ran or one failed. */
-    let responseFiles = files;
-    if (appConfig.fileStrategy === FileSources.s3) {
-      try {
-        const cache = getLogStores(CacheKeys.S3_EXPIRY_INTERVAL);
-        const alreadyChecked = await cache.get(req.user.id);
-        if (!alreadyChecked) {
-          responseFiles = await refreshS3FileUrls(files, db.batchUpdateFiles);
-          /** Only mark the user-wide interval after a full list: a limited
-           *  palette request refreshes only the newest rows, and caching that
-           *  would leave older signed URLs stale for the files panel. */
-          if (limit == null) {
-            await cache.set(req.user.id, true, Time.THIRTY_MINUTES);
-          }
-        }
-      } catch (error) {
-        logger.warn('[/files] Error refreshing S3 file URLs:', error);
-      }
-    }
+    const responseFiles = await handleFileListRequest({
+      userId: req.user.id,
+      rawLimit: req.query.limit,
+      fileStrategy: req.config?.fileStrategy,
+      maxLimit: req.config?.fileListLimit,
+      dependencies: {
+        getFiles: db.getFiles,
+        batchUpdateFiles: db.batchUpdateFiles,
+        refreshS3FileUrls,
+        getLogStores,
+        logger,
+      },
+    });
     res.status(200).send(responseFiles);
   } catch (error) {
     logger.error('[/files] Error getting files:', error);

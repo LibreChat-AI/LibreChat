@@ -1126,6 +1126,25 @@ describe('configSchema fileStrategy', () => {
   });
 });
 
+describe('configSchema fileListLimit', () => {
+  it('defaults fileListLimit to 100 for existing configurations', () => {
+    const result = configSchema.parse({ version: '1.3.7' });
+    expect(result.fileListLimit).toBe(100);
+  });
+
+  it('accepts a positive integer override', () => {
+    const result = configSchema.safeParse({ version: '1.3.7', fileListLimit: 250 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.fileListLimit).toBe(250);
+    }
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid fileListLimit %p', (fileListLimit) => {
+    expect(configSchema.safeParse({ version: '1.3.7', fileListLimit }).success).toBe(false);
+  });
+});
+
 describe('configSchema skillSync', () => {
   it('accepts a GitHub skill sync source with explicit paths and credential key', () => {
     const result = configSchema.safeParse({

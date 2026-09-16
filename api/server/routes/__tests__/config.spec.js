@@ -555,6 +555,22 @@ describe('GET /api/config', () => {
       expect(response.body.interface).toEqual(baseAppConfig.interfaceConfig);
     });
 
+    it('delivers the configured steer arm confirmation timeout to authenticated clients', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: {
+          ...baseAppConfig.interfaceConfig,
+          steerArmConfirmationTimeoutMs: 30_000,
+        },
+      });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.interface.steerArmConfirmationTimeoutMs).toBe(30_000);
+    });
+
     it('should include authenticated-only env var fields', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       process.env.SANDPACK_BUNDLER_URL = 'https://bundler.test';

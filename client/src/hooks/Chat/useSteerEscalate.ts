@@ -2,14 +2,15 @@ import { useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
-import { supportsGenerationProtocolV2, useArmSteerMutation } from '~/data-provider';
+import { DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS } from 'librechat-data-provider';
+import {
+  supportsGenerationProtocolV2,
+  useArmSteerMutation,
+  useGetStartupConfig,
+} from '~/data-provider';
 import { escalatingSteerFamily } from '~/store/steer';
 import useLocalize from '~/hooks/useLocalize';
 import store from '~/store';
-
-/** Axios has no default request timeout. Bound the UI lock while preserving an
- *  honest unknown outcome; the idempotent arm may still complete server-side. */
-const ARM_CONFIRM_TIMEOUT_MS = 10_000;
 
 type ArmFailure = {
   name?: string;
@@ -49,6 +50,10 @@ export default function useSteerEscalate(conversationId: string) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const { mutateAsync: armSteer } = useArmSteerMutation();
+  const { data: startupConfig } = useGetStartupConfig();
+  const armConfirmTimeoutMs =
+    startupConfig?.interface?.steerArmConfirmationTimeoutMs ??
+    DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS;
   const setEscalating = useSetAtom(escalatingSteerFamily(conversationId));
   const activeGenerationCreatedAt = useRecoilValue(
     store.activeGenerationCreatedAtByConvoId(conversationId),
@@ -107,7 +112,7 @@ export default function useSteerEscalate(conversationId: string) {
             new Promise<never>((_resolve, reject) => {
               timeout = setTimeout(
                 () => reject(new Error('Steer arm confirmation timed out')),
-                ARM_CONFIRM_TIMEOUT_MS,
+                armConfirmTimeoutMs,
               );
             }),
           ]);
@@ -166,6 +171,7 @@ export default function useSteerEscalate(conversationId: string) {
       conversationId,
       activeGenerationCreatedAt,
       activeGenerationProtocolVersion,
+      armConfirmTimeoutMs,
       setEscalating,
       markSteerPreempt,
       showToast,

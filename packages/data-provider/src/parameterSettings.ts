@@ -1473,17 +1473,26 @@ export function resolveReasoningSettingForTarget({
       return override == null ? setting : { ...setting, ...override };
     },
   );
+  const declaredReasoningSettings = (paramDefinitions ?? [])
+    .filter((setting) => reasoningSettingKeys.includes(setting.key as ReasoningSettingKey))
+    .filter((setting) => !settings.some((baseSetting) => baseSetting.key === setting.key))
+    .map((setting) => setting as SettingDefinition);
+  const effectiveSettings = [...settings, ...declaredReasoningSettings];
   const explicitReasoningKey = paramDefinitions?.find((setting) =>
     reasoningSettingKeys.includes(setting.key as ReasoningSettingKey),
   )?.key as ReasoningSettingKey | undefined;
   if (explicitReasoningKey != null) {
-    return findReasoningSetting(settings, explicitReasoningKey);
+    return findReasoningSetting(effectiveSettings, explicitReasoningKey);
   }
   const resolutionEndpoint = isKnownReasoningProvider(effectiveDefaultParamsEndpoint)
     ? effectiveDefaultParamsEndpoint
     : endpoint;
 
-  return resolveReasoningSetting({ endpoint: resolutionEndpoint, model, settings });
+  return resolveReasoningSetting({
+    endpoint: resolutionEndpoint,
+    model,
+    settings: effectiveSettings,
+  });
 }
 
 /** Confirms that a stored one-shot override still belongs to the selected

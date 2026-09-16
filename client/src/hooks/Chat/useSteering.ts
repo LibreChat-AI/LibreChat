@@ -212,23 +212,38 @@ export function resolveAcknowledgedSteer(
   return true;
 }
 
+/** The message the pause predicates judge: the caller's resolved active-branch
+ *  tail when it passed one, else the latest assistant in the supplied cache.
+ *  Passing the tail is what stops a cached sibling branch from deciding for
+ *  the branch on screen. */
+function resolvePauseSubject(
+  messagesOrMessage: TMessage[] | TMessage | null | undefined,
+  activeTail?: TMessage | null,
+): TMessage | null | undefined {
+  if (activeTail !== undefined) {
+    return activeTail;
+  }
+  if (!Array.isArray(messagesOrMessage)) {
+    return messagesOrMessage;
+  }
+  for (let index = messagesOrMessage.length - 1; index >= 0; index--) {
+    if (messagesOrMessage[index].isCreatedByUser === false) {
+      return messagesOrMessage[index];
+    }
+  }
+  return null;
+}
+
 /** True when the latest assistant message carries an unresolved tool approval:
  *  the run is (or is about to be) paused, so a steer POST would 409.
  *
- *  Exported so the in-thread pending steers gate their escalation control on
- *  the same predicate the composer does, rather than a second approximation. */
+ *  Pass the active branch tail whenever it has been resolved; without it this
+ *  falls back to array order over the cache. */
 export function hasLiveToolApproval(
   messagesOrMessage: TMessage[] | TMessage | null | undefined,
+  activeTail?: TMessage | null,
 ): boolean {
-  let message = Array.isArray(messagesOrMessage) ? null : messagesOrMessage;
-  if (Array.isArray(messagesOrMessage)) {
-    for (let i = messagesOrMessage.length - 1; i >= 0; i--) {
-      if (messagesOrMessage[i].isCreatedByUser === false) {
-        message = messagesOrMessage[i];
-        break;
-      }
-    }
-  }
+  const message = resolvePauseSubject(messagesOrMessage, activeTail);
   if (message?.isCreatedByUser !== false) {
     return false;
   }
@@ -477,17 +492,33 @@ function reconcileServerQueuedTurns(
   });
   return [...retained, ...projected].sort(compareQueuedMessages);
 }
-
 /**
  * The ONE during-run pause predicate. Both an unresolved tool approval and a
  * live `ask_user_question` suspend the generation while keeping its submission
  * slot occupied, so a steer POST would 409 in either case.
  *
  * Shared by the composer and the in-thread pending steers so a control is
- * never enabled on one surface while the other correctly refuses.
+ * never enabled on one surface while the other correctly refuses. Callers
+ * should pass the active branch tail when they have resolved it; this prevents
+ * a cached sibling from changing the result.
  */
-export function hasLiveRunPause(messages: TMessage[] | undefined): boolean {
-  return hasLiveToolApproval(messages) || findLiveAskUserQuestion(messages) != null;
+export function hasLiveRunPause(
+  messagesOrMessage: TMessage[] | TMessage | null | undefined,
+  activeTail?: TMessage | null,
+): boolean {
+  /* Legacy callers hand over the whole cache without a resolved tail; keep
+     scanning it for them, but once a caller resolves the active branch only
+     that branch decides. */
+  const questionSource =
+    activeTail === undefined && Array.isArray(messagesOrMessage)
+      ? messagesOrMessage
+      : [resolvePauseSubject(messagesOrMessage, activeTail)].filter(
+          (message): message is TMessage => message != null,
+        );
+  return (
+    hasLiveToolApproval(messagesOrMessage, activeTail) ||
+    findLiveAskUserQuestion(questionSource) != null
+  );
 }
 
 export interface UseSteeringParams {
@@ -872,7 +903,7 @@ export default function useSteering({
    * to know a live generation exists so they remain discoverable and disabled
    * instead of looking as though the action disappeared. */
   const pausedOnApproval =
-    enabled && isSubmitting ? answerModeActive || (liveMessageState?.approval ?? false) : false;
+    enabled && isSubmitting ? answerModeActive || hasLiveRunPause(latestMessage) : false;
 
   /** Whether a steer can reach the live run right now, independent of the
    *  user's default action, so the per-send menu can always override to

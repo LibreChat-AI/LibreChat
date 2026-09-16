@@ -58,6 +58,8 @@ cache: true
 # File storage configuration
 # Single strategy for all file types (legacy format, still supported)
 # fileStrategy: "s3"
+# Maximum rows returned when GET /files receives an explicit `limit` query parameter.
+# fileListLimit: 100
 
 # Granular file storage strategies (new format - recommended)
 # Allows different storage strategies for different file types

@@ -10,13 +10,17 @@ import store from '~/store';
 
 const mockArmMutateAsync = jest.fn();
 const mockShowToast = jest.fn();
+type StartupConfigStub = { data?: { interface?: { steerArmConfirmationTimeoutMs?: number } } };
+const mockGetStartupConfig = jest.fn<StartupConfigStub, []>(() => ({ data: undefined }));
 
 jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
 jest.mock('~/data-provider', () => ({
+  DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS: 10_000,
   useArmSteerMutation: () => ({ mutateAsync: mockArmMutateAsync }),
+  useGetStartupConfig: () => mockGetStartupConfig(),
   supportsGenerationProtocolV2: (value: unknown) =>
     value != null &&
     typeof value === 'object' &&
@@ -77,6 +81,7 @@ describe('useSteerEscalate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     act(() => getDefaultStore().set(escalatingSteerFamily(CONVO_ID), false));
+    mockGetStartupConfig.mockReturnValue({ data: undefined });
   });
 
   afterEach(() => {
@@ -251,6 +256,38 @@ describe('useSteerEscalate', () => {
       }),
     );
     expect(result.current.steers[0]).not.toHaveProperty('preempt', true);
+  });
+
+  it('uses the configured arm confirmation timeout', async () => {
+    jest.useFakeTimers();
+    mockGetStartupConfig.mockReturnValue({
+      data: { interface: { steerArmConfirmationTimeoutMs: 20_000 } },
+    });
+    mockArmMutateAsync.mockReturnValue(new Promise(() => undefined));
+    const { result } = setup();
+
+    act(() => result.current.escalate({ steerId: 'steer-1' }));
+    expect(result.current.escalating).toBe(true);
+
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockShowToast).not.toHaveBeenCalled();
+    expect(result.current.escalating).toBe(true);
+
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_steer_arm_unconfirmed',
+      status: 'warning',
+    });
+    expect(result.current.escalating).toBe(false);
   });
 
   it('warns and unlocks when arm confirmation times out', async () => {

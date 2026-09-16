@@ -12,12 +12,13 @@ import {
 import type { TConversation, TFile, TMessage } from 'librechat-data-provider';
 import type { QueuedMessage } from '~/store/families';
 import type { ExtendedFile } from '~/common';
+import useSteering, { hasLiveRunPause, mergeQueuedTurnFileMetadata } from '../useSteering';
 import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
-import useSteering, { mergeQueuedTurnFileMetadata } from '../useSteering';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import { revealedQueuedTurnFamily } from '~/store/steer';
+import { applyPendingAction } from '~/utils/approval';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';
 
@@ -272,6 +273,76 @@ describe('useSteering', () => {
       expect(result.current.pausedOnApproval).toBe(true);
       expect(result.current.effectiveAction).toBe('queue');
       expect(result.current.canSteer).toBe(false);
+    });
+
+    it('applies pause predicates to the active branch tail only', () => {
+      const inactiveApproval = {
+        messageId: 'inactive-approval',
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'inactive-call',
+              name: 'shell',
+              approval: { actionId: 'inactive' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+      const activeNoPause = {
+        messageId: 'active-no-pause',
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+      expect(hasLiveRunPause([activeNoPause, inactiveApproval], activeNoPause)).toBe(false);
+
+      const activeApproval = {
+        messageId: 'active-approval',
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'active-call',
+              name: 'shell',
+              approval: { actionId: 'active' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+      const inactiveNoPause = {
+        messageId: 'inactive-no-pause',
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+      expect(hasLiveRunPause([activeApproval, inactiveNoPause], activeApproval)).toBe(true);
+      const questionAction = {
+        actionId: 'question',
+        streamId: 'question-stream',
+        createdAt: 0,
+        payload: { type: 'ask_user_question', question: { question: 'Which branch?' } },
+      } as unknown as Parameters<typeof applyPendingAction>[1];
+      const inactiveQuestion = applyPendingAction(
+        {
+          messageId: 'inactive-question',
+          isCreatedByUser: false,
+          content: [],
+        } as unknown as TMessage,
+        questionAction,
+      );
+      const activeQuestion = applyPendingAction(
+        {
+          messageId: 'active-question',
+          isCreatedByUser: false,
+          content: [],
+        } as unknown as TMessage,
+        questionAction,
+      );
+      expect(hasLiveRunPause([activeNoPause, inactiveQuestion], activeNoPause)).toBe(false);
+      expect(hasLiveRunPause([activeQuestion, inactiveNoPause], activeQuestion)).toBe(true);
     });
 
     it('queues during startup and exposes no live mutation until the generation epoch arrives', () => {

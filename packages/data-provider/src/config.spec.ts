@@ -6,7 +6,9 @@ import {
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
   configSchema,
+  DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
+  interfaceSchema,
   excludedKeys,
   DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
   DEFAULT_MCP_APP_PERSISTED_BYTES,
@@ -80,6 +82,35 @@ describe('repository instruction configuration', () => {
         agentsEndpointSchema.safeParse({ repositoryInstructions: { timeoutMs } }).success,
       ).toBe(false);
     }
+  });
+});
+
+describe('steer escalation confirmation timeout', () => {
+  it('defaults to the existing ten-second confirmation window', () => {
+    expect(interfaceSchema.parse({}).steerArmConfirmationTimeoutMs).toBe(
+      DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    );
+    expect(configSchema.parse({ version: '1.0' }).interface?.steerArmConfirmationTimeoutMs).toBe(
+      DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    );
+  });
+
+  it('accepts a configured confirmation window', () => {
+    expect(
+      configSchema.parse({
+        version: '1.0',
+        interface: { steerArmConfirmationTimeoutMs: 30_000 },
+      }).interface?.steerArmConfirmationTimeoutMs,
+    ).toBe(30_000);
+  });
+
+  it.each([0, -1, 1.5, 2_147_483_648, '30s'])('rejects invalid confirmation window %p', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        interface: { steerArmConfirmationTimeoutMs: value },
+      }).success,
+    ).toBe(false);
   });
 });
 

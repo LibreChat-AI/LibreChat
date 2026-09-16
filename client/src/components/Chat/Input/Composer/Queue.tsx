@@ -130,12 +130,12 @@ function QueueRow({
      only within their contiguous local segment; the client cannot persist a
      position change across an acknowledged row. */
   const canMoveTo = useCallback(
-    (target: number) => {
-      if (target < 0 || target >= total || target === index || message.server != null) {
+    (sourceIndex: number, target: number, sourceId: string) => {
+      if (target < 0 || target >= total || target === sourceIndex || serverOwnedIds.has(sourceId)) {
         return false;
       }
-      const start = Math.min(index, target);
-      const end = Math.max(index, target);
+      const start = Math.min(sourceIndex, target);
+      const end = Math.max(sourceIndex, target);
       for (let position = start; position <= end; position++) {
         if (serverOwnedIds.has(order[position])) {
           return false;
@@ -143,9 +143,10 @@ function QueueRow({
       }
       return true;
     },
-    [index, message.server, order, serverOwnedIds, total],
+    [order, serverOwnedIds, total],
   );
-  const reorderable = message.server == null && order.some((_id, target) => canMoveTo(target));
+  const reorderable =
+    message.server == null && order.some((_, target) => canMoveTo(index, target, message.id));
   /* HTML5 drag needs a hover-capable pointer; on touch it would take the
      gesture away from scrolling the rail. Arrow keys reorder either way. */
   const canDrag = useMediaQuery('(hover: hover)');
@@ -170,7 +171,7 @@ function QueueRow({
       if (item.index < index ? offset < middle : offset > middle) {
         return;
       }
-      if (!canMoveTo(index)) {
+      if (!canMoveTo(item.index, index, item.id)) {
         if (item.blockedTarget !== index) {
           refuseReorder();
           item.blockedTarget = index;
@@ -189,7 +190,7 @@ function QueueRow({
       if (target < 0 || target >= total) {
         return;
       }
-      if (!canMoveTo(target)) {
+      if (!canMoveTo(index, target, message.id)) {
         refuseReorder();
         return;
       }

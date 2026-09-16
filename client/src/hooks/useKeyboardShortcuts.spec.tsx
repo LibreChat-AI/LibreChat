@@ -680,6 +680,21 @@ describe('stop generating shortcut', () => {
     expect(first.onClick).not.toHaveBeenCalled();
   });
 
+  it('does nothing when focus is in an idle pane while another pane is generating', () => {
+    renderHarness();
+    const generating = appendComposerForm();
+    const idle = appendComposerForm();
+    generating.form.dataset.chatPane = '0';
+    idle.form.dataset.chatPane = '1';
+    idle.form.querySelector('[data-testid="stop-generation-button"]')?.remove();
+    idle.textarea.focus();
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true }, idle.textarea);
+
+    expect(generating.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it('does not prevent the event when nothing is generating', () => {
     renderHarness();
 

@@ -170,11 +170,6 @@ jest.mock('../ParallelContent', () => ({
   ),
 }));
 
-jest.mock('../Parts/PendingSteers', () => ({
-  __esModule: true,
-  default: () => <div data-testid="pending-steers" />,
-}));
-
 import ContentParts from '../ContentParts';
 
 const baseProps = {
@@ -974,30 +969,5 @@ describe('ContentParts: settled content identity across compaction', () => {
       'data-animate-entrance',
       'true',
     );
-  });
-});
-
-/* The pending block belongs to the latest reply. A late failed receipt can
-   arrive after submission state clears, and its recovery controls must remain. */
-describe('ContentParts: pending steers', () => {
-  const withGate = (over: Partial<typeof baseProps> & { conversationId?: string }) =>
-    render(<ContentParts {...baseProps} {...over} />);
-
-  it('shows them on the last message while a run is live', () => {
-    withGate({ isLast: true, isSubmitting: true, conversationId: 'convo-1' });
-    expect(screen.getByTestId('pending-steers')).toBeInTheDocument();
-  });
-
-  it('keeps late recovery controls on the last message after the run finishes', () => {
-    withGate({ isLast: true, isSubmitting: false, conversationId: 'convo-1' });
-    expect(screen.getByTestId('pending-steers')).toBeInTheDocument();
-  });
-
-  it.each([
-    ['an earlier message', { isLast: false, isSubmitting: true, conversationId: 'convo-1' }],
-    ['no conversation yet', { isLast: true, isSubmitting: true, conversationId: undefined }],
-  ])('shows nothing for %s', (_label, over) => {
-    withGate(over);
-    expect(screen.queryByTestId('pending-steers')).not.toBeInTheDocument();
   });
 });

@@ -341,6 +341,40 @@ describe('resolveReasoningSettingForTarget', () => {
       options: expect.arrayContaining(['low', 'high']),
     });
   });
+  it.each([
+    [
+      'effort',
+      { key: 'effort', type: 'enum', options: ['low', 'high'] } as Partial<SettingDefinition>,
+    ],
+    [
+      'thinkingLevel',
+      {
+        key: 'thinkingLevel',
+        type: 'enum',
+        options: ['low', 'high'],
+      } as Partial<SettingDefinition>,
+    ],
+    [
+      'thinkingBudget',
+      {
+        key: 'thinkingBudget',
+        type: 'number',
+        range: { min: 256, max: 32768, step: 128 },
+      } as Partial<SettingDefinition>,
+    ],
+  ])(
+    'appends the declared %s reasoning definition without a default parameter endpoint',
+    (key, definition) => {
+      const setting = resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.custom,
+        model: 'deployment-model',
+        paramDefinitions: [definition],
+      });
+
+      expect(setting?.key).toBe(key);
+      expect(setting).toMatchObject(definition);
+    },
+  );
 });
 
 describe('isReasoningOverrideSupported', () => {

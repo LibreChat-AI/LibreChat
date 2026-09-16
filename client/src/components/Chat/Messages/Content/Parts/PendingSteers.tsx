@@ -3,6 +3,8 @@ import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { TextQuote } from 'lucide-react';
 import { useToastContext } from '@librechat/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useSteerMoveToQueue } from '~/hooks/Chat/useSteerCancel';
 import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
@@ -11,6 +13,7 @@ import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { cn, isLegacyDeliveryUncertain } from '~/utils';
 import { escalatingSteerFamily } from '~/store/steer';
+import { useLatestMessage } from '~/hooks/Messages';
 import { useLocalize } from '~/hooks';
 import SteerPart from './SteerPart';
 import store from '~/store';
@@ -38,20 +41,29 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
   const moveToQueue = useSteerMoveToQueue(conversationId);
   const [movingId, setMovingId] = useState<string | null>(null);
   const escalating = useAtomValue(escalatingSteerFamily(conversationId));
-  /* Reads the cache the composer already populates, so the escalation control
-     is gated on the same pause the composer sees rather than round-tripping to
-     discover the run cannot accept an arm. The shared predicate covers a live
-     `ask_user_question` as well as an unresolved tool approval: both suspend
-     the generation while holding its submission slot, and gating on approvals
-     alone left this control enabled while the composer correctly refused.
-     Boolean `select` for the same reason the composer uses one: streaming
-     deltas must not re-render this row. */
-  const { data: paused } = useGetMessagesByConvoId<boolean>(conversationId, {
+  /* Resolve the cache to the branch the user is viewing before applying the
+     shared pause predicate. The cache contains every sibling branch, while
+     `useLatestMessage` follows the same selection state as the message view. */
+  const queryClient = useQueryClient();
+  const cachedMessages =
+    queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]) ?? [];
+  const latestMessage = useLatestMessage(0, conversationId);
+  const { data: fallbackPaused } = useGetMessagesByConvoId<boolean>(conversationId, {
     select: hasLiveRunPause,
   });
-  /* Only one interrupt can be unresolved at a time: a second arm would seal the
-     same run twice. The flag covers an arm's round trip, before its own chip
-     can report `preempt`. */
+  /* A one-message cache is necessarily the active branch. Until the
+     conversation atom reaches useLatestMessage, retain the query's established
+     single-branch result so a live question cannot re-enable escalation. */
+  const resolvePaused = (): boolean => {
+    if (cachedMessages.length > 1) {
+      return latestMessage != null && hasLiveRunPause(latestMessage);
+    }
+    if (fallbackPaused != null) {
+      return fallbackPaused;
+    }
+    return cachedMessages.length === 1 && hasLiveRunPause(cachedMessages[0]);
+  };
+  const paused = resolvePaused();
   const interruptPending = useMemo(
     () => escalating || steers.some((steer) => steer.preempt === true && steer.status !== 'failed'),
     [escalating, steers],

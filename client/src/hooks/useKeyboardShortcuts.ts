@@ -633,13 +633,11 @@ export function useShortcutActions(): ShortcutAction[] {
        slot, so typing a steer never costs the focused form its match. The
        document-wide fallback is for focus that sits outside any composer. */
     const focusedPane = getFocusedChatPane();
-    const scoped = focusedPane?.querySelector<HTMLElement>(
-      '[data-testid="stop-generation-button"]',
-    );
-    if (scoped != null) {
-      return clickTarget(scoped);
+    if (focusedPane == null) {
+      return clickElement('[data-testid="stop-generation-button"]');
     }
-    return clickElement('[data-testid="stop-generation-button"]');
+    const scoped = focusedPane.querySelector<HTMLElement>('[data-testid="stop-generation-button"]');
+    return scoped != null ? clickTarget(scoped) : false;
   }, [getFocusedChatPane]);
 
   const handleRegenerateResponse = useCallback(

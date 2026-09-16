@@ -14,6 +14,7 @@ import { MessagesViewProvider, useChatContext, useFileMapContext } from '~/Provi
 import { RowMountProvider, useProgressiveRowMount } from '~/hooks/Messages';
 import { useChatSurface } from '~/components/Chat/Subagents/surface';
 import useThreadRows from '~/hooks/Messages/useThreadRows';
+import PendingSteers from './Content/Parts/PendingSteers';
 import { autoScrollAtom } from '~/store/autoScroll';
 import { FLAT_THREAD, ThreadList } from './Thread';
 import { fontSizeAtom } from '~/store/fontSize';
@@ -183,7 +184,16 @@ function MessagesViewContent({
                   />
                 </>
               )}
-              <div id="messages-end" className="group h-0 w-full shrink-0" ref={messagesEndRef} />
+              {/** The pending surface is renderer-independent: both ThreadList
+               * and MultiMessage end at this shared thread tail. Keeping its
+               * mount here also preserves recovery controls when the message
+               * tree is temporarily empty during navigation or delivery. */}
+              {conversationId != null && <PendingSteers conversationId={conversationId} />}
+              <div
+                id="messages-end"
+                className="group h-0 w-full flex-shrink-0"
+                ref={messagesEndRef}
+              />
             </div>
           </div>
 

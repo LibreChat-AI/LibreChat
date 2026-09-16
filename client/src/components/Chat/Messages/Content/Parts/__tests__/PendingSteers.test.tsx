@@ -1,11 +1,14 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryKeys } from 'librechat-data-provider';
+import { Provider as JotaiProvider, createStore } from 'jotai';
+import { ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { Agents, TMessage } from 'librechat-data-provider';
+import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
 import type { PendingSteer } from '~/store/families';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
 import { applyPendingAction } from '~/utils/approval';
 import PendingSteers from '../PendingSteers';
 import store from '~/store';
@@ -54,10 +57,9 @@ const pending = (over: Partial<PendingSteer> = {}): PendingSteer => ({
   ...over,
 });
 
-function renderPending(steers: PendingSteer[], messages?: TMessage[]) {
-  /* The escalation control reads the message cache to gate on a run pause,
-     which is route-scoped: the same providers the chat view supplies around
-     this row in the app. */
+function renderPending(steers: PendingSteer[], messages?: TMessage[], activeSiblingIndex?: number) {
+  /* The escalation control resolves the cache through the branch-aware
+     latest-message hook, using the same providers the chat view supplies. */
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Infinity },
@@ -65,14 +67,23 @@ function renderPending(steers: PendingSteer[], messages?: TMessage[]) {
     },
   });
   queryClient.setQueryData([QueryKeys.messages, CONVO_ID], messages ?? []);
+  const jotaiStore = createStore();
+  if (activeSiblingIndex != null) {
+    jotaiStore.set(siblingIdxFamily(siblingKey('root-user')), activeSiblingIndex);
+  }
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <RecoilRoot
-          initializeState={({ set }) => set(store.pendingSteersByConvoId(CONVO_ID), steers)}
-        >
-          <PendingSteers conversationId={CONVO_ID} />
-        </RecoilRoot>
+        <JotaiProvider store={jotaiStore}>
+          <RecoilRoot
+            initializeState={({ set }) => {
+              set(store.conversationByIndex(0), { conversationId: CONVO_ID } as TConversation);
+              set(store.pendingSteersByConvoId(CONVO_ID), steers);
+            }}
+          >
+            <PendingSteers conversationId={CONVO_ID} />
+          </RecoilRoot>
+        </JotaiProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -222,11 +233,91 @@ describe('PendingSteers', () => {
         payload: { type: 'ask_user_question', question: { question: 'Which one?' } },
       } as unknown as Agents.PendingAction;
       const paused = applyPendingAction(
-        { messageId: 'm1', isCreatedByUser: false, content: [] } as unknown as TMessage,
+        {
+          messageId: 'm1',
+          parentMessageId: 'root-user',
+          conversationId: CONVO_ID,
+          isCreatedByUser: false,
+          content: [],
+        } as unknown as TMessage,
         askAction,
       );
-
+      expect(hasLiveRunPause([paused])).toBe(true);
       renderPending([pending({ status: 'pending', steerId: 's-paused' })], [paused]);
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    it('ignores a pause on an inactive sibling branch', () => {
+      const root = {
+        messageId: 'root-user',
+        parentMessageId: '',
+        conversationId: CONVO_ID,
+        isCreatedByUser: true,
+        content: [],
+      } as unknown as TMessage;
+      const active = {
+        messageId: 'active',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+      const inactive = {
+        messageId: 'inactive',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'inactive-call',
+              name: 'shell',
+              approval: { actionId: 'inactive' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+
+      renderPending([pending({ status: 'pending' })], [root, active, inactive], 1);
+      expect(screen.getByTestId('steer-escalate-now')).toBeEnabled();
+    });
+
+    it('disables escalation for a pause on the active sibling branch', () => {
+      const root = {
+        messageId: 'root-user',
+        parentMessageId: '',
+        conversationId: CONVO_ID,
+        isCreatedByUser: true,
+        content: [],
+      } as unknown as TMessage;
+      const active = {
+        messageId: 'active-approval',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'active-call',
+              name: 'shell',
+              approval: { actionId: 'active' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+      const inactive = {
+        messageId: 'inactive-no-pause',
+        parentMessageId: root.messageId,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+
+      renderPending([pending({ status: 'pending' })], [root, active, inactive], 1);
       expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
     });
 

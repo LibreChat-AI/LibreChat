@@ -36,6 +36,26 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.codeHighlightThrottleMs).toBe(100);
   });
 
+  it('uses and preserves the schema default for steer arm confirmation', async () => {
+    const configDefaults = getConfigDefaults();
+    const interfaceDefaults = {
+      ...configDefaults.interface,
+      steerArmConfirmationTimeoutMs: 10_000,
+    };
+    const defaults = { ...configDefaults, interface: interfaceDefaults };
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults: defaults,
+    });
+    expect(defaultInterface?.steerArmConfirmationTimeoutMs).toBe(10_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { steerArmConfirmationTimeoutMs: 30_000 } },
+      configDefaults: defaults,
+    });
+    expect(configuredInterface?.steerArmConfirmationTimeoutMs).toBe(30_000);
+  });
+
   it('preserves disabled URL auto-submit config', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {

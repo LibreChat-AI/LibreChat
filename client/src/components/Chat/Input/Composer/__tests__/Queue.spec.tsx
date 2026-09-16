@@ -567,15 +567,16 @@ describe('Queue', () => {
       const dt = dataTransfer();
 
       fireEvent.dragStart(grip, { dataTransfer: dt });
-      fireEvent.dragOver(secondRow, { dataTransfer: dt });
+      fireEvent.dragOver(secondRow, { dataTransfer: dt, clientY: 1 });
       if (drop) {
-        fireEvent.drop(secondRow, { dataTransfer: dt });
+        fireEvent.drop(secondRow, { dataTransfer: dt, clientY: 1 });
       }
       fireEvent.dragEnd(grip, { dataTransfer: dt });
     };
 
-    it('keeps the new order when the drag is dropped on the rail', () => {
+    it('reorders a local row when dragged onto another local row', () => {
       dragFirstRowOntoSecond(true);
+      expect(mockReorderQueued).toHaveBeenCalledWith('q1', 1);
       expect(mockRestoreQueuedOrder).not.toHaveBeenCalled();
     });
 
