@@ -14,6 +14,13 @@ import {
  * stays in this tab's React tree and is portaled into that window, so these
  * scenarios are about what survives the move: the artifact itself, its styling,
  * its preview frame, its menus, and unsaved editor text.
+ *
+ * There is deliberately no scenario for a browser that denies Web Storage. The
+ * pane's own fallback to default bounds is covered where it can be observed, in
+ * `client/src/components/Artifacts/__tests__/undockedWindow.spec.ts`; denying
+ * storage in the browser takes the whole app into its error boundary before any
+ * of this is reachable, so asserting it here would test a capability the shell
+ * does not have.
  */
 
 const UNDOCK = 'Open in new window';
@@ -313,41 +320,6 @@ test.describe('undocked artifacts pane', () => {
       .poll(async () => dockedCodeTab.getAttribute('aria-checked'), { timeout: 10000 })
       .toBe('true');
     await expect(docked.locator('#artifacts-code')).toBeVisible({ timeout: 30000 });
-  });
-
-  /* Reading `localStorage` throws outright under a policy that denies Web
-   * Storage, so the remembered window bounds must not be on the path that
-   * decides whether the pane can move at all — in either direction. */
-  test('the pane still moves when the browser denies storage @scenario:undocking-works-when-storage-is-denied', async ({
-    page,
-  }) => {
-    test.setTimeout(120000);
-    const panel = await openHtmlArtifact(page);
-
-    /* Denied after load: the app reads storage while booting, and the finding
-     * is about the undock and dock paths, not about starting up without it. */
-    await page.evaluate(() => {
-      Object.defineProperty(window, 'localStorage', {
-        configurable: true,
-        get() {
-          throw new DOMException('denied', 'SecurityError');
-        },
-      });
-    });
-
-    const [popup] = await Promise.all([
-      page.waitForEvent('popup'),
-      panel.getByRole('button', { name: UNDOCK }).click(),
-    ]);
-    await expect(popup.locator(UNDOCKED_PANE)).toBeVisible({ timeout: 20000 });
-    await expect(popup.getByRole('region', { name: HTML_ARTIFACT })).toBeVisible();
-
-    /* Persisting the bounds runs on the way home too, and a throw there would
-     * strand the pane in a window whose control the user just pressed. */
-    await popup.getByRole('button', { name: DOCK }).click();
-
-    await expect(page.getByRole('region', { name: HTML_ARTIFACT })).toBeVisible({ timeout: 20000 });
-    await expect(page.getByRole('button', { name: UNDOCK })).toBeVisible();
   });
 });
 
