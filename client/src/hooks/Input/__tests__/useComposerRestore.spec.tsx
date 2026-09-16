@@ -241,16 +241,27 @@ describe('useComposerRestore', () => {
       expect(currentText()).toBe('');
     });
 
-    it('restores attachments as already-uploaded entries', () => {
+    it('restores attachments as already-uploaded entries with delivery metadata', () => {
       const { result, setFiles } = setup();
       act(() => {
         result.current.editToComposer('with a file', [
-          { file_id: 'f9', filename: 'notes.pdf', filepath: '/f9', type: 'application/pdf' },
+          {
+            file_id: 'f9',
+            filename: 'notes.docx',
+            filepath: '/f9',
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            llmDeliveryPath: 'text',
+          },
         ]);
       });
       const next = setFiles.mock.calls[0][0](new Map()) as Map<string, ExtendedFile>;
       expect(next.get('f9')).toEqual(
-        expect.objectContaining({ file_id: 'f9', progress: 1, attached: true }),
+        expect.objectContaining({
+          file_id: 'f9',
+          progress: 1,
+          attached: true,
+          llmDeliveryPath: 'text',
+        }),
       );
     });
 

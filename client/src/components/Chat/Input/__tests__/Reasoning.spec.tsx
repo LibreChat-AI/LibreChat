@@ -1,10 +1,17 @@
+import { RecoilRoot } from 'recoil';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { Constants, ReasoningEffort } from 'librechat-data-provider';
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
+import type {
+  SettingDefinition,
+  TConversation,
+  TReasoningOverride,
+  TSubmission,
+} from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../Composer/state';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
+import store from '~/store';
 
 type MockEndpointConfig = {
   type?: string;
@@ -190,7 +197,9 @@ describe('useComposerReasoning', () => {
       reasoning_effort: ReasoningEffort.medium,
     } as TConversation;
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
     );
     const rendered = renderHook(
       ({
@@ -301,7 +310,9 @@ describe('useComposerReasoning', () => {
       reasoning_effort: ReasoningEffort.medium,
     } as TConversation;
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
     );
     type ReasoningProps = { activeConversation: TConversation };
     const primary = renderHook(
@@ -377,8 +388,16 @@ describe('useComposerReasoning', () => {
       model: 'gpt-5',
       reasoning_effort: ReasoningEffort.medium,
     } as TConversation;
+    const submission = {
+      conversation: { conversationId: Constants.NEW_CONVO },
+      userMessage: { conversationId: Constants.NEW_CONVO },
+    } as TSubmission;
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      <RecoilRoot
+        initializeState={(snapshot) => snapshot.set(store.submissionByIndex(0), submission)}
+      >
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
     );
     const rendered = renderHook(
       ({ activeConversation }: { activeConversation: TConversation }) =>
@@ -422,6 +441,53 @@ describe('useComposerReasoning', () => {
     expect(reasoningStore.get(pendingReasoningOverrideFamily(placeholderKey))).toBeUndefined();
   });
 
+  it('does not carry a new-chat selection into an unrelated conversation', async () => {
+    const reasoningStore = createStore();
+    const conversation = {
+      conversationId: Constants.NEW_CONVO,
+      endpoint: 'openAI',
+      model: 'gpt-5',
+      reasoning_effort: ReasoningEffort.medium,
+    } as TConversation;
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      ({ activeConversation }: { activeConversation: TConversation }) =>
+        useComposerReasoning({
+          conversation: activeConversation,
+          index: 0,
+          hasAddedConversation: false,
+          enabled: true,
+        }),
+      { initialProps: { activeConversation: conversation }, wrapper },
+    );
+    const placeholderKey = getReasoningStateKey(Constants.NEW_CONVO, 0);
+
+    act(() => {
+      rendered.result.current?.setValue({
+        key: 'reasoning_effort',
+        value: ReasoningEffort.high,
+      });
+    });
+
+    rendered.rerender({
+      activeConversation: { ...conversation, conversationId: 'unrelated-conversation' },
+    });
+
+    await waitFor(() =>
+      expect(
+        reasoningStore.get(pendingReasoningOverrideFamily('unrelated-conversation')),
+      ).toBeUndefined(),
+    );
+    expect(reasoningStore.get(pendingReasoningOverrideFamily(placeholderKey))).toEqual({
+      key: 'reasoning_effort',
+      value: ReasoningEffort.high,
+    });
+  });
+
   it('merges custom definitions and clears values removed by a capability change', async () => {
     mockEndpointsConfig = {
       custom: {
@@ -441,7 +507,9 @@ describe('useComposerReasoning', () => {
       model: 'gpt-5',
     } as TConversation;
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
     );
     const rendered = renderHook(
       () =>
@@ -489,17 +557,19 @@ describe('useComposerReasoning', () => {
   it('preserves restored reasoning while custom endpoint capabilities are loading', async () => {
     mockEndpointsConfig = undefined;
     const reasoningStore = createStore();
-    reasoningStore.set(pendingReasoningOverrideFamily('loading-reasoning-conversation'), {
-      key: 'reasoning_effort',
-      value: ReasoningEffort.high,
-    });
     const conversation = {
       conversationId: 'loading-reasoning-conversation',
       endpoint: 'custom',
       model: 'gpt-5',
     } as TConversation;
+    reasoningStore.set(pendingReasoningOverrideFamily('loading-reasoning-conversation'), {
+      key: 'reasoning_effort',
+      value: ReasoningEffort.high,
+    });
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
     );
     const rendered = renderHook(
       () =>
@@ -512,10 +582,7 @@ describe('useComposerReasoning', () => {
       { wrapper },
     );
 
-    expect(rendered.result.current?.value).toEqual({
-      key: 'reasoning_effort',
-      value: ReasoningEffort.high,
-    });
+    expect(rendered.result.current).toBeNull();
     expect(
       reasoningStore.get(pendingReasoningOverrideFamily('loading-reasoning-conversation')),
     ).toEqual({ key: 'reasoning_effort', value: ReasoningEffort.high });
@@ -528,7 +595,12 @@ describe('useComposerReasoning', () => {
     };
     rendered.rerender();
 
-    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('reasoning_effort'));
+    await waitFor(() =>
+      expect(rendered.result.current?.value).toEqual({
+        key: 'reasoning_effort',
+        value: ReasoningEffort.high,
+      }),
+    );
     expect(
       reasoningStore.get(pendingReasoningOverrideFamily('loading-reasoning-conversation')),
     ).toEqual({ key: 'reasoning_effort', value: ReasoningEffort.high });

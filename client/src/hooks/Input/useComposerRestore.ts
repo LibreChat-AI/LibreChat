@@ -122,6 +122,7 @@ export default function useComposerRestore({
               size: file.bytes ?? 0,
               progress: 1,
               attached: true,
+              llmDeliveryPath: file.llmDeliveryPath,
             });
           }
           return next;

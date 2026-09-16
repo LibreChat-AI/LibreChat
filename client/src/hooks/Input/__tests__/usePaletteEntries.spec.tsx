@@ -434,6 +434,25 @@ describe('usePaletteEntries', () => {
       expect(skillKeys('agent_1')).toEqual(['skill:s2']);
     });
 
+    it('lists nothing when a persisted agent explicitly disables its skill catalog', () => {
+      mockAgentsMap = {
+        agent_1: { skills_enabled: true, skills_scope: 'none', skills: ['s1', 's2'] },
+      };
+      expect(skillKeys('agent_1')).toEqual([]);
+    });
+
+    it('lists nothing for a selected catalog with no selected skills', () => {
+      mockAgentsMap = { agent_1: { skills_enabled: true, skills_scope: 'selected', skills: [] } };
+      expect(skillKeys('agent_1')).toEqual([]);
+    });
+
+    it('lists the whole catalog for an all-scoped agent despite stale stored skills', () => {
+      mockAgentsMap = {
+        agent_1: { skills_enabled: true, skills_scope: 'all', skills: ['stale-skill'] },
+      };
+      expect(skillKeys('agent_1')).toEqual(['skill:s1', 'skill:s2']);
+    });
+
     it('lists agent skills even when endpoint tools are hidden', () => {
       mockAgentsMap = { agent_1: { skills_enabled: true, skills: ['s2'] } };
       const { result } = renderHook(

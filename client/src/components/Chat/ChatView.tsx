@@ -22,6 +22,7 @@ import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
 import { composerLiftFamily } from './Input/Composer/state';
+import { showComposerTipsAtom } from '~/store/composerTips';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import Footer, { useConfiguredFooter } from './Footer';
 import { AskAnswerHostProvider } from './ask/state';
@@ -50,6 +51,7 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
   const rootSubmission = useRecoilValue(store.submissionByIndex(index));
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
   const saveDrafts = useRecoilValue(store.saveDrafts);
+  const showComposerTips = useAtomValue(showComposerTipsAtom);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const pendingAction = useAtomValue(
     pendingApprovalActionFamily(conversationId ?? Constants.NEW_CONVO),
@@ -222,6 +224,7 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                             placeholder={chatFormPlaceholder}
                             project={isProjectLandingPage ? project : undefined}
                             isLandingPage={isLandingPage}
+                            showComposerTips={showComposerTips}
                             footerBelow={footerBelow}
                             centerFormOnLanding={centerFormOnLanding}
                           />

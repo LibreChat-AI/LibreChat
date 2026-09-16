@@ -116,9 +116,6 @@ const localStorageAtoms = {
    * drawer covers the screen and the swipe closes it.
    */
   mobileDrawerStrip: atomWithLocalStorage('mobileDrawerStrip', false),
-  /** The line of keyboard hints under the composer. Off by default: it is
-   *  discovery copy, and the shortcuts it names stay available either way. */
-  showComposerTips: atomWithLocalStorage('showComposerTips', false),
   showFooter: atomWithLocalStorage('showFooter', true),
 
   // Commands settings

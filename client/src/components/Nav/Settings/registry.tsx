@@ -49,6 +49,7 @@ import { RevokeKeys } from '../SettingsTabs/Data/RevokeKeys';
 import { ClearChats } from '../SettingsTabs/Data/ClearChats';
 import { TokenCredits, AutoRefill } from './BillingControls';
 import AdminPanel from '../SettingsTabs/General/AdminPanel';
+import { showComposerTipsAtom } from '~/store/composerTips';
 import SharedLinks from '../SettingsTabs/Data/SharedLinks';
 import ImageResize from '../SettingsTabs/Chat/ImageResize';
 import Passkeys from '../SettingsTabs/Account/Passkeys';
@@ -152,7 +153,7 @@ export const registry: SettingEntry[] = [
     section: 'layout',
     labelKey: 'com_nav_composer_tips',
     Component: toggleControl({
-      stateAtom: store.showComposerTips,
+      stateAtom: showComposerTipsAtom,
       localizationKey: 'com_nav_composer_tips',
       switchId: 'showComposerTips',
     }),

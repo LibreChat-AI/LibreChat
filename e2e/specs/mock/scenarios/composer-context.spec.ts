@@ -28,7 +28,9 @@ async function uploadViaComposerPalette(
 ) {
   await page.getByRole('button', { name: 'Attach and tools' }).click();
   const palette = page.getByRole('dialog', { name: 'Attach and tools' });
-  const localUpload = palette.getByRole('button', { name: 'From Local Computer', exact: true });
+  const localUpload = palette.getByRole('button', {
+    name: /^(From Local Computer|Upload to Provider)$/,
+  });
   await expect(localUpload).toBeVisible();
 
   const [fileChooser] = await Promise.all([page.waitForEvent('filechooser'), localUpload.click()]);
@@ -151,16 +153,16 @@ test.describe('composer context', () => {
       // `effort` setting, so the composer renders the compact effort slider.
       await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-      const thinkingButton = page.getByRole('button', { name: /^Reasoning for next message/ });
+      const thinkingButton = page.getByRole('button', { name: /^Thinking: / });
       await expect(thinkingButton).toBeVisible();
       const resolvedDefaultLabel = await thinkingButton.getAttribute('aria-label');
       expect(resolvedDefaultLabel).toBeTruthy();
 
       await thinkingButton.click();
-      const thinkingDialog = page.getByRole('dialog', { name: 'Effort' });
+      const thinkingDialog = page.getByRole('dialog', { name: /^Thinking: / });
       await expect(thinkingDialog).toBeVisible();
-      const thinkingSlider = thinkingDialog.getByRole('slider');
-      await thinkingSlider.press('End');
+      const thinkingMax = thinkingDialog.getByRole('radio', { name: 'Max', exact: true });
+      await thinkingMax.click();
       await expect(thinkingButton).not.toHaveAttribute('aria-label', resolvedDefaultLabel!);
       await page.keyboard.press('Escape');
 

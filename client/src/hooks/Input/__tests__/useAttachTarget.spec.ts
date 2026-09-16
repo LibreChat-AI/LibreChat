@@ -126,9 +126,7 @@ describe('useAttachTarget', () => {
       );
     });
 
-    /* An explicit false on the conversation is a decision, not an absence, so
-       neither fallback may overwrite it. */
-    it('preserves an explicit false on the conversation', () => {
+    it('lets the saved agent override a copied conversation flag', () => {
       mockAgentsMap = { 'agent-1': { model_parameters: { useResponsesApi: true } } };
       mockFetchedAgent = { model_parameters: { useResponsesApi: true } };
       expect(
@@ -137,7 +135,7 @@ describe('useAttachTarget', () => {
           agent_id: 'agent-1',
           useResponsesApi: false,
         }).useResponsesApi,
-      ).toBe(false);
+      ).toBe(true);
     });
 
     it('passes the conversation flag straight through outside the agents endpoint', () => {

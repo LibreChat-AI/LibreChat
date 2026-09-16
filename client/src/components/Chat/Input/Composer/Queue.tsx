@@ -27,6 +27,8 @@ interface DragItem {
   index: number;
   /** The order the drag started from, so abandoning it puts things back. */
   order: string[];
+  /** Avoid repeating the same refusal while the pointer remains over a blocked row. */
+  blockedTarget?: number;
 }
 
 /** Restores a message's text into the composer, or refuses (false) when the
@@ -52,6 +54,8 @@ interface QueueRowProps {
   /** Every queued id in order, captured when a drag starts so abandoning it
    *  can put the queue back the way it was. */
   order: string[];
+  /** A server-owned row is a durable ordering boundary. */
+  serverOwnedIds: ReadonlySet<string>;
   steering: SteeringControls;
   conversationId: string;
   /** One interrupt at a time: an arm is already unresolved somewhere. */
@@ -90,6 +94,7 @@ function QueueRow({
   index,
   total,
   order,
+  serverOwnedIds,
   steering,
   conversationId,
   interruptPending,
@@ -121,12 +126,34 @@ function QueueRow({
   } else if (isUnconfirmed) {
     statusLabel = 'com_ui_steer_delivery_unconfirmed';
   }
-  /* The queue is sent in order, so one message cannot be ahead of or behind
-     itself: the handle only means something once there is somewhere to go. */
-  const reorderable = total > 1;
+  /* A server-owned row is a durable ordering boundary. Local rows may move
+     only within their contiguous local segment; the client cannot persist a
+     position change across an acknowledged row. */
+  const canMoveTo = useCallback(
+    (target: number) => {
+      if (target < 0 || target >= total || target === index || message.server != null) {
+        return false;
+      }
+      const start = Math.min(index, target);
+      const end = Math.max(index, target);
+      for (let position = start; position <= end; position++) {
+        if (serverOwnedIds.has(order[position])) {
+          return false;
+        }
+      }
+      return true;
+    },
+    [index, message.server, order, serverOwnedIds, total],
+  );
+  const reorderable = message.server == null && order.some((_id, target) => canMoveTo(target));
   /* HTML5 drag needs a hover-capable pointer; on touch it would take the
      gesture away from scrolling the rail. Arrow keys reorder either way. */
   const canDrag = useMediaQuery('(hover: hover)');
+  const refuseReorder = useCallback(() => {
+    const message = localize('com_ui_queue_reorder_blocked');
+    showToast({ message, status: 'warning' });
+    onAnnounce(message);
+  }, [localize, onAnnounce, showToast]);
 
   const [, drop] = useDrop<DragItem>({
     accept: DRAG_TYPE,
@@ -137,16 +164,43 @@ function QueueRow({
         return;
       }
       /* Swap on the crossing of the midpoint rather than on entry, so a row
-         does not flip back and forth under a pointer resting on its edge. */
+       * does not flip back and forth under a pointer resting on its edge. */
       const middle = (bounds.bottom - bounds.top) / 2;
       const offset = pointer.y - bounds.top;
       if (item.index < index ? offset < middle : offset > middle) {
         return;
       }
+      if (!canMoveTo(index)) {
+        if (item.blockedTarget !== index) {
+          refuseReorder();
+          item.blockedTarget = index;
+        }
+        return;
+      }
+      item.blockedTarget = undefined;
       reorderQueued(item.id, index);
       item.index = index;
     },
   });
+
+  const move = useCallback(
+    (offset: number) => {
+      const target = index + offset;
+      if (target < 0 || target >= total) {
+        return;
+      }
+      if (!canMoveTo(target)) {
+        refuseReorder();
+        return;
+      }
+      reorderQueued(message.id, target);
+      onAnnounce(localize('com_ui_queue_moved', { 0: String(target + 1), 1: String(total) }));
+      /* The row travels with its message, so the handle keeps the focus it
+       * had; the position it reports is what changed. */
+      gripRef.current?.focus();
+    },
+    [canMoveTo, index, total, reorderQueued, message.id, onAnnounce, localize, refuseReorder],
+  );
 
   const [{ isDragging }, drag] = useDrag({
     type: DRAG_TYPE,
@@ -162,22 +216,6 @@ function QueueRow({
       }
     },
   });
-
-  const move = useCallback(
-    (offset: number) => {
-      const target = index + offset;
-      if (!reorderable || target < 0 || target >= total) {
-        return;
-      }
-      reorderQueued(message.id, target);
-      onAnnounce(localize('com_ui_queue_moved', { 0: String(target + 1), 1: String(total) }));
-      /* The row travels with its message, so the handle keeps the focus it
-         had; the position it reports is what changed. */
-      gripRef.current?.focus();
-    },
-    [index, total, reorderable, reorderQueued, message.id, onAnnounce, localize],
-  );
-
   /* Edit and Remove both hand this row's words somewhere else across an await
      (discarding the parked server copy) and only drop the row afterwards. The
      run-end drain can land inside that gap and send the very message being
@@ -456,9 +494,11 @@ function QueueRow({
  * in Settings now; what stays on the row is only what acts on THAT message.
  *
  * The rail is also the running order: whatever sits at the top is what gets
- * sent when the reply lands, so rows can be dragged past one another by the
- * handle, or moved with the arrow keys while it holds focus. Only the drag is
- * pointer-bound, which is why the keys are on the handle rather than under it.
+ * sent when the reply lands, so local rows can be dragged past one another by
+ * the handle, or moved with the arrow keys while it holds focus. Acknowledged
+ * server rows are durable boundaries and cannot be crossed by either control.
+ * Only the drag is pointer-bound, which is why the keys are on the handle
+ * rather than under it.
  *
  * Send-now resolves itself: `sendQueuedNow` steers into the live reply when
  * the run accepts it, or sends right away once nothing is running. While a
@@ -491,6 +531,10 @@ function Queue({ steering, conversationId, onRestoreToComposer }: QueueProps) {
      narrating each one would be behind the pointer and in the way of it. */
   const [announcement, setAnnouncement] = useState('');
   const order = useMemo(() => queued.map((message) => message.id), [queued]);
+  const serverOwnedIds = useMemo(
+    () => new Set(queued.filter((message) => message.server != null).map((message) => message.id)),
+    [queued],
+  );
 
   /* Cleared when the rail empties or the conversation changes: the region is
      removed with the rail and re-inserted with its old text still in it, which
@@ -526,6 +570,7 @@ function Queue({ steering, conversationId, onRestoreToComposer }: QueueProps) {
             index={index}
             total={queued.length}
             order={order}
+            serverOwnedIds={serverOwnedIds}
             steering={steering}
             conversationId={conversationId}
             interruptPending={interruptPending}

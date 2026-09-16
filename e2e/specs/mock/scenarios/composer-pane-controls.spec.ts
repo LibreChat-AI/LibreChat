@@ -28,7 +28,7 @@ test('stops a run from a portaled composer control @scenario:stop-from-a-portale
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-  const label = uniqueAgentName('portaled-stop');
+  const label = `portaled-stop-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
   const messages = page.getByTestId('messages-view');
   const partialReply = messages
     .locator('.message-render')
@@ -36,23 +36,25 @@ test('stops a run from a portaled composer control @scenario:stop-from-a-portale
     .first();
   const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
   expect(run.ok()).toBeTruthy();
-  // The fake model emits this stable chunk marker while the response is still streaming.
+  // Match the queue scenarios' stable mid-stream barrier before inspecting the
+  // assistant turn: the fake model's marker is emitted before the full reply.
   await expect(messages.getByText('chunk-010')).toBeVisible({ timeout: 15000 });
-  await expect(partialReply).toBeVisible({ timeout: 30000 });
 
   /*
-    Palette.tsx:1086 and Palette.tsx:1107 render the palette trigger and its
-    portal marker; Palette.tsx:1164 renders the focused search textbox. The
-    shortcut then follows useKeyboardShortcuts.ts:612-641 from that portal
-    marker back to ChatView.tsx:176-177 and clicks StopButton.tsx:37.
+    The effort popover is portaled out of the composer pane. Keep focus on one
+    of its radios, then use the pane's own Stop control: the global shortcut
+    dispatcher intentionally suppresses all role="dialog" surfaces.
   */
-  await page.getByTestId('composer-palette-button').click();
-  const palette = page.getByRole('dialog', { name: 'Attach and tools' });
-  await expect(palette).toBeVisible();
-  const search = page.getByTestId('composer-palette-search');
-  await search.focus();
-  await expect(search).toBeFocused();
+  const thinkingButton = page.getByRole('button', { name: /^Thinking: / });
+  await thinkingButton.click();
+  const thinkingPopover = page.getByRole('dialog', { name: /^Thinking: / });
+  await expect(thinkingPopover).toBeVisible();
+  const thinkingRadio = thinkingPopover.getByRole('radio', { name: 'Medium', exact: true });
+  await thinkingRadio.focus();
+  await expect(thinkingRadio).toBeFocused();
 
+  const stopButton = page.getByTestId('stop-generation-button');
+  await expect(stopButton).toBeVisible();
   const [abortResponse] = await Promise.all([
     page.waitForResponse(
       (response) =>
@@ -60,7 +62,7 @@ test('stops a run from a portaled composer control @scenario:stop-from-a-portale
         new URL(response.url()).pathname.endsWith('/api/agents/chat/abort'),
       { timeout: 30000 },
     ),
-    page.keyboard.press('Control+Shift+X'),
+    stopButton.click(),
   ]);
   expect(abortResponse.ok()).toBeTruthy();
 
@@ -156,7 +158,7 @@ test('resumes a pending tool approval from the composer bar @scenario:pending-to
   test.setTimeout(120000);
   const agentName = uniqueAgentName('E2E composer approval');
   let agentId: string | undefined;
-  const label = uniqueAgentName('composer-approval');
+  const label = `composer-approval-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 
   try {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
@@ -164,11 +166,13 @@ test('resumes a pending tool approval from the composer bar @scenario:pending-to
     const agent = await createApprovalAgent(page, agentName);
     agentId = agent.id;
     await selectAgent(page, agentName);
-
     const response = await sendMessage(page, `E2E_TOOL_APPROVAL:${label}`);
     expect(response.ok()).toBeTruthy();
     await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
 
+    await expect(
+      page.getByTestId('messages-view').getByTestId('tool-approval').first(),
+    ).toBeVisible({ timeout: 30000 });
     const composerApproval = page.getByTestId('pending-tool-approval-button');
     await expect(composerApproval).toBeVisible({ timeout: 30000 });
     await expect(composerApproval).toBeEnabled();

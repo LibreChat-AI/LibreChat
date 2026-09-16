@@ -8,7 +8,7 @@ import {
   resolveDropParamsUIKeys,
 } from './parameterSettings';
 import { BedrockProviders, EModelEndpoint, Providers } from './types';
-import { ReasoningEffort } from './schemas';
+import { ReasoningEffort, ReasoningParameterFormat } from './schemas';
 
 const googleParams = paramSettings[EModelEndpoint.google] as SettingDefinition[];
 const anthropicParams = paramSettings[EModelEndpoint.anthropic] as SettingDefinition[];
@@ -281,6 +281,35 @@ describe('resolveReasoningSettingForTarget', () => {
         defaultParamsEndpoint: EModelEndpoint.anthropic,
       })?.key,
     ).toBe('effort');
+  });
+  it.each([EModelEndpoint.custom, Providers.OPENROUTER])(
+    'does not infer reasoning for an undeclared %s deployment',
+    (endpoint) => {
+      expect(
+        resolveReasoningSettingForTarget({
+          endpoint,
+          model: 'deployment-model',
+        }),
+      ).toBeUndefined();
+    },
+  );
+  it('honors an explicit reasoning format on a custom deployment', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.custom,
+        model: 'deployment-model',
+        reasoningFormat: ReasoningParameterFormat.reasoningObject,
+      })?.key,
+    ).toBe('reasoning_effort');
+  });
+  it('hides a custom deployment when its reasoning format is disabled', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.custom,
+        model: 'deployment-model',
+        reasoningFormat: ReasoningParameterFormat.disabled,
+      }),
+    ).toBeUndefined();
   });
 
   it('merges a deployment-owned reasoning definition into provider defaults', () => {

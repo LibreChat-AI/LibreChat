@@ -5,6 +5,7 @@ import {
   isAgentsEndpoint,
   isEphemeralAgentId,
   resolveEndpointType,
+  resolveUseResponsesApi,
   getEndpointFileConfig,
 } from 'librechat-data-provider';
 import type { TConversation, EModelEndpoint, EndpointFileConfig } from 'librechat-data-provider';
@@ -46,12 +47,13 @@ export default function useAttachTarget(
   });
 
   const useResponsesApi = useMemo(() => {
-    if (!isAgents || !conversation?.agent_id || conversation?.useResponsesApi !== undefined) {
+    if (!isAgents || !conversation?.agent_id) {
       return conversation?.useResponsesApi;
     }
-    return (
+    return resolveUseResponsesApi(
       agentData?.model_parameters?.useResponsesApi ??
-      agentsMap?.[conversation.agent_id]?.model_parameters?.useResponsesApi
+        agentsMap?.[conversation.agent_id]?.model_parameters?.useResponsesApi,
+      conversation?.useResponsesApi,
     );
   }, [isAgents, conversation?.agent_id, conversation?.useResponsesApi, agentData, agentsMap]);
 

@@ -237,6 +237,26 @@ describe('Queue', () => {
     expect(mockReorderQueued).toHaveBeenCalledWith('q2', 0);
   });
 
+  it('refuses to reorder across an acknowledged server-owned row', () => {
+    renderQueue([
+      queued({ id: 'q1' }),
+      queued({ id: 'server-q1', server: { id: 'server-q1', status: 'queued', revision: 1 } }),
+      queued({ id: 'q2' }),
+    ]);
+    const grips = screen.getAllByTestId('queued-message-grip');
+    expect(grips[0]).toHaveAttribute('aria-disabled', 'true');
+    expect(grips[1]).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.keyDown(grips[0], { key: 'ArrowDown' });
+    expect(mockReorderQueued).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'com_ui_queue_reorder_blocked',
+        status: 'warning',
+      }),
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_queue_reorder_blocked');
+  });
+
   it('refuses to move a message past either end of the queue', () => {
     renderQueue([queued({ id: 'q1' }), queued({ id: 'q2' })]);
     const grips = screen.getAllByTestId('queued-message-grip');
@@ -562,6 +582,29 @@ describe('Queue', () => {
     it('puts the order back when the drag is abandoned', () => {
       dragFirstRowOntoSecond(false);
       expect(mockRestoreQueuedOrder).toHaveBeenCalledWith(['q1', 'q2']);
+    });
+    it('refuses a pointer reorder onto a server-owned row', () => {
+      renderQueue([
+        queued({ id: 'q1' }),
+        queued({ id: 'q2' }),
+        queued({ id: 'server-q1', server: { id: 'server-q1', status: 'queued', revision: 1 } }),
+      ]);
+      const grip = screen.getAllByTestId('queued-message-grip')[0];
+      const serverRow = screen.getAllByTestId('queued-message-row')[2];
+      const dt = dataTransfer();
+
+      fireEvent.dragStart(grip, { dataTransfer: dt });
+      fireEvent.dragOver(serverRow, { dataTransfer: dt, clientY: 1 });
+      fireEvent.drop(serverRow, { dataTransfer: dt, clientY: 1 });
+      fireEvent.dragEnd(grip, { dataTransfer: dt });
+
+      expect(mockReorderQueued).not.toHaveBeenCalled();
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'com_ui_queue_reorder_blocked',
+          status: 'warning',
+        }),
+      );
     });
   });
 

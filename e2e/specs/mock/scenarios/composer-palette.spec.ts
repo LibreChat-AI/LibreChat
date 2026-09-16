@@ -189,6 +189,13 @@ test.describe('composer palette', () => {
 
     await page.keyboard.press('Escape');
     await expect(palette(page)).toBeHidden();
-    await expect(messageInput).toBeFocused();
+    const hasHoverPointer = await page.evaluate(() => matchMedia('(hover: hover)').matches);
+    if (hasHoverPointer) {
+      await expect(messageInput).toBeFocused();
+    } else {
+      /* Touch composers deliberately avoid reclaiming focus so closing the
+       * palette does not raise the on-screen keyboard again. */
+      await expect(messageInput).not.toBeFocused();
+    }
   });
 });

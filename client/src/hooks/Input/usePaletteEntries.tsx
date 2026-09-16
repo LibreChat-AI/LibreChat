@@ -16,8 +16,10 @@ import {
   Permissions,
   ArtifactModes,
   PermissionTypes,
+  SkillsScope,
   isEphemeralAgentId,
   defaultAgentCapabilities,
+  resolveAgentSkillsScope,
 } from 'librechat-data-provider';
 import type { TSkillSummary, TToolFavoriteType } from 'librechat-data-provider';
 import {
@@ -196,8 +198,9 @@ export default function usePaletteEntries({
   const allSkills = useAllSkills(skillsListable && catalogEnabled, catalogOpenRevision);
 
   /* Mirrors backend `resolveAgentScopedSkillIds`: ephemeral agents see the full
-     catalog; persisted agents gate on `skills_enabled` and fail closed while
-     `agentsMap` is hydrating or when the agent is missing from it. */
+     catalog; persisted agents gate on `skills_enabled` and the resolved scope,
+     and fail closed while `agentsMap` is hydrating or when the agent is missing
+     from it. */
   const agentSkillIds = useMemo<string[] | null | undefined>(() => {
     if (!agentId || isEphemeralAgentId(agentId)) {
       return undefined;
@@ -209,7 +212,14 @@ export default function usePaletteEntries({
     if (!agent || agent.skills_enabled !== true) {
       return [];
     }
-    return Array.isArray(agent.skills) && agent.skills.length > 0 ? agent.skills : undefined;
+    const scope = resolveAgentSkillsScope(agent.skills, agent.skills_enabled, agent.skills_scope);
+    if (scope === SkillsScope.none) {
+      return [];
+    }
+    if (scope === SkillsScope.all) {
+      return undefined;
+    }
+    return agent.skills ?? [];
   }, [agentId, agentsMap]);
 
   /* A toggle, like every other row: picking a skill used to be one-way, so the

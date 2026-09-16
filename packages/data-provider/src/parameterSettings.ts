@@ -19,9 +19,9 @@ import {
   BedrockProviders,
   anthropicSettings,
 } from './types';
+import { ReasoningParameterFormat, getModelKey, getSettingsKeys } from './schemas';
 import { isOpus55Model, supportsPromptCache, supportsAdaptiveThinking } from './bedrock';
 import { resolveEffectiveUseResponsesApi } from './file-config';
-import { getModelKey, getSettingsKeys } from './schemas';
 import { clampSettingRange } from './generate';
 
 // Base definitions
@@ -1324,6 +1324,20 @@ const findReasoningSetting = (
   key: ReasoningSettingKey,
 ): SettingDefinition | undefined => settings.find((setting) => setting.key === key);
 
+const knownReasoningProviderEndpoints: Record<string, true> = {
+  [EModelEndpoint.openAI]: true,
+  [EModelEndpoint.azureOpenAI]: true,
+  [EModelEndpoint.anthropic]: true,
+  [EModelEndpoint.bedrock]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}`]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.Moonshot}`]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.MoonshotAI}`]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.ZAI}`]: true,
+};
+
+const isKnownReasoningProvider = (endpoint?: string | null): boolean =>
+  endpoint != null && knownReasoningProviderEndpoints[endpoint] === true;
+
 const isKnownOpenAIReasoningModel = (model: string): boolean =>
   /(?:^|[/._-])(?:o[134](?:[-.]|$)|gpt[-.]?(?:[5-9]|\d{2,})(?:[-.]|$)|gpt[-.]?oss(?:[-.]|$))/i.test(
     model,
@@ -1397,27 +1411,45 @@ export function resolveReasoningSetting({
 }
 
 /** Builds the effective reasoning definition shared by the composer and the
- * server. Custom definitions refine the provider defaults instead of replacing
- * the rest of the settings list. */
+ * server. Custom definitions refine provider defaults instead of replacing the
+ * rest of the settings list; generic custom/OpenRouter targets require an
+ * explicit reasoning declaration before their shared settings can be consulted. */
 export function resolveReasoningSettingForTarget({
   endpoint,
   model,
   isAgent = false,
   defaultParamsEndpoint,
+  reasoningFormat,
   paramDefinitions,
 }: {
   endpoint: string;
   model?: string | null;
   isAgent?: boolean;
   defaultParamsEndpoint?: string | null;
+  reasoningFormat?: ReasoningParameterFormat | null;
   paramDefinitions?: Partial<SettingDefinition>[] | null;
 }): SettingDefinition | undefined {
-  if (!model) {
+  if (!model || reasoningFormat === ReasoningParameterFormat.disabled) {
+    return undefined;
+  }
+  const [combinedSettingsKey, endpointSettingsKey] = getSettingsKeys(endpoint, model);
+  const effectiveDefaultParamsEndpoint = defaultParamsEndpoint ?? endpointSettingsKey;
+
+  const hasExplicitCapability =
+    (paramDefinitions?.some((setting) =>
+      reasoningSettingKeys.includes(setting.key as ReasoningSettingKey),
+    ) ??
+      false) ||
+    reasoningFormat != null ||
+    isKnownReasoningProvider(effectiveDefaultParamsEndpoint);
+  const usesGenericSettings =
+    endpoint === EModelEndpoint.custom ||
+    endpoint === Providers.OPENROUTER ||
+    paramSettings[endpoint] == null;
+  if (usesGenericSettings && !hasExplicitCapability) {
     return undefined;
   }
 
-  const [combinedSettingsKey, endpointSettingsKey] = getSettingsKeys(endpoint, model);
-  const effectiveDefaultParamsEndpoint = defaultParamsEndpoint ?? endpointSettingsKey;
   const baseSettings = isAgent
     ? (agentParamSettings[combinedSettingsKey] ??
       agentParamSettings[effectiveDefaultParamsEndpoint] ??
@@ -1441,8 +1473,11 @@ export function resolveReasoningSettingForTarget({
       return override == null ? setting : { ...setting, ...override };
     },
   );
+  const resolutionEndpoint = isKnownReasoningProvider(effectiveDefaultParamsEndpoint)
+    ? effectiveDefaultParamsEndpoint
+    : endpoint;
 
-  return resolveReasoningSetting({ endpoint, model, settings });
+  return resolveReasoningSetting({ endpoint: resolutionEndpoint, model, settings });
 }
 
 /** Confirms that a stored one-shot override still belongs to the selected

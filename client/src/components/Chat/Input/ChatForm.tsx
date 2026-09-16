@@ -99,6 +99,8 @@ interface ChatFormProps {
   /** Owned by ChatView: which layout the composer sits in — the welcome screen
    *  floats or bottoms it out, a conversation ends the page with it. */
   isLandingPage: boolean;
+  /** Owned by the host: the persisted preference for showing keyboard hints. */
+  showComposerTips: boolean;
   /** Owned by the host: the app-level preference for where the welcome-screen
    *  composer sits. The chat feature only consumes it. */
   centerFormOnLanding: boolean;
@@ -142,6 +144,7 @@ const ChatForm = memo(function ChatForm({
   placeholder,
   project,
   isLandingPage,
+  showComposerTips,
   footerBelow,
   centerFormOnLanding,
   files,
@@ -175,7 +178,6 @@ const ChatForm = memo(function ChatForm({
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const TextToSpeech = useRecoilValue(store.textToSpeech);
   const enterToSend = useRecoilValue(store.enterToSend);
-  const showComposerTips = useRecoilValue(store.showComposerTips);
   const chatDirection = useRecoilValue(store.chatDirection);
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
@@ -957,12 +959,14 @@ function ChatFormWrapper({
   placeholder,
   project,
   isLandingPage,
+  showComposerTips,
   footerBelow,
   centerFormOnLanding,
 }: {
   index?: number;
   placeholder?: string;
   project?: TChatProject;
+  showComposerTips: boolean;
   isLandingPage: boolean;
   footerBelow: boolean;
   centerFormOnLanding: boolean;
@@ -1029,6 +1033,7 @@ function ChatFormWrapper({
   return (
     <ChatForm
       index={index}
+      showComposerTips={showComposerTips}
       placeholder={placeholder}
       project={project}
       isLandingPage={isLandingPage}

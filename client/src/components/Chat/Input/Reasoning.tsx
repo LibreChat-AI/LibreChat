@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useRecoilValue } from 'recoil';
 import { useAtom, useStore } from 'jotai';
 import * as Popover from '@radix-ui/react-popover';
 import { Button, Input, Slider } from '@librechat/client';
@@ -25,6 +26,7 @@ import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
 import { useAgentsMapContext } from '~/Providers';
 import { formatTokens } from '~/utils';
 import { useLocalize } from '~/hooks';
+import store from '~/store';
 
 type ReasoningControlProps = {
   index: number;
@@ -266,19 +268,34 @@ export function useComposerReasoning({
   const [value, setValue] = useAtom(pendingReasoningOverrideFamily(reasoningStateKey));
   const reasoningStore = useStore();
   const placeholderStateKey = getReasoningStateKey(null, index);
+  const submission = useRecoilValue(store.submissionByIndex(index));
+  const submissionConversationId =
+    submission?.conversation?.conversationId ?? submission?.userMessage?.conversationId;
+  const submittedConversationRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (submission?.userMessage == null) {
+      submittedConversationRef.current = null;
+      return;
+    }
+    submittedConversationRef.current = getReasoningStateKey(submissionConversationId, index);
+  }, [index, submission, submissionConversationId]);
+  const previousStateKey = useRef(reasoningStateKey);
 
   /* A new chat holds its selection under the placeholder key until the
-     `created`/`sync` event assigns a durable id. The pane and the target are
-     unchanged across that transition, so the pending value moves with the id
-     instead of being orphaned under a key nothing reads again — otherwise the
-     control silently reverts to the default and the next turn loses the level
-     the user picked. Declared before the cleanup effect below so the moved
-     value is in place before that effect judges it. */
-  const previousStateKey = useRef(reasoningStateKey);
+     `created`/`sync` event assigns a durable id. Only migrate while this pane
+     still has the live submission that started under that placeholder (or a
+     submission already stamped with the incoming id); navigation clears or
+     replaces the pane submission, so it cannot move a new-chat choice into an
+     unrelated conversation. Declared before the cleanup effect below so the
+     moved value is in place before that effect judges it. */
   useEffect(() => {
     const previous = previousStateKey.current;
     previousStateKey.current = reasoningStateKey;
-    if (previous === reasoningStateKey || previous !== placeholderStateKey) {
+    const hasLiveSubmission =
+      submission?.userMessage != null &&
+      (submissionConversationId === conversationId ||
+        submittedConversationRef.current === placeholderStateKey);
+    if (previous === reasoningStateKey || previous !== placeholderStateKey || !hasLiveSubmission) {
       return;
     }
     const pending = reasoningStore.get(pendingReasoningOverrideFamily(previous));
@@ -291,7 +308,14 @@ export function useComposerReasoning({
     if (reasoningStore.get(pendingReasoningOverrideFamily(reasoningStateKey)) == null) {
       reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), pending);
     }
-  }, [placeholderStateKey, reasoningStateKey, reasoningStore]);
+  }, [
+    conversationId,
+    placeholderStateKey,
+    reasoningStateKey,
+    reasoningStore,
+    submission,
+    submissionConversationId,
+  ]);
   const endpoint = conversation?.endpointType ?? conversation?.endpoint ?? '';
   const agent = (fetchedAgent ?? agentsMap?.[conversation?.agent_id ?? '']) as Agent | undefined;
   const isAgent = isAgentsEndpoint(endpoint);
@@ -306,6 +330,7 @@ export function useComposerReasoning({
       model,
       isAgent,
       defaultParamsEndpoint: customParams.defaultParamsEndpoint,
+      reasoningFormat: customParams.reasoningFormat,
       paramDefinitions: customParams.paramDefinitions,
     });
   }, [endpointType, endpointsConfig, isAgent, model, provider]);

@@ -10,7 +10,6 @@ import {
   QueryKeys,
   ContentTypes,
   EModelEndpoint,
-  ReasoningParameterFormat,
   getEndpointField,
   isAgentsEndpoint,
   parseCompactConvo,
@@ -513,14 +512,14 @@ export default function useChatFunctions({
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
       const supportedSetting =
-        effectiveEndpoint == null ||
-        customParams?.reasoningFormat === ReasoningParameterFormat.disabled
+        effectiveEndpoint == null
           ? undefined
           : resolveReasoningSettingForTarget({
               endpoint: effectiveEndpointType ?? effectiveEndpoint,
               model: effectiveModel,
               isAgent,
               defaultParamsEndpoint: customParams?.defaultParamsEndpoint,
+              reasoningFormat: customParams?.reasoningFormat,
               paramDefinitions: customParams?.paramDefinitions,
             });
       if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
