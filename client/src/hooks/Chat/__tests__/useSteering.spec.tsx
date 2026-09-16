@@ -1,7 +1,7 @@
 import React from 'react';
-import { getDefaultStore, Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
+import { getDefaultStore, Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
 import {
   Constants,
   ContentTypes,
@@ -12,11 +12,11 @@ import {
 import type { TConversation, TFile, TMessage } from 'librechat-data-provider';
 import type { QueuedMessage } from '~/store/families';
 import type { ExtendedFile } from '~/common';
-import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
 import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
+import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
-import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import useSteering, { mergeQueuedTurnFileMetadata } from '../useSteering';
+import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';

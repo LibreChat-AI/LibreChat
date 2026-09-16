@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import type { ComposerItem } from '~/hooks/Input/useComposerItems';
 import type { ExtendedFile } from '~/common';
 import Tray from '../Tray';
@@ -101,15 +101,14 @@ describe('Tray', () => {
     const focusComposer = jest.fn();
     const remove = jest.fn();
     renderTray(
-      [
-        item({ id: 'quote:0', remove }),
-        item({ id: 'quote:1', label: 'another excerpt' }),
-      ],
+      [item({ id: 'quote:0', remove }), item({ id: 'quote:1', label: 'another excerpt' })],
       new Map(),
       focusComposer,
     );
 
-    fireEvent.click(screen.getByLabelText('com_ui_remove_quote'));
+    fireEvent.click(
+      within(screen.getAllByTestId('composer-chip-quote')[0]).getByLabelText('com_ui_remove_quote'),
+    );
     expect(remove).toHaveBeenCalledTimes(1);
     expect(focusComposer).toHaveBeenCalledTimes(1);
   });

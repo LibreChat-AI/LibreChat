@@ -4,14 +4,14 @@ import {
   Constants,
   mergeFileConfig,
   isAgentsEndpoint,
+  isEphemeralAgentId,
   getEndpointFileConfig,
   defaultAgentCapabilities,
 } from 'librechat-data-provider';
 import type { EToolResources } from 'librechat-data-provider';
+import { getViableUploadOptions, getUploadToolAllowances, isUnifiedUploadMode } from '~/utils';
 import useAgentToolPermissions from '~/hooks/Agents/useAgentToolPermissions';
-import { getViableUploadOptions, getUploadToolAllowances } from '~/utils';
 import useAgentCapabilities from '~/hooks/Agents/useAgentCapabilities';
-import { getViableUploadOptions, isUnifiedUploadMode } from '~/utils';
 import useGetAgentsConfig from '~/hooks/Agents/useGetAgentsConfig';
 import { useGetFileConfig } from '~/data-provider';
 import { ephemeralAgentByConvoId } from '~/store';
@@ -42,6 +42,9 @@ export default function useUploadOptions() {
   const isConfigPending = !isFileConfigLoaded && !isFileConfigError && !isFileConfigPaused;
 
   const { fileSearchAllowedByAgent, codeAllowedByAgent } = getUploadToolAllowances(agentId, tools);
+  /* Same predicate `getUploadToolAllowances` applies internally: only a saved
+     agent has a provider to wait for below. */
+  const isSavedAgent = agentId != null && agentId !== '' && !isEphemeralAgentId(agentId);
 
   /* An agent conversation carries endpoint `agents`, but its file policy belongs to the
    * provider it runs on, which is the entry a named custom endpoint configures. Resolved

@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { composerSubmitClasses, IconButton, TooltipAnchor } from '@librechat/client';
-import { cn } from '~/utils';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 export default memo(function StopButton({
   stop,

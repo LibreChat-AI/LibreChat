@@ -1,6 +1,12 @@
-import { Provider as JotaiProvider, createStore, getDefaultStore } from 'jotai';
 import { renderHook, act } from '@testing-library/react';
-import { Constants, ContentTypes, EModelEndpoint, QueryKeys, createPayload } from 'librechat-data-provider';
+import { Provider as JotaiProvider, createStore } from 'jotai';
+import {
+  Constants,
+  ContentTypes,
+  EModelEndpoint,
+  QueryKeys,
+  createPayload,
+} from 'librechat-data-provider';
 import type {
   Agent,
   CodeEnvironmentMode,
@@ -188,7 +194,6 @@ describe('useChatFunctions ask', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockAgentQueryData.current = undefined;
-    mockGetQueryData.mockReturnValue({});
     mockGetLatestConversation.mockReturnValue(null);
     mockResolveCodeWorkspaceSubmission.mockReturnValue({});
   });
@@ -268,7 +273,8 @@ describe('useChatFunctions ask', () => {
 
   it('refuses every direct send before consuming composer context during handoff', () => {
     const family = revealedQueuedTurnFamily('conversation-1');
-    getDefaultStore().set(family, {
+    const { result, setSubmission, getMessages, reasoningStore } = renderAsk([]);
+    reasoningStore.set(family, {
       clientRequestId: 'queued',
       parentMessageId: 'response',
       generationCreatedAt: 41,
@@ -276,7 +282,6 @@ describe('useChatFunctions ask', () => {
       revealedAt: new Date().toISOString(),
     });
     try {
-      const { result, setSubmission, getMessages } = renderAsk([]);
       expect(result.current.ask({ text: 'direct' })).toBe(false);
       expect(
         result.current.ask({ text: 'rerun', parentMessageId: 'earlier' }, { isRegenerate: true }),
@@ -286,7 +291,7 @@ describe('useChatFunctions ask', () => {
       expect(setSubmission).not.toHaveBeenCalled();
       expect(mockSetFilesToDelete).not.toHaveBeenCalled();
     } finally {
-      getDefaultStore().set(family, null);
+      reasoningStore.set(family, null);
     }
   });
 

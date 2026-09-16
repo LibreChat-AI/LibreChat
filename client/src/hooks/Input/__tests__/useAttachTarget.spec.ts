@@ -202,9 +202,11 @@ describe('useAttachTarget', () => {
     });
 
     it('withholds uploads for a saved agent until its provider is known', () => {
-      mockAgentsMap = { 'agent-1': { model_parameters: {} } };
+      mockAgentsMap = { agent_1: { model_parameters: {} } };
       mockFetchedAgent = undefined;
-      expect(target({ endpoint: EModelEndpoint.agents, agent_id: 'agent-1' }).canAttach).toBe(false);
+      expect(target({ endpoint: EModelEndpoint.agents, agent_id: 'agent_1' }).canAttach).toBe(
+        false,
+      );
     });
 
     it('does not wait for provider metadata on an ephemeral agent', () => {

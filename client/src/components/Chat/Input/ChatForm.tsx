@@ -51,7 +51,6 @@ import DuringRunSendButton from './DuringRunSendButton';
 import ProjectLandingChip from '../ProjectLandingChip';
 import useDictation from '~/hooks/Input/useDictation';
 import { useGetStartupConfig } from '~/data-provider';
-import { mainTextareaId } from '~/common';
 import CodeWorkspaceMenu from './CodeWorkspaceMenu';
 import useSteering from '~/hooks/Chat/useSteering';
 import CodeApprovalMenu from './CodeApprovalMenu';
@@ -61,6 +60,7 @@ import { submitFromComposer } from './submit';
 import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
 import Waveform from './Composer/Waveform';
+import { mainTextareaId } from '~/common';
 import CollapseChat from './CollapseChat';
 import QuoteButton from './QuoteButton';
 import ToolDialogs from './ToolDialogs';
@@ -682,7 +682,7 @@ const ChatForm = memo(function ChatForm({
           min-content width, and one long unbroken word in a queued message
           propagates all the way up here: the composer stretched past the
           thread and its chips ran off the side. Zeroing it lets the width come
-          from the form, so the chips inside truncate instead. */
+          from the form, so the chips inside truncate instead. */}
       <div className="relative flex h-full min-w-0 flex-1 items-stretch md:flex-col">
         {/* Primary composer owns the selection popup so split-view doesn't double it. */}
         {index === 0 && quotesEnabled && <QuoteButton conversationId={conversationId} />}

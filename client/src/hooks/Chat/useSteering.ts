@@ -1348,18 +1348,13 @@ export default function useSteering({
     [],
   );
 
-  /** Consumes the composer's autosaved draft once its text has been taken into
-   *  a steer or queued item. The composer clears via the form's `reset()`,
-   *  which is programmatic and never fires the `input` event `useAutoSave`
-   *  listens on, so the draft would outlive the submit. It is keyed under
-   *  this pane's pending draft key here (every caller is gated on
-   *  `duringRunActive`, which requires `isSubmitting` and rules out the
-   *  answer-mode draft key), and run end migrates a surviving pending draft
-   *  onto the conversation and restores it, resurfacing text the user already
-   *  sent. */
-  const takeComposerDraft = useCallback(() => {
-    clearAllDrafts(getPendingDraftId(index));
-  }, [index]);
+  /* The draft consumer is the host's (`useAutoSave`'s `consumeDraft`, threaded
+     in as `takeComposerDraft`): the composer clears via the form's `reset()`,
+     which is programmatic and never fires the `input` event `useAutoSave`
+     listens on, so the draft would otherwise outlive the submit and run end
+     would restore text the user already sent. Only autosave knows whether this
+     composer is parked on the pane's pending key or on the conversation key, so
+     the clear belongs there rather than being recomputed here. */
   const removeQueued = useRecoilCallback(
     ({ set }) =>
       (id: string) => {

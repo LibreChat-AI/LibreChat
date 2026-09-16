@@ -1,4 +1,3 @@
-import copy from 'copy-to-clipboard';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -6,6 +5,7 @@ import { render, act, cleanup, renderHook, fireEvent, screen } from '@testing-li
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
+import type * as ReasoningModule from '~/components/Chat/Input/Reasoning';
 import useKeyboardShortcuts, {
   isOverridden,
   effectiveBinding,
@@ -17,13 +17,48 @@ import useKeyboardShortcuts, {
   useShortcutAriaKey,
 } from './useKeyboardShortcuts';
 import { ReasoningControl } from '~/components/Chat/Input/Reasoning';
+import Thinking from '~/components/Chat/Input/Composer/Thinking';
 import store from '~/store';
+
+/** `copy-to-clipboard` exports a single callable: `copy(text, options?)`. */
+const mockCopy = jest.fn((_text: string, _options?: { format?: string }) => true);
+
+jest.mock('~/components/Chat/Input/Reasoning', () => ({
+  __esModule: true,
+  ReasoningControl: jest.requireActual<typeof ReasoningModule>('~/components/Chat/Input/Reasoning')
+    .ReasoningControl,
+  useComposerReasoning: () => ({
+    setting: {
+      key: 'reasoning_effort',
+      type: 'enum',
+      default: 'low',
+      options: ['auto', 'low', 'high'],
+    } as SettingDefinition,
+    value: { key: 'reasoning_effort', value: 'low' },
+    setValue: jest.fn(),
+  }),
+}));
+
+jest.mock('~/data-provider/Endpoints/queries', () => ({
+  ...jest.requireActual('~/data-provider/Endpoints/queries'),
+  useGetStartupConfig: () => ({ data: { interface: { parameters: true } } }),
+}));
+
+jest.mock('~/Providers', () => ({
+  useChatContext: () => ({
+    conversation: { conversationId: 'test-convo', endpoint: 'openAI', model: 'gpt-4o' },
+  }),
+}));
+
+jest.mock('~/hooks/Generic/useReducedMotion', () => ({
+  __esModule: true,
+  default: () => true,
+}));
 
 jest.mock('copy-to-clipboard', () => ({
   __esModule: true,
-  default: jest.fn(() => true),
+  default: (text: string, options?: { format?: string }) => mockCopy(text, options),
 }));
-
 jest.mock('./useNewConvo', () => ({
   __esModule: true,
   default: () => ({ newConversation: jest.fn() }),
@@ -88,7 +123,7 @@ function renderHarness(
 beforeEach(() => {
   queryClient = new QueryClient();
   window.localStorage.clear();
-  copyMock.mockClear();
+  mockCopy.mockClear();
 });
 
 afterEach(() => {
@@ -517,7 +552,7 @@ describe('clipboard shortcuts', () => {
 
     expect(firstCopy).not.toHaveBeenCalled();
     expect(secondCopy).toHaveBeenCalledTimes(1);
-    expect(copyMock).not.toHaveBeenCalled();
+    expect(mockCopy).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(true);
   });
 
@@ -527,7 +562,7 @@ describe('clipboard shortcuts', () => {
 
     const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
 
-    expect(copyMock).toHaveBeenCalledWith('const x = 1;', { format: 'text/plain' });
+    expect(mockCopy).toHaveBeenCalledWith('const x = 1;', { format: 'text/plain' });
     expect(event.defaultPrevented).toBe(true);
   });
 
@@ -536,7 +571,7 @@ describe('clipboard shortcuts', () => {
 
     const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
 
-    expect(copyMock).not.toHaveBeenCalled();
+    expect(mockCopy).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
 });
@@ -618,6 +653,30 @@ describe('stop generating shortcut', () => {
     }
 
     expect(second.onClick).toHaveBeenCalledTimes(2);
+    expect(first.onClick).not.toHaveBeenCalled();
+  });
+  it('stops only the secondary pane from its thinking effort radios', () => {
+    let stop: (() => boolean | void) | undefined;
+    function EnumThinking() {
+      stop = useShortcutActions().find((action) => action.id === 'stopGenerating')?.run;
+      return <Thinking index={1} disabled={false} hasAddedConversation={false} />;
+    }
+
+    renderHarness(undefined, '/c/test-convo', undefined, <EnumThinking />);
+    const first = appendComposerForm();
+    const second = appendComposerForm();
+    first.form.dataset.chatPane = '0';
+    second.form.dataset.chatPane = '1';
+
+    fireEvent.click(screen.getByRole('button', { name: /thinking/i }));
+    const effort = screen.getByRole('radio', { name: 'Low' });
+    effort.focus();
+
+    act(() => {
+      expect(stop?.()).toBe(true);
+    });
+
+    expect(second.onClick).toHaveBeenCalledTimes(1);
     expect(first.onClick).not.toHaveBeenCalled();
   });
 

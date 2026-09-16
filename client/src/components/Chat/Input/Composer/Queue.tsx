@@ -3,13 +3,19 @@ import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useDrag, useDrop } from 'react-dnd';
 import { X, Pencil, TextQuote, TriangleAlert, GripVertical, Clock } from 'lucide-react';
-import { Button, IconButton, TooltipAnchor, useMediaQuery, useToastContext } from '@librechat/client';
+import {
+  Button,
+  IconButton,
+  TooltipAnchor,
+  useMediaQuery,
+  useToastContext,
+} from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { SteeringControls, QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/store/families';
+import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
-import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';

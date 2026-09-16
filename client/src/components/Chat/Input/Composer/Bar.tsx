@@ -23,7 +23,13 @@ const EMPTY_ENTRIES: PaletteEntry[] = [];
 
 /** Matches the rows' `gap-1.5`, which the split arithmetic has to account for. */
 const CHIP_GAP = 6;
-const PINNED_MCP_KEY = 'mcp:pinned';
+/**
+ * Key of the aggregate MCP menu chip. Server rows are keyed `mcp:${serverName}`
+ * (`usePaletteEntries`), so this cannot live in that namespace: a server named
+ * `pinned` would produce the same key, and the bar would render two entries
+ * with one React key and one packing-width slot.
+ */
+export const PINNED_MCP_KEY = 'aggregate:mcp';
 
 /**
  * Whether every chip fits on the button row beside the `+` and the controls.

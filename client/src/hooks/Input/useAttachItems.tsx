@@ -376,6 +376,10 @@ export default function useAttachItems({
     endpoint,
     provider,
     endpointType,
+    /* Read inside `onSelect` (line 294): a config change that alters the
+       explicit MIME allowlist has to rebuild these rows, or the click still
+       requests the previous upload type. */
+    endpointFileConfig?.supportedMimeTypes,
     codeEnabled,
     contextEnabled,
     fileSearchEnabled,

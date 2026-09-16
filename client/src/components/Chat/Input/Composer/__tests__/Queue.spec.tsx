@@ -8,9 +8,9 @@ import { act, render, screen, within, fireEvent } from '@testing-library/react';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/store/families';
 import { hasQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import Queue from '../Queue';
 import store from '~/store';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) => {
     if (!options) {
@@ -590,7 +590,9 @@ describe('Queue', () => {
     const rows = screen.getAllByTestId('queued-message-row');
     expect(screen.getAllByRole('img', { name: 'com_ui_steer_queued_info' })).toHaveLength(2);
     rows.forEach((row) => {
-      expect(within(row).getByRole('img', { name: 'com_ui_steer_queued_info' })).toBeInTheDocument();
+      expect(
+        within(row).getByRole('img', { name: 'com_ui_steer_queued_info' }),
+      ).toBeInTheDocument();
     });
     expect(screen.queryByTestId('queued-caption')).not.toBeInTheDocument();
   });

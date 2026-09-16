@@ -125,7 +125,8 @@ function Harness() {
 function renderComposer({
   submitting = false,
   quotes = [],
-}: { submitting?: boolean; quotes?: string[] } = {}) {
+  speechSettingsInitialized = false,
+}: { submitting?: boolean; quotes?: string[]; speechSettingsInitialized?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -143,6 +144,7 @@ function renderComposer({
       <RecoilRoot
         initializeState={({ set }) => {
           set(store.isSubmittingFamily(0), submitting);
+          set(store.speechSettingsInitialized, speechSettingsInitialized);
           set(store.pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
         }}
       >
@@ -194,6 +196,18 @@ describe('ChatForm attachments', () => {
       llmDeliveryPath: 'text',
     });
   });
+
+  test('keeps the mic disabled until speech settings hydrate', async () => {
+    const pending = renderComposer({ speechSettingsInitialized: false });
+    const micName = 'Use microphone';
+
+    expect(await screen.findByRole('button', { name: micName })).toBeDisabled();
+
+    pending.unmount();
+    renderComposer({ speechSettingsInitialized: true });
+
+    expect(await screen.findByRole('button', { name: micName })).toBeEnabled();
+  }, 20000);
 
   test('re-enables send once an attachment finishes uploading', async () => {
     const { container } = renderComposer();

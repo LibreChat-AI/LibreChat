@@ -50,8 +50,8 @@ import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedRespons
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
-import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import { activeUsageResponseIdFamily } from '~/store/usage';
 import { revealedQueuedTurnFamily } from '~/store/steer';

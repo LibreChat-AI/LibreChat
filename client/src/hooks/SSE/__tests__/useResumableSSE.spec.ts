@@ -19,8 +19,8 @@ import {
   pendingUsageFamily,
   removeUsageAtoms,
 } from '~/store/usage';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import type { PendingSteer } from '~/store/families';
+import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;
 
