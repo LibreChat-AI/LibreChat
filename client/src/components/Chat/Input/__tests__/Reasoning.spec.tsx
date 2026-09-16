@@ -565,12 +565,14 @@ describe('useComposerReasoning', () => {
       },
     };
     const reasoningStore = createStore();
+    /* A named custom endpoint: the label is not an `EModelEndpoint` member, which
+       is exactly the shape this case is about. */
     const conversation = {
       conversationId: 'mock-provider-conversation',
       endpoint: 'Mock Provider A',
       endpointType: 'custom',
       model: 'mock-model-a',
-    } as TConversation;
+    } as unknown as TConversation;
     const wrapper = ({ children }: { children: ReactNode }) => (
       <RecoilRoot>
         <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>

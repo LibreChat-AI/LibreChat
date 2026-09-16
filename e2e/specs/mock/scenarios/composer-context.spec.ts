@@ -171,9 +171,9 @@ test.describe('composer context', () => {
       );
       await sendMessageAndWaitForCompletion(page, 'E2E first scoped thinking turn');
       const firstBody = (await firstRequestPromise).postDataJSON() as {
-        userMessage?: { reasoningOverride?: { key?: string; value?: string } };
+        reasoningOverride?: { key?: string; value?: string };
       };
-      expect(firstBody.userMessage?.reasoningOverride).toEqual(
+      expect(firstBody.reasoningOverride).toEqual(
         expect.objectContaining({ key: 'effort', value: 'max' }),
       );
       await expect(thinkingButton).toHaveAttribute('aria-label', resolvedDefaultLabel!);
@@ -183,9 +183,9 @@ test.describe('composer context', () => {
       );
       await sendMessageAndWaitForCompletion(page, 'E2E second default thinking turn');
       const secondBody = (await secondRequestPromise).postDataJSON() as {
-        userMessage?: { reasoningOverride?: unknown };
+        reasoningOverride?: unknown;
       };
-      expect(secondBody.userMessage?.reasoningOverride).toBeUndefined();
+      expect(secondBody.reasoningOverride).toBeUndefined();
       await expect(thinkingButton).toHaveAttribute('aria-label', resolvedDefaultLabel!);
     } finally {
       await cleanupConversation(page);

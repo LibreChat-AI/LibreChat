@@ -494,7 +494,9 @@ describe('useChatFunctions ask', () => {
     };
     const override = { key: 'effort', value: 'high' } as TReasoningOverride;
     const { result, setSubmission } = renderAsk([], 'mock-provider-conversation', {
-      endpoint: 'Mock Provider A',
+      /* The lab's endpoint is a named custom endpoint, so its label is not an
+         `EModelEndpoint` member; that is the configuration under test. */
+      endpoint: 'Mock Provider A' as TConversation['endpoint'],
       model: 'mock-model-a',
       reasoningOverride: override,
     });
