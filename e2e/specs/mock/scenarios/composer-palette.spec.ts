@@ -72,10 +72,14 @@ test.describe('composer palette', () => {
       await expect(mcpSection).toBeVisible();
     }
 
-    await expect(page.getByRole('button', { name: 'Tools Options', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('dialog', { name: 'Select Upload Type', exact: true })).toHaveCount(
-      0,
-    );
+    /* Removed redesign surfaces must be absent from the active palette, not merely
+       absent under a legacy test id. */
+    await expect(
+      palette(page).getByRole('button', { name: 'Tools Options', exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole('dialog', { name: 'Select Upload Type', exact: true }),
+    ).toHaveCount(0);
     await expect(page.getByRole('menu')).toHaveCount(0);
   });
 

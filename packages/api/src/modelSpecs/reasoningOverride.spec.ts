@@ -35,10 +35,6 @@ const resolve = async (
     },
   });
 
-const expectInvalid = (result: ReasoningOverrideResult) => {
-  expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
-};
-
 describe('resolveReasoningOverride', () => {
   it('applies a supported override and records the existing value', async () => {
     const result = await resolve();
@@ -62,7 +58,7 @@ describe('resolveReasoningOverride', () => {
       reasoningOverride: { key: 'effort', value: AnthropicEffort.high },
     });
 
-    expectInvalid(result);
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
   });
 
   it.each([
@@ -99,7 +95,7 @@ describe('resolveReasoningOverride', () => {
       },
     });
 
-    expectInvalid(result);
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
   });
 
   it('rejects overrides for custom endpoints that disable reasoning parameters', async () => {
@@ -120,7 +116,7 @@ describe('resolveReasoningOverride', () => {
       },
     });
 
-    expectInvalid(result);
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
   });
 
   it.each([
@@ -176,12 +172,40 @@ describe('resolveReasoningOverride', () => {
       modelParameters: { effort: 'high' },
     });
   });
+  it('accepts the effort level advertised by a non-agent custom endpoint', async () => {
+    const result = await resolve({
+      endpoint: 'Mock Provider A',
+      endpointType: EModelEndpoint.custom,
+      parsedModel: 'mock-model-a',
+      isAgent: false,
+      reasoningOverride: { key: 'effort', value: AnthropicEffort.high },
+      endpointOption: {
+        endpointType: EModelEndpoint.custom,
+        model_parameters: { model: 'mock-model-a' },
+      },
+      endpointsConfig: {
+        'Mock Provider A': {
+          order: 0,
+          type: EModelEndpoint.custom,
+          customParams: {
+            defaultParamsEndpoint: EModelEndpoint.anthropic,
+            paramDefinitions: [{ key: 'effort' }],
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      modelParameters: { model: 'mock-model-a', effort: AnthropicEffort.high, thinking: true },
+    });
+  });
 
   it('rejects an override for a field owned by an enforced model spec', async () => {
     const result = await resolve({
       enforcedModelSpecFields: new Set(['reasoning_effort']),
     });
 
-    expectInvalid(result);
+    expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
   });
 });

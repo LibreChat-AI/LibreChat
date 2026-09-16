@@ -554,6 +554,46 @@ describe('useComposerReasoning', () => {
     );
   });
 
+  it('exposes the declared effort control for the mock custom endpoint', () => {
+    mockEndpointsConfig = {
+      'Mock Provider A': {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'anthropic',
+          paramDefinitions: [{ key: 'effort' } as SettingDefinition],
+        },
+      },
+    };
+    const reasoningStore = createStore();
+    const conversation = {
+      conversationId: 'mock-provider-conversation',
+      endpoint: 'Mock Provider A',
+      endpointType: 'custom',
+      model: 'mock-model-a',
+    } as TConversation;
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation,
+          index: 0,
+          hasAddedConversation: false,
+          enabled: true,
+        }),
+      { wrapper },
+    );
+
+    expect(rendered.result.current?.setting).toMatchObject({
+      key: 'effort',
+      options: expect.arrayContaining(['low', 'high']),
+    });
+  });
+
   it('preserves restored reasoning while custom endpoint capabilities are loading', async () => {
     mockEndpointsConfig = undefined;
     const reasoningStore = createStore();

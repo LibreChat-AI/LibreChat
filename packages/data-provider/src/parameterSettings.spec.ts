@@ -327,6 +327,20 @@ describe('resolveReasoningSettingForTarget', () => {
       })?.options,
     ).toEqual(['low', 'high']);
   });
+
+  it('resolves the declared effort control for a custom endpoint using Anthropic defaults', () => {
+    const setting = resolveReasoningSettingForTarget({
+      endpoint: EModelEndpoint.custom,
+      model: 'mock-model-a',
+      defaultParamsEndpoint: EModelEndpoint.anthropic,
+      paramDefinitions: [{ key: 'effort' }],
+    });
+
+    expect(setting).toMatchObject({
+      key: 'effort',
+      options: expect.arrayContaining(['low', 'high']),
+    });
+  });
 });
 
 describe('isReasoningOverrideSupported', () => {

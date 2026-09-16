@@ -21,10 +21,10 @@ import {
  *
  * Two trigger points are covered end to end (real backend + DB + provisioning HTTP):
  *
- * - Immediate (legacy dropdown, Mock Provider A): choosing "Upload to Code
+ * - Immediate (legacy destination rows, Mock Provider A): choosing "Upload to Code
  *   Environment" / "Upload for File Search" provisions at upload time
  *   (`uploadCodeEnvFile` / `uploadVectors`).
- * - Lazy (unified button, Mock Provider B): a plain attachment routes to `none` and
+ * - Lazy (unified palette source row, Mock Provider B): a plain attachment routes to `none` and
  *   is NOT provisioned at upload; it is uploaded to the code env / embedded only
  *   when a tool that needs it runs (`provisionFiles` at ON_TOOL_EXECUTE). This is the
  *   headline behavior — "all uploaded files available to the tool at execute time".
@@ -33,14 +33,14 @@ import {
  * actually reached the target env, independent of the deferred DB write.
  */
 
-test.describe('file provisioning — immediate (legacy dropdown)', () => {
+test.describe('file provisioning — immediate (legacy destination rows)', () => {
   test('"Upload to Code Environment" provisions the file to the code env', async ({ page }) => {
     test.setTimeout(120000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await resetProvisioning(page);
-    // The legacy "Upload to Code Environment" option only appears once the
-    // ephemeral execute_code capability is enabled.
+    // The Code Environment destination row appears once the ephemeral
+    // execute_code capability is enabled.
     await enableCodeInterpreter(page);
 
     const fileName = `${uniqueName('code')}.csv`;
@@ -64,7 +64,7 @@ test.describe('file provisioning — immediate (legacy dropdown)', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
     await resetProvisioning(page);
-    // The legacy "Upload for File Search" option only appears once the ephemeral
+    // The File Search destination row appears once the ephemeral
     // file_search capability is enabled.
     await enableFileSearch(page);
 

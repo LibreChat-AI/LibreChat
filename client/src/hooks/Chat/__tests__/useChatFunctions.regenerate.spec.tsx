@@ -32,9 +32,16 @@ const mockSetFilesToDelete = jest.fn();
 const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockAgentQueryData: { current?: Agent } = {};
-const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) =>
-  queryKey[0] === QueryKeys.agent ? mockAgentQueryData.current : {},
-);
+const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
+const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
+  if (queryKey[0] === QueryKeys.agent) {
+    return mockAgentQueryData.current;
+  }
+  if (queryKey[0] === QueryKeys.endpoints) {
+    return mockEndpointsQueryData.current ?? {};
+  }
+  return {};
+});
 const mockLoggerWarn = jest.fn();
 const mockGetLatestConversation = jest.fn(() => null as TConversation | null);
 const mockResolveCodeWorkspaceSubmission = jest.fn<
@@ -154,6 +161,7 @@ function renderAsk(
   conversationId = 'conversation-1',
   options: {
     endpoint?: TConversation['endpoint'];
+    model?: string;
     isSubmitting?: boolean;
     reasoningOverride?: TReasoningOverride;
     agentId?: string;
@@ -165,6 +173,9 @@ function renderAsk(
   const immutableConversation = conversation(conversationId);
   if ('endpoint' in options) {
     immutableConversation.endpoint = options.endpoint ?? null;
+  }
+  if (options.model != null) {
+    immutableConversation.model = options.model;
   }
   if (options.agentId != null) {
     immutableConversation.agent_id = options.agentId;
@@ -192,6 +203,7 @@ function renderAsk(
 
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
+    mockEndpointsQueryData.current = undefined;
     jest.clearAllMocks();
     mockAgentQueryData.current = undefined;
     mockGetLatestConversation.mockReturnValue(null);
@@ -470,6 +482,31 @@ describe('useChatFunctions ask', () => {
     expect(submission.userMessage.reasoningOverride).toEqual(override);
     expect(reasoningStore.get(pendingReasoningOverrideFamily('conversation-1'))).toBeUndefined();
   });
+  it('submits the declared effort override for the mock custom endpoint', () => {
+    mockEndpointsQueryData.current = {
+      'Mock Provider A': {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'anthropic',
+          paramDefinitions: [{ key: 'effort' }],
+        },
+      },
+    };
+    const override = { key: 'effort', value: 'high' } as TReasoningOverride;
+    const { result, setSubmission } = renderAsk([], 'mock-provider-conversation', {
+      endpoint: 'Mock Provider A',
+      model: 'mock-model-a',
+      reasoningOverride: override,
+    });
+
+    act(() => {
+      result.current.ask({ text: 'Think with effort' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.reasoningOverride).toEqual(override);
+  });
+
   it('uses hydrated per-agent query data when the agent catalog is unavailable', () => {
     const agentId = 'agent-uncatalogued';
     const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;

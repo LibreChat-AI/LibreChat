@@ -455,12 +455,18 @@ export function waitForUpload(page: Page) {
   });
 }
 
-/** Attach a file via the unified single button (no tool resource). */
+/** Attach a file through the palette's implicit local/provider source row. */
 export async function uploadViaUnifiedButton(page: Page, file: AttachFile) {
   const uploadResponse = waitForUpload(page);
+  await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools', exact: true });
+  const sourceRow = palette.getByRole('button', {
+    name: /^(From Local Computer|Upload to Provider)$/,
+  });
+  await expect(sourceRow).toBeVisible();
   const [fileChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.locator('#attach-file-button').click(),
+    sourceRow.click(),
   ]);
   await fileChooser.setFiles({
     name: file.name,
@@ -470,13 +476,40 @@ export async function uploadViaUnifiedButton(page: Page, file: AttachFile) {
   return uploadResponse;
 }
 
-/** Attach a file via a named option in the legacy 3-way dropdown. */
+const legacyDestinationRows: Record<string, { key: string; label: string }> = {
+  'Upload to Code Environment': {
+    key: 'local:execute_code',
+    label: 'Upload to Code Environment',
+  },
+  'Upload for File Search': {
+    key: 'local:file_search',
+    label: 'Upload for File Search',
+  },
+};
+
+/** Attach through a named legacy destination row in the composer palette. */
 export async function uploadViaLegacyOption(page: Page, optionName: string, file: AttachFile) {
+  const destination = legacyDestinationRows[optionName];
+  if (destination == null) {
+    throw new Error(`Unsupported legacy upload destination: ${optionName}`);
+  }
+
   const uploadResponse = waitForUpload(page);
-  await page.locator('#attach-file-menu-button').click();
+  await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools', exact: true });
+  const moreOptions = palette.getByRole('button', { name: 'More upload options', exact: true });
+  await expect(moreOptions).toBeVisible();
+  await moreOptions.click();
+  const destinationRow = palette
+    .locator(`[data-row-key="${destination.key}"]`)
+    .getByRole('button', {
+      name: destination.label,
+      exact: true,
+    });
+  await expect(destinationRow).toBeVisible();
   const [fileChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('menuitem', { name: optionName }).click(),
+    destinationRow.click(),
   ]);
   await fileChooser.setFiles({
     name: file.name,
