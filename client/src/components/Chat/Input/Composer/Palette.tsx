@@ -1111,9 +1111,25 @@ function Palette({
             ref={popoverRef}
             unmountOnHide
             initialFocus={inputRef}
+            /* Ariakit otherwise restores focus to the disclosure, leaving the
+               composer inert after Escape, an outside click, or a terminal
+               upload row. Keep touch users from getting a summoned keyboard,
+               but return keyboard users to the message field for every close
+               path through the popover itself. */
+            autoFocusOnHide={false}
+            onClose={() => {
+              if (window.matchMedia('(pointer: coarse)').matches) {
+                return;
+              }
+              window.requestAnimationFrame(() => {
+                anchorRef.current
+                  ?.querySelector<HTMLElement>('[data-testid="text-input"]')
+                  ?.focus();
+              });
+            }}
             /* Without this the trigger could not close the palette: mousedown on
-               it counts as "outside", so Ariakit hid the popup and the button's
-               own click immediately re-opened it. */
+             * it counts as "outside", so Ariakit hid the popup and the button's
+             * own click immediately re-opened it. */
             hideOnInteractOutside={(event) =>
               !disclosureRef.current?.contains(event.target as Node)
             }
