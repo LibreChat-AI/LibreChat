@@ -1,0 +1,191 @@
+import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import {
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  getAccessToken,
+  requestJson,
+  selectMockEndpoint,
+} from '../helpers';
+
+const PALETTE_NAME = 'Attach and tools';
+const SEARCH_NAME = 'Search tools, skills and servers';
+const FAVORITE_SECTION = 'Favorites';
+const TOOL_FAVORITE_PATH = '/api/user/settings/favorites/tools/builtin/execute_code';
+
+const paletteButton = (page: Page) => page.getByRole('button', { name: PALETTE_NAME });
+const palette = (page: Page) => page.getByRole('dialog', { name: PALETTE_NAME });
+const paletteRows = (page: Page) => palette(page).locator('[data-row-key]');
+const paletteSearch = (page: Page) =>
+  palette(page).getByRole('combobox', { name: SEARCH_NAME, exact: true });
+
+async function openPalette(page: Page) {
+  await expect(paletteButton(page)).toBeVisible();
+  await paletteButton(page).click();
+  await expect(palette(page)).toBeVisible();
+  await expect(paletteSearch(page)).toBeVisible();
+}
+
+async function selectMockChat(page: Page) {
+  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+  await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+  await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
+}
+
+test.describe('composer palette', () => {
+  test('opens one searchable catalog with attach and tool sections @scenario:palette-opens-one-searchable-catalog', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await selectMockChat(page);
+    await openPalette(page);
+
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(
+      palette(page).getByRole('columnheader', { name: 'Attach', exact: true }),
+    ).toBeVisible();
+    await expect(
+      palette(page).getByRole('columnheader', { name: 'Tools', exact: true }),
+    ).toBeVisible();
+    await expect(
+      palette(page).getByRole('button', { name: 'Upload to Provider', exact: true }),
+    ).toBeVisible();
+    await expect(
+      palette(page).getByRole('button', { name: 'Run Code', exact: true }),
+    ).toBeVisible();
+    await expect(
+      palette(page).getByRole('button', { name: 'File Search', exact: true }),
+    ).toBeVisible();
+
+    /* Skills and MCP sections depend on the permissions and catalog state supplied
+       by the deployment. When present, they are rows in this same dialog rather
+       than separate surfaces. */
+    const skillsSection = palette(page).getByRole('columnheader', { name: 'Skills', exact: true });
+    if ((await skillsSection.count()) > 0) {
+      await expect(skillsSection).toBeVisible();
+    }
+    const mcpSection = palette(page).getByRole('columnheader', {
+      name: 'MCP Servers',
+      exact: true,
+    });
+    if ((await mcpSection.count()) > 0) {
+      await expect(mcpSection).toBeVisible();
+    }
+
+    await expect(page.getByRole('button', { name: 'Tools Options', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Select Upload Type', exact: true })).toHaveCount(
+      0,
+    );
+    await expect(page.getByRole('menu')).toHaveCount(0);
+  });
+
+  test('search narrows the visible rows and clearing restores the catalog @scenario:palette-search-narrows-to-matching-rows', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await selectMockChat(page);
+    await openPalette(page);
+
+    const rows = paletteRows(page);
+    const fullCatalogCount = await rows.count();
+    expect(fullCatalogCount).toBeGreaterThan(3);
+
+    await paletteSearch(page).fill('Run Code');
+    await expect(
+      palette(page).getByRole('button', { name: 'Run Code', exact: true }),
+    ).toBeVisible();
+    await expect(
+      palette(page).getByRole('button', { name: 'File Search', exact: true }),
+    ).toHaveCount(0);
+    await expect.poll(() => rows.count()).toBeLessThan(fullCatalogCount);
+
+    await paletteSearch(page).fill('');
+    await expect.poll(() => rows.count()).toBe(fullCatalogCount);
+    await expect(
+      palette(page).getByRole('button', { name: 'File Search', exact: true }),
+    ).toBeVisible();
+  });
+
+  test('favourited palette row moves to favourites and persists after reload @scenario:favourited-palette-row-moves-to-favourites-and-persists', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await selectMockChat(page);
+    const token = await getAccessToken(page);
+
+    /* The shared e2e user may retain state from a prior interrupted run. Remove
+       this one known row first, then prove the UI's own write survives reload. */
+    await requestJson(page, { path: TOOL_FAVORITE_PATH, token, method: 'DELETE' });
+
+    try {
+      await page.reload({ timeout: 10000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      await openPalette(page);
+      await paletteSearch(page).fill('Run Code');
+
+      const runCode = palette(page).getByRole('button', { name: 'Run Code', exact: true });
+      await expect(runCode).toBeVisible();
+      await page.keyboard.press('Control+d');
+
+      await expect(
+        palette(page).getByRole('button', { name: 'Remove from favorites', exact: true }),
+      ).toBeVisible();
+      await expect(
+        palette(page).getByRole('button', { name: 'Run Code, Favorites', exact: true }),
+      ).toBeVisible();
+      await paletteSearch(page).fill('');
+      await expect(
+        palette(page).getByRole('columnheader', { name: FAVORITE_SECTION, exact: true }),
+      ).toBeVisible();
+      await expect(
+        palette(page).getByRole('button', { name: 'Run Code, Favorites', exact: true }),
+      ).toBeVisible();
+
+      await page.reload({ timeout: 10000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      await openPalette(page);
+      await expect(
+        palette(page).getByRole('columnheader', { name: FAVORITE_SECTION, exact: true }),
+      ).toBeVisible();
+      await expect(
+        palette(page).getByRole('button', { name: 'Run Code, Favorites', exact: true }),
+      ).toBeVisible();
+    } finally {
+      await requestJson(page, { path: TOOL_FAVORITE_PATH, token, method: 'DELETE' });
+    }
+  });
+
+  test('palette is operable from the keyboard alone @scenario:palette-is-operable-from-the-keyboard-alone', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await selectMockChat(page);
+
+    const messageInput = page.getByRole('textbox', { name: 'Message input' });
+    await messageInput.focus();
+    await expect(messageInput).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(paletteButton(page)).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    await expect(palette(page)).toBeVisible();
+    await expect(paletteSearch(page)).toBeFocused();
+    await page.keyboard.type('search');
+    const initialActive = await paletteSearch(page).getAttribute('aria-activedescendant');
+    await page.keyboard.press('ArrowDown');
+    const movedActive = await paletteSearch(page).getAttribute('aria-activedescendant');
+    expect(movedActive).not.toBe(initialActive);
+    await page.keyboard.press('Enter');
+
+    await expect(
+      palette(page).getByRole('button', { name: 'File Search', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await expect(
+      page.getByTestId('composer-active-builtin').filter({ hasText: 'File Search' }),
+    ).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(palette(page)).toBeHidden();
+    await expect(messageInput).toBeFocused();
+  });
+});
