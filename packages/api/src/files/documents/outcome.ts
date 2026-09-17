@@ -54,6 +54,13 @@ export function isParserOutputLimitError(error: unknown): boolean {
   return matches(error, 'PARSER_OUTPUT_LIMIT', 'ParserOutputLimitError');
 }
 
+/** Nothing here parses the document's type. A refusal, not an empty extraction: a
+ * configured OCR service was already offered the resolved type by the upload plan, so
+ * there is no further engine to try. */
+export function isUnsupportedDocumentTypeError(error: unknown): boolean {
+  return matches(error, 'UNSUPPORTED_DOCUMENT_TYPE', 'UnsupportedDocumentTypeError');
+}
+
 /** Not a refusal: the parser ran and the document holds no extractable text. That is the
  * case a configured OCR service exists for. */
 export function isNoDocumentTextError(error: unknown): boolean {
@@ -69,7 +76,8 @@ export function isDocumentParserRefusal(error: unknown): boolean {
     isPdfPageLimitError(error) ||
     isParserBusyError(error) ||
     isParserInputLimitError(error) ||
-    isParserOutputLimitError(error)
+    isParserOutputLimitError(error) ||
+    isUnsupportedDocumentTypeError(error)
   );
 }
 

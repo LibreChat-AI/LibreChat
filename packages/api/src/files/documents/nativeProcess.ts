@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { extname, join } from 'path';
 import { spawn } from 'child_process';
 import { unlink, writeFile } from 'fs/promises';
+import { logger } from '@librechat/data-schemas';
 import { megabyte } from 'librechat-data-provider';
 import { createConcurrencyLimiter } from '~/utils/promise';
 
@@ -74,6 +75,25 @@ export class NoDocumentTextError extends Error {
   constructor(message = 'No text found in document') {
     super(message);
     this.name = 'NoDocumentTextError';
+  }
+}
+
+/**
+ * No engine claims the document's type: neither its declared MIME nor its filename names
+ * a format any local parser reads. An operator can reach this by naming a vendor MIME in
+ * `documentParser.supportedMimeTypes` and uploading it under a filename with no
+ * recognizable extension, which admission accepts and dispatch cannot route. Coded and
+ * given its own status so the caller is told the type is unsupported instead of reading a
+ * generic failure, which is the same contract every other parser refusal keeps.
+ */
+export class UnsupportedDocumentTypeError extends Error {
+  readonly code = 'UNSUPPORTED_DOCUMENT_TYPE';
+  /** Well-formed request naming a media type nothing here parses. */
+  readonly userErrorStatusCode = 415;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedDocumentTypeError';
   }
 }
 
@@ -172,26 +192,27 @@ type ParserAdmission = {
   readonly maxQueued: number;
 };
 let parserAdmission: ParserAdmission | null = null;
+let reportedParserBoundsMismatch = false;
 
 /**
- * One limiter per API process, whatever the caller knows about the configuration.
+ * One limiter per API process, resolved once.
  *
  * Only the upload route reads `fileConfig`; the code-artifact and fallback-text callers
  * reach the same engines with no options at all. Keying a limiter by its bounds handed
  * those callers a second limiter of their own, so an operator who set
  * `maxConcurrentParsers` bounded one of them while the process still ran more children
- * than the number they had set. The bounds a configured caller names are remembered, and
- * a caller that names none joins it.
+ * than the number they had set.
+ *
+ * Replacing the limiter when a later caller names different bounds is not a fix either: a
+ * fresh limiter starts with an active count of zero while the children the old one
+ * admitted are still running, so the process would briefly run more parses than either
+ * bound allows. The bounds are therefore fixed at the first parse and a caller that names
+ * different ones is logged, not honored; a deployment that changes them restarts.
  */
 function getParserLimiter(maxConcurrentParsers?: number, maxQueuedParsers?: number): ParserLimiter {
-  const concurrency =
-    maxConcurrentParsers ?? parserAdmission?.concurrency ?? NATIVE_PARSER_CONCURRENCY;
-  const maxQueued = maxQueuedParsers ?? parserAdmission?.maxQueued ?? NATIVE_PARSER_MAX_QUEUED;
-  if (
-    parserAdmission == null ||
-    parserAdmission.concurrency !== concurrency ||
-    parserAdmission.maxQueued !== maxQueued
-  ) {
+  if (parserAdmission == null) {
+    const concurrency = maxConcurrentParsers ?? NATIVE_PARSER_CONCURRENCY;
+    const maxQueued = maxQueuedParsers ?? NATIVE_PARSER_MAX_QUEUED;
     parserAdmission = {
       limiter: createConcurrencyLimiter(concurrency, {
         maxQueued,
@@ -200,6 +221,16 @@ function getParserLimiter(maxConcurrentParsers?: number, maxQueuedParsers?: numb
       concurrency,
       maxQueued,
     };
+    return parserAdmission.limiter;
+  }
+  const namesOtherBounds =
+    (maxConcurrentParsers != null && maxConcurrentParsers !== parserAdmission.concurrency) ||
+    (maxQueuedParsers != null && maxQueuedParsers !== parserAdmission.maxQueued);
+  if (namesOtherBounds && !reportedParserBoundsMismatch) {
+    reportedParserBoundsMismatch = true;
+    logger.warn(
+      `[documentParser] Parser admission is already running with ${parserAdmission.concurrency} concurrent and ${parserAdmission.maxQueued} queued; ignoring a later request for ${maxConcurrentParsers ?? parserAdmission.concurrency}/${maxQueuedParsers ?? parserAdmission.maxQueued}. Restart the API process to apply changed documentParser admission limits.`,
+    );
   }
   return parserAdmission.limiter;
 }

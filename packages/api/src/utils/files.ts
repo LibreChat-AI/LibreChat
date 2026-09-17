@@ -29,6 +29,7 @@ const USER_FACING_UPLOAD_ERROR_CODES: Readonly<Record<string, string>> = {
   PARSER_INPUT_LIMIT: 'Document exceeds the supported file size limit',
   PARSER_OUTPUT_LIMIT: 'Extracted document text exceeds the supported size limit',
   CONCURRENCY_LIMIT: 'Too many document parsing requests are already waiting',
+  UNSUPPORTED_DOCUMENT_TYPE: 'Document type is not supported by the parser',
 };
 
 const ASCII_FILENAME_SAFE_PATTERN = /^[a-zA-Z0-9._-]$/;

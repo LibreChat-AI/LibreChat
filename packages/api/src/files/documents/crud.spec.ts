@@ -186,15 +186,23 @@ describe('Document Parser', () => {
     ).rejects.toThrow('No text found in document');
   });
 
-  test('returns a provider-specific error for unsupported non-PDF input', async () => {
+  /**
+   * Admission accepts a type an operator named in `documentParser.supportedMimeTypes`,
+   * so dispatch can be handed a document no engine claims. That has to answer as a
+   * refusal with its own status, not as an unclassified failure the route reports as 500.
+   */
+  test('refuses unsupported non-PDF input with its own status', async () => {
     const file = {
       ...fixture('nonexistent.file', 'application/invalid'),
       size: 0,
     } as Express.Multer.File;
 
-    await expect(parseDocument({ file })).rejects.toThrow(
-      'Unsupported file type in the anydoc parser',
-    );
+    await expect(parseDocument({ file })).rejects.toMatchObject({
+      name: 'UnsupportedDocumentTypeError',
+      code: 'UNSUPPORTED_DOCUMENT_TYPE',
+      userErrorStatusCode: 415,
+      message: expect.stringMatching(/Unsupported file type in the anydoc parser/),
+    });
   });
 
   test('rejects files exceeding the shared local parser size limit', async () => {

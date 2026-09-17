@@ -1,4 +1,4 @@
-import { CHILD_PRELUDE, withParserAdmission } from './nativeProcess';
+import { CHILD_PRELUDE } from './nativeProcess';
 
 /**
  * The counter runs inside the child, where the payload is measured before it crosses
@@ -30,7 +30,18 @@ describe('child payload measurement', () => {
   });
 });
 
+/**
+ * The limiter is process-wide and resolved once, so each test needs its own module
+ * instance: sharing one would let the first test's bounds decide the rest.
+ */
 describe('parser admission configuration', () => {
+  let withParserAdmission: typeof import('./nativeProcess').withParserAdmission;
+
+  beforeEach(async () => {
+    jest.resetModules();
+    ({ withParserAdmission } = await import('./nativeProcess'));
+  });
+
   const deferred = () => {
     let resolve!: () => void;
     const promise = new Promise<void>((done) => {
@@ -38,7 +49,6 @@ describe('parser admission configuration', () => {
     });
     return { promise, resolve };
   };
-
   test('uses a configured concurrency of one to serialize parses', async () => {
     const first = deferred();
     const started: string[] = [];
@@ -123,5 +133,40 @@ describe('parser admission configuration', () => {
       'unconfigured',
     ]);
     expect(started).toEqual(['configured', 'unconfigured']);
+  });
+
+  /**
+   * A limiter created for new bounds would start with an active count of zero while the
+   * children the first one admitted are still running, so the process would exceed both
+   * bounds at once. Later bounds are therefore ignored rather than swapped in.
+   */
+  test('later bounds never replace the limiter that is already admitting', async () => {
+    const first = deferred();
+    const started: string[] = [];
+    const running = withParserAdmission(
+      async () => {
+        started.push('first');
+        await first.promise;
+        return 'first';
+      },
+      undefined,
+      1,
+      2,
+    );
+    /* A second request resolving a wider bound must still wait behind the first. */
+    const wider = withParserAdmission(
+      async () => {
+        started.push('wider');
+        return 'wider';
+      },
+      undefined,
+      4,
+      8,
+    );
+
+    await Promise.resolve();
+    expect(started).toEqual(['first']);
+    first.resolve();
+    await expect(Promise.all([running, wider])).resolves.toEqual(['first', 'wider']);
   });
 });

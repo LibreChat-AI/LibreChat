@@ -6,6 +6,7 @@ import type { ParsedDocumentUploadResult } from '~/types';
 import {
   isParserOutputLimit,
   NoDocumentTextError,
+  UnsupportedDocumentTypeError,
   withStableParserInput,
 } from '../documents/nativeProcess';
 import { assertSafeZipSizeIfArchive } from '../documents/zipSafety';
@@ -189,7 +190,8 @@ function resolveFormat(name: string, type: string): string | null {
  * the file is supported, the attempt is worth more than the refusal, so it proceeds
  * with a warning and anydoc gets to make the final call from the content itself.
  *
- * @throws {Error} when neither the MIME type nor the extension names a supported format.
+ * @throws {UnsupportedDocumentTypeError} when neither the MIME type nor the extension
+ * names a supported format.
  */
 function assertSupportedType(
   name: string,
@@ -203,7 +205,9 @@ function assertSupportedType(
     type === 'application/pdf' ||
     (ANYDOC_MIME_FORMATS[type] == null && extensionFormat === 'pdf')
   ) {
-    throw new Error(`PDF files are handled by pdf-inspector, not anydoc ("${name}").`);
+    throw new UnsupportedDocumentTypeError(
+      `PDF files are handled by pdf-inspector, not anydoc ("${name}").`,
+    );
   }
   if (foldedMimeTypes.has(type)) {
     if (extensionFormat == null) {
@@ -219,7 +223,7 @@ function assertSupportedType(
     );
     return;
   }
-  throw new Error(
+  throw new UnsupportedDocumentTypeError(
     `Unsupported file type in the anydoc parser: "${type || 'unknown'}" ("${name}").`,
   );
 }

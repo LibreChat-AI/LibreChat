@@ -166,7 +166,8 @@ jest.mock('@librechat/api', () => {
     errorMatches(error, 'PDF_PAGE_LIMIT', 'PdfPageLimitError') ||
     errorMatches(error, 'CONCURRENCY_LIMIT', 'ConcurrencyLimitError') ||
     errorMatches(error, 'PARSER_INPUT_LIMIT', 'ParserInputLimitError') ||
-    errorMatches(error, 'PARSER_OUTPUT_LIMIT', 'ParserOutputLimitError');
+    errorMatches(error, 'PARSER_OUTPUT_LIMIT', 'ParserOutputLimitError') ||
+    errorMatches(error, 'UNSUPPORTED_DOCUMENT_TYPE', 'UnsupportedDocumentTypeError');
   const resolveDocumentExtraction = jest.fn(
     async ({ delimitedText, parse, runConfiguredOCR, readRawText, assertPartialTextAllowed }) => {
       let parsed;
