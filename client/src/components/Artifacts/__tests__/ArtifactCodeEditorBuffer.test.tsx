@@ -393,4 +393,29 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
       expect.objectContaining({ original: 'SAVED-A', updated: 'RETAINED-A' }),
     );
   });
+
+  /* Clearing the editor is mid-edit, not a deletion: typing never saves an
+   * empty buffer, so no path that resubmits retained text may either — a host
+   * change would otherwise persist the removal of the whole artifact. */
+  it('does not persist a cleared editor when the pane changes hosts', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).not.toHaveBeenCalled();
+
+    view.closePane();
+    view.reopenPane();
+    await flush();
+
+    expect(mockEditArtifact).not.toHaveBeenCalled();
+
+    view.select(artifactB);
+    view.select(artifactA);
+    await flush();
+
+    expect(mockEditArtifact).not.toHaveBeenCalled();
+  });
 });

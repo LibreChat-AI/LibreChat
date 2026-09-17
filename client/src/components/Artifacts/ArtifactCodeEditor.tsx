@@ -393,6 +393,16 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         return;
       }
 
+      /* An empty editor is not an instruction to delete the artifact. Typing
+       * never saves it — a user who selects all and deletes is mid-edit — and
+       * the paths that resubmit retained text must not turn that into a
+       * deletion just because the pane changed hosts or the user came back to
+       * the artifact. The rule belongs here, with the rest of what decides
+       * whether a request goes out. */
+      if (code.length === 0) {
+        return;
+      }
+
       /* What an edit replaces is whatever the last save wrote, and the
        * registry catches up only when the edited message propagates — so
        * every path that sends text (a keystroke's debounce, a queued edit, a
