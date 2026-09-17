@@ -49,7 +49,7 @@ const getInitialArtifactPanelSize = () => {
 
 interface ShareArtifactsContainerProps {
   messages: TMessage[];
-  conversationId: string;
+  conversationId: string | null | undefined;
   mainContent: React.ReactNode;
 }
 
@@ -67,9 +67,10 @@ export function ShareArtifactsContainer({
   const isSmallScreen = useMediaQuery('(max-width: 1023px)');
   const isUndocked = useAtomValue(artifactsUndocked);
   const [artifactPanelSize, setArtifactPanelSize] = useState(getInitialArtifactPanelSize);
-  /* Leaving the shared conversation clears the registry; the pane's own
-   * cleanup keeps it while the pane only changes hosts. */
-  useArtifactsRegistryLifetime();
+  /* This is the shared conversation's identity, not the chat tab's Recoil
+   * slot. It may be absent while shared data loads; the lifetime hook keeps
+   * the last real identity through that loading transition. */
+  useArtifactsRegistryLifetime(conversationId);
 
   const { shareId } = useShareContext();
   const { data: sharedStartupConfig, isSuccess: hasSharedConfig } = useGetSharedStartupConfig(

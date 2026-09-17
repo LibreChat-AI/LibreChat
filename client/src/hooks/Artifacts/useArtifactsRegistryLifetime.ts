@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useSetAtom } from 'jotai';
-import { useRecoilValue, useResetRecoilState } from 'recoil';
+import { useResetRecoilState } from 'recoil';
 import { artifactsActiveTab, artifactsOpenedArtifactId } from '~/components/Artifacts/state';
 import store from '~/store';
 
 /**
  * Bounds the artifact registry to one host and one conversation.
  *
- * Wipes `artifactsState` / `currentArtifactId` whenever the active
- * conversation changes. `useArtifacts` already runs this cleanup, but
+ * The identity comes from the host, because which conversation is on screen is
+ * the host's question to answer: the chat tab reads its Recoil slot, and a
+ * shared conversation has its own id that slot never carries.
+ *
+ * Wipes `artifactsState` / `currentArtifactId` whenever that identity
+ * changes. `useArtifacts` already runs this cleanup, but
  * only while the pane is mounted — so without a top-level guard,
  * tool-artifact cards that self-heal their entries while the panel is
  * closed would leak into the next conversation's panel on open. The
@@ -20,8 +24,9 @@ import store from '~/store';
  * mobile sheet, undocked window), so navigating away from this route — to a
  * shared conversation, say — has to be what clears it.
  */
-export default function useArtifactsRegistryLifetime(): void {
-  const conversationId = useRecoilValue(store.conversationIdByIndex(0));
+export default function useArtifactsRegistryLifetime(
+  conversationId: string | null | undefined,
+): void {
   const resetArtifacts = useResetRecoilState(store.artifactsState);
   const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
   const setActiveTab = useSetAtom(artifactsActiveTab);
@@ -40,7 +45,10 @@ export default function useArtifactsRegistryLifetime(): void {
     const prev = prevConversationIdRef.current;
     const next = conversationId ?? null;
     prevConversationIdRef.current = next;
-    if (prev == null || prev === next) {
+    /* A missing id is the loading state before the shared conversation has
+     * been observed. Treating it as the empty sentinel preserves the first
+     * real identity's artifacts; every later identity change still wipes. */
+    if (prev === null || prev === next) {
       return;
     }
     endSession();

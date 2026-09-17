@@ -41,7 +41,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
   const resetSelectedSubagent = useCallback(() => setSelectedSubagent(null), [setSelectedSubagent]);
   const previousConversationIdRef = useRef<string | null>(null);
 
-  useArtifactsRegistryLifetime();
+  useArtifactsRegistryLifetime(conversationId);
 
   useEffect(() => {
     const previous = previousConversationIdRef.current;

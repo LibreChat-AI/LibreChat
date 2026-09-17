@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { getDefaultStore } from 'jotai';
 import { act, render } from '@testing-library/react';
-import { RecoilRoot, useRecoilCallback, useSetRecoilState } from 'recoil';
+import { RecoilRoot, useRecoilCallback } from 'recoil';
 import type { TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { Artifact } from '~/common';
+import { artifactsActiveTab, artifactsOpenedArtifactId } from '~/components/Artifacts/state';
 import useArtifactsRegistryLifetime from '../useArtifactsRegistryLifetime';
 import store from '~/store';
 
@@ -20,17 +22,24 @@ const buildConversation = (conversationId: string | null): TConversation =>
   ({ conversationId }) as TConversation;
 
 interface HarnessHandle {
-  setConversation: (conversationId: string | null) => void;
+  setConversation: (conversationId: string | null | undefined) => void;
   readArtifacts: () => Record<string, Artifact | undefined> | null;
   readCurrentId: () => string | null;
+  readActiveTab: () => string;
+  readOpenedArtifactId: () => string | null;
 }
 
-const Harness = ({ handleRef }: { handleRef: React.MutableRefObject<HarnessHandle | null> }) => {
-  useArtifactsRegistryLifetime();
-  const setConvo = useSetRecoilState(store.conversationByIndex(0));
-  // useRecoilCallback's snapshot is read fresh at call time, so the test
-  // sees the latest committed atom values rather than a stale render-time
-  // closure.
+const Harness = ({
+  handleRef,
+  initialConversationId,
+}: {
+  handleRef: React.MutableRefObject<HarnessHandle | null>;
+  initialConversationId: string | null | undefined;
+}) => {
+  const [conversationId, setConversationId] = useState<string | null | undefined>(
+    initialConversationId,
+  );
+  useArtifactsRegistryLifetime(conversationId);
   const readArtifacts = useRecoilCallback(
     ({ snapshot }) =>
       () =>
@@ -46,28 +55,30 @@ const Harness = ({ handleRef }: { handleRef: React.MutableRefObject<HarnessHandl
 
   if (handleRef.current == null) {
     handleRef.current = {
-      setConversation: (conversationId) => setConvo(buildConversation(conversationId)),
+      setConversation: setConversationId,
       readArtifacts,
       readCurrentId,
+      readActiveTab: () => getDefaultStore().get(artifactsActiveTab),
+      readOpenedArtifactId: () => getDefaultStore().get(artifactsOpenedArtifactId),
     };
   }
   return null;
 };
 
 const renderHarness = (initial: {
-  conversationId: string | null;
+  conversationId: string | null | undefined;
   artifacts: Record<string, Artifact>;
   currentId: string | null;
 }) => {
   const initializeState = (snapshot: MutableSnapshot) => {
-    snapshot.set(store.conversationByIndex(0), buildConversation(initial.conversationId));
+    snapshot.set(store.conversationByIndex(0), buildConversation(initial.conversationId ?? null));
     snapshot.set(store.artifactsState, initial.artifacts);
     snapshot.set(store.currentArtifactId, initial.currentId);
   };
   const handleRef: React.MutableRefObject<HarnessHandle | null> = { current: null };
   render(
     <RecoilRoot initializeState={initializeState}>
-      <Harness handleRef={handleRef} />
+      <Harness handleRef={handleRef} initialConversationId={initial.conversationId} />
     </RecoilRoot>,
   );
   if (!handleRef.current) {
@@ -98,20 +109,41 @@ describe('useArtifactsRegistryLifetime', () => {
     expect(handle.readCurrentId()).toBe('art-1');
   });
 
-  it('wipes artifactsState and currentArtifactId when the conversation id changes', () => {
-    // Reproduces the codex-flagged leak: panel was closed in conv-A, the
-    // ToolArtifactCard's self-heal effect re-registered while
-    // artifactsVisibility stayed false, and then the user switched to
-    // conv-B. Without this hook the next panel open in conv-B would show
-    // conv-A's artifacts in the version list.
+  /* The leak this guard exists for: the panel was closed in one conversation,
+   * a ToolArtifactCard's self-heal effect re-registered its entry while
+   * `artifactsVisibility` stayed false, and the user moved on. Without the
+   * wipe the next panel open — in the next chat or the next shared link —
+   * would list the previous conversation's artifacts, and the pane would open
+   * on the tab and artifact the reader left behind. */
+  it('wipes all registry and pane session state when the passed identity changes', () => {
+    const jotaiStore = getDefaultStore();
+    jotaiStore.set(artifactsActiveTab, 'code');
+    jotaiStore.set(artifactsOpenedArtifactId, 'leftover-from-A');
     const handle = renderHarness({
-      conversationId: 'conv-A',
+      conversationId: 'shared-A',
       artifacts: { 'leftover-from-A': buildArtifact('leftover-from-A') },
       currentId: 'leftover-from-A',
     });
-    act(() => handle.setConversation('conv-B'));
+
+    act(() => handle.setConversation('shared-B'));
+
     expect(handle.readArtifacts()).toBeNull();
     expect(handle.readCurrentId()).toBeNull();
+    expect(handle.readActiveTab()).toBe('preview');
+    expect(handle.readOpenedArtifactId()).toBeNull();
+  });
+
+  it('keeps the registry through an absent id while shared data is loading', () => {
+    const handle = renderHarness({
+      conversationId: undefined,
+      artifacts: { 'art-1': buildArtifact('art-1') },
+      currentId: 'art-1',
+    });
+
+    act(() => handle.setConversation('shared-A'));
+
+    expect(handle.readArtifacts()).toEqual({ 'art-1': buildArtifact('art-1') });
+    expect(handle.readCurrentId()).toBe('art-1');
   });
 
   it('treats an initial null → defined transition as a first observation, not a switch', () => {
@@ -133,7 +165,7 @@ describe('useArtifactsRegistryLifetime', () => {
   it('wipes the registry when the host unmounts', () => {
     const handleRef: React.MutableRefObject<HarnessHandle | null> = { current: null };
     const Host = () => {
-      useArtifactsRegistryLifetime();
+      useArtifactsRegistryLifetime('conv-A');
       return null;
     };
     const App = ({ hostMounted }: { hostMounted: boolean }) => (
@@ -144,7 +176,7 @@ describe('useArtifactsRegistryLifetime', () => {
           snapshot.set(store.currentArtifactId, 'art-1');
         }}
       >
-        <Harness handleRef={handleRef} />
+        <Harness handleRef={handleRef} initialConversationId="conv-A" />
         {hostMounted && <Host />}
       </RecoilRoot>
     );
