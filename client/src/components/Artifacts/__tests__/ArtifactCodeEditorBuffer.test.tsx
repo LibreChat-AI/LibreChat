@@ -362,4 +362,35 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
 
     expect(mockEditArtifact).toHaveBeenCalledTimes(1);
   });
+
+  /* A save for the artifact the user left can land while they are reading
+   * another one, and the registry catches up only when the edited message
+   * propagates. The edit restored on the way back replaces what that save
+   * wrote, not what the registry still says, or the endpoint refuses it and
+   * the text the user typed never lands. */
+  it('rebases a restored edit on what the last save actually wrote', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('SAVED-A');
+    settleDebounce();
+    await flush();
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    /* A second edit whose debounce the selection change cancels. */
+    type('RETAINED-A');
+    view.select(artifactB);
+    view.select(artifactA);
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(2);
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ original: 'SAVED-A', updated: 'RETAINED-A' }),
+    );
+  });
 });

@@ -393,7 +393,15 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         return;
       }
 
-      const original = originalOverride ?? art.content ?? '';
+      /* What an edit replaces is whatever the last save wrote, and the
+       * registry catches up only when the edited message propagates — so
+       * every path that sends text (a keystroke's debounce, a queued edit, a
+       * buffer inherited at mount, one restored on the way back to an
+       * artifact) rebases here rather than each remembering to. Sending a
+       * registry that has not caught up has the endpoint refuse the newest
+       * text, and three of those paths have had to learn that separately. */
+      const original =
+        originalOverride ?? getSavedContent(queryClient, target) ?? art.content ?? '';
       if (isMutatingRef.current) {
         pendingUpdateRef.current = {
           ...target,
@@ -429,7 +437,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         updated: code,
       });
     },
-    [codeSession, readOnly],
+    [codeSession, queryClient, readOnly],
   );
 
   runMutationRef.current = runMutation;
@@ -599,7 +607,9 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     if (ed && nextValue != null) {
       writeModelValue(ed, nextValue);
     }
-    if (restored != null && restored !== (artifact.content ?? '')) {
+    /* `runMutation` decides what this replaces, and refuses text that would
+     * change nothing or that the endpoint already rejected. */
+    if (restored != null) {
       runMutationRef.current(restored);
     }
   }, [artifact.id, artifact.content, monacoRef, writeModelValue]);
