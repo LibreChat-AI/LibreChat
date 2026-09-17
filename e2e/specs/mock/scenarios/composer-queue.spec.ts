@@ -129,6 +129,42 @@ test.describe('composer queue rail', () => {
     await expect(messageTurns(page).nth(7)).toContainText(MOCK_REPLY_TEXT, { timeout: 30000 });
   });
 
+  test('Pointer reordering commits the new queue order @scenario:pointer-reordering-commits-the-new-queue-order', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    test.skip((page.viewportSize()?.width ?? 1280) <= 768, 'HTML5 pointer drag requires hover support');
+    const label = uniqueLabel('queue-pointer-reorder');
+    const firstText = `First pointer message ${label}`;
+    const secondText = `Second pointer message ${label}`;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await establishConversation(page, `queue-pointer-setup-${label}`);
+
+    await startSlowRun(page, label);
+    await typeDuringRun(page, firstText);
+    await messageInput(page).press('Enter');
+    await expect(queuedRows(page).filter({ hasText: firstText })).toBeVisible({ timeout: 10000 });
+
+    await typeDuringRun(page, secondText);
+    await messageInput(page).press('Enter');
+    await expect(queuedRows(page)).toHaveCount(2, { timeout: 10000 });
+
+    const firstGrip = queuedRows(page).first().getByTestId('queued-message-grip');
+    const secondRow = queuedRows(page).nth(1);
+    await firstGrip.dragTo(secondRow);
+    await expect(queuedRows(page).first()).toContainText(secondText);
+
+    await expect(messagesView(page).getByText(SLOW_REPLY_LAST_CHUNK)).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(queuedRows(page)).toHaveCount(0, { timeout: 60000 });
+    await expect(messageTurns(page)).toHaveCount(8, { timeout: 45000 });
+    await expect(messageTurns(page).nth(4)).toContainText(secondText);
+    await expect(messageTurns(page).nth(6)).toContainText(firstText);
+  });
+
   test('Composer keeps typed text when the run finishes @scenario:composer-keeps-typed-text-when-the-run-finishes', async ({
     page,
   }) => {

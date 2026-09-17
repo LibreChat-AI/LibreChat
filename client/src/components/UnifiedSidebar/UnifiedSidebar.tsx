@@ -1,4 +1,5 @@
 import { useCallback, useState, useEffect, useRef, memo } from 'react';
+import { useAtom } from 'jotai';
 import { useForm } from 'react-hook-form';
 import { useMediaQuery } from '@librechat/client';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -17,9 +18,11 @@ import {
 } from './constants';
 import { ChatContext, ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
+import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
+import { showFilesDialogAtom } from '~/store/filesDialog';
 import { useChatHelpers, useLocalize } from '~/hooks';
 import SidePanelNav from '~/components/SidePanel/Nav';
 import Sidebar from './Sidebar';
@@ -51,6 +54,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { isSmallScreen, expanded } = useSidebarState();
+  const [showFiles, setShowFiles] = useAtom(showFilesDialogAtom);
   const { setSidebarOpen } = useSidebarToggle();
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const [sidebarWidth, setSidebarWidth] = useState(getInitialWidth);
@@ -184,61 +188,57 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
     return () => document.removeEventListener('keydown', handler);
   }, [isSmallScreen, expanded, handleCollapse]);
 
-  if (isSmallScreen) {
-    return (
-      <div
-        id={MOBILE_DRAWER_ID}
-        className={cn(
-          /** The close swipe reads horizontal touches here (the drawer holds no
-           * horizontal scrollers), while pinch-zoom stays with the browser —
-           * this full-viewport surface must not disable zooming entirely. */
-          'bg-surface-primary-alt fixed inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
-          expanded ? 'translate-x-0' : '-translate-x-full',
-        )}
-        style={{
-          width: MOBILE_DRAWER_WIDTH,
-          /** The strip setting changes the width without passing through the
-           *  snap path, so the preference has to reach the declarative style
-           *  too or that one change still animates. */
-          transition: prefersReducedMotion ? undefined : MOBILE_DRAWER_TRANSITION,
-          zIndex: DRAWER_Z_INDEX,
-          /** Why a closed drawer is not painted at all: see DRAWER_UNPAINTED.
-           *  The travel stays painted — `isSliding` covers the frames Recoil's
-           *  deferred flip leaves uncovered at both ends, and a drag claims
-           *  painting inline (see useDrawerSwipe), which hands this value back
-           *  explicitly because React cannot re-assert it on its own. */
-          visibility: expanded || isSliding ? undefined : DRAWER_UNPAINTED,
-        }}
-        inert={!expanded ? '' : undefined}
-      >
-        <SidebarChatProvider>
-          <ActivePanelProvider>
-            <MobileHeader
-              links={links}
-              expanded={expanded}
-              onClose={handleCollapse}
-              onLeaveInsights={handleLeaveInsights}
-              routeActiveId={isInsightsRoute ? 'insights' : undefined}
-            />
-            <nav
-              id="chat-history-nav"
-              className="bg-surface-primary-alt min-h-0 flex-1 overflow-hidden"
-            >
-              <SidePanelNav links={links} />
-            </nav>
-            <MobileShortcutTargets
-              links={links}
-              onLeaveInsights={handleLeaveInsights}
-              routeActiveId={isInsightsRoute ? 'insights' : undefined}
-            />
-            <MobileBottomBar links={links} onNewChat={handleCollapse} />
-          </ActivePanelProvider>
-        </SidebarChatProvider>
-      </div>
-    );
-  }
-
-  return (
+  const sidebarContent = isSmallScreen ? (
+    <div
+      id={MOBILE_DRAWER_ID}
+      className={cn(
+        /** The close swipe reads horizontal touches here (the drawer holds no
+         * horizontal scrollers), while pinch-zoom stays with the browser —
+         * this full-viewport surface must not disable zooming entirely. */
+        'fixed inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col bg-surface-primary-alt',
+        expanded ? 'translate-x-0' : '-translate-x-full',
+      )}
+      style={{
+        width: MOBILE_DRAWER_WIDTH,
+        /** The strip setting changes the width without passing through the
+         * snap path, so the preference has to reach the declarative style
+         * too or that one change still animates. */
+        transition: prefersReducedMotion ? undefined : MOBILE_DRAWER_TRANSITION,
+        zIndex: DRAWER_Z_INDEX,
+        /** Why a closed drawer is not painted at all: see DRAWER_UNPAINTED.
+         * The travel stays painted — `isSliding` covers the frames Recoil's
+         * deferred flip leaves uncovered at both ends, and a drag claims
+         * painting inline (see useDrawerSwipe), which hands this value back
+         * explicitly because React cannot re-assert it on its own. */
+        visibility: expanded || isSliding ? undefined : DRAWER_UNPAINTED,
+      }}
+      inert={!expanded ? '' : undefined}
+    >
+      <SidebarChatProvider>
+        <ActivePanelProvider>
+          <MobileHeader
+            links={links}
+            expanded={expanded}
+            onClose={handleCollapse}
+            onLeaveInsights={handleLeaveInsights}
+            routeActiveId={isInsightsRoute ? 'insights' : undefined}
+          />
+          <nav
+            id="chat-history-nav"
+            className="min-h-0 flex-1 overflow-hidden bg-surface-primary-alt"
+          >
+            <SidePanelNav links={links} />
+          </nav>
+          <MobileShortcutTargets
+            links={links}
+            onLeaveInsights={handleLeaveInsights}
+            routeActiveId={isInsightsRoute ? 'insights' : undefined}
+          />
+          <MobileBottomBar links={links} onNewChat={handleCollapse} />
+        </ActivePanelProvider>
+      </SidebarChatProvider>
+    </div>
+  ) : (
     <SidebarChatProvider>
       <ActivePanelProvider>
         <aside
@@ -268,6 +268,13 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
         </aside>
       </ActivePanelProvider>
     </SidebarChatProvider>
+  );
+
+  return (
+    <>
+      {sidebarContent}
+      {showFiles && <MyFilesModal open={showFiles} onOpenChange={setShowFiles} />}
+    </>
   );
 }
 

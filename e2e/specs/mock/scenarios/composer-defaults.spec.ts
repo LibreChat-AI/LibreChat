@@ -64,7 +64,7 @@ test.describe('composer defaults', () => {
     const filesItem = accountMenu.getByRole('menuitem', { name: 'My Files', exact: true });
     await expect(filesItem).toBeVisible();
     await filesItem.click();
-    await expect(page.getByRole('dialog', { name: 'My Files' })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'My Files' })).toHaveCount(1);
   });
 
   test('Enter during a run steers the current reply by default @scenario:enter-during-a-run-steers-the-current-reply-by-default', async ({

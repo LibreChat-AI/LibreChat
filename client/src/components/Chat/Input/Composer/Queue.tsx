@@ -182,6 +182,9 @@ function QueueRow({
       reorderQueued(item.id, index);
       item.index = index;
     },
+    /* Mark releases over the rail as successful after hover has applied the
+       validated reorder; releases outside every row still restore in `end`. */
+    drop: () => ({}),
   });
 
   const move = useCallback(
