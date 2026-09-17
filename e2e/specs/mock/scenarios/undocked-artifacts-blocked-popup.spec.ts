@@ -16,7 +16,8 @@ import {
 
 const UNDOCK = 'Open in new window';
 const HTML_ARTIFACT = 'E2E HTML Artifact';
-const BLOCKED_NOTICE = 'Your browser blocked the new window. Allow pop-ups for this site and try again.';
+const BLOCKED_NOTICE =
+  'Your browser blocked the new window. Allow pop-ups for this site and try again.';
 
 /** The undock control is desktop-only: it is hidden below 868px. */
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -46,7 +47,9 @@ test('a blocked popup keeps the pane docked and says why @scenario:a-blocked-pop
 
   await panel.getByRole('button', { name: UNDOCK }).click();
 
-  await expect(page.getByText(BLOCKED_NOTICE)).toBeVisible({ timeout: 15000 });
+  /* The notice is both shown and announced, so the same text is in the toast
+   * and in the live region — either one proves the user was told. */
+  await expect(page.getByText(BLOCKED_NOTICE).first()).toBeVisible({ timeout: 15000 });
   /* Still here, still showing the artifact, and still offering the move. */
   await expect(panel).toBeVisible();
   await expect(panel.getByRole('button', { name: UNDOCK })).toBeVisible();
