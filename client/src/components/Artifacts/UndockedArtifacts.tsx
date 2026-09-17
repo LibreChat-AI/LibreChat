@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
-import { Toast } from '@librechat/client';
 import { useAtom, useSetAtom } from 'jotai';
 import * as RadixToast from '@radix-ui/react-toast';
+import { Toast, ToastViewport } from '@librechat/client';
 import {
   mirrorDocumentStyles,
   mirrorDocumentTheme,
@@ -112,7 +112,7 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
     <RadixToast.Provider>
       {children}
       <Toast />
-      <RadixToast.Viewport className="pointer-events-none fixed inset-x-0 top-0 z-[1000] mx-auto my-2 flex max-w-[560px] flex-col items-stretch justify-start" />
+      <ToastViewport />
     </RadixToast.Provider>,
     detached.root,
   );
