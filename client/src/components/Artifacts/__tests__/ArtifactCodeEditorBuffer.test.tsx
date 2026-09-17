@@ -418,4 +418,43 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
 
     expect(mockEditArtifact).not.toHaveBeenCalled();
   });
+
+  /* The pane changes hosts while a save is running and the user keeps typing:
+   * the text they typed in the new instance is the newest thing in play, so
+   * the buffer it inherited at mount must not be sent after it and put the
+   * artifact back the way it was. */
+  it('does not undo a newer edit with the buffer it inherited at mount', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('EDIT-OLD');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    /* The host change happens while that save is still open. */
+    view.closePane();
+    view.reopenPane();
+    await flush();
+
+    type('EDIT-NEW');
+    settleDebounce();
+    await flush();
+
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
+    });
+    await flush();
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(2);
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ updated: 'EDIT-NEW' }),
+    );
+  });
 });

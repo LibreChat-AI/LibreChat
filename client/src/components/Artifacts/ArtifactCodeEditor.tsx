@@ -301,6 +301,11 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * to the text that was refused rather than to whatever is on screen when
    * the refusal lands. */
   const mutationArtifactIdRef = useRef<string | null>(null);
+  /* The buffer this instance inherited at mount, and whether it has been
+   * dealt with. It is the oldest text in play: anything the user types here
+   * supersedes it, so both the drain and the queue consult these. */
+  const inheritedBufferRef = useRef<string | null>(restoredCode ?? null);
+  const drainedBufferRef = useRef<string | null>(null);
   const isStaleSession = () => codeSession.current !== mutationSessionRef.current;
 
   const editArtifact = useEditArtifact({
@@ -412,6 +417,15 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
        * text, and three of those paths have had to learn that separately. */
       const original =
         originalOverride ?? getSavedContent(queryClient, target) ?? art.content ?? '';
+      /* Anything this instance sends is newer than the buffer it inherited at
+       * mount, so that older text stops being a candidate for the drain —
+       * whether this goes out now or waits behind a running save. Left in
+       * play, it would be sent once this one lands and would quietly put the
+       * user's edit back the way it was. The drain itself passes the
+       * inherited text, which is how it stays exempt. */
+      if (inheritedBufferRef.current !== code) {
+        drainedBufferRef.current = inheritedBufferRef.current;
+      }
       if (isMutatingRef.current) {
         pendingUpdateRef.current = {
           ...target,
@@ -488,8 +502,6 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * picked up by navigating back to an artifact belongs to an editor that is
    * still alive and will send it itself; submitting it here would race that
    * editor's own `setValue`. */
-  const inheritedBufferRef = useRef<string | null>(restoredCode ?? null);
-  const drainedBufferRef = useRef<string | null>(null);
   useEffect(() => {
     if (isMutating) {
       return;
