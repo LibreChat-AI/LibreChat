@@ -327,22 +327,22 @@ const createClone = (element: Element, target: Document): HTMLStyleElement | HTM
   if (element.tagName === 'LINK') {
     const source = element as HTMLLinkElement;
     const clone = target.createElement('link');
-    clone.rel = source.rel;
     clone.href = source.href;
-    clone.media = source.media;
-    if (source.type !== '') {
-      clone.type = source.type;
-    }
     if (source.crossOrigin != null) {
       clone.crossOrigin = source.crossOrigin;
     }
+    /* The same attributes the sync keeps current, applied at birth: a sheet
+     * the host had already switched off before the window opened would
+     * otherwise arrive in the popup switched on, and its signature would
+     * match from then on so nothing would correct it. */
+    mirrorSheetAttributes(source, clone);
     return clone;
   }
 
   const source = element as HTMLStyleElement;
   const clone = target.createElement('style');
-  clone.media = source.media;
   clone.textContent = styleSnapshot(source).text;
+  mirrorSheetAttributes(source, clone);
   return clone;
 };
 

@@ -280,6 +280,22 @@ describe('mirrorDocumentStyles', () => {
     stop();
   });
 
+  /* A sheet the host had already switched off before the window opened: the
+   * clone has to arrive switched off too, because from then on its signature
+   * matches and nothing would come back to correct it. */
+  it('mirrors a stylesheet that was already switched off when the window opened', () => {
+    link.setAttribute('disabled', '');
+    link.media = 'print';
+    const target = detachedDocument();
+
+    const stop = mirrorDocumentStyles(document, target);
+
+    const clone = target.head.querySelector('link');
+    expect(clone?.hasAttribute('disabled')).toBe(true);
+    expect(clone?.getAttribute('media')).toBe('print');
+    stop();
+  });
+
   /* A rewrite that keeps the text length and the rule count is invisible to
    * any cheap signature, so the mutation record has to drive the refresh. */
   it('mirrors a rewrite that changes no measurable shape', async () => {
