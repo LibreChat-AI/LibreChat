@@ -320,7 +320,6 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
                * keeps the original document, so the record's source no longer says it. */
               llmDeliveryPath: data.llmDeliveryPath,
               embedded: data.embedded,
-              llmDeliveryPath: data.llmDeliveryPath,
             },
             assistant_id ? true : false,
           );

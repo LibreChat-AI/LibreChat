@@ -1897,9 +1897,9 @@ describe('share-scoped file routes', () => {
     expect(getFiles).toHaveBeenCalledWith({ file_id: 'file-1' }, null, {});
   });
 
-  it('serves parsed text previews but refuses a binary for preview-only snapshots', async () => {
+  it('serves a parsed snapshot as text on both the preview and the file route', async () => {
     getSharedLinkFile.mockResolvedValue({
-      file: { file_id: 'file-1', source: 'text', hasTextPreview: true },
+      file: { file_id: 'file-1', source: 'text', filename: 'report.docx' },
       hasSnapshots: true,
     });
     getFiles.mockResolvedValue([{ status: 'ready', text: '# Parsed report', textFormat: 'text' }]);
@@ -1910,7 +1910,10 @@ describe('share-scoped file routes', () => {
     expect(preview.body.text).toBe('# Parsed report');
 
     const binary = await request(app).get('/api/share/share-123/files/file-1');
-    expect(binary.status).toBe(404);
+    expect(binary.status).toBe(200);
+    expect(binary.headers['content-type']).toContain('text/plain');
+    expect(binary.text).toBe('# Parsed report');
+    /** No durable object exists for a parsed record, so no storage strategy is consulted. */
     expect(mockGetStrategyFunctions).not.toHaveBeenCalled();
   });
 

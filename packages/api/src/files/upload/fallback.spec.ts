@@ -123,9 +123,17 @@ describe('resolveUploadFallbackText', () => {
       mimetype: XLSX_MIME,
     } as Express.Multer.File;
 
-    await expect(
-      resolveUploadFallbackText({ ...route, file, fileId: 'file-1', extractors }),
-    ).resolves.toBe('Sheet One:\nData,on,first,sheet\nSecond Sheet:\nData,On\nSecond,Sheet\n');
+    const text = await resolveUploadFallbackText({
+      ...route,
+      file,
+      fileId: 'file-1',
+      extractors,
+    });
+    /* The parser preserves the workbook's structure as markdown instead of flattening it. */
+    expect(text).toContain('## Sheet One');
+    expect(text).toContain('| Data | on | first | sheet |');
+    expect(text).toContain('## Second Sheet');
+    expect(text).toContain('| Second | Sheet |');
     expect(extractors.parseDocument).toHaveBeenCalledWith({ file });
     expect(extractors.parseTextNative).not.toHaveBeenCalled();
   });

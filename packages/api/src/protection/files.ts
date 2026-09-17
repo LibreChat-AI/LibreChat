@@ -8,7 +8,7 @@ import {
   resolveEffectiveMimeType,
   isPermissiveMimeConfig,
 } from 'librechat-data-provider';
-import type { FileConfig, FileFilterField, FiltersConfig } from 'librechat-data-provider';
+import type { FileConfig, FileFilterField, FiltersConfig, RegexLike } from 'librechat-data-provider';
 import type { ContentTraversalLimitReason } from './adapters/nested';
 import type { LocatorTraversalReporter } from './diagnostics';
 import {
@@ -428,6 +428,38 @@ export function planDocumentExtraction(
       (plan === UPLOAD_EXTRACTED_TEXT_PLANS.configuredOCR || aliasSupportsOCR),
     useDocumentParser: !useConfiguredText && parserEligible,
   };
+}
+
+/**
+ * Whether an upload's type is admissible at all: accepted by the endpoint's own list, or
+ * named in `documentParser.supportedMimeTypes`, which is an operator saying the server
+ * parses it.
+ *
+ * Two gates ask this question about the same upload and must not drift. Multer's filter
+ * runs while the file part is still streaming, so it cannot see a `tool_resource` sent
+ * after the file and admits parser types unscoped (`admitParserTypes: true`); the only
+ * thing it lets through is a temporary file the next gate deletes. `filterFile` has the
+ * complete body and scopes the parser list to the context path, the only one that reaches
+ * the parser.
+ */
+export function isAdmissibleUploadType(input: {
+  readonly mimeType: string;
+  readonly fileConfig: FileConfig;
+  /** The endpoint's own allowlist, already resolved by the caller. */
+  readonly endpointMimeTypes: RegexLike[] | undefined;
+  readonly admitParserTypes: boolean;
+}): boolean {
+  const checkType = input.fileConfig.checkType;
+  if (checkType == null) {
+    return false;
+  }
+  if (checkType(input.mimeType, input.endpointMimeTypes ?? [])) {
+    return true;
+  }
+  const parserMimeTypes = input.fileConfig.documentParser?.supportedMimeTypes;
+  return input.admitParserTypes && parserMimeTypes != null
+    ? checkType(input.mimeType, parserMimeTypes)
+    : false;
 }
 
 /** Whether a context upload has a downstream extraction step that can inspect derived text. */

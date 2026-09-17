@@ -40,6 +40,7 @@ const {
   resolveUploadFallbackText,
   MAX_STORED_EXTRACTED_TEXT_BYTES,
   planDocumentExtraction,
+  isAdmissibleUploadType,
   resolveDocumentExtraction,
   isDocumentParserRefusal,
   isNoDocumentTextError,
@@ -1878,11 +1879,12 @@ function filterFile({ req, image, isAvatar, endpoint: endpointOverride }) {
    * it, and a second check that disagrees only moves the refusal one step later. The
    * request body is complete here, so this is the authoritative place to scope it to
    * the context path, the only one that reaches the parser. */
-  const parserTypes = fileConfig.documentParser?.supportedMimeTypes;
-  const isContextUpload = req.body?.tool_resource === EToolResources.context;
-  const isSupportedMimeType =
-    fileConfig.checkType(file.mimetype, endpointFileConfig.supportedMimeTypes) ||
-    (isContextUpload && parserTypes != null && fileConfig.checkType(file.mimetype, parserTypes));
+  const isSupportedMimeType = isAdmissibleUploadType({
+    mimeType: file.mimetype,
+    fileConfig,
+    endpointMimeTypes: endpointFileConfig.supportedMimeTypes,
+    admitParserTypes: req.body?.tool_resource === EToolResources.context,
+  });
 
   if (!isSupportedMimeType) {
     throw new Error('Unsupported file type');

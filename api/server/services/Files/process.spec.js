@@ -199,6 +199,26 @@ jest.mock('@librechat/api', () => {
       return delimitedText ? await readRawText?.() : undefined;
     },
   );
+  /**
+   * The shared admission predicate both upload gates call. `packages/api` owns its rules
+   * and proves them; this reproduces the answer so these specs stay about the scope
+   * `filterFile` hands in.
+   */
+  const isAdmissibleUploadType = jest.fn(
+    ({ mimeType, fileConfig, endpointMimeTypes, admitParserTypes }) => {
+      const checkType = fileConfig.checkType;
+      if (checkType == null) {
+        return false;
+      }
+      if (checkType(mimeType, endpointMimeTypes ?? [])) {
+        return true;
+      }
+      const parserMimeTypes = fileConfig.documentParser?.supportedMimeTypes;
+      return admitParserTypes && parserMimeTypes != null
+        ? checkType(mimeType, parserMimeTypes)
+        : false;
+    },
+  );
   return {
     sanitizeFilename: jest.fn((n) => n),
     /** Grants both; these specs vary the capability set, not the role. */
@@ -212,6 +232,7 @@ jest.mock('@librechat/api', () => {
     extractInspectableFileText: jest.fn(async ({ extract }) => extract()),
     assertExtractedTextInspectable: jest.fn(),
     planDocumentExtraction,
+    isAdmissibleUploadType,
     resolveDocumentExtraction,
     isDocumentParserRefusal,
     isNoDocumentTextError,

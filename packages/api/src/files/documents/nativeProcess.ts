@@ -166,21 +166,42 @@ export function isParserOutputLimit(error: unknown): boolean {
  * request would have sat behind a queue with no deadline.
  */
 type ParserLimiter = <T>(task: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
-const parserLimiters = new Map<string, ParserLimiter>();
+type ParserAdmission = {
+  readonly limiter: ParserLimiter;
+  readonly concurrency: number;
+  readonly maxQueued: number;
+};
+let parserAdmission: ParserAdmission | null = null;
 
-function getParserLimiter(maxConcurrentParsers?: number, maxQueuedParsers?: number) {
-  const resolvedConcurrency = maxConcurrentParsers ?? NATIVE_PARSER_CONCURRENCY;
-  const resolvedMaxQueued = maxQueuedParsers ?? NATIVE_PARSER_MAX_QUEUED;
-  const key = `${resolvedConcurrency}:${resolvedMaxQueued}`;
-  let limiter = parserLimiters.get(key);
-  if (!limiter) {
-    limiter = createConcurrencyLimiter(resolvedConcurrency, {
-      maxQueued: resolvedMaxQueued,
-      label: 'document parsing',
-    });
-    parserLimiters.set(key, limiter);
+/**
+ * One limiter per API process, whatever the caller knows about the configuration.
+ *
+ * Only the upload route reads `fileConfig`; the code-artifact and fallback-text callers
+ * reach the same engines with no options at all. Keying a limiter by its bounds handed
+ * those callers a second limiter of their own, so an operator who set
+ * `maxConcurrentParsers` bounded one of them while the process still ran more children
+ * than the number they had set. The bounds a configured caller names are remembered, and
+ * a caller that names none joins it.
+ */
+function getParserLimiter(maxConcurrentParsers?: number, maxQueuedParsers?: number): ParserLimiter {
+  const concurrency =
+    maxConcurrentParsers ?? parserAdmission?.concurrency ?? NATIVE_PARSER_CONCURRENCY;
+  const maxQueued = maxQueuedParsers ?? parserAdmission?.maxQueued ?? NATIVE_PARSER_MAX_QUEUED;
+  if (
+    parserAdmission == null ||
+    parserAdmission.concurrency !== concurrency ||
+    parserAdmission.maxQueued !== maxQueued
+  ) {
+    parserAdmission = {
+      limiter: createConcurrencyLimiter(concurrency, {
+        maxQueued,
+        label: 'document parsing',
+      }),
+      concurrency,
+      maxQueued,
+    };
   }
-  return limiter;
+  return parserAdmission.limiter;
 }
 
 /**

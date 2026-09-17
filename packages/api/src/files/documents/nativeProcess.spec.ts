@@ -92,22 +92,36 @@ describe('parser admission configuration', () => {
     await expect(Promise.all([running, queued])).resolves.toEqual(['running', 'queued']);
   });
 
-  test('shares the compatibility-default limiter across calls without options', async () => {
+  /**
+   * The code-artifact and fallback-text callers reach the same engines with no options,
+   * so they have to land in the limiter the upload route configured: a limiter of their
+   * own would run children the operator's bound never counted.
+   */
+  test('a caller that passes no options joins the configured limiter', async () => {
     const first = deferred();
     const started: string[] = [];
-    const parses = ['first', 'second', 'third'].map((name, index) =>
-      withParserAdmission(async () => {
-        started.push(name);
-        if (index === 0) {
-          await first.promise;
-        }
-        return name;
-      }),
+    const configured = withParserAdmission(
+      async () => {
+        started.push('configured');
+        await first.promise;
+        return 'configured';
+      },
+      undefined,
+      1,
+      2,
     );
+    const unconfigured = withParserAdmission(async () => {
+      started.push('unconfigured');
+      return 'unconfigured';
+    });
 
     await Promise.resolve();
-    expect(started).toEqual(['first', 'second']);
+    expect(started).toEqual(['configured']);
     first.resolve();
-    await expect(Promise.all(parses)).resolves.toEqual(['first', 'second', 'third']);
+    await expect(Promise.all([configured, unconfigured])).resolves.toEqual([
+      'configured',
+      'unconfigured',
+    ]);
+    expect(started).toEqual(['configured', 'unconfigured']);
   });
 });

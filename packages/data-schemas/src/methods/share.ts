@@ -493,9 +493,10 @@ function snapshotMatchesCurrentVersion(
  */
 async function enrichSnapshotDeliveryPaths(
   mongoose: typeof import('mongoose'),
-  share: t.ISharedLink & { messages: t.IMessage[] },
+  share: Pick<t.ISharedLink, '_id' | 'user'>,
+  snapshots: t.SharedFileSnapshot[] | undefined,
 ): Promise<{ snapshots: t.SharedFileSnapshot[]; changed: boolean }> {
-  const existing = share.fileSnapshots ?? [];
+  const existing = snapshots ?? [];
   const missingIds = new Set(
     existing
       .filter((snapshot) => snapshot.llmDeliveryPath === undefined)
@@ -1055,13 +1056,14 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
           await buildFileSnapshots(mongoose, messagesToShare, share.user),
         );
         shouldPersistFileSnapshots = true;
-      } else if (includeFiles && fileSnapshots !== undefined) {
-        /** Snapshot already at the current version: only the delivery marker can be
-         *  missing. A rebuild above persists `snapshotVersion`, so a link it repaired
-         *  reaches this branch (and gets its markers) on its next view. */
-        const enriched = await enrichSnapshotDeliveryPaths(mongoose, share);
+      }
+      /* Entries a rebuild preserved were pinned before the delivery marker existed, so
+       * the marker backfill runs over whatever the array holds now. Freshly built
+       * entries already carry it, which makes this a no-op for them. */
+      if (includeFiles && fileSnapshots !== undefined) {
+        const enriched = await enrichSnapshotDeliveryPaths(mongoose, share, fileSnapshots);
         fileSnapshots = enriched.snapshots;
-        shouldPersistEnrichedDeliveryPaths = enriched.changed;
+        shouldPersistEnrichedDeliveryPaths = enriched.changed && !shouldPersistFileSnapshots;
       }
       const snapshots = includeFiles
         ? new Map<string, t.SharedFileSnapshot>(

@@ -17,6 +17,7 @@ import {
   resolveCanonicalFileReferences,
   resolveCanonicalFileReferenceUnits,
   planDocumentExtraction,
+  isAdmissibleUploadType,
   UPLOAD_EXTRACTED_TEXT_PLANS,
   UninspectableFileError,
 } from './files';
@@ -295,6 +296,53 @@ describe('file content inspection policy', () => {
       useDocumentParser: false,
       useConfiguredOCR: false,
     });
+  });
+
+  /**
+   * Multer's filter and `filterFile` both decide whether a type may be uploaded at all,
+   * one mid-stream and one on the complete body. They ask this predicate so an operator's
+   * parser list cannot be honored by one gate and refused by the other.
+   */
+  it('admits an operator parser type only where the caller scopes it', () => {
+    const vendorDocx = 'application/vnd.vendor.word';
+    const fileConfig = mergeFileConfig({
+      documentParser: { supportedMimeTypes: [`^${vendorDocx.replace(/[.+]/g, '\\$&')}$`] },
+    });
+    const endpointMimeTypes = [/^application\/pdf$/];
+
+    expect(
+      isAdmissibleUploadType({
+        mimeType: 'application/pdf',
+        fileConfig,
+        endpointMimeTypes,
+        admitParserTypes: false,
+      }),
+    ).toBe(true);
+    expect(
+      isAdmissibleUploadType({
+        mimeType: vendorDocx,
+        fileConfig,
+        endpointMimeTypes,
+        admitParserTypes: true,
+      }),
+    ).toBe(true);
+    /* The context scope is the caller's to apply: unscoped, the parser list is not consulted. */
+    expect(
+      isAdmissibleUploadType({
+        mimeType: vendorDocx,
+        fileConfig,
+        endpointMimeTypes,
+        admitParserTypes: false,
+      }),
+    ).toBe(false);
+    expect(
+      isAdmissibleUploadType({
+        mimeType: 'application/x-unknown',
+        fileConfig,
+        endpointMimeTypes,
+        admitParserTypes: true,
+      }),
+    ).toBe(false);
   });
 
   it('defers transcript fail-close only to STT-supported non-assistant context uploads', () => {

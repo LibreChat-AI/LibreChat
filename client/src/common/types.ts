@@ -603,7 +603,6 @@ export interface ExtendedFile {
   llmDeliveryPath?: t.TFile['llmDeliveryPath'];
   attached?: boolean;
   embedded?: boolean;
-  llmDeliveryPath?: t.TFile['llmDeliveryPath'];
   tool_resource?: string;
   metadata?: t.TFile['metadata'];
 }

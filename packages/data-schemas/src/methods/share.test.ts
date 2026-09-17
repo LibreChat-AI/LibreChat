@@ -2982,7 +2982,7 @@ describe('Share Methods', () => {
       expect(byId.get(docId)?.sourceDispatchedAt).toBe(sourceDispatchedAt);
     });
 
-    test('snapshots parsed document text without retaining its parser marker as a path', async () => {
+    test('snapshots parsed document text without leaking its parser marker to a viewer', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const conversationId = `conv_${nanoid()}`;
       await seedConversation(userId, conversationId);
@@ -2992,6 +2992,7 @@ describe('Share Methods', () => {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         filename: 'report.docx',
         text: '# Parsed report',
+        llmDeliveryPath: 'text',
       });
       await Message.create({
         messageId: `msg_${nanoid()}`,
@@ -3012,15 +3013,15 @@ describe('Share Methods', () => {
       const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
       const saved = await SharedLink.findOne({ shareId }).lean();
       expect(saved?.fileSnapshots?.[0]).toEqual(
-        expect.objectContaining({ file_id: docId, hasTextPreview: true }),
+        expect.objectContaining({ file_id: docId, source: FileSources.text }),
       );
-      expect(saved?.fileSnapshots?.[0].filepath).toBeUndefined();
 
       const shared = await shareMethods.getSharedMessages(shareId);
       const file = shared?.messages[0].files?.[0];
-      expect(file?.hasTextPreview).toBe(true);
-      expect(file?.filepath).toBeUndefined();
-      expect(file?.source).toBeUndefined();
+      /** The viewer reads the text through the share route, never the parser marker. */
+      expect(file?.filepath).toBe(`/api/share/${shareId}/files/${docId}`);
+      expect(file?.source).toBe(FileSources.text);
+      expect(file?.llmDeliveryPath).toBe('text');
     });
 
     test('createSharedLink with snapshotFiles=false stores no snapshots', async () => {
@@ -3216,6 +3217,7 @@ describe('Share Methods', () => {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         filename: 'report.docx',
         text: '# Parsed report',
+        llmDeliveryPath: 'text',
       });
       const message = await Message.create({
         messageId: `msg_${nanoid()}`,
@@ -3239,7 +3241,8 @@ describe('Share Methods', () => {
       expect(stale.hasSnapshots).toBe(false);
 
       const shared = await shareMethods.getSharedMessages(shareId);
-      expect(shared?.messages[0].files?.[0]?.hasTextPreview).toBe(true);
+      expect(shared?.messages[0].files?.[0]?.filepath).toBe(`/api/share/${shareId}/files/${docId}`);
+      expect(shared?.messages[0].files?.[0]?.llmDeliveryPath).toBe('text');
 
       const saved = await SharedLink.findOne({ shareId }).lean();
       expect(saved?.fileSnapshots).toHaveLength(1);
@@ -3247,7 +3250,7 @@ describe('Share Methods', () => {
 
       const current = await shareMethods.getSharedLinkFile(shareId, docId);
       expect(current.hasSnapshots).toBe(true);
-      expect(current.file?.hasTextPreview).toBe(true);
+      expect(current.file?.source).toBe(FileSources.text);
     });
 
     /**
@@ -3311,10 +3314,10 @@ describe('Share Methods', () => {
       expect(byId.get(imageId)).toEqual(
         expect.objectContaining({ previewRevision: 'rev-1', bytes: 512 }),
       );
-      expect(byId.get(docId)).toEqual(expect.objectContaining({ hasTextPreview: true }));
+      expect(byId.get(docId)).toEqual(expect.objectContaining({ source: FileSources.text }));
     });
 
-    test('enriches a pinned parsed-text snapshot without replacing its pins', async () => {
+    test('leaves a pinned parsed-text snapshot exactly as it was pinned', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const conversationId = `conv_${nanoid()}`;
       await seedConversation(userId, conversationId);
@@ -3356,11 +3359,13 @@ describe('Share Methods', () => {
       });
 
       const shared = await shareMethods.getSharedMessages(shareId);
-      expect(shared?.messages[0].files?.[0]?.hasTextPreview).toBe(true);
+      expect(shared?.messages[0].files?.[0]?.filepath).toBe(`/api/share/${shareId}/files/${docId}`);
 
       const saved = await SharedLink.findOne({ shareId }).lean();
       expect(saved?.snapshotVersion).toBe(FILE_SNAPSHOT_VERSION);
-      expect(saved?.fileSnapshots?.[0]).toEqual({ ...pinned, hasTextPreview: true });
+      /** The version upgrade may add records; it may never re-pin one it already had,
+       *  and the live file's revision no longer matches, so no marker is copied. */
+      expect(saved?.fileSnapshots?.[0]).toEqual({ ...pinned, llmDeliveryPath: null });
     });
 
     /**
@@ -3393,10 +3398,12 @@ describe('Share Methods', () => {
       const saved = await SharedLink.findOne({ shareId }).lean();
 
       expect(saved?.fileSnapshots?.[0]).toEqual(
-        expect.objectContaining({ file_id: docId, hasTextPreview: true }),
+        expect.objectContaining({ file_id: docId, source: FileSources.text }),
       );
+
       /** The dead temporary path never reaches a viewer. */
-      expect(saved?.fileSnapshots?.[0].filepath).toBeUndefined();
+      const shared = await shareMethods.getSharedMessages(shareId);
+      expect(shared?.messages[0].files?.[0]?.filepath).toBe(`/api/share/${shareId}/files/${docId}`);
     });
 
     test('leaves a current snapshot alone when a referenced file is unsnapshottable', async () => {
@@ -3771,18 +3778,15 @@ describe('Share Methods', () => {
       expect(saved?.fileSnapshots?.[0]).toMatchObject({
         file_id: textId,
         source: 'text',
-        hasTextPreview: true,
       });
       expect(saved?.fileSnapshots?.[0]).not.toHaveProperty('text');
-      expect(saved?.fileSnapshots?.[0]).not.toHaveProperty('filepath');
 
       const shared = await shareMethods.getSharedMessages(result.shareId);
       expect(shared?.messages[0].files?.[0]).toMatchObject({
         file_id: textId,
-        hasTextPreview: true,
+        source: 'text',
+        filepath: `/api/share/${result.shareId}/files/${textId}`,
       });
-      expect(shared?.messages[0].files?.[0].source).toBeUndefined();
-      expect(shared?.messages[0].files?.[0].filepath).toBeUndefined();
     });
 
     test('updateSharedLink clears snapshots when snapshotFiles is disabled', async () => {

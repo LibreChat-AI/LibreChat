@@ -2,14 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
-const { sanitizeFilename, createCustomError } = require('@librechat/api');
+const { sanitizeFilename, createCustomError, isAdmissibleUploadType } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
   mergeFileConfig,
   isAgentsEndpoint,
   resolveEffectiveMimeType,
   getEndpointFileConfig,
-  fileConfig: defaultFileConfig,
 } = require('librechat-data-provider');
 const { getAppConfig } = require('~/server/services/Config');
 
@@ -137,10 +136,12 @@ const createFileFilter = (customFileConfig, resolveEndpoint) => {
      * `tool_resource` after the file. `filterFile` applies that scope on a complete body
      * a moment later, before any provider is handed the upload, so the only thing this
      * admits is a temporary file that the next gate deletes. */
-    const parserTypes = effectiveFileConfig?.documentParser?.supportedMimeTypes;
-    const admitted =
-      defaultFileConfig.checkType(mimeType, supportedMimeTypes) ||
-      (parserTypes != null && defaultFileConfig.checkType(mimeType, parserTypes));
+    const admitted = isAdmissibleUploadType({
+      mimeType,
+      fileConfig: effectiveFileConfig,
+      endpointMimeTypes: supportedMimeTypes,
+      admitParserTypes: true,
+    });
 
     if (!admitted) {
       return cb(

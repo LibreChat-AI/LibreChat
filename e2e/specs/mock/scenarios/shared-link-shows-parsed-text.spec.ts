@@ -49,7 +49,9 @@ test('a viewer of a shared conversation can read the parsed document text @scena
     .getByRole('button', { name: upload.name, exact: true })
     .click();
 
-  const region = page.getByRole('region', { name: 'Extracted text' });
-  await expect(region).toBeVisible({ timeout: 30000 });
-  await expect(region).toContainText('Quarterly Report');
+  /* The shared message view opens the file preview dialog, which reads the text through
+   * the share-scoped preview route because the snapshot carries llmDeliveryPath=text. */
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible({ timeout: 30000 });
+  await expect(dialog).toContainText('Quarterly Report', { timeout: 30000 });
 });

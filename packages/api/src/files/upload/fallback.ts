@@ -70,10 +70,16 @@ export function getUploadFallbackTextPlan(
   ) {
     return null;
   }
-  if (documentParserMimeTypes.some((pattern) => pattern.test(route.mimeType))) {
-    return UPLOAD_FALLBACK_TEXT_PLANS.documentParser;
+  /* A type whose own bytes are text is read as text, even when the parser's list names it
+   * (delimited text is on that list so a context upload is admissible). The upload path
+   * makes the same call through `isDelimitedTextType`: a CSV's own text is the faithful
+   * rendering, not a table drawn from it. */
+  if (isNativelyReadableText(route.mimeType)) {
+    return UPLOAD_FALLBACK_TEXT_PLANS.nativeText;
   }
-  return isNativelyReadableText(route.mimeType) ? UPLOAD_FALLBACK_TEXT_PLANS.nativeText : null;
+  return documentParserMimeTypes.some((pattern) => pattern.test(route.mimeType))
+    ? UPLOAD_FALLBACK_TEXT_PLANS.documentParser
+    : null;
 }
 
 /**
