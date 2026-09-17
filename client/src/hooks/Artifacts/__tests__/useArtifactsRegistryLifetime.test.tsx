@@ -146,6 +146,29 @@ describe('useArtifactsRegistryLifetime', () => {
     expect(handle.readCurrentId()).toBe('art-1');
   });
 
+  /* A shared link's data can refetch and hand back nothing for a render. That
+   * is the same conversation loading, so the reader must not lose the artifact
+   * they have open — and its return must not read as a first sighting either,
+   * because the next real switch still has to wipe. */
+  it('keeps the registry when a loaded identity goes absent and comes back', () => {
+    const handle = renderHarness({
+      conversationId: 'shared-A',
+      artifacts: { 'art-1': buildArtifact('art-1') },
+      currentId: 'art-1',
+    });
+
+    act(() => handle.setConversation(undefined));
+    expect(handle.readArtifacts()).toEqual({ 'art-1': buildArtifact('art-1') });
+
+    act(() => handle.setConversation('shared-A'));
+    expect(handle.readArtifacts()).toEqual({ 'art-1': buildArtifact('art-1') });
+    expect(handle.readCurrentId()).toBe('art-1');
+
+    act(() => handle.setConversation('shared-B'));
+    expect(handle.readArtifacts()).toBeNull();
+    expect(handle.readCurrentId()).toBeNull();
+  });
+
   it('treats an initial null → defined transition as a first observation, not a switch', () => {
     // Initial conversation can flicker through `null` while a fresh chat
     // is still loading. Treating that null as a "previous" id would

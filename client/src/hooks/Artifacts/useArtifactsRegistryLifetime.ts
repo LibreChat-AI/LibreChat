@@ -42,13 +42,18 @@ export default function useArtifactsRegistryLifetime(
   }, [resetArtifacts, resetCurrentArtifactId, setActiveTab, setOpenedArtifactId]);
 
   useEffect(() => {
+    /* An absent id is a host that has nothing to report yet, not a different
+     * conversation: a shared link's data can refetch, and the chat tab reads
+     * its slot before it is filled. Wiping on the way through would take the
+     * registry away from the conversation that owns it and then treat its
+     * return as a first sighting, so the last real identity stays the one the
+     * next id is compared against. */
+    if (conversationId == null) {
+      return;
+    }
     const prev = prevConversationIdRef.current;
-    const next = conversationId ?? null;
-    prevConversationIdRef.current = next;
-    /* A missing id is the loading state before the shared conversation has
-     * been observed. Treating it as the empty sentinel preserves the first
-     * real identity's artifacts; every later identity change still wipes. */
-    if (prev === null || prev === next) {
+    prevConversationIdRef.current = conversationId;
+    if (prev === null || prev === conversationId) {
       return;
     }
     endSession();
