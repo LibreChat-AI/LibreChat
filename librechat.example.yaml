@@ -238,6 +238,9 @@ interface:
     public: false
   bookmarks: true
   multiConvo: true
+  # Allow the artifacts pane to be moved into its own browser window
+  # (desktop only; the mobile sheet is unaffected). Default: true.
+  artifactUndocking: true
   agents:
     use: true
     create: true
