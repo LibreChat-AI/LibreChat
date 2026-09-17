@@ -336,4 +336,30 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
       expect.objectContaining({ updated: 'NEW-EDIT' }),
     );
   });
+
+  /* A save answers after the user has moved on, so the refusal has to be
+   * recorded against the artifact whose text was refused. Filed under the
+   * artifact on screen instead, it would let the one that was rejected send
+   * the same text again the moment the user came back to it. */
+  it('records a refusal against the artifact whose save was refused', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('REJECTED-A');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    view.select(artifactB);
+    await act(async () => {
+      inFlight?.reject({ status: 400 });
+      await Promise.resolve();
+    });
+    await flush();
+
+    view.select(artifactA);
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+  });
 });

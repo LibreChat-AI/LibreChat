@@ -296,6 +296,11 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * pane the user closed is not it. The save itself is left alone — it is the
    * request's to finish, and `isMutating` reports it until it does. */
   const mutationSessionRef = useRef(codeSession.current);
+  /* The artifact a save was started for. Its callbacks answer later, by which
+   * time the user may have selected another artifact, and a rejection belongs
+   * to the text that was refused rather than to whatever is on screen when
+   * the refusal lands. */
+  const mutationArtifactIdRef = useRef<string | null>(null);
   const isStaleSession = () => codeSession.current !== mutationSessionRef.current;
 
   const editArtifact = useEditArtifact({
@@ -314,7 +319,12 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       const pending = pendingUpdateRef.current;
       pendingUpdateRef.current = null;
       setCurrentUpdate(null);
-      setRejectedCode(undefined);
+      /* Only this save's own artifact is cleared: another artifact's refusal
+       * is still a refusal. */
+      const savedArtifactId = mutationArtifactIdRef.current ?? artifactRef.current.id;
+      if (rejectedCodeArtifactIdRef.current === savedArtifactId) {
+        setRejectedCode(undefined);
+      }
       const currentTarget = getArtifactEditTarget(artifactRef.current);
       if (
         pending == null ||
@@ -341,7 +351,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
 
       const status = getResponseStatus(error);
       if (status === 400 && attempted != null) {
-        setRejectedCode(attempted, artifactRef.current.id);
+        setRejectedCode(attempted, mutationArtifactIdRef.current ?? artifactRef.current.id);
       }
       setCurrentUpdate(null);
 
@@ -410,6 +420,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       }
 
       mutationSessionRef.current = codeSession.current;
+      mutationArtifactIdRef.current = target.artifactId;
       setCurrentCodeRef.current(code, art.id);
       editArtifactRef.current.mutate({
         index: target.index,
