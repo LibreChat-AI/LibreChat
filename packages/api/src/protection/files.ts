@@ -8,7 +8,12 @@ import {
   resolveEffectiveMimeType,
   isPermissiveMimeConfig,
 } from 'librechat-data-provider';
-import type { FileConfig, FileFilterField, FiltersConfig, RegexLike } from 'librechat-data-provider';
+import type {
+  FileConfig,
+  FileFilterField,
+  FiltersConfig,
+  RegexLike,
+} from 'librechat-data-provider';
 import type { ContentTraversalLimitReason } from './adapters/nested';
 import type { LocatorTraversalReporter } from './diagnostics';
 import {
