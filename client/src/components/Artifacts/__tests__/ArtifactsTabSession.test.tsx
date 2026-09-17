@@ -54,6 +54,7 @@ function Hosts() {
             latestMessageId: null,
             latestMessageText: '',
             conversationId: 'conversation-1',
+            canUndock: true,
           }}
         >
           <button

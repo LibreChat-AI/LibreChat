@@ -20,7 +20,12 @@ const ArtifactsContext = createContext<ArtifactsContextValue | undefined>(undefi
 
 interface ArtifactsProviderProps {
   children: React.ReactNode;
-  value?: Partial<ArtifactsContextValue>;
+  /* The capability has no safe default, so the host has to answer it: a
+   * provider that guessed would either offer a window the deployment forbids
+   * or hide a control it allows. Everything else here has a chat-shaped
+   * fallback the host can leave alone. */
+  value: Partial<Omit<ArtifactsContextValue, 'canUndock'>> &
+    Pick<ArtifactsContextValue, 'canUndock'>;
 }
 
 export function ArtifactsProvider({ children, value }: ArtifactsProviderProps) {
@@ -32,19 +37,18 @@ export function ArtifactsProvider({ children, value }: ArtifactsProviderProps) {
     return getLatestText(latestMessage);
   }, [latestMessage]);
 
-  const defaultContextValue = useMemo<ArtifactsContextValue>(
+  const defaultContextValue = useMemo<Omit<ArtifactsContextValue, 'canUndock'>>(
     () => ({
       isSubmitting,
       conversationId: conversationId ?? null,
       latestMessageText: chatLatestMessageText,
       latestMessageId: latestMessage?.messageId ?? null,
-      canUndock: true,
     }),
     [isSubmitting, chatLatestMessageText, latestMessage?.messageId, conversationId],
   );
 
   const contextValue = useMemo<ArtifactsContextValue>(
-    () => (value ? { ...defaultContextValue, ...value } : defaultContextValue),
+    () => ({ ...defaultContextValue, ...value }),
     [defaultContextValue, value],
   );
 
