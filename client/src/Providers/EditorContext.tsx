@@ -24,6 +24,11 @@ interface MutationContextType {
  * changes hosts (side panel, mobile sheet, undocked window), so whether the
  * buffer is this artifact's unsaved text cannot be decided from a mount.
  *
+ * `rejectedCode` is session state rather than editor-instance state because a
+ * remount is a host change, not a new decision by the user. It carries the
+ * artifact identity for the same reason as the code buffer: a rejection for
+ * one artifact must not suppress a save for another.
+ *
  * `codeSession` is the editing session the buffer belongs to. A save keeps its
  * callbacks after the editor that started it is gone, and those callbacks
  * would otherwise write the buffer a closed session just cleared and submit
@@ -38,6 +43,9 @@ interface CodeContextType {
   currentCode?: string;
   codeArtifactId?: string;
   setCurrentCode: (code: string | undefined, artifactId?: string) => void;
+  rejectedCode?: string;
+  rejectedCodeArtifactId?: string;
+  setRejectedCode: (code: string | undefined, artifactId?: string) => void;
   codeSession: { current: number };
   endCodeSession: () => void;
 }
@@ -54,6 +62,10 @@ const CodeContext = createContext<CodeContextType | undefined>(undefined);
 export function EditorProvider({ children }: { children: React.ReactNode }) {
   const isMutating = useIsMutating({ mutationKey: [MutationKeys.editArtifact] }) > 0;
   const [codeBuffer, setCodeBuffer] = useState<{ code?: string; artifactId?: string }>({});
+  const [rejectedBuffer, setRejectedBuffer] = useState<{
+    code?: string;
+    artifactId?: string;
+  }>({});
   const codeSession = useRef(0);
 
   const setCurrentCode = useCallback((code: string | undefined, artifactId?: string) => {
@@ -63,9 +75,14 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const setRejectedCode = useCallback((code: string | undefined, artifactId?: string) => {
+    setRejectedBuffer(code === undefined ? {} : { code, artifactId });
+  }, []);
+
   const endCodeSession = useCallback(() => {
     codeSession.current += 1;
     setCodeBuffer({});
+    setRejectedBuffer({});
   }, []);
 
   const mutationValue = useMemo(() => ({ isMutating }), [isMutating]);
@@ -74,10 +91,13 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
       currentCode: codeBuffer.code,
       codeArtifactId: codeBuffer.artifactId,
       setCurrentCode,
+      rejectedCode: rejectedBuffer.code,
+      rejectedCodeArtifactId: rejectedBuffer.artifactId,
+      setRejectedCode,
       codeSession,
       endCodeSession,
     }),
-    [codeBuffer, endCodeSession, setCurrentCode],
+    [codeBuffer, endCodeSession, rejectedBuffer, setCurrentCode, setRejectedCode],
   );
 
   return (

@@ -287,4 +287,53 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
       }),
     );
   });
+
+  it('does not resubmit rejected text when the editor remounts in the same session', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('REJECTED-EDIT');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      inFlight?.reject({ status: 400 });
+      await Promise.resolve();
+    });
+    await flush();
+
+    view.closePane();
+    view.reopenPane();
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves a new edit after a rejected buffer is remounted', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('REJECTED-EDIT');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      inFlight?.reject({ status: 400 });
+      await Promise.resolve();
+    });
+    await flush();
+
+    view.closePane();
+    view.reopenPane();
+    type('NEW-EDIT');
+    settleDebounce();
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(2);
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ updated: 'NEW-EDIT' }),
+    );
+  });
 });

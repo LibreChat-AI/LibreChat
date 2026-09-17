@@ -265,19 +265,27 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   const queryClient = useQueryClient();
   const { isSubmitting } = useArtifactsContext();
   const readOnly = (externalReadOnly ?? false) || isSubmitting;
-  const { currentCode, codeArtifactId, setCurrentCode, codeSession } = useCodeState();
+  const {
+    currentCode,
+    codeArtifactId,
+    setCurrentCode,
+    rejectedCode,
+    rejectedCodeArtifactId,
+    setRejectedCode,
+    codeSession,
+  } = useCodeState();
   /* The pane is remounted when it changes hosts (side panel, mobile sheet,
    * undocked window). The buffer outlives that remount, so unsaved text is
    * restored here instead of falling back to the persisted content. */
   const restoredCode = codeArtifactId === artifact.id ? currentCode : undefined;
   const [currentUpdate, setCurrentUpdate] = useState<string | null>(null);
   const { isMutating } = useMutationState();
-  const [failedContent, setFailedContent] = useState<string | null>(null);
   const artifactRef = useRef(artifact);
   const isMutatingRef = useRef(isMutating);
   const currentUpdateRef = useRef(currentUpdate);
   const setCurrentCodeRef = useRef(setCurrentCode);
-  const failedContentRef = useRef(failedContent);
+  const rejectedCodeRef = useRef(rejectedCode);
+  const rejectedCodeArtifactIdRef = useRef(rejectedCodeArtifactId);
   const pendingUpdateRef = useRef<PendingUpdate | null>(null);
   const runMutationRef = useRef<(code: string, original?: string) => void>(() => {});
   /** Read by the mount effect below, which must not re-run as the user types. */
@@ -306,8 +314,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       const pending = pendingUpdateRef.current;
       pendingUpdateRef.current = null;
       setCurrentUpdate(null);
-      setFailedContent(null);
-
+      setRejectedCode(undefined);
       const currentTarget = getArtifactEditTarget(artifactRef.current);
       if (
         pending == null ||
@@ -334,8 +341,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
 
       const status = getResponseStatus(error);
       if (status === 400 && attempted != null) {
-        setFailedContent(attempted);
-        failedContentRef.current = attempted;
+        setRejectedCode(attempted, artifactRef.current.id);
       }
       setCurrentUpdate(null);
 
@@ -365,7 +371,8 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   currentUpdateRef.current = currentUpdate;
   editArtifactRef.current = editArtifact;
   setCurrentCodeRef.current = setCurrentCode;
-  failedContentRef.current = failedContent;
+  rejectedCodeRef.current = rejectedCode;
+  rejectedCodeArtifactIdRef.current = rejectedCodeArtifactId;
   restoredCodeRef.current = restoredCode;
 
   const runMutation = useCallback(
@@ -394,7 +401,11 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         return;
       }
 
-      if (failedContentRef.current != null && code.trim() === failedContentRef.current.trim()) {
+      if (
+        rejectedCodeArtifactIdRef.current === art.id &&
+        rejectedCodeRef.current != null &&
+        code.trim() === rejectedCodeRef.current.trim()
+      ) {
         return;
       }
 
@@ -497,6 +508,14 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     }
     drainedBufferRef.current = inherited;
     prevContentRef.current = inherited;
+    if (
+      inheritedTarget != null &&
+      rejectedCodeArtifactIdRef.current === artifactRef.current.id &&
+      rejectedCodeRef.current != null &&
+      inherited.trim() === rejectedCodeRef.current.trim()
+    ) {
+      return;
+    }
     runMutationRef.current(inherited, inheritedOriginal);
   }, [isMutating, queryClient]);
 
@@ -552,14 +571,16 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * A retained buffer is also sent here. Its own debounce was cancelled when
    * the selection moved away, so this is where that edit finally becomes a
    * save — and it is sent for the artifact it belongs to, which is the one on
-   * screen again. */
+   * screen again. The rejection marker is deliberately left alone: it names
+   * the artifact it was recorded for, so it cannot suppress this artifact's
+   * save, and dropping it here would let this resend put the one text the
+   * endpoint already refused back on the wire. */
   useEffect(() => {
     if (artifact.id === prevArtifactId.current) {
       return;
     }
     prevArtifactId.current = artifact.id;
     pendingUpdateRef.current = null;
-    setFailedContent(null);
     const restored = restoredCodeRef.current;
     const nextValue = restored ?? artifact.content;
     prevContentRef.current = nextValue ?? '';
