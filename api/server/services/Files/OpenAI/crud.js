@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { toFile } = require('openai');
 const { sleep } = require('@librechat/agents');
 const { logger } = require('@librechat/data-schemas');
 const { FilePurpose } = require('librechat-data-provider');
@@ -15,8 +16,10 @@ const { FilePurpose } = require('librechat-data-provider');
 async function uploadOpenAIFile({ req, file, openai }) {
   const { height, width } = req.body;
   const isImage = height && width;
+  /* Named from the upload rather than the staged path: staging prefixes a per-request id,
+   * and this name is what the provider's file list and citations show. */
   const uploadedFile = await openai.files.create({
-    file: fs.createReadStream(file.path),
+    file: await toFile(fs.createReadStream(file.path), file.originalname),
     purpose: isImage ? FilePurpose.Vision : FilePurpose.Assistants,
   });
 
