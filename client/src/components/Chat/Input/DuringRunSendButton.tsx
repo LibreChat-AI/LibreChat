@@ -125,9 +125,8 @@ const DuringRunSendButton = React.memo(
       label: localize('com_ui_steer'),
       kbd: steerKbd,
       icon: <Zap className="h-4 w-4 text-status-warning" aria-hidden="true" />,
-      // Gate on availability, not the default action: the row exists to
-      // override a queue-preferring default with an explicit steer.
-      disabled: !steering.canSteer,
+      // A staged reasoning choice is a queued full turn, not a live steer.
+      disabled: !steering.canSteer || steering.pendingReasoningOverride != null,
       onClick: () => runAction((text) => steering.steerFromComposer(text)),
     };
     const queueRow: ActionRow = {
@@ -143,11 +142,10 @@ const DuringRunSendButton = React.memo(
       label: localize('com_ui_interrupt_steer'),
       kbd: interruptSteerKbd,
       icon: <ZapOff className="h-4 w-4 text-status-warning" aria-hidden="true" />,
-      // Matches the standalone button's gate, and deliberately NOT
-      // `!canSteer` like the steer row above: `canSteer` is also false before
-      // a conversation exists, where `interruptSteer` falls back to interrupt
-      // & send and this row must stay live for the whole first turn.
-      disabled: steering.pausedOnApproval || !steering.canControlGeneration,
+      disabled:
+        steering.pausedOnApproval ||
+        !steering.canControlGeneration ||
+        steering.pendingReasoningOverride != null,
       onClick: () => runAction((text) => steering.interruptSteer(text)),
     };
     const interruptRow: ActionRow = {

@@ -91,8 +91,10 @@ export async function waitForPersistedAgent(
   return latestAgent!;
 }
 
-export async function openAgentBuilder(page: Page) {
-  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+export async function openAgentBuilder(page: Page, { navigate = true }: { navigate?: boolean } = {}) {
+  if (navigate) {
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+  }
 
   const form = page.getByRole('form', { name: 'Agent configuration form' });
   /** Which control exists is a layout decision, not a timing one: the rail is

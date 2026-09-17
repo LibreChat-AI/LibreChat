@@ -27,6 +27,7 @@ export interface ComposerHintState {
   canControlGeneration: boolean;
   /** Which action Enter takes during a run, per the effective setting. */
   duringRunAction: 'steer' | 'queue';
+  steerInterruptsByDefault?: boolean;
   /** Whether the steer route can accept input right now. A paused tool
    *  approval forces the effective action to queue and refuses steers, so the
    *  live-send alternate must not be advertised through it. */
@@ -98,18 +99,28 @@ export function composeHint(
        alternate is named only while the stock chord still works. */
     const sendChord = sendBinding.customized ? sendBinding.display : mod;
     const isSteer = state.duringRunAction === 'steer';
-    /* With plain Enter bound to a newline, the chord IS the default action and
-       there is no second chord left to reach the alternate one, so the hint
-       names only what the composer will actually do. */
-    const defaultAction = isSteer
-      ? localize('com_ui_composer_hint_steer')
-      : localize('com_ui_composer_hint_queue_default');
+    const interruptByDefault = isSteer && state.steerInterruptsByDefault === true;
+    /* The default action and the live submit route share this preference:
+       naming plain Enter as Steer while it preempts is materially misleading. */
+    let defaultAction: string;
+    if (interruptByDefault) {
+      defaultAction = localize('com_ui_interrupt_steer');
+    } else if (isSteer) {
+      defaultAction = localize('com_ui_composer_hint_steer');
+    } else {
+      defaultAction = localize('com_ui_composer_hint_queue_default');
+    }
     const alternateAction = isSteer
       ? `${mod} ${localize('com_ui_composer_hint_queue')}`
       : `${mod} ${localize('com_ui_composer_hint_send_now')}`;
-    const chordVerb = isSteer
-      ? 'com_ui_composer_hint_steer_verb'
-      : 'com_ui_composer_hint_queue_verb';
+    let chordVerb: Parameters<typeof localize>[0];
+    if (interruptByDefault) {
+      chordVerb = 'com_ui_interrupt_steer';
+    } else if (isSteer) {
+      chordVerb = 'com_ui_composer_hint_steer_verb';
+    } else {
+      chordVerb = 'com_ui_composer_hint_queue_verb';
+    }
     const parts: string[] = [];
     if (state.enterToSend) {
       parts.push(defaultAction);

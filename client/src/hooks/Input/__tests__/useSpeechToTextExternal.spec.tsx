@@ -15,14 +15,10 @@ type SpeechMutationOptions = {
   onSuccess?: (data: { text: string }) => void;
   onError?: () => void;
 };
-
 const mockProcessAudio = jest.fn();
 const mockShowToast = jest.fn();
-let mockMutationOptions: SpeechMutationOptions | undefined;
-
 jest.mock('~/data-provider', () => ({
-  useSpeechToTextMutation: (options: SpeechMutationOptions) => {
-    mockMutationOptions = options;
+  useSpeechToTextMutation: (_options: SpeechMutationOptions) => {
     return { mutate: mockProcessAudio, isLoading: false };
   },
 }));
@@ -144,7 +140,6 @@ const start = async (begin: () => void) => {
 describe('useSpeechToTextExternal', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockMutationOptions = undefined;
     FakeMediaRecorder.instances = [];
     FakeMediaRecorder.supportedType = 'audio/webm';
     FakeAudioContext.instances = [];
@@ -283,20 +278,20 @@ describe('useSpeechToTextExternal', () => {
     const { result, onTranscriptionComplete, unmount } = setup({ autoSendText: AUTO_SEND_SECONDS });
     await start(result.current.externalStartRecording);
 
-    act(() => mockMutationOptions?.onSuccess?.({ text: 'words in flight' }));
+    act(() => mockProcessAudio.mock.calls[0]?.[1]?.onSuccess?.({ text: 'words in flight' }));
     act(() => unmount());
     act(() => jest.advanceTimersByTime(AUTO_SEND_SECONDS * 1000));
 
     expect(onTranscriptionComplete).not.toHaveBeenCalled();
   });
-
   it('settles after a transcription is written', async () => {
     const { result, setText, onTranscriptionSettled } = setup();
     await start(result.current.externalStartRecording);
-
-    act(() => mockMutationOptions?.onSuccess?.({ text: 'settled words' }));
-
-    expect(setText).toHaveBeenCalledWith('settled words');
+    const recorder = FakeMediaRecorder.instances[0];
+    act(() => recorder.emitData(new Blob(['take'], { type: 'audio/webm' })));
+    act(() => result.current.externalStopRecording());
+    act(() => mockProcessAudio.mock.calls[0]?.[1]?.onSuccess?.({ text: 'settled words' }));
+    expect(setText).toHaveBeenCalledWith('settled words', undefined);
     expect(onTranscriptionSettled).toHaveBeenCalledTimes(1);
   });
 
@@ -328,7 +323,9 @@ describe('useSpeechToTextExternal', () => {
     await start(result.current.externalStartRecording);
 
     act(() => unmount());
-    act(() => mockMutationOptions?.onSuccess?.({ text: 'words nobody is waiting for' }));
+    act(() =>
+      mockProcessAudio.mock.calls[0]?.[1]?.onSuccess?.({ text: 'words nobody is waiting for' }),
+    );
     act(() => jest.advanceTimersByTime(AUTO_SEND_SECONDS * 1000));
 
     expect(setText).not.toHaveBeenCalled();

@@ -1,6 +1,7 @@
 import { memo, useMemo, useState, useEffect, useCallback } from 'react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import type { TFile, TMessage } from 'librechat-data-provider';
+import SteerReceipt, { type SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
 import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
 import MessageQuotes from '~/components/Chat/Messages/Content/MessageQuotes';
@@ -8,7 +9,6 @@ import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { useFileMapContext, useShareContext } from '~/Providers';
-import SteerReceipt from '~/components/Chat/Steering/Receipt';
 import Image from '~/components/Chat/Messages/Content/Image';
 import CollapsibleText from './CollapsibleText';
 import { useLocalize } from '~/hooks';
@@ -30,6 +30,7 @@ const SteerPart = memo(function SteerPart({
   steerId,
   createdAt,
   isSubmitting = false,
+  receiptState = 'applied',
 }: {
   steer: string;
   files?: TMessage['files'];
@@ -43,6 +44,8 @@ const SteerPart = memo(function SteerPart({
    *  steering identity while it is the live thing at the end, then settles
    *  to timestamp gray (always settled on reload, share, and search). */
   isSubmitting?: boolean;
+  /** Pending renderer state must never claim server application early. */
+  receiptState?: SteerReceiptState;
 }) {
   const localize = useLocalize();
   /** Read the atom rather than the auth context: AuthContextProvider mirrors the
@@ -163,7 +166,7 @@ const SteerPart = memo(function SteerPart({
          *  width changes as the relative string ticks. */}
         <div className="mt-1 flex min-h-8 items-center justify-end gap-2 text-text-secondary">
           <MessageTimestamp value={timestamp} className="ml-0" />
-          <SteerReceipt state="applied" live={isSubmitting} animateIn={animateIn} />
+          <SteerReceipt state={receiptState} live={isSubmitting} animateIn={animateIn} />
         </div>
       </div>
       {otherFiles.length > 0 && (

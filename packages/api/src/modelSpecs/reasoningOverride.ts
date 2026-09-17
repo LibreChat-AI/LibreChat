@@ -95,6 +95,7 @@ export async function resolveReasoningOverride({
     defaultParamsEndpoint: customParams?.defaultParamsEndpoint ?? defaultParamsEndpoint,
     paramDefinitions: customParams?.paramDefinitions,
     reasoningFormat: customParams?.reasoningFormat,
+    blockedReasoningKeys: new Set([...appliedModelSpecPrivateFields, ...enforcedModelSpecFields]),
   });
 
   if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {

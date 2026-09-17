@@ -245,6 +245,7 @@ type ComposerReasoningOptions = {
   index: number;
   hasAddedConversation?: boolean;
   enabled?: boolean;
+  blockedReasoningKeys?: ReadonlySet<string>;
 };
 
 type ComposerReasoningState = {
@@ -258,6 +259,7 @@ export function useComposerReasoning({
   index,
   hasAddedConversation = false,
   enabled = true,
+  blockedReasoningKeys,
 }: ComposerReasoningOptions): ComposerReasoningState | null {
   const agentsMap = useAgentsMapContext();
   const { data: fetchedAgent } = useGetAgentByIdQuery(conversation?.agent_id);
@@ -322,7 +324,6 @@ export function useComposerReasoning({
   const provider = isAgent ? (agent?.provider ?? '') : (conversation?.endpoint ?? '');
   const model = isAgent ? (agent?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
-
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     return resolveReasoningSettingForTarget({
@@ -332,8 +333,9 @@ export function useComposerReasoning({
       defaultParamsEndpoint: customParams.defaultParamsEndpoint,
       reasoningFormat: customParams.reasoningFormat,
       paramDefinitions: customParams.paramDefinitions,
+      blockedReasoningKeys,
     });
-  }, [endpointType, endpointsConfig, isAgent, model, provider]);
+  }, [blockedReasoningKeys, endpointType, endpointsConfig, isAgent, model, provider]);
   const settingFingerprint =
     setting == null
       ? ''

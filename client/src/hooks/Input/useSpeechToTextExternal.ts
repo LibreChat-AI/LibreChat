@@ -35,9 +35,9 @@ export const getBestSupportedMimeType = (
 };
 
 const useSpeechToTextExternal = (
-  setText: (text: string) => void,
-  onTranscriptionComplete: (text: string) => void,
-  onTranscriptionSettled: () => void,
+  setText: (text: string, takeId?: number) => void,
+  onTranscriptionComplete: (text: string, takeId?: number) => void,
+  onTranscriptionSettled: (takeId?: number) => void,
 ) => {
   const { showToast } = useToastContext();
   const audioStream = useRef<MediaStream | null>(null);
@@ -58,6 +58,7 @@ const useSpeechToTextExternal = (
    *  from a listener registered at start, so state read there is a render
    *  behind and could pack the blob as a format the audio is not in. */
   const audioMimeTypeRef = useRef<string>('');
+  const recordingTakeIdRef = useRef<number | undefined>(undefined);
   const [isListening, setIsListening] = useState(false);
   const [isRequestBeingMade, setIsRequestBeingMade] = useState(false);
 
@@ -67,39 +68,7 @@ const useSpeechToTextExternal = (
   const [speechToText] = useRecoilState<boolean>(store.speechToText);
   const [autoTranscribeAudio] = useRecoilState<boolean>(store.autoTranscribeAudio);
 
-  const { mutate: processAudio, isLoading: isProcessing } = useSpeechToTextMutation({
-    onSuccess: (data) => {
-      /* The request outlives the composer: react-query delivers this even after
-         unmount, and arming the auto-send here would submit a turn into a
-         conversation the user has already left. */
-      if (!isMountedRef.current) {
-        return;
-      }
-
-      const extractedText = data.text;
-      setText(extractedText);
-      setIsRequestBeingMade(false);
-      onTranscriptionSettled();
-
-      if (autoSendText > -1 && speechToText && extractedText.length > 0) {
-        if (autoSendTimerRef.current) {
-          clearTimeout(autoSendTimerRef.current);
-        }
-        autoSendTimerRef.current = setTimeout(() => {
-          autoSendTimerRef.current = null;
-          onTranscriptionComplete(extractedText);
-        }, autoSendText * 1000);
-      }
-    },
-    onError: () => {
-      showToast({
-        message: 'An error occurred while processing the audio, maybe the audio was too short',
-        status: 'error',
-      });
-      setIsRequestBeingMade(false);
-      onTranscriptionSettled();
-    },
-  });
+  const { mutate: processAudio, isLoading: isProcessing } = useSpeechToTextMutation();
 
   const getFileExtension = (mimeType: string) => {
     if (mimeType.includes('mp4')) {
@@ -156,10 +125,39 @@ const useSpeechToTextExternal = (
       }
       setIsRequestBeingMade(true);
       cleanup();
-      processAudio(formData);
+      const takeId = recordingTakeIdRef.current;
+      processAudio(formData, {
+        onSuccess: (data) => {
+          if (!isMountedRef.current) {
+            return;
+          }
+          const extractedText = data.text;
+          setText(extractedText, takeId);
+          setIsRequestBeingMade(false);
+          onTranscriptionSettled(takeId);
+          if (autoSendText > -1 && speechToText && extractedText.length > 0) {
+            if (autoSendTimerRef.current != null) {
+              clearTimeout(autoSendTimerRef.current);
+              autoSendTimerRef.current = null;
+            }
+            autoSendTimerRef.current = setTimeout(() => {
+              autoSendTimerRef.current = null;
+              onTranscriptionComplete(extractedText, takeId);
+            }, autoSendText * 1000);
+          }
+        },
+        onError: () => {
+          showToast({
+            message: 'An error occurred while processing the audio, maybe the audio was too short',
+            status: 'error',
+          });
+          setIsRequestBeingMade(false);
+          onTranscriptionSettled(takeId);
+        },
+      });
     } else {
       showToast({ message: 'The audio was too short', status: 'warning' });
-      onTranscriptionSettled();
+      onTranscriptionSettled(recordingTakeIdRef.current);
     }
   };
 
@@ -206,7 +204,8 @@ const useSpeechToTextExternal = (
     audioStream.current = null;
   };
 
-  const startRecording = async () => {
+  const startRecording = async (takeId?: number) => {
+    recordingTakeIdRef.current = takeId;
     if (isRequestBeingMade) {
       showToast({ message: 'A request is already being made. Please wait.', status: 'warning' });
       return;
@@ -292,14 +291,13 @@ const useSpeechToTextExternal = (
       showToast({ message: 'MediaRecorder is not recording', status: 'error' });
     }
   };
-
-  const externalStartRecording = () => {
+  const externalStartRecording = (takeId?: number) => {
     if (isListening) {
       showToast({ message: 'Already listening. Please stop recording first.', status: 'warning' });
       return;
     }
 
-    startRecording();
+    void startRecording(takeId);
   };
 
   const externalStopRecording = () => {

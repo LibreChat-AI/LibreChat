@@ -3,14 +3,14 @@ import useSpeechToTextBrowser from './useSpeechToTextBrowser';
 import useGetAudioSettings from './useGetAudioSettings';
 
 const useSpeechToText = (
-  setText: (text: string) => void,
-  onTranscriptionComplete: (text: string) => void,
-  onTranscriptionSettled: () => void,
+  setText: (text: string, takeId?: number) => void,
+  onTranscriptionComplete: (text: string, takeId?: number) => void,
+  onTranscriptionSettled: (takeId?: number) => void,
 ): {
   isLoading?: boolean;
   isListening?: boolean;
   stopRecording: () => void | Promise<void>;
-  startRecording: () => void | Promise<void>;
+  startRecording: (takeId?: number) => void | Promise<void>;
   /** Ends capture without producing a transcript. */
   abortRecording: () => void;
 } => {

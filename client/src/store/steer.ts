@@ -33,3 +33,8 @@ export type RevealedQueuedTurn = {
 export const revealedQueuedTurnFamily = atomFamily((_conversationId: string) =>
   atom<RevealedQueuedTurn | null>(null),
 );
+
+/** Client ids cancelled before the steer POST receives its authoritative id. */
+export const pendingSteerCancelClientIdsFamily = atomFamily((_conversationId: string) =>
+  atom<string[]>([]),
+);

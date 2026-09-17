@@ -29,9 +29,9 @@ const SpeechRecognition = hasSpeechRecognitionController(speechRecognitionModule
   : speechRecognitionModule.default;
 
 const useSpeechToTextBrowser = (
-  setText: (text: string) => void,
-  onTranscriptionComplete: (text: string) => void,
-  onTranscriptionSettled: () => void,
+  setText: (text: string, takeId?: number) => void,
+  onTranscriptionComplete: (text: string, takeId?: number) => void,
+  onTranscriptionSettled: (takeId?: number) => void,
 ) => {
   const localize = useLocalize();
   const { showToast } = useToastContext();
@@ -40,10 +40,11 @@ const useSpeechToTextBrowser = (
 
   const lastTranscript = useRef<string | null>(null);
   const lastInterim = useRef<string | null>(null);
+  const activeTakeIdRef = useRef<number | undefined>(undefined);
   const timeoutRef = useRef<NodeJS.Timeout | null>();
-  const [autoSendText] = useRecoilState(store.autoSendText);
   const [languageSTT] = useRecoilState<string>(store.languageSTT);
   const [autoTranscribeAudio] = useRecoilState<boolean>(store.autoTranscribeAudio);
+  const [autoSendText] = useRecoilState(store.autoSendText);
 
   const {
     listening,
@@ -64,7 +65,7 @@ const useSpeechToTextBrowser = (
       return;
     }
 
-    setText(interimTranscript);
+    setText(interimTranscript, activeTakeIdRef.current);
     lastInterim.current = interimTranscript;
   }, [setText, interimTranscript]);
 
@@ -77,11 +78,12 @@ const useSpeechToTextBrowser = (
       return;
     }
 
-    setText(finalTranscript);
+    const takeId = activeTakeIdRef.current;
+    setText(finalTranscript, takeId);
     lastTranscript.current = finalTranscript;
     if (autoSendText > -1 && finalTranscript.length > 0) {
       timeoutRef.current = setTimeout(() => {
-        onTranscriptionComplete(finalTranscript);
+        onTranscriptionComplete(finalTranscript, takeId);
         resetTranscript();
       }, autoSendText * 1000);
     }
@@ -92,57 +94,61 @@ const useSpeechToTextBrowser = (
       }
     };
   }, [setText, onTranscriptionComplete, resetTranscript, finalTranscript, autoSendText]);
+  const startRecording = useCallback(
+    (takeId?: number) => {
+      activeTakeIdRef.current = takeId;
+      if (!browserSupportsSpeechRecognition) {
+        showToast({
+          message: sttExternal
+            ? localize('com_ui_speech_not_supported_use_external')
+            : localize('com_ui_speech_not_supported'),
+          status: 'error',
+        });
+        return;
+      }
 
-  const startRecording = useCallback(() => {
-    if (!browserSupportsSpeechRecognition) {
-      showToast({
-        message: sttExternal
-          ? localize('com_ui_speech_not_supported_use_external')
-          : localize('com_ui_speech_not_supported'),
-        status: 'error',
+      if (!isMicrophoneAvailable) {
+        showToast({
+          message: localize('com_ui_microphone_unavailable'),
+          status: 'error',
+        });
+        return;
+      }
+
+      if (!hasSpeechRecognitionController(SpeechRecognition)) {
+        showToast({
+          message: sttExternal
+            ? localize('com_ui_speech_not_supported_use_external')
+            : localize('com_ui_speech_not_supported'),
+          status: 'error',
+        });
+        return;
+      }
+
+      SpeechRecognition.startListening({
+        language: languageSTT,
+        continuous: autoTranscribeAudio,
       });
-      return;
-    }
-
-    if (!isMicrophoneAvailable) {
-      showToast({
-        message: localize('com_ui_microphone_unavailable'),
-        status: 'error',
-      });
-      return;
-    }
-
-    if (!hasSpeechRecognitionController(SpeechRecognition)) {
-      showToast({
-        message: sttExternal
-          ? localize('com_ui_speech_not_supported_use_external')
-          : localize('com_ui_speech_not_supported'),
-        status: 'error',
-      });
-      return;
-    }
-
-    SpeechRecognition.startListening({
-      language: languageSTT,
-      continuous: autoTranscribeAudio,
-    });
-  }, [
-    autoTranscribeAudio,
-    browserSupportsSpeechRecognition,
-    isMicrophoneAvailable,
-    languageSTT,
-    localize,
-    showToast,
-    sttExternal,
-  ]);
+    },
+    [
+      autoTranscribeAudio,
+      browserSupportsSpeechRecognition,
+      isMicrophoneAvailable,
+      languageSTT,
+      localize,
+      showToast,
+      sttExternal,
+    ],
+  );
 
   const stopRecording = useCallback(async () => {
+    const takeId = activeTakeIdRef.current;
     try {
       if (hasSpeechRecognitionController(SpeechRecognition)) {
         await SpeechRecognition.stopListening();
       }
     } finally {
-      onTranscriptionSettled();
+      onTranscriptionSettled(takeId);
     }
   }, [onTranscriptionSettled]);
 

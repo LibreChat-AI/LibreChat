@@ -5,8 +5,9 @@ import { TextQuote } from 'lucide-react';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
+import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
+import useSteerCancel, { useSteerMoveToQueue } from '~/hooks/Chat/useSteerCancel';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
-import { useSteerMoveToQueue } from '~/hooks/Chat/useSteerCancel';
 import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useSteerRecovery from '~/hooks/Chat/useSteerRecovery';
 import { hasLiveRunPause } from '~/hooks/Chat/useSteering';
@@ -37,6 +38,7 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
   const { showToast } = useToastContext();
   const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
   const { retry, sendAsNew } = useSteerRecovery(conversationId);
+  const cancelSteer = useSteerCancel(conversationId);
   const escalate = useSteerEscalate(conversationId);
   const moveToQueue = useSteerMoveToQueue(conversationId);
   const [movingId, setMovingId] = useState<string | null>(null);
@@ -89,6 +91,22 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
       setMovingId(null);
     }
   };
+  const cancelPendingSteer = async (steer: (typeof steers)[number]) => {
+    if (movingId != null) {
+      return;
+    }
+    setMovingId(steer.steerId);
+    try {
+      const outcome = await cancelSteer(steer);
+      if (outcome === 'applied') {
+        showToast({ message: localize('com_ui_steer_already_applied'), status: 'info' });
+      } else if (outcome === 'failed') {
+        showToast({ message: localize('com_ui_steer_cancel_failed'), status: 'error' });
+      }
+    } finally {
+      setMovingId(null);
+    }
+  };
 
   return (
     <div role="list" aria-label={localize('com_ui_steer_in_flight')} data-testid="pending-steers">
@@ -96,6 +114,12 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
         const deliveryUncertain = steer.deliveryUncertain === true;
         const retrySafe = !isLegacyDeliveryUncertain(steer);
         const quoteCount = steer.quotes?.length ?? 0;
+        let receiptState: SteerReceiptState = 'delivered';
+        if (steer.status === 'sending') {
+          receiptState = 'sending';
+        } else if (steer.preempt === true) {
+          receiptState = 'interrupting';
+        }
         return (
           <div
             key={steer.steerId}
@@ -107,6 +131,7 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
               files={steer.files}
               steerId={steer.steerId}
               createdAt={steer.createdAt}
+              receiptState={receiptState}
             />
             {steer.status === 'failed' ? (
               <div className="-mt-2 mb-2 flex items-center gap-3 pl-9 text-xs">
@@ -168,13 +193,25 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
                   />
                 )}
                 {steer.status === 'pending' && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={movingId != null}
+                      onClick={() => void queueSteer(steer)}
+                      className={ACTION_CLASS}
+                    >
+                      {localize('com_ui_convert_to_queue')}
+                    </button>
+                  </>
+                )}
+                {(steer.status === 'pending' || steer.status === 'sending') && (
                   <button
                     type="button"
                     disabled={movingId != null}
-                    onClick={() => void queueSteer(steer)}
+                    onClick={() => void cancelPendingSteer(steer)}
                     className={ACTION_CLASS}
                   >
-                    {localize('com_ui_convert_to_queue')}
+                    {localize('com_ui_cancel')}
                   </button>
                 )}
               </div>

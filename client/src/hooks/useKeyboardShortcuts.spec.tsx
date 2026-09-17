@@ -155,6 +155,8 @@ function appendResponseCopyButton(onClick: () => void) {
  *  button while the user types a steer. */
 function appendComposerForm({ hidden = false }: { hidden?: boolean } = {}) {
   const onClick = jest.fn();
+  const pane = document.createElement('div');
+  pane.dataset.chatPane = String(document.querySelectorAll('[data-chat-pane]').length);
   const form = document.createElement('form');
   const textarea = document.createElement('textarea');
   const button = document.createElement('button');
@@ -165,8 +167,9 @@ function appendComposerForm({ hidden = false }: { hidden?: boolean } = {}) {
   }
   button.addEventListener('click', onClick);
   form.append(textarea, button);
-  document.body.appendChild(form);
-  return { form, textarea, onClick };
+  pane.appendChild(form);
+  document.body.appendChild(pane);
+  return { form: pane, textarea, onClick };
 }
 
 /** A composer form carrying the palette disclosure the upload shortcut clicks.
@@ -174,6 +177,8 @@ function appendComposerForm({ hidden = false }: { hidden?: boolean } = {}) {
  *  cannot share. */
 function appendPaletteForm({ uploadShortcut = true }: { uploadShortcut?: boolean } = {}) {
   const onClick = jest.fn();
+  const pane = document.createElement('div');
+  pane.dataset.chatPane = String(document.querySelectorAll('[data-chat-pane]').length);
   const form = document.createElement('form');
   const textarea = document.createElement('textarea');
   const anchor = document.createElement('button');
@@ -184,8 +189,9 @@ function appendPaletteForm({ uploadShortcut = true }: { uploadShortcut?: boolean
   button.dataset.uploadShortcut = String(uploadShortcut);
   button.addEventListener('click', onClick);
   form.append(textarea, anchor, button);
-  document.body.appendChild(form);
-  return { form, textarea, anchor, onClick };
+  pane.appendChild(form);
+  document.body.appendChild(pane);
+  return { form: pane, textarea, anchor, onClick };
 }
 
 function appendEscalationButton(
@@ -351,6 +357,24 @@ describe('global shortcut dispatch', () => {
     const event = dispatchKey({ key: 's', ctrlKey: true, shiftKey: true });
 
     expect(event.defaultPrevented).toBe(false);
+  });
+  it('ignores hidden dialog shells but suppresses shortcuts for visible dialogs', () => {
+    renderHarness();
+    const hiddenDialog = document.createElement('div');
+    hiddenDialog.setAttribute('role', 'dialog');
+    hiddenDialog.hidden = true;
+    document.body.appendChild(hiddenDialog);
+
+    const hiddenEvent = dispatchKey({ key: 's', ctrlKey: true, shiftKey: true });
+    expect(hiddenEvent.defaultPrevented).toBe(true);
+
+    hiddenDialog.remove();
+    const visibleDialog = document.createElement('div');
+    visibleDialog.setAttribute('role', 'dialog');
+    document.body.appendChild(visibleDialog);
+
+    const visibleEvent = dispatchKey({ key: 's', ctrlKey: true, shiftKey: true });
+    expect(visibleEvent.defaultPrevented).toBe(false);
   });
 
   it('ignores non-allowed shortcuts while typing in an input', () => {
@@ -587,6 +611,48 @@ describe('stop generating shortcut', () => {
 
     expect(second.onClick).toHaveBeenCalledTimes(1);
     expect(first.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+  it('clicks the visible stop control when a hidden control is mounted first', () => {
+    renderHarness();
+    const hiddenClick = jest.fn();
+    const visibleClick = jest.fn();
+    const hidden = document.createElement('button');
+    hidden.dataset.testid = 'stop-generation-button';
+    hidden.style.display = 'none';
+    hidden.addEventListener('click', hiddenClick);
+    const visible = document.createElement('button');
+    visible.dataset.testid = 'stop-generation-button';
+    visible.addEventListener('click', visibleClick);
+    const focusTarget = document.createElement('input');
+    document.body.append(hidden, visible, focusTarget);
+    focusTarget.focus();
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true }, focusTarget);
+
+    expect(hiddenClick).not.toHaveBeenCalled();
+    expect(visibleClick).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('uses the visible model selector when a hidden selector is mounted first', () => {
+    renderHarness();
+    const hiddenClick = jest.fn();
+    const visibleClick = jest.fn();
+    const hidden = document.createElement('button');
+    hidden.dataset.testid = 'model-selector-button';
+    hidden.style.display = 'none';
+    hidden.addEventListener('click', hiddenClick);
+    const visible = document.createElement('button');
+    visible.dataset.testid = 'model-selector-button';
+    visible.addEventListener('click', visibleClick);
+    document.body.append(hidden, visible);
+    visible.focus();
+
+    const event = dispatchKey({ key: 'm', ctrlKey: true, shiftKey: true }, visible);
+
+    expect(hiddenClick).not.toHaveBeenCalled();
+    expect(visibleClick).toHaveBeenCalledTimes(1);
     expect(event.defaultPrevented).toBe(true);
   });
 

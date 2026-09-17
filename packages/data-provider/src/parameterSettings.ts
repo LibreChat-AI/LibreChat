@@ -1410,10 +1410,9 @@ export function resolveReasoningSetting({
   );
 }
 
-/** Builds the effective reasoning definition shared by the composer and the
- * server. Custom definitions refine provider defaults instead of replacing the
- * rest of the settings list; generic custom/OpenRouter targets require an
- * explicit reasoning declaration before their shared settings can be consulted. */
+/** Builds the effective reasoning definition shared by the composer and the server.
+ * A model-spec lock is part of capability resolution, not a caller-only UI check:
+ * both surfaces must see the same unavailable result before an override is staged. */
 export function resolveReasoningSettingForTarget({
   endpoint,
   model,
@@ -1421,6 +1420,7 @@ export function resolveReasoningSettingForTarget({
   defaultParamsEndpoint,
   reasoningFormat,
   paramDefinitions,
+  blockedReasoningKeys,
 }: {
   endpoint: string;
   model?: string | null;
@@ -1428,6 +1428,7 @@ export function resolveReasoningSettingForTarget({
   defaultParamsEndpoint?: string | null;
   reasoningFormat?: ReasoningParameterFormat | null;
   paramDefinitions?: Partial<SettingDefinition>[] | null;
+  blockedReasoningKeys?: ReadonlySet<string>;
 }): SettingDefinition | undefined {
   if (!model || reasoningFormat === ReasoningParameterFormat.disabled) {
     return undefined;
@@ -1449,7 +1450,6 @@ export function resolveReasoningSettingForTarget({
   if (usesGenericSettings && !hasExplicitCapability) {
     return undefined;
   }
-
   const baseSettings = isAgent
     ? (agentParamSettings[combinedSettingsKey] ??
       agentParamSettings[effectiveDefaultParamsEndpoint] ??
@@ -1462,6 +1462,7 @@ export function resolveReasoningSettingForTarget({
       paramSettings[effectiveDefaultParamsEndpoint] ??
       paramSettings[endpointSettingsKey] ??
       []);
+
   const customSettingsByKey = new Map(
     (paramDefinitions ?? []).flatMap((setting) =>
       setting.key == null ? [] : ([[setting.key, setting]] as const),
@@ -1482,17 +1483,30 @@ export function resolveReasoningSettingForTarget({
     reasoningSettingKeys.includes(setting.key as ReasoningSettingKey),
   )?.key as ReasoningSettingKey | undefined;
   if (explicitReasoningKey != null) {
-    return findReasoningSetting(effectiveSettings, explicitReasoningKey);
+    const explicitSetting = findReasoningSetting(effectiveSettings, explicitReasoningKey);
+    return explicitSetting != null && blockedReasoningKeys?.has(explicitSetting.key)
+      ? undefined
+      : explicitSetting;
   }
   const resolutionEndpoint = isKnownReasoningProvider(effectiveDefaultParamsEndpoint)
     ? effectiveDefaultParamsEndpoint
     : endpoint;
-
-  return resolveReasoningSetting({
+  if (
+    resolutionEndpoint === EModelEndpoint.azureOpenAI &&
+    !paramDefinitions?.some((setting) =>
+      reasoningSettingKeys.includes(setting.key as ReasoningSettingKey),
+    )
+  ) {
+    return undefined;
+  }
+  const resolvedSetting = resolveReasoningSetting({
     endpoint: resolutionEndpoint,
     model,
     settings: effectiveSettings,
   });
+  return resolvedSetting != null && blockedReasoningKeys?.has(resolvedSetting.key)
+    ? undefined
+    : resolvedSetting;
 }
 
 /** Confirms that a stored one-shot override still belongs to the selected

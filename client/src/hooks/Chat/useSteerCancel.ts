@@ -1,6 +1,8 @@
 import { useCallback } from 'react';
+import { useSetAtom } from 'jotai';
 import { useRecoilCallback, useRecoilValue } from 'recoil';
 import type { PendingSteer } from '~/store/families';
+import { pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useCancelSteerMutation } from '~/data-provider';
 import { appendAppliedSteerIds } from '~/utils';
@@ -17,6 +19,7 @@ export function useSteerReclaim(conversationId: string) {
   const activeGenerationCreatedAt = useRecoilValue(
     store.activeGenerationCreatedAtByConvoId(conversationId),
   );
+  const setPendingCancelIds = useSetAtom(pendingSteerCancelClientIdsFamily(conversationId));
   const settleReclaimed = useRecoilCallback(
     ({ set }) =>
       (steer: PendingSteer) => {
@@ -32,6 +35,7 @@ export function useSteerReclaim(conversationId: string) {
               (item.clientSteerId == null || !settled.has(item.clientSteerId)),
           ),
         );
+        setPendingCancelIds((prev) => prev.filter((id) => !ids.includes(id)));
         set(store.queuedMessagesByConvoId(conversationId), (prev) =>
           prev.filter(
             (item) =>
@@ -41,7 +45,7 @@ export function useSteerReclaim(conversationId: string) {
           ),
         );
       },
-    [conversationId],
+    [conversationId, setPendingCancelIds],
   );
 
   return useCallback(
@@ -93,24 +97,38 @@ export function useSteerMoveToQueue(conversationId: string) {
 
 export default function useSteerCancel(conversationId: string) {
   const reclaim = useSteerReclaim(conversationId);
-
-  const removeEntry = useRecoilCallback(
+  const setPendingCancelIds = useSetAtom(pendingSteerCancelClientIdsFamily(conversationId));
+  const markOptimisticCancel = useRecoilCallback(
     ({ set }) =>
-      (steerId: string) => {
-        set(store.pendingSteersByConvoId(conversationId), (prev) =>
-          prev.filter((item) => item.steerId !== steerId),
-        );
+      (steer: PendingSteer) => {
+        const clientId = steer.clientSteerId ?? steer.steerId;
+        setPendingCancelIds((prev) => (prev.includes(clientId) ? prev : [...prev, clientId]));
+        if (steer.status === 'sending') {
+          set(store.pendingSteersByConvoId(conversationId), (prev) =>
+            prev.filter((item) => item.steerId !== steer.steerId),
+          );
+        }
       },
-    [conversationId],
+    [conversationId, setPendingCancelIds],
+  );
+  const clearOptimisticCancel = useCallback(
+    (steer: PendingSteer) => {
+      const clientId = steer.clientSteerId ?? steer.steerId;
+      setPendingCancelIds((prev) => prev.filter((id) => id !== clientId));
+    },
+    [setPendingCancelIds],
   );
   return useCallback(
     async (steer: PendingSteer): Promise<SteerCancelOutcome> => {
+      if (steer.status === 'sending') {
+        markOptimisticCancel(steer);
+      }
       const outcome = await reclaim(steer);
       if (outcome === 'reclaimed') {
-        removeEntry(steer.steerId);
+        clearOptimisticCancel(steer);
       }
       return outcome;
     },
-    [reclaim, removeEntry],
+    [clearOptimisticCancel, markOptimisticCancel, reclaim],
   );
 }

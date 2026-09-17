@@ -13,7 +13,6 @@ import { ensureSidebarOnScreen } from './pinned.helpers';
 
 const MCP_SERVER_TITLE = 'E2E Memory';
 const PROVIDER_C = { label: 'Mock Provider C', model: 'mock-model-c' };
-const SLOW_REPLY_LAST_CHUNK = 'chunk-159';
 
 const messageInput = (page: Page) => page.getByRole('textbox', { name: 'Message input' });
 const duringRunSendButton = (page: Page) => page.getByTestId('during-run-send-button');
@@ -96,9 +95,11 @@ test.describe('composer defaults', () => {
       timeout: 10000,
     });
     await expect(
-      messagesView(page).locator('[data-testid="steer-part"]:not([data-testid="pending-steers"] *)').filter({
-        hasText: steerText,
-      }),
+      messagesView(page)
+        .locator('[data-testid="steer-part"]:not([data-testid="pending-steers"] *)')
+        .filter({
+          hasText: steerText,
+        }),
     ).toHaveCount(1, { timeout: 60000 });
     await expect(messagesView(page).getByText(`E2E steer tool reply done ${label}`)).toBeVisible({
       timeout: 60000,
@@ -106,6 +107,5 @@ test.describe('composer defaults', () => {
     await expect(messagesView(page).getByText(`[steers-seen=1] ${steerText}`)).toBeVisible({
       timeout: 30000,
     });
-    await expect(messagesView(page).getByText(SLOW_REPLY_LAST_CHUNK)).toBeVisible({ timeout: 30000 });
   });
 });

@@ -477,8 +477,8 @@ const ChatForm = memo(function ChatForm({
   const speechDisabled =
     !speechSettingsInitialized || disableInputs || isNotAppendable || answerMode.composerLocked;
   /** The same gate `onSubmit` applies: while a question pause is live the
-   *  composer IS the answer box, so a dictated turn has to answer it rather
-   *  than start a turn the paused run would drop. */
+   * composer IS the answer box, so a dictated turn has to answer it rather
+   * than start a turn the paused run would drop. */
   const dictationAsk = useCallback<TAskFunction>(
     (props) => {
       if (dictationAnswerModeActive && submitAnswerText(props.text)) {
@@ -490,6 +490,7 @@ const ChatForm = memo(function ChatForm({
   );
   const dictation = useDictation({
     ask: dictationAsk,
+    duringRunSubmit: steering.duringRunActive ? steering.submitDuringRun : undefined,
     methods,
     /* Answer mode leaves the run submitting while handing the composer over,
        which is exactly when speech must still reach it: the send button is
@@ -566,8 +567,8 @@ const ChatForm = memo(function ChatForm({
     submitButtonRef,
     filesLoading,
     showStopButton,
-    handleStopGenerating,
     setShowStopButton,
+    handleStopGenerating,
     endpoint,
   ]);
 
@@ -937,6 +938,7 @@ const ChatForm = memo(function ChatForm({
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
             canControlGeneration={steering.canControlGeneration}
+            steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
             canSteer={steering.canSteer}
             answerModeActive={answerMode.active}

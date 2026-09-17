@@ -38,6 +38,7 @@ export interface Dictation {
  */
 export default function useDictation({
   ask,
+  duringRunSubmit,
   methods,
   isSubmitting,
   filesLoading = false,
@@ -47,6 +48,8 @@ export default function useDictation({
   speechToText,
 }: {
   ask: TAskFunction;
+  /** Optional host route for a take that completes while generation is active. */
+  duringRunSubmit?: (text: string) => boolean | void;
   methods: ReturnType<typeof useChatFormContext>;
   isSubmitting: boolean;
   /** Attachments still uploading. Send and steer both refuse to submit while
@@ -68,12 +71,15 @@ export default function useDictation({
   const { showToast } = useToastContext();
   const { speechToTextEndpoint } = useGetAudioSettings();
   /** The Auto Send Text setting, which submits a plain recording once its
-   *  transcript settles. A stop that was never asked to send still honours it. */
+   * transcript settles. A stop that was never asked to send still honours it. */
   const autoSendEnabled = autoSendText > -1;
 
   const existingTextRef = useRef<string>('');
+  const takeIdRef = useRef(0);
   const isSubmittingRef = useRef(isSubmitting);
   isSubmittingRef.current = isSubmitting;
+  const duringRunSubmitRef = useRef(duringRunSubmit);
+  duringRunSubmitRef.current = duringRunSubmit;
   const filesLoadingRef = useRef(filesLoading);
   filesLoadingRef.current = filesLoading;
   const deferComposerResetRef = useRef(deferComposerReset);
@@ -90,13 +96,13 @@ export default function useDictation({
    *  the composer holding the draft that was there before recording, which an
    *  armed stop-and-send would then send as if it had been dictated. */
   const heardRef = useRef(false);
-
   const submit = useCallback(
     (text: string) => {
       if (spentRef.current || !text) {
         return;
       }
-      if (isSubmittingRef.current) {
+      const runSubmit = duringRunSubmitRef.current;
+      if (isSubmittingRef.current && runSubmit == null) {
         showToast({ message: localize('com_ui_speech_while_submitting'), status: 'error' });
         return;
       }
@@ -111,7 +117,7 @@ export default function useDictation({
       if (globalAudio) {
         globalAudio.muted = false;
       }
-      const submitted = ask({ text });
+      const submitted = runSubmit?.(text) ?? ask({ text });
       if (submitted === false) {
         spentRef.current = false;
         return;
@@ -124,9 +130,11 @@ export default function useDictation({
     },
     [ask, reset, showToast, localize],
   );
-
   const onTranscriptionComplete = useCallback(
-    (text: string) => {
+    (text: string, takeId?: number) => {
+      if (takeId != null && takeId !== takeIdRef.current) {
+        return;
+      }
       const mode = modeRef.current;
 
       if (text) {
@@ -158,11 +166,14 @@ export default function useDictation({
 
       submit(finalText);
     },
-    [reset, setValue, submit, autoSendEnabled, speechToTextEndpoint],
+    [autoSendEnabled, reset, setValue, submit, speechToTextEndpoint],
   );
 
   const setText = useCallback(
-    (text: string) => {
+    (text: string, takeId?: number) => {
+      if (takeId != null && takeId !== takeIdRef.current) {
+        return;
+      }
       if (modeRef.current === 'cancel') {
         return;
       }
@@ -177,7 +188,11 @@ export default function useDictation({
   );
 
   const [settling, setSettling] = useState(false);
-  const onTranscriptionSettled = useCallback(() => setSettling(false), []);
+  const onTranscriptionSettled = useCallback((takeId?: number) => {
+    if (takeId == null || takeId === takeIdRef.current) {
+      setSettling(false);
+    }
+  }, []);
   const { isListening, isLoading, startRecording, stopRecording, abortRecording } = useSpeechToText(
     setText,
     onTranscriptionComplete,
@@ -220,7 +235,6 @@ export default function useDictation({
     }
     submit(getValues('text') || '');
   }, [pendingSend, active, isLoading, settling, submit, getValues]);
-
   /* A discarded request can remain in React Query's loading state until the
      network settles. It no longer owns the composer once cancel is pressed. */
   const [discarded, setDiscarded] = useState(false);
@@ -230,19 +244,19 @@ export default function useDictation({
       /* Do not re-arm the canceled take before its late callback arrives. */
       return;
     }
+    const takeId = takeIdRef.current + 1;
+    takeIdRef.current = takeId;
     modeRef.current = 'compose';
     spentRef.current = false;
     heardRef.current = false;
     setDiscarded(false);
     setPendingSend(false);
     existingTextRef.current = getValues('text') || '';
-    startRecording();
+    startRecording(takeId);
   }, [disabled, getValues, isLoading, settling, startRecording]);
 
-  /* Only a running take can be stopped. The bar disables these controls once a
-     transcription is in flight, and this is the same rule stated where the mode
-     is actually written: a second stop would otherwise rewrite how a take that
-     was already committed gets spent. */
+  /* Only a running take can be stopped. The bar disables stop and send once a
+     transcription is in flight, and this hook keeps the same boundary. */
   const activeRef = useRef(active);
   activeRef.current = active;
   const stopWith = useCallback(
@@ -260,11 +274,10 @@ export default function useDictation({
     [stopRecording],
   );
 
-  /* A real abort, not a stop that throws the result away: stopping would still
-     hand the audio to the transcription request and flash "Transcribing" before
-     discarding it. The mode flag stays set as a backstop in case a transcript
-     that was already in flight lands anyway. */
+  /* A real abort, not a stop that throws the result away. The token invalidates
+     callbacks from this take even if an external request settles later. */
   const cancel = useCallback(() => {
+    takeIdRef.current += 1;
     modeRef.current = 'cancel';
     spentRef.current = true;
     setDiscarded(true);

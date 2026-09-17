@@ -339,6 +339,17 @@ function anyModalOpen(): boolean {
     if (dialog.getAttribute('data-state') === 'closed') {
       continue;
     }
+    if (dialog.hasAttribute('hidden')) {
+      continue;
+    }
+    const style = (dialog as HTMLElement).style;
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      continue;
+    }
+    const computedStyle = typeof window !== 'undefined' ? window.getComputedStyle(dialog) : null;
+    if (computedStyle?.display === 'none' || computedStyle?.visibility === 'hidden') {
+      continue;
+    }
     return true;
   }
   return false;
@@ -370,8 +381,34 @@ function clickTarget(el: HTMLElement | null | undefined): boolean {
   return true;
 }
 
+function isVisibleElement(el: HTMLElement): boolean {
+  for (let current: HTMLElement | null = el; current != null; current = current.parentElement) {
+    if (current.hidden) {
+      return false;
+    }
+    const style = current.style;
+    const computedStyle = typeof window !== 'undefined' ? window.getComputedStyle(current) : null;
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      computedStyle?.display === 'none' ||
+      computedStyle?.visibility === 'hidden'
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function clickElement(selector: string): boolean {
-  return clickTarget(document.querySelector<HTMLElement>(selector));
+  const elements = document.querySelectorAll<HTMLElement>(selector);
+  for (const element of elements) {
+    if (!isUnavailableElement(element) && isVisibleElement(element)) {
+      element.click();
+      return true;
+    }
+  }
+  return false;
 }
 
 function clickLastElement(selector: string): boolean {
@@ -622,21 +659,17 @@ export function useShortcutActions(): ShortcutAction[] {
     if (paneIndex != null && /^\d+$/.test(paneIndex)) {
       return document.querySelector<HTMLElement>(`[data-chat-pane="${paneIndex}"]`);
     }
-    return activeElement?.closest<HTMLElement>('form') ?? null;
+    return null;
   }, []);
 
   const handleStopGenerating = useCallback(() => {
-    /* Both split panes can be generating at once, each advertising this
-       shortcut under its own composer; stop the run the user is focused in
-       rather than always the first pane's. The composer keeps its stop control
-       mounted (hidden) whenever the during-run send button takes the visible
-       slot, so typing a steer never costs the focused form its match. The
-       document-wide fallback is for focus that sits outside any composer. */
     const focusedPane = getFocusedChatPane();
+    const scoped = focusedPane?.querySelector<HTMLElement>(
+      '[data-testid="stop-generation-button"]',
+    );
     if (focusedPane == null) {
       return clickElement('[data-testid="stop-generation-button"]');
     }
-    const scoped = focusedPane.querySelector<HTMLElement>('[data-testid="stop-generation-button"]');
     return scoped != null ? clickTarget(scoped) : false;
   }, [getFocusedChatPane]);
 
@@ -1127,11 +1160,12 @@ export default function useKeyboardShortcuts() {
 
       const target = e.target as HTMLElement | null;
 
+      const isStopGenerating = matchedId === 'stopGenerating';
       if (shortcutsDialogOpen) {
-        if (matchedId !== 'showShortcuts') {
+        if (matchedId !== 'showShortcuts' && !isStopGenerating) {
           return;
         }
-      } else if (anyModalOpen() || isWithinOpenMenu(target)) {
+      } else if (!isStopGenerating && (anyModalOpen() || isWithinOpenMenu(target))) {
         return;
       }
 
@@ -1140,8 +1174,6 @@ export default function useKeyboardShortcuts() {
         tagName === 'INPUT' || tagName === 'TEXTAREA' || target?.isContentEditable === true;
       const isMainTextarea = target?.id === mainTextareaId;
 
-      // The composer owns every Enter-based submit chord (native and custom), so defer all
-      // Enter presses there; other editing contexts handle their own submit too.
       if (
         matchedId === 'submitMessage' &&
         ((isMainTextarea && e.key === 'Enter') || (isEditing && !isMainTextarea))
@@ -1149,7 +1181,7 @@ export default function useKeyboardShortcuts() {
         return;
       }
 
-      if (isEditing && !EDITING_ALLOWED_SHORTCUTS.has(matchedId)) {
+      if (!isStopGenerating && isEditing && !EDITING_ALLOWED_SHORTCUTS.has(matchedId)) {
         return;
       }
 

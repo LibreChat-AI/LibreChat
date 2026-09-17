@@ -222,10 +222,10 @@ describe('useSteering', () => {
   });
 
   describe('effectiveAction', () => {
-    it('defaults to queue during an active agents run', () => {
+    it('defaults to steer during an active agents run', () => {
       const { result } = setup();
       expect(result.current.duringRunActive).toBe(true);
-      expect(result.current.effectiveAction).toBe('queue');
+      expect(result.current.effectiveAction).toBe('steer');
     });
 
     it('honors the queue preference while keeping the steer override available', () => {
@@ -239,8 +239,7 @@ describe('useSteering', () => {
     });
 
     it('degrades to queue without a real conversation id', () => {
-      // Seed 'steer' so the assertion exercises the `canSteer ?` degrade
-      // guard itself, not just the (now default) queue value falling through.
+      // Explicitly request steer so this verifies the missing-id fallback to queue.
       const { result } = setup({ conversationId: Constants.NEW_CONVO as string }, ({ set }) => {
         set(store.duringRunDefaultAction, 'steer');
       });
@@ -265,8 +264,7 @@ describe('useSteering', () => {
           ],
         } as unknown as TMessage,
       ];
-      // Seed 'steer' so this proves the pausedOnApproval guard forces queue,
-      // not just that the default happens to already be queue.
+      // Explicitly request steer so this verifies the pause fallback to queue.
       const { result } = setup({}, ({ set }) => {
         set(store.duringRunDefaultAction, 'steer');
       });
@@ -1899,8 +1897,7 @@ describe('useSteering', () => {
     });
 
     it('ignores empty submissions', () => {
-      // Seed 'steer' so the mockMutate assertion actually exercises the
-      // steer path's blank-text guard, not the (now default) queue path.
+      // Explicitly request steer so blank-text validation exercises the steer path.
       const { result } = setup({}, ({ set }) => {
         set(store.duringRunDefaultAction, 'steer');
       });

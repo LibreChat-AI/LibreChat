@@ -50,9 +50,9 @@ import {
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
 import { hasQueuedIntent, acquireQueueSendLock, releaseQueueSendLock } from '~/utils/queueIntent';
+import { revealedQueuedTurnFamily, pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import { markComposerFilesTaken } from '~/utils/composerFiles';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 import { useLatestMessage } from '~/hooks/Messages';
 import { insertQueuedMessage } from '~/utils/queue';
 import { useSetFilesToDelete } from '~/hooks/Files';
@@ -904,18 +904,14 @@ export default function useSteering({
    * instead of looking as though the action disappeared. */
   const pausedOnApproval =
     enabled && isSubmitting ? answerModeActive || hasLiveRunPause(latestMessage) : false;
-
-  /** Whether a steer can reach the live run right now, independent of the
-   *  user's default action, so the per-send menu can always override to
-   *  steer when it's genuinely available. */
   const canSteer = hasRealConvoId && canControlGeneration && !pausedOnApproval;
-  /** Whether a queued row has a real immediate-send path. Answer mode keeps
-   * `isSubmitting` true while hiding during-run steering, so presenting Send
-   * now there would be an enabled no-op. */
   const canSendQueuedNow = (!isSubmitting && !revealPending) || (duringRunActive && canSteer);
-  /** Steering needs a live server-side job; degrade to queue otherwise. */
-  const effectiveAction: DuringRunAction = canSteer ? defaultAction : 'queue';
 
+  /** A live steer cannot change the provider request already in flight.
+   * Stage a full queued turn instead, and expose that same effective action to
+   * Enter, the button and the hint. */
+  const effectiveAction: DuringRunAction =
+    canSteer && pendingReasoningOverride == null ? defaultAction : 'queue';
   /** Live submission state for POST callbacks: the closure value can be
    *  stale by the time the steer response arrives. */
   const isSubmittingRef = useRef(isSubmitting);
@@ -1033,6 +1029,19 @@ export default function useSteering({
           .some((steer) => steer.status === 'pending' && steer.clientSteerId === clientSteerId);
       },
     [],
+  );
+  const hasPendingSteerCancel = useCallback(
+    (convoId: string, clientSteerId: string) =>
+      jotaiStore.get(pendingSteerCancelClientIdsFamily(convoId)).includes(clientSteerId),
+    [jotaiStore],
+  );
+  const clearPendingSteerCancel = useCallback(
+    (convoId: string, clientSteerId: string) => {
+      jotaiStore.set(pendingSteerCancelClientIdsFamily(convoId), (prev) =>
+        prev.filter((id) => id !== clientSteerId),
+      );
+    },
+    [jotaiStore],
   );
 
   /** Fire-and-forget TTL hold for uploads entering the client queue: a
@@ -1860,6 +1869,20 @@ export default function useSteering({
           {
             onSuccess: (response) => {
               try {
+                if (hasPendingSteerCancel(conversationId, localId)) {
+                  void cancelSteer({
+                    conversationId,
+                    steerId: response.steerId,
+                    clientSteerId: localId,
+                    generationCreatedAt:
+                      targetGenerationCreatedAt ?? activeGenerationCreatedAt ?? undefined,
+                  }).then(({ removed }) => {
+                    if (removed === true) {
+                      clearPendingSteerCancel(conversationId, localId);
+                    }
+                  });
+                  return;
+                }
                 /** A 202 without the echo means a pre-quotes replica queued
                  *  the words without their excerpts. The quotes are NOT
                  *  re-staged here — the steer has not injected yet, so they
@@ -1934,6 +1957,7 @@ export default function useSteering({
             },
             onError: (error) => {
               try {
+                clearPendingSteerCancel(conversationId, localId);
                 if (isSteerAcceptedOrSettled(conversationId, localId)) {
                   replaceSteerChip(conversationId, localId, null);
                   return;
@@ -2071,6 +2095,9 @@ export default function useSteering({
       rewakeDrain,
       registerQueuedOrigin,
       isSteerAcceptedOrSettled,
+      hasPendingSteerCancel,
+      clearPendingSteerCancel,
+      cancelSteer,
       showToast,
       localize,
       activeGenerationCreatedAt,
@@ -2476,6 +2503,8 @@ export default function useSteering({
       canSendQueuedNow,
       effectiveAction,
       defaultAction,
+      steerInterruptsByDefault,
+      pendingReasoningOverride,
       pausedOnApproval,
       setDefaultAction,
       submitDuringRun,
@@ -2504,7 +2533,9 @@ export default function useSteering({
       duringRunActive,
       canSendQueuedNow,
       effectiveAction,
+      steerInterruptsByDefault,
       defaultAction,
+      pendingReasoningOverride,
       pausedOnApproval,
       setDefaultAction,
       submitDuringRun,

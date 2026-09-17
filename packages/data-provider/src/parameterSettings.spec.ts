@@ -293,6 +293,21 @@ describe('resolveReasoningSettingForTarget', () => {
       ).toBeUndefined();
     },
   );
+  it('requires an explicit reasoning definition for Azure deployments', () => {
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model: 'administrator-named-deployment',
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model: 'administrator-named-deployment',
+        paramDefinitions: [{ key: 'reasoning_effort' }],
+      })?.key,
+    ).toBe('reasoning_effort');
+  });
   it('honors an explicit reasoning format on a custom deployment', () => {
     expect(
       resolveReasoningSettingForTarget({

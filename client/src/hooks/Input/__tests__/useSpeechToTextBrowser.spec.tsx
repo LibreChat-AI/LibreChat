@@ -84,7 +84,7 @@ describe('useSpeechToTextBrowser', () => {
     act(() => {
       jest.advanceTimersByTime(AUTO_SEND_SECONDS * 1000);
     });
-    expect(onTranscriptionComplete).toHaveBeenCalledWith('the words that landed');
+    expect(onTranscriptionComplete).toHaveBeenCalledWith('the words that landed', undefined);
   });
 
   /* The take is cancelled after the transcript arrived but before the delay

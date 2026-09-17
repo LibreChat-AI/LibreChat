@@ -39,6 +39,8 @@ jest.mock('~/hooks/Chat/useSteerRecovery', () => ({
 }));
 
 jest.mock('~/hooks/Chat/useSteerCancel', () => ({
+  __esModule: true,
+  default: () => jest.fn(),
   useSteerMoveToQueue: () => mockMoveToQueue,
 }));
 

@@ -8,8 +8,8 @@ import useReducedMotion from '~/hooks/Generic/useReducedMotion';
 import Effort, { resolveEffortLabel } from './Effort';
 import { useGetStartupConfig } from '~/data-provider';
 import { useChatContext } from '~/Providers';
+import { cn, getModelSpec } from '~/utils';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 /** Matches `animate-composer-popover`'s opacity leg, so the button and the
  *  popup resize on the same clock. */
@@ -203,11 +203,19 @@ function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
   const { conversation } = useChatContext();
   const { data: startupConfig } = useGetStartupConfig();
   const parametersEnabled = startupConfig?.interface?.parameters;
+  const modelSpec = getModelSpec({ specName: conversation?.spec, startupConfig });
+  const blockedReasoningKeys = useMemo(() => {
+    if (startupConfig?.modelSpecs?.enforce !== true || modelSpec?.preset == null) {
+      return undefined;
+    }
+    return new Set(Object.keys(modelSpec.preset));
+  }, [modelSpec?.preset, startupConfig?.modelSpecs?.enforce]);
   const reasoning = useComposerReasoning({
     conversation: conversation ?? null,
     index,
     hasAddedConversation,
     enabled: parametersEnabled,
+    blockedReasoningKeys,
   });
 
   if (parametersEnabled !== true || reasoning == null) {
