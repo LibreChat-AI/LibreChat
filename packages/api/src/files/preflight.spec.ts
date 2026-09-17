@@ -107,6 +107,31 @@ describe('upload content preflight', () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
+  it('defers a configured parser MIME without reading binary bytes', async () => {
+    const readFile = jest.fn();
+
+    await expect(
+      assertUploadContentAllowed({
+        ...baseInput,
+        fileConfig: mergeFileConfig({
+          documentParser: { supportedMimeTypes: ['^application\\/vnd\\.vendor\\.word$'] },
+        }),
+        filters: filters(['extracted_text'], 'block'),
+        endpoint: 'agents',
+        toolResource: EToolResources.context,
+        file: {
+          originalname: 'report.vendor',
+          mimetype: 'application/vnd.vendor.word',
+          path: '/tmp/report',
+          size: 64,
+        },
+        rawFileMode: 'opaque',
+        readFile,
+      }),
+    ).resolves.toBeUndefined();
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
   it('classifies transcript deferral through the merged STT configuration', async () => {
     await expect(
       assertUploadContentAllowed({

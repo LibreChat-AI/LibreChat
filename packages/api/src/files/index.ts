@@ -6,6 +6,7 @@ export * from './context';
 export * from './deletion';
 export * from './extract';
 export * from './documents/crud';
+export * from './documents/outcome';
 export * from './encode';
 export * from './filter';
 export * from './mime';

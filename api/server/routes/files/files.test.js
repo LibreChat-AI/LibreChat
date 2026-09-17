@@ -1420,6 +1420,58 @@ describe('File Routes - Delete with Agent Access', () => {
     });
   });
 
+  /**
+   * The client mirrors the upload path's routing to decide what it may offer, and both
+   * of these read the environment rather than the YAML, so the config endpoint is where
+   * that knowledge crosses over.
+   */
+  describe('GET /files/config', () => {
+    const originalRagUrl = process.env.RAG_API_URL;
+
+    afterEach(() => {
+      requestConfig = {};
+      if (originalRagUrl === undefined) {
+        delete process.env.RAG_API_URL;
+      } else {
+        process.env.RAG_API_URL = originalRagUrl;
+      }
+    });
+
+    it('reports whether an OCR strategy and a RAG text service are configured', async () => {
+      process.env.RAG_API_URL = 'http://rag-api.test';
+      requestConfig = { ocr: { strategy: 'mistral_ocr' }, fileConfig: {} };
+
+      const response = await request(app).get('/files/config');
+
+      expect(response.status).toBe(200);
+      expect(response.body.ocr.enabled).toBe(true);
+      expect(response.body.text.enabled).toBe(true);
+    });
+
+    it('reports both as absent when neither is configured', async () => {
+      delete process.env.RAG_API_URL;
+      requestConfig = { fileConfig: {} };
+
+      const response = await request(app).get('/files/config');
+
+      expect(response.status).toBe(200);
+      expect(response.body.ocr.enabled).toBe(false);
+      expect(response.body.text.enabled).toBe(false);
+    });
+
+    it('keeps the configured text allowlist alongside the derived flag', async () => {
+      process.env.RAG_API_URL = 'http://rag-api.test';
+      requestConfig = { fileConfig: { text: { supportedMimeTypes: ['^text/plain$'] } } };
+
+      const response = await request(app).get('/files/config');
+
+      expect(response.body.text).toEqual({
+        supportedMimeTypes: ['^text/plain$'],
+        enabled: true,
+      });
+    });
+  });
+
   describe('POST /files/usage', () => {
     const createQueuedFile = async (expiresAt) => {
       const ownFileId = uuidv4();

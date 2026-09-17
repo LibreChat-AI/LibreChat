@@ -9,7 +9,7 @@ const {
   transferNativeCopyProvenance,
 } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
-const { EModelEndpoint, Constants, ForkOptions } = require('librechat-data-provider');
+const { EModelEndpoint, Constants, ContentTypes, ForkOptions } = require('librechat-data-provider');
 const { getConvo, getMessages, getSharedMessages } = require('~/models');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const { getAppConfig } = require('~/server/services/Config');
@@ -324,18 +324,42 @@ function splitAtTargetLevel(messages, targetMessageId) {
  * sharer's files into the viewer's run. Dropping the ids keeps a fork's file
  * access no broader than viewing the read-only share, while leaving render-only
  * metadata (e.g. `filepath`, `toolCallId`) intact.
+ *
+ * `hasTextPreview` goes with the id. It marks a parsed record whose text is fetched
+ * through the share's file route, which needs both the id and a share context; a fork
+ * has neither, so keeping the marker would leave the copy offering an extracted-text
+ * panel that can only ever report that there is no extracted text.
  * @param {TMessage} message - The shared message to sanitize.
  * @returns {TMessage} The message with file identifiers removed.
  */
+const stripSharedFileRef = ({ file_id: _fileId, hasTextPreview: _hasTextPreview, ...file }) => file;
+
+/** Steer parts carry the same user file refs inline in `content`, so they get the same treatment. */
+function stripSharedSteerFileIds(content) {
+  let result = null;
+  for (let i = 0; i < content.length; i++) {
+    const part = content[i];
+    if (part?.type !== ContentTypes.STEER || !Array.isArray(part.files)) {
+      continue;
+    }
+    if (result == null) {
+      result = [...content];
+    }
+    result[i] = { ...part, files: part.files.map(stripSharedFileRef) };
+  }
+  return result ?? content;
+}
+
 function stripSharedFileIds(message) {
   const sanitized = { ...message };
   if (Array.isArray(sanitized.files)) {
-    sanitized.files = sanitized.files.map(({ file_id: _fileId, ...file }) => file);
+    sanitized.files = sanitized.files.map(stripSharedFileRef);
   }
   if (Array.isArray(sanitized.attachments)) {
-    sanitized.attachments = sanitized.attachments.map(
-      ({ file_id: _fileId, ...attachment }) => attachment,
-    );
+    sanitized.attachments = sanitized.attachments.map(stripSharedFileRef);
+  }
+  if (Array.isArray(sanitized.content)) {
+    sanitized.content = stripSharedSteerFileIds(sanitized.content);
   }
   return sanitized;
 }

@@ -246,6 +246,12 @@ const resolveShareFile = async (req, res, next) => {
 
 /** Stream (or redirect to) a snapshotted file from its original stored object. */
 const streamSharedFile = async (req, res, file, requestedDisposition) => {
+  /* A text-only snapshot has no object to stream: the local parser's engine name and a
+   * configured extraction's temporary path are both left out of the snapshot, while a
+   * record whose original document storage kept keeps its `filepath` and can be served. */
+  if (file.hasTextPreview === true && file.filepath == null) {
+    return res.status(404).json({ message: 'File has no shared binary' });
+  }
   const source = file.source || FileSources.local;
 
   // An update keeps the shareId, so these URLs are stable across re-publishes. Without

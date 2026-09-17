@@ -1,6 +1,6 @@
+import type { FileConfig, RegexLike } from './types/files';
 import type { MimeUploadCapability } from './file-config';
 import type { ResponsesApiRouting } from './types';
-import type { FileConfig } from './types/files';
 import {
   fileConfig as baseFileConfig,
   fileConfigSchema,
@@ -17,15 +17,56 @@ import {
   setFileConfigRegexCompiler,
   documentParserMimeTypes,
   getEndpointFileConfig,
+  isParsedDocument,
   applicationMimeTypes,
+  defaultSTTMimeTypes,
   defaultOCRMimeTypes,
   supportedMimeTypes,
   mergeFileConfig,
   inferMimeType,
+  resolveEffectiveMimeType,
   textMimeTypes,
 } from './file-config';
 import { resolveDefaultLLMDeliveryPath } from './resolve-llm-delivery-path';
 import { EModelEndpoint } from './schemas';
+
+describe('resolveEffectiveMimeType', () => {
+  /**
+   * OOXML, ODF and EPUB documents are zip containers, so a client that types uploads by
+   * magic bytes calls an ordinary `.docx` an archive. Nothing else re-infers it, and the
+   * type decides both what the client offers and how the server routes: disagree and a
+   * file is offered extracted text on one side and stored as raw bytes on the other.
+   */
+  it.each([
+    ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['slides.pptm', 'application/vnd.ms-powerpoint.presentation.macroEnabled.12'],
+    ['book.epub', 'application/epub+zip'],
+    ['sheet.ods', 'application/vnd.oasis.opendocument.spreadsheet'],
+  ])('resolves zip-typed %s to its document type', (fileName, expected) => {
+    expect(resolveEffectiveMimeType(fileName, 'application/zip')).toBe(expected);
+    expect(resolveEffectiveMimeType(fileName, 'application/x-zip-compressed')).toBe(expected);
+  });
+
+  it('leaves an ordinary archive as an archive', () => {
+    expect(resolveEffectiveMimeType('bundle.zip', 'application/zip')).toBe('application/zip');
+    expect(resolveEffectiveMimeType('bundle', 'application/zip')).toBe('application/zip');
+  });
+
+  it('still infers from the extension for a generic or absent type', () => {
+    expect(resolveEffectiveMimeType('report.docx', 'application/octet-stream')).toBe(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    expect(resolveEffectiveMimeType('test.py', '')).toBe('text/x-python');
+  });
+
+  it('normalizes casing and parameters so neither can decide a route', () => {
+    expect(resolveEffectiveMimeType('doc.pdf', 'Application/PDF')).toBe('application/pdf');
+    expect(resolveEffectiveMimeType('data.csv', 'text/csv; charset=utf-8')).toBe('text/csv');
+    expect(resolveEffectiveMimeType('archive.zip', 'application/x-zip-compressed')).toBe(
+      'application/zip',
+    );
+  });
+});
 
 describe('inferMimeType', () => {
   it('should normalize text/x-python-script to text/x-python', () => {
@@ -64,6 +105,22 @@ describe('inferMimeType', () => {
     expect(inferMimeType('archive.zip', '')).toBe('application/zip');
     expect(inferMimeType('photo.heic', '')).toBe('image/heic');
     expect(inferMimeType('Main.java', '')).toBe('text/x-java');
+  });
+
+  it.each(['application/octet-stream', 'binary/octet-stream'])(
+    'should replace generic MIME type %s with the document type inferred from its extension',
+    (genericType) => {
+      expect(inferMimeType('report.docx', genericType)).toBe(
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      );
+      expect(inferMimeType('report.pdf', genericType)).toBe('application/pdf');
+    },
+  );
+
+  it('should preserve a generic MIME type when the extension is unknown', () => {
+    expect(inferMimeType('payload.unknownext', 'application/octet-stream')).toBe(
+      'application/octet-stream',
+    );
   });
 
   it('should return empty string for unknown extension with no browser type', () => {
@@ -137,6 +194,40 @@ describe('inferMimeType', () => {
     expect(baseFileConfig.checkType(inferMimeType('sheet.xlsx', ''))).toBe(true);
     expect(baseFileConfig.checkType(inferMimeType('legacy.doc', ''))).toBe(true);
     expect(baseFileConfig.checkType(inferMimeType('template.potx', ''))).toBe(true);
+  });
+});
+
+describe('defaultOCRMimeTypes coverage of parser-supported containers', () => {
+  /**
+   * The local parser reads these containers, and a scan inside one is exactly what it
+   * escalates to OCR. Leaving a macro-enabled variant out means the same scanned page is
+   * recovered in a DOCX and silently kept as partial text in a DOCM.
+   */
+  it.each([
+    ['legacy Word', 'application/msword'],
+    ['RTF', 'application/rtf'],
+    ['RTF as text', 'text/rtf'],
+    ['DOCM', 'application/vnd.ms-word.document.macroEnabled.12'],
+    ['PPTM', 'application/vnd.ms-powerpoint.presentation.macroEnabled.12'],
+    ['PPSM', 'application/vnd.ms-powerpoint.slideshow.macroEnabled.12'],
+    ['PPSX', 'application/vnd.openxmlformats-officedocument.presentationml.slideshow'],
+    ['XLSM', 'application/vnd.ms-excel.sheet.macroEnabled.12'],
+    ['XLSB', 'application/vnd.ms-excel.sheet.binary.macroEnabled.12'],
+  ])('covers %s, which the local parser also reads', (_label, mimeType) => {
+    expect(baseFileConfig.checkType(mimeType, defaultOCRMimeTypes)).toBe(true);
+  });
+
+  it.each([
+    ['DOCX', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['PPTX', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ['XLSX', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['PDF', 'application/pdf'],
+  ])('still covers %s', (_label, mimeType) => {
+    expect(baseFileConfig.checkType(mimeType, defaultOCRMimeTypes)).toBe(true);
+  });
+
+  it('leaves delimited text out, which OCR has nothing to add to', () => {
+    expect(baseFileConfig.checkType('text/csv', defaultOCRMimeTypes)).toBe(false);
   });
 });
 
@@ -234,25 +325,253 @@ describe('documentParserMimeTypes', () => {
 
   it.each([
     'application/pdf',
+    'application/msword',
+    'application/vnd.ms-word.document.macroenabled.12',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/rtf',
+    'text/rtf',
+    'application/epub+zip',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.ms-powerpoint.presentation.macroenabled.12',
+    'application/vnd.ms-powerpoint.slideshow.macroenabled.12',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/vnd.ms-excel',
+    'application/vnd.ms-excel.sheet.macroenabled.12',
+    'application/vnd.ms-excel.sheet.binary.macroenabled.12',
     'application/msexcel',
     'application/x-msexcel',
     'application/x-ms-excel',
     'application/vnd.oasis.opendocument.spreadsheet',
     'application/vnd.oasis.opendocument.text',
+    'application/vnd.oasis.opendocument.presentation',
+    'text/csv',
+    'application/csv',
   ])('matches natively parseable type: %s', (mimeType) => {
     expect(check(mimeType)).toBe(true);
   });
 
-  it.each([
-    'application/vnd.oasis.opendocument.presentation',
-    'application/vnd.oasis.opendocument.graphics',
-    'text/plain',
-    'image/png',
-  ])('does not match OCR-only or unsupported type: %s', (mimeType) => {
-    expect(check(mimeType)).toBe(false);
+  it.each(['application/vnd.oasis.opendocument.graphics', 'text/plain', 'image/png'])(
+    'does not match OCR-only or unsupported type: %s',
+    (mimeType) => {
+      expect(check(mimeType)).toBe(false);
+    },
+  );
+
+  it('allows every local parser type through the general upload defaults', () => {
+    const locallyParsedTypes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.ms-word.document.macroenabled.12',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/rtf',
+      'text/rtf',
+      'application/epub+zip',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.ms-powerpoint.presentation.macroenabled.12',
+      'application/vnd.ms-powerpoint.slideshow.macroenabled.12',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
+      'application/vnd.ms-excel',
+      'application/vnd.ms-excel.sheet.macroenabled.12',
+      'application/vnd.ms-excel.sheet.binary.macroenabled.12',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.oasis.opendocument.text',
+      'application/vnd.oasis.opendocument.spreadsheet',
+      'application/vnd.oasis.opendocument.presentation',
+      'text/csv',
+      'application/csv',
+    ];
+
+    for (const mimeType of locallyParsedTypes) {
+      expect(supportedMimeTypes.some((regex) => regex.test(mimeType))).toBe(true);
+    }
+  });
+});
+
+describe('documentParser file config', () => {
+  const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const matches = (types: RegexLike[] | undefined, mimeType: string): boolean =>
+    (types ?? []).some((regex) => regex.test(mimeType));
+
+  it('defaults to the built-in parser MIME types when unconfigured', () => {
+    const merged = mergeFileConfig(undefined);
+
+    expect(merged.documentParser?.supportedMimeTypes).toEqual(documentParserMimeTypes);
+  });
+
+  it('keeps the default when other sub-configs are set', () => {
+    const merged = mergeFileConfig({ ocr: { supportedMimeTypes: ['^image\\/png$'] } });
+
+    expect(merged.documentParser?.supportedMimeTypes).toEqual(documentParserMimeTypes);
+  });
+
+  it('preserves the server-derived OCR availability signal', () => {
+    const merged = mergeFileConfig({ ocr: { enabled: true } });
+
+    expect(merged.ocr?.enabled).toBe(true);
+  });
+
+  it('lets an admin allowlist take precedence over the provider default', () => {
+    const merged = mergeFileConfig({
+      documentParser: { supportedMimeTypes: ['^application\\/pdf$'] },
+    });
+
+    expect(matches(merged.documentParser?.supportedMimeTypes, 'application/pdf')).toBe(true);
+    expect(matches(merged.documentParser?.supportedMimeTypes, docx)).toBe(false);
+    /** The default still matches docx, so the override is what changed the answer */
+    expect(matches(documentParserMimeTypes, docx)).toBe(true);
+  });
+
+  it('survives schema parsing, so a configured value reaches mergeFileConfig', () => {
+    const parsed = fileConfigSchema.parse({
+      documentParser: { supportedMimeTypes: ['^application\\/pdf$'] },
+    });
+
+    expect(parsed.documentParser?.supportedMimeTypes).toEqual(['^application\\/pdf$']);
+    expect(matches(mergeFileConfig(parsed).documentParser?.supportedMimeTypes, docx)).toBe(false);
+  });
+
+  it('skips invalid patterns instead of throwing', () => {
+    const logged = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const merged = mergeFileConfig({
+      documentParser: { supportedMimeTypes: ['^application\\/pdf$', '([unclosed'] },
+    });
+
+    expect(merged.documentParser?.supportedMimeTypes).toHaveLength(1);
+    expect(logged).toHaveBeenCalledTimes(1);
+    logged.mockRestore();
+  });
+
+  /* The parser refuses anything above its ceiling, so an operator who raises the
+   * endpoint and server limits needs a lever here or their admitted uploads get an
+   * unconditional 413. Written in megabytes like every other size limit in this file,
+   * and consumed in bytes. */
+  it('exposes the parser input ceiling in megabytes with a 15MB default', () => {
+    expect(mergeFileConfig(undefined).documentParser?.fileSizeLimit).toBe(15 * 1024 * 1024);
+
+    const parsed = fileConfigSchema.parse({ documentParser: { fileSizeLimit: 32 } });
+    const merged = mergeFileConfig(parsed);
+
+    expect(merged.documentParser?.fileSizeLimit).toBe(32 * 1024 * 1024);
+    /* Raising the ceiling must not silently discard the type allowlist beside it. */
+    expect(merged.documentParser?.supportedMimeTypes).toEqual(documentParserMimeTypes);
+  });
+
+  /* A document big enough to need a raised ceiling also needs longer to convert, and
+   * the child is killed on this deadline. */
+  it('exposes the extraction deadline in milliseconds with a 30s default', () => {
+    expect(mergeFileConfig(undefined).documentParser?.timeoutMs).toBe(30_000);
+
+    const parsed = fileConfigSchema.parse({ documentParser: { timeoutMs: 90_000 } });
+
+    expect(mergeFileConfig(parsed).documentParser?.timeoutMs).toBe(90_000);
+  });
+  it('keeps the PDF page ceiling as a raw count through schema parsing and merge', () => {
+    expect(mergeFileConfig(undefined).documentParser?.maxPageCount).toBe(1000);
+
+    const parsed = fileConfigSchema.parse({ documentParser: { maxPageCount: 1500 } });
+    expect(parsed.documentParser?.maxPageCount).toBe(1500);
+    expect(mergeFileConfig(parsed).documentParser?.maxPageCount).toBe(1500);
+  });
+  it('exposes archive byte ceilings as megabytes with 25MB and 100MB defaults', () => {
+    const defaults = mergeFileConfig(undefined).documentParser;
+    expect(defaults?.archiveEntrySizeLimit).toBe(25 * 1024 * 1024);
+    expect(defaults?.archiveTotalSizeLimit).toBe(100 * 1024 * 1024);
+
+    const parsed = fileConfigSchema.parse({
+      documentParser: { archiveEntrySizeLimit: 40, archiveTotalSizeLimit: 180 },
+    });
+    const merged = mergeFileConfig(parsed).documentParser;
+
+    expect(merged?.archiveEntrySizeLimit).toBe(40 * 1024 * 1024);
+    expect(merged?.archiveTotalSizeLimit).toBe(180 * 1024 * 1024);
+  });
+
+  it('rejects a page ceiling above the child IPC safety maximum', () => {
+    expect(() => fileConfigSchema.parse({ documentParser: { maxPageCount: 10_001 } })).toThrow(
+      /maximum of 10000 pages/,
+    );
+  });
+
+  /* Counts, not sizes: an archive's entry count and the recovery walk's page count are
+   * compared directly, so the merge must not run them through the megabyte conversion
+   * every limit beside them uses. */
+  it('keeps the archive entry count and the recovery page count as raw counts', () => {
+    const defaults = mergeFileConfig(undefined).documentParser;
+    expect(defaults?.archiveEntryCountLimit).toBe(4096);
+    expect(defaults?.maxRecoveredPageCount).toBe(250);
+
+    const parsed = fileConfigSchema.parse({
+      documentParser: { archiveEntryCountLimit: 12_000, maxRecoveredPageCount: 800 },
+    });
+    const merged = mergeFileConfig(parsed).documentParser;
+
+    expect(merged?.archiveEntryCountLimit).toBe(12_000);
+    expect(merged?.maxRecoveredPageCount).toBe(800);
+  });
+  it('exposes parser admission counts and classifier timeout as raw overrides', () => {
+    const defaults = mergeFileConfig(undefined).documentParser;
+    expect(defaults?.maxConcurrentParsers).toBe(2);
+    expect(defaults?.maxQueuedParsers).toBe(6);
+    expect(defaults?.classifierTimeoutMs).toBe(15_000);
+
+    const parsed = fileConfigSchema.parse({
+      documentParser: {
+        maxConcurrentParsers: 1,
+        maxQueuedParsers: 3,
+        classifierTimeoutMs: 45_000,
+      },
+    });
+    const merged = mergeFileConfig(parsed).documentParser;
+
+    expect(merged?.maxConcurrentParsers).toBe(1);
+    expect(merged?.maxQueuedParsers).toBe(3);
+    expect(merged?.classifierTimeoutMs).toBe(45_000);
+  });
+});
+
+describe('stt file config', () => {
+  it('defaults to the built-in STT MIME types when unconfigured', () => {
+    const merged = mergeFileConfig(undefined);
+
+    expect(merged.stt?.supportedMimeTypes).toEqual(defaultSTTMimeTypes);
+  });
+
+  it('lets an admin allowlist take precedence over the default', () => {
+    const parsed = fileConfigSchema.parse({ stt: { supportedMimeTypes: ['^audio\\/wav$'] } });
+    const merged = mergeFileConfig(parsed);
+    const matches = (mimeType: string): boolean =>
+      (merged.stt?.supportedMimeTypes ?? []).some((regex) => regex.test(mimeType));
+
+    expect(matches('audio/wav')).toBe(true);
+    expect(matches('audio/mp3')).toBe(false);
+  });
+});
+
+describe('isParsedDocument', () => {
+  it('resolves by MIME type first', () => {
+    expect(isParsedDocument('application/pdf', 'renamed.bin')).toBe(true);
+    expect(
+      isParsedDocument('application/vnd.openxmlformats-officedocument.presentationml.presentation'),
+    ).toBe(true);
+  });
+
+  it('falls back to the filename when the MIME type is generic or wrong', () => {
+    /* Parsed records were historically stored as text/plain, and browsers can
+     * report application/octet-stream; the extension keeps both working. */
+    expect(isParsedDocument('text/plain', 'deck.pptx')).toBe(true);
+    expect(isParsedDocument('application/octet-stream', 'report.docx')).toBe(true);
+    expect(isParsedDocument(undefined, 'paper.pdf')).toBe(true);
+  });
+
+  it('rejects files the parser does not handle', () => {
+    expect(isParsedDocument('application/zip', 'archive.zip')).toBe(false);
+    expect(isParsedDocument('text/plain', 'notes.txt')).toBe(false);
+    expect(isParsedDocument(undefined, undefined)).toBe(false);
+    expect(isParsedDocument('', '.pptx')).toBe(false);
   });
 });
 

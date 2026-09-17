@@ -1897,6 +1897,23 @@ describe('share-scoped file routes', () => {
     expect(getFiles).toHaveBeenCalledWith({ file_id: 'file-1' }, null, {});
   });
 
+  it('serves parsed text previews but refuses a binary for preview-only snapshots', async () => {
+    getSharedLinkFile.mockResolvedValue({
+      file: { file_id: 'file-1', source: 'text', hasTextPreview: true },
+      hasSnapshots: true,
+    });
+    getFiles.mockResolvedValue([{ status: 'ready', text: '# Parsed report', textFormat: 'text' }]);
+
+    const app = buildApp();
+    const preview = await request(app).get('/api/share/share-123/files/file-1/preview');
+    expect(preview.status).toBe(200);
+    expect(preview.body.text).toBe('# Parsed report');
+
+    const binary = await request(app).get('/api/share/share-123/files/file-1');
+    expect(binary.status).toBe(404);
+    expect(mockGetStrategyFunctions).not.toHaveBeenCalled();
+  });
+
   it('404s for a file not in the snapshot without rebuilding it', async () => {
     getSharedLinkFile.mockResolvedValue({ file: null, hasSnapshots: true });
 

@@ -39,14 +39,10 @@ jest.mock('~/files/documents/crud', () => ({
 }));
 
 /* The office HTML producer is mocked here so the existing fallback-path
- * assertions (parseDocument receives the canonical MIME) keep exercising
- * `extractDocument`. Tests that need real HTML output drive `bufferToOfficeHtml`
- * directly via its own spec file (`html.spec.ts`); a separate `office-html`
- * describe block below exercises the integration with this mock relaxed.
- *
- * `officeHtmlBucket` is the gate predicate the upstream uses to decide
- * whether to call the dispatcher at all. We pass through to the real
- * implementation so the gate routes the same files in tests as in prod. */
+ * assertions still exercise `extractDocument`. Tests that need real HTML output
+ * drive `bufferToOfficeHtml` directly via its own spec file (`html.spec.ts`); a
+ * separate `office-html` describe block below exercises the integration with this
+ * mock relaxed. */
 const mockOfficeHtml = jest.fn(
   async (_buffer: Buffer, _name: string, _mime: string) => null as string | null,
 );
@@ -146,21 +142,12 @@ describe('extractCodeArtifactText', () => {
       expect(text).toBeNull();
     });
 
-    it('rewrites a generic sniffed MIME to the canonical document MIME by extension (ODT)', async () => {
-      // Code-output buffers for office docs are commonly sniffed as
-      // application/zip — without canonicalization, parseDocument would
-      // reject these and inline previews would silently disappear.
-      const buffer = Buffer.from('PKfake-odt');
-      await extractCodeArtifactText(buffer, 'notes.odt', 'application/zip', 'document');
-      expect(parseDocumentCalls[0]?.originalname).toBe('notes.odt');
-    });
-
     it.each([
-      ['notes.odt', 'application/zip', 'application/vnd.oasis.opendocument.text'],
-      ['report.pdf', 'application/octet-stream', 'application/pdf'],
+      ['notes.odt', 'application/zip'],
+      ['report.pdf', 'application/octet-stream'],
     ])(
-      'passes canonical mimetype for %s when sniff returns %s (legacy parseDocument path)',
-      async (name, sniffed, _canon) => {
+      'passes the sniffed MIME for %s through the legacy parseDocument path',
+      async (name, sniffed) => {
         const parseDocumentMock = (
           jest.requireMock('~/files/documents/crud') as {
             parseDocument: jest.Mock;
@@ -169,10 +156,7 @@ describe('extractCodeArtifactText', () => {
         parseDocumentMock.mockClear();
         await extractCodeArtifactText(Buffer.from('PK'), name, sniffed, 'document');
         const call = parseDocumentMock.mock.calls[0]?.[0];
-        /* PDF doesn't have an entry in `documentMimeFromExtension` so the
-         * sniffed MIME passes through unchanged. ODT does — gets
-         * canonicalized to ODT_MIME. */
-        expect(call?.file?.mimetype).toBe(_canon === 'application/pdf' ? sniffed : _canon);
+        expect(call?.file?.mimetype).toBe(sniffed);
       },
     );
 
@@ -585,6 +569,131 @@ describe('extractCodeArtifactInspectionText', () => {
     });
   });
 
+  it('routes a parser-readable PPTX through parseDocument as complete inspection text', async () => {
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('PK'),
+      'slides.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'presentation',
+    );
+
+    expect(result).toEqual({
+      text: docxText,
+      complete: true,
+    });
+  });
+
+  it.each(['application/x-cfb', 'application/octet-stream'])(
+    'parses a legacy .doc artifact sniffed as %s as complete inspection text',
+    async (mimeType) => {
+      const result = await extractCodeArtifactInspectionText(
+        Buffer.from('legacy-word'),
+        'report.doc',
+        mimeType,
+        'other',
+      );
+
+      expect(result).toEqual({
+        text: docxText,
+        complete: true,
+      });
+      expect(parseDocument).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file: expect.objectContaining({
+            mimetype: mimeType,
+            originalname: 'report.doc',
+          }),
+        }),
+      );
+    },
+  );
+
+  /* The classifier has no `presentation` category for these: a legacy or macro-enabled
+   * deck is `other`, and the parser reads all of them. */
+  it.each([
+    ['deck.ppt', 'application/vnd.ms-powerpoint'],
+    ['deck.pptm', 'application/octet-stream'],
+    ['deck.pps', 'application/octet-stream'],
+    ['deck.odp', 'application/vnd.oasis.opendocument.presentation'],
+  ])('parses %s even though the classifier calls it other', async (name, mimeType) => {
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('PK'),
+      name,
+      mimeType,
+      'other',
+    );
+
+    expect(result).toEqual({
+      text: docxText,
+      complete: true,
+    });
+  });
+
+  it('marks parser-readable PPTX text incomplete when pages need OCR', async () => {
+    const text = 'text from the readable slides';
+    jest.mocked(parseDocument).mockResolvedValueOnce({
+      filename: 'slides.pptx',
+      bytes: Buffer.byteLength(text),
+      filepath: 'document_parser',
+      text,
+      images: [],
+      pagesNeedingOcr: [2],
+    });
+
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('PK'),
+      'slides.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'presentation',
+    );
+
+    expect(result).toEqual({
+      text,
+      complete: false,
+    });
+  });
+
+  it('marks parsed document text incomplete when the parser may omit content', async () => {
+    const text = 'text from the readable document';
+    jest.mocked(parseDocument).mockResolvedValueOnce({
+      filename: 'report.pdf',
+      bytes: Buffer.byteLength(text),
+      filepath: 'document_parser',
+      text,
+      images: [],
+      mayOmitContent: true,
+    });
+
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('%PDF'),
+      'report.pdf',
+      'application/pdf',
+      'document',
+    );
+
+    expect(result).toEqual({
+      text,
+      complete: false,
+    });
+  });
+
+  it('keeps an unsupported presentation format on the incomplete office preview path', async () => {
+    const html = '<!DOCTYPE html><html><body>template</body></html>';
+    mockOfficeHtml.mockResolvedValueOnce(html);
+
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('PK'),
+      'template.potx',
+      'application/vnd.openxmlformats-officedocument.presentationml.template',
+      'presentation',
+    );
+
+    expect(result).toEqual({
+      text: html,
+      complete: false,
+    });
+  });
+
   it('marks parsed document text incomplete when the derived output exceeds the inspection limit', async () => {
     const suffix = 'BLOCK-DOCUMENT-SUFFIX';
     const text = `${'a'.repeat(MAX_TEXT_EXTRACT_BYTES + 1)}${suffix}`;
@@ -609,8 +718,8 @@ describe('extractCodeArtifactInspectionText', () => {
   });
 
   it('marks an oversized office preview banner as incomplete', async () => {
+    jest.mocked(parseDocument).mockRejectedValueOnce(new Error('parser unavailable'));
     mockOfficeHtml.mockResolvedValueOnce('x'.repeat(MAX_TEXT_CACHE_BYTES + 1));
-
     const result = await extractCodeArtifactInspectionText(
       Buffer.from('PK'),
       'slides.pptx',

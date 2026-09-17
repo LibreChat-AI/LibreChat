@@ -600,6 +600,7 @@ export interface ExtendedFile {
   preview?: string;
   progress: number;
   source?: FileSources;
+  llmDeliveryPath?: t.TFile['llmDeliveryPath'];
   attached?: boolean;
   embedded?: boolean;
   llmDeliveryPath?: t.TFile['llmDeliveryPath'];

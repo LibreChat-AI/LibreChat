@@ -177,15 +177,10 @@ describe('resolveDefaultLLMDeliveryPath', () => {
       'application/zip',
       'application/x-zip-compressed',
       'application/x-tar',
-      'application/epub+zip',
       'application/vnd.apache.parquet',
-      /* No built-in parser handles presentations or drawings, so without OCR they would
-       * reach the same raw-bytes fallback. */
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'application/vnd.oasis.opendocument.presentation',
+      /* Drawings are absent from documentParserMimeTypes, so no built-in parser reads
+       * one and without OCR it would reach the same raw-bytes fallback. */
       'application/vnd.oasis.opendocument.graphics',
-      /* Legacy DOC is absent from documentParserMimeTypes, so it has no parser either. */
-      'application/msword',
     ]) {
       expect(resolveDefaultLLMDeliveryPath(mimeType, undefined, undefined, 'openAI')).toBe('none');
     }
@@ -201,6 +196,14 @@ describe('resolveDefaultLLMDeliveryPath', () => {
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'application/vnd.ms-excel',
       'message/rfc822',
+      /* Every format the document parser reads routes to extraction, including the
+       * presentation, legacy Word and EPUB containers it gained here: admitting a type
+       * the server can extract and then storing it as raw bytes leaves the upload
+       * unreadable to the model it was attached for. */
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.oasis.opendocument.presentation',
+      'application/msword',
+      'application/epub+zip',
     ]) {
       expect(resolveDefaultLLMDeliveryPath(mimeType, undefined, undefined, 'openAI')).toBe('text');
     }

@@ -122,6 +122,13 @@ jest.mock('~/data-provider', () => ({
   }),
 }));
 
+/* Validation reads the agent's OCR capability; this suite is about endpoint routing, so
+ * the config resolves to the defaults rather than pulling in the endpoints query. */
+jest.mock('~/hooks/Agents/useGetAgentsConfig', () => ({
+  __esModule: true,
+  default: jest.fn(() => ({ agentsConfig: null })),
+}));
+
 jest.mock('~/hooks/useLocalize', () => {
   const fn = jest.fn(() => mockLocalize) as jest.Mock & {
     TranslationKeys: Record<string, never>;

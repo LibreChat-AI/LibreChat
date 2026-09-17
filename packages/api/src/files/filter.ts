@@ -67,6 +67,8 @@ export function isLegacyFileUploadUX(
 
 type EndpointPolicyFile = Pick<TFile, 'bytes' | 'type'> & {
   source?: string;
+  /** Loose on purpose: `TFile` narrows it to a union, `IMongoFile` stores a string. */
+  llmDeliveryPath?: string;
   metadata?: { routingMimeType?: string };
 };
 
@@ -125,11 +127,18 @@ export function filterFilesByEndpointRuntimeConfig<T extends EndpointPolicyFile>
 
   /** Filter by MIME type, against the type the upload was accepted as. Conversion rewrites
    *  `type`, so screening a converted image by its stored format drops a file the same
-   *  allowlist admitted minutes earlier. */
+   *  allowlist admitted minutes earlier.
+   *
+   *  A record delivered as text is never sent as the type it advertises, so a narrowed
+   *  allowlist that exists to keep binaries out must not also discard it. Storage keeps
+   *  the original document now, so the marker is `llmDeliveryPath`; `FileSources.text` is
+   *  the same statement from records written before that. */
   if (supportedMimeTypes && supportedMimeTypes.length > 0) {
     filteredFiles = filteredFiles.filter((file) => {
       return (
-        (preserveTextSources && (file.source ?? FileSources.local) === FileSources.text) ||
+        (preserveTextSources &&
+          (file.llmDeliveryPath === 'text' ||
+            (file.source ?? FileSources.local) === FileSources.text)) ||
         isMimeTypeSupported(file.metadata?.routingMimeType ?? file.type, supportedMimeTypes)
       );
     });

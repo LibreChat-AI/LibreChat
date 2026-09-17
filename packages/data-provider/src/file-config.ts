@@ -336,21 +336,87 @@ export const defaultOCRMimeTypes = [
   imageMimeTypes,
   excelMimeTypes,
   /^application\/pdf$/,
-  /^application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|presentationml\.presentation)$/,
-  /^application\/vnd\.openxmlformats-officedocument\.presentationml\.template$/,
-  /^application\/vnd\.ms-(word|powerpoint)$/,
+  /^application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|presentationml\.(presentation|slideshow|template))$/,
+  /* `application/msword` is the canonical legacy Word type; `vnd.ms-word` is not, and
+   * matching only the latter left every `.doc` outside the OCR defaults while the parser
+   * happily read it. */
+  /^application\/(msword|vnd\.ms-(word|powerpoint))$/,
+  /* RTF embeds pictures the same way, and the parser reports them. */
+  /^(application|text)\/rtf$/,
+  /* The same document families in their macro-enabled and binary containers. The local
+   * parser reads these, and a scan inside one is exactly what it hands to OCR, so
+   * leaving them out would mean a DOCM's scanned page is silently kept as partial text
+   * where the same content in a DOCX is recovered. */
+  /^application\/vnd\.ms-word\.document\.macroenabled\.12$/i,
+  /^application\/vnd\.ms-powerpoint\.(presentation|slideshow)\.macroenabled\.12$/i,
+  /^application\/vnd\.ms-excel\.sheet\.(macroenabled|binary\.macroenabled)\.12$/i,
   /^application\/epub\+zip$/,
   /^application\/vnd\.oasis\.opendocument\.(text|spreadsheet|presentation|graphics)$/,
 ];
 
-/** MIME types handled by the built-in document parser (pdf, docx, excel variants, ods/odt) */
-export const documentParserMimeTypes = [
+/**
+ * Non-PDF document types local extraction handles. Named for the formats rather than
+ * the engine reading them: this list is part of the shared configuration contract the
+ * client validates against, and it should not have to change because the engine did.
+ */
+export const officeDocumentMimeTypes = [
   excelMimeTypes,
-  /^application\/pdf$/,
-  /^application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$/,
-  /^application\/vnd\.oasis\.opendocument\.spreadsheet$/,
-  /^application\/vnd\.oasis\.opendocument\.text$/,
+  /^application\/msword$/i,
+  /^application\/vnd\.ms-word\.document\.macroenabled\.12$/i,
+  /^application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$/i,
+  /^application\/(?:rtf|epub\+zip|csv)$/i,
+  /^text\/(?:rtf|csv)$/i,
+  /^application\/vnd\.ms-powerpoint$/i,
+  /^application\/vnd\.ms-powerpoint\.presentation\.macroenabled\.12$/i,
+  /^application\/vnd\.ms-powerpoint\.slideshow\.macroenabled\.12$/i,
+  /^application\/vnd\.openxmlformats-officedocument\.presentationml\.(?:presentation|slideshow)$/i,
+  /^application\/vnd\.ms-excel\.sheet\.(?:macroenabled|binary\.macroenabled)\.12$/i,
+  /^application\/vnd\.oasis\.opendocument\.(?:text|spreadsheet|presentation)$/i,
 ];
+
+/** MIME types handled by local document extraction, PDF first. */
+export const documentParserMimeTypes = [/^application\/pdf$/i, ...officeDocumentMimeTypes];
+
+/** Extension fallback for uploads whose MIME type arrives generic or missing. */
+const parsedDocumentExtensions = new Set([
+  'pdf',
+  'doc',
+  'docx',
+  'docm',
+  'odt',
+  'rtf',
+  'epub',
+  'ppt',
+  'pps',
+  'pot',
+  'pptx',
+  'pptm',
+  'ppsx',
+  'ppsm',
+  'odp',
+  'xls',
+  'xlsx',
+  'xlsm',
+  'xlsb',
+  'ods',
+  'csv',
+]);
+
+/**
+ * Whether the document parser extracts text for this file, resolved the way the
+ * parser itself routes: MIME type first, filename extension as fallback.
+ * Single source of truth for every UI affordance that offers extracted text.
+ */
+export function isParsedDocument(type?: string | null, filename?: string | null): boolean {
+  if (type && documentParserMimeTypes.some((regex) => regex.test(type))) {
+    return true;
+  }
+  const dot = filename?.lastIndexOf('.') ?? -1;
+  if (filename == null || dot <= 0) {
+    return false;
+  }
+  return parsedDocumentExtensions.has(filename.slice(dot + 1).toLowerCase());
+}
 
 export const defaultTextMimeTypes = [/^[\w.-]+\/[\w.-]+$/];
 
@@ -360,6 +426,7 @@ export const supportedMimeTypes = [
   textMimeTypes,
   excelMimeTypes,
   applicationMimeTypes,
+  ...documentParserMimeTypes,
   imageMimeTypes,
   videoMimeTypes,
   audioMimeTypes,
@@ -377,6 +444,7 @@ export const codeInterpreterMimeTypes = [
 ];
 
 export const codeTypeMapping: { [key: string]: string } = {
+  pdf: 'application/pdf', // .pdf - Portable Document Format
   c: 'text/x-c', // .c - C source
   cs: 'text/x-csharp', // .cs - C# source
   cpp: 'text/x-c++', // .cpp - C++ source
@@ -497,11 +565,21 @@ export const codeTypeMapping: { [key: string]: string } = {
   odg: 'application/vnd.oasis.opendocument.graphics', // .odg - OpenDocument Graphics
   doc: 'application/msword', // .doc - Word (legacy)
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx - Word
+  docm: 'application/vnd.ms-word.document.macroEnabled.12', // .docm - Word with macros
+  rtf: 'application/rtf', // .rtf - Rich Text Format
+  epub: 'application/epub+zip', // .epub - EPUB publication
   xls: 'application/vnd.ms-excel', // .xls - Excel (legacy)
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx - Excel
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12', // .xlsm - Excel with macros
+  xlsb: 'application/vnd.ms-excel.sheet.binary.macroEnabled.12', // .xlsb - Excel binary workbook
   ppt: 'application/vnd.ms-powerpoint', // .ppt - PowerPoint (legacy)
+  pps: 'application/vnd.ms-powerpoint', // .pps - PowerPoint slideshow (legacy)
+  pot: 'application/vnd.ms-powerpoint', // .pot - PowerPoint template (legacy)
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx - PowerPoint
   potx: 'application/vnd.openxmlformats-officedocument.presentationml.template', // .potx - PowerPoint template
+  pptm: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12', // .pptm - PowerPoint with macros
+  ppsx: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow', // .ppsx - PowerPoint slideshow
+  ppsm: 'application/vnd.ms-powerpoint.slideshow.macroEnabled.12', // .ppsm - PowerPoint slideshow with macros
   ics: 'text/calendar', // .ics - iCalendar
   ical: 'text/calendar', // .ical - iCalendar
   ifb: 'text/calendar', // .ifb - iCalendar free/busy
@@ -525,6 +603,8 @@ export const mimeTypeAliases: Readonly<Record<string, string>> = {
   'text/x-shellscript': 'application/x-sh',
 };
 
+const genericMimeTypes = new Set(['application/octet-stream', 'binary/octet-stream']);
+
 /**
  * Infers the MIME type from a file's extension when the browser doesn't recognize it,
  * and normalizes known non-standard MIME type aliases to their canonical forms.
@@ -533,12 +613,48 @@ export const mimeTypeAliases: Readonly<Record<string, string>> = {
  * @returns The normalized or inferred MIME type; empty string if unresolvable
  */
 export function inferMimeType(fileName: string, currentType: string): string {
+  const declaredType = currentType.split(';')[0].trim().toLowerCase();
+  const shouldInfer = !currentType || genericMimeTypes.has(declaredType);
+  const extension = fileName.split('.').pop()?.toLowerCase() ?? '';
+  const inferredType = codeTypeMapping[extension] || imageTypeMapping[extension];
+
+  if (shouldInfer && inferredType) {
+    return inferredType;
+  }
+
   if (currentType) {
     return mimeTypeAliases[currentType] ?? currentType;
   }
 
-  const extension = fileName.split('.').pop()?.toLowerCase() ?? '';
-  return codeTypeMapping[extension] || imageTypeMapping[extension] || currentType;
+  return currentType;
+}
+
+/**
+ * Zip containers a client may report in place of the document's own type. OOXML, ODF
+ * and EPUB documents are archives, so a client that types uploads by magic bytes calls
+ * an ordinary `.docx` one; Windows reports the `x-zip-compressed` alias for both.
+ */
+const archiveMimeTypes = new Set(['application/zip', 'application/x-zip-compressed']);
+
+/**
+ * The MIME type an upload should be routed by. Extends {@link inferMimeType} with the
+ * archive case, where the declared type is real but says only "zip" about a document
+ * the parser reads, and normalizes the rest so casing and `; charset=` parameters
+ * cannot decide a route.
+ *
+ * Shared by the client's upload validation and the server's routing: a file offered
+ * the extracted-text affordance on one side and stored as raw bytes on the other is
+ * the failure this exists to prevent.
+ */
+export function resolveEffectiveMimeType(fileName: string, currentType: string): string {
+  const declared = (currentType ?? '').split(';')[0].trim().toLowerCase();
+  if (!declared || genericMimeTypes.has(declared)) {
+    return inferMimeType(fileName, currentType);
+  }
+  if (archiveMimeTypes.has(declared) && isParsedDocument(null, fileName)) {
+    return inferMimeType(fileName, '') || declared;
+  }
+  return mimeTypeAliases[declared] ?? declared;
 }
 
 export const retrievalMimeTypes = [
@@ -552,6 +668,29 @@ export const mbToBytes = (mb: number): number => mb * megabyte;
 
 const defaultSizeLimit = mbToBytes(512);
 const defaultSkillImportSizeLimit = mbToBytes(50);
+/** The built-in document parser reads a whole document into memory to extract it, so
+ * it takes a far lower ceiling than transfer does. Matches the parser's own default. */
+const defaultDocumentParserSizeLimit = mbToBytes(15);
+/** Deadline one extraction child gets; the value both parser engines were built with. */
+const defaultDocumentParserTimeoutMs = 30_000;
+/** Maximum whole-document parses admitted concurrently by the local parser. */
+const defaultDocumentParserMaxConcurrentParsers = 2;
+/** Maximum whole-document parses held in the local parser queue. */
+const defaultDocumentParserMaxQueuedParsers = 6;
+/** Deadline for PDF scan classification, bounded by the overall parse deadline. */
+const defaultDocumentParserClassifierTimeoutMs = 15_000;
+/** Page counts are compared directly by the PDF engines, unlike byte-based limits. */
+const defaultDocumentParserMaxPageCount = 1000;
+/** The single-entry decompression ceiling matches the archive guard's direct-call default. */
+const defaultDocumentParserArchiveEntrySizeLimit = mbToBytes(25);
+/** The aggregate decompression ceiling matches the archive guard's direct-call default. */
+const defaultDocumentParserArchiveTotalSizeLimit = mbToBytes(100);
+/** The entry-count ceiling matches the archive guard's direct-call default: every entry
+ * costs a stream and an inflate teardown however little it decompresses to. */
+const defaultDocumentParserArchiveEntryCountLimit = 4096;
+/** Pages the in-process PDF recovery walk reads, matching the engine's own default. A
+ * page costs ~20ms to recover and cannot be batched, which is what this bounds. */
+const defaultDocumentParserMaxRecoveredPageCount = 250;
 const defaultTokenLimit = 100000;
 const defaultContextSizeLimit = mbToBytes(128);
 const defaultContextCharLimit = 1_000_000;
@@ -563,6 +702,8 @@ const assistantsFileConfig = {
   disabled: false,
 };
 
+/** The child-process IPC guard rejects page arrays above this non-configurable maximum. */
+const MAX_DOCUMENT_PARSER_PAGE_COUNT = 10_000;
 export const fileConfig = {
   endpoints: {
     [EModelEndpoint.assistants]: assistantsFileConfig,
@@ -601,6 +742,19 @@ export const fileConfig = {
   },
   ocr: {
     supportedMimeTypes: defaultOCRMimeTypes,
+  },
+  documentParser: {
+    archiveEntrySizeLimit: defaultDocumentParserArchiveEntrySizeLimit,
+    archiveTotalSizeLimit: defaultDocumentParserArchiveTotalSizeLimit,
+    supportedMimeTypes: documentParserMimeTypes,
+    fileSizeLimit: defaultDocumentParserSizeLimit,
+    timeoutMs: defaultDocumentParserTimeoutMs,
+    maxConcurrentParsers: defaultDocumentParserMaxConcurrentParsers,
+    maxQueuedParsers: defaultDocumentParserMaxQueuedParsers,
+    classifierTimeoutMs: defaultDocumentParserClassifierTimeoutMs,
+    maxPageCount: defaultDocumentParserMaxPageCount,
+    archiveEntryCountLimit: defaultDocumentParserArchiveEntryCountLimit,
+    maxRecoveredPageCount: defaultDocumentParserMaxRecoveredPageCount,
   },
   text: {
     supportedMimeTypes: defaultTextMimeTypes,
@@ -680,9 +834,56 @@ export const fileConfigSchema = z.object({
   ocr: z
     .object({
       supportedMimeTypes: supportedMimeTypesSchema.optional(),
+      enabled: z.boolean().optional(),
+    })
+    .optional(),
+  documentParser: z
+    .object({
+      supportedMimeTypes: supportedMimeTypesSchema.optional(),
+      /** Largest document handed to the built-in parser, in megabytes. Parsing loads
+       * and decompresses the whole document in a child process, so the ceiling bounds
+       * memory per upload rather than transfer; raising it costs memory. */
+      fileSizeLimit: z.number().min(0).optional(),
+      /** How long one extraction child may run before it is killed, in milliseconds.
+       * A document large enough to need a raised `fileSizeLimit` usually needs longer
+       * than the default to convert. */
+      timeoutMs: z.number().min(0).optional(),
+      /** Maximum whole-document parses allowed to run concurrently. */
+      maxConcurrentParsers: z.number().int().min(1).optional(),
+      /** Maximum whole-document parses allowed to wait for a slot. */
+      maxQueuedParsers: z.number().int().min(0).optional(),
+      /** Deadline for the optional PDF scan classifier, in milliseconds. */
+      classifierTimeoutMs: z.number().min(0).optional(),
+      /** Maximum PDF pages accepted before extraction work can grow without bound. The
+       * 10,000-page maximum protects the API process from oversized page arrays crossing IPC. */
+      maxPageCount: z
+        .number()
+        .int()
+        .min(0)
+        .max(MAX_DOCUMENT_PARSER_PAGE_COUNT, {
+          message: `must not exceed the maximum of ${MAX_DOCUMENT_PARSER_PAGE_COUNT} pages`,
+        })
+        .optional(),
+      /** Maximum decompressed bytes allowed for one ZIP entry, in megabytes. */
+      archiveEntrySizeLimit: z.number().min(0).optional(),
+      /** Maximum decompressed bytes allowed across one ZIP archive, in megabytes. */
+      archiveTotalSizeLimit: z.number().min(0).optional(),
+      /** Maximum entries one ZIP archive may hold. Every entry costs a stream and an
+       * inflate teardown, so this bounds walk time rather than decompressed size. */
+      archiveEntryCountLimit: z.number().int().min(0).optional(),
+      /** Maximum PDF pages the in-process recovery walk reads when the native engine
+       * dropped them. Pages past it are reported as needing OCR rather than probed, so
+       * raising it trades request time for completeness on a mostly-scanned document. */
+      maxRecoveredPageCount: z.number().int().min(0).optional(),
     })
     .optional(),
   text: z
+    .object({
+      supportedMimeTypes: supportedMimeTypesSchema.optional(),
+      enabled: z.boolean().optional(),
+    })
+    .optional(),
+  stt: z
     .object({
       supportedMimeTypes: supportedMimeTypesSchema.optional(),
     })
@@ -1233,6 +1434,10 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
       ...fileConfig.ocr,
       supportedMimeTypes: fileConfig.ocr?.supportedMimeTypes || [],
     },
+    documentParser: {
+      ...fileConfig.documentParser,
+      supportedMimeTypes: fileConfig.documentParser?.supportedMimeTypes || [],
+    },
     text: {
       ...fileConfig.text,
       supportedMimeTypes: fileConfig.text?.supportedMimeTypes || [],
@@ -1312,6 +1517,58 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
     }
   }
 
+  if (dynamic.documentParser !== undefined) {
+    const {
+      supportedMimeTypes: documentParserTypes,
+      fileSizeLimit: documentParserSizeLimit,
+      archiveEntrySizeLimit: documentParserArchiveEntrySizeLimit,
+      archiveTotalSizeLimit: documentParserArchiveTotalSizeLimit,
+      maxPageCount: documentParserMaxPageCount,
+      maxConcurrentParsers: documentParserMaxConcurrentParsers,
+      maxQueuedParsers: documentParserMaxQueuedParsers,
+      classifierTimeoutMs: documentParserClassifierTimeoutMs,
+      ...documentParserRest
+    } = dynamic.documentParser;
+    mergedConfig.documentParser = {
+      ...mergedConfig.documentParser,
+      ...documentParserRest,
+    };
+    if (documentParserTypes) {
+      mergedConfig.documentParser.supportedMimeTypes = convertStringsToRegex(documentParserTypes);
+    }
+    /* Megabytes in the file, bytes in the merged config, the same way every other size
+     * limit here is written and consumed. */
+    if (documentParserSizeLimit !== undefined) {
+      mergedConfig.documentParser.fileSizeLimit = mbToBytes(documentParserSizeLimit);
+    }
+    /* Archive limits use megabytes in the file and bytes in the merged config. */
+    if (documentParserArchiveEntrySizeLimit !== undefined) {
+      mergedConfig.documentParser.archiveEntrySizeLimit = mbToBytes(
+        documentParserArchiveEntrySizeLimit,
+      );
+    }
+    if (documentParserArchiveTotalSizeLimit !== undefined) {
+      mergedConfig.documentParser.archiveTotalSizeLimit = mbToBytes(
+        documentParserArchiveTotalSizeLimit,
+      );
+    }
+    /* Page counts are not sizes, so the configured value stays a direct count. */
+    if (documentParserMaxPageCount !== undefined) {
+      mergedConfig.documentParser.maxPageCount = documentParserMaxPageCount;
+    }
+    /* Admission counts and classifier duration are raw units, so they pass through
+     * unchanged rather than taking the megabyte conversion used by byte ceilings. */
+    if (documentParserMaxConcurrentParsers !== undefined) {
+      mergedConfig.documentParser.maxConcurrentParsers = documentParserMaxConcurrentParsers;
+    }
+    if (documentParserMaxQueuedParsers !== undefined) {
+      mergedConfig.documentParser.maxQueuedParsers = documentParserMaxQueuedParsers;
+    }
+    if (documentParserClassifierTimeoutMs !== undefined) {
+      mergedConfig.documentParser.classifierTimeoutMs = documentParserClassifierTimeoutMs;
+    }
+  }
+
   if (dynamic.text !== undefined) {
     const { supportedMimeTypes: textMimeTypes, ...textRest } = dynamic.text;
     mergedConfig.text = {
@@ -1320,6 +1577,17 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
     };
     if (textMimeTypes) {
       mergedConfig.text.supportedMimeTypes = convertStringsToRegex(textMimeTypes);
+    }
+  }
+
+  if (dynamic.stt !== undefined) {
+    const { supportedMimeTypes: sttMimeTypes, ...sttRest } = dynamic.stt;
+    mergedConfig.stt = {
+      ...mergedConfig.stt,
+      ...sttRest,
+    };
+    if (sttMimeTypes) {
+      mergedConfig.stt.supportedMimeTypes = convertStringsToRegex(sttMimeTypes);
     }
   }
 

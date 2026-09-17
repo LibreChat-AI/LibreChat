@@ -12,6 +12,7 @@ import {
   mergeFileConfig,
   isAssistantsEndpoint,
   getEndpointFileConfig,
+  defaultAgentCapabilities,
   defaultAssistantsVersion,
 } from 'librechat-data-provider';
 import type {
@@ -36,7 +37,9 @@ import {
 } from '~/utils';
 import { useGetFileConfig, useUploadFileMutation } from '~/data-provider';
 import useAgentUploadTarget from '~/hooks/Agents/useAgentUploadTarget';
+import useAgentCapabilities from '~/hooks/Agents/useAgentCapabilities';
 import useLocalize, { TranslationKeys } from '~/hooks/useLocalize';
+import useGetAgentsConfig from '~/hooks/Agents/useGetAgentsConfig';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useDelayedUploadToast } from './useDelayedUploadToast';
 import { useChatContext } from '~/Providers/ChatContext';
@@ -149,6 +152,8 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
   const [errors, setErrors] = useState<string[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const { startUploadTimer, clearUploadTimer } = useDelayedUploadToast();
+  const { agentsConfig } = useGetAgentsConfig();
+  const capabilities = useAgentCapabilities(agentsConfig?.capabilities ?? defaultAgentCapabilities);
   const { files, setFiles, conversation } = fileState;
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -311,6 +316,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
               width: data.width,
               filename: data.filename,
               source: data.source,
+              /** What decides whether this chip can offer the extracted text: storage
+               * keeps the original document, so the record's source no longer says it. */
+              llmDeliveryPath: data.llmDeliveryPath,
               embedded: data.embedded,
               llmDeliveryPath: data.llmDeliveryPath,
             },
@@ -559,6 +567,11 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
         toolResource: _toolResource,
         skipSizeValidation: true,
         skipBatchRules: selection.keptIndices.length > 0,
+        /* The same capability the upload options consult. Without it, a document the
+         * deployment routes through OCR is accepted here for an agent that cannot use
+         * OCR, and the server answers with a capability error the client could have
+         * given straight away. */
+        ocrEnabled: capabilities.ocrEnabled,
       });
     } catch (error) {
       console.error('file validation error', error);

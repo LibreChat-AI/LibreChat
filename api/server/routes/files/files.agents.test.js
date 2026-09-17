@@ -1298,6 +1298,37 @@ describe('File Routes - Agent Files Endpoint', () => {
       errorLogSpy.mockRestore();
     });
 
+    it('returns a stable 413 for an oversized document parser input', async () => {
+      processAgentFileUpload.mockRejectedValueOnce(
+        Object.assign(new Error('PRIVATE-UPLOAD.docx exceeds the 15MB parser limit'), {
+          code: 'PARSER_INPUT_LIMIT',
+          userErrorStatusCode: 413,
+        }),
+      );
+      const errorLogSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+      const testApp = createAppWithUser(otherUserId, SystemRoles.USER, {
+        filters: {
+          files: {
+            pii: {
+              fields: ['name'],
+            },
+          },
+        },
+      });
+
+      const response = await request(testApp).post('/files').send({
+        endpoint: 'agents',
+        file_id: uuidv4(),
+      });
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual({
+        message: 'Document exceeds the supported file size limit',
+      });
+      expect(JSON.stringify(response.body)).not.toContain('PRIVATE-UPLOAD');
+      errorLogSpy.mockRestore();
+    });
+
     it('preserves legacy upload error details when file protection is inactive', async () => {
       const legacyMessage = 'Invalid file format: .legacy';
       processAgentFileUpload.mockRejectedValueOnce(

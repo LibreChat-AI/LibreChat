@@ -16,6 +16,7 @@ import {
   omitResolvedCanonicalFileLocators,
   resolveCanonicalFileReferences,
   resolveCanonicalFileReferenceUnits,
+  planDocumentExtraction,
   UPLOAD_EXTRACTED_TEXT_PLANS,
   UninspectableFileError,
 } from './files';
@@ -72,6 +73,18 @@ describe('file content inspection policy', () => {
      * Processing sends those to RAG with native fallback off and passes the result
      * through extractInspectableFileText, so the extraction step exists and fail-closing
      * here would reject an upload that does get inspected. */
+    const configuredDocumentParser = mergeFileConfig({
+      documentParser: { supportedMimeTypes: ['^application\\/vnd\\.vendor\\.word$'] },
+      ocr: { supportedMimeTypes: [] },
+      text: { supportedMimeTypes: [] },
+    });
+    expect(
+      getUploadExtractedTextPlan({
+        ...baseInput,
+        mimeType: 'application/vnd.vendor.word',
+        fileConfig: configuredDocumentParser,
+      }),
+    ).toBe(UPLOAD_EXTRACTED_TEXT_PLANS.documentParser);
     const configuredNonDocumentText = mergeFileConfig({
       ocr: { supportedMimeTypes: [] },
       text: { supportedMimeTypes: ['application/x-rag-document'] },
@@ -132,6 +145,24 @@ describe('file content inspection policy', () => {
       }),
     ).toBe(UPLOAD_EXTRACTED_TEXT_PLANS.documentParser);
 
+    const configuredRagOnlyDocument = mergeFileConfig({
+      documentParser: { supportedMimeTypes: ['^application\\/pdf$'] },
+      ocr: { supportedMimeTypes: [] },
+      text: {
+        supportedMimeTypes: [
+          '^application\\/vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document$',
+        ],
+      },
+    });
+    expect(
+      getUploadExtractedTextPlan({
+        ...baseInput,
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        fileConfig: configuredRagOnlyDocument,
+        ragConfigured: true,
+      }),
+    ).toBe(UPLOAD_EXTRACTED_TEXT_PLANS.configuredRAG);
+
     const configuredOCR = mergeFileConfig({
       ocr: { supportedMimeTypes: ['application/x-ocr-document'] },
       text: { supportedMimeTypes: [] },
@@ -151,6 +182,119 @@ describe('file content inspection policy', () => {
         ocrConfigured: true,
       }),
     ).toBe(true);
+  });
+
+  /**
+   * The upload route runs whatever this returns, so precedence and escalation are the
+   * behavior: a configured text service takes the document away from the parser, and an
+   * operator alias — a type only their parser list names — still reaches OCR, because
+   * the alias resolves to a type OCR does advertise.
+   */
+  it('selects the extraction engines an agent context upload runs', () => {
+    const base = {
+      endpoint: 'agents',
+      toolResource: EToolResources.context,
+      ocrConfigured: false,
+      ragConfigured: false,
+    };
+    const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    const defaults = mergeFileConfig(undefined);
+    expect(
+      planDocumentExtraction({
+        ...base,
+        mimeType: docx,
+        fileName: 'report.docx',
+        fileConfig: defaults,
+      }),
+    ).toEqual({
+      plan: UPLOAD_EXTRACTED_TEXT_PLANS.documentParser,
+      parserMimeType: docx,
+      parserEligible: true,
+      isBuiltInDocumentType: true,
+      useConfiguredText: false,
+      useConfiguredOCR: false,
+      useDocumentParser: true,
+    });
+
+    /* A scanned PDF: the parser reads what it can and OCR covers the rest, so both run. */
+    expect(
+      planDocumentExtraction({
+        ...base,
+        mimeType: 'application/pdf',
+        fileName: 'scan.pdf',
+        fileConfig: defaults,
+        ocrConfigured: true,
+      }),
+    ).toMatchObject({ useDocumentParser: true, useConfiguredOCR: true });
+
+    /* Configured for RAG: extraction is that service's, and the parser stands down
+     * even though it handles the type. */
+    const ragOwnsDocx = mergeFileConfig({
+      ocr: { supportedMimeTypes: [] },
+      text: { supportedMimeTypes: [`^${docx.replace(/[.+]/g, '\\$&')}$`] },
+    });
+    expect(
+      planDocumentExtraction({
+        ...base,
+        mimeType: docx,
+        fileName: 'report.docx',
+        fileConfig: ragOwnsDocx,
+        ragConfigured: true,
+        ocrConfigured: true,
+      }),
+    ).toMatchObject({
+      useConfiguredText: true,
+      useDocumentParser: false,
+      useConfiguredOCR: false,
+    });
+
+    /* An operator alias for a PDF: OCR advertises `application/pdf`, not the alias, so
+     * the route has to judge the escalation on the resolved type. */
+    const aliasedPdf = mergeFileConfig({
+      documentParser: { supportedMimeTypes: ['^application\\/x-vendor-pdf$'] },
+      text: { supportedMimeTypes: [] },
+    });
+    expect(
+      planDocumentExtraction({
+        ...base,
+        mimeType: 'application/x-vendor-pdf',
+        fileName: 'contract.pdf',
+        fileConfig: aliasedPdf,
+        ocrConfigured: true,
+      }),
+    ).toMatchObject({
+      parserMimeType: 'application/pdf',
+      parserEligible: true,
+      useDocumentParser: true,
+      useConfiguredOCR: true,
+    });
+    /* Without a configured OCR service there is nothing to escalate to. */
+    expect(
+      planDocumentExtraction({
+        ...base,
+        mimeType: 'application/x-vendor-pdf',
+        fileName: 'contract.pdf',
+        fileConfig: aliasedPdf,
+      }),
+    ).toMatchObject({ useDocumentParser: true, useConfiguredOCR: false });
+
+    /* A type no engine claims runs nothing. */
+    expect(
+      planDocumentExtraction({
+        ...base,
+        mimeType: 'application/x-unsupported',
+        fileName: 'blob.bin',
+        fileConfig: defaults,
+        ocrConfigured: true,
+        ragConfigured: true,
+      }),
+    ).toMatchObject({
+      plan: null,
+      parserEligible: false,
+      useDocumentParser: false,
+      useConfiguredOCR: false,
+    });
   });
 
   it('defers transcript fail-close only to STT-supported non-assistant context uploads', () => {

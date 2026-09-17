@@ -1,4 +1,4 @@
-const { Constants, ForkOptions, RetentionMode } = require('librechat-data-provider');
+const { Constants, ContentTypes, ForkOptions, RetentionMode } = require('librechat-data-provider');
 
 const mockLogger = {
   debug: jest.fn(),
@@ -967,6 +967,47 @@ describe('forkSharedConversation', () => {
     // Render-only metadata is preserved
     expect(message.files[0].filepath).toBe('/images/owner/a.png');
     expect(message.attachments[0].toolCallId).toBe('tool_1');
+  });
+
+  /**
+   * The extracted-text panel resolves through the share's file route, which needs the
+   * file id and a share context. A fork keeps neither, so a surviving marker would show
+   * the viewer an empty "no extracted text" panel for a document that has plenty.
+   */
+  test('should strip the parsed-text marker along with the file id', async () => {
+    getSharedMessages.mockResolvedValue({
+      ...mockShare,
+      messages: [
+        {
+          messageId: 'msg_a',
+          parentMessageId: Constants.NO_PARENT,
+          text: 'Message with a parsed document',
+          isCreatedByUser: true,
+          createdAt: '2021-01-01',
+          files: [{ file_id: 'owner-doc-1', filename: 'report.docx', hasTextPreview: true }],
+          content: [
+            {
+              type: ContentTypes.STEER,
+              files: [{ file_id: 'owner-doc-2', filename: 'notes.pdf', hasTextPreview: true }],
+            },
+          ],
+        },
+      ],
+    });
+
+    await forkSharedConversation({
+      shareId: 'share123',
+      requestUserId: 'user1',
+    });
+
+    const [message] = bulkSaveMessages.mock.calls[0][0];
+    expect(message.files[0]).not.toHaveProperty('hasTextPreview');
+    expect(message.files[0].filename).toBe('report.docx');
+
+    const [steerPart] = message.content;
+    expect(steerPart.files[0]).not.toHaveProperty('file_id');
+    expect(steerPart.files[0]).not.toHaveProperty('hasTextPreview');
+    expect(steerPart.files[0].filename).toBe('notes.pdf');
   });
 
   test('should resolve interfaceConfig from the app config and pass it to the builder', async () => {
