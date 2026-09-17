@@ -82,6 +82,41 @@ export function defaultBounds(source: Window): UndockedWindowBounds {
   };
 }
 
+/** Enough of the window to see and grab, if that is all that overlaps. */
+const MIN_VISIBLE_EDGE = 96;
+
+/**
+ * Whether remembered bounds can still put the window somewhere the user can
+ * reach it. Coordinates outlive the monitor arrangement that produced them, and
+ * the pane leaves this page when it undocks: a window opened onto a display
+ * that no longer exists would take the artifact and its only Dock control with
+ * it.
+ *
+ * `screen` describes the display the host window is on, so bounds on a second
+ * monitor look off-screen here and are indistinguishable from bounds on a
+ * monitor that was unplugged — except that `isExtended` says whether there is
+ * another display at all. A desktop that reports exactly one is the only case
+ * where the remembered rectangle is provably gone; anything else (including a
+ * browser that does not report it) keeps the user's placement.
+ */
+export function isPlausibleOnScreen(bounds: UndockedWindowBounds, source: Window): boolean {
+  const screen = source.screen as (Screen & { availLeft?: number; availTop?: number }) | undefined;
+  if (screen == null || !isFiniteNumber(screen.availWidth) || !isFiniteNumber(screen.availHeight)) {
+    return true;
+  }
+  const left = isFiniteNumber(screen.availLeft) ? screen.availLeft : 0;
+  const top = isFiniteNumber(screen.availTop) ? screen.availTop : 0;
+  const overlaps =
+    bounds.left + bounds.width - MIN_VISIBLE_EDGE > left &&
+    bounds.left + MIN_VISIBLE_EDGE < left + screen.availWidth &&
+    bounds.top + bounds.height - MIN_VISIBLE_EDGE > top &&
+    bounds.top + MIN_VISIBLE_EDGE < top + screen.availHeight;
+  if (overlaps) {
+    return true;
+  }
+  return (screen as Screen & { isExtended?: boolean }).isExtended !== false;
+}
+
 /**
  * Opens (or refocuses) the popup that hosts the undocked pane. Returns `null`
  * when the browser blocked it, which is the caller's cue to tell the user.
@@ -97,7 +132,11 @@ export function openUndockedWindow(source: Window): Window | null {
   } catch {
     stored = null;
   }
-  const bounds = parseBounds(stored) ?? defaultBounds(source);
+  const remembered = parseBounds(stored);
+  const bounds =
+    remembered != null && isPlausibleOnScreen(remembered, source)
+      ? remembered
+      : defaultBounds(source);
   const features = [
     'popup=yes',
     `width=${bounds.width}`,

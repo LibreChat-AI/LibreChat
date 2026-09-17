@@ -107,6 +107,104 @@ describe('parseBounds', () => {
   });
 });
 
+/**
+ * Remembered coordinates outlive the monitor arrangement that produced them,
+ * and undocking takes the pane — and the only Dock control — out of this page.
+ * A window put where nothing can reach it is the one failure the remembered
+ * bounds must never cause.
+ */
+describe('reopening at remembered bounds', () => {
+  const sourceOn = (screen: Record<string, unknown>) =>
+    ({
+      screen,
+      outerWidth: 1200,
+      outerHeight: 900,
+      screenX: 0,
+      screenY: 0,
+      localStorage: {
+        getItem: () => JSON.stringify({ width: 900, height: 700, left: -1720, top: -80 }),
+      },
+      open: jest.fn(() => ({ focus: jest.fn() })),
+    }) as unknown as Window;
+
+  const openedFeatures = (source: Window) => {
+    openUndockedWindow(source);
+    return (source.open as jest.Mock).mock.calls[0][2] as string;
+  };
+
+  it('ignores a monitor that is no longer attached', () => {
+    const source = sourceOn({
+      availWidth: 1600,
+      availHeight: 1000,
+      availLeft: 0,
+      availTop: 0,
+      isExtended: false,
+    });
+
+    const features = openedFeatures(source);
+
+    const fallback = defaultBounds(source);
+    expect(features).toContain(`left=${fallback.left}`);
+    expect(features).toContain(`top=${fallback.top}`);
+  });
+
+  it('keeps the placement while a second display is attached', () => {
+    const features = openedFeatures(
+      sourceOn({
+        availWidth: 1600,
+        availHeight: 1000,
+        availLeft: 0,
+        availTop: 0,
+        isExtended: true,
+      }),
+    );
+
+    expect(features).toContain('left=-1720');
+    expect(features).toContain('top=-80');
+  });
+
+  it('keeps the placement when the browser does not report other displays', () => {
+    const features = openedFeatures({
+      screen: { availWidth: 1600, availHeight: 1000 },
+      outerWidth: 1200,
+      outerHeight: 900,
+      screenX: 0,
+      screenY: 0,
+      localStorage: {
+        getItem: () => JSON.stringify({ width: 900, height: 700, left: -1720, top: -80 }),
+      },
+      open: jest.fn(() => ({ focus: jest.fn() })),
+    } as unknown as Window);
+
+    expect(features).toContain('left=-1720');
+  });
+
+  it('keeps a placement that still overlaps this display', () => {
+    const source = {
+      screen: {
+        availWidth: 1600,
+        availHeight: 1000,
+        availLeft: 0,
+        availTop: 0,
+        isExtended: false,
+      },
+      outerWidth: 1200,
+      outerHeight: 900,
+      screenX: 0,
+      screenY: 0,
+      localStorage: {
+        getItem: () => JSON.stringify({ width: 900, height: 700, left: 640, top: 120 }),
+      },
+      open: jest.fn(() => ({ focus: jest.fn() })),
+    } as unknown as Window;
+
+    const features = openedFeatures(source);
+
+    expect(features).toContain('left=640');
+    expect(features).toContain('top=120');
+  });
+});
+
 describe('mirrorDocumentStyles', () => {
   let host: HTMLStyleElement;
   let link: HTMLLinkElement;
