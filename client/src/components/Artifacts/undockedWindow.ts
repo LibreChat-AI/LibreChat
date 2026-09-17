@@ -293,12 +293,34 @@ const styleSnapshot = (element: Element): { text: string; signature: string } =>
   return { text, signature: `text|${text.length}|${rules?.length ?? -1}` };
 };
 
+/** Attributes that decide whether, and where, a sheet applies. They are part
+ *  of the signature because a change to any of them changes the styling the
+ *  popup should be showing, without touching a rule or a text node. */
+const SHEET_ATTRIBUTES = ['media', 'disabled', 'rel', 'href', 'type'] as const;
+
+const attributeSignature = (element: Element): string =>
+  SHEET_ATTRIBUTES.map((name) => element.getAttribute(name) ?? '').join('|');
+
 const sheetSnapshot = (element: Element): { text: string; signature: string } => {
+  const attributes = attributeSignature(element);
   if (element.tagName === 'LINK') {
     const link = element as HTMLLinkElement;
-    return { text: '', signature: `link|${link.href}|${link.media}` };
+    return { text: '', signature: `link|${link.href}|${attributes}` };
   }
-  return styleSnapshot(element);
+  const style = styleSnapshot(element);
+  return { text: style.text, signature: `${style.signature}|${attributes}` };
+};
+
+/** Applies the attributes that travelled with the sheet to its clone. */
+const mirrorSheetAttributes = (source: Element, clone: Element): void => {
+  for (const name of SHEET_ATTRIBUTES) {
+    const value = source.getAttribute(name);
+    if (value == null) {
+      clone.removeAttribute(name);
+    } else if (clone.getAttribute(name) !== value) {
+      clone.setAttribute(name, value);
+    }
+  }
 };
 
 const createClone = (element: Element, target: Document): HTMLStyleElement | HTMLLinkElement => {
@@ -359,6 +381,7 @@ export function mirrorDocumentStyles(source: Document, target: Document): () => 
         continue;
       }
       entry.signature = signature;
+      mirrorSheetAttributes(entry.source, entry.clone);
       if (entry.clone.tagName === 'STYLE') {
         (entry.clone as HTMLStyleElement).textContent = text;
       } else {
@@ -381,7 +404,16 @@ export function mirrorDocumentStyles(source: Document, target: Document): () => 
     }
     sync();
   });
-  observer.observe(source.head, { childList: true, subtree: true, characterData: true });
+  /* A sheet can be switched on, off or onto another medium by attribute alone
+   * — `media`, `disabled`, or a `rel` that stops it being a stylesheet at all
+   * — which touches no child and no text node. */
+  observer.observe(source.head, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: [...SHEET_ATTRIBUTES],
+  });
   const interval = source.defaultView?.setInterval(sync, RESYNC_INTERVAL_MS);
 
   return () => {

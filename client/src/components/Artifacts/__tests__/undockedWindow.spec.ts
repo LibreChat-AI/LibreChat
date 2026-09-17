@@ -252,6 +252,34 @@ describe('mirrorDocumentStyles', () => {
     stop();
   });
 
+  /* A sheet can change what it applies to without any of its content moving:
+   * a `media` switch, or a `disabled` flag, is an attribute and nothing else.
+   * The popup shows the host's styling, so it has to follow. */
+  it('follows a stylesheet that changes which medium it applies to', async () => {
+    link.media = 'print';
+    const target = detachedDocument();
+    const stop = mirrorDocumentStyles(document, target);
+    expect(target.head.querySelector('link')?.getAttribute('media')).toBe('print');
+
+    link.media = 'all';
+    await Promise.resolve();
+
+    expect(target.head.querySelector('link')?.getAttribute('media')).toBe('all');
+    stop();
+  });
+
+  it('follows a stylesheet the host switches off', async () => {
+    const target = detachedDocument();
+    const stop = mirrorDocumentStyles(document, target);
+    expect(target.head.querySelector('link')?.hasAttribute('disabled')).toBe(false);
+
+    link.setAttribute('disabled', '');
+    await Promise.resolve();
+
+    expect(target.head.querySelector('link')?.hasAttribute('disabled')).toBe(true);
+    stop();
+  });
+
   /* A rewrite that keeps the text length and the rule count is invisible to
    * any cheap signature, so the mutation record has to drive the refresh. */
   it('mirrors a rewrite that changes no measurable shape', async () => {
