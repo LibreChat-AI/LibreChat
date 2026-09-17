@@ -89,7 +89,15 @@ test('a shared link can undock its artifacts pane @scenario:a-shared-link-can-un
      * left behind in the page the reader came from. */
     await expect(reader.locator('#artifact-viewer')).toHaveCount(0);
 
-    await popup.getByRole('button', { name: DOCK }).click();
+    /* Docking closes the window the click was made in, so the click itself
+     * can resolve against a page that is already gone; what matters is where
+     * the pane ends up. */
+    const closed = popup.waitForEvent('close').catch(() => undefined);
+    await popup
+      .getByRole('button', { name: DOCK })
+      .click()
+      .catch(() => undefined);
+    await closed;
 
     await expect(reader.getByRole('region', { name: HTML_ARTIFACT })).toBeVisible({
       timeout: 20000,
