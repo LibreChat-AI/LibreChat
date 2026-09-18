@@ -31,7 +31,9 @@ function assertEqual(a, b) {
 
 function assertThrows(fn, pattern) {
   let threw = false;
-  try { fn(); } catch (err) {
+  try {
+    fn();
+  } catch (err) {
     threw = true;
     if (pattern && !pattern.test(err.message)) {
       throw new Error(`Error message "${err.message}" did not match ${pattern}`);
@@ -56,8 +58,9 @@ function withEnv(vars, fn) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  try { return fn(); }
-  finally {
+  try {
+    return fn();
+  } finally {
     for (const [k, v] of Object.entries(original)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -105,15 +108,24 @@ assert('prefers CSFLE_GCP_SERVICE_ACCOUNT_FILE over GOOGLE_SERVICE_KEY_FILE', ()
 });
 
 assert('throws with file path and var name when file not found', () => {
-  withEnv({ CSFLE_GCP_SERVICE_ACCOUNT_FILE: '/nonexistent/path/sa.json', GOOGLE_SERVICE_KEY_FILE: undefined }, () => {
-    assertThrows(() => loadGcpCredentials(), /CSFLE_GCP_SERVICE_ACCOUNT_FILE/);
-  });
+  withEnv(
+    {
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: '/nonexistent/path/sa.json',
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      assertThrows(() => loadGcpCredentials(), /CSFLE_GCP_SERVICE_ACCOUNT_FILE/);
+    },
+  );
 });
 
 assert('throws with GOOGLE_SERVICE_KEY_FILE in message when that var is used', () => {
-  withEnv({ CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined, GOOGLE_SERVICE_KEY_FILE: '/nonexistent/sa.json' }, () => {
-    assertThrows(() => loadGcpCredentials(), /GOOGLE_SERVICE_KEY_FILE/);
-  });
+  withEnv(
+    { CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined, GOOGLE_SERVICE_KEY_FILE: '/nonexistent/sa.json' },
+    () => {
+      assertThrows(() => loadGcpCredentials(), /GOOGLE_SERVICE_KEY_FILE/);
+    },
+  );
 });
 
 assert('throws on invalid JSON', () => {
@@ -143,58 +155,183 @@ assert('throws when private_key is missing', () => {
 // -----------------------------------------------------------------------
 console.log('\nbuildKmsProviders() — local key mode');
 
+const localKey = require('crypto').randomBytes(96).toString('base64');
+
 assert('returns local provider with correct key', () => {
-  const key = require('crypto').randomBytes(96).toString('base64');
-  withEnv({
-    GCP_KMS_PROJECT_ID: undefined,
-    MONGO_CSFLE_LOCAL_MASTER_KEY: key,
-    CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
-    GOOGLE_SERVICE_KEY_FILE: undefined,
-  }, () => {
-    const result = buildKmsProviders();
-    assertEqual(result.provider, 'local');
-    if (!result.kmsProviders.local?.key) throw new Error('key buffer missing');
-    assertEqual(result.masterKey, undefined);
-  });
+  withEnv(
+    {
+      GCP_KMS_PROJECT_ID: undefined,
+      CSFLE_KMS_PROVIDER: undefined,
+      MONGO_CSFLE_LOCAL_MASTER_KEY: localKey,
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      const result = buildKmsProviders();
+      assertEqual(result.provider, 'local');
+      if (!result.kmsProviders.local?.key) throw new Error('key buffer missing');
+      assertEqual(result.masterKey, undefined);
+    },
+  );
+});
+
+assert('explicit local provider ignores GCP project configuration', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'local',
+      GCP_KMS_PROJECT_ID: 'gcp-project',
+      GCP_KMS_KEY_NAME: 'gcp-key',
+      MONGO_CSFLE_LOCAL_MASTER_KEY: localKey,
+    },
+    () => {
+      const result = buildKmsProviders();
+      assertEqual(result.provider, 'local');
+      if (!result.kmsProviders.local?.key) throw new Error('key buffer missing');
+    },
+  );
+});
+
+assert('explicit local provider requires a master key', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'local',
+      GCP_KMS_PROJECT_ID: 'gcp-project',
+      MONGO_CSFLE_LOCAL_MASTER_KEY: undefined,
+    },
+    () => {
+      assertThrows(() => buildKmsProviders(), /MONGO_CSFLE_LOCAL_MASTER_KEY/);
+    },
+  );
 });
 
 assert('throws when neither GCP nor local key is configured', () => {
-  withEnv({
-    GCP_KMS_PROJECT_ID: undefined,
-    MONGO_CSFLE_LOCAL_MASTER_KEY: undefined,
-    CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
-    GOOGLE_SERVICE_KEY_FILE: undefined,
-  }, () => {
-    assertThrows(() => buildKmsProviders(), /No KMS configured/);
-  });
+  withEnv(
+    {
+      GCP_KMS_PROJECT_ID: undefined,
+      CSFLE_KMS_PROVIDER: undefined,
+      MONGO_CSFLE_LOCAL_MASTER_KEY: undefined,
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      assertThrows(() => buildKmsProviders(), /No KMS configured/);
+    },
+  );
 });
 
 assert('throws when local key decodes to wrong length', () => {
-  withEnv({
-    GCP_KMS_PROJECT_ID: undefined,
-    MONGO_CSFLE_LOCAL_MASTER_KEY: Buffer.from('tooshort').toString('base64'),
-    CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
-    GOOGLE_SERVICE_KEY_FILE: undefined,
-  }, () => {
-    assertThrows(() => buildKmsProviders(), /96 bytes/);
-  });
+  withEnv(
+    {
+      GCP_KMS_PROJECT_ID: undefined,
+      CSFLE_KMS_PROVIDER: undefined,
+      MONGO_CSFLE_LOCAL_MASTER_KEY: Buffer.from('tooshort').toString('base64'),
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      assertThrows(() => buildKmsProviders(), /96 bytes/);
+    },
+  );
 });
 
 console.log('\nbuildKmsProviders() — GCP mode');
 
 assert('uses ADC when no file vars set', () => {
-  withEnv({
-    GCP_KMS_PROJECT_ID: 'my-project',
-    GCP_KMS_KEY_NAME: 'my-key',
-    CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
-    GOOGLE_SERVICE_KEY_FILE: undefined,
-  }, () => {
-    const result = buildKmsProviders();
-    assertEqual(result.provider, 'gcp');
-    const gcpCreds = result.kmsProviders.gcp;
-    if (Object.keys(gcpCreds).length !== 0) throw new Error('Expected empty gcp object for ADC');
-    assertEqual(result.masterKey.projectId, 'my-project');
-  });
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: undefined,
+      GCP_KMS_PROJECT_ID: 'my-project',
+      GCP_KMS_KEY_NAME: 'my-key',
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      const result = buildKmsProviders();
+      assertEqual(result.provider, 'gcp');
+      const gcpCreds = result.kmsProviders.gcp;
+      if (Object.keys(gcpCreds).length !== 0) throw new Error('Expected empty gcp object for ADC');
+      assertEqual(result.masterKey.projectId, 'my-project');
+    },
+  );
+});
+
+assert('explicit GCP provider returns GCP configuration', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'gcp',
+      GCP_KMS_PROJECT_ID: 'my-project',
+      GCP_KMS_KEY_NAME: 'my-key',
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      assertEqual(buildKmsProviders().provider, 'gcp');
+    },
+  );
+});
+
+assert('explicit GCP provider requires a project ID', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'gcp',
+      GCP_KMS_PROJECT_ID: undefined,
+      GCP_KMS_KEY_NAME: 'my-key',
+    },
+    () => {
+      assertThrows(() => buildKmsProviders(), /GCP_KMS_PROJECT_ID/);
+    },
+  );
+});
+
+assert('explicit GCP provider requires a key name', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'gcp',
+      GCP_KMS_PROJECT_ID: 'my-project',
+      GCP_KMS_KEY_NAME: undefined,
+    },
+    () => {
+      assertThrows(() => buildKmsProviders(), /GCP_KMS_KEY_NAME/);
+    },
+  );
+});
+
+assert('accepts case-insensitive and trimmed provider values', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: '  GCP ',
+      GCP_KMS_PROJECT_ID: 'my-project',
+      GCP_KMS_KEY_NAME: 'my-key',
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: undefined,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      assertEqual(buildKmsProviders().provider, 'gcp');
+    },
+  );
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: ' LOCAL ',
+      GCP_KMS_PROJECT_ID: 'my-project',
+      MONGO_CSFLE_LOCAL_MASTER_KEY: localKey,
+    },
+    () => {
+      assertEqual(buildKmsProviders().provider, 'local');
+    },
+  );
+});
+
+assert('rejects an unrecognized provider value', () => {
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: 'kms',
+      GCP_KMS_PROJECT_ID: 'my-project',
+      MONGO_CSFLE_LOCAL_MASTER_KEY: localKey,
+    },
+    () => {
+      assertThrows(() => buildKmsProviders(), /CSFLE_KMS_PROVIDER.*local.*gcp/i);
+    },
+  );
 });
 
 assert('injects explicit credentials when key file is set (bare base64 key)', () => {
@@ -202,16 +339,20 @@ assert('injects explicit credentials when key file is set (bare base64 key)', ()
   const bareKey = Buffer.from('fake-rsa-key-bytes').toString('base64');
   const p = tmpFile(JSON.stringify({ client_email: 'sa@p.iam', private_key: bareKey }));
   cleanup.push(p);
-  withEnv({
-    GCP_KMS_PROJECT_ID: 'my-project',
-    GCP_KMS_KEY_NAME: 'my-key',
-    CSFLE_GCP_SERVICE_ACCOUNT_FILE: p,
-    GOOGLE_SERVICE_KEY_FILE: undefined,
-  }, () => {
-    const result = buildKmsProviders();
-    assertEqual(result.kmsProviders.gcp.email, 'sa@p.iam');
-    assertEqual(result.kmsProviders.gcp.privateKey, bareKey);
-  });
+  withEnv(
+    {
+      CSFLE_KMS_PROVIDER: undefined,
+      GCP_KMS_PROJECT_ID: 'my-project',
+      GCP_KMS_KEY_NAME: 'my-key',
+      CSFLE_GCP_SERVICE_ACCOUNT_FILE: p,
+      GOOGLE_SERVICE_KEY_FILE: undefined,
+    },
+    () => {
+      const result = buildKmsProviders();
+      assertEqual(result.kmsProviders.gcp.email, 'sa@p.iam');
+      assertEqual(result.kmsProviders.gcp.privateKey, bareKey);
+    },
+  );
 });
 
 // -----------------------------------------------------------------------
@@ -244,7 +385,10 @@ assert('handles literal \\n escape sequences in JSON private_key (as parsed by J
 });
 
 assert('throws when result is empty after stripping', () => {
-  assertThrows(() => normalisePemToBase64('-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----', 'test'), /empty after stripping/);
+  assertThrows(
+    () => normalisePemToBase64('-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----', 'test'),
+    /empty after stripping/,
+  );
 });
 
 // end-to-end: loadGcpCredentials returns normalised key from PEM file
@@ -262,7 +406,11 @@ assert('loadGcpCredentials returns stripped base64 when key file contains PEM pr
 
 // -----------------------------------------------------------------------
 for (const p of cleanup) {
-  try { fs.unlinkSync(p); } catch (_) {}
+  try {
+    fs.unlinkSync(p);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

@@ -6,7 +6,7 @@ const { buildKmsProviders } = require('./provider');
 const { DEK_NAMES } = require('./deks');
 
 /**
- * Bootstraps the __keyVault collection and creates the 6 DEKs idempotently.
+ * Bootstraps the __keyVault collection and creates the messages DEK idempotently.
  * Safe to call on every startup — existing DEKs are detected by alt-name and skipped.
  *
  * @param {string} mongoUri

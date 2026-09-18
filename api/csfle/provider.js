@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { logger } = require('@librechat/data-schemas');
 
 /**
  * Normalises a GCP service-account `private_key` value for libmongocrypt.
@@ -99,6 +100,10 @@ function loadGcpCredentials() {
 /**
  * Selects and builds the KMS provider configuration.
  *
+ * CSFLE_KMS_PROVIDER selects the mode when set to "local" or "gcp".
+ * When unset, mode is inferred from GCP_KMS_PROJECT_ID for backward
+ * compatibility:
+ *
  * GCP mode (when GCP_KMS_PROJECT_ID is set):
  *   - If CSFLE_GCP_SERVICE_ACCOUNT_FILE or GOOGLE_SERVICE_KEY_FILE is set,
  *     reads the JSON key file and supplies explicit credentials to libmongocrypt.
@@ -111,9 +116,31 @@ function loadGcpCredentials() {
  * @returns {{ provider: string, kmsProviders: object, masterKey: object | undefined }}
  */
 function buildKmsProviders() {
-  if (process.env.GCP_KMS_PROJECT_ID) {
+  const rawProvider = process.env.CSFLE_KMS_PROVIDER;
+  const configuredProvider = rawProvider?.trim().toLowerCase();
+  const provider = configuredProvider || (process.env.GCP_KMS_PROJECT_ID ? 'gcp' : 'local');
+
+  if (configuredProvider && !['local', 'gcp'].includes(configuredProvider)) {
+    const message =
+      `[CSFLE] Invalid CSFLE_KMS_PROVIDER value ${JSON.stringify(rawProvider)}. ` +
+      'Valid values are "local" or "gcp"; leave it unset to infer from GCP_KMS_PROJECT_ID.';
+    logger.error(message);
+    throw new Error(message);
+  }
+
+  const source = configuredProvider ? 'explicit CSFLE_KMS_PROVIDER' : 'inferred';
+  logger.info(`[CSFLE] KMS provider selected: ${provider} (${source})`);
+
+  if (provider === 'gcp') {
+    if (!process.env.GCP_KMS_PROJECT_ID) {
+      const message = '[CSFLE] GCP_KMS_PROJECT_ID is required when CSFLE_KMS_PROVIDER=gcp';
+      logger.error(message);
+      throw new Error(message);
+    }
     if (!process.env.GCP_KMS_KEY_NAME) {
-      throw new Error('[CSFLE] GCP_KMS_KEY_NAME is required when GCP_KMS_PROJECT_ID is set');
+      const message = '[CSFLE] GCP_KMS_KEY_NAME is required when CSFLE_KMS_PROVIDER=gcp';
+      logger.error(message);
+      throw new Error(message);
     }
 
     const creds = loadGcpCredentials();
@@ -134,17 +161,18 @@ function buildKmsProviders() {
 
   const b64 = process.env.MONGO_CSFLE_LOCAL_MASTER_KEY;
   if (!b64) {
-    throw new Error(
-      '[CSFLE] No KMS configured: set GCP_KMS_PROJECT_ID (production) ' +
-        'or MONGO_CSFLE_LOCAL_MASTER_KEY (dev/CI)',
-    );
+    const message =
+      '[CSFLE] No KMS configured: MONGO_CSFLE_LOCAL_MASTER_KEY is required for local KMS; ' +
+      'set it or configure GCP_KMS_PROJECT_ID for GCP KMS';
+    logger.error(message);
+    throw new Error(message);
   }
 
   const keyBuf = Buffer.from(b64, 'base64');
   if (keyBuf.length !== 96) {
-    throw new Error(
-      `[CSFLE] MONGO_CSFLE_LOCAL_MASTER_KEY must decode to exactly 96 bytes (got ${keyBuf.length})`,
-    );
+    const message = `[CSFLE] MONGO_CSFLE_LOCAL_MASTER_KEY must decode to exactly 96 bytes (got ${keyBuf.length})`;
+    logger.error(message);
+    throw new Error(message);
   }
 
   return {
