@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { optionalEnabled, instrumentMongooseQueryMetrics } = require('@librechat/api');
+const { isEnabled, optionalEnabled, instrumentMongooseQueryMetrics } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { buildAutoEncryptionOptions } = require('~/csfle/index');
 const { runStartupMigration } = require('~/csfle/manager');
