@@ -31,17 +31,24 @@ export default function useSteerRecovery(conversationId: string) {
   const isRunOver = useCallback(
     (snapshot: Snapshot) => {
       const keys = snapshot.getLoadable(store.conversationKeysAtom).getValue();
+      let held = false;
       for (const key of keys) {
         const convo = snapshot.getLoadable(store.conversationByIndex(key)).getValue();
         if (convo?.conversationId !== conversationId) {
           continue;
         }
-        return snapshot.getLoadable(store.isSubmittingFamily(key)).getValue() !== true;
+        /* Comparison mode can hold one conversation in several panes, and only
+           the pane that owns the run is submitting: any live pane means the
+           run is still going, whichever slot comes first. */
+        if (snapshot.getLoadable(store.isSubmittingFamily(key)).getValue() === true) {
+          return false;
+        }
+        held = true;
       }
       /* Held by no slot at all: the user navigated to another chat, which says
          nothing about the run they left behind. Reading that as the end is the
          same mistake as reading the unmount as the end, one step further out. */
-      return false;
+      return held;
     },
     [conversationId],
   );

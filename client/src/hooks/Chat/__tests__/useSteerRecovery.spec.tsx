@@ -394,6 +394,35 @@ describe('useSteerRecovery', () => {
       expect(queue).toEqual([]);
     });
 
+    /* Comparison mode can hold the same conversation in two panes. An idle
+       first pane says nothing while the pane that owns the run is still
+       submitting: reading it as the end queued the accepted steer a second time. */
+    it('leaves the ack pending while any pane holding the conversation is still running', async () => {
+      let settle: (value: unknown) => void = () => undefined;
+      mockMutateAsync.mockReturnValue(new Promise((resolve) => (settle = resolve)));
+      const { result } = setup((snapshot) => {
+        snapshot.set(store.conversationKeysAtom, [0, 1]);
+        snapshot.set(store.conversationByIndex(1), { conversationId: CONVO_ID } as never);
+        snapshot.set(store.isSubmittingFamily(0), false);
+        snapshot.set(store.isSubmittingFamily(1), true);
+        snapshot.set(store.pendingSteersByConvoId(CONVO_ID), [
+          { steerId: 'local-pane', text: 'second pane owns it', status: 'failed', createdAt: 4 },
+        ]);
+      });
+
+      act(() => {
+        result.current.recovery.retry('local-pane');
+      });
+      await act(async () => {
+        settle({ steerId: 'srv-pane', status: 'queued', position: 1, conversationId: CONVO_ID });
+      });
+
+      expect(result.current.chips).toEqual([
+        expect.objectContaining({ steerId: 'srv-pane', status: 'pending' }),
+      ]);
+      expect(result.current.queue).toEqual([]);
+    });
+
     /* An interrupt-steer that failed has to retry AS an interrupt: resent as an
        ordinary steer it lands at the run's next tool step instead of sealing the
        stream, which is not the action the chip says it is. */
