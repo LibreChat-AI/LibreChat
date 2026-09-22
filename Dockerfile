@@ -2,16 +2,16 @@
 
 # ── Stage 1: download crypt_shared ──────────────────────────────────────────
 # mongo_crypt_v1.so is the Automatic Encryption Shared Library required for
-# CSFLE.  Pinned to 7.0.21 with verified SHA-256 checksums (both amd64 and
+# CSFLE.  Pinned to 8.1.1 with verified SHA-256 checksums (both amd64 and
 # arm64) for reproducible, supply-chain-safe builds.
 FROM alpine:3.21 AS crypt-shared
 
-ARG CRYPT_VERSION=7.0.21
+ARG CRYPT_VERSION=8.1.1
 ARG CRYPT_BASE_URL=https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux
 
-# SHA-256 digests verified 2026-06-21
-ARG CRYPT_SHA256_AMD64=25190407f7131989fdd9c113ef0aa4c7ef618cccee024b35e8de0aeaf3f74764
-ARG CRYPT_SHA256_ARM64=81bbf9120dd00e856a36d5f8234c88b0fdd4c9d6677a327e9047a7483a9e88d0
+# SHA-256 digests verified 2026-09-22
+ARG CRYPT_SHA256_AMD64=f0297a398de4a0705e2b111126fe5355214b0f0711171aa23f7317432e445dab
+ARG CRYPT_SHA256_ARM64=6aab6738312db6935e5e07d14c86e2cb0185a3d488cec311dbeffaa9aa88e62e
 
 RUN apk add --no-cache curl tar && \
     ARCH="$(uname -m)" && \

@@ -3,6 +3,8 @@
 const fs = require('fs');
 const { logger } = require('@librechat/data-schemas');
 
+let providerSelectionLogged = false;
+
 /**
  * Normalises a GCP service-account `private_key` value for libmongocrypt.
  *
@@ -129,7 +131,10 @@ function buildKmsProviders() {
   }
 
   const source = configuredProvider ? 'explicit CSFLE_KMS_PROVIDER' : 'inferred';
-  logger.info(`[CSFLE] KMS provider selected: ${provider} (${source})`);
+  if (!providerSelectionLogged) {
+    logger.info(`[CSFLE] KMS provider selected: ${provider} (${source})`);
+    providerSelectionLogged = true;
+  }
 
   if (provider === 'gcp') {
     if (!process.env.GCP_KMS_PROJECT_ID) {
