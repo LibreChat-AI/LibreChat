@@ -6,7 +6,7 @@ import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, type TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
-import useSteerCancel, { useSteerMoveToQueue } from '~/hooks/Chat/useSteerCancel';
+import useSteerCancel, { useSteerMoveToQueue, useSteerRehome } from '~/hooks/Chat/useSteerCancel';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
 import useSteerRecovery from '~/hooks/Chat/useSteerRecovery';
@@ -41,6 +41,7 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
   const cancelSteer = useSteerCancel(conversationId);
   const escalate = useSteerEscalate(conversationId);
   const moveToQueue = useSteerMoveToQueue(conversationId);
+  const rehomeSteer = useSteerRehome(conversationId);
   const [movingId, setMovingId] = useState<string | null>(null);
   const escalating = useAtomValue(escalatingSteerFamily(conversationId));
   /* Resolve the cache to the branch the user is viewing before applying the
@@ -92,6 +93,16 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
       }
     } finally {
       setMovingId(null);
+    }
+  };
+  /** A definitively rejected steer can be corrected: the whole message comes
+   *  back through the shared recovery boundary, so its attachments, quoted
+   *  excerpts and skill picks come with it. Withheld while delivery is
+   *  uncertain, like every other action that assumes the server does not hold
+   *  these words. */
+  const editFailedSteer = (steer: (typeof steers)[number]) => {
+    if (rehomeSteer(steer) === 'queue') {
+      showToast({ message: localize('com_ui_steer_moved_to_queue'), status: 'info' });
     }
   };
   const cancelPendingSteer = async (steer: (typeof steers)[number]) => {
@@ -161,6 +172,15 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
                     className={ACTION_CLASS}
                   >
                     {localize('com_ui_retry')}
+                  </button>
+                )}
+                {!deliveryUncertain && (
+                  <button
+                    type="button"
+                    onClick={() => editFailedSteer(steer)}
+                    className={ACTION_CLASS}
+                  >
+                    {localize('com_ui_edit')}
                   </button>
                 )}
                 {!deliveryUncertain && (

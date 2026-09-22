@@ -17,6 +17,7 @@ const mockRetry = jest.fn();
 const mockSendAsNew = jest.fn();
 const mockEscalate = jest.fn();
 const mockMoveToQueue = jest.fn();
+const mockRehome = jest.fn(() => 'composer' as const);
 const mockShowToast = jest.fn();
 
 jest.mock('@librechat/client', () => ({
@@ -42,6 +43,7 @@ jest.mock('~/hooks/Chat/useSteerCancel', () => ({
   __esModule: true,
   default: () => jest.fn(),
   useSteerMoveToQueue: () => mockMoveToQueue,
+  useSteerRehome: () => mockRehome,
 }));
 
 jest.mock('../SteerPart', () => ({
@@ -185,6 +187,22 @@ describe('PendingSteers', () => {
     fireEvent.click(screen.getByText('com_ui_send_as_new'));
     expect(mockSendAsNew).toHaveBeenCalledWith('s-failed');
     expect(mockRetry).not.toHaveBeenCalled();
+  });
+
+  it('returns a definitively failed steer whole so it can be corrected', () => {
+    const steer = pending({ status: 'failed', steerId: 's-failed', quotes: ['excerpt'] });
+    renderPending([steer]);
+    fireEvent.click(screen.getByText('com_ui_edit'));
+    expect(mockRehome).toHaveBeenCalledWith(steer);
+    expect(mockSendAsNew).not.toHaveBeenCalled();
+    expect(mockRetry).not.toHaveBeenCalled();
+  });
+
+  /* An uncertain delivery may still be held by the server, so every action that
+     assumes the words are the client's again stays hidden, editing included. */
+  it('withholds editing while delivery is uncertain', () => {
+    renderPending([pending({ status: 'failed', deliveryUncertain: true })]);
+    expect(screen.queryByText('com_ui_edit')).not.toBeInTheDocument();
   });
 
   /* The escalation control is the in-thread half of the `escalateSteer`

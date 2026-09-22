@@ -10,8 +10,8 @@ import {
   useMediaQuery,
   useToastContext,
 } from '@librechat/client';
-import type { TMessage } from 'librechat-data-provider';
-import type { SteeringControls, QueuedMessageContext } from '~/hooks/Chat/useSteering';
+import type { RestoreToComposer } from '~/Providers/ComposerRestoreContext';
+import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/store/families';
 import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
@@ -30,16 +30,6 @@ interface DragItem {
   /** Avoid repeating the same refusal while the pointer remains over a blocked row. */
   blockedTarget?: number;
 }
-
-/** Restores a message's text into the composer, or refuses (false) when the
- *  composer is occupied / on another chat (see `restoreReclaimedSteer` in
- *  `ChatForm`). Used by the queue rail's edit/trash actions. */
-export type RestoreToComposer = (
-  text: string,
-  files: TMessage['files'],
-  context: QueuedMessageContext,
-  originConversationId: string,
-) => boolean;
 
 interface QueueProps {
   steering: SteeringControls;

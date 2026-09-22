@@ -17,7 +17,13 @@ import {
   useQueuedTurnReveal,
   useLocalize,
 } from '~/hooks';
-import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } from '~/Providers';
+import {
+  ChatContext,
+  AddedChatContext,
+  ChatFormProvider,
+  useFileMapContext,
+  ComposerRestoreProvider,
+} from '~/Providers';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
@@ -164,28 +170,29 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
   return (
     <AskAnswerHostProvider saveDrafts={saveDrafts}>
       <ChatFormProvider {...methods}>
-        <ChatContext.Provider value={chatHelpers}>
-          <AddedChatContext.Provider value={addedChatHelpers}>
-            <ApprovalProvider pendingAction={pendingAction}>
-              <Presentation>
-                <TraceSurface conversationId={conversationId}>
-                  <h1 className="sr-only">{pageHeading}</h1>
-                  <Header
-                    parentConversationId={parentConversationId}
-                    readOnly={isSubagentThreadReadOnly}
-                  />
-                  <>
-                    <div
-                      data-chat-pane={index}
-                      style={
-                        isLandingPage && composerLift > 0
-                          ? { transform: `translateY(-${composerLift}px)` }
-                          : undefined
-                      }
-                      className={cn(
-                        'flex flex-col',
-                        isLandingPage
-                          ? /* The gutter is reserved once per state, wherever the
+        <ComposerRestoreProvider>
+          <ChatContext.Provider value={chatHelpers}>
+            <AddedChatContext.Provider value={addedChatHelpers}>
+              <ApprovalProvider pendingAction={pendingAction}>
+                <Presentation>
+                  <TraceSurface conversationId={conversationId}>
+                    <h1 className="sr-only">{pageHeading}</h1>
+                    <Header
+                      parentConversationId={parentConversationId}
+                      readOnly={isSubagentThreadReadOnly}
+                    />
+                    <>
+                      <div
+                        data-chat-pane={index}
+                        style={
+                          isLandingPage && composerLift > 0
+                            ? { transform: `translateY(-${composerLift}px)` }
+                            : undefined
+                        }
+                        className={cn(
+                          'flex flex-col',
+                          isLandingPage
+                            ? /* The gutter is reserved once per state, wherever the
                                centring happens. A conversation centres the composer
                                inside the band below, against a message column that
                                holds the scrollbar band back; the landing page centres
@@ -193,55 +200,56 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                                together, so it holds the same band back here. Without
                                it the composer lands 4px right of where a conversation
                                puts it and slides sideways on the way in. */
-                            'scrollbar-gutter-spacer flex-1 items-center justify-end sm:justify-center'
-                          : 'h-full overflow-y-auto',
-                      )}
-                    >
-                      {content}
-                      {/* Named + opaque so a view transition (the ask_user_question
+                              'scrollbar-gutter-spacer flex-1 items-center justify-end sm:justify-center'
+                            : 'h-full overflow-y-auto',
+                        )}
+                      >
+                        {content}
+                        {/* Named + opaque so a view transition (the ask_user_question
                         popover ⇄ chat-card morph) paints the whole composer band
                         over the travelling card instead of letting it show
                         through below the composer. The background matches the
                         page, so normal rendering is unchanged. */}
-                      <div
-                        className={cn(
-                          'bg-surface-primary-alt w-full [view-transition-name:chat-form]',
-                          !isLandingPage && 'scrollbar-gutter-spacer',
-                          isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
-                        )}
-                      >
-                        {isLandingPage && <ConversationStarters />}
-                        {isSubagentThreadReadOnly ? (
-                          <div
-                            className="text-text-secondary mx-auto w-full max-w-3xl px-4 py-3 text-center text-sm xl:max-w-4xl"
-                            role="note"
-                          >
-                            {localize('com_ui_subagent_thread_read_only')}
-                          </div>
-                        ) : (
-                          <ChatForm
-                            index={index}
-                            placeholder={chatFormPlaceholder}
-                            project={isProjectLandingPage ? project : undefined}
-                            isLandingPage={isLandingPage}
-                            showComposerTips={showComposerTips}
-                            footerBelow={footerBelow}
-                            centerFormOnLanding={centerFormOnLanding}
-                          />
-                        )}
-                        {/* The generic disclaimer and the policy links are the
-                            welcome screen's; a deployment's own footer stays
-                            with the conversation that always showed it. */}
-                        {!isLandingPage && configuredFooter && <Footer configuredOnly />}
+                        <div
+                          className={cn(
+                            'bg-surface-primary-alt w-full [view-transition-name:chat-form]',
+                            !isLandingPage && 'scrollbar-gutter-spacer',
+                            isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
+                          )}
+                        >
+                          {isLandingPage && <ConversationStarters />}
+                          {isSubagentThreadReadOnly ? (
+                            <div
+                              className="text-text-secondary mx-auto w-full max-w-3xl px-4 py-3 text-center text-sm xl:max-w-4xl"
+                              role="note"
+                            >
+                              {localize('com_ui_subagent_thread_read_only')}
+                            </div>
+                          ) : (
+                            <ChatForm
+                              index={index}
+                              placeholder={chatFormPlaceholder}
+                              project={isProjectLandingPage ? project : undefined}
+                              isLandingPage={isLandingPage}
+                              showComposerTips={showComposerTips}
+                              footerBelow={footerBelow}
+                              centerFormOnLanding={centerFormOnLanding}
+                            />
+                          )}
+                          {/* The generic disclaimer and the policy links are the
+                              welcome screen's; a deployment's own footer stays
+                              with the conversation that always showed it. */}
+                          {!isLandingPage && configuredFooter && <Footer configuredOnly />}
+                        </div>
                       </div>
-                    </div>
-                    {isLandingPage && <Footer />}
-                  </>
-                </TraceSurface>
-              </Presentation>
-            </ApprovalProvider>
-          </AddedChatContext.Provider>
-        </ChatContext.Provider>
+                      {isLandingPage && <Footer />}
+                    </>
+                  </TraceSurface>
+                </Presentation>
+              </ApprovalProvider>
+            </AddedChatContext.Provider>
+          </ChatContext.Provider>
+        </ComposerRestoreProvider>
       </ChatFormProvider>
     </AskAnswerHostProvider>
   );

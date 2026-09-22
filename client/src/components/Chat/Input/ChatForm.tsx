@@ -19,6 +19,14 @@ import {
   useCodeWorkspace,
 } from '~/hooks';
 import {
+  useChatContext,
+  useChatFormContext,
+  useAddedChatContext,
+  useAssistantsMapContext,
+  useComposerRestoreHost,
+  BadgeRowProvider,
+} from '~/Providers';
+import {
   cn,
   getModelSpec,
   hasIncompleteFiles,
@@ -27,13 +35,6 @@ import {
   getFilesDraftCached,
   isPastedTextFileMarked,
 } from '~/utils';
-import {
-  useChatContext,
-  useChatFormContext,
-  useAddedChatContext,
-  useAssistantsMapContext,
-  BadgeRowProvider,
-} from '~/Providers';
 import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
@@ -368,6 +369,15 @@ const ChatForm = memo(function ChatForm({
     textAreaRef,
     answerModeActive: composerReserved,
   });
+  /* Surfaces outside the composer (a steer cancelled from the thread) re-home
+     their words through the same guarded restore the queue rail gets as a
+     prop. Published while this composer is mounted; a recovery that resolves
+     after it has gone finds nothing and falls back to the queue. */
+  const { publish: publishComposerRestore } = useComposerRestoreHost();
+  useEffect(() => {
+    publishComposerRestore(restoreReclaimedSteer);
+    return () => publishComposerRestore(null);
+  }, [publishComposerRestore, restoreReclaimedSteer]);
   const steering = useSteering({
     consumeDraft,
     index,

@@ -2628,6 +2628,7 @@
   "com_ui_steer_interrupting_info": "Interrupt requested. The response will stop at the next safe point, then your message takes over. Reasoning and tool calls are not interrupted. To interrupt them, stop the response instead.",
   "com_ui_steer_interrupts_default": "Steering interrupts generation",
   "com_ui_steer_interrupts_default_info": "When on, Enter stops the response at the next safe point instead of waiting for the agent's next tool step. Either way the partial answer is kept and the response continues.",
+  "com_ui_steer_moved_to_queue": "Moved to the queue: it sends when this response finishes",
   "com_ui_steer_paused_queued": "The agent is waiting for your review — your message was queued instead",
   "com_ui_steer_preempt_unsupported": "This deployment can't interrupt mid-response, so that steering message stays queued for the next tool step",
   "com_ui_steer_queued_info": "Sends when this response finishes",

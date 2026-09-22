@@ -54,6 +54,7 @@ import {
 import { hasQueuedIntent, acquireQueueSendLock, releaseQueueSendLock } from '~/utils/queueIntent';
 import { revealedQueuedTurnFamily, pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import { markComposerFilesTaken } from '~/utils/composerFiles';
+import { useSteerRehome } from '~/hooks/Chat/useSteerCancel';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useLatestMessage } from '~/hooks/Messages';
 import { insertQueuedMessage } from '~/utils/queue';
@@ -574,6 +575,9 @@ export default function useSteering({
   const fileMap = useFileMapContext();
   const setFilesToDelete = useSetFilesToDelete();
   const convertSteersToQueued = useSteerConvert();
+  /* The single boundary a steer's words return through, wherever the cancel
+     that reclaimed them was decided. */
+  const rehomeSteer = useSteerRehome(conversationId);
   /** `mutate` is a stable callback; the mutation result objects are fresh
    * every render and would defeat the memoized return value below. */
   const { mutate: steerMessage } = useSteerMessageMutation();
@@ -1884,6 +1888,25 @@ export default function useSteering({
                       targetGenerationCreatedAt ?? activeGenerationCreatedAt ?? undefined,
                   }).then(({ removed }) => {
                     if (removed === true) {
+                      /* Cancel won the race against its own POST. The words are
+                         off the server now, so they go back to the user through
+                         the same boundary as an immediate cancel: whole, and
+                         into the queue when the composer will not take them.
+                         Clearing the marker without this loses the message. */
+                      rehomeSteer({
+                        steerId: response.steerId,
+                        clientSteerId: localId,
+                        text: trimmed,
+                        status: 'pending',
+                        createdAt,
+                        ...(files && { files }),
+                        ...(targetGenerationCreatedAt != null && {
+                          generationCreatedAt: targetGenerationCreatedAt,
+                        }),
+                        generationProtocolVersion: targetGenerationProtocolVersion,
+                        ...(opts?.queuedOrigin && { queuedOrigin: opts.queuedOrigin }),
+                        ...carried,
+                      });
                       clearPendingSteerCancel(conversationId, localId);
                     }
                   });
@@ -2093,6 +2116,7 @@ export default function useSteering({
       acknowledgeSteer,
       settleReceiptReplay,
       queueRecoveredSteer,
+      rehomeSteer,
       reclaimRejectedChipQuotes,
       steerMessage,
       sendNow,
