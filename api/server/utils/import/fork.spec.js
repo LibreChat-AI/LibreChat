@@ -1,4 +1,4 @@
-const { Constants, ForkOptions } = require('librechat-data-provider');
+const { Constants, ForkOptions, RetentionMode } = require('librechat-data-provider');
 
 const mockLogger = {
   debug: jest.fn(),
@@ -116,6 +116,28 @@ describe('forkConversation', () => {
     getMessages.mockResolvedValue(mockMessages);
     bulkSaveConvos.mockResolvedValue(null);
     bulkSaveMessages.mockResolvedValue(null);
+  });
+
+  test('applies ephemeral retention to forked conversation and messages', async () => {
+    await forkConversation({
+      originalConvoId: 'abc123',
+      targetMessageId: '3',
+      requestUserId: 'user1',
+      option: ForkOptions.DIRECT_PATH,
+      interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+    });
+
+    expect(bulkSaveConvos).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+    );
+    expect(bulkSaveMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+      true,
+    );
   });
 
   test('should fork conversation without branches', async () => {
@@ -464,6 +486,62 @@ describe('duplicateConversation', () => {
     bulkSaveConvos.mockResolvedValue(null);
     bulkSaveMessages.mockResolvedValue(null);
     bulkIncrementTagCounts.mockResolvedValue(null);
+  });
+
+  test('applies ephemeral retention to duplicated conversation and messages', async () => {
+    await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+    });
+
+    expect(bulkSaveConvos).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+    );
+    expect(bulkSaveMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+      true,
+    );
+  });
+
+  test('keeps a duplicate of a temporary chat temporary under all-data retention', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, isTemporary: true });
+
+    const result = await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.ALL, generalChatRetention: 2160 },
+    });
+
+    expect(result.conversation.isTemporary).toBe(true);
+  });
+
+  test('leaves a duplicate of an ordinary chat visible under all-data retention', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, isTemporary: false });
+
+    const result = await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.ALL, generalChatRetention: 2160 },
+    });
+
+    expect(result.conversation.isTemporary).toBe(false);
+  });
+
+  test('does not increment tag counts for forced-temporary duplicates', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, tags: ['important', 'work'] });
+
+    await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+    });
+
+    expect(bulkIncrementTagCounts.mock.calls.flatMap(([, tags]) => tags)).toEqual([]);
   });
 
   test('should duplicate conversation and increment tag counts', async () => {

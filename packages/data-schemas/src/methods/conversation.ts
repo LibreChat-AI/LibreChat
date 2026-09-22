@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { RetentionMode } from 'librechat-data-provider';
+import { RetentionMode, isForcedTemporaryRetention } from 'librechat-data-provider';
 import type {
   AnyBulkWriteOperation,
   DeleteResult,
@@ -292,6 +292,16 @@ export interface ConversationMethods {
       replyMessageId?: string;
     },
   ): Promise<IConversation | { message: string } | null>;
+  /**
+   * Stamps forced-temporary retention onto an existing conversation and, optionally, some of its
+   * messages, for writes that bypass the retention-aware save path. Reuses the stored deadline
+   * rather than opening a new window, never upserts, never rewrites `messages`, and releases the
+   * conversation's bookmark counts exactly once when it stops being visible.
+   */
+  stampForcedRetention(
+    ctx: { userId: string; interfaceConfig?: AppConfig['interfaceConfig'] },
+    target: { conversationId: string; messageIds?: string[] },
+  ): Promise<void>;
   setConvoPinned(
     user: string,
     conversationId: string,
@@ -2270,6 +2280,66 @@ export function createConversationMethods(
     }
   }
 
+  async function stampForcedRetention(
+    { userId, interfaceConfig }: { userId: string; interfaceConfig?: AppConfig['interfaceConfig'] },
+    { conversationId, messageIds = [] }: { conversationId: string; messageIds?: string[] },
+  ): Promise<void> {
+    if (!userId || !isForcedTemporaryRetention(interfaceConfig?.retentionMode)) {
+      return;
+    }
+
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.findOne({ conversationId, user: userId })
+      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1 })
+      .lean<{
+        _id: Types.ObjectId;
+        isTemporary?: boolean;
+        expiredAt?: Date | null;
+        tags?: string[];
+      } | null>();
+    if (!stored) {
+      return;
+    }
+
+    let expiredAt = stored.expiredAt ?? null;
+    if (expiredAt == null) {
+      try {
+        expiredAt = createTempChatExpirationDate(interfaceConfig);
+      } catch (err) {
+        logger.error('[stampForcedRetention] Error creating temporary chat expiration date:', err);
+        expiredAt = createFallbackRetentionDate();
+      }
+    }
+
+    if (stored.isTemporary !== true) {
+      /** Conditional on the transition, so concurrent stamps release the bookmark counts once. */
+      const converted = await Conversation.updateOne(
+        { _id: stored._id, isTemporary: { $ne: true } },
+        { $set: { isTemporary: true, expiredAt } },
+        { timestamps: false },
+      );
+      if (converted.modifiedCount > 0 && stored.tags?.length) {
+        await decrementTagCounts(mongoose, userId, stored.tags);
+      }
+    } else if (stored.expiredAt == null) {
+      await Conversation.updateOne(
+        { _id: stored._id, expiredAt: null },
+        { $set: { expiredAt } },
+        { timestamps: false },
+      );
+    }
+
+    if (messageIds.length === 0) {
+      return;
+    }
+    const Message = mongoose.models.Message as Model<IMessage>;
+    await Message.updateMany(
+      { user: userId, conversationId, messageId: { $in: messageIds } },
+      { $set: { isTemporary: true, expiredAt } },
+      { timestamps: false },
+    );
+  }
+
   /**
    * Saves a conversation to the database.
    */
@@ -2375,11 +2445,23 @@ export function createConversationMethods(
       }
 
       let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
+      const forcedTemporary = isForcedTemporaryRetention(interfaceConfig?.retentionMode);
       if (expiredAt instanceof Date && !Number.isNaN(expiredAt.getTime())) {
-        if (typeof isTemporary === 'boolean') {
+        if (forcedTemporary) {
+          update.isTemporary = true;
+        } else if (typeof isTemporary === 'boolean') {
           update.isTemporary = isTemporary;
         }
         update.expiredAt = expiredAt;
+      } else if (forcedTemporary) {
+        update.isTemporary = true;
+        try {
+          update.expiredAt = createTempChatExpirationDate(interfaceConfig);
+        } catch (err) {
+          logger.error('Error creating temporary chat expiration date:', err);
+          logger.info(`---\`saveConvo\` context: ${metadata?.context}`);
+          update.expiredAt = createFallbackRetentionDate();
+        }
       } else if (interfaceConfig?.retentionMode === RetentionMode.ALL) {
         if (typeof isTemporary === 'boolean') {
           update.isTemporary = isTemporary;
@@ -4002,6 +4084,7 @@ export function createConversationMethods(
     getConvoFiles,
     searchConversation,
     deleteNullOrEmptyConversations,
+    stampForcedRetention,
     saveConvo,
     setConvoPinned,
     appendConvoMessageReference,

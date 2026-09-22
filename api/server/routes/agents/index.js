@@ -550,6 +550,7 @@ router.get('/chat/status/:conversationId', async (req, res) => {
     aggregatedContent: resumeState?.aggregatedContent ?? [],
     createdAt: job.createdAt,
     elapsedMs: getGenerationElapsedMs(job),
+    isTemporary: job.metadata?.isTemporary === true,
     resumeState,
     // Surface the live pending approval so a client rebuilding from /chat/status
     // (reload / cross-replica) has the action id + payload to render and submit

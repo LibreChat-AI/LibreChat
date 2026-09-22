@@ -4492,6 +4492,30 @@ describe('Message Operations', () => {
       expect(result?.expiredAt).toBeNull();
     });
 
+    it('should force temporary message and set expiredAt when retentionMode is EPHEMERAL even if isTemporary is false', async () => {
+      mockCtx.isTemporary = false;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.EPHEMERAL,
+      };
+      const result = await saveMessage(mockCtx, mockMessageData);
+      expect(result?.isTemporary).toBe(true);
+      expect(result?.expiredAt).toBeDefined();
+      expect(result?.expiredAt).toBeInstanceOf(Date);
+    });
+
+    it('should force temporary message when retentionMode is EPHEMERAL and isTemporary is omitted', async () => {
+      mockCtx.isTemporary = undefined;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.EPHEMERAL,
+      };
+      const result = await saveMessage(mockCtx, mockMessageData);
+      expect(result?.isTemporary).toBe(true);
+      expect(result?.expiredAt).toBeDefined();
+      expect(result?.expiredAt).toBeInstanceOf(Date);
+    });
+
     it('should handle missing config gracefully', async () => {
       // Simulate missing config - should use default retention period
       delete mockCtx.interfaceConfig;

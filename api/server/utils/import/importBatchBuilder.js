@@ -5,6 +5,8 @@ const {
   assertConversationImportContentAllowed,
   reportLocatorTraversalFailure,
   executeConversationImportWrites,
+  resolveImportRetentionFields,
+  resolveImportTagCounts,
 } = require('@librechat/api');
 const {
   getTenantId,
@@ -12,12 +14,7 @@ const {
   createFallbackRetentionDate,
   createChatExpirationDate,
 } = require('@librechat/data-schemas');
-const {
-  EModelEndpoint,
-  Constants,
-  RetentionMode,
-  openAISettings,
-} = require('librechat-data-provider');
+const { EModelEndpoint, Constants, openAISettings } = require('librechat-data-provider');
 const {
   bulkIncrementTagCounts,
   bulkSaveConvos,
@@ -81,26 +78,17 @@ class ImportBatchBuilder {
     this.conversations = [];
     this.messages = [];
     this.retentionFields = undefined;
+    /** Set by a fork or duplicate so the copy keeps its source's temporary classification. */
+    this.sourceIsTemporary = undefined;
   }
 
   getRetentionFields() {
-    if (this.retentionFields !== undefined) {
-      return this.retentionFields;
-    }
-
-    if (this.interfaceConfig?.retentionMode !== RetentionMode.ALL) {
-      this.retentionFields = {};
-      return this.retentionFields;
-    }
-
-    try {
-      this.retentionFields = {
-        isTemporary: false,
-        expiredAt: createChatExpirationDate(this.interfaceConfig),
-      };
-    } catch (error) {
-      logger.error('[ImportBatchBuilder] Error creating import expiration date:', error);
-      this.retentionFields = { isTemporary: false, expiredAt: createFallbackRetentionDate() };
+    if (this.retentionFields === undefined) {
+      this.retentionFields = resolveImportRetentionFields(
+        this.interfaceConfig,
+        { createChatExpirationDate, createFallbackRetentionDate, logger },
+        { sourceIsTemporary: this.sourceIsTemporary },
+      );
     }
     return this.retentionFields;
   }
@@ -221,7 +209,10 @@ class ImportBatchBuilder {
       conversationIds,
       ...(tenantId == null ? {} : { tenantId }),
     };
-    const tags = this.conversations.flatMap((convo) => convo.tags);
+    const tags = resolveImportTagCounts(
+      this.getRetentionFields(),
+      this.conversations.flatMap((convo) => convo.tags),
+    );
 
     try {
       await executeConversationImportWrites({

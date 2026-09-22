@@ -14,6 +14,7 @@ import type {
   IAgentEventActorSuspensionEvidence,
   IChatProject,
   IConversation,
+  IMessage,
   AppConfig,
 } from '../types';
 import { ConversationMethods, createConversationMethods } from './conversation';
@@ -2237,6 +2238,30 @@ describe('Conversation Operations', () => {
       const result = await saveConvo(mockCtx, mockConversationData);
       expect(result?.expiredAt).toBeNull();
       expect(result?.isTemporary).toBe(false);
+    });
+
+    it('should force temporary conversation and set expiredAt when retentionMode is EPHEMERAL even if isTemporary is false', async () => {
+      mockCtx.isTemporary = false;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.EPHEMERAL,
+      };
+      const result = await saveConvo(mockCtx, mockConversationData);
+      expect(result?.isTemporary).toBe(true);
+      expect(result?.expiredAt).toBeDefined();
+      expect(result?.expiredAt).not.toBeNull();
+    });
+
+    it('should force temporary conversation when retentionMode is EPHEMERAL and isTemporary is omitted', async () => {
+      mockCtx.isTemporary = undefined;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.EPHEMERAL,
+      };
+      const result = await saveConvo(mockCtx, mockConversationData);
+      expect(result?.isTemporary).toBe(true);
+      expect(result?.expiredAt).toBeDefined();
+      expect(result?.expiredAt).not.toBeNull();
     });
 
     it('should filter out temporary conversations in getConvosByCursor', async () => {
@@ -8856,4 +8881,113 @@ describe('Conversation Operations', () => {
       expect(result.conversations.map((c) => c.conversationId)).toEqual([convo.conversationId]);
     });
   });
+});
+
+describe('stampForcedRetention', () => {
+  const ephemeral = { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 };
+  let userId: string;
+  let conversationId: string;
+  let messageId: string;
+
+  const MessageModel = () => mongoose.models.Message as mongoose.Model<IMessage>;
+
+  beforeEach(async () => {
+    userId = `stamp-${uuidv4()}`;
+    conversationId = uuidv4();
+    messageId = `message-${uuidv4()}`;
+    await Conversation.create({
+      conversationId,
+      user: userId,
+      title: 'Permanent',
+      endpoint: EModelEndpoint.openAI,
+      isTemporary: false,
+      tags: ['work'],
+      messages: [],
+    });
+    await MessageModel().create({
+      messageId,
+      conversationId,
+      user: userId,
+      text: 'hello',
+      isCreatedByUser: true,
+      isTemporary: false,
+    });
+    await ConversationTag.create({ user: userId, tag: 'work', count: 1, position: 0 });
+  });
+
+  it('converts the conversation and the named message and releases its bookmark count', async () => {
+    await methods.stampForcedRetention(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, messageIds: [messageId] },
+    );
+
+    const convo = await Conversation.findOne({ conversationId }).lean();
+    const message = await MessageModel().findOne({ messageId }).lean();
+    expect(convo?.isTemporary).toBe(true);
+    expect(convo?.expiredAt).toBeInstanceOf(Date);
+    expect(message?.isTemporary).toBe(true);
+    expect(message?.expiredAt).toEqual(convo?.expiredAt);
+    expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(0);
+  });
+
+  it('keeps the stored deadline instead of opening a new window', async () => {
+    const deadline = new Date(Date.now() + 5 * 60 * 1000);
+    await Conversation.updateOne({ conversationId }, { isTemporary: true, expiredAt: deadline });
+
+    await methods.stampForcedRetention(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, messageIds: [messageId] },
+    );
+
+    const convo = await Conversation.findOne({ conversationId }).lean();
+    const message = await MessageModel().findOne({ messageId }).lean();
+    expect(convo?.expiredAt).toEqual(deadline);
+    expect(message?.expiredAt).toEqual(deadline);
+  });
+
+  it('releases the bookmark count only once across repeated stamps', async () => {
+    const stamp = () =>
+      methods.stampForcedRetention({ userId, interfaceConfig: ephemeral }, { conversationId });
+    await Promise.all([stamp(), stamp(), stamp()]);
+
+    expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(0);
+  });
+
+  it('never recreates a conversation or message that is gone', async () => {
+    await Conversation.deleteOne({ conversationId });
+    await MessageModel().deleteOne({ messageId });
+
+    await methods.stampForcedRetention(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, messageIds: [messageId] },
+    );
+
+    expect(await Conversation.countDocuments({ conversationId })).toBe(0);
+    expect(await MessageModel().countDocuments({ messageId })).toBe(0);
+  });
+
+  it('leaves the message list untouched', async () => {
+    const messageRef = new mongoose.Types.ObjectId();
+    await Conversation.updateOne({ conversationId }, { messages: [messageRef] });
+
+    await methods.stampForcedRetention({ userId, interfaceConfig: ephemeral }, { conversationId });
+
+    const convo = await Conversation.findOne({ conversationId }).lean();
+    expect(convo?.messages?.map(String)).toEqual([String(messageRef)]);
+  });
+
+  it.each([RetentionMode.TEMPORARY, RetentionMode.ALL, undefined])(
+    'writes nothing under retentionMode %s',
+    async (retentionMode) => {
+      await methods.stampForcedRetention(
+        { userId, interfaceConfig: retentionMode == null ? undefined : { retentionMode } },
+        { conversationId, messageIds: [messageId] },
+      );
+
+      const convo = await Conversation.findOne({ conversationId }).lean();
+      expect(convo?.isTemporary).toBe(false);
+      expect(convo?.expiredAt ?? null).toBeNull();
+      expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(1);
+    },
+  );
 });

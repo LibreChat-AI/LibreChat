@@ -49,6 +49,7 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('@librechat/api', () => ({
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  applyForcedTemporaryRequest: jest.fn(),
   sendEvent: jest.fn(),
   persistedReasoningOverrideFields:
     jest.requireActual('@librechat/api').persistedReasoningOverrideFields,

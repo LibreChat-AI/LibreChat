@@ -400,6 +400,30 @@ describe('useResumeOnLoad', () => {
       expect(jotaiStore.get(pendingApprovalActionFamily(CONVERSATION_ID))).toEqual(pendingAction);
     });
 
+    /** A reloaded forced-temporary run has no conversation row to read yet, so only the
+     *  status snapshot knows the run is hidden; a hard-coded `false` would send it into
+     *  history caches and request a title the server never creates. */
+    it.each([true, false])(
+      'rebuilds the submission with the server-recorded temporary state %s',
+      async (isTemporary) => {
+        const observedSubmissions: Array<TSubmission | null> = [];
+        mockUseStreamStatus.mockReturnValue({
+          ...ACTIVE_STATUS,
+          data: { ...ACTIVE_STATUS.data, isTemporary },
+        });
+
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(isTemporary);
+      },
+    );
+
     /** The elapsed indicator's baseline must be the generation's real start:
      *  an attach with no surviving anchor (a reload, or a run another client
      *  started) rebuilds it clock-locally from the server-computed generation

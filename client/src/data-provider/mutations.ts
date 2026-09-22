@@ -24,6 +24,7 @@ import {
 import useUpdateTagsInConvo from '~/hooks/Conversations/useUpdateTagsInConvo';
 import { chatFilterTagsAtom } from '~/components/Conversations/chatFilters';
 import { updateConversationTag } from '~/utils/conversationTags';
+import { isTemporaryConversation } from '~/utils/conversation';
 import { useConversationTagsQuery } from './queries';
 
 export const useUpdateConversationMutation = (
@@ -1468,7 +1469,12 @@ export const useDuplicateConversationMutation = (
         queryClient.invalidateQueries([QueryKeys.project, duplicatedConversation.chatProjectId]);
       }
 
-      if (duplicatedConversation.tags && duplicatedConversation.tags.length > 0) {
+      /* The server counts no tags for a copy that retention keeps hidden, so neither does the cache. */
+      if (
+        duplicatedConversation.tags &&
+        duplicatedConversation.tags.length > 0 &&
+        !isTemporaryConversation(duplicatedConversation)
+      ) {
         queryClient.setQueryData<t.TConversationTag[]>([QueryKeys.conversationTags], (oldTags) => {
           if (!oldTags) return oldTags;
           return oldTags.map((tag) => {
@@ -1525,7 +1531,12 @@ export const useForkConvoMutation = (
         queryClient.invalidateQueries([QueryKeys.project, forkedConversation.chatProjectId]);
       }
 
-      if (forkedConversation.tags && forkedConversation.tags.length > 0) {
+      /* The server counts no tags for a copy that retention keeps hidden, so neither does the cache. */
+      if (
+        forkedConversation.tags &&
+        forkedConversation.tags.length > 0 &&
+        !isTemporaryConversation(forkedConversation)
+      ) {
         queryClient.setQueryData<t.TConversationTag[]>([QueryKeys.conversationTags], (oldTags) => {
           if (!oldTags) return oldTags;
           return oldTags.map((tag) => {

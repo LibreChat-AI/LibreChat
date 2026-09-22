@@ -57,7 +57,8 @@ export default function HeaderMenu({
 
   const showBookmarks = hasAccessToBookmarks === true && bookmarks.show;
   const showCompare = hasAccessToMultiConvo === true && multiConvo.show;
-  const showTemporary = hasAccessToTemporaryChat === true && temporary.show;
+  const showTemporary =
+    (hasAccessToTemporaryChat === true || temporary.isEnforced) && temporary.show;
 
   const items: t.MenuItemProps[] = [];
 
@@ -107,8 +108,11 @@ export default function HeaderMenu({
   if (showTemporary) {
     pushGroup({
       id: 'header-temporary',
-      label: localize('com_ui_temporary'),
+      label: temporary.isEnforced
+        ? localize('com_ui_temporary_enforced')
+        : localize('com_ui_temporary'),
       ariaChecked: temporary.isTemporary,
+      disabled: temporary.isEnforced,
       className: temporary.isTemporary ? 'bg-surface-active' : undefined,
       icon: temporary.isTemporary ? (
         <Check className="text-text-primary size-4" />

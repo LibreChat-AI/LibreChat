@@ -6,6 +6,7 @@ import {
   Constants,
   PermissionTypes,
   Permissions,
+  isForcedTemporaryRetention,
 } from 'librechat-data-provider';
 import { OpenSidebar, PresetsMenu, NewChat, HeaderMenu } from './Menus';
 import { TemporaryChat, TemporaryChatIndicator } from './TemporaryChat';
@@ -66,6 +67,10 @@ function Header({
     permissionType: PermissionTypes.TEMPORARY_CHAT,
     permission: Permissions.USE,
   });
+  /** An administrator-enforced mode is not a role grant, so it is overlaid here rather than
+   *  written into the role's stored permissions; the control is read-only either way. */
+  const showTemporaryChat =
+    hasAccessToTemporaryChat === true || isForcedTemporaryRetention(interfaceConfig.retentionMode);
 
   /** Child threads are view-only records of their parent's run and have no trace of their own. */
   const trace = useTraceControl({
@@ -112,7 +117,7 @@ function Header({
       </div>
 
       <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
-        {hasAccessToTemporaryChat === true && <TemporaryChatIndicator />}
+        {showTemporaryChat && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className="md:hidden" />}
         {!isNewChat && parentConversationId == null && (
           <BackgroundTasksButton
@@ -125,7 +130,7 @@ function Header({
         <div className="hidden items-center gap-2 md:flex">
           {trace.show && <TraceButton onClick={trace.open} />}
           <ExportAndShareMenu isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false} />
-          {hasAccessToTemporaryChat === true && <TemporaryChat />}
+          {showTemporaryChat && <TemporaryChat />}
         </div>
       </div>
     </div>

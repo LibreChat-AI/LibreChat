@@ -177,4 +177,42 @@ describe('Assistants message retention', () => {
       history.mockRestore();
     }
   });
+
+  it('forces the whole turn temporary under ephemeral retention', async () => {
+    const user = new mongoose.Types.ObjectId().toString();
+    const conversationId = v4();
+    const req = {
+      user: { id: user },
+      body: { conversationId, isTemporary: false },
+      resolvedConversation: null,
+      config: {
+        interfaceConfig: { retentionMode: 'ephemeral', temporaryChatRetention: 1 },
+      },
+    };
+    const params = {
+      user,
+      conversationId,
+      endpoint: 'assistants',
+      assistant_id: 'asst_test',
+      thread_id: 'thread_test',
+      text: 'hello',
+    };
+    const startedAt = Date.now();
+    const userMessage = await saveUserMessage(req, { ...params, messageId: v4() });
+    await saveAssistantMessage(req, {
+      ...params,
+      messageId: v4(),
+      parentMessageId: userMessage.messageId,
+      content: [],
+    });
+
+    const rows = await Message.find({ user, conversationId }).lean();
+    const convo = await Conversation.findOne({ user, conversationId }).lean();
+    expect(rows).toHaveLength(2);
+    for (const row of [...rows, convo]) {
+      expect(row.isTemporary).toBe(true);
+      expect(row.expiredAt.getTime()).toBeGreaterThanOrEqual(startedAt + 3600000);
+      expect(row.expiredAt.getTime()).toBeLessThan(startedAt + 3600000 + 5000);
+    }
+  });
 });

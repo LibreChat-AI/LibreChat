@@ -150,6 +150,7 @@ function buildSubmissionFromResumeState(
   conversationId: string,
   generationCreatedAt?: number,
   generationProtocolVersion: GenerationProtocolVersion = 1,
+  isTemporary = false,
 ): TSubmission {
   const userMessageData = resumeState.userMessage;
   const responseMessageId =
@@ -259,7 +260,7 @@ function buildSubmissionFromResumeState(
     isRegenerate: isRegenerateResume,
     ...(isAnchoredRun && { compact: true }),
     ...(regenerateMessages && { regenerateMessages }),
-    isTemporary: false,
+    isTemporary,
     endpointOption: {},
     // Signal to useResumableSSE to subscribe to existing stream instead of starting new
     resumeStreamId: streamId,
@@ -1056,6 +1057,7 @@ export default function useResumeOnLoad(
         conversationId,
         streamStatus.createdAt,
         generationProtocolVersion,
+        streamStatus.isTemporary === true,
       );
       setSubmission(submission);
     } else {
@@ -1073,7 +1075,7 @@ export default function useResumeOnLoad(
         } as TMessage,
         conversation: { conversationId, title: 'Resumed Chat' } as TConversation,
         isRegenerate: false,
-        isTemporary: false,
+        isTemporary: streamStatus.isTemporary === true,
         endpointOption: {},
         // Signal to useResumableSSE to subscribe to existing stream instead of starting new
         resumeStreamId: streamStatus.streamId,

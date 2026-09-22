@@ -658,6 +658,14 @@ export function storeEndpointSettings(conversation: TConversation | null) {
 
 // Add
 export function addConvoToAllQueries(queryClient: QueryClient, newConvo: TConversation) {
+  /* Same reason the upsert path refuses one: the history query excludes temporary
+     conversations server-side, so a fork, duplicate or import made while retention
+     forces temporary mode would sit in the sidebar until a refetch removed it, and
+     would stay there if that refetch failed. */
+  if (isTemporaryConversation(newConvo)) {
+    return;
+  }
+
   for (const query of findConversationListQueries(queryClient)) {
     /* The unpin path reinserts a row that the update helper may have just marked stale;
        seeding it at page one would clear that invalidation and fabricate a position. */

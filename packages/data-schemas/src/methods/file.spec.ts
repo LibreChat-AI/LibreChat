@@ -4,7 +4,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { EToolResources, FileContext } from 'librechat-data-provider';
 import type { IChatProject, IMongoFile } from '~/types';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
-import { runAsSystem } from '~/config/tenantContext';
+import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createFileMethods } from './file';
 import { createModels } from '~/models';
 
@@ -87,7 +87,6 @@ describe('File Methods', () => {
       expect(file?.file_id).toBe(fileId);
       expect(file?.expiresAt).toBeUndefined();
     });
-
     it('persists independent Code API pointers for both execution profiles', async () => {
       const defaultRef = {
         kind: 'user' as const,
@@ -118,6 +117,61 @@ describe('File Methods', () => {
 
       expect(file?.metadata?.codeEnvRefs?.default?.file_id).toBe('default-file');
       expect(file?.metadata?.codeEnvRefs?.stateful?.file_id).toBe('stateful-file');
+    });
+
+    it('casts string owner ids in atomic pipeline upserts', async () => {
+      const fileId = uuidv4();
+      const userId = new mongoose.Types.ObjectId();
+
+      const file = await fileMethods.createFile({
+        file_id: fileId,
+        user: userId.toString() as unknown as mongoose.Types.ObjectId,
+        filename: 'owned.txt',
+        filepath: '/uploads/owned.txt',
+        type: 'text/plain',
+        bytes: 100,
+      });
+
+      expect(file?.user).toEqual(userId);
+      await expect(File.countDocuments({ file_id: fileId, user: userId })).resolves.toBe(1);
+    });
+
+    it('rejects cross-tenant mutation fields before atomic pipeline upserts', async () => {
+      const userId = new mongoose.Types.ObjectId();
+
+      await expect(
+        tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+          fileMethods.createFile({
+            file_id: uuidv4(),
+            user: userId,
+            tenantId: 'tenant-b',
+            filename: 'cross-tenant.txt',
+            filepath: '/uploads/cross-tenant.txt',
+            type: 'text/plain',
+            bytes: 100,
+          }),
+        ),
+      ).rejects.toThrow('Cross-tenant tenantId mutation is not allowed');
+    });
+
+    it('derives matching tenant ids from the tenant-scoped upsert filter', async () => {
+      const fileId = uuidv4();
+      const file = await tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        fileMethods.createFile({
+          file_id: fileId,
+          user: new mongoose.Types.ObjectId(),
+          tenantId: 'tenant-a',
+          filename: 'tenant-owned.txt',
+          filepath: '/uploads/tenant-owned.txt',
+          type: 'text/plain',
+          bytes: 100,
+        }),
+      );
+
+      expect(file?.tenantId).toBe('tenant-a');
+      await expect(
+        runAsSystem(() => File.countDocuments({ file_id: fileId, tenantId: 'tenant-a' })),
+      ).resolves.toBe(1);
     });
   });
 

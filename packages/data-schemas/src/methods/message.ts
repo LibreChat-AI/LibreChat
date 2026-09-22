@@ -1,6 +1,7 @@
 import {
   backgroundResultMetadata,
   HITL_MESSAGE_FILTER_FIELDS,
+  isForcedTemporaryRetention,
   RetentionMode,
 } from 'librechat-data-provider';
 import type { DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
@@ -1095,11 +1096,23 @@ export function createMessageMethods(
       delete update.expiredAt;
       let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
 
+      const forcedTemporary = isForcedTemporaryRetention(interfaceConfig?.retentionMode);
       if (expiredAt instanceof Date && !Number.isNaN(expiredAt.getTime())) {
-        if (typeof isTemporary === 'boolean') {
+        if (forcedTemporary) {
+          update.isTemporary = true;
+        } else if (typeof isTemporary === 'boolean') {
           update.isTemporary = isTemporary;
         }
         update.expiredAt = expiredAt;
+      } else if (forcedTemporary) {
+        update.isTemporary = true;
+        try {
+          update.expiredAt = createTempChatExpirationDate(interfaceConfig);
+        } catch (err) {
+          logger.error('Error creating temporary chat expiration date:', err);
+          logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
+          update.expiredAt = createFallbackRetentionDate();
+        }
       } else if (interfaceConfig?.retentionMode === RetentionMode.ALL) {
         if (typeof isTemporary === 'boolean') {
           update.isTemporary = isTemporary;

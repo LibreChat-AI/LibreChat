@@ -375,8 +375,10 @@ interface:
   # Defaults to the temporary chat retention policy when omitted.
   # generalChatRetention: 2160 # 90 days, independently of temporary chats
   # Existing stored deadlines are not migrated when these settings change.
-  # Retention mode: "all" applies expiry to all data types, "temporary" (default) only to temporary chats
-  # Before switching from "all" back to "temporary", remove retention deadlines from non-temporary data
+  # Retention mode: "temporary" (default) applies expiry only to chats users mark temporary;
+  # "all" applies expiry to all data types while keeping chats visible in history;
+  # "ephemeral" forces every chat to be temporary (always on, not user-toggleable) and applies expiry to all data.
+  # Before switching from "all"/"ephemeral" back to "temporary", remove retention deadlines from non-temporary data
   # that should stop expiring:
   # db.conversations.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })
   # db.messages.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })

@@ -1098,6 +1098,24 @@ describe('Conversation Utilities', () => {
         expect(data!.pages[0].conversations.map((c) => c.conversationId)).toEqual(['a']);
       });
 
+      it('addConvoToAllQueries keeps a forced-temporary copy out of the list', () => {
+        addConvoToAllQueries(queryClient, { ...convoB, isTemporary: true } as TConversation);
+        const data = queryClient.getQueryData<InfiniteData<{ conversations: TConversation[] }>>([
+          'allConversations',
+        ]);
+
+        expect(data!.pages[0].conversations.map((c) => c.conversationId)).toEqual(['a']);
+      });
+
+      it('addConvoToAllQueries still inserts an ordinary copy', () => {
+        addConvoToAllQueries(queryClient, { ...convoB, isTemporary: false } as TConversation);
+        const data = queryClient.getQueryData<InfiniteData<{ conversations: TConversation[] }>>([
+          'allConversations',
+        ]);
+
+        expect(data!.pages[0].conversations.map((c) => c.conversationId)).toContain('b');
+      });
+
       it('upsertConvoInAllQueries keeps legacy expiring conversations out of the list', () => {
         upsertConvoInAllQueries(queryClient, {
           ...convoB,

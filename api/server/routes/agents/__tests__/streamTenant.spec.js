@@ -508,6 +508,25 @@ describe('SSE stream tenant isolation', () => {
       expect(res.body.active).toBe(true);
     });
 
+    it.each([true, false])(
+      'reports the run temporary state %s recorded at admission',
+      async (isTemporary) => {
+        mockUserId = 'user-123';
+        mockTenantId = 'tenant-a';
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'user-123', tenantId: 'tenant-a', isTemporary },
+          status: 'running',
+          createdAt: Date.now(),
+        });
+        mockGenerationJobManager.getResumeState.mockResolvedValue(null);
+
+        const res = await request(app).get('/agents/chat/status/conv-123');
+
+        expect(res.status).toBe(200);
+        expect(res.body.isTemporary).toBe(isTemporary);
+      },
+    );
+
     it('preserves the immutable v2 marker on an active status response', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue({
         metadata: { userId: 'user-123', generationProtocolVersion: 2 },
