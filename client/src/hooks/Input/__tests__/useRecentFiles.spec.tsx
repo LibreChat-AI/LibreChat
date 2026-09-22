@@ -1,6 +1,7 @@
 import { renderHook } from '@testing-library/react';
+import { DEFAULT_COMPOSER_RECENT_FILES } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
-import useRecentFiles, { RECENT_FILE_COUNT } from '../useRecentFiles';
+import useRecentFiles from '../useRecentFiles';
 
 /**
  * The palette's "your files" section: a short server-sorted page while idle,
@@ -12,6 +13,7 @@ let mockAll: TFile[] | undefined;
 let mockRecentEnabled: boolean | undefined;
 let mockAllEnabled: boolean | undefined;
 let mockLimit: number | undefined;
+let mockComposerRecentFiles: number | undefined;
 
 jest.mock('~/data-provider', () => ({
   useGetRecentFiles: (limit: number, config?: { enabled?: boolean }) => {
@@ -23,6 +25,9 @@ jest.mock('~/data-provider', () => ({
     mockAllEnabled = config?.enabled;
     return { data: mockAll };
   },
+  useGetStartupConfig: () => ({
+    data: { interface: { composerRecentFiles: mockComposerRecentFiles } },
+  }),
 }));
 
 jest.mock('~/hooks/Files/useAttachExisting', () => ({
@@ -48,6 +53,7 @@ describe('useRecentFiles', () => {
     mockRecentEnabled = undefined;
     mockAllEnabled = undefined;
     mockLimit = undefined;
+    mockComposerRecentFiles = undefined;
   });
 
   it('fetches the recent page only while the palette is open and unsearched', () => {
@@ -58,7 +64,13 @@ describe('useRecentFiles', () => {
     recent(true);
     expect(mockRecentEnabled).toBe(true);
     expect(mockAllEnabled).toBe(false);
-    expect(mockLimit).toBe(RECENT_FILE_COUNT);
+    expect(mockLimit).toBe(DEFAULT_COMPOSER_RECENT_FILES);
+  });
+
+  it('requests the deployment-configured recent-files limit when set', () => {
+    mockComposerRecentFiles = 12;
+    recent(true);
+    expect(mockLimit).toBe(12);
   });
 
   it('switches to the full list once the user starts typing', () => {

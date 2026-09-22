@@ -2055,6 +2055,8 @@ export const DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS = 10_000;
 export const DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS = 60_000;
 /** Last-resort expiry of the client's per-pane queued-send lock. */
 export const DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS = 60_000;
+/** How many recently touched files the composer palette offers to reuse. */
+export const DEFAULT_COMPOSER_RECENT_FILES = 5;
 
 const mcpServersSchema = z
   .object({
@@ -2400,6 +2402,11 @@ export const interfaceSchema = z
       .positive()
       .max(2_147_483_647)
       .default(DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS),
+    /** How many recently touched files the composer palette requests and shows
+     *  while idle; 0 turns the section off. Capped at the file list endpoint's
+     *  own default maximum (`fileListLimit`) so the palette can never ask for
+     *  more than a typical deployment will return. */
+    composerRecentFiles: z.number().int().min(0).max(100).default(DEFAULT_COMPOSER_RECENT_FILES),
   })
   .default({
     modelSelect: true,
@@ -2480,6 +2487,7 @@ export const interfaceSchema = z
     steerArmConfirmationTimeoutMs: DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
     queuedTurnReconciliationTimeoutMs: DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
     queuedSendLockTimeoutMs: DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
+    composerRecentFiles: DEFAULT_COMPOSER_RECENT_FILES,
   });
 
 export type TInterfaceConfig = z.infer<typeof interfaceSchema>;

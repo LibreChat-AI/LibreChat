@@ -1,12 +1,9 @@
 import { useMemo } from 'react';
+import { DEFAULT_COMPOSER_RECENT_FILES } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { AttachExistingContext } from '~/hooks/Files/useAttachExisting';
-import { useGetFiles, useGetRecentFiles } from '~/data-provider';
+import { useGetFiles, useGetRecentFiles, useGetStartupConfig } from '~/data-provider';
 import useAttachExisting from '~/hooks/Files/useAttachExisting';
-
-/** How many recent uploads the unsearched palette shows; kept in step with the
- *  server `?limit=` so we never fetch more than we will render. */
-export const RECENT_FILE_COUNT = 5;
 
 /**
  * The user's files for the composer palette attach section.
@@ -24,9 +21,12 @@ export default function useRecentFiles(
   files: TFile[];
   attach: (file: TFile) => void;
 } {
+  const { data: startupConfig } = useGetStartupConfig();
+  const recentFileCount =
+    startupConfig?.interface?.composerRecentFiles ?? DEFAULT_COMPOSER_RECENT_FILES;
   const query = search.trim().toLowerCase();
   const searching = query.length > 0;
-  const { data: recent } = useGetRecentFiles(RECENT_FILE_COUNT, {
+  const { data: recent } = useGetRecentFiles(recentFileCount, {
     enabled: enabled && !searching,
   });
   const { data: all } = useGetFiles<TFile[]>({ enabled: enabled && searching });

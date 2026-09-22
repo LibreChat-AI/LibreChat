@@ -66,6 +66,21 @@ describe('loadDefaultInterface', () => {
     expect(configuredInterface?.queuedSendLockTimeoutMs).toBe(15_000);
   });
 
+  it('uses and preserves the schema default for the composer recent-files limit', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.composerRecentFiles).toBe(5);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { composerRecentFiles: 10 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.composerRecentFiles).toBe(10);
+  });
+
   it('uses and preserves the schema default for steer arm confirmation', async () => {
     const configDefaults = getConfigDefaults();
     const interfaceDefaults = {
