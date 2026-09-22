@@ -9,6 +9,7 @@ import {
   isAgentsEndpoint,
   isAssistantsEndpoint,
   DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
+  DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
 } from 'librechat-data-provider';
 import type {
   TAgentQueuedTurnFileRef,
@@ -609,6 +610,8 @@ export default function useSteering({
   const reconciliationWindowMs =
     startupConfig?.interface?.queuedTurnReconciliationTimeoutMs ??
     DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
+  const sendLockTimeoutMs =
+    startupConfig?.interface?.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const knownClientRequestIds = useMemo(
     () =>
       Array.from(
@@ -2329,7 +2332,7 @@ export default function useSteering({
         return;
       }
       if (!isSubmitting) {
-        const lock = acquireQueueSendLock(sendLockKey);
+        const lock = acquireQueueSendLock(sendLockKey, sendLockTimeoutMs);
         if (lock == null) {
           restoreQueued(origin);
           return;
@@ -2381,6 +2384,7 @@ export default function useSteering({
       isSubmitting,
       sendNow,
       sendLockKey,
+      sendLockTimeoutMs,
       restoreQueued,
       releaseQueuedOrigin,
     ],

@@ -51,6 +51,21 @@ describe('loadDefaultInterface', () => {
     expect(configuredInterface?.queuedTurnReconciliationTimeoutMs).toBe(180_000);
   });
 
+  it('uses and preserves the schema default for the queued-send lock expiry', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.queuedSendLockTimeoutMs).toBe(60_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { queuedSendLockTimeoutMs: 15_000 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.queuedSendLockTimeoutMs).toBe(15_000);
+  });
+
   it('uses and preserves the schema default for steer arm confirmation', async () => {
     const configDefaults = getConfigDefaults();
     const interfaceDefaults = {

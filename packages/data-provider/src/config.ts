@@ -2053,6 +2053,8 @@ export const mcpRefreshDefaults = {
 /** Default confirmation window for a client-side steer escalation arm. */
 export const DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS = 10_000;
 export const DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS = 60_000;
+/** Last-resort expiry of the client's per-pane queued-send lock. */
+export const DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS = 60_000;
 
 const mcpServersSchema = z
   .object({
@@ -2389,6 +2391,15 @@ export const interfaceSchema = z
       .positive()
       .max(2_147_483_647)
       .default(DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS),
+    /** How long a queued send may hold its pane before the claim is treated as
+     *  broken and released, in milliseconds. A healthy start releases it at once;
+     *  this only bounds a start that failed without ever reporting progress. */
+    queuedSendLockTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(2_147_483_647)
+      .default(DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS),
   })
   .default({
     modelSelect: true,
@@ -2468,6 +2479,7 @@ export const interfaceSchema = z
     // defaults live in updateInterfacePermissions, which is a separate concern.
     steerArmConfirmationTimeoutMs: DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
     queuedTurnReconciliationTimeoutMs: DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
+    queuedSendLockTimeoutMs: DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
   });
 
 export type TInterfaceConfig = z.infer<typeof interfaceSchema>;

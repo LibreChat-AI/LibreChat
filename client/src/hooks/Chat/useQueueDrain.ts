@@ -1,13 +1,13 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { useAtomValue } from 'jotai';
-import { Constants } from 'librechat-data-provider';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
+import { Constants, DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS } from 'librechat-data-provider';
 import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin, RunEnd } from '~/store/families';
 import type { QueueSendLock } from '~/utils/queueIntent';
 import type { TAskFunction } from '~/common';
 import { acquireQueueSendLock, releaseQueueSendLock, hasQueuedIntent } from '~/utils/queueIntent';
+import { useGetStartupConfig, useMarkFilesUsageMutation } from '~/data-provider';
 import { selectQueuedTurnReveal } from '~/hooks/Chat/useQueuedTurnReveal';
-import { useMarkFilesUsageMutation } from '~/data-provider';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import { mergeQueuedMessages } from '~/utils/queue';
 import { insertQueuedOrigin } from '~/utils/steer';
@@ -92,6 +92,9 @@ export default function useQueueDrain(
   const sendLockRef = useRef<QueueSendLock | null>(null);
   const revealLockRef = useRef(false);
   const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
+  const { data: startupConfig } = useGetStartupConfig();
+  const sendLockTimeoutMs =
+    startupConfig?.interface?.queuedSendLockTimeoutMs ?? DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS;
   const ownQueue = useRecoilValue(
     store.queuedMessagesByConvoId(activeConversationId ?? Constants.NEW_CONVO),
   );
@@ -426,7 +429,7 @@ export default function useQueueDrain(
      * can already have called `ask` for this pane in the current browser task.
      * Claimed BEFORE the signal is consumed so a refusal leaves the run end
      * armed for the next commit instead of dropping the queue on the floor. */
-    const lock = acquireQueueSendLock(sendLockKey);
+    const lock = acquireQueueSendLock(sendLockKey, sendLockTimeoutMs);
     if (lock == null) {
       return;
     }
@@ -495,6 +498,7 @@ export default function useQueueDrain(
     parkedRunEnd,
     isSubmitting,
     sendLockKey,
+    sendLockTimeoutMs,
     activeConversationId,
     parkForeignRunEnd,
     drainNext,

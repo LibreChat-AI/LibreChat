@@ -52,6 +52,8 @@ export async function loadDefaultInterface({
     queuedTurnReconciliationTimeoutMs:
       interfaceConfig?.queuedTurnReconciliationTimeoutMs ??
       defaults.queuedTurnReconciliationTimeoutMs,
+    queuedSendLockTimeoutMs:
+      interfaceConfig?.queuedSendLockTimeoutMs ?? defaults.queuedSendLockTimeoutMs,
 
     // Permissions and related settings - only include if explicitly configured
     bookmarks: interfaceConfig?.bookmarks,

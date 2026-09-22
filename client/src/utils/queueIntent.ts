@@ -1,3 +1,5 @@
+import { DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS } from 'librechat-data-provider';
+
 /**
  * Cross-hook arbitration for the client-side message queue, deliberately held
  * OUTSIDE React state.
@@ -17,28 +19,28 @@ export type QueueSendLock = {
   readonly takenAt: number;
 };
 
-/**
- * Last-resort expiry, never the normal release path.
- *
- * A claim is given up as soon as the pane's submission state moves, which for
- * the ordinary agents start happens synchronously inside `ask`. A start that
- * hard-fails without ever setting `isSubmitting` leaves nothing to observe, and
- * without an expiry that claim would sit on the pane until the user navigated
- * away. Far longer than any healthy start takes to become observable, so it can
- * only ever fire on a claim that is already broken; when it does, the pane
- * simply degrades to the unguarded behaviour rather than latching shut.
- */
-const STALE_SEND_LOCK_MS = 60_000;
-
 const sendLocks = new Map<string, QueueSendLock>();
 
 /**
  * Claims a pane's submission slot for one queued send. Returns `null` when a
  * send is already in flight there, in which case the caller must NOT submit.
+ *
+ * `staleAfterMs` is a last-resort expiry, never the normal release path. A
+ * claim is given up as soon as the pane's submission state moves, which for
+ * the ordinary agents start happens synchronously inside `ask`. A start that
+ * hard-fails without ever setting `isSubmitting` leaves nothing to observe, and
+ * without an expiry that claim would sit on the pane until the user navigated
+ * away. It is far longer than any healthy start takes to become observable, so
+ * it only fires on a claim that is already broken, and then the pane degrades
+ * to the unguarded behaviour rather than latching shut. Operators set it as
+ * `interface.queuedSendLockTimeoutMs`.
  */
-export function acquireQueueSendLock(pane: string): QueueSendLock | null {
+export function acquireQueueSendLock(
+  pane: string,
+  staleAfterMs: number = DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
+): QueueSendLock | null {
   const held = sendLocks.get(pane);
-  if (held != null && Date.now() - held.takenAt < STALE_SEND_LOCK_MS) {
+  if (held != null && Date.now() - held.takenAt < staleAfterMs) {
     return null;
   }
   const lock: QueueSendLock = { pane, takenAt: Date.now() };
