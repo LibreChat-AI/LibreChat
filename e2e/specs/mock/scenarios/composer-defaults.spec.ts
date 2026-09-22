@@ -49,34 +49,29 @@ async function establishConversation(page: Page, label: string) {
  * its layout box when closed, so `inert` is the only signal that tells the two
  * states apart. Desktop renders no drawer and its panel is always there.
  *
+ * The layout is read from the viewport, not from whether the drawer exists:
+ * the first render runs before the app's media query resolves, so an early
+ * probe finds no drawer and would take the desktop branch on a phone.
+ *
  * Deliberately not `ensureSidebarOnScreen`: that helper also settles the Pinned
  * section's placement for the pinned specs, and a run where an earlier test
  * left a pinned conversation made these two wait 15s on a region they never
  * touch.
  */
 async function openAccountMenuHost(page: Page) {
-  const drawer = page.locator('#mobile-drawer');
-  if ((await drawer.count()) === 0) {
+  if ((page.viewportSize()?.width ?? 1280) > 768) {
     return;
   }
-  const navUser = drawer.getByTestId('nav-user');
-  const opener = page.getByRole('button', { name: 'Open sidebar' });
-  /* Re-check before every attempt rather than deciding once. The drawer stays
-     mounted when closed, so a single early read of `inert` can report a state
-     the app has not settled into yet and leave the drawer shut; and while it is
-     open the opener is labelled "Close sidebar", so this cannot toggle it back. */
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (await navUser.isVisible().catch(() => false)) {
-      return;
+  const drawer = page.locator('#mobile-drawer');
+  await expect(drawer).toBeAttached();
+  /* While open the opener is labelled "Close sidebar", so a retried click can
+     never toggle the drawer back shut. */
+  await expect(async () => {
+    if (await drawer.evaluate((element) => element.hasAttribute('inert'))) {
+      await page.getByRole('button', { name: 'Open sidebar' }).click({ timeout: 2_000 });
     }
-    if ((await opener.count()) > 0) {
-      await opener.first().click();
-    }
-    await expect(navUser)
-      .toBeVisible({ timeout: 5_000 })
-      .catch(() => undefined);
-  }
-  await expect(navUser).toBeVisible({ timeout: 10_000 });
+    await expect(drawer).not.toHaveAttribute('inert', /.*/, { timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
 }
 
 test.describe('composer defaults', () => {

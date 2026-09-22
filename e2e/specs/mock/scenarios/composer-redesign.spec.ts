@@ -136,8 +136,13 @@ test.describe('composer redesign contracts', () => {
       await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
       await startRunThroughComposer(page, `shortcut-form-${Date.now()}`);
     }
-    await page.keyboard.press('Escape');
-    await page.keyboard.press('Escape');
+    /* Clears whatever the desktop setup left open. On a phone the builder sits
+       in the drawer, and Escape there dismisses the drawer itself, taking the
+       form this test needs behind `inert`. */
+    if (!narrow) {
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
+    }
     const dialogs = await page.evaluate(
       () =>
         Array.from(
