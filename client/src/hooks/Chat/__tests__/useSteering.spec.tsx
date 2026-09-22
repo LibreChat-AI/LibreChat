@@ -3699,7 +3699,7 @@ describe('useSteering', () => {
         }),
         { wrapper },
       );
-      return { ...rendered, sendNow };
+      return { ...rendered, sendNow, stopGenerating };
     }
 
     const stageContext = ({ set }: MutableSnapshot) => {
@@ -3723,6 +3723,25 @@ describe('useSteering', () => {
         reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       });
       expect(result.current.pendingReasoning).toBeUndefined();
+    });
+
+    /* The interrupt-and-steer chord promises to keep the partial answer. With
+       reasoning staged it cannot steer, and aborting would break that promise,
+       so it declines like its disabled menu row instead of interrupting. */
+    it('interruptSteer declines without aborting when reasoning is staged', () => {
+      const staged = { key: 'reasoning_effort', value: ReasoningEffort.high } as const;
+      const { result, stopGenerating } = setupWithContext({}, undefined, staged);
+
+      let consumed: boolean | undefined;
+      act(() => {
+        consumed = result.current.steering.interruptSteer('stop and reason about this');
+      });
+
+      expect(consumed).toBe(false);
+      expect(stopGenerating).not.toHaveBeenCalled();
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(result.current.queue).toEqual([]);
+      expect(result.current.pendingReasoning).toEqual(staged);
     });
 
     it('queueFromComposer consumes staged quotes + skills into the queued item', () => {

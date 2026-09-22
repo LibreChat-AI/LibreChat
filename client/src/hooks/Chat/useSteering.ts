@@ -2477,8 +2477,13 @@ export default function useSteering({
       if (!hasRealConvoId) {
         return interruptAndSend(trimmed);
       }
+      /* A staged reasoning choice belongs to a new generation, which a steer
+         into the live one cannot carry. Falling back to interruptAndSend here
+         would discard the partial answer this action promises to keep, so
+         decline exactly as the disabled menu row does and leave the words in
+         the composer, where Enter queues them as a turn of their own. */
       if (pendingReasoningOverride != null) {
-        return interruptAndSend(trimmed);
+        return false;
       }
       const consumed = submitSteer(trimmed, takeComposerFiles(), takeComposerQuotes(), {
         preempt: true,
