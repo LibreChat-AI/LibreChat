@@ -874,7 +874,11 @@ function Palette({
                     aria-hidden="true"
                     className="size-7 shrink-0 overflow-hidden rounded-md bg-surface-tertiary"
                   >
+                    {/* Keyed by the path so a virtualized row that is reused for
+                        another file gets a fresh image, not one still hidden by
+                        the previous file's failed load. */}
                     <img
+                      key={file.filepath}
                       src={file.filepath}
                       alt=""
                       className="h-full w-full object-cover"

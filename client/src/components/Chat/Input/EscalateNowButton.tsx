@@ -111,7 +111,9 @@ export default function EscalateNowButton({
 
   return (
     <Ariakit.TooltipProvider placement="top" timeout={300}>
-      <span className={cn('transition-opacity', disabled && 'opacity-35')}>
+      {/* The disabled IconButton already renders at half opacity; 70% of that
+          is the 35% this control has always dimmed to. */}
+      <span className={cn('transition-opacity', disabled && 'opacity-70')}>
         <Ariakit.TooltipAnchor
           render={
             <IconButton

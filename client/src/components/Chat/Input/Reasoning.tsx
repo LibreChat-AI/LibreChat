@@ -190,7 +190,7 @@ export function ReasoningControl({
               <>
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <div className="h-8 w-24 shrink-0 overflow-hidden rounded-lg bg-surface-primary font-medium shadow-sm">
+                    <div className="h-8 w-24 shrink-0 rounded-lg bg-surface-primary font-medium shadow-sm">
                       <Input
                         type="number"
                         aria-label={label}
