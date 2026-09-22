@@ -8,7 +8,6 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from '../helpers';
-import { ensureSidebarOnScreen } from './pinned.helpers';
 
 const MCP_SERVER_TITLE = 'E2E Memory';
 const PROVIDER_C = { label: 'Mock Provider C', model: 'mock-model-c' };
@@ -44,6 +43,40 @@ async function establishConversation(page: Page, label: string) {
   await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15000 });
 }
 
+/**
+ * These tests need one thing from the sidebar: the account menu. On a narrow
+ * viewport that lives inside the mobile drawer, which stays mounted and keeps
+ * its layout box when closed, so `inert` is the only signal that tells the two
+ * states apart. Desktop renders no drawer and its panel is always there.
+ *
+ * Deliberately not `ensureSidebarOnScreen`: that helper also settles the Pinned
+ * section's placement for the pinned specs, and a run where an earlier test
+ * left a pinned conversation made these two wait 15s on a region they never
+ * touch.
+ */
+async function openAccountMenuHost(page: Page) {
+  const drawer = page.locator('#mobile-drawer');
+  if ((await drawer.count()) === 0) {
+    return;
+  }
+  if ((await drawer.getAttribute('inert')) == null) {
+    return;
+  }
+  const opener = page.getByRole('button', { name: 'Open sidebar' });
+  if ((await opener.count()) === 0) {
+    return;
+  }
+  await opener.first().click();
+  await expect(drawer).not.toHaveAttribute('inert', /.*/);
+  /* `inert` clears on the state commit, a few frames ahead of the slide
+     settling; wait for the drawer to actually reach the viewport. */
+  await expect
+    .poll(async () => (await drawer.boundingBox())?.x ?? Number.NEGATIVE_INFINITY, {
+      timeout: 15_000,
+    })
+    .toBeGreaterThanOrEqual(0);
+}
+
 test.describe('composer defaults', () => {
   test('file manager opens from the account menu @scenario:file-manager-opens-from-the-account-menu', async ({
     page,
@@ -51,7 +84,7 @@ test.describe('composer defaults', () => {
     test.setTimeout(60000);
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-    await ensureSidebarOnScreen(page);
+    await openAccountMenuHost(page);
     const accountMenuButton =
       (page.viewportSize()?.width ?? 1280) <= 768
         ? page.locator('#mobile-drawer').getByTestId('nav-user')
@@ -72,7 +105,7 @@ test.describe('composer defaults', () => {
     test.setTimeout(60000);
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-    await ensureSidebarOnScreen(page);
+    await openAccountMenuHost(page);
     const accountMenuButton =
       (page.viewportSize()?.width ?? 1280) <= 768
         ? page.locator('#mobile-drawer').getByTestId('nav-user')
