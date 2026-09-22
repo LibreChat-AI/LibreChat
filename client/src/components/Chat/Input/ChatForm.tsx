@@ -373,7 +373,7 @@ const ChatForm = memo(function ChatForm({
      their words through the same guarded restore the queue rail gets as a
      prop. Published while this composer is mounted; a recovery that resolves
      after it has gone finds nothing and falls back to the queue. */
-  const { publish: publishComposerRestore } = useComposerRestoreHost();
+  const { publish: publishComposerRestore, publishRewake } = useComposerRestoreHost();
   useEffect(() => {
     publishComposerRestore(restoreReclaimedSteer);
     return () => publishComposerRestore(null);
@@ -391,6 +391,14 @@ const ChatForm = memo(function ChatForm({
     sendNow,
     stopGenerating,
   });
+  /* A steer retried from the thread can land in the queue after the run it
+     belonged to has ended and spent its one-shot drain signal; the thread
+     reaches the drain through the same host as the restore above. */
+  const { rewakeDrain: steeringRewakeDrain } = steering;
+  useEffect(() => {
+    publishRewake(steeringRewakeDrain);
+    return () => publishRewake(null);
+  }, [publishRewake, steeringRewakeDrain]);
 
   /** ⌘/Ctrl+Enter = the non-default during-run action, ⌥/Alt+Enter =
    *  interrupt & send (discards the answer), ⌘/Ctrl+Shift+Enter = interrupt &

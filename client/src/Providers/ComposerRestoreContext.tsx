@@ -14,12 +14,20 @@ export type RestoreToComposer = (
   originConversationId: string,
 ) => boolean;
 
+/** Re-posts a conversation's spent run-end signal so its queue drain wakes. */
+export type RewakeDrain = (conversationId: string) => void;
+
 interface ComposerRestoreHost {
   /** The composer publishes its guarded restore here while it is mounted. */
   publish: (restore: RestoreToComposer | null) => void;
   /** Resolved at call time: a recovery round-trip can settle long after the
    *  composer that started it has gone. */
   restore: RestoreToComposer;
+  /** The composer publishes its drain wake-up here while it is mounted. */
+  publishRewake: (rewake: RewakeDrain | null) => void;
+  /** Resolved at call time like `restore`; a no-op with no composer mounted,
+   *  which leaves a queued row for the next run end or an explicit send. */
+  rewakeDrain: RewakeDrain;
 }
 
 const refuse: RestoreToComposer = () => false;
@@ -27,10 +35,13 @@ const refuse: RestoreToComposer = () => false;
 const ComposerRestoreContext = createContext<ComposerRestoreHost>({
   publish: () => {},
   restore: refuse,
+  publishRewake: () => {},
+  rewakeDrain: () => {},
 });
 
 /**
- * Lets surfaces outside the composer hand a message back to it.
+ * Lets surfaces outside the composer hand a message back to it: into the
+ * draft, or into the queue with the drain woken to pick it up.
  *
  * The composer is a sibling of the message list, not its ancestor, so a
  * pending steer cancelled from the thread cannot reach the restore the queue
@@ -49,7 +60,17 @@ export function ComposerRestoreProvider({ children }: { children?: ReactNode }) 
       restoreRef.current?.(text, files, context, originConversationId) ?? false,
     [],
   );
-  const value = useMemo(() => ({ publish, restore }), [publish, restore]);
+  const rewakeRef = useRef<RewakeDrain | null>(null);
+  const publishRewake = useCallback((rewake: RewakeDrain | null) => {
+    rewakeRef.current = rewake;
+  }, []);
+  const rewakeDrain = useCallback<RewakeDrain>((conversationId) => {
+    rewakeRef.current?.(conversationId);
+  }, []);
+  const value = useMemo(
+    () => ({ publish, restore, publishRewake, rewakeDrain }),
+    [publish, restore, publishRewake, rewakeDrain],
+  );
   return (
     <ComposerRestoreContext.Provider value={value}>{children}</ComposerRestoreContext.Provider>
   );

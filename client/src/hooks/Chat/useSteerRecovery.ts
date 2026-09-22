@@ -7,6 +7,7 @@ import {
   isDefiniteSteerRejection,
   resolveAcknowledgedSteer,
 } from '~/hooks/Chat/useSteering';
+import { useComposerRestoreHost } from '~/Providers/ComposerRestoreContext';
 import { carriedSteerContext, isLegacyDeliveryUncertain } from '~/utils';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useSteerMessageMutation } from '~/data-provider';
@@ -20,6 +21,7 @@ import store from '~/store';
 export default function useSteerRecovery(conversationId: string) {
   const { mutateAsync: steerMessage } = useSteerMessageMutation();
   const convertSteersToQueued = useSteerConvert();
+  const { rewakeDrain } = useComposerRestoreHost();
 
   /** Whether the run this steer belongs to has finished, read live at ack time.
    *  Unmounting is not the same signal: `PendingSteers` also unmounts when the
@@ -124,8 +126,14 @@ export default function useSteerRecovery(conversationId: string) {
           bindRecoverySource,
         },
       );
+      /* These conversions settle asynchronously. A retry left `sending` is kept
+         out of the run-end sweep, so if the run finished while the POST was in
+         flight the drain has already spent its one-shot signal on a queue this
+         row was not in yet. Re-post it; the composer ignores the call unless
+         that run completed cleanly and no newer signal is armed. */
+      rewakeDrain(conversationId);
     },
-    [conversationId, convertSteersToQueued],
+    [conversationId, convertSteersToQueued, rewakeDrain],
   );
 
   const retry = useRecoilCallback(

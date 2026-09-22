@@ -1,6 +1,11 @@
 import React from 'react';
 import { act, render, renderHook } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
+import type { RewakeDrain } from '~/Providers/ComposerRestoreContext';
+import {
+  ComposerRestoreProvider,
+  useComposerRestoreHost,
+} from '~/Providers/ComposerRestoreContext';
 import useSteerRecovery from '../useSteerRecovery';
 import store from '~/store';
 
@@ -25,7 +30,18 @@ const seedRun = (snapshot: MutableSnapshot, submitting: boolean) => {
   snapshot.set(store.isSubmittingFamily(0), submitting);
 };
 
-function setup(initialize?: (snapshot: MutableSnapshot) => void) {
+/** Publishes a drain wake-up the way `ChatForm` does, so the retry path runs
+ *  against the real host rather than a mocked module. */
+function RewakePublisher({ rewake, children }: { rewake: RewakeDrain; children: React.ReactNode }) {
+  const { publishRewake } = useComposerRestoreHost();
+  React.useEffect(() => {
+    publishRewake(rewake);
+    return () => publishRewake(null);
+  }, [publishRewake, rewake]);
+  return <>{children}</>;
+}
+
+function setup(initialize?: (snapshot: MutableSnapshot) => void, rewake?: RewakeDrain) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot
       initializeState={(snapshot) => {
@@ -33,7 +49,9 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
         initialize?.(snapshot);
       }}
     >
-      {children}
+      <ComposerRestoreProvider>
+        {rewake ? <RewakePublisher rewake={rewake}>{children}</RewakePublisher> : children}
+      </ComposerRestoreProvider>
     </RecoilRoot>
   );
   return renderHook(
@@ -158,6 +176,43 @@ describe('useSteerRecovery', () => {
       expect(result.current.queue).toEqual([
         expect.objectContaining({ id: 'local-2', text: 'too late' }),
       ]);
+    });
+
+    /* A retry is kept out of the run-end sweep while it is `sending`, so a run
+       that finished during the POST has already spent its drain signal on a
+       queue this row was not in yet. Queueing it has to wake the drain. */
+    it('wakes the queue drain when a late retry lands in the queue', async () => {
+      mockMutateAsync.mockRejectedValue({ response: { data: { code: 'NO_ACTIVE_RUN' } } });
+      const rewake = jest.fn();
+      const { result } = setup(({ set }) => {
+        set(store.pendingSteersByConvoId(CONVO_ID), [
+          { steerId: 'local-late', text: 'after the end', status: 'failed', createdAt: 8 },
+        ]);
+      }, rewake);
+      act(() => {
+        result.current.recovery.retry('local-late');
+      });
+      await flush();
+      expect(result.current.queue).toEqual([
+        expect.objectContaining({ id: 'local-late', text: 'after the end' }),
+      ]);
+      expect(rewake).toHaveBeenCalledWith(CONVO_ID);
+    });
+
+    it('leaves the drain alone when a retry is accepted into a live run', async () => {
+      mockMutateAsync.mockResolvedValue({ steerId: 'srv-live', preempt: false });
+      const rewake = jest.fn();
+      const { result } = setup(({ set }) => {
+        set(store.pendingSteersByConvoId(CONVO_ID), [
+          { steerId: 'local-live', text: 'still running', status: 'failed', createdAt: 9 },
+        ]);
+      }, rewake);
+      act(() => {
+        result.current.recovery.retry('local-live');
+      });
+      await flush();
+      expect(result.current.queue).toEqual([]);
+      expect(rewake).not.toHaveBeenCalled();
     });
 
     /* RUN_REPLACED belongs with the rest: the retry pins `generationCreatedAt`
