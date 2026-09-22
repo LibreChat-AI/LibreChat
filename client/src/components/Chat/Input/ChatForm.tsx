@@ -1006,6 +1006,13 @@ function ChatFormWrapper({
       conversation?.codeApprovalMode,
       conversation?.codeEnvironmentMode,
       conversation?.codeWorkspaces,
+      /** The composer's reasoning control reads its configured value off this
+       *  object. Leaving these out held the old level on screen after a
+       *  Parameters-panel edit, while the next send already used the new one. */
+      conversation?.reasoning_effort,
+      conversation?.effort,
+      conversation?.thinkingLevel,
+      conversation?.thinkingBudget,
       hasMessages,
     ],
   );
