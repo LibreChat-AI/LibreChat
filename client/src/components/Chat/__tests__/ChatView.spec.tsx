@@ -5,6 +5,7 @@ import ChatView from '../ChatView';
 
 const mockParams = jest.fn();
 const mockConversation = jest.fn();
+const mockChatFormProps = jest.fn();
 
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
@@ -49,7 +50,13 @@ jest.mock('../Footer', () => ({
 }));
 jest.mock('../Landing', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('../Messages/MessagesView', () => ({ __esModule: true, default: () => <div /> }));
-jest.mock('../Input/ChatForm', () => ({ __esModule: true, default: () => <div /> }));
+jest.mock('../Input/ChatForm', () => ({
+  __esModule: true,
+  default: (props: Record<string, unknown>) => {
+    mockChatFormProps(props);
+    return <div />;
+  },
+}));
 jest.mock('../Input/ConversationStarters', () => ({ __esModule: true, default: () => <div /> }));
 
 describe('ChatView page heading', () => {
@@ -113,6 +120,32 @@ describe('ChatView page heading', () => {
     expect(
       screen.queryByRole('heading', { level: 1, name: 'Previous chat' }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('ChatView composer preferences', () => {
+  beforeEach(() => {
+    mockParams.mockReturnValue({});
+    mockConversation.mockReturnValue(null);
+    mockChatFormProps.mockClear();
+    localStorage.clear();
+  });
+
+  /** ChatForm used to read this preference itself via `useRecoilValue(store.enterToSend)`,
+   *  reaching into app-global state the composer only consumes. ChatView now owns the
+   *  read and passes it down, the same boundary `showComposerTips` already follows. */
+  test('reads the persisted enterToSend preference and passes it into ChatForm', () => {
+    localStorage.setItem('enterToSend', JSON.stringify(false));
+
+    render(<ChatView />);
+
+    expect(mockChatFormProps).toHaveBeenCalledWith(expect.objectContaining({ enterToSend: false }));
+  });
+
+  test('falls back to the atom default when nothing is persisted', () => {
+    render(<ChatView />);
+
+    expect(mockChatFormProps).toHaveBeenCalledWith(expect.objectContaining({ enterToSend: true }));
   });
 });
 

@@ -102,6 +102,9 @@ interface ChatFormProps {
   isLandingPage: boolean;
   /** Owned by the host: the persisted preference for showing keyboard hints. */
   showComposerTips: boolean;
+  /** Owned by the host: the persisted preference for whether Enter sends the
+   *  message (vs. queues a newline). The composer only consumes it. */
+  enterToSend: boolean;
   /** Owned by the host: the app-level preference for where the welcome-screen
    *  composer sits. The chat feature only consumes it. */
   centerFormOnLanding: boolean;
@@ -146,6 +149,7 @@ const ChatForm = memo(function ChatForm({
   project,
   isLandingPage,
   showComposerTips,
+  enterToSend,
   footerBelow,
   centerFormOnLanding,
   files,
@@ -178,7 +182,6 @@ const ChatForm = memo(function ChatForm({
   const autoSendText = useRecoilValue(store.autoSendText);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const TextToSpeech = useRecoilValue(store.textToSpeech);
-  const enterToSend = useRecoilValue(store.enterToSend);
   const chatDirection = useRecoilValue(store.chatDirection);
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
@@ -985,6 +988,10 @@ function ChatFormWrapper({
   project,
   isLandingPage,
   showComposerTips,
+  /** Defaults to the atom's own default (`atomWithLocalStorage('enterToSend',
+   *  true)`) so call sites that predate this prop, mainly tests, keep their
+   *  prior behavior without passing it explicitly. */
+  enterToSend = true,
   footerBelow,
   centerFormOnLanding,
 }: {
@@ -992,6 +999,7 @@ function ChatFormWrapper({
   placeholder?: string;
   project?: TChatProject;
   showComposerTips: boolean;
+  enterToSend?: boolean;
   isLandingPage: boolean;
   footerBelow: boolean;
   centerFormOnLanding: boolean;
@@ -1066,6 +1074,7 @@ function ChatFormWrapper({
     <ChatForm
       index={index}
       showComposerTips={showComposerTips}
+      enterToSend={enterToSend}
       placeholder={placeholder}
       project={project}
       isLandingPage={isLandingPage}
