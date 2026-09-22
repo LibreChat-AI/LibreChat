@@ -1,10 +1,32 @@
 import {
   isReasoningOverrideSupported,
+  reasoningOverrideSchema,
   ReasoningParameterFormat,
   resolveReasoningSettingForTarget,
   type TEndpointsConfig,
   type TReasoningOverride,
 } from 'librechat-data-provider';
+
+export type ReasoningOverrideRequest =
+  | { ok: true; reasoningOverride?: TReasoningOverride }
+  | { ok: false; reason: 'invalid-reasoning-override' };
+
+/**
+ * Validates the reasoning override a request carries, before the conversation
+ * is parsed or an endpoint option is built. An absent override is valid and
+ * yields no target, so the caller only has to map `ok: false` onto its own
+ * error response instead of knowing the payload's shape.
+ */
+export function parseReasoningOverrideRequest(raw: unknown): ReasoningOverrideRequest {
+  if (raw == null) {
+    return { ok: true };
+  }
+  const parsed = reasoningOverrideSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, reason: 'invalid-reasoning-override' };
+  }
+  return { ok: true, reasoningOverride: parsed.data };
+}
 
 export type ReasoningOverrideBase = {
   key: TReasoningOverride['key'];

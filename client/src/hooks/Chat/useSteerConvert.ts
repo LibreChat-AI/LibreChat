@@ -37,6 +37,10 @@ interface SteerConvertOptions {
   allowPreviouslyConvertedIds?: readonly string[];
   /** Local failures have no durable receipt to reclaim on a later send. */
   bindRecoverySource?: boolean;
+  /** Mark the converted rows so the run-end drain leaves them for an explicit
+   *  send. Set for steers the server rejected: sweeping them out of the chip
+   *  surface must not turn a refusal into an automatic new turn. */
+  needsExplicitSend?: boolean;
 }
 
 /**
@@ -66,6 +70,7 @@ export default function useSteerConvert() {
         generationProtocolVersion?: GenerationProtocolVersion,
         allowPreviouslyConvertedIds: readonly string[] = [],
         bindRecoverySource?: boolean,
+        needsExplicitSend?: boolean,
       ) => {
         if (steers.length === 0) {
           return;
@@ -157,14 +162,21 @@ export default function useSteerConvert() {
                     ...(steer.clientSteerId && { recoveryClientSteerId: steer.clientSteerId }),
                   }
                 : {};
+              const explicitSend = needsExplicitSend === true ? { needsExplicitSend: true } : {};
               const item =
                 queuedOrigin != null
-                  ? { ...queuedOrigin.item, ...recoveryFields, ...(files && { files }) }
+                  ? {
+                      ...queuedOrigin.item,
+                      ...recoveryFields,
+                      ...explicitSend,
+                      ...(files && { files }),
+                    }
                   : ({
                       id: steer.steerId,
                       text: steer.text,
                       createdAt: steer.createdAt ?? Date.now(),
                       ...recoveryFields,
+                      ...explicitSend,
                       ...(files && files.length > 0 && { files }),
                       // The chip is the usual source, but a reclaimed steer may
                       // have lost its chip to a competing cancel mid-round-trip.
@@ -219,6 +231,7 @@ export default function useSteerConvert() {
         options?.generationProtocolVersion,
         options?.allowPreviouslyConvertedIds,
         options?.bindRecoverySource,
+        options?.needsExplicitSend,
       );
       if (options?.claimParked !== true || steers.length === 0) {
         return;

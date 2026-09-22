@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page, Response } from '@playwright/test';
 import {
-  MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   messagesView,
   replyPrompt,
@@ -65,6 +64,37 @@ test.describe('composer defaults', () => {
     await expect(filesItem).toBeVisible();
     await filesItem.click();
     await expect(page.getByRole('dialog', { name: 'My Files' })).toHaveCount(1);
+  });
+
+  test('closing the file manager returns focus to its opener @scenario:closing-the-file-manager-returns-focus-to-its-opener', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await ensureSidebarOnScreen(page);
+    const accountMenuButton =
+      (page.viewportSize()?.width ?? 1280) <= 768
+        ? page.locator('#mobile-drawer').getByTestId('nav-user')
+        : page.getByTestId('nav-user');
+    await expect(accountMenuButton).toBeVisible();
+    await accountMenuButton.click();
+
+    const filesItem = page
+      .getByRole('menu')
+      .getByRole('menuitem', { name: 'My Files', exact: true });
+    await expect(filesItem).toBeVisible();
+    await filesItem.click();
+
+    const dialog = page.getByRole('dialog', { name: 'My Files' });
+    await expect(dialog).toHaveCount(1);
+
+    /** The menu that held the opener is gone by the time the dialog captures
+     *  focus, so without an explicit opener the close lands on the body and a
+     *  keyboard user loses their place in the sidebar. */
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(accountMenuButton).toBeFocused();
   });
 
   test('Enter during a run steers the current reply by default @scenario:enter-during-a-run-steers-the-current-reply-by-default', async ({

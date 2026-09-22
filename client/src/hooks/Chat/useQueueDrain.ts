@@ -345,9 +345,14 @@ export default function useQueueDrain(
         /** A row the rail is mid-edit or mid-remove on is spoken for: its words
          * are already on their way to the composer, and sending them from here
          * would deliver the message the user is in the middle of taking back.
-         * Skipped rather than blocking the whole queue, so an untouched
-         * follow-up behind it still goes on this run end. */
-        const nextIndex = shouldDrain ? merged.findIndex((item) => !hasQueuedIntent(item.id)) : -1;
+         * A row swept in from a REJECTED steer is spoken for too: it carries
+         * words the server refused, and its failure surface offers Retry and
+         * "Send as new" precisely so the user chooses.
+         * Both are skipped rather than blocking the whole queue, so an
+         * untouched follow-up behind them still goes on this run end. */
+        const nextIndex = shouldDrain
+          ? merged.findIndex((item) => !hasQueuedIntent(item.id) && item.needsExplicitSend !== true)
+          : -1;
         const next = nextIndex >= 0 ? merged[nextIndex] : null;
         const remainder = nextIndex >= 0 ? merged.filter((_, at) => at !== nextIndex) : merged;
 

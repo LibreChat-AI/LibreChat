@@ -2052,6 +2052,7 @@ export const mcpRefreshDefaults = {
 
 /** Default confirmation window for a client-side steer escalation arm. */
 export const DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS = 10_000;
+export const DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS = 60_000;
 
 const mcpServersSchema = z
   .object({
@@ -2379,6 +2380,15 @@ export const interfaceSchema = z
       .positive()
       .max(2_147_483_647)
       .default(DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS),
+    /** How long the client keeps reconciling a transport-ambiguous queued turn
+     *  before it stops polling, in milliseconds. A slow proxy or a delayed
+     *  read replica needs a longer window than the default. */
+    queuedTurnReconciliationTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .max(2_147_483_647)
+      .default(DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS),
   })
   .default({
     modelSelect: true,
@@ -2457,6 +2467,7 @@ export const interfaceSchema = z
     // billable scheduled runs) on every deployment that never opted in. The PERMISSION
     // defaults live in updateInterfacePermissions, which is a separate concern.
     steerArmConfirmationTimeoutMs: DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    queuedTurnReconciliationTimeoutMs: DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
   });
 
 export type TInterfaceConfig = z.infer<typeof interfaceSchema>;

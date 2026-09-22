@@ -187,8 +187,14 @@ function MessagesViewContent({
               {/** The pending surface is renderer-independent: both ThreadList
                * and MultiMessage end at this shared thread tail. Keeping its
                * mount here also preserves recovery controls when the message
-               * tree is temporarily empty during navigation or delivery. */}
-              {conversationId != null && <PendingSteers conversationId={conversationId} />}
+               * tree is temporarily empty during navigation or delivery.
+               *
+               * It keys off the RENDERED tree for the same reason the mount
+               * window does: during warm-cache navigation the Recoil
+               * conversation id still names the source chat, and its Cancel
+               * and Escalate actions would mutate that run while sitting at
+               * the destination thread's tail. */}
+              {treeConversationId != null && <PendingSteers conversationId={treeConversationId} />}
               <div
                 id="messages-end"
                 className="group h-0 w-full flex-shrink-0"

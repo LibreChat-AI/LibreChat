@@ -15,8 +15,8 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { ArchivedChatsModal } from '~/components/Nav/SettingsTabs/General/ArchivedChatsModal';
+import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
-import { showFilesDialogAtom } from '~/store/filesDialog';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { openInNewTab } from '~/utils';
 import { useLocalize } from '~/hooks';
@@ -103,6 +103,7 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
   });
   const [showSettings, setShowSettings] = useState(false);
   const setShowFiles = useSetAtom(showFilesDialogAtom);
+  const setFilesDialogTrigger = useSetAtom(filesDialogTriggerAtom);
   const setShowShortcutsDialog = useSetRecoilState(store.showShortcutsDialog);
   const [showArchived, setShowArchived] = useState(false);
   const accountSettingsButtonRef = useRef<HTMLButtonElement>(null);
@@ -166,7 +167,13 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
         </Menu.MenuItem>
 
         <Menu.MenuItem
-          onClick={() => setShowFiles(true)}
+          onClick={() => {
+            /** The menu is gone by the time the dialog captures focus, so the
+             *  account button has to be named here or focus returns to the
+             *  document body when the dialog closes. */
+            setFilesDialogTrigger(accountSettingsButtonRef);
+            setShowFiles(true);
+          }}
           className="select-item text-sm"
           data-testid="nav-files"
         >

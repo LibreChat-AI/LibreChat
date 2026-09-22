@@ -49,6 +49,9 @@ export async function loadDefaultInterface({
     theme: interfaceConfig?.theme,
     steerArmConfirmationTimeoutMs:
       interfaceConfig?.steerArmConfirmationTimeoutMs ?? defaults.steerArmConfirmationTimeoutMs,
+    queuedTurnReconciliationTimeoutMs:
+      interfaceConfig?.queuedTurnReconciliationTimeoutMs ??
+      defaults.queuedTurnReconciliationTimeoutMs,
 
     // Permissions and related settings - only include if explicitly configured
     bookmarks: interfaceConfig?.bookmarks,

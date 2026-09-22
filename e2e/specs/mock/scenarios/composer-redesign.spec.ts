@@ -171,7 +171,7 @@ test.describe('composer redesign contracts', () => {
     expect(abortResponse.ok()).toBeTruthy();
   });
 
-  test('Canceled pending steer restores its text before application @scenario:canceled-pending-steer-disappears-before-application', async ({
+  test('Canceled pending steer disappears before application @scenario:canceled-pending-steer-disappears-before-application', async ({
     page,
   }) => {
     await openComposer(page);
@@ -183,10 +183,28 @@ test.describe('composer redesign contracts', () => {
       .getByRole('listitem')
       .filter({ hasText: 'pending steer' });
     await expect(bubble).toContainText('Sending');
-    await messageInput(page).fill('draft remains');
     await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(bubble).toHaveCount(0);
     await expect(messagesView(page).getByText('pending steer', { exact: true })).toHaveCount(0);
+  });
+
+  test('Canceled steer returns its text to the composer @scenario:canceled-steer-returns-its-text-to-the-composer', async ({
+    page,
+  }) => {
+    await openComposer(page);
+    await startRun(page, `reclaim-steer-${Date.now()}`);
+    await messageInput(page).fill('pending steer');
+    await page.getByTestId('during-run-send-button').click();
+    const bubble = page
+      .getByTestId('pending-steers')
+      .getByRole('listitem')
+      .filter({ hasText: 'pending steer' });
+    await expect(bubble).toContainText('Sending');
+    /** The draft typed while the cancel was in flight must survive the
+     *  reclaim: the returned steer joins it instead of replacing it. */
+    await messageInput(page).fill('draft remains');
+    await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(bubble).toHaveCount(0);
     await expect(messageInput(page)).toHaveValue('draft remains\npending steer');
   });
 

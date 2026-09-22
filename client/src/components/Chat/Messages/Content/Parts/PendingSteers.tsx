@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { TextQuote } from 'lucide-react';
@@ -66,6 +66,9 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
     return cachedMessages.length === 1 && hasLiveRunPause(cachedMessages[0]);
   };
   const paused = resolvePaused();
+  /** Arming removes the control that was activated, so the row's Cancel button
+   *  (which survives the `preempt` flip) is where keyboard focus goes next. */
+  const cancelButtonRefs = useRef(new Map<string, HTMLButtonElement | null>());
   const interruptPending = useMemo(
     () => escalating || steers.some((steer) => steer.preempt === true && steer.status !== 'failed'),
     [escalating, steers],
@@ -185,10 +188,13 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
                     messageText={steer.text}
                     disabled={paused === true || interruptPending}
                     onClick={() =>
-                      escalate({
-                        steerId: steer.steerId,
-                        generationCreatedAt: steer.generationCreatedAt,
-                      })
+                      escalate(
+                        {
+                          steerId: steer.steerId,
+                          generationCreatedAt: steer.generationCreatedAt,
+                        },
+                        () => cancelButtonRefs.current.get(steer.steerId)?.focus(),
+                      )
                     }
                   />
                 )}
@@ -207,6 +213,13 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
                 {(steer.status === 'pending' || steer.status === 'sending') && (
                   <button
                     type="button"
+                    ref={(node) => {
+                      if (node == null) {
+                        cancelButtonRefs.current.delete(steer.steerId);
+                        return;
+                      }
+                      cancelButtonRefs.current.set(steer.steerId, node);
+                    }}
                     disabled={movingId != null}
                     onClick={() => void cancelPendingSteer(steer)}
                     className={ACTION_CLASS}

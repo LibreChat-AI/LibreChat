@@ -8,6 +8,7 @@ import {
   ContentTypes,
   isAgentsEndpoint,
   isAssistantsEndpoint,
+  DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
 } from 'librechat-data-provider';
 import type {
   TAgentQueuedTurnFileRef,
@@ -27,6 +28,7 @@ import type { AgentQueuedTurnReceipt, GenerationProtocolVersion } from '~/data-p
 import type { QueueSendLock } from '~/utils/queueIntent';
 import type { ExtendedFile, FileSetter } from '~/common';
 import {
+  useGetStartupConfig,
   useCancelSteerMutation,
   useSteerMessageMutation,
   useMarkFilesUsageMutation,
@@ -76,10 +78,6 @@ export interface QueuedMessageContext {
 
 /** Server-side cap on a usage touch (mirrors `FILES_USAGE_MAX_IDS`). */
 const QUEUE_USAGE_MAX_FILES = 10;
-/** Bound transport-outcome reconciliation while still guaranteeing several
- * list reads after the enqueue promise settles. Focus/remount remains a later
- * reconciliation path for exceptionally slow intermediaries. */
-const QUEUED_TURN_RECONCILIATION_MS = 60_000;
 
 export type SteerErrorCode =
   | 'NO_ACTIVE_RUN'
@@ -599,6 +597,14 @@ export default function useSteering({
   const queuedMessages = useRecoilValue(store.queuedMessagesByConvoId(queueKey));
   const pendingReasoningOverride = useAtomValue(pendingReasoningOverrideFamily(reasoningStateKey));
   const setQueuedMessages = useSetRecoilState(store.queuedMessagesByConvoId(queueKey));
+  const { data: startupConfig } = useGetStartupConfig();
+  /** Bound transport-outcome reconciliation while still guaranteeing several
+   * list reads after the enqueue promise settles. Focus/remount remains a later
+   * reconciliation path; a slow proxy or a delayed read replica needs the
+   * operator to widen this rather than wait for one. */
+  const reconciliationWindowMs =
+    startupConfig?.interface?.queuedTurnReconciliationTimeoutMs ??
+    DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS;
   const knownClientRequestIds = useMemo(
     () =>
       Array.from(
@@ -614,7 +620,7 @@ export default function useSteering({
     if (item.server?.status !== 'uncertain' || item.server.uncertainSince == null) {
       return latest;
     }
-    const until = item.server.uncertainSince + QUEUED_TURN_RECONCILIATION_MS;
+    const until = item.server.uncertainSince + reconciliationWindowMs;
     return latest == null ? until : Math.max(latest, until);
   }, undefined);
   const nextReconciliationExpiry = queuedMessages.reduce<number | undefined>((earliest, item) => {
@@ -625,7 +631,7 @@ export default function useSteering({
     ) {
       return earliest;
     }
-    const expiry = item.server.uncertainSince + QUEUED_TURN_RECONCILIATION_MS;
+    const expiry = item.server.uncertainSince + reconciliationWindowMs;
     return earliest == null ? expiry : Math.min(earliest, expiry);
   }, undefined);
   /** An expired uncertain row is held for manual recovery only; nothing the
@@ -760,7 +766,7 @@ export default function useSteering({
             item.server?.status !== 'uncertain' ||
             item.server.uncertainSince == null ||
             item.server.reconciliationExpired === true ||
-            item.server.uncertainSince + QUEUED_TURN_RECONCILIATION_MS > observedAt
+            item.server.uncertainSince + reconciliationWindowMs > observedAt
           ) {
             return item;
           }
@@ -774,7 +780,7 @@ export default function useSteering({
     const delay = Math.max(0, nextReconciliationExpiry - Date.now());
     const timer = window.setTimeout(expire, delay);
     return () => window.clearTimeout(timer);
-  }, [nextReconciliationExpiry, serverQueueEnabled, setQueuedMessages]);
+  }, [nextReconciliationExpiry, reconciliationWindowMs, serverQueueEnabled, setQueuedMessages]);
   /** The start POST installs this epoch before any live mutation may be sent.
    * `isSubmitting` flips earlier so the user can keep typing; during that
    * bounded interval submits degrade to the local queue and Stop/steer refuse. */

@@ -41,7 +41,12 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => mockFileMap,
 }));
 
+/** The reconciliation window is an operator lever; these specs exercise the
+ *  shipped default unless a case overrides it. */
+let mockStartupConfig: { interface?: { queuedTurnReconciliationTimeoutMs?: number } } | undefined;
+
 jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: mockStartupConfig }),
   useCancelSteerMutation: () => ({ mutateAsync: mockCancelSteer }),
   useSteerMessageMutation: () => ({ mutate: mockMutate }),
   useAgentQueuedTurns: (...args: unknown[]) => mockUseAgentQueuedTurns(...args),

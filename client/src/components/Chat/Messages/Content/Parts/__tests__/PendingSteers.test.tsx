@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
 import type { PendingSteer } from '~/store/families';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
@@ -199,10 +199,27 @@ describe('PendingSteers', () => {
     it('arms the steer by id, carrying its own generation', () => {
       renderPending([pending({ status: 'pending', steerId: 's-ack', generationCreatedAt: 4141 })]);
       fireEvent.click(screen.getByTestId('steer-escalate-now'));
-      expect(mockEscalate).toHaveBeenCalledWith({
-        steerId: 's-ack',
-        generationCreatedAt: 4141,
+      expect(mockEscalate).toHaveBeenCalledWith(
+        {
+          steerId: 's-ack',
+          generationCreatedAt: 4141,
+        },
+        expect.any(Function),
+      );
+    });
+
+    /* Arming removes the control that was just activated, so a keyboard user
+       would be dropped on the document body in the middle of the thread. */
+    it('moves focus to the row`s cancel action once the arm is confirmed', () => {
+      renderPending([pending({ status: 'pending', steerId: 's-ack' })]);
+      fireEvent.click(screen.getByTestId('steer-escalate-now'));
+
+      const onArmed = mockEscalate.mock.calls[0][1] as () => void;
+      act(() => {
+        onArmed();
       });
+
+      expect(screen.getByRole('button', { name: 'com_ui_cancel' })).toHaveFocus();
     });
 
     it.each([

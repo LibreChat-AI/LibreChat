@@ -1310,6 +1310,10 @@ export default function useResumableSSE(
           convertSteersToQueued(conversationId, failed, {
             generationProtocolVersion,
             bindRecoverySource: false,
+            /** Swept out of the chip surface so it cannot render under the next
+             *  reply, but the server refused these words: the rail holds the row
+             *  for Retry or an explicit send instead of draining it automatically. */
+            needsExplicitSend: true,
           });
         }
       },

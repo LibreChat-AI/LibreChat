@@ -16,13 +16,13 @@ import {
   MOBILE_DRAWER_WIDTH,
   DRAWER_UNPAINTED,
 } from './constants';
+import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
 import { ChatContext, ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
-import { showFilesDialogAtom } from '~/store/filesDialog';
 import { useChatHelpers, useLocalize } from '~/hooks';
 import SidePanelNav from '~/components/SidePanel/Nav';
 import Sidebar from './Sidebar';
@@ -55,6 +55,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
   const navigate = useNavigate();
   const { isSmallScreen, expanded } = useSidebarState();
   const [showFiles, setShowFiles] = useAtom(showFilesDialogAtom);
+  const [filesDialogTrigger, setFilesDialogTrigger] = useAtom(filesDialogTriggerAtom);
   const { setSidebarOpen } = useSidebarToggle();
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const [sidebarWidth, setSidebarWidth] = useState(getInitialWidth);
@@ -270,10 +271,28 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
     </SidebarChatProvider>
   );
 
+  const closeFiles = useCallback(
+    (open: boolean) => {
+      setShowFiles(open);
+      if (!open) {
+        /** A stale opener would capture focus for the NEXT open, which the
+         *  shortcut path deliberately leaves to the composer. */
+        setFilesDialogTrigger(null);
+      }
+    },
+    [setFilesDialogTrigger, setShowFiles],
+  );
+
   return (
     <>
       {sidebarContent}
-      {showFiles && <MyFilesModal open={showFiles} onOpenChange={setShowFiles} />}
+      {showFiles && (
+        <MyFilesModal
+          open={showFiles}
+          onOpenChange={closeFiles}
+          triggerRef={filesDialogTrigger ?? undefined}
+        />
+      )}
     </>
   );
 }

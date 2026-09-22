@@ -131,6 +131,37 @@ describe('useQueueDrain', () => {
     expect(ask).toHaveBeenCalledWith({ text: 'first follow-up' }, emptyOverrides);
   });
 
+  it('leaves a rejected steer for an explicit send and drains the row behind it', async () => {
+    const { ask, setters } = setup(({ set }) => {
+      set(store.queuedMessagesByConvoId(CONVO_ID), [
+        { ...queuedMessage('q-rejected', 'the server refused this'), needsExplicitSend: true },
+        queuedMessage('q2', 'second follow-up'),
+      ]);
+    });
+
+    act(() => {
+      setters.setRunEnd!(runEnd({ generationCreatedAt: 1234 }));
+    });
+
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(ask).toHaveBeenCalledWith({ text: 'second follow-up' }, emptyOverrides);
+  });
+
+  it('sends nothing when every queued row awaits an explicit send', async () => {
+    const { ask, setters } = setup(({ set }) => {
+      set(store.queuedMessagesByConvoId(CONVO_ID), [
+        { ...queuedMessage('q-rejected', 'the server refused this'), needsExplicitSend: true },
+      ]);
+    });
+
+    act(() => {
+      setters.setRunEnd!(runEnd({ generationCreatedAt: 1234 }));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it('does not locally drain or renew server-owned Agent rows', async () => {
     const { ask, setters } = setup(({ set }) => {
       set(store.queuedMessagesByConvoId(CONVO_ID), [

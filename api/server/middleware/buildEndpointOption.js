@@ -7,6 +7,7 @@ const {
   extractChatContent,
   contentFilterBlockResponse,
   resolveReasoningOverride,
+  parseReasoningOverrideRequest,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
@@ -14,7 +15,6 @@ const {
   EModelEndpoint,
   isAgentsEndpoint,
   parseCompactConvo,
-  reasoningOverrideSchema,
   getDefaultParamsEndpoint,
 } = require('librechat-data-provider');
 const azureAssistants = require('~/server/services/Endpoints/azureAssistants');
@@ -71,11 +71,8 @@ async function buildEndpointOption(req, res, next) {
 
   const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
 
-  const reasoningOverrideResult =
-    req.body.reasoningOverride == null
-      ? null
-      : reasoningOverrideSchema.safeParse(req.body.reasoningOverride);
-  if (reasoningOverrideResult?.success === false) {
+  const reasoningOverrideRequest = parseReasoningOverrideRequest(req.body.reasoningOverride);
+  if (!reasoningOverrideRequest.ok) {
     return handleError(res, { text: 'Invalid reasoning override' });
   }
 
@@ -192,7 +189,7 @@ async function buildEndpointOption(req, res, next) {
     req.body = req.body || {}; // Express 5: ensure req.body exists
     req.body.endpointOption = await builder(endpoint, parsedBody, endpointType);
 
-    const reasoningOverride = reasoningOverrideResult?.data;
+    const { reasoningOverride } = reasoningOverrideRequest;
     if (reasoningOverride != null) {
       const resolution = await resolveReasoningOverride({
         reasoningOverride,

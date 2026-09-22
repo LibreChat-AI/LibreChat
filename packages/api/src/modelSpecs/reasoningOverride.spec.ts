@@ -7,6 +7,7 @@ import {
   type TReasoningOverride,
 } from 'librechat-data-provider';
 import {
+  parseReasoningOverrideRequest,
   resolveReasoningOverride,
   type ReasoningOverrideInput,
   type ReasoningOverrideResult,
@@ -34,6 +35,42 @@ const resolve = async (
       ...overrides.endpointOption,
     },
   });
+
+describe('parseReasoningOverrideRequest', () => {
+  it('accepts a request that carries no reasoning override', () => {
+    expect(parseReasoningOverrideRequest(undefined)).toEqual({ ok: true });
+    expect(parseReasoningOverrideRequest(null)).toEqual({ ok: true });
+  });
+
+  it('returns the parsed override for a well-formed payload', () => {
+    const result = parseReasoningOverrideRequest({
+      key: 'reasoning_effort',
+      value: ReasoningEffort.high,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.reasoningOverride).toEqual({
+      key: 'reasoning_effort',
+      value: ReasoningEffort.high,
+    });
+  });
+
+  it('rejects an unknown key rather than passing it to the resolver', () => {
+    expect(
+      parseReasoningOverrideRequest({ key: 'not_a_reasoning_field', value: ReasoningEffort.high }),
+    ).toEqual({
+      ok: false,
+      reason: 'invalid-reasoning-override',
+    });
+  });
+
+  it('rejects a payload that is not an object', () => {
+    expect(parseReasoningOverrideRequest('reasoning_effort')).toEqual({
+      ok: false,
+      reason: 'invalid-reasoning-override',
+    });
+  });
+});
 
 describe('resolveReasoningOverride', () => {
   it('applies a supported override and records the existing value', async () => {

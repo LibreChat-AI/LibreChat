@@ -36,6 +36,21 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.codeHighlightThrottleMs).toBe(100);
   });
 
+  it('uses and preserves the schema default for queued-turn reconciliation', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.queuedTurnReconciliationTimeoutMs).toBe(60_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { queuedTurnReconciliationTimeoutMs: 180_000 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.queuedTurnReconciliationTimeoutMs).toBe(180_000);
+  });
+
   it('uses and preserves the schema default for steer arm confirmation', async () => {
     const configDefaults = getConfigDefaults();
     const interfaceDefaults = {

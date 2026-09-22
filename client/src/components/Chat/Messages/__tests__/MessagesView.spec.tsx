@@ -104,6 +104,19 @@ describe('MessagesView pending steers', () => {
     expect(screen.queryByTestId('flat-thread')).not.toBeInTheDocument();
   });
 
+  it('keys the pending surface to the rendered tree, not the lagging context', () => {
+    /** Warm-cache navigation renders the destination tree while the Recoil
+     *  conversation still names the source chat. Cancel and Escalate must act
+     *  on the run the reader is looking at. */
+    const destinationTree = [
+      { messageId: 'assistant-2', conversationId: 'convo-2' },
+    ] as unknown as TMessage[];
+
+    render(<MessagesView messagesTree={destinationTree} messages={destinationTree} />);
+
+    expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-2');
+  });
+
   it('keeps recovery visible while the message tree is temporarily empty', () => {
     render(<MessagesView messagesTree={[]} messages={[]} />);
 
