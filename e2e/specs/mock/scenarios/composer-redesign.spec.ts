@@ -235,7 +235,9 @@ test.describe('composer redesign contracts', () => {
     /** Editing the queued row while that draft is still typed would merge the
      *  two the same way, so Edit refuses and says what to do instead. */
     await queuedRow.getByRole('button', { name: 'Edit message' }).click();
-    await expect(page.getByText(/Clear the message box in this chat/)).toBeVisible();
+    await expect(
+      page.getByLabel('Notifications (F8)').getByText(/Clear the message box in this chat/),
+    ).toBeVisible();
     await expect(queuedRow).toBeVisible();
     await expect(messageInput(page)).toHaveValue('draft remains');
   });
