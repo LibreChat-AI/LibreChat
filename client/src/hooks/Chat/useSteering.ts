@@ -1882,21 +1882,22 @@ export default function useSteering({
           {
             onSuccess: (response) => {
               try {
-                if (hasPendingSteerCancel(conversationId, localId)) {
-                  void cancelSteer({
-                    conversationId,
-                    steerId: response.steerId,
-                    clientSteerId: localId,
-                    generationCreatedAt:
-                      targetGenerationCreatedAt ?? activeGenerationCreatedAt ?? undefined,
-                  }).then(({ removed }) => {
-                    if (removed === true) {
-                      /* Cancel won the race against its own POST. The words are
-                         off the server now, so they go back to the user through
-                         the same boundary as an immediate cancel: whole, and
-                         into the queue when the composer will not take them.
-                         Clearing the marker without this loses the message. */
-                      rehomeSteer({
+                const acceptResponse = () => {
+                  /** A 202 without the echo means a pre-quotes replica queued
+                   *  the words without their excerpts. The quotes are NOT
+                   *  re-staged here: the steer has not injected yet, so they
+                   *  stay carried on the pending chip: a quote-less applied
+                   *  event re-stages them at the actual loss, and a terminal
+                   *  leftover conversion carries them onto the recovered row
+                   *  instead (its normal send delivers quotes on any server).
+                   *  Only a settled replay (an already-injected steer with no
+                   *  future event to re-home the chip) reclaims immediately. */
+                  const quotesRejected = carried.quotes != null && response.quotesAccepted !== true;
+                  const canUseV2Receipt =
+                    targetGenerationProtocolVersion === 2 && supportsGenerationProtocolV2(response);
+                  if (canUseV2Receipt && response.settled === true) {
+                    if (response.leftover === true) {
+                      queueRecoveredSteer({
                         steerId: response.steerId,
                         clientSteerId: localId,
                         text: trimmed,
@@ -1907,82 +1908,106 @@ export default function useSteering({
                           generationCreatedAt: targetGenerationCreatedAt,
                         }),
                         generationProtocolVersion: targetGenerationProtocolVersion,
-                        ...(opts?.queuedOrigin && { queuedOrigin: opts.queuedOrigin }),
+                        ...(opts?.queuedOrigin && {
+                          queuedOrigin: opts.queuedOrigin,
+                        }),
                         ...carried,
                       });
-                      clearPendingSteerCancel(conversationId, localId);
+                    } else {
+                      if (quotesRejected) {
+                        reclaimRejectedChipQuotes(conversationId, [localId, response.steerId]);
+                      }
+                      settleReceiptReplay(conversationId, localId, response.steerId);
                     }
-                  });
-                  return;
-                }
-                /** A 202 without the echo means a pre-quotes replica queued
-                 *  the words without their excerpts. The quotes are NOT
-                 *  re-staged here — the steer has not injected yet, so they
-                 *  stay carried on the pending chip: a quote-less applied
-                 *  event re-stages them at the actual loss, and a terminal
-                 *  leftover conversion carries them onto the recovered row
-                 *  instead (its normal send delivers quotes on any server).
-                 *  Only a settled replay — an already-injected steer with no
-                 *  future event to re-home the chip — reclaims immediately. */
-                const quotesRejected = carried.quotes != null && response.quotesAccepted !== true;
-                const canUseV2Receipt =
-                  targetGenerationProtocolVersion === 2 && supportsGenerationProtocolV2(response);
-                if (canUseV2Receipt && response.settled === true) {
-                  if (response.leftover === true) {
-                    queueRecoveredSteer({
-                      steerId: response.steerId,
-                      clientSteerId: localId,
-                      text: trimmed,
-                      status: 'pending',
-                      createdAt,
-                      ...(files && { files }),
-                      ...(targetGenerationCreatedAt != null && {
-                        generationCreatedAt: targetGenerationCreatedAt,
-                      }),
-                      generationProtocolVersion: targetGenerationProtocolVersion,
-                      ...(opts?.queuedOrigin && {
-                        queuedOrigin: opts.queuedOrigin,
-                      }),
-                      ...carried,
-                    });
-                  } else {
-                    if (quotesRejected) {
-                      reclaimRejectedChipQuotes(conversationId, [localId, response.steerId]);
-                    }
-                    settleReceiptReplay(conversationId, localId, response.steerId);
+                    return;
                   }
+                  /** The server's echo is authoritative: a deployment whose SDK
+                   *  cannot seal mid-stream still queues the steer and answers
+                   *  `preempt: false`, which relabels the chip to the ordinary
+                   *  wording instead of surfacing an error. */
+                  const acknowledged = {
+                    steerId: response.steerId,
+                    clientSteerId: localId,
+                    text: trimmed,
+                    status: 'pending',
+                    createdAt,
+                    ...(files && { files }),
+                    ...(response.preempt === true && { preempt: true }),
+                    ...(response.preemptRevision != null && {
+                      preemptRevision: response.preemptRevision,
+                    }),
+                    ...(targetGenerationCreatedAt != null && {
+                      generationCreatedAt: targetGenerationCreatedAt,
+                    }),
+                    generationProtocolVersion: targetGenerationProtocolVersion,
+                    ...(opts?.queuedOrigin && {
+                      queuedOrigin: opts.queuedOrigin,
+                    }),
+                    ...carried,
+                  } satisfies PendingSteer;
+                  if (acknowledgeSteer(conversationId, localId, acknowledged)) {
+                    /** Terminal conversion re-homes the words as a queued
+                     *  follow-up that sends via `ask`; the carried quotes ride
+                     *  it there, so nothing is re-staged. */
+                    queueRecoveredSteer(acknowledged);
+                  }
+                };
+                if (hasPendingSteerCancel(conversationId, localId)) {
+                  void cancelSteer({
+                    conversationId,
+                    steerId: response.steerId,
+                    clientSteerId: localId,
+                    generationCreatedAt:
+                      targetGenerationCreatedAt ?? activeGenerationCreatedAt ?? undefined,
+                  }).then(
+                    ({ removed }) => {
+                      clearPendingSteerCancel(conversationId, localId);
+                      if (removed === true) {
+                        /* Cancel won the race against its own POST. The words are
+                           off the server now, so they go back to the user through
+                           the same boundary as an immediate cancel: whole, and
+                           into the queue when the composer will not take them.
+                           Clearing the marker without this loses the message. */
+                        rehomeSteer({
+                          steerId: response.steerId,
+                          clientSteerId: localId,
+                          text: trimmed,
+                          status: 'pending',
+                          createdAt,
+                          ...(files && { files }),
+                          ...(targetGenerationCreatedAt != null && {
+                            generationCreatedAt: targetGenerationCreatedAt,
+                          }),
+                          generationProtocolVersion: targetGenerationProtocolVersion,
+                          ...(opts?.queuedOrigin && { queuedOrigin: opts.queuedOrigin }),
+                          ...carried,
+                        });
+                        return;
+                      }
+                      /* The server kept the steer: it is live and will still
+                         reach the agent. The chip the optimistic cancel hid
+                         comes back through the ordinary acknowledgement, so it
+                         settles like any other accepted steer. */
+                      acceptResponse();
+                      showToast({
+                        message: localize('com_ui_steer_already_applied'),
+                        status: 'info',
+                      });
+                    },
+                    () => {
+                      clearPendingSteerCancel(conversationId, localId);
+                      /* Unknown outcome, but the POST was accepted: treat the
+                         steer as live rather than claiming it is gone. */
+                      acceptResponse();
+                      showToast({
+                        message: localize('com_ui_steer_cancel_failed'),
+                        status: 'warning',
+                      });
+                    },
+                  );
                   return;
                 }
-                /** The server's echo is authoritative: a deployment whose SDK
-                 *  cannot seal mid-stream still queues the steer and answers
-                 *  `preempt: false`, which relabels the chip to the ordinary
-                 *  wording instead of surfacing an error. */
-                const acknowledged = {
-                  steerId: response.steerId,
-                  clientSteerId: localId,
-                  text: trimmed,
-                  status: 'pending',
-                  createdAt,
-                  ...(files && { files }),
-                  ...(response.preempt === true && { preempt: true }),
-                  ...(response.preemptRevision != null && {
-                    preemptRevision: response.preemptRevision,
-                  }),
-                  ...(targetGenerationCreatedAt != null && {
-                    generationCreatedAt: targetGenerationCreatedAt,
-                  }),
-                  generationProtocolVersion: targetGenerationProtocolVersion,
-                  ...(opts?.queuedOrigin && {
-                    queuedOrigin: opts.queuedOrigin,
-                  }),
-                  ...carried,
-                } satisfies PendingSteer;
-                if (acknowledgeSteer(conversationId, localId, acknowledged)) {
-                  /** Terminal conversion re-homes the words as a queued
-                   *  follow-up that sends via `ask` — the carried quotes ride
-                   *  it there, so nothing is re-staged. */
-                  queueRecoveredSteer(acknowledged);
-                }
+                acceptResponse();
               } finally {
                 settleDispatch();
               }

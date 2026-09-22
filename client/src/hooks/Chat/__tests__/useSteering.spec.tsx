@@ -16,11 +16,11 @@ import {
   getReasoningStateKey,
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
+import { revealedQueuedTurnFamily, pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import useSteering, { hasLiveRunPause, mergeQueuedTurnFileMetadata } from '../useSteering';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 import { applyPendingAction } from '~/utils/approval';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';
@@ -2367,6 +2367,65 @@ describe('useSteering', () => {
       expect(result.current.chips).toEqual([]);
       expect(result.current.queue).toEqual([]);
     });
+
+    /* Cancel pressed while the POST was in flight is replayed once the 202
+       names the server id. When that replayed cancel does not remove the steer,
+       it is still live: hiding it would claim the words are gone while they
+       reach the agent anyway. */
+    it.each([
+      [
+        'the server keeps the steer',
+        () => mockCancelSteer.mockResolvedValueOnce({ removed: false }),
+        'info',
+      ],
+      [
+        'the cancel request fails',
+        () => mockCancelSteer.mockRejectedValueOnce(new Error('offline')),
+        'warning',
+      ],
+    ] as const)(
+      'restores a live steer when a deferred cancel fails because %s',
+      async (_case, arrange, status) => {
+        arrange();
+        let acknowledge: (() => void) | undefined;
+        let clientSteerId = '';
+        mockMutate.mockImplementation((params, { onSuccess }) => {
+          clientSteerId = params.clientSteerId;
+          acknowledge = () =>
+            onSuccess({
+              steerId: 'srv-1',
+              status: 'queued',
+              position: 1,
+              conversationId: CONVO_ID,
+            });
+        });
+        const { result } = setupWithState();
+        act(() => {
+          result.current.steering.submitSteer('cancel me in flight');
+        });
+        const marker = pendingSteerCancelClientIdsFamily(CONVO_ID);
+        getDefaultStore().set(marker, [clientSteerId]);
+
+        await act(async () => {
+          acknowledge?.();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(mockCancelSteer).toHaveBeenCalledWith(
+          expect.objectContaining({ steerId: 'srv-1', clientSteerId }),
+        );
+        expect(result.current.chips).toEqual([
+          expect.objectContaining({
+            steerId: 'srv-1',
+            status: 'pending',
+            text: 'cancel me in flight',
+          }),
+        ]);
+        expect(getDefaultStore().get(marker)).toEqual([]);
+        expect(mockShowToast).toHaveBeenCalledWith(expect.objectContaining({ status }));
+      },
+    );
 
     it.each([
       [
