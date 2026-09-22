@@ -104,7 +104,11 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
       (await getCodeProvisionedUploads(page)).map((u) => u.filename),
       'unified upload must not provision to the code env until a tool runs',
     ).not.toContain(fileName);
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
+    /* Scoped to the tray: the palette lists the same file under its recent
+       uploads, and it is still in the DOM while its close animation runs. */
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName }),
+    ).toBeVisible({ timeout: 15000 });
 
     // A tool run triggers lazy provisioning: the fake model emits an execute_code call.
     // Provisioning fires at ON_TOOL_EXECUTE, before the execute_code tool itself runs,
@@ -142,7 +146,11 @@ test.describe('file provisioning — lazy (unified upload, at tool-execute)', ()
       (await getRagEmbedded(page)).map((e) => e.file_id),
       'unified upload must not embed until file_search runs',
     ).not.toContain(fileId);
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
+    /* Scoped to the tray: the palette lists the same file under its recent
+       uploads, and it is still in the DOM while its close animation runs. */
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName }),
+    ).toBeVisible({ timeout: 15000 });
 
     // Embedding fires at ON_TOOL_EXECUTE, independent of the file_search tool result.
     await sendMessage(page, `E2E_FILE_SEARCH:${uniqueName('q')}`);

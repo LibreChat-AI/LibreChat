@@ -25,9 +25,8 @@ const paletteOption = (page: Page) =>
  *  own Cancel button is not in the accessibility tree at all. Dismiss it before
  *  asserting on anything underneath. */
 async function dismissOAuthDialog(page: Page) {
-  const dialog = page.getByRole('dialog', {
-    name: new RegExp(`^Connect ${SERVER_TITLE}\\b`),
-  });
+  /* Titled with the server's name, not its display title. */
+  const dialog = page.getByRole('dialog', { name: `Connect ${SERVER_NAME}`, exact: true });
   await expect(dialog).toBeVisible({ timeout: 10000 });
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);

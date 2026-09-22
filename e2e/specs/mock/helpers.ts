@@ -87,6 +87,11 @@ async function enableBuiltinTool(page: Page, label: string) {
   await expect(
     page.getByTestId('composer-active-builtin').filter({ hasText: label }),
   ).toBeVisible();
+  /* Wait for the palette to finish closing. Reopening it during the leave
+     animation resumes the same popover rather than mounting a fresh one, so the
+     list keeps the scroll offset this click left it at, and the Attach rows at
+     the top sit outside the virtualized window a caller then queries. */
+  await expect(page.getByRole('dialog', { name: 'Attach and tools' })).toHaveCount(0);
 }
 
 /** Enable the ephemeral Skills capability from the composer palette. */
@@ -464,10 +469,7 @@ export async function uploadViaUnifiedButton(page: Page, file: AttachFile) {
     name: /^(From Local Computer|Upload to Provider)$/,
   });
   await expect(sourceRow).toBeVisible();
-  const [fileChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    sourceRow.click(),
-  ]);
+  const [fileChooser] = await Promise.all([page.waitForEvent('filechooser'), sourceRow.click()]);
   await fileChooser.setFiles({
     name: file.name,
     mimeType: file.mimeType,
