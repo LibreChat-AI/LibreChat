@@ -886,10 +886,15 @@ const ChatForm = memo(function ChatForm({
                   {localize('com_error_code_workspace_required')}
                 </p>
               )}
+              {/* The composer is what keeps MCP connection and authorization state
+                  current wherever its ephemeral tools apply; the Agent Builder's
+                  tool library reads the same cache, so without this a server it
+                  lists reads as unknown and offers to connect instead of toggling. */}
               <BadgeRowProvider
                 conversationId={conversationId}
                 specName={conversation?.spec}
                 isSubmitting={isSubmitting}
+                observeToolAuthorization={showTools}
               >
                 <Bar
                   index={index}
