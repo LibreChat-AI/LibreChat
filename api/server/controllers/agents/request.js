@@ -6,10 +6,10 @@ const {
   ErrorTypes,
   ViolationTypes,
   isEphemeralAgentId,
-  reasoningOverrideSchema,
 } = require('librechat-data-provider');
 const {
   toPendingSteer,
+  resolvePersistedReasoningOverride,
   getViolationInfo,
   buildMessageFiles,
   getReferencedQuotes,
@@ -264,7 +264,13 @@ function getPreliminaryUserMessage(
    * turn keeps its `MessageQuotes`.
    */
   const referencedQuotes = getReferencedQuotes(quotes);
-  const parsedReasoningOverride = reasoningOverrideSchema.safeParse(reasoningOverride);
+  /* A preliminary message is always a fresh turn: edits and regenerations reuse
+     the live user message, and compaction is projected before reaching here. */
+  const persistedReasoningOverride = resolvePersistedReasoningOverride({
+    rawReasoningOverride: reasoningOverride,
+    isEdited: false,
+    isCompaction: false,
+  });
 
   return {
     messageId,
@@ -283,8 +289,8 @@ function getPreliminaryUserMessage(
     ...(Array.isArray(manualSkills) && manualSkills.length > 0 && { manualSkills }),
     ...(Array.isArray(alwaysAppliedSkills) &&
       alwaysAppliedSkills.length > 0 && { alwaysAppliedSkills }),
-    ...(parsedReasoningOverride.success && {
-      reasoningOverride: parsedReasoningOverride.data,
+    ...(persistedReasoningOverride !== undefined && {
+      reasoningOverride: persistedReasoningOverride,
     }),
     ...(subagentTriggerProjection != null && { subagentTriggerProjection }),
   };
