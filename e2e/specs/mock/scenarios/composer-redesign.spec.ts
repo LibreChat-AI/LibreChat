@@ -138,20 +138,21 @@ test.describe('composer redesign contracts', () => {
     }
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
-    const dialogs = await page.evaluate(() =>
-      Array.from(
-        document.querySelectorAll('[role="dialog"]:not([inert]):not([data-state="closed"])'),
-      ).filter((el) => {
-        const style = (el as HTMLElement).style;
-        const computedStyle = window.getComputedStyle(el);
-        return (
-          !el.hasAttribute('hidden') &&
-          style.display !== 'none' &&
-          style.visibility !== 'hidden' &&
-          computedStyle.display !== 'none' &&
-          computedStyle.visibility !== 'hidden'
-        );
-      }).length,
+    const dialogs = await page.evaluate(
+      () =>
+        Array.from(
+          document.querySelectorAll('[role="dialog"]:not([inert]):not([data-state="closed"])'),
+        ).filter((el) => {
+          const style = (el as HTMLElement).style;
+          const computedStyle = window.getComputedStyle(el);
+          return (
+            !el.hasAttribute('hidden') &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            computedStyle.display !== 'none' &&
+            computedStyle.visibility !== 'hidden'
+          );
+        }).length,
     );
     expect(dialogs).toBe(0);
     const nameInput = form.getByLabel('Agent name');
@@ -162,13 +163,15 @@ test.describe('composer redesign contracts', () => {
         response.request().method() === 'POST' &&
         new URL(response.url()).pathname.endsWith('/api/agents/chat/abort'),
     );
-    const modifier = await page.evaluate(() => (navigator.platform.includes('Mac') ? 'Meta' : 'Control'));
+    const modifier = await page.evaluate(() =>
+      navigator.platform.includes('Mac') ? 'Meta' : 'Control',
+    );
     await page.keyboard.press(`${modifier}+Shift+X`);
     const abortResponse = await abort;
     expect(abortResponse.ok()).toBeTruthy();
   });
 
-  test('Canceled pending steer disappears before application @scenario:canceled-pending-steer-disappears-before-application', async ({
+  test('Canceled pending steer restores its text before application @scenario:canceled-pending-steer-disappears-before-application', async ({
     page,
   }) => {
     await openComposer(page);
@@ -180,11 +183,12 @@ test.describe('composer redesign contracts', () => {
       .getByRole('listitem')
       .filter({ hasText: 'pending steer' });
     await expect(bubble).toContainText('Sending');
+    await messageInput(page).fill('draft remains');
     await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(bubble).toHaveCount(0);
     await expect(messagesView(page).getByText('pending steer', { exact: true })).toHaveCount(0);
+    await expect(messageInput(page)).toHaveValue('draft remains\npending steer');
   });
-
 
   test('Pending steer status does not claim application before delivery @scenario:pending-steer-status-does-not-claim-application-before-delivery', async ({
     page,

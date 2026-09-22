@@ -154,12 +154,20 @@ export default function useTextarea({
    *  navigation that resolves its record before moving the route. */
   useEffect(() => {
     const text = pendingComposerText ?? '';
-    if (text === '' || !insertComposerText(text)) {
+    if (text === '') {
+      return;
+    }
+    /* A reclaimed steer must not overwrite a draft the user typed while the
+     * cancel request was in flight. Keep both messages distinct when the
+     * composer already owns text; an empty composer receives the exact steer. */
+    const currentText = textAreaRef.current?.value ?? '';
+    const handoffText = currentText.length > 0 ? `\n${text}` : text;
+    if (!insertComposerText(handoffText)) {
       return;
     }
 
     setPendingComposerText(undefined);
-  }, [insertComposerText, pendingComposerText, setPendingComposerText]);
+  }, [insertComposerText, pendingComposerText, setPendingComposerText, textAreaRef]);
 
   useEffect(() => {
     const currentValue = textAreaRef.current?.value ?? '';

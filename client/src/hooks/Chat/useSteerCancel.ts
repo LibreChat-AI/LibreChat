@@ -111,6 +111,15 @@ export default function useSteerCancel(conversationId: string) {
       },
     [conversationId, setPendingCancelIds],
   );
+  const restoreReclaimedText = useRecoilCallback(
+    ({ set }) =>
+      (steer: PendingSteer) => {
+        set(store.pendingComposerTextByConvoId(conversationId), (previous) =>
+          previous == null || previous.length === 0 ? steer.text : `${previous}\n${steer.text}`,
+        );
+      },
+    [conversationId],
+  );
   const clearOptimisticCancel = useCallback(
     (steer: PendingSteer) => {
       const clientId = steer.clientSteerId ?? steer.steerId;
@@ -125,10 +134,11 @@ export default function useSteerCancel(conversationId: string) {
       }
       const outcome = await reclaim(steer);
       if (outcome === 'reclaimed') {
+        restoreReclaimedText(steer);
         clearOptimisticCancel(steer);
       }
       return outcome;
     },
-    [clearOptimisticCancel, markOptimisticCancel, reclaim],
+    [clearOptimisticCancel, markOptimisticCancel, reclaim, restoreReclaimedText],
   );
 }
