@@ -192,6 +192,17 @@ const sidebarPlacement = async (page: Page): Promise<SidebarPlacement> => {
  */
 export async function ensureSidebarOnScreen(page: Page): Promise<void> {
   const drawer = page.locator('#mobile-drawer');
+  /* A closed drawer stays mounted and keeps its layout box, so geometry cannot
+     tell it from an open one; `inert` is the state the component actually sets
+     and the reason every control inside answers a query while none of them can
+     be tapped. Open it before anything below measures. */
+  if ((await drawer.count()) > 0 && (await drawer.getAttribute('inert')) != null) {
+    const opener = page.getByRole('button', { name: 'Open sidebar' });
+    if ((await opener.count()) > 0) {
+      await opener.first().click();
+      await expect.poll(() => drawer.getAttribute('inert'), { timeout: 15_000 }).toBeNull();
+    }
+  }
   if ((await pinnedSection(page).count()) === 0) {
     /* Empty sidebars have no Pinned region to measure, but the mobile drawer
        is still mounted while its transform keeps it outside the viewport.
