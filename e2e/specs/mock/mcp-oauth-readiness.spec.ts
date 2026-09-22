@@ -20,6 +20,19 @@ const paletteOption = (page: Page) =>
   page
     .getByRole('dialog', { name: 'Attach and tools' })
     .getByRole('button', { name: new RegExp(`^${SERVER_TITLE}\\b`) });
+/** Connect opens the OAuth dialog on top of the panel. It is a modal, so while
+ *  it is open the rest of the document is marked `aria-hidden` and the card's
+ *  own Cancel button is not in the accessibility tree at all. Dismiss it before
+ *  asserting on anything underneath. */
+async function dismissOAuthDialog(page: Page) {
+  const dialog = page.getByRole('dialog', {
+    name: new RegExp(`^Connect ${SERVER_TITLE}\\b`),
+  });
+  await expect(dialog).toBeVisible({ timeout: 10000 });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+}
+
 async function expectSelected(page: Page, checked: 'true' | 'false') {
   await page.getByRole('button', { name: 'Attach and tools' }).click();
   await expect(paletteOption(page)).toHaveAttribute('aria-pressed', checked);
@@ -133,6 +146,7 @@ test.describe('MCP OAuth readiness', () => {
     const card = serverCard(page);
     await card.getByRole('button', { name: 'Connect', exact: true }).click();
     await pendingPolled;
+    await dismissOAuthDialog(page);
 
     await expect(card.getByRole('button', { name: 'Cancel' })).toBeVisible();
     await expect(page.getByText('Failed to initialize MCP server')).toHaveCount(0);
@@ -406,6 +420,7 @@ test.describe('MCP OAuth readiness', () => {
     await openMcpPanel(page);
     const card = serverCard(page);
     await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await dismissOAuthDialog(page);
 
     await expect(card.getByRole('button', { name: 'Cancel' })).toBeVisible({
       timeout: 8000,
