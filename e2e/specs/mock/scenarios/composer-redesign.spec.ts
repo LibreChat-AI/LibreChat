@@ -230,9 +230,14 @@ test.describe('composer redesign contracts', () => {
     await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(bubble).toHaveCount(0);
     await expect(messageInput(page)).toHaveValue('draft remains');
-    await expect(
-      page.getByTestId('queued-message-row').filter({ hasText: 'pending steer' }),
-    ).toBeVisible();
+    const queuedRow = page.getByTestId('queued-message-row').filter({ hasText: 'pending steer' });
+    await expect(queuedRow).toBeVisible();
+    /** Editing the queued row while that draft is still typed would merge the
+     *  two the same way, so Edit refuses and says what to do instead. */
+    await queuedRow.getByRole('button', { name: 'Edit message' }).click();
+    await expect(page.getByText(/Clear the message box in this chat/)).toBeVisible();
+    await expect(queuedRow).toBeVisible();
+    await expect(messageInput(page)).toHaveValue('draft remains');
   });
 
   test('Pending steer status does not claim application before delivery @scenario:pending-steer-status-does-not-claim-application-before-delivery', async ({

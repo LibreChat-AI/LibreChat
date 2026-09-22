@@ -2110,7 +2110,7 @@
   "com_ui_question_unanswered": "No answer was given",
   "com_ui_queue": "Queue",
   "com_ui_convert_to_queue": "Queue for after the response",
-  "com_ui_queue_edit_blocked": "Finish answering the question before editing a queued message.",
+  "com_ui_queue_edit_blocked": "Clear the message box in this chat, or finish answering the question, to edit this message.",
   "com_ui_queue_moved": "Moved to {{0}} of {{1}}",
   "com_ui_queue_reorder_blocked": "Queued turns already acknowledged by the server cannot be reordered.",
   "com_ui_queue_remove_blocked": "Clear the message box in this chat to take this message back.",
