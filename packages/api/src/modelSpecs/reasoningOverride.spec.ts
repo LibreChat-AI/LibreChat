@@ -238,6 +238,45 @@ describe('resolveReasoningOverride', () => {
     });
   });
 
+  describe('a thinking budget range the operator widened past the built-in maximum', () => {
+    const wideBudget = (value: number) =>
+      resolve({
+        endpoint: 'Mock Provider A',
+        endpointType: EModelEndpoint.custom,
+        parsedModel: 'mock-model-a',
+        isAgent: false,
+        reasoningOverride: { key: 'thinkingBudget', value },
+        endpointOption: {
+          endpointType: EModelEndpoint.custom,
+          model_parameters: { model: 'mock-model-a' },
+        },
+        endpointsConfig: {
+          'Mock Provider A': {
+            order: 0,
+            type: EModelEndpoint.custom,
+            customParams: {
+              defaultParamsEndpoint: EModelEndpoint.anthropic,
+              paramDefinitions: [
+                { key: 'thinkingBudget', range: { min: 1024, max: 500000, step: 1024 } },
+              ],
+            },
+          },
+        },
+      });
+
+    it('parses and applies a budget inside the configured range', async () => {
+      expect(parseReasoningOverrideRequest({ key: 'thinkingBudget', value: 300032 })).toEqual({
+        ok: true,
+        reasoningOverride: { key: 'thinkingBudget', value: 300032 },
+      });
+      await expect(wideBudget(300032)).resolves.toMatchObject({ ok: true });
+    });
+
+    it('still rejects a budget above the configured range', async () => {
+      await expect(wideBudget(600064)).resolves.toMatchObject({ ok: false });
+    });
+  });
+
   it('rejects an override for a field owned by an enforced model spec', async () => {
     const result = await resolve({
       enforcedModelSpecFields: new Set(['reasoning_effort']),

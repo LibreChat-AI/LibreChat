@@ -22,7 +22,7 @@ describe('resolvePersistedReasoningOverride', () => {
     undefined,
     null,
     { key: 'model', value: 'secret-model' },
-    { key: 'thinkingBudget', value: 200001 },
+    { key: 'thinkingBudget', value: -2 },
   ])('omits an invalid request override: %o', (rawReasoningOverride) => {
     expect(resolve({ rawReasoningOverride })).toBeUndefined();
   });

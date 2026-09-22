@@ -24,6 +24,7 @@ describe('reasoningOverrideSchema', () => {
     { key: 'thinkingLevel', value: 'low' },
     { key: 'thinkingBudget', value: -1 },
     { key: 'thinkingBudget', value: 32768 },
+    { key: 'thinkingBudget', value: 500000 },
   ])('accepts a supported request-scoped override: %o', (override) => {
     expect(reasoningOverrideSchema.parse(override)).toEqual(override);
   });
@@ -34,7 +35,7 @@ describe('reasoningOverrideSchema', () => {
     { key: 'effort', value: 'none' },
     { key: 'thinkingLevel', value: 'max' },
     { key: 'thinkingBudget', value: 1.5 },
-    { key: 'thinkingBudget', value: 200001 },
+    { key: 'thinkingBudget', value: -2 },
     { key: 'thinkingBudget', value: 1000, extra: true },
   ])('rejects an invalid request-scoped override: %o', (override) => {
     expect(reasoningOverrideSchema.safeParse(override).success).toBe(false);

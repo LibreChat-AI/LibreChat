@@ -375,7 +375,9 @@ export const reasoningOverrideSchema = z.discriminatedUnion('key', [
   z
     .object({
       key: z.literal('thinkingBudget'),
-      value: z.number().int().min(-1).max(200000),
+      /* No fixed ceiling: an operator's paramDefinitions may widen the range,
+         and the request is checked against the resolved range server-side. */
+      value: z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER),
     })
     .strict(),
 ]);
