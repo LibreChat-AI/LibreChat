@@ -59,22 +59,24 @@ async function openAccountMenuHost(page: Page) {
   if ((await drawer.count()) === 0) {
     return;
   }
-  if ((await drawer.getAttribute('inert')) == null) {
-    return;
-  }
+  const navUser = drawer.getByTestId('nav-user');
   const opener = page.getByRole('button', { name: 'Open sidebar' });
-  if ((await opener.count()) === 0) {
-    return;
+  /* Re-check before every attempt rather than deciding once. The drawer stays
+     mounted when closed, so a single early read of `inert` can report a state
+     the app has not settled into yet and leave the drawer shut; and while it is
+     open the opener is labelled "Close sidebar", so this cannot toggle it back. */
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await navUser.isVisible().catch(() => false)) {
+      return;
+    }
+    if ((await opener.count()) > 0) {
+      await opener.first().click();
+    }
+    await expect(navUser)
+      .toBeVisible({ timeout: 5_000 })
+      .catch(() => undefined);
   }
-  await opener.first().click();
-  await expect(drawer).not.toHaveAttribute('inert', /.*/);
-  /* `inert` clears on the state commit, a few frames ahead of the slide
-     settling; wait for the drawer to actually reach the viewport. */
-  await expect
-    .poll(async () => (await drawer.boundingBox())?.x ?? Number.NEGATIVE_INFINITY, {
-      timeout: 15_000,
-    })
-    .toBeGreaterThanOrEqual(0);
+  await expect(navUser).toBeVisible({ timeout: 10_000 });
 }
 
 test.describe('composer defaults', () => {
