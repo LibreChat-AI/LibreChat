@@ -197,9 +197,15 @@ test('resumes a pending tool approval with the composer usable @scenario:pending
     await expect(page.getByRole('dialog', { name: /^Thinking: / })).toHaveCount(0);
     await expect(page.getByTestId('stop-generation-button')).toBeVisible();
 
-    const submit = approval.getByRole('button', { name: 'Submit', exact: true });
+    /* The composer's review panel owns the batch submit and floats over the
+       tail of the thread, so the thread's own copy of the card sits behind it
+       and cannot be clicked. Drive the surface the user is actually looking
+       at; the timeline card is asserted above as the record of the request. */
+    const reviewPanel = page.locator('#pending-tool-approval-panel');
+    await expect(reviewPanel).toBeVisible();
+    const submit = reviewPanel.getByRole('button', { name: 'Continue', exact: true });
     await expect(submit).toBeDisabled();
-    await approval.getByRole('button', { name: 'Approve', exact: true }).click();
+    await reviewPanel.getByRole('button', { name: 'Approve', exact: true }).click();
     await expect(submit).toBeEnabled();
 
     const [resumeRequest, resumeResponse] = await Promise.all([

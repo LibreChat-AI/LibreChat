@@ -201,29 +201,24 @@ export async function ensureSidebarOnScreen(page: Page): Promise<void> {
     if ((await opener.count()) > 0) {
       await opener.first().click();
       await expect.poll(() => drawer.getAttribute('inert'), { timeout: 15_000 }).toBeNull();
+      /* `inert` clears on the state commit, a few frames ahead of the slide
+         settling. Wait for the drawer to actually be in the viewport before
+         letting a caller query the controls inside it. */
+      await expect
+        .poll(async () => (await drawer.boundingBox())?.x ?? Number.NEGATIVE_INFINITY, {
+          timeout: 15_000,
+        })
+        .toBeGreaterThanOrEqual(0);
     }
   }
   if ((await pinnedSection(page).count()) === 0) {
-    /* Empty sidebars have no Pinned region to measure, but the mobile drawer
-       is still mounted while its transform keeps it outside the viewport.
-       Desktop renders no drawer at all, and `boundingBox()` on a locator that
-       matches nothing waits for it until the test times out, so the absence
-       has to be checked rather than measured. */
-    if ((await drawer.count()) === 0) {
-      return;
-    }
-    const drawerBox = await drawer.boundingBox();
-    if (drawerBox != null && drawerBox.x < 0) {
-      const opener = page.getByRole('button', { name: 'Open sidebar' });
-      if ((await opener.count()) > 0) {
-        await opener.first().click();
-        await expect
-          .poll(async () => (await drawer.boundingBox())?.x ?? Number.NEGATIVE_INFINITY, {
-            timeout: 15_000,
-          })
-          .toBeGreaterThanOrEqual(0);
-      }
-    }
+    /* Empty sidebars have no Pinned region to measure, and there is nothing
+       left to do: the drawer above is already open, and desktop renders no
+       drawer at all. Measuring the drawer again here and opening it a second
+       time is what used to close it: the slide is animated imperatively and
+       its state commit is deferred by several frames, so a bounding box read
+       mid-flight still reads as off-screen and the extra click lands on the
+       machine that is already opening it. */
     return;
   }
   await expect.poll(() => sidebarPlacement(page), { timeout: 15_000 }).not.toBe('unlaid');

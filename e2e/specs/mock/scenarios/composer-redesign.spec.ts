@@ -200,12 +200,34 @@ test.describe('composer redesign contracts', () => {
       .getByRole('listitem')
       .filter({ hasText: 'pending steer' });
     await expect(bubble).toContainText('Sending');
-    /** The draft typed while the cancel was in flight must survive the
-     *  reclaim: the returned steer joins it instead of replacing it. */
+    await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(bubble).toHaveCount(0);
+    await expect(messageInput(page)).toHaveValue('pending steer');
+  });
+
+  test('Canceled steer keeps a typed draft and queues the message @scenario:canceled-steer-keeps-a-typed-draft-and-queues-the-message', async ({
+    page,
+  }) => {
+    await openComposer(page);
+    await startRun(page, `reclaim-draft-${Date.now()}`);
+    await messageInput(page).fill('pending steer');
+    await page.getByTestId('during-run-send-button').click();
+    const bubble = page
+      .getByTestId('pending-steers')
+      .getByRole('listitem')
+      .filter({ hasText: 'pending steer' });
+    await expect(bubble).toContainText('Sending');
+    /** A draft staged while the cancel is in flight owns the composer. The
+     *  reclaimed steer is a different message: gluing the two together would
+     *  send one submission the user never wrote, so it becomes a queued
+     *  follow-up instead, and the draft is left exactly as typed. */
     await messageInput(page).fill('draft remains');
     await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(bubble).toHaveCount(0);
-    await expect(messageInput(page)).toHaveValue('draft remains\npending steer');
+    await expect(messageInput(page)).toHaveValue('draft remains');
+    await expect(
+      page.getByTestId('queued-message-row').filter({ hasText: 'pending steer' }),
+    ).toBeVisible();
   });
 
   test('Pending steer status does not claim application before delivery @scenario:pending-steer-status-does-not-claim-application-before-delivery', async ({

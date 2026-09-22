@@ -26,6 +26,39 @@ async function openPalette(page: Page) {
   await expect(paletteSearch(page)).toBeVisible();
 }
 
+/**
+ * The catalog arrives in waves: built-in tools paint with the dialog, the MCP
+ * server list is released by the app-wide warmup timer, and the skills catalog
+ * only starts fetching once the dialog's open effect has run. Counting rows the
+ * moment the dialog appears therefore snapshots a partial catalog, and the row
+ * count keeps climbing underneath the test.
+ *
+ * Wait for the last wave to land, then for the count to hold still across
+ * consecutive reads, and return that settled total.
+ */
+async function settledRowCount(page: Page): Promise<number> {
+  const mcpSection = palette(page).getByRole('columnheader', {
+    name: 'MCP Servers',
+    exact: true,
+  });
+  await expect(mcpSection).toBeVisible({ timeout: 20000 });
+  const rows = paletteRows(page);
+  let previous = -1;
+  let stableReads = 0;
+  await expect
+    .poll(
+      async () => {
+        const current = await rows.count();
+        stableReads = current === previous ? stableReads + 1 : 0;
+        previous = current;
+        return stableReads;
+      },
+      { timeout: 20000, intervals: [300] },
+    )
+    .toBeGreaterThanOrEqual(3);
+  return previous;
+}
+
 async function selectMockChat(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
@@ -77,9 +110,9 @@ test.describe('composer palette', () => {
     await expect(
       palette(page).getByRole('button', { name: 'Tools Options', exact: true }),
     ).toHaveCount(0);
-    await expect(
-      page.getByRole('dialog', { name: 'Select Upload Type', exact: true }),
-    ).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Select Upload Type', exact: true })).toHaveCount(
+      0,
+    );
     await expect(page.getByRole('menu')).toHaveCount(0);
   });
 
@@ -91,7 +124,7 @@ test.describe('composer palette', () => {
     await openPalette(page);
 
     const rows = paletteRows(page);
-    const fullCatalogCount = await rows.count();
+    const fullCatalogCount = await settledRowCount(page);
     expect(fullCatalogCount).toBeGreaterThan(3);
 
     await paletteSearch(page).fill('Run Code');
