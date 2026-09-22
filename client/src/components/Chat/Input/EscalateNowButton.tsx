@@ -4,6 +4,7 @@ import * as Ariakit from '@ariakit/react';
 import { IconButton } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 /** Longest message excerpt spoken as part of the button's accessible name;
  *  past this the row is identified by its opening words rather than read out. */
@@ -110,28 +111,29 @@ export default function EscalateNowButton({
 
   return (
     <Ariakit.TooltipProvider placement="top" timeout={300}>
-      <Ariakit.TooltipAnchor
-        render={
-          <IconButton
-            label={accessibleLabel}
-            size="xs"
-            variant="primary"
-            aria-keyshortcuts={isActive ? ariaKey : undefined}
-            data-escalate-steer={surface}
-            data-escalate-steer-active={isActive ? 'true' : undefined}
-            data-testid={surface === 'queued' ? 'queued-interrupt-now' : 'steer-escalate-now'}
-            disabled={disabled}
-            onPointerEnter={() => !disabled && updateActiveTarget('hover', targetId, true)}
-            onPointerLeave={() => updateActiveTarget('hover', targetId, false)}
-            onFocus={() => !disabled && updateActiveTarget('focus', targetId, true)}
-            onBlur={() => updateActiveTarget('focus', targetId, false)}
-            onClick={onClick}
-            className="transition-opacity disabled:opacity-35"
-          >
-            <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
-          </IconButton>
-        }
-      />
+      <span className={cn('transition-opacity', disabled && 'opacity-35')}>
+        <Ariakit.TooltipAnchor
+          render={
+            <IconButton
+              label={accessibleLabel}
+              size="xs"
+              variant="primary"
+              aria-keyshortcuts={isActive ? ariaKey : undefined}
+              data-escalate-steer={surface}
+              data-escalate-steer-active={isActive ? 'true' : undefined}
+              data-testid={surface === 'queued' ? 'queued-interrupt-now' : 'steer-escalate-now'}
+              disabled={disabled}
+              onPointerEnter={() => !disabled && updateActiveTarget('hover', targetId, true)}
+              onPointerLeave={() => updateActiveTarget('hover', targetId, false)}
+              onFocus={() => !disabled && updateActiveTarget('focus', targetId, true)}
+              onBlur={() => updateActiveTarget('focus', targetId, false)}
+              onClick={onClick}
+            >
+              <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.4} aria-hidden="true" />
+            </IconButton>
+          }
+        />
+      </span>
       <Ariakit.Tooltip className="z-50 rounded-lg bg-surface-tertiary px-2 py-1 text-xs text-text-primary shadow-lg">
         {chord && isActive ? `${label} · ${chord}` : label}
       </Ariakit.Tooltip>

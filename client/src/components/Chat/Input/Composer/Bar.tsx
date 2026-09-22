@@ -134,9 +134,18 @@ function RoundButton({
           variant={primary ? 'primary' : 'ghost'}
           onClick={onClick}
           disabled={disabled}
-          className={cn(!primary && 'text-text-secondary hover:text-text-primary')}
         >
-          {children}
+          {/* IconButton owns its own text color; this fills the button so the
+              icon (currentColor) starts muted and brightens on hover, without
+              restyling the primitive itself. */}
+          <span
+            className={cn(
+              'flex h-full w-full items-center justify-center',
+              !primary && 'text-text-secondary transition-colors hover:text-text-primary',
+            )}
+          >
+            {children}
+          </span>
         </IconButton>
       }
     />
@@ -380,10 +389,13 @@ function Bar({
       <IconButton
         label={localize('com_ui_select_var', { 0: entry.label })}
         size="xs"
-        className="-mr-1 text-current hover:bg-surface-hover/50"
+        className="-mr-1"
         onClick={entry.onSelect}
       >
-        <Plus className="size-3" aria-hidden="true" />
+        {/* Matches the chip's own `tone="surface"` text color: IconButton owns
+            its own color, so the glyph carries it directly rather than
+            inheriting through the button. */}
+        <Plus className="size-3 text-text-secondary" aria-hidden="true" />
       </IconButton>
     ) : null;
 
@@ -424,7 +436,7 @@ function Bar({
         aria-hidden={above.length === 0 || dictating}
         {...(above.length === 0 || dictating ? { inert: '' } : {})}
         className={cn(
-          'grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none',
+          'grid transition-all duration-200 ease-out motion-reduce:transition-none',
           above.length > 0 && !dictating
             ? 'grid-rows-[1fr] opacity-100'
             : 'grid-rows-[0fr] opacity-0',
@@ -484,7 +496,7 @@ function Bar({
           {...(dictating ? { inert: '' } : {})}
           className={cn(
             'flex min-w-0 flex-wrap items-center gap-1.5',
-            'transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none',
+            'transition duration-200 ease-out motion-reduce:transition-none',
             dictating ? 'pointer-events-none translate-y-3 opacity-0' : 'translate-y-0 opacity-100',
           )}
         >
@@ -510,7 +522,7 @@ function Bar({
               {...(dictating ? { inert: '' } : {})}
               className={cn(
                 'col-start-1 row-start-1 flex items-center justify-end gap-1.5',
-                'transition-[transform,opacity] duration-200 ease-out motion-reduce:transition-none',
+                'transition duration-200 ease-out motion-reduce:transition-none',
                 dictating
                   ? 'pointer-events-none translate-y-3 opacity-0'
                   : 'translate-y-0 opacity-100',
@@ -531,7 +543,7 @@ function Bar({
               {...(dictating ? {} : { inert: '' })}
               className={cn(
                 'col-start-1 row-start-1 flex origin-center items-center justify-end px-1',
-                'transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
+                'transition duration-200 ease-out motion-reduce:transition-none',
                 dictating ? 'scale-100 opacity-100' : 'pointer-events-none scale-90 opacity-0',
               )}
             >

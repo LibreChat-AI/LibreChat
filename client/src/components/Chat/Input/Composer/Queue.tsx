@@ -69,13 +69,17 @@ function QueuedIcon({ warning, hint }: { warning: boolean; hint?: string }) {
   return (
     <TooltipAnchor
       description={hint}
-      role="img"
-      aria-label={hint}
-      tabIndex={0}
-      className="flex shrink-0 cursor-help rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
-    >
-      <Clock className="h-4 w-4 text-text-secondary" aria-hidden="true" />
-    </TooltipAnchor>
+      render={
+        <span
+          role="img"
+          aria-label={hint}
+          tabIndex={0}
+          className="flex shrink-0 cursor-help rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+        >
+          <Clock className="h-4 w-4 text-text-secondary" aria-hidden="true" />
+        </span>
+      }
+    />
   );
 }
 
@@ -372,12 +376,18 @@ function QueueRow({
           move(event.key === 'ArrowUp' ? -1 : 1);
         }}
         className={cn(
-          'p-0.5 text-text-secondary hover:text-text-primary',
-          reorderable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default opacity-40',
+          'group',
+          reorderable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
           canDrag && reorderable && 'touch-none',
         )}
       >
-        <GripVertical className="h-4 w-4" aria-hidden="true" />
+        <GripVertical
+          className={cn(
+            'h-4 w-4 text-text-secondary transition-colors group-hover:text-text-primary',
+            !reorderable && 'opacity-40',
+          )}
+          aria-hidden="true"
+        />
       </IconButton>
       <QueuedIcon
         warning={isRejected || isUnconfirmed || isIndeterminate}
@@ -431,9 +441,9 @@ function QueueRow({
                 : undefined
             }
             onClick={() => steering.sendQueuedNow(message)}
-            className="h-auto shrink-0 px-2 py-0.5 text-text-primary disabled:pointer-events-auto disabled:cursor-not-allowed"
+            className="h-auto shrink-0 disabled:pointer-events-auto disabled:cursor-not-allowed"
           >
-            {localize('com_ui_send_now')}
+            <span className="text-text-primary">{localize('com_ui_send_now')}</span>
           </Button>
           {showEscalate && (
             <EscalateNowButton
@@ -454,9 +464,12 @@ function QueueRow({
             size="xs"
             disabled={actionPending || !serverActionable}
             onClick={editToComposer}
-            className="text-text-secondary hover:text-text-primary"
+            className="group"
           >
-            <Pencil className="h-4 w-4" aria-hidden="true" />
+            <Pencil
+              className="h-4 w-4 text-text-secondary transition-colors group-hover:text-text-primary"
+              aria-hidden="true"
+            />
           </IconButton>
         </>
       )}
@@ -472,9 +485,12 @@ function QueueRow({
             !(message.server?.id != null && message.server.status === 'claimed' && revealed))
         }
         onClick={isUnconfirmed ? () => steering.removeQueued(message.id) : removeToComposer}
-        className="text-text-secondary hover:text-text-primary"
+        className="group"
       >
-        <X className="h-4 w-4" aria-hidden="true" />
+        <X
+          className="h-4 w-4 text-text-secondary transition-colors group-hover:text-text-primary"
+          aria-hidden="true"
+        />
       </IconButton>
     </div>
   );

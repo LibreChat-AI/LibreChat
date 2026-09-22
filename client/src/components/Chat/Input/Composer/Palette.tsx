@@ -785,7 +785,7 @@ function Palette({
           >
             <div
               role="columnheader"
-              className="flex flex-1 items-end px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-text-secondary"
+              className="flex flex-1 items-end px-2 pb-1 text-xs font-medium uppercase tracking-wide text-text-secondary"
             >
               {row.label}
             </div>
@@ -865,15 +865,24 @@ function Palette({
                 tabIndex={-1}
                 className="flex h-full w-full cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
               >
-                {/* Painted as a background rather than an `img`: these thumbnails
-                    are often unreachable (remote storage, expired links), and a
-                    background degrades to an empty tile instead of a broken glyph. */}
+                {/* The wrapper carries the fallback tile color; the image itself
+                    hides on error so an unreachable thumbnail (remote storage,
+                    expired links) degrades to an empty tile instead of a broken
+                    glyph. */}
                 {file.type?.startsWith('image') === true ? (
                   <span
                     aria-hidden="true"
-                    style={{ backgroundImage: `url(${file.filepath})` }}
-                    className="size-7 shrink-0 rounded-md bg-surface-tertiary bg-cover bg-center"
-                  />
+                    className="size-7 shrink-0 overflow-hidden rounded-md bg-surface-tertiary"
+                  >
+                    <img
+                      src={file.filepath}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      onError={(event) => {
+                        event.currentTarget.classList.add('hidden');
+                      }}
+                    />
+                  </span>
                 ) : (
                   <FilePreview
                     file={file}
@@ -964,19 +973,25 @@ function Palette({
             <div role="gridcell" className="flex shrink-0 items-center gap-1">
               {modes.map((mode) =>
                 mode.icon != null ? (
-                  <IconButton
-                    key={mode.id}
-                    size="xs"
-                    shape="square"
-                    label={mode.label}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      mode.onSelect();
-                    }}
-                    className={cn(ROW_ACTION_REVEAL, 'text-text-secondary hover:text-text-primary')}
-                  >
-                    <span aria-hidden="true">{mode.icon}</span>
-                  </IconButton>
+                  <span key={mode.id} className={ROW_ACTION_REVEAL}>
+                    <IconButton
+                      size="xs"
+                      shape="square"
+                      label={mode.label}
+                      className="group"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        mode.onSelect();
+                      }}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="text-text-secondary group-hover:text-text-primary"
+                      >
+                        {mode.icon}
+                      </span>
+                    </IconButton>
+                  </span>
                 ) : (
                   <button
                     key={mode.id}
@@ -987,7 +1002,7 @@ function Palette({
                       mode.onSelect();
                     }}
                     className={cn(
-                      'min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+                      'min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
                       mode.active
                         ? 'border-transparent bg-surface-active-alt text-text-primary'
                         : 'border-border-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary',
@@ -1001,28 +1016,30 @@ function Palette({
           )}
           {canFavorite && (
             <div role="gridcell" className="flex shrink-0 items-center pr-1">
-              <IconButton
-                size="xs"
-                shape="square"
-                label={localize(favorited ? 'com_ui_unfavorite' : 'com_ui_favorite')}
-                aria-pressed={favorited}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  favorites.toggleFavorite(row.entry.itemType, row.entry.itemId);
-                }}
-                className={cn(
-                  ROW_ACTION_REVEAL,
-                  favorited
-                    ? 'text-accent-primary hover:text-accent-primary-hover'
-                    : 'text-text-secondary hover:text-text-primary',
-                )}
-              >
-                <Star
-                  className="h-4 w-4"
-                  fill={favorited ? 'currentColor' : 'none'}
-                  aria-hidden="true"
-                />
-              </IconButton>
+              <span className={ROW_ACTION_REVEAL}>
+                <IconButton
+                  size="xs"
+                  shape="square"
+                  label={localize(favorited ? 'com_ui_unfavorite' : 'com_ui_favorite')}
+                  aria-pressed={favorited}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    favorites.toggleFavorite(row.entry.itemType, row.entry.itemId);
+                  }}
+                  className="group"
+                >
+                  <Star
+                    className={cn(
+                      'h-4 w-4',
+                      favorited
+                        ? 'text-accent-primary group-hover:text-accent-primary-hover'
+                        : 'text-text-secondary group-hover:text-text-primary',
+                    )}
+                    fill={favorited ? 'currentColor' : 'none'}
+                    aria-hidden="true"
+                  />
+                </IconButton>
+              </span>
             </div>
           )}
         </div>
@@ -1054,53 +1071,61 @@ function Palette({
           {/* The disclosure is the outer component and the tooltip is what it
               renders through, not the other way round: passing a
               `PopoverDisclosure` as `TooltipAnchor`'s `render` swallowed the
-              disclosure's own click handler and the popover never opened. */}
-          <Ariakit.PopoverDisclosure
-            ref={disclosureRef}
-            /* The upload-file shortcut clicks this control, resolving it by the
-               `data-testid` below rather than by an `id`: both split panes
-               mount a composer, so a shared `id` is invalid HTML and pins the
-               shortcut to whichever pane comes first in the document. A test id
-               may repeat, which lets the shortcut scope itself to the focused
-               form. */
-            disabled={disabled}
-            aria-label={disclosureLabel}
-            /* Kept as the disclosure while dictating rather than swapped for a
-               plain cancel button: a swap would mount a fresh element already
-               at its final angle, and the turn is the whole point. Ariakit
-               honours `defaultPrevented`, so claiming the click here stops the
-               popover from opening. */
-            onClick={(event) => {
-              if (!dictating) {
-                return;
-              }
-              event.preventDefault();
-              onCancel?.();
-            }}
-            render={
-              <TooltipAnchor
-                description={disclosureLabel}
-                render={<IconButton label={disclosureLabel} size="md" />}
-              />
-            }
-            data-testid="composer-palette-button"
-            data-upload-shortcut={String(!dictating)}
+              disclosure's own click handler and the popover never opened.
+              The IconButton renders transparent (`ghost`) by default, so this
+              wrapper's own background is what shows through it for the
+              open/dictating state, rather than restyling the button itself. */}
+          <span
             className={cn(
-              'text-text-secondary hover:text-text-primary',
-              /* The close mark carries the same weight whichever job it is
-                 doing: dimmer and unbacked while dictating read as a smaller
-                 glyph next to the one the open palette shows. */
-              (open || dictating) && 'bg-surface-hover text-text-primary',
+              'group inline-flex rounded-full',
+              (open || dictating) && 'bg-surface-hover',
             )}
           >
-            {/* The same glyph turned a quarter of the way round is the close
-                mark, so the button reads as one control changing state rather
-                than two icons swapping. */}
-            <Plus
-              className={cn('animate-composer-icon size-5', (open || dictating) && 'rotate-45')}
-              aria-hidden="true"
-            />
-          </Ariakit.PopoverDisclosure>
+            <Ariakit.PopoverDisclosure
+              ref={disclosureRef}
+              /* The upload-file shortcut clicks this control, resolving it by the
+                 `data-testid` below rather than by an `id`: both split panes
+                 mount a composer, so a shared `id` is invalid HTML and pins the
+                 shortcut to whichever pane comes first in the document. A test id
+                 may repeat, which lets the shortcut scope itself to the focused
+                 form. */
+              disabled={disabled}
+              aria-label={disclosureLabel}
+              /* Kept as the disclosure while dictating rather than swapped for a
+                 plain cancel button: a swap would mount a fresh element already
+                 at its final angle, and the turn is the whole point. Ariakit
+                 honours `defaultPrevented`, so claiming the click here stops the
+                 popover from opening. */
+              onClick={(event) => {
+                if (!dictating) {
+                  return;
+                }
+                event.preventDefault();
+                onCancel?.();
+              }}
+              render={
+                <TooltipAnchor
+                  description={disclosureLabel}
+                  render={<IconButton label={disclosureLabel} size="md" />}
+                />
+              }
+              data-testid="composer-palette-button"
+              data-upload-shortcut={String(!dictating)}
+            >
+              {/* The same glyph turned a quarter of the way round is the close
+                  mark, so the button reads as one control changing state rather
+                  than two icons swapping. */}
+              <Plus
+                className={cn(
+                  'animate-composer-icon size-5',
+                  open || dictating
+                    ? 'rotate-45 text-text-primary'
+                    : 'text-text-secondary group-hover:text-text-primary',
+                )}
+                aria-hidden="true"
+              />
+            </Ariakit.PopoverDisclosure>
+          </span>
           <Ariakit.Popover
             portal
             portalElement={getMainLandmark}

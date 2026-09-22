@@ -4,17 +4,11 @@ import { ChevronDown } from 'lucide-react';
 import { TooltipAnchor } from '@librechat/client';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
-import useReducedMotion from '~/hooks/Generic/useReducedMotion';
 import Effort, { resolveEffortLabel } from './Effort';
 import { useGetStartupConfig } from '~/data-provider';
 import { useChatContext } from '~/Providers';
 import { cn, getModelSpec } from '~/utils';
 import { useLocalize } from '~/hooks';
-
-/** Matches `animate-composer-popover`'s opacity leg, so the button and the
- *  popup resize on the same clock. */
-const RESIZE_MS = 190;
-const EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
 
 interface ThinkingControlProps {
   index: number;
@@ -34,7 +28,6 @@ function ThinkingControl({
   onChange,
 }: ThinkingControlProps) {
   const localize = useLocalize();
-  const reducedMotion = useReducedMotion();
   /* Ariakit owns the open state rather than a controlled `open`/`setOpen` pair:
      with the controlled form, hide-on-interact-outside fired on mousedown and
      the disclosure's own click re-opened it, so a second click never closed the
@@ -105,15 +98,19 @@ function ThinkingControl({
         render={
           <TooltipAnchor
             description={localize('com_ui_composer_thinking')}
-            render={<button type="button" />}
+            render={
+              <button
+                type="button"
+                className={cn(
+                  'gap-1 rounded-full px-2.5 text-sm text-text-primary transition-colors',
+                  'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+                  open && 'bg-surface-hover',
+                )}
+              />
+            }
           />
         }
-        className={cn(
-          'flex h-8 shrink-0 items-center gap-1 rounded-full px-2.5 text-sm transition-colors',
-          'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
-          'text-text-primary',
-          open && 'bg-surface-hover',
-        )}
+        className="flex h-8 shrink-0 items-center"
       >
         {/* Closed, the button hugs its label so it takes no more room in the bar
             than it needs. Open, it widens to the longest label and the text
@@ -121,13 +118,10 @@ function ThinkingControl({
             row. The label itself swaps plainly: a keyed crossfade dipped it to
             transparent mid-change, which read as a flicker rather than polish. */}
         <span
-          className="relative block overflow-hidden ease-out"
-          style={{
-            width: slotWidth,
-            /* Written inline, so a stylesheet's reduced-motion rule cannot
-               reach it: the label takes its new width at once instead. */
-            transition: `width ${reducedMotion ? 0 : RESIZE_MS}ms ${EASE}`,
-          }}
+          /* `composer-slot-resize` runs on `animate-composer-popover`'s clock,
+             so the button and the popup resize together. */
+          className="composer-slot-resize relative block overflow-hidden"
+          style={{ width: slotWidth }}
         >
           <span
             ref={ghostsRef}

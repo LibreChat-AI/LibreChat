@@ -12,7 +12,6 @@ import type { SettingDefinition, TConversation, TReasoningOverride } from 'libre
 import type { CSSProperties } from 'react';
 import type { LocalizeFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks';
-import useReducedMotion from '~/hooks/Generic/useReducedMotion';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -29,8 +28,6 @@ const TRACK_H = 24;
  *  row is sized to the largest it can get and the rail is banded inside it. */
 const THUMB = 28;
 const THUMB_ACTIVE = 32;
-/** The fill clears before the thumb that covers it starts to fade. */
-const FILL_FADE_MS = 90;
 /** Which way each arrow key moves along the track. */
 const ARROW_STEP: Record<string, number | undefined> = {
   ArrowLeft: -1,
@@ -39,7 +36,6 @@ const ARROW_STEP: Record<string, number | undefined> = {
   ArrowDown: 1,
 };
 
-const THUMB_FADE_MS = 140;
 /**
  * `enumMappings` maps a raw value to a translation KEY, not to display text:
  * rendering it directly is what leaks `com_ui_medium` into the UI. Shared with
@@ -88,7 +84,6 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
   /** Ref drives the gesture (pointermove fires before a state flush would land);
    *  the state only feeds styling. */
   const draggingRef = useRef(false);
-  const reducedMotion = useReducedMotion();
   /** One per stop, so an arrow key can move focus along with the selection. */
   const stopRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -273,16 +268,6 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         : setting.description;
   }
   const thumbSize = dragging ? THUMB_ACTIVE : THUMB;
-  /* The track's motion is written inline, where a stylesheet's reduced-motion
-     rule cannot reach it, so the durations collapse here instead. */
-  let moveMs = dragging ? 75 : 150;
-  let fadeMs = FILL_FADE_MS;
-  let thumbFadeMs = THUMB_FADE_MS;
-  if (reducedMotion) {
-    moveMs = 0;
-    fadeMs = 0;
-    thumbFadeMs = 0;
-  }
 
   return (
     <div className="w-[268px] p-3">
@@ -353,19 +338,25 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         {/* The semantic accent keeps the track intentional in every theme.
             Always mounted: unmounting it at the first stop made the fill snap
             out of existence on the way down instead of shrinking, which reads
-            as a glitch. */}
+            as a glitch. Width and opacity run on their own layers so they can
+            keep their own clocks: the fill clears fast (nearest scale to
+            90ms) so it is already gone before the thumb starts uncovering
+            the rail. */}
         <span
           aria-hidden="true"
-          style={{
-            height: TRACK_H,
-            width: fillWidth(shownIndex),
-            opacity: isUngraded ? 0 : 1,
-            /* Fades out faster than the thumb above it, so it is already gone
-               before the thumb starts uncovering the rail. */
-            transition: `width ${moveMs}ms ease-out, opacity ${fadeMs}ms ease-out`,
-          }}
-          className="absolute left-0 top-1/2 -translate-y-1/2 rounded-full bg-accent-primary"
-        />
+          style={{ height: TRACK_H, width: fillWidth(shownIndex) }}
+          className={cn(
+            'absolute left-0 top-1/2 -translate-y-1/2 transition-all ease-out motion-reduce:duration-0',
+            dragging ? 'duration-75' : 'duration-150',
+          )}
+        >
+          <span
+            className={cn(
+              'block h-full w-full rounded-full bg-accent-primary transition-opacity duration-100 ease-out motion-reduce:duration-0',
+              isUngraded ? 'opacity-0' : 'opacity-100',
+            )}
+          />
+        </span>
 
         {!isUngraded &&
           levels.map((value, index) => (
@@ -385,7 +376,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         {isUngraded && (
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 flex items-center justify-center text-[11px] font-medium uppercase tracking-wide text-text-secondary"
+            className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-medium uppercase tracking-wide text-text-secondary"
           >
             {ungradedLabel}
           </span>
@@ -393,54 +384,62 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
 
         {/* Always mounted: unmounting it on the way into the ungraded mode pulled
             the cover off the fill mid-fade. It holds still until the fill has
-            gone, then fades itself. */}
+            gone, then fades itself: its own opacity leg (nearest scale to
+            140ms) is delayed on the way in (nearest scale to the fill's
+            90ms), so the cover does not lift before the rail underneath is
+            clean. */}
         <span
           aria-hidden="true"
-          style={{
-            left: centerOf(shownIndex),
-            height: thumbSize,
-            width: thumbSize,
-            opacity: isUngraded ? 0 : 1,
-            transition: [
-              `left ${moveMs}ms ease-out`,
-              `height ${moveMs}ms ease-out`,
-              `width ${moveMs}ms ease-out`,
-              `opacity ${thumbFadeMs}ms ease-out ${isUngraded ? `${fadeMs}ms` : '0ms'}`,
-            ].join(', '),
-          }}
-          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-surface-fixed shadow-md"
-        />
-
-        {levels.map((value, index) => (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            aria-checked={!isUngraded && index === activeIndex}
-            aria-label={label(value)}
-            /* One stop for the whole group, as a radiogroup is meant to have:
-               Tab reaches the current level and leaves, and the arrow keys move
-               between them. In the ungraded mode no level is checked, so the one that
-               would be restored takes the tab stop. */
-            tabIndex={index === shownIndex ? 0 : -1}
-            onKeyDown={(event) => {
-              const step = ARROW_STEP[event.key];
-              if (step === undefined) {
-                return;
-              }
-              event.preventDefault();
-              const next = Math.min(Math.max(index + step, 0), levels.length - 1);
-              select(levels[next]);
-              stopRefs.current[next]?.focus();
-            }}
-            ref={(node) => {
-              stopRefs.current[index] = node;
-            }}
-            onClick={() => select(value)}
-            style={hitArea(index)}
-            className="absolute inset-y-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+          style={{ left: centerOf(shownIndex), height: thumbSize, width: thumbSize }}
+          className={cn(
+            'absolute top-1/2 -translate-x-1/2 -translate-y-1/2 transition-all ease-out motion-reduce:duration-0',
+            dragging ? 'duration-75' : 'duration-150',
+          )}
+        >
+          <span
+            className={cn(
+              'block h-full w-full rounded-full bg-surface-fixed shadow-md transition-opacity duration-150 ease-out motion-reduce:delay-0 motion-reduce:duration-0',
+              isUngraded ? 'opacity-0 delay-100' : 'opacity-100 delay-0',
+            )}
           />
-        ))}
+        </span>
+
+        {levels.map((value, index) => {
+          /* Spread as a literal rather than passed through: an object built by
+             a helper call cannot be checked property-by-property, so it is
+             destructured here where `left`/`right` are visibly the only keys. */
+          const { left, right } = hitArea(index);
+          return (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={!isUngraded && index === activeIndex}
+              aria-label={label(value)}
+              /* One stop for the whole group, as a radiogroup is meant to have:
+                 Tab reaches the current level and leaves, and the arrow keys move
+                 between them. In the ungraded mode no level is checked, so the one that
+                 would be restored takes the tab stop. */
+              tabIndex={index === shownIndex ? 0 : -1}
+              onKeyDown={(event) => {
+                const step = ARROW_STEP[event.key];
+                if (step === undefined) {
+                  return;
+                }
+                event.preventDefault();
+                const next = Math.min(Math.max(index + step, 0), levels.length - 1);
+                select(levels[next]);
+                stopRefs.current[next]?.focus();
+              }}
+              ref={(node) => {
+                stopRefs.current[index] = node;
+              }}
+              onClick={() => select(value)}
+              style={{ left, right }}
+              className="absolute inset-y-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+            />
+          );
+        })}
       </div>
 
       {/* One slot holding both footers: the axis hints belong to the gesture and
@@ -451,7 +450,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
           aria-hidden="true"
           dir="ltr"
           className={cn(
-            'col-start-1 row-start-1 flex items-center justify-between text-[11px] text-text-secondary transition-opacity duration-150',
+            'col-start-1 row-start-1 flex items-center justify-between text-xs text-text-secondary transition-opacity duration-150',
             dragging ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
         >
@@ -477,7 +476,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
                 aria-pressed={isUngraded}
                 onClick={() => select(isUngraded ? levels[restoreIndex] : ungradedValue)}
                 className={cn(
-                  'rounded-full px-2 py-0.5 text-[11px] transition-colors',
+                  'rounded-full px-2 py-0.5 text-xs transition-colors',
                   isUngraded
                     ? 'bg-accent-primary/15 text-accent-primary'
                     : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary',
@@ -492,17 +491,13 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
                   {/* A button rather than a bare span: this is the only place
                       the provider's own explanation of the parameter appears,
                       and hovering was the only way to reach it. */}
-                  <IconButton
-                    label={localize('com_ui_more_info')}
-                    size="xs"
-                    className="text-text-secondary"
-                  >
-                    <CircleHelp className="h-3.5 w-3.5" aria-hidden="true" />
+                  <IconButton label={localize('com_ui_more_info')} size="xs">
+                    <CircleHelp className="h-3.5 w-3.5 text-text-secondary" aria-hidden="true" />
                   </IconButton>
                 </HoverCardTrigger>
                 <HoverCardPortal>
-                  <HoverCardContent side="top" className="w-72 text-sm">
-                    {descriptionText}
+                  <HoverCardContent side="top" className="w-72">
+                    <span className="text-sm">{descriptionText}</span>
                   </HoverCardContent>
                 </HoverCardPortal>
               </HoverCard>

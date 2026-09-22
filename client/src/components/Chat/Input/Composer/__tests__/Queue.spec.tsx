@@ -46,9 +46,15 @@ jest.mock('@librechat/client', () => {
     IconButton,
     TooltipAnchor: ({
       children,
+      render,
       ...props
-    }: { children?: React.ReactNode } & Record<string, unknown>) =>
-      ReactActual.createElement('span', props, children),
+    }: {
+      children?: React.ReactNode;
+      render?: React.ReactElement;
+    } & Record<string, unknown>) =>
+      render
+        ? ReactActual.cloneElement(render, props)
+        : ReactActual.createElement('span', props, children),
     useMediaQuery: () => true,
     useToastContext: () => ({ showToast: mockShowToast }),
   };
@@ -137,7 +143,7 @@ describe('Queue', () => {
     expect(rows).toHaveLength(2);
 
     const firstRow = within(rows[0]);
-    expect(firstRow.getByText('com_ui_send_now')).toBeInTheDocument();
+    expect(firstRow.getByRole('button', { name: 'com_ui_send_now' })).toBeInTheDocument();
     expect(firstRow.getByTestId('queued-interrupt-now')).toBeInTheDocument();
     expect(firstRow.getByLabelText('com_ui_edit_message')).toBeInTheDocument();
     expect(firstRow.getByLabelText('com_ui_remove_queued')).toBeInTheDocument();
@@ -146,7 +152,7 @@ describe('Queue', () => {
 
   it('sends the row that was clicked, not the first one', () => {
     renderQueue([queued({ id: 'q1' }), queued({ id: 'q2', text: 'the second one' })]);
-    fireEvent.click(screen.getAllByText('com_ui_send_now')[1]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_send_now' })[1]);
     expect(mockSendQueuedNow).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'q2', text: 'the second one' }),
     );
@@ -154,7 +160,7 @@ describe('Queue', () => {
 
   it('disables send now while the run is paused on approval', () => {
     renderQueue([queued()], pausedSteering);
-    const sendButton = screen.getByText('com_ui_send_now');
+    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
     expect(sendButton).toBeDisabled();
     expect(sendButton).toHaveAttribute('title', 'com_ui_send_now_paused');
 
@@ -170,7 +176,7 @@ describe('Queue', () => {
       [queued()],
       steeringWith({ duringRunActive: false, canSteer: false, canSendQueuedNow: false }),
     );
-    const sendButton = screen.getByText('com_ui_send_now');
+    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
     expect(sendButton).toBeDisabled();
     fireEvent.click(sendButton);
     expect(mockSendQueuedNow).not.toHaveBeenCalled();
@@ -178,7 +184,7 @@ describe('Queue', () => {
 
   it('disables send now for a receipt-bound recovery during a live run', () => {
     renderQueue([queued({ recoverySteerId: 'srv-1' })]);
-    const sendButton = screen.getByText('com_ui_send_now');
+    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
 
     expect(sendButton).toBeDisabled();
     fireEvent.click(sendButton);
@@ -195,7 +201,7 @@ describe('Queue', () => {
         reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       }),
     ]);
-    const sendButton = screen.getByText('com_ui_send_now');
+    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
     const interruptButton = screen.getByTestId('queued-interrupt-now');
 
     expect(sendButton).toBeDisabled();
@@ -215,7 +221,7 @@ describe('Queue', () => {
       ],
       steeringWith({ duringRunActive: false, canSteer: false, canSendQueuedNow: true }),
     );
-    const sendButton = screen.getByText('com_ui_send_now');
+    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
 
     expect(sendButton).toBeEnabled();
     fireEvent.click(sendButton);
@@ -669,7 +675,7 @@ describe('Queue', () => {
 
       const firstRow = within(screen.getAllByTestId('queued-message-row')[0]);
       expect(firstRow.getByText('com_ui_queued_turn_starting')).toBeInTheDocument();
-      expect(firstRow.queryByText('com_ui_send_now')).not.toBeInTheDocument();
+      expect(firstRow.queryByRole('button', { name: 'com_ui_send_now' })).not.toBeInTheDocument();
       expect(firstRow.queryByLabelText('com_ui_edit_message')).not.toBeInTheDocument();
       expect(firstRow.getByLabelText('com_ui_remove_queued')).toBeEnabled();
     } finally {
@@ -683,7 +689,7 @@ describe('Queue', () => {
       (status) => {
         renderQueue([queued({ server: { id: 'server-q1', status } })]);
 
-        expect(screen.getByText('com_ui_send_now')).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeDisabled();
         expect(screen.getByLabelText('com_ui_edit_message')).toBeDisabled();
         expect(screen.getByLabelText('com_ui_remove_queued')).toBeDisabled();
         expect(screen.getByTestId('queued-interrupt-now')).toBeDisabled();
@@ -694,7 +700,7 @@ describe('Queue', () => {
       renderQueue([queued({ server: { status: 'rejected' } })]);
 
       expect(screen.getByText('com_ui_queued_turn_failed')).toBeInTheDocument();
-      expect(screen.getByText('com_ui_send_now')).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeEnabled();
       expect(screen.getByLabelText('com_ui_edit_message')).toBeEnabled();
       expect(screen.getByLabelText('com_ui_remove_queued')).toBeEnabled();
     });
@@ -702,7 +708,7 @@ describe('Queue', () => {
     it('keeps an acknowledged queued server row actionable', () => {
       renderQueue([queued({ server: { id: 'server-q1', status: 'queued' } })]);
 
-      expect(screen.getByText('com_ui_send_now')).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeEnabled();
       expect(screen.getByLabelText('com_ui_edit_message')).toBeEnabled();
       expect(screen.getByLabelText('com_ui_remove_queued')).toBeEnabled();
     });
@@ -711,7 +717,7 @@ describe('Queue', () => {
       renderQueue([queued({ server: { id: 'server-q1', status: 'indeterminate' } })]);
 
       expect(screen.getByText('com_ui_queued_turn_reconciliation_required')).toBeInTheDocument();
-      expect(screen.getByText('com_ui_send_now')).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeDisabled();
       expect(screen.getByLabelText('com_ui_edit_message')).toBeDisabled();
       expect(screen.getByLabelText('com_ui_remove_queued')).toBeDisabled();
     });
@@ -733,7 +739,7 @@ describe('Queue', () => {
       );
 
       expect(screen.getByText('com_ui_steer_delivery_unconfirmed')).toBeInTheDocument();
-      expect(screen.getByText('com_ui_send_now')).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeDisabled();
       expect(screen.getByLabelText('com_ui_edit_message')).toBeDisabled();
 
       fireEvent.click(screen.getByLabelText('com_ui_dismiss_unconfirmed_delivery'));
@@ -757,7 +763,7 @@ describe('Queue', () => {
 
     it('leaves Send now as an ordinary steer', () => {
       renderQueue([queued({ id: 'q1' })]);
-      fireEvent.click(screen.getByText('com_ui_send_now'));
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_send_now' }));
       expect(mockSendQueuedNow).toHaveBeenCalledWith(expect.objectContaining({ id: 'q1' }));
     });
 

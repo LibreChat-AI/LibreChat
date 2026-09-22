@@ -1,7 +1,6 @@
 import { memo } from 'react';
 import { Chip as SharedChip } from '@librechat/client';
 import type { ReactNode } from 'react';
-import { cn } from '~/utils';
 
 export interface ChipProps {
   label: string;
@@ -32,6 +31,7 @@ function Chip({
       data-testid={testId}
       tone="surface"
       size="md"
+      shape="theme"
       title={title ?? label}
       leading={
         icon != null ? (
@@ -43,9 +43,9 @@ function Chip({
       trailing={trailing}
       onRemove={onRemove}
       removeLabel={removeLabel}
-      className={cn('gap-1.5 rounded-xl text-sm font-normal', className)}
+      className={className}
     >
-      {label}
+      <span className="text-sm font-normal">{label}</span>
     </SharedChip>
   );
 }

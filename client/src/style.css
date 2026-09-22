@@ -2634,6 +2634,12 @@ html[data-input-modality='keyboard']
   transition-duration: 120ms, 140ms;
 }
 
+/* The Thinking pill's label slot resizes with the popover it opens: same
+   duration and curve as the opacity leg above. */
+.composer-slot-resize {
+  transition: width 190ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 /**
  * Palette list. `.scrollbar-hover` fades its thumb in on pointer-over, so on a
  * list this dense the scrollbar reads as appearing out of nowhere, and where
@@ -2703,6 +2709,7 @@ html[data-input-modality='keyboard']
   .animate-composer-popover[data-enter],
   .animate-composer-popover[data-leave],
   .animate-composer-icon,
+  .composer-slot-resize,
   .composer-palette-rows .ReactVirtualized__Grid {
     transition-duration: 1ms;
   }

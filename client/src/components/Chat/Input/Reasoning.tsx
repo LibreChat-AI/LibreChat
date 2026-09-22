@@ -110,18 +110,20 @@ export function ReasoningControl({
   return (
     <Popover.Root modal>
       <Popover.Trigger asChild>
-        <Button
+        {/* Styled as the composer control it sits beside (the Thinking pill in
+            `Composer/Thinking.tsx`) rather than as a restyled `Button`: the
+            open state keeps it lit while its popover is up, which no `Button`
+            variant expresses. */}
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
           disabled={disabled}
           aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
-          className="h-8 gap-1.5 rounded-xl px-2 text-text-secondary data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary"
+          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary"
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
           <span className="@sm:inline hidden max-w-24 truncate">{displayValue}</span>
           <ChevronDown className="size-3" aria-hidden="true" />
-        </Button>
+        </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
@@ -147,9 +149,12 @@ export function ReasoningControl({
                 variant="ghost"
                 size="icon-xs"
                 aria-label={localize('com_ui_close')}
-                className="-mr-1 shrink-0 rounded-lg text-text-secondary"
+                className="group -mr-1 shrink-0"
               >
-                <X className="size-4" aria-hidden="true" />
+                <X
+                  className="size-4 text-text-secondary group-hover:text-text-primary"
+                  aria-hidden="true"
+                />
               </Button>
             </Popover.Close>
           </div>
@@ -157,16 +162,17 @@ export function ReasoningControl({
             {isEnum ? (
               <>
                 <div className="mb-4 text-sm font-medium text-text-primary">{displayValue}</div>
-                <Slider
-                  aria-labelledby={labelId}
-                  aria-valuetext={displayValue}
-                  value={[selectedIndex]}
-                  min={0}
-                  max={options.length - 1}
-                  step={1}
-                  onValueChange={([nextIndex]) => emit(options[nextIndex])}
-                  className="py-1"
-                />
+                <div className="py-1">
+                  <Slider
+                    aria-labelledby={labelId}
+                    aria-valuetext={displayValue}
+                    value={[selectedIndex]}
+                    min={0}
+                    max={options.length - 1}
+                    step={1}
+                    onValueChange={([nextIndex]) => emit(options[nextIndex])}
+                  />
+                </div>
                 <div className="mt-2.5 flex justify-between gap-4 text-xs text-text-secondary">
                   <span className="truncate">
                     {translated(setting.enumMappings?.[options[0]] ?? options[0], localize)}
@@ -184,18 +190,20 @@ export function ReasoningControl({
               <>
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <Input
-                      type="number"
-                      aria-label={label}
-                      value={numericValue === '-1' ? '' : numericValue}
-                      placeholder={formatTokens(numericMin)}
-                      min={numericMin}
-                      max={range.max}
-                      step={range.step ?? 1}
-                      onChange={(event) => setNumericValue(event.target.value)}
-                      onBlur={commitNumericValue}
-                      className="h-8 w-24 bg-surface-primary px-2 text-right font-medium shadow-sm"
-                    />
+                    <div className="h-8 w-24 shrink-0 overflow-hidden rounded-lg bg-surface-primary font-medium shadow-sm">
+                      <Input
+                        type="number"
+                        aria-label={label}
+                        value={numericValue === '-1' ? '' : numericValue}
+                        placeholder={formatTokens(numericMin)}
+                        min={numericMin}
+                        max={range.max}
+                        step={range.step ?? 1}
+                        onChange={(event) => setNumericValue(event.target.value)}
+                        onBlur={commitNumericValue}
+                        className="h-8 w-24 text-right"
+                      />
+                    </div>
                     <span className="truncate text-xs text-text-secondary">
                       {localize('com_ui_tokens')}
                     </span>
@@ -207,26 +215,27 @@ export function ReasoningControl({
                       size="sm"
                       aria-pressed={isAuto}
                       onClick={() => emitNumericValue(-1)}
-                      className="h-8 shrink-0 px-2.5 text-xs"
+                      className="h-8 shrink-0"
                     >
-                      {localize('com_ui_auto')}
+                      <span className="text-xs">{localize('com_ui_auto')}</span>
                     </Button>
                   )}
                 </div>
-                <Slider
-                  aria-labelledby={labelId}
-                  aria-valuetext={
-                    isAuto
-                      ? localize('com_ui_auto')
-                      : `${formatTokens(numericScaleValue)} ${localize('com_ui_tokens')}`
-                  }
-                  value={[numericScaleValue]}
-                  min={numericMin}
-                  max={range.max}
-                  step={range.step ?? 1}
-                  onValueChange={([nextValue]) => emitNumericValue(nextValue)}
-                  className="py-1"
-                />
+                <div className="py-1">
+                  <Slider
+                    aria-labelledby={labelId}
+                    aria-valuetext={
+                      isAuto
+                        ? localize('com_ui_auto')
+                        : `${formatTokens(numericScaleValue)} ${localize('com_ui_tokens')}`
+                    }
+                    value={[numericScaleValue]}
+                    min={numericMin}
+                    max={range.max}
+                    step={range.step ?? 1}
+                    onValueChange={([nextValue]) => emitNumericValue(nextValue)}
+                  />
+                </div>
                 <div className="mt-2.5 flex justify-between gap-4 text-xs text-text-secondary">
                   <span>{formatTokens(numericMin)}</span>
                   <span>{formatTokens(range.max)}</span>
