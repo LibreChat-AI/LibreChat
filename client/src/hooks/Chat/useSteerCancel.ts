@@ -114,6 +114,13 @@ export function useSteerMoveToQueue(conversationId: string) {
  * The chip goes either way. Once the words live somewhere else, a pending row
  * claiming the server still holds them is a lie.
  */
+export interface SteerRehomeOptions {
+  /** The server refused these words. Queued as a fallback they must wait for
+   *  the user to send them, or the run-end drain would turn a refusal into an
+   *  automatic new turn carrying the payload that was rejected. */
+  rejectedByServer?: boolean;
+}
+
 export function useSteerRehome(conversationId: string) {
   const { restore } = useComposerRestoreHost();
   const convertSteersToQueued = useSteerConvert();
@@ -133,7 +140,7 @@ export function useSteerRehome(conversationId: string) {
   );
 
   return useCallback(
-    (steer: PendingSteer): SteerRehomeTarget => {
+    (steer: PendingSteer, options?: SteerRehomeOptions): SteerRehomeTarget => {
       const taken = restore(steer.text, steer.files, carriedSteerContext(steer), conversationId);
       if (taken) {
         dropPendingSteer(steer);
@@ -145,6 +152,7 @@ export function useSteerRehome(conversationId: string) {
         generationProtocolVersion: steer.generationProtocolVersion,
         allowPreviouslyConvertedIds: [steer.steerId],
         bindRecoverySource: false,
+        ...(options?.rejectedByServer === true && { needsExplicitSend: true }),
       });
       return 'queue';
     },

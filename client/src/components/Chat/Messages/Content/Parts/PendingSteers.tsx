@@ -101,7 +101,7 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
    *  uncertain, like every other action that assumes the server does not hold
    *  these words. */
   const editFailedSteer = (steer: (typeof steers)[number]) => {
-    if (rehomeSteer(steer) === 'queue') {
+    if (rehomeSteer(steer, { rejectedByServer: true }) === 'queue') {
       showToast({ message: localize('com_ui_steer_moved_to_queue'), status: 'info' });
     }
   };

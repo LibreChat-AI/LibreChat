@@ -193,7 +193,9 @@ describe('PendingSteers', () => {
     const steer = pending({ status: 'failed', steerId: 's-failed', quotes: ['excerpt'] });
     renderPending([steer]);
     fireEvent.click(screen.getByText('com_ui_edit'));
-    expect(mockRehome).toHaveBeenCalledWith(steer);
+    /* Queued as a fallback it must wait for an explicit send: the server
+       refused this payload, so the run-end drain must not send it anyway. */
+    expect(mockRehome).toHaveBeenCalledWith(steer, { rejectedByServer: true });
     expect(mockSendAsNew).not.toHaveBeenCalled();
     expect(mockRetry).not.toHaveBeenCalled();
   });
