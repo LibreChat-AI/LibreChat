@@ -111,14 +111,11 @@ export default function FileRow({
   }
 
   const renderFiles = () => {
-    /* `alignItems: center` so a card and a thumbnail of different heights share
-       one baseline instead of hanging from the top of the tallest row. */
     const rowStyle = isRTL
       ? {
           display: 'flex',
           flexDirection: 'row-reverse',
           flexWrap: 'wrap',
-          alignItems: 'center',
           gap: '6px',
           width: '100%',
           maxWidth: '100%',
@@ -126,14 +123,15 @@ export default function FileRow({
       : {
           display: 'flex',
           flexWrap: 'wrap',
-          alignItems: 'center',
           gap: '6px',
           width: '100%',
           maxWidth: '100%',
         };
 
     return (
-      <div style={rowStyle as React.CSSProperties}>
+      /* `items-center` so a card and a thumbnail of different heights share
+         one baseline instead of hanging from the top of the tallest row. */
+      <div className="items-center" style={rowStyle as React.CSSProperties}>
         {files
           .reduce(
             (acc, current) => {
@@ -177,7 +175,7 @@ export default function FileRow({
               /* `flex`, not the default block: `Image`'s root is inline-block,
                  which sits on a text baseline and adds descender space under
                  the thumbnail, floating it above the cards beside it. */
-              <div key={fileIndex} style={{ display: 'flex', flexShrink: 0 }}>
+              <div key={fileIndex} className="flex shrink-0">
                 {isImage ? (
                   <Image
                     url={getCachedPreview(file.file_id) ?? file.preview ?? file.filepath}
