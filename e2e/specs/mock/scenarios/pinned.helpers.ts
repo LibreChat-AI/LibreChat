@@ -194,7 +194,13 @@ export async function ensureSidebarOnScreen(page: Page): Promise<void> {
   const drawer = page.locator('#mobile-drawer');
   if ((await pinnedSection(page).count()) === 0) {
     /* Empty sidebars have no Pinned region to measure, but the mobile drawer
-       is still mounted while its transform keeps it outside the viewport. */
+       is still mounted while its transform keeps it outside the viewport.
+       Desktop renders no drawer at all, and `boundingBox()` on a locator that
+       matches nothing waits for it until the test times out, so the absence
+       has to be checked rather than measured. */
+    if ((await drawer.count()) === 0) {
+      return;
+    }
     const drawerBox = await drawer.boundingBox();
     if (drawerBox != null && drawerBox.x < 0) {
       const opener = page.getByRole('button', { name: 'Open sidebar' });
