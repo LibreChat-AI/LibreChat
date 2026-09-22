@@ -216,6 +216,22 @@ describe('useAttachExisting', () => {
     expect(mockAddFile).toHaveBeenCalled();
   });
 
+  /* addFile keys by file_id, so re-selecting a file already in the composer
+     replaces its entry rather than growing the map; the count check must not
+     treat that replacement as a new attachment. */
+  it('reattaches a file already holding the endpoint limit without refusing it', () => {
+    mockStaged = new Map([
+      ['f1', staged({ file_id: 'f1' })],
+      ['b', staged({ file_id: 'b' })],
+      ['c', staged({ file_id: 'c' })],
+    ]);
+    attach();
+    expect(mockAddFile).toHaveBeenCalled();
+    expect(mockShowToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('com_ui_attach_error_limit') }),
+    );
+  });
+
   it('warns but still attaches a non-OpenAI file on the assistants endpoint', () => {
     mockConversation = { endpoint: EModelEndpoint.assistants };
     mockFileConfig = {

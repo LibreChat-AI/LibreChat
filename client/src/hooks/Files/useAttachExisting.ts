@@ -91,7 +91,13 @@ export default function useAttachExisting(context: AttachExistingContext): (file
         return;
       }
 
-      if (endpointFileConfig.fileLimit && files.size >= endpointFileConfig.fileLimit) {
+      const isReattach = files.has(fileData.file_id);
+
+      if (
+        endpointFileConfig.fileLimit &&
+        !isReattach &&
+        files.size >= endpointFileConfig.fileLimit
+      ) {
         showToast({
           message: `${localize('com_ui_attach_error_limit')} ${endpointFileConfig.fileLimit} files (${endpoint})`,
           status: 'error',
