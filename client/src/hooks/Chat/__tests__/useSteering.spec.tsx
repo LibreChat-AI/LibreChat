@@ -12,8 +12,11 @@ import {
 import type { TConversation, TFile, TMessage } from 'librechat-data-provider';
 import type { QueuedMessage } from '~/store/families';
 import type { ExtendedFile } from '~/common';
+import {
+  getReasoningStateKey,
+  pendingReasoningOverrideFamily,
+} from '~/components/Chat/Input/Composer/state';
 import useSteering, { hasLiveRunPause, mergeQueuedTurnFileMetadata } from '../useSteering';
-import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
 import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/utils';
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
@@ -3670,10 +3673,17 @@ describe('useSteering', () => {
       const sendNow = jest.fn();
       const stopGenerating = jest.fn();
       const reasoningStore = createStore();
-      reasoningStore.set(pendingReasoningOverrideFamily(CONVO_ID), initialReasoning);
+      reasoningStore.set(
+        pendingReasoningOverrideFamily(getReasoningStateKey(params.conversationId ?? CONVO_ID, 0)),
+        initialReasoning,
+      );
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <JotaiProvider store={reasoningStore}>
-          <RecoilRoot initializeState={withActiveGeneration(initialize)}>{children}</RecoilRoot>
+          <RecoilRoot
+            initializeState={withActiveGeneration(initialize, params.conversationId ?? CONVO_ID)}
+          >
+            {children}
+          </RecoilRoot>
         </JotaiProvider>
       );
       const rendered = renderHook(
@@ -3742,6 +3752,24 @@ describe('useSteering', () => {
       expect(mockMutate).not.toHaveBeenCalled();
       expect(result.current.queue).toEqual([]);
       expect(result.current.pendingReasoning).toEqual(staged);
+    });
+
+    it('interruptSteer declines on the first turn when reasoning is staged', () => {
+      const staged = { key: 'reasoning_effort', value: ReasoningEffort.high } as const;
+      const { result, stopGenerating } = setupWithContext(
+        { conversationId: Constants.NEW_CONVO as string },
+        undefined,
+        staged,
+      );
+
+      let consumed: boolean | undefined;
+      act(() => {
+        consumed = result.current.steering.interruptSteer('stop and reason about this');
+      });
+
+      expect(consumed).toBe(false);
+      expect(stopGenerating).not.toHaveBeenCalled();
+      expect(mockMutate).not.toHaveBeenCalled();
     });
 
     it('queueFromComposer consumes staged quotes + skills into the queued item', () => {
