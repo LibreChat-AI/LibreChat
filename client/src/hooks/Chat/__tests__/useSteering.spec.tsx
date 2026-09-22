@@ -2329,6 +2329,7 @@ describe('useSteering', () => {
           ),
           setAcceptedIds: useSetRecoilState(store.acceptedSteerClientIdsByConvoId(CONVO_ID)),
           chips: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
+          setChips: useSetRecoilState(store.pendingSteersByConvoId(CONVO_ID)),
           setAppliedIds: useSetRecoilState(store.appliedSteerIdsByConvoId(CONVO_ID)),
           drainFlag: useRecoilValue(store.drainAfterAbortByIndex(0)),
         }),
@@ -2403,8 +2404,13 @@ describe('useSteering', () => {
         act(() => {
           result.current.steering.submitSteer('cancel me in flight');
         });
+        /* What `useSteerCancel` does to a steer still sending: mark it and
+           hide its chip before the POST has answered. */
         const marker = pendingSteerCancelClientIdsFamily(CONVO_ID);
         getDefaultStore().set(marker, [clientSteerId]);
+        act(() => {
+          result.current.setChips([]);
+        });
 
         await act(async () => {
           acknowledge?.();

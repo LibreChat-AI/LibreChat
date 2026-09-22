@@ -2403,7 +2403,9 @@ export const interfaceSchema = z
       .max(2_147_483_647)
       .default(DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS),
     /** How many recently touched files the composer palette requests and shows
-     *  while idle; 0 turns the section off. Capped at the file list endpoint's
+     *  while idle; 0 turns that idle list off. Searching the palette still
+     *  finds any of the user's files, since it is the composer's only way to
+     *  reuse one. Capped at the file list endpoint's
      *  own default maximum (`fileListLimit`) so the palette can never ask for
      *  more than a typical deployment will return. */
     composerRecentFiles: z.number().int().min(0).max(100).default(DEFAULT_COMPOSER_RECENT_FILES),
