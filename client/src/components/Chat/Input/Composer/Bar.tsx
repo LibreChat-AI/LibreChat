@@ -375,7 +375,7 @@ function Bar({
     'flex flex-wrap items-center gap-1.5',
     isRTL ? 'flex-row-reverse' : 'flex-row',
   );
-  const barClass = cn('@container flex flex-col gap-1.5 px-2 pb-2');
+  const barClass = 'flex flex-col gap-1.5 px-2 pb-2';
 
   const renderChip = (entry: PaletteEntry) => {
     const pinnedInactive = entry.pinned && !entry.active;

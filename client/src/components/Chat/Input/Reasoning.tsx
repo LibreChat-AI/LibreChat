@@ -121,7 +121,6 @@ export function ReasoningControl({
           className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary inline-flex h-8 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
-          <span className="hidden max-w-24 truncate @sm:inline">{displayValue}</span>
           <ChevronDown className="size-3" aria-hidden="true" />
         </button>
       </Popover.Trigger>
