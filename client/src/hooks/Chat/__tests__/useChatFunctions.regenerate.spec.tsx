@@ -473,6 +473,33 @@ describe('useChatFunctions ask', () => {
     expect(submission.endpointOption).not.toHaveProperty('reasoning_effort', 'high');
   });
 
+  /* A manual compaction is an internal summarization turn, like a regenerate:
+     the staged choice belongs to the user's next real message. */
+  it('leaves a staged reasoning override for the next message across a manual compaction', () => {
+    const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
+    const { result, setSubmission, reasoningStore } = renderAsk(
+      [{ messageId: 'msg-1', parentMessageId: Constants.NO_PARENT } as TMessage],
+      'conversation-1',
+      { reasoningOverride: override },
+    );
+
+    act(() => {
+      result.current.ask(
+        {
+          text: '',
+          conversationId: 'conversation-1',
+          messageId: 'msg-1',
+          parentMessageId: 'msg-1',
+        },
+        { compact: true },
+      );
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission | undefined;
+    expect(submission?.userMessage?.reasoningOverride).toBeUndefined();
+    expect(reasoningStore.get(pendingReasoningOverrideFamily('conversation-1'))).toEqual(override);
+  });
+
   it('drains a staged reasoning override onto a fresh submission exactly once', () => {
     const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
     const { result, setSubmission, reasoningStore } = renderAsk([], 'conversation-1', {

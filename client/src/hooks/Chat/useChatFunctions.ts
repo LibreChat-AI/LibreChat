@@ -497,7 +497,7 @@ export default function useChatFunctions({
       }
     }
     let reasoningOverride = overrideReasoning ?? undefined;
-    if (overrideReasoning === undefined && !isRegenerate && !isContinued && !isEdited) {
+    if (overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited) {
       reasoningOverride = drainPendingReasoning(getReasoningStateKey(conversationId, index));
     }
     if (reasoningOverride != null) {
