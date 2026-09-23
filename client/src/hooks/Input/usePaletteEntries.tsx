@@ -194,9 +194,6 @@ export default function usePaletteEntries({
      capability are not enough to offer the toggle. */
   const canUseMemory = useHasMemoryAccess() && user?.personalization?.memories !== false;
 
-  const skillsListable = enabled && canUseSkills && skillsEnabled;
-  const allSkills = useAllSkills(skillsListable && catalogEnabled, catalogOpenRevision);
-
   /* Mirrors backend `resolveAgentScopedSkillIds`: ephemeral agents see the full
      catalog; persisted agents gate on `skills_enabled` and the resolved scope,
      and fail closed while `agentsMap` is hydrating or when the agent is missing
@@ -221,6 +218,14 @@ export default function usePaletteEntries({
     }
     return agent.skills ?? [];
   }, [agentId, agentsMap]);
+
+  /* A saved agent whose scope admits no skill renders no skill rows, so the
+     catalog is not paged in for it. */
+  const skillsListable = enabled && canUseSkills && skillsEnabled;
+  const allSkills = useAllSkills(
+    skillsListable && catalogEnabled && agentSkillIds?.length !== 0,
+    catalogOpenRevision,
+  );
 
   /* A toggle, like every other row: picking a skill used to be one-way, so the
      only way to undo a mis-click was to find the chip in the tray. */

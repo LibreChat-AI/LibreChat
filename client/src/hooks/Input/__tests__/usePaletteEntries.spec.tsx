@@ -20,6 +20,7 @@ let mockAgentsMap: Record<string, Record<string, unknown>>;
 let mockSkillsActive: boolean;
 let mockUser: { personalization?: { memories?: boolean } } | undefined;
 let mockSkillsQuery: Record<string, unknown>;
+let mockSkillsQueryEnabled: boolean | undefined;
 
 jest.mock('~/hooks', () => ({
   useHasAccess: ({ permissionType }: { permissionType: string }) =>
@@ -43,7 +44,10 @@ jest.mock('~/Providers', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useSkillsInfiniteQuery: () => mockSkillsQuery,
+  useSkillsInfiniteQuery: (_params: unknown, options?: { enabled?: boolean }) => {
+    mockSkillsQueryEnabled = options?.enabled;
+    return mockSkillsQuery;
+  },
 }));
 
 const toggle = (state: unknown, isPinned = false): ToggleFixture => ({
@@ -414,6 +418,23 @@ describe('usePaletteEntries', () => {
 
     const skillKeys = (agentId?: string | null) =>
       keysOf(entries(agentId).result).filter((key) => key.startsWith('skill:'));
+
+    it('pages in the catalog only for an agent whose scope can show a skill', () => {
+      skillKeys('openAI__gpt-5___GPT-5');
+      expect(mockSkillsQueryEnabled).toBe(true);
+
+      mockAgentsMap = { agent_1: { skills_enabled: false } };
+      skillKeys('agent_1');
+      expect(mockSkillsQueryEnabled).toBe(false);
+
+      mockAgentsMap = { agent_1: { skills_enabled: true, skills_scope: 'none', skills: ['s1'] } };
+      skillKeys('agent_1');
+      expect(mockSkillsQueryEnabled).toBe(false);
+
+      mockAgentsMap = { agent_1: { skills_enabled: true, skills: ['s2'] } };
+      skillKeys('agent_1');
+      expect(mockSkillsQueryEnabled).toBe(true);
+    });
 
     it('lists the whole catalog for an ephemeral agent', () => {
       expect(skillKeys('openAI__gpt-5___GPT-5')).toEqual(['skill:s1', 'skill:s2']);
