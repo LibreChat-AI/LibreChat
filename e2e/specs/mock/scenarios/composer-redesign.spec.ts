@@ -62,6 +62,9 @@ test.describe('composer redesign contracts', () => {
       'data-during-run-action',
       'queue',
     );
+    /* The send-now chord would queue as well, so the hint names only the queue. */
+    await expect(messageInput(page)).toHaveAccessibleDescription(/Enter queues/);
+    await expect(messageInput(page)).not.toHaveAccessibleDescription(/send now/i);
     await page.getByTestId('during-run-send-button').click();
     await expect(
       page.getByTestId('queued-message-row').filter({ hasText: 'new turn after reasoning' }),

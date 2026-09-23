@@ -969,7 +969,9 @@ const ChatForm = memo(function ChatForm({
             canStop={canStop}
             steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
-            canSteer={steering.canSteer}
+            /* A staged reasoning choice forces the message to queue, and the
+               send-now chord then queues too; do not advertise it. */
+            canSteer={steering.canSteer && steering.pendingReasoningOverride == null}
             answerModeActive={answerMode.active}
             uploadingCount={uploadingCount}
           />
