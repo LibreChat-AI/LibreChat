@@ -12,6 +12,7 @@ import {
 } from 'librechat-data-provider';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { Query, QueryKey } from '@tanstack/react-query';
+import type { PendingSteer } from '~/store/families';
 import {
   activeUsageResponseIdFamily,
   liveTokensFamily,
@@ -19,7 +20,6 @@ import {
   pendingUsageFamily,
   removeUsageAtoms,
 } from '~/store/usage';
-import type { PendingSteer } from '~/store/families';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;

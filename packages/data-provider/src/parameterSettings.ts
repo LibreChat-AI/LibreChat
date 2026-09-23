@@ -19,8 +19,8 @@ import {
   BedrockProviders,
   anthropicSettings,
 } from './types';
-import { ReasoningParameterFormat, getModelKey, getSettingsKeys } from './schemas';
 import { isOpus55Model, supportsPromptCache, supportsAdaptiveThinking } from './bedrock';
+import { ReasoningParameterFormat, getModelKey, getSettingsKeys } from './schemas';
 import { resolveEffectiveUseResponsesApi } from './file-config';
 import { clampSettingRange } from './generate';
 
