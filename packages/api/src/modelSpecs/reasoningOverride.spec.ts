@@ -10,6 +10,7 @@ import {
   parseReasoningOverrideRequest,
   resolveReasoningOverride,
   applyRequestReasoningOverride,
+  type ReasoningOverrideBase,
   type ReasoningOverrideInput,
   type ReasoningOverrideResult,
 } from './reasoningOverride';
@@ -309,7 +310,8 @@ describe('applyRequestReasoningOverride', () => {
   });
 
   it('applies the override and records the base snapshot on the request', async () => {
-    const req: ReturnType<typeof request> & { reasoningOverrideBase?: unknown } = request();
+    const req: ReturnType<typeof request> & { reasoningOverrideBase?: ReasoningOverrideBase } =
+      request();
 
     await expect(applyRequestReasoningOverride(req, { ...input, reasoningOverride })).resolves.toBe(
       true,
