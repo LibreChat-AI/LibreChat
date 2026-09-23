@@ -131,6 +131,17 @@ describe('composeHint', () => {
       expect(result).not.toContain('com_ui_composer_hint_typing');
     });
 
+    it('names only the newline key once the send binding is cleared', () => {
+      const result = composeHint(
+        { ...baseState, hasText: true, enterToSend: false },
+        localize,
+        true,
+        STOP,
+        { customized: true, display: '' },
+      ).text;
+      expect(result).toBe('⏎ com_ui_composer_hint_newline');
+    });
+
     it('drops the alternate during-run action, which the chord no longer reaches', () => {
       const result = hint({
         duringRunActive: true,

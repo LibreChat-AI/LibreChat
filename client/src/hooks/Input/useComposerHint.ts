@@ -164,17 +164,15 @@ export function composeHint(
     if (!state.enterToSend) {
       const mod = isMac ? '⌘⏎' : 'Ctrl+⏎';
       const sendChord = sendBinding.customized ? sendBinding.display : mod;
-      /* A cleared binding leaves no key that sends, and naming one that does
-         nothing is worse than the plain typing tip. */
-      if (sendChord) {
-        return {
-          text: [
-            `${sendChord} ${localize('com_ui_composer_hint_send')}`,
-            `⏎ ${localize('com_ui_composer_hint_newline')}`,
-          ].join(SEPARATOR),
-          kind: 'tip',
-        };
-      }
+      /* A cleared binding leaves no key that sends: name only what Enter does
+         rather than a send key that does nothing. */
+      const newline = `⏎ ${localize('com_ui_composer_hint_newline')}`;
+      return {
+        text: sendChord
+          ? [`${sendChord} ${localize('com_ui_composer_hint_send')}`, newline].join(SEPARATOR)
+          : newline,
+        kind: 'tip',
+      };
     }
     return { text: localize('com_ui_composer_hint_typing'), kind: 'tip' };
   }
