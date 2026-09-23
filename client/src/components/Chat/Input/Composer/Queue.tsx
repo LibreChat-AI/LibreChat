@@ -264,6 +264,13 @@ function QueueRow({
       quotes: message.quotes,
       manualSkills: message.manualSkills,
       ...(message.reasoningOverride != null && { reasoningOverride: message.reasoningOverride }),
+      ...(message.parentMessageId != null &&
+        message.expectedPredecessorCreatedAt != null && {
+          lineage: {
+            parentMessageId: message.parentMessageId,
+            predecessorCreatedAt: message.expectedPredecessorCreatedAt,
+          },
+        }),
       skipUsageMark: true,
     });
   }, [message, steering]);

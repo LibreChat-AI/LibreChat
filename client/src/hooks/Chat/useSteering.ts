@@ -1116,6 +1116,10 @@ export default function useSteering({
           createdAt?: number;
           clientRequestId?: string;
           expectedPredecessorCreatedAt?: number;
+          /** The queue lineage of a row being put back after its parked copy was
+           *  cancelled. The run it waited on may have ended meanwhile, which
+           *  clears the live pair, and the row must stay durable regardless. */
+          lineage?: { parentMessageId: string; predecessorCreatedAt: number };
         },
       ) => {
         const trimmed = text.trim();
@@ -1123,13 +1127,15 @@ export default function useSteering({
           return;
         }
         const parentMessageId =
-          pendingReveal != null
+          options?.lineage?.parentMessageId ??
+          (pendingReveal != null
             ? pendingReveal.queueParentMessageId
-            : liveMessageState?.parentMessageId;
+            : liveMessageState?.parentMessageId);
         const predecessorCreatedAt =
-          pendingReveal != null
+          options?.lineage?.predecessorCreatedAt ??
+          (pendingReveal != null
             ? pendingReveal.queuePredecessorCreatedAt
-            : activeGenerationCreatedAt;
+            : activeGenerationCreatedAt);
         /** FINAL clears the active epoch before attachment. The revealed
          * intent retains the queue's original parent/epoch pair. Its display
          * parent and advancing completion boundary are not queue lineage.

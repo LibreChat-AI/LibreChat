@@ -467,6 +467,41 @@ describe('useSteering', () => {
       expect(result.current.queue[0].server).toBeUndefined();
     });
 
+    it('keeps a re-queued row durable on its own lineage once the run it waited on has ended', async () => {
+      const { result } = setupServerQueue(
+        withActiveGeneration(({ set }) => {
+          set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), null);
+        }),
+      );
+
+      await act(async () => {
+        result.current.steering.enqueue('put back after a refused edit', {
+          id: 'queued-1',
+          createdAt: 7,
+          lineage: { parentMessageId: 'original-parent', predecessorCreatedAt: 42 },
+          skipUsageMark: true,
+        });
+        await Promise.resolve();
+      });
+
+      expect(result.current.queue).toEqual([
+        expect.objectContaining({
+          id: 'queued-1',
+          parentMessageId: 'original-parent',
+          expectedPredecessorCreatedAt: 42,
+          server: { status: 'sending' },
+        }),
+      ]);
+      expect(mockEnqueueQueuedTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentMessageId: 'original-parent',
+          expectedPredecessorCreatedAt: 42,
+          text: 'put back after a refused edit',
+        }),
+        expect.anything(),
+      );
+    });
+
     it('persists another follow-up against the original queue lineage after its completion boundary advances', async () => {
       const family = revealedQueuedTurnFamily(CONVO_ID);
       getDefaultStore().set(family, {
