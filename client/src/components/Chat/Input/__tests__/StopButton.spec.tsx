@@ -37,8 +37,8 @@ describe('StopButton', () => {
     render(<StopButton stop={stop} setShowStopButton={setShowStopButton} hidden />);
 
     const button = screen.getByTestId('stop-generation-button');
-    expect(button).toHaveClass('hidden');
-    expect(button).not.toHaveClass('flex');
+    /* The preflight hides `[hidden]` with `!important`, over the slot's `flex`. */
+    expect(button).toHaveAttribute('hidden');
 
     button.click();
 

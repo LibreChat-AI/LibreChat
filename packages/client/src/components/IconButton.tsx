@@ -1,10 +1,11 @@
 import * as React from 'react';
 import { cva } from 'class-variance-authority';
 import type { ClassProp } from 'class-variance-authority/types';
+import { composerSubmitClasses } from '~/utils/composer';
 import { cn } from '~/utils';
 
 type IconButtonVariantProps = {
-  variant?: 'default' | 'primary' | 'secondary' | 'ghost' | 'destructive' | null;
+  variant?: 'default' | 'primary' | 'secondary' | 'ghost' | 'destructive' | 'submit' | null;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'theme' | null;
   shape?: 'round' | 'square' | 'theme' | null;
 };
@@ -20,6 +21,8 @@ const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string
         ghost: 'bg-transparent hover:bg-surface-hover',
         destructive:
           'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
+        /** The composer's submit slot: send, stop and the during-run send share it. */
+        submit: cn('hover:bg-surface-inverted-hover', composerSubmitClasses()),
       },
       size: {
         xs: 'size-6',

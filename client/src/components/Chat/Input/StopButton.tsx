@@ -1,7 +1,6 @@
 import { memo } from 'react';
-import { composerSubmitClasses, IconButton, TooltipAnchor } from '@librechat/client';
+import { IconButton, TooltipAnchor } from '@librechat/client';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 export default memo(function StopButton({
   stop,
@@ -31,11 +30,11 @@ export default memo(function StopButton({
         <IconButton
           type="button"
           label={localize('com_nav_stop_generating')}
-          variant="primary"
+          variant="submit"
           size="theme"
           shape="theme"
           data-testid="stop-generation-button"
-          className={cn(composerSubmitClasses(), hidden && 'hidden')}
+          hidden={hidden}
           disabled={!canStop}
           aria-label={localize('com_nav_stop_generating')}
           onClick={(e) => {
