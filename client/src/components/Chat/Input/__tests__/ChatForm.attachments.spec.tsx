@@ -299,16 +299,30 @@ describe('ChatForm attachments', () => {
     expect(textarea).toHaveFocus();
   }, 20000);
 
-  test('returns focus to the textarea when removing a quote collapses the popup', async () => {
-    renderComposer({ quotes: ['alpha', 'beta'] });
+  test('returns focus to the textarea when the last quote is removed', async () => {
+    renderComposer({ quotes: ['alpha'] });
     const textarea = await screen.findByTestId('text-input');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove quote' }));
+
+    await waitFor(() => expect(screen.queryAllByTestId('composer-chip-quote')).toHaveLength(0));
+    expect(textarea).toHaveFocus();
+  }, 20000);
+
+  test('moves focus to the remaining quote when one of two is removed', async () => {
+    renderComposer({ quotes: ['alpha', 'beta'] });
+    await screen.findByTestId('text-input');
     const firstChip = () => screen.getAllByTestId('composer-chip-quote')[0];
 
     await userEvent.click(within(firstChip()).getByRole('button', { name: 'Remove quote' }));
 
     await waitFor(() => expect(screen.getAllByTestId('composer-chip-quote')).toHaveLength(1));
     expect(screen.getByText('beta')).toBeInTheDocument();
-    expect(textarea).toHaveFocus();
+    expect(
+      within(screen.getByTestId('composer-chip-quote')).getByRole('button', {
+        name: 'Remove quote',
+      }),
+    ).toHaveFocus();
   }, 20000);
 
   test('keeps focus inside the popup when removing a quote leaves several', async () => {
