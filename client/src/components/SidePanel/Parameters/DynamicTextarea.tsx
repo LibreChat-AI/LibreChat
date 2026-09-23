@@ -49,12 +49,12 @@ function DynamicTextarea({
 
   return (
     <div
-      className={`flex flex-col items-center justify-start gap-6 ${
+      className={`flex h-full flex-col items-center justify-start gap-6 ${
         columnSpan != null ? `col-span-${columnSpan}` : 'col-span-full'
       }`}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid w-full items-center gap-2">
+        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
           <div className="flex w-full justify-between">
             <Label
               htmlFor={`${settingKey}-dynamic-textarea`}
@@ -75,6 +75,12 @@ function DynamicTextarea({
           <TextareaAutosize
             focusOutline="hidden"
             id={`${settingKey}-dynamic-textarea`}
+            /** The field is measured by a shadow copy of itself, and the panel mounts
+             *  before the sidebar has settled on a width, so that measurement can come
+             *  back as one word per line. Capping the rows lets the library clamp its
+             *  own answer instead of leaving a CSS max-height to hide a wrong one. */
+            minRows={3}
+            maxRows={8}
             disabled={readonly}
             value={inputValue ?? ''}
             onChange={setInputValue}
@@ -88,7 +94,7 @@ function DynamicTextarea({
                 : placeholder
             }
             className={cn(
-              'border-border-light bg-surface-secondary flex max-h-[138px] min-h-[100px] w-full resize-none rounded-lg border px-3 py-2 text-sm',
+              'border-border-light bg-surface-secondary flex max-h-[220px] min-h-[76px] w-full resize-none rounded-lg border px-3 py-2 text-sm',
             )}
           />
         </HoverCardTrigger>

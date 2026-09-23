@@ -49,8 +49,27 @@ export enum OptionTypes {
   Model = 'model',
   Custom = 'custom',
 }
+/**
+ * A condition under which a parameter is worth offering at all.
+ *
+ * Some parameters only reach the provider alongside another one: OpenAI's reasoning
+ * summary, mode and context travel inside the `reasoning` object the Responses API
+ * takes and are dropped without it; Anthropic's thinking budget is read only while
+ * thinking is enabled. Stating that here rather than in a panel keeps the rule with
+ * the definition it belongs to, so a deployment defining its own parameters can
+ * declare one too.
+ */
+export interface SettingDependency {
+  /** The parameter this one rides along with. */
+  key: string;
+  /** The value it has to hold. Omitted, any value that is not nullish or false. */
+  equals?: number | boolean | string;
+}
+
 export interface SettingDefinition {
   key: string;
+  /** Conditions that must all hold, or this parameter does nothing and is not shown. */
+  dependsOn?: SettingDependency[];
   description?: string;
   type: 'number' | 'boolean' | 'string' | 'enum' | 'array';
   default?: number | boolean | string | string[];
