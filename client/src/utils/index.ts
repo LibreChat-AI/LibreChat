@@ -50,6 +50,7 @@ export * from './toolLabels';
 export * from './favoritesError';
 export * from './approval';
 export * from './steer';
+export * from './pane';
 export * from './activityLabels';
 export * from './agentModelSelection';
 export * from './runStepDuration';

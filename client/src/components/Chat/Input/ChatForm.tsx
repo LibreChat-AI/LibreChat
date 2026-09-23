@@ -524,6 +524,7 @@ const ChatForm = memo(function ChatForm({
     disabled: speechDisabled,
     autoSendText,
     speechToText: SpeechToText,
+    index,
   });
   const uploadingCount = useMemo(() => {
     let count = 0;

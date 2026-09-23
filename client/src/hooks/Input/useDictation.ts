@@ -3,6 +3,7 @@ import { useToastContext } from '@librechat/client';
 import type { TAskFunction } from '~/common';
 import useGetAudioSettings from './useGetAudioSettings';
 import { useChatFormContext } from '~/Providers';
+import { isFocusedChatPane } from '~/utils/pane';
 import useSpeechToText from './useSpeechToText';
 import { globalAudioId } from '~/common';
 import useLocalize from '../useLocalize';
@@ -46,6 +47,7 @@ export default function useDictation({
   disabled = false,
   autoSendText,
   speechToText,
+  index = 0,
 }: {
   ask: TAskFunction;
   /** Optional host route for a take that completes while generation is active. */
@@ -65,6 +67,8 @@ export default function useDictation({
   autoSendText: number;
   /** Host-owned Speech to Text preference. */
   speechToText: boolean;
+  /** The chat pane this composer belongs to; only the focused pane answers the shortcut. */
+  index?: number;
 }): Dictation {
   const { setValue, reset, getValues } = methods;
   const localize = useLocalize();
@@ -295,6 +299,7 @@ export default function useDictation({
       if (
         disabled ||
         speechToText !== true ||
+        !isFocusedChatPane(index) ||
         event.code !== 'KeyL' ||
         !event.shiftKey ||
         !event.altKey ||
@@ -312,7 +317,7 @@ export default function useDictation({
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [disabled, speechToText, start, stopToComposer]);
+  }, [disabled, index, speechToText, start, stopToComposer]);
 
   /* Memoized so `memo(Bar)` has something that can compare equal: a fresh
      object here re-rendered the whole bar on every keystroke in the composer. */

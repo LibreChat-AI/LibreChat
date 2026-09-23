@@ -178,10 +178,14 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                 <Presentation>
                   <TraceSurface conversationId={conversationId}>
                     <h1 className="sr-only">{pageHeading}</h1>
-                    <Header
-                      parentConversationId={parentConversationId}
-                      readOnly={isSubagentThreadReadOnly}
-                    />
+                    {/* Marks the header's controls as this pane's, so a pane-scoped
+                        shortcut pressed from them acts here, not on the first pane. */}
+                    <div data-chat-pane-portal={index} className="contents">
+                      <Header
+                        parentConversationId={parentConversationId}
+                        readOnly={isSubagentThreadReadOnly}
+                      />
+                    </div>
                     <>
                       <div
                         data-chat-pane={index}

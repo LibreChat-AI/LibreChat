@@ -746,6 +746,19 @@ describe('stop generating shortcut', () => {
     expect(first.onClick).not.toHaveBeenCalled();
   });
 
+  it('stops the pane whose header controls hold focus', () => {
+    renderHarness();
+    const first = appendComposerForm();
+    const second = appendComposerForm();
+    const headerControl = appendPortalFocus(1);
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true }, headerControl);
+
+    expect(second.onClick).toHaveBeenCalledTimes(1);
+    expect(first.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('does nothing when focus is in an idle pane while another pane is generating', () => {
     renderHarness();
     const generating = appendComposerForm();

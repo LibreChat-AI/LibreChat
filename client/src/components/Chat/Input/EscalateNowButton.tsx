@@ -3,6 +3,7 @@ import { ArrowUp } from 'lucide-react';
 import * as Ariakit from '@ariakit/react';
 import { IconButton } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
+import { getChatPane, getFocusedChatPane } from '~/utils/pane';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -14,27 +15,56 @@ const MESSAGE_LABEL_MAX_LENGTH = 80;
    than context: the shortcut handler lives at the document level and only ever
    needs the single hovered/focused target, so every button subscribing to one
    store is cheaper than a provider spanning both surfaces. Focus wins over
-   hover, matching what a keyboard user is actually pointed at. */
+   hover, matching what a keyboard user is actually pointed at. A hovered button
+   in a pane that does not hold focus is not the target, since the shortcut acts
+   in the focused pane; focus moves re-evaluate that. */
 const listeners = new Set<() => void>();
-let hoveredTarget: string | null = null;
+let hovered: { id: string; element: Element } | null = null;
 let focusedTarget: string | null = null;
 
+function isInFocusedPane(element: Element) {
+  const focusedPane = getFocusedChatPane();
+  return focusedPane == null || getChatPane(element) === focusedPane;
+}
+
 function getActiveTarget() {
-  return focusedTarget ?? hoveredTarget;
+  if (focusedTarget != null) {
+    return focusedTarget;
+  }
+  return hovered != null && isInFocusedPane(hovered.element) ? hovered.id : null;
+}
+
+function notify() {
+  listeners.forEach((listener) => listener());
 }
 
 function subscribeToActiveTarget(listener: () => void) {
+  if (listeners.size === 0) {
+    document.addEventListener('focusin', notify);
+    document.addEventListener('focusout', notify);
+  }
   listeners.add(listener);
-  return () => listeners.delete(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      document.removeEventListener('focusin', notify);
+      document.removeEventListener('focusout', notify);
+    }
+  };
 }
 
-function updateActiveTarget(kind: 'hover' | 'focus', targetId: string, active: boolean) {
+function updateActiveTarget(
+  kind: 'hover' | 'focus',
+  targetId: string,
+  active: boolean,
+  element?: Element,
+) {
   const previous = getActiveTarget();
   if (kind === 'hover') {
-    if (active) {
-      hoveredTarget = targetId;
-    } else if (hoveredTarget === targetId) {
-      hoveredTarget = null;
+    if (active && element != null) {
+      hovered = { id: targetId, element };
+    } else if (hovered?.id === targetId) {
+      hovered = null;
     }
   } else if (active) {
     focusedTarget = targetId;
@@ -42,20 +72,20 @@ function updateActiveTarget(kind: 'hover' | 'focus', targetId: string, active: b
     focusedTarget = null;
   }
   if (previous !== getActiveTarget()) {
-    listeners.forEach((listener) => listener());
+    notify();
   }
 }
 
 function clearActiveTarget(targetId: string) {
   const previous = getActiveTarget();
-  if (hoveredTarget === targetId) {
-    hoveredTarget = null;
+  if (hovered?.id === targetId) {
+    hovered = null;
   }
   if (focusedTarget === targetId) {
     focusedTarget = null;
   }
   if (previous !== getActiveTarget()) {
-    listeners.forEach((listener) => listener());
+    notify();
   }
 }
 
@@ -125,7 +155,9 @@ export default function EscalateNowButton({
               data-escalate-steer-active={isActive ? 'true' : undefined}
               data-testid={surface === 'queued' ? 'queued-interrupt-now' : 'steer-escalate-now'}
               disabled={disabled}
-              onPointerEnter={() => !disabled && updateActiveTarget('hover', targetId, true)}
+              onPointerEnter={(event) =>
+                !disabled && updateActiveTarget('hover', targetId, true, event.currentTarget)
+              }
               onPointerLeave={() => updateActiveTarget('hover', targetId, false)}
               onFocus={() => !disabled && updateActiveTarget('focus', targetId, true)}
               onBlur={() => updateActiveTarget('focus', targetId, false)}

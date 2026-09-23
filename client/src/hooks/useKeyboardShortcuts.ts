@@ -20,6 +20,7 @@ import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { useArchiveConvoMutation } from '~/data-provider';
 import { showFilesDialogAtom } from '~/store/filesDialog';
 import { useHasAccess, useLocalize } from '~/hooks';
+import { getFocusedChatPane } from '~/utils/pane';
 import useNewChat from '~/hooks/Chat/useNewChat';
 import store from '~/store';
 
@@ -648,20 +649,6 @@ export function useShortcutActions(): ShortcutAction[] {
     return copy(text.trim(), { format: 'text/plain' });
   }, []);
 
-  const getFocusedChatPane = useCallback((): HTMLElement | null => {
-    const activeElement = document.activeElement as HTMLElement | null;
-    const directPane = activeElement?.closest<HTMLElement>('[data-chat-pane]');
-    if (directPane != null) {
-      return directPane;
-    }
-    const portaledPane = activeElement?.closest<HTMLElement>('[data-chat-pane-portal]');
-    const paneIndex = portaledPane?.dataset.chatPanePortal;
-    if (paneIndex != null && /^\d+$/.test(paneIndex)) {
-      return document.querySelector<HTMLElement>(`[data-chat-pane="${paneIndex}"]`);
-    }
-    return null;
-  }, []);
-
   const handleStopGenerating = useCallback(() => {
     const focusedPane = getFocusedChatPane();
     const scoped = focusedPane?.querySelector<HTMLElement>(
@@ -671,7 +658,7 @@ export function useShortcutActions(): ShortcutAction[] {
       return clickElement('[data-testid="stop-generation-button"]');
     }
     return scoped != null ? clickTarget(scoped) : false;
-  }, [getFocusedChatPane]);
+  }, []);
 
   const handleRegenerateResponse = useCallback(
     () => clickElement('[data-testid="regenerate-generation-button"]'),
@@ -700,7 +687,7 @@ export function useShortcutActions(): ShortcutAction[] {
       return null;
     };
     return clickTarget(pick('bubble') ?? pick('queued'));
-  }, [getFocusedChatPane]);
+  }, []);
 
   const handleEditLastMessage = useCallback(() => {
     const userTurns = document.querySelectorAll('.user-turn');
@@ -801,7 +788,7 @@ export function useShortcutActions(): ShortcutAction[] {
       document.querySelector<HTMLButtonElement>('#attach-file-button') ??
       document.querySelector<HTMLButtonElement>('#attach-file');
     return clickTarget(btn);
-  }, [getFocusedChatPane]);
+  }, []);
 
   const handleArchiveConversation = useCallback(() => {
     const convoId = conversation?.conversationId;

@@ -65,6 +65,7 @@ function setup({
   filesLoading = false,
   deferComposerReset = false,
   disabled = false,
+  index,
 }: {
   autoSendText?: number;
   speechToText?: boolean;
@@ -73,6 +74,7 @@ function setup({
   filesLoading?: boolean;
   deferComposerReset?: boolean;
   disabled?: boolean;
+  index?: number;
 } = {}) {
   let text = draft;
   let uploading = filesLoading;
@@ -95,6 +97,7 @@ function setup({
       disabled,
       autoSendText,
       speechToText,
+      index,
     };
     return useDictation(dictationOptions);
   });
@@ -183,6 +186,38 @@ describe('useDictation', () => {
 
     expect(mockStop).toHaveBeenCalledTimes(1);
     expect(result.current.transcribing).toBe(true);
+  });
+
+  it('answers the shortcut only in the pane that holds focus', () => {
+    setup({ index: 1 });
+    const pressShortcut = () =>
+      act(() => {
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', { code: 'KeyL', shiftKey: true, altKey: true }),
+        );
+      });
+    const pane = (index: number) => {
+      const section = document.createElement('section');
+      section.dataset.chatPane = String(index);
+      const input = document.createElement('input');
+      section.appendChild(input);
+      document.body.appendChild(section);
+      return { section, input };
+    };
+    const first = pane(0);
+    const second = pane(1);
+
+    pressShortcut();
+    first.input.focus();
+    pressShortcut();
+    expect(mockStart).not.toHaveBeenCalled();
+
+    second.input.focus();
+    pressShortcut();
+    expect(mockStart).toHaveBeenCalledTimes(1);
+
+    first.section.remove();
+    second.section.remove();
   });
 
   it('refuses both direct and shortcut starts while the host disables speech', () => {
