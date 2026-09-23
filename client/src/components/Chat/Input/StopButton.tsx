@@ -35,11 +35,7 @@ export default memo(function StopButton({
           size="theme"
           shape="theme"
           data-testid="stop-generation-button"
-          className={cn(
-            composerSubmitClasses(),
-            'duration-theme-normal disabled:opacity-30',
-            hidden && 'hidden',
-          )}
+          className={cn(composerSubmitClasses(), hidden && 'hidden')}
           disabled={!canStop}
           aria-label={localize('com_nav_stop_generating')}
           onClick={(e) => {
