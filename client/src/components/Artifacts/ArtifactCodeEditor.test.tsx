@@ -68,6 +68,7 @@ jest.mock('~/Providers/EditorContext', () => {
       return {
         currentCode,
         setCurrentCode,
+        retainedCode: {},
         rejectedCode,
         rejectedCodeArtifactId,
         setRejectedCode,
