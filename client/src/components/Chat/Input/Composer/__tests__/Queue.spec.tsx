@@ -67,6 +67,7 @@ const mockReorderQueued = jest.fn();
 const mockRestoreQueuedOrder = jest.fn();
 const mockDiscardQueued = jest.fn().mockResolvedValue(true);
 const mockRewakeDrain = jest.fn();
+const mockEnqueue = jest.fn();
 
 /** Only what the rail reads, filled out against the real type so a change to
  *  the contract breaks compilation rather than passing quietly. */
@@ -82,6 +83,7 @@ const steeringWith = (over: Partial<SteeringControls> = {}): SteeringControls =>
     restoreQueuedOrder: mockRestoreQueuedOrder,
     discardQueued: mockDiscardQueued,
     rewakeDrain: mockRewakeDrain,
+    enqueue: mockEnqueue,
     ...over,
   }) as SteeringControls;
 
@@ -371,6 +373,54 @@ describe('Queue', () => {
     expect(onRestore).not.toHaveBeenCalled();
     expect(mockRemoveQueued).not.toHaveBeenCalled();
     expect(mockShowToast).toHaveBeenCalledWith(expect.objectContaining({ message: toast }));
+  });
+
+  /* The composer passed the precheck but changed while the parked copy was
+     being cancelled: the words go back on the durable queue in their place
+     rather than living only in memory until the next reload. */
+  it.each([
+    ['com_ui_remove_queued', 'com_ui_queue_remove_blocked'],
+    ['com_ui_edit_message', 'com_ui_queue_edit_blocked'],
+  ])(
+    're-queues a durable row the composer refuses after cancelling it (%s)',
+    async (label, toast) => {
+      const row = queued({
+        id: 'q1',
+        createdAt: 42,
+        quotes: ['a quote'],
+        server: { id: 'server-q1', status: 'queued' },
+      });
+      renderQueue([row], steering, {
+        onRestoreToComposer: jest.fn().mockReturnValue(false),
+        canRestoreToComposer: jest.fn().mockReturnValue(true),
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText(label));
+      });
+      expect(mockDiscardQueued).toHaveBeenCalled();
+      expect(mockRemoveQueued).toHaveBeenCalledWith('q1');
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        'follow up on this',
+        expect.objectContaining({
+          id: 'q1',
+          createdAt: 42,
+          quotes: ['a quote'],
+          skipUsageMark: true,
+        }),
+      );
+      expect(mockShowToast).toHaveBeenCalledWith(expect.objectContaining({ message: toast }));
+    },
+  );
+
+  it('keeps a local-only row in place when the composer refuses it', async () => {
+    renderQueue([queued({ id: 'q1' })], steering, {
+      onRestoreToComposer: jest.fn().mockReturnValue(false),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+    });
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    expect(mockRemoveQueued).not.toHaveBeenCalled();
   });
 
   it('hands the whole message to the composer to edit', async () => {

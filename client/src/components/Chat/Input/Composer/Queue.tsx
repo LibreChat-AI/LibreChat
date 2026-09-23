@@ -248,6 +248,26 @@ function QueueRow({
     [message.id, steering, conversationId],
   );
 
+  /* The composer can change while the parked copy is being cancelled, so a
+     refusal after that await would leave the words only in memory, gone on the
+     next reload. Put a row that had a durable copy back on the durable queue,
+     in its place, instead of keeping the downgraded local one. */
+  const requeueDurably = useCallback(() => {
+    if (message.server == null && message.recoverySteerId == null) {
+      return;
+    }
+    steering.removeQueued(message.id);
+    steering.enqueue(message.text, {
+      id: message.id,
+      createdAt: message.createdAt,
+      files: message.files,
+      quotes: message.quotes,
+      manualSkills: message.manualSkills,
+      ...(message.reasoningOverride != null && { reasoningOverride: message.reasoningOverride }),
+      skipUsageMark: true,
+    });
+  }, [message, steering]);
+
   const editToComposer = useCallback(
     () =>
       handOff(async () => {
@@ -283,6 +303,7 @@ function QueueRow({
           steering.removeQueued(message.id);
           return true;
         }
+        requeueDurably();
         showToast({ message: localize('com_ui_queue_edit_blocked'), status: 'warning' });
         return false;
       }),
@@ -292,6 +313,7 @@ function QueueRow({
       message,
       onRestoreToComposer,
       canRestoreToComposer,
+      requeueDurably,
       conversationId,
       showToast,
       localize,
@@ -331,6 +353,7 @@ function QueueRow({
         /* Refusing silently reads as a dead button: the row stays, nothing
            moves, and the reason (a draft in the box, another chat on screen)
            is somewhere the click was not. */
+        requeueDurably();
         showToast({ message: localize('com_ui_queue_remove_blocked'), status: 'warning' });
         return false;
       }),
@@ -340,6 +363,7 @@ function QueueRow({
       message,
       onRestoreToComposer,
       canRestoreToComposer,
+      requeueDurably,
       conversationId,
       showToast,
       localize,
