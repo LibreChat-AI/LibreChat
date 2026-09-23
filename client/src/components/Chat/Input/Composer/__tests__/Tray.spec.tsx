@@ -97,7 +97,17 @@ describe('Tray', () => {
     fireEvent.click(screen.getByLabelText('com_ui_remove_quote'));
     expect(remove).toHaveBeenCalledTimes(1);
   });
-  it('returns focus to the composer when a short quote list is dismissed', () => {
+  it('returns focus to the composer when the last quote is dismissed', () => {
+    const focusComposer = jest.fn();
+    const remove = jest.fn();
+    renderTray([item({ id: 'quote:0', remove })], new Map(), focusComposer);
+
+    fireEvent.click(screen.getByLabelText('com_ui_remove_quote'));
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(focusComposer).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps focus on the quotes while another one remains', () => {
     const focusComposer = jest.fn();
     const remove = jest.fn();
     renderTray(
@@ -110,7 +120,7 @@ describe('Tray', () => {
       within(screen.getAllByTestId('composer-chip-quote')[0]).getByLabelText('com_ui_remove_quote'),
     );
     expect(remove).toHaveBeenCalledTimes(1);
-    expect(focusComposer).toHaveBeenCalledTimes(1);
+    expect(focusComposer).not.toHaveBeenCalled();
   });
 
   it('opens for staged files even with nothing else in it', () => {

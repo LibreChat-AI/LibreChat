@@ -105,7 +105,9 @@ function Tray({
       const quoteItems = items.filter((candidate) => candidate.kind === 'quote');
       const quoteIndex = quoteItems.findIndex((candidate) => candidate.id === item.id);
       item.remove();
-      if (quoteItems.length <= 2) {
+      /* Every quote is its own chip, so focus moves to a remaining quote's remove
+         control and only returns to the composer once the last one is gone. */
+      if (quoteItems.length <= 1) {
         focusComposer?.();
         return;
       }
