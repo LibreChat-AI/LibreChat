@@ -182,7 +182,7 @@ interface ShareArtifactsPanelProps {
 function ShareArtifactsPanel({ contextValue }: ShareArtifactsPanelProps) {
   return (
     <ArtifactsProvider value={contextValue}>
-      <div className="flex h-full w-full border-l border-border-light bg-surface-primary shadow-2xl">
+      <div className="border-border-light bg-surface-primary flex h-full w-full border-l shadow-2xl">
         <Suspense fallback={null}>
           <Artifacts />
         </Suspense>
