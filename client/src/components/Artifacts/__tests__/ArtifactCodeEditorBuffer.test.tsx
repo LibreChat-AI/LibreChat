@@ -195,6 +195,39 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     expect(mockEditArtifact).not.toHaveBeenCalled();
   });
 
+  /* Editing the artifact the user moved to must not evict the text the one
+   * they left was holding: its debounce died with the selection change, so the
+   * retained copy is the only place it still lives. Reported by Codex on
+   * 591ab13c96 (P1). */
+  it('restores the text of the left artifact after another is edited', async () => {
+    const { ed, read } = createModel('CONTENT-A');
+    const monacoRef = { current: ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('EDITED-A');
+    view.select(artifactB);
+    type('EDITED-B');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    view.select(artifactA);
+    await flush();
+
+    /* The restored edit queues behind the running save of the other artifact,
+     * and that save's callbacks send it once it lands. */
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(read()).toBe('EDITED-A');
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ messageId: 'msg-a', original: 'CONTENT-A', updated: 'EDITED-A' }),
+    );
+  });
+
   it('restores that text and saves it when the artifact is selected again', async () => {
     const { ed, read } = createModel('CONTENT-A');
     const monacoRef = { current: ed } as React.MutableRefObject<any>;

@@ -268,6 +268,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   const {
     currentCode,
     codeArtifactId,
+    retainedCode,
     setCurrentCode,
     rejectedCode,
     rejectedCodeArtifactId,
@@ -276,8 +277,10 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   } = useCodeState();
   /* The pane is remounted when it changes hosts (side panel, mobile sheet,
    * undocked window). The buffer outlives that remount, so unsaved text is
-   * restored here instead of falling back to the persisted content. */
-  const restoredCode = codeArtifactId === artifact.id ? currentCode : undefined;
+   * restored here instead of falling back to the persisted content. An edit
+   * another artifact displaced from the active slot is retained under this
+   * artifact, so coming back to it lands on its own unsaved text too. */
+  const restoredCode = codeArtifactId === artifact.id ? currentCode : retainedCode[artifact.id];
   const [currentUpdate, setCurrentUpdate] = useState<string | null>(null);
   const { isMutating } = useMutationState();
   const artifactRef = useRef(artifact);

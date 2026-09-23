@@ -29,6 +29,11 @@ interface MutationContextType {
  * artifact identity for the same reason as the code buffer: a rejection for
  * one artifact must not suppress a save for another.
  *
+ * A buffer another artifact displaces is retained under the artifact it
+ * belongs to: the edit's debounce died with the selection change, so the
+ * retained copy is the only place that text still lives, and the editor that
+ * gets the artifact back restores and sends it from there.
+ *
  * `codeSession` is the editing session the buffer belongs to. A save keeps its
  * callbacks after the editor that started it is gone, and those callbacks
  * would otherwise write the buffer a closed session just cleared and submit
@@ -42,6 +47,7 @@ interface MutationContextType {
 interface CodeContextType {
   currentCode?: string;
   codeArtifactId?: string;
+  retainedCode: Record<string, string>;
   setCurrentCode: (code: string | undefined, artifactId?: string) => void;
   rejectedCode?: string;
   rejectedCodeArtifactId?: string;
@@ -61,7 +67,10 @@ const CodeContext = createContext<CodeContextType | undefined>(undefined);
  */
 export function EditorProvider({ children }: { children: React.ReactNode }) {
   const isMutating = useIsMutating({ mutationKey: [MutationKeys.editArtifact] }) > 0;
-  const [codeBuffer, setCodeBuffer] = useState<{ code?: string; artifactId?: string }>({});
+  const [codeState, setCodeState] = useState<{
+    buffer: { code?: string; artifactId?: string };
+    retained: Record<string, string>;
+  }>({ buffer: {}, retained: {} });
   const [rejectedBuffer, setRejectedBuffer] = useState<{
     code?: string;
     artifactId?: string;
@@ -69,10 +78,25 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   const codeSession = useRef(0);
 
   const setCurrentCode = useCallback((code: string | undefined, artifactId?: string) => {
-    setCodeBuffer((previous) => ({
-      code,
-      artifactId: artifactId ?? (code === undefined ? undefined : previous.artifactId),
-    }));
+    setCodeState((previous) => {
+      if (code === undefined) {
+        return { ...previous, buffer: {} };
+      }
+      /* The buffer keeps its owner when the writer does not name one. */
+      const owner = artifactId ?? previous.buffer.artifactId;
+      const { code: wasCode, artifactId: wasOwner } = previous.buffer;
+      const retained = { ...previous.retained };
+      /* Displacing another artifact's buffer retains that text under its
+       * owner; writing for the same artifact makes the active slot the newest
+       * text again, so its retained copy retires. */
+      if (wasCode != null && wasOwner != null && wasOwner !== owner) {
+        retained[wasOwner] = wasCode;
+      }
+      if (owner != null) {
+        delete retained[owner];
+      }
+      return { buffer: { code, artifactId: owner }, retained };
+    });
   }, []);
 
   const setRejectedCode = useCallback((code: string | undefined, artifactId?: string) => {
@@ -81,15 +105,16 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
 
   const endCodeSession = useCallback(() => {
     codeSession.current += 1;
-    setCodeBuffer({});
+    setCodeState({ buffer: {}, retained: {} });
     setRejectedBuffer({});
   }, []);
 
   const mutationValue = useMemo(() => ({ isMutating }), [isMutating]);
   const codeValue = useMemo(
     () => ({
-      currentCode: codeBuffer.code,
-      codeArtifactId: codeBuffer.artifactId,
+      currentCode: codeState.buffer.code,
+      codeArtifactId: codeState.buffer.artifactId,
+      retainedCode: codeState.retained,
       setCurrentCode,
       rejectedCode: rejectedBuffer.code,
       rejectedCodeArtifactId: rejectedBuffer.artifactId,
@@ -97,7 +122,7 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
       codeSession,
       endCodeSession,
     }),
-    [codeBuffer, endCodeSession, rejectedBuffer, setCurrentCode, setRejectedCode],
+    [codeState, endCodeSession, rejectedBuffer, setCurrentCode, setRejectedCode],
   );
 
   return (
