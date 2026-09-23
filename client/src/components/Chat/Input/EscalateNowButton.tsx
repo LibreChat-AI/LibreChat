@@ -168,7 +168,7 @@ export default function EscalateNowButton({
           }
         />
       </span>
-      <Ariakit.Tooltip className="z-50 rounded-lg bg-surface-tertiary px-2 py-1 text-xs text-text-primary shadow-lg">
+      <Ariakit.Tooltip className="bg-surface-tertiary text-text-primary z-50 rounded-lg px-2 py-1 text-xs shadow-lg">
         {chord && isActive ? `${label} · ${chord}` : label}
       </Ariakit.Tooltip>
     </Ariakit.TooltipProvider>

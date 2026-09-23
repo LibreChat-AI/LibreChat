@@ -30,7 +30,7 @@ function Waveform({ active, className }: WaveformProps) {
         <span
           key={index}
           style={{ height: `${Math.max(MIN_BAR, level) * 100}%` }}
-          className="w-[3px] shrink-0 rounded-full bg-text-primary opacity-70 transition-all duration-100 ease-out motion-reduce:transition-none"
+          className="bg-text-primary w-[3px] shrink-0 rounded-full opacity-70 transition-all duration-100 ease-out motion-reduce:transition-none"
         />
       ))}
     </div>

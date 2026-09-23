@@ -64,10 +64,10 @@ interface QueueRowProps {
 
 function QueuedIcon({ warning, hint }: { warning: boolean; hint?: string }) {
   if (warning) {
-    return <TriangleAlert className="h-4 w-4 shrink-0 text-status-warning" aria-hidden="true" />;
+    return <TriangleAlert className="text-status-warning h-4 w-4 shrink-0" aria-hidden="true" />;
   }
   if (!hint) {
-    return <Clock className="h-4 w-4 shrink-0 text-text-secondary" aria-hidden="true" />;
+    return <Clock className="text-text-secondary h-4 w-4 shrink-0" aria-hidden="true" />;
   }
   return (
     <TooltipAnchor
@@ -77,9 +77,9 @@ function QueuedIcon({ warning, hint }: { warning: boolean; hint?: string }) {
           role="img"
           aria-label={hint}
           tabIndex={0}
-          className="focus-visible:outline-hidden flex shrink-0 cursor-help rounded-full focus-visible:ring-2 focus-visible:ring-text-primary"
+          className="focus-visible:ring-text-primary flex shrink-0 cursor-help rounded-full focus-visible:ring-2 focus-visible:outline-hidden"
         >
-          <Clock className="h-4 w-4 text-text-secondary" aria-hidden="true" />
+          <Clock className="text-text-secondary h-4 w-4" aria-hidden="true" />
         </span>
       }
     />
@@ -379,7 +379,7 @@ function QueueRow({
       role="listitem"
       data-testid="queued-message-row"
       className={cn(
-        'flex items-center gap-2 border-b border-border-light px-3 py-1.5 text-sm last:border-b-0',
+        'border-border-light flex items-center gap-2 border-b px-3 py-1.5 text-sm last:border-b-0',
         isDragging && 'opacity-40',
       )}
     >
@@ -416,7 +416,7 @@ function QueueRow({
       >
         <GripVertical
           className={cn(
-            'h-4 w-4 text-text-secondary transition-colors group-hover:text-text-primary',
+            'text-text-secondary group-hover:text-text-primary h-4 w-4 transition-colors',
             !reorderable && 'opacity-40',
           )}
           aria-hidden="true"
@@ -426,11 +426,11 @@ function QueueRow({
         warning={isRejected || isUnconfirmed || isIndeterminate}
         hint={steering.duringRunActive ? localize('com_ui_steer_queued_info') : undefined}
       />
-      <span className="min-w-0 flex-1 truncate text-text-primary" title={message.text}>
+      <span className="text-text-primary min-w-0 flex-1 truncate" title={message.text}>
         {message.text}
       </span>
       {quoteCount > 0 && (
-        <span className="flex shrink-0 items-center gap-0.5 text-xs text-text-secondary">
+        <span className="text-text-secondary flex shrink-0 items-center gap-0.5 text-xs">
           <TextQuote className="h-3.5 w-3.5" aria-hidden="true" />
           <span aria-hidden="true">{quoteCount}</span>
           <span className="sr-only">
@@ -440,7 +440,7 @@ function QueueRow({
       )}
       {fileCount > 0 && (
         <span
-          className="shrink-0 text-xs text-text-secondary"
+          className="text-text-secondary shrink-0 text-xs"
           title={localize('com_ui_queued_attachment_count', { 0: String(fileCount) })}
         >
           <span className="sr-only">
@@ -454,10 +454,10 @@ function QueueRow({
         </span>
       )}
       {(isRejected || isUnconfirmed || isIndeterminate) && (
-        <span className="shrink-0 text-xs text-status-warning">{localize(statusLabel)}</span>
+        <span className="text-status-warning shrink-0 text-xs">{localize(statusLabel)}</span>
       )}
       {revealed && (
-        <span className="shrink-0 text-xs text-text-secondary">
+        <span className="text-text-secondary shrink-0 text-xs">
           {localize('com_ui_queued_turn_starting')}
         </span>
       )}
@@ -500,7 +500,7 @@ function QueueRow({
             className="group"
           >
             <Pencil
-              className="h-4 w-4 text-text-secondary transition-colors group-hover:text-text-primary"
+              className="text-text-secondary group-hover:text-text-primary h-4 w-4 transition-colors"
               aria-hidden="true"
             />
           </IconButton>
@@ -521,7 +521,7 @@ function QueueRow({
         className="group"
       >
         <X
-          className="h-4 w-4 text-text-secondary transition-colors group-hover:text-text-primary"
+          className="text-text-secondary group-hover:text-text-primary h-4 w-4 transition-colors"
           aria-hidden="true"
         />
       </IconButton>
@@ -604,7 +604,7 @@ function Queue({
 
        The rows are the list; the hint and the live region are not items, and a
        list that owns them reports the wrong count. */
-    <div className="mx-3 overflow-hidden rounded-t-2xl border border-b-0 border-border-light bg-surface-secondary">
+    <div className="border-border-light bg-surface-secondary mx-3 overflow-hidden rounded-t-2xl border border-b-0">
       <div
         role="list"
         aria-label={localize('com_ui_queued_messages')}

@@ -311,7 +311,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
           setDragging(false);
         }}
         className={cn(
-          'relative w-full touch-none select-none transition-opacity duration-200',
+          'relative w-full touch-none transition-opacity duration-200 select-none',
           dragging ? 'cursor-grabbing' : 'cursor-pointer',
           /* Muted while the provider is deciding, so it reads as "not set by
              you" instead of "set to the lowest". Touching it takes over. */
@@ -332,7 +332,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
                and the rail would vanish into it. */
             isUngraded
               ? 'border-border-heavy bg-transparent'
-              : 'border-transparent bg-border-medium',
+              : 'bg-border-medium border-transparent',
           )}
         />
         {/* The semantic accent keeps the track intentional in every theme.
@@ -346,13 +346,13 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
           aria-hidden="true"
           style={{ height: TRACK_H, width: fillWidth(shownIndex) }}
           className={cn(
-            'absolute left-0 top-1/2 -translate-y-1/2 transition-all ease-out motion-reduce:duration-0',
+            'absolute top-1/2 left-0 -translate-y-1/2 transition-all ease-out motion-reduce:duration-0',
             dragging ? 'duration-75' : 'duration-150',
           )}
         >
           <span
             className={cn(
-              'block h-full w-full rounded-full bg-accent-primary transition-opacity duration-100 ease-out motion-reduce:duration-0',
+              'bg-accent-primary block h-full w-full rounded-full transition-opacity duration-100 ease-out motion-reduce:duration-0',
               isUngraded ? 'opacity-0' : 'opacity-100',
             )}
           />
@@ -376,7 +376,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         {isUngraded && (
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-medium uppercase tracking-wide text-text-secondary"
+            className="text-text-secondary pointer-events-none absolute inset-0 flex items-center justify-center text-xs font-medium tracking-wide uppercase"
           >
             {ungradedLabel}
           </span>
@@ -398,7 +398,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         >
           <span
             className={cn(
-              'block h-full w-full rounded-full bg-surface-fixed shadow-md transition-opacity duration-150 ease-out motion-reduce:delay-0 motion-reduce:duration-0',
+              'bg-surface-fixed block h-full w-full rounded-full shadow-md transition-opacity duration-150 ease-out motion-reduce:delay-0 motion-reduce:duration-0',
               isUngraded ? 'opacity-0 delay-100' : 'opacity-100 delay-0',
             )}
           />
@@ -436,7 +436,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
               }}
               onClick={() => select(value)}
               style={{ left, right }}
-              className="focus-visible:outline-hidden absolute inset-y-0 rounded-full focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+              className="focus-visible:ring-text-primary absolute inset-y-0 rounded-full focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
             />
           );
         })}
@@ -450,7 +450,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
           aria-hidden="true"
           dir="ltr"
           className={cn(
-            'col-start-1 row-start-1 flex items-center justify-between text-xs text-text-secondary transition-opacity duration-150',
+            'text-text-secondary col-start-1 row-start-1 flex items-center justify-between text-xs transition-opacity duration-150',
             dragging ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
         >
@@ -464,7 +464,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
             dragging ? 'pointer-events-none opacity-0' : 'opacity-100',
           )}
         >
-          <span className="text-sm text-text-secondary">
+          <span className="text-text-secondary text-sm">
             {localize('com_ui_composer_thinking')}
           </span>
           <span className="flex shrink-0 items-center gap-2">
@@ -492,7 +492,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
                       the provider's own explanation of the parameter appears,
                       and hovering was the only way to reach it. */}
                   <IconButton label={localize('com_ui_more_info')} size="xs">
-                    <CircleHelp className="h-3.5 w-3.5 text-text-secondary" aria-hidden="true" />
+                    <CircleHelp className="text-text-secondary h-3.5 w-3.5" aria-hidden="true" />
                   </IconButton>
                 </HoverCardTrigger>
                 <HoverCardPortal>

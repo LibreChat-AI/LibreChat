@@ -150,7 +150,7 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
             {steer.status === 'failed' ? (
               <div className="-mt-2 mb-2 flex items-center gap-3 pl-9 text-xs">
                 {quoteCount > 0 && (
-                  <span className="flex items-center gap-0.5 text-text-secondary">
+                  <span className="text-text-secondary flex items-center gap-0.5">
                     <TextQuote className="h-3.5 w-3.5" aria-hidden="true" />
                     <span aria-hidden="true">{quoteCount}</span>
                     <span className="sr-only">
@@ -194,7 +194,7 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
                 )}
               </div>
             ) : (
-              <div className="-mt-2 mb-2 flex items-center gap-2 pl-9 text-xs text-text-secondary">
+              <div className="text-text-secondary -mt-2 mb-2 flex items-center gap-2 pl-9 text-xs">
                 <span>
                   {localize(
                     steer.preempt === true ? 'com_ui_steer_in_flight_preempt' : 'com_ui_sending',

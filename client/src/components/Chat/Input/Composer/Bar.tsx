@@ -141,7 +141,7 @@ function RoundButton({
           <span
             className={cn(
               'flex h-full w-full items-center justify-center',
-              !primary && 'text-text-secondary transition-colors hover:text-text-primary',
+              !primary && 'text-text-secondary hover:text-text-primary transition-colors',
             )}
           >
             {children}
@@ -176,7 +176,7 @@ export function ChipModes({ modes, menuLabel }: ChipModesProps) {
             : (menuLabel ?? localize('com_ui_mode'))
         }
         onClick={(e) => e.stopPropagation()}
-        className="focus-visible:outline-hidden -mr-0.5 flex shrink-0 items-center gap-0.5 rounded px-1 text-xs text-text-secondary transition-colors hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-2 focus-visible:ring-border-xheavy"
+        className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-border-xheavy -mr-0.5 flex shrink-0 items-center gap-0.5 rounded px-1 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
       >
         {active != null && <span className="max-w-[7rem] truncate">{active.label}</span>}
         <ChevronDown
@@ -192,7 +192,7 @@ export function ChipModes({ modes, menuLabel }: ChipModesProps) {
         gutter={6}
         unmountOnHide
         onClick={(event) => event.stopPropagation()}
-        className="animate-composer-popover outline-hidden z-50 min-w-[10rem] rounded-xl border border-border-light bg-presentation p-1 shadow-lg"
+        className="animate-composer-popover border-border-light bg-presentation z-50 min-w-[10rem] rounded-xl border p-1 shadow-lg outline-hidden"
       >
         {modes.map((mode) => (
           <Ariakit.MenuItem
@@ -201,7 +201,7 @@ export function ChipModes({ modes, menuLabel }: ChipModesProps) {
             role="menuitemradio"
             aria-checked={mode.active}
             onClick={mode.onSelect}
-            className="flex cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-sm text-text-secondary data-[active-item]:bg-surface-hover data-[active-item]:text-text-primary"
+            className="text-text-secondary data-[active-item]:bg-surface-hover data-[active-item]:text-text-primary flex cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-sm"
           >
             <span className="truncate">{mode.label}</span>
             {mode.active && <Check className="size-4 shrink-0" aria-hidden="true" />}
@@ -395,7 +395,7 @@ function Bar({
         {/* Matches the chip's own `tone="surface"` text color: IconButton owns
             its own color, so the glyph carries it directly rather than
             inheriting through the button. */}
-        <Plus className="size-3 text-text-secondary" aria-hidden="true" />
+        <Plus className="text-text-secondary size-3" aria-hidden="true" />
       </IconButton>
     ) : null;
 
@@ -547,7 +547,7 @@ function Bar({
                 dictating ? 'scale-100 opacity-100' : 'pointer-events-none scale-90 opacity-0',
               )}
             >
-              <span className="text-xs tabular-nums text-text-secondary" aria-hidden="true">
+              <span className="text-text-secondary text-xs tabular-nums" aria-hidden="true">
                 {dictation.transcribing
                   ? localize('com_ui_transcribing')
                   : formatElapsed(dictation.elapsed)}

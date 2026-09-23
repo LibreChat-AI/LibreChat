@@ -37,7 +37,7 @@ function Hints({
         <div
           aria-hidden="true"
           data-testid="composer-hints"
-          className="pointer-events-none select-none px-3 pt-1.5 text-center text-xs leading-4 text-text-secondary"
+          className="text-text-secondary pointer-events-none px-3 pt-1.5 text-center text-xs leading-4 select-none"
         >
           {hint.text}
         </div>

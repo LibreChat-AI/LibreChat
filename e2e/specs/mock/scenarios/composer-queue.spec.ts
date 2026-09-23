@@ -133,7 +133,10 @@ test.describe('composer queue rail', () => {
     page,
   }) => {
     test.setTimeout(120000);
-    test.skip((page.viewportSize()?.width ?? 1280) <= 768, 'HTML5 pointer drag requires hover support');
+    test.skip(
+      (page.viewportSize()?.width ?? 1280) <= 768,
+      'HTML5 pointer drag requires hover support',
+    );
     const label = uniqueLabel('queue-pointer-reorder');
     const firstText = `First pointer message ${label}`;
     const secondText = `Second pointer message ${label}`;

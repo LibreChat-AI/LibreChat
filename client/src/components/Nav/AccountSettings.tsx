@@ -50,7 +50,7 @@ function HelpSubmenu({
       >
         <CircleHelp className="icon-md" aria-hidden="true" />
         <span className="flex-1 text-left">{localize('com_nav_help')}</span>
-        <ChevronRight className="h-4 w-4 text-text-secondary" aria-hidden="true" />
+        <ChevronRight className="text-text-secondary h-4 w-4" aria-hidden="true" />
       </Menu.MenuItem>
       <Menu.Menu
         portal
@@ -127,7 +127,7 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
         </div>
         {!collapsed && (
           <div
-            className="mt-2 grow overflow-hidden text-ellipsis whitespace-nowrap text-left text-text-primary"
+            className="text-text-primary mt-2 grow overflow-hidden text-left text-ellipsis whitespace-nowrap"
             style={{ marginTop: '0', marginLeft: '0' }}
           >
             {user?.name ?? user?.username ?? localize('com_nav_user')}

@@ -102,8 +102,8 @@ function ThinkingControl({
               <button
                 type="button"
                 className={cn(
-                  'gap-1 rounded-full px-2.5 text-sm text-text-primary transition-colors',
-                  'focus-visible:outline-hidden hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-text-primary',
+                  'text-text-primary gap-1 rounded-full px-2.5 text-sm transition-colors',
+                  'hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
                   open && 'bg-surface-hover',
                 )}
               />
@@ -126,7 +126,7 @@ function ThinkingControl({
           <span
             ref={ghostsRef}
             aria-hidden="true"
-            className="pointer-events-none invisible absolute left-0 top-0 w-max"
+            className="pointer-events-none invisible absolute top-0 left-0 w-max"
           >
             {optionLabels.map((text) => (
               <span key={text} className="block whitespace-nowrap">
@@ -137,14 +137,14 @@ function ThinkingControl({
           <span
             ref={currentRef}
             aria-hidden="true"
-            className="pointer-events-none invisible absolute left-0 top-0 w-max whitespace-nowrap"
+            className="pointer-events-none invisible absolute top-0 left-0 w-max whitespace-nowrap"
           >
             {display}
           </span>
           {/* Always centred: flipping alignment as the width animated made the
               label jump sideways mid-transition. Closed the slot is exactly the
               label's width, so centred and left are identical anyway. */}
-          <span className="block whitespace-nowrap text-center">{display}</span>
+          <span className="block text-center whitespace-nowrap">{display}</span>
         </span>
         {/* Turns to point at the popup, which is the only cue that the button
             and the panel below it are one control. */}
@@ -167,7 +167,7 @@ function ThinkingControl({
         aria-label={localize('com_ui_composer_thinking_value', { 0: display })}
         /* `border-light` resolves to the same value as `surface-tertiary`, so
            the edge was invisible against the popup's own background. */
-        className="animate-composer-popover outline-hidden z-50 rounded-2xl border border-border-medium bg-surface-tertiary shadow-lg"
+        className="animate-composer-popover border-border-medium bg-surface-tertiary z-50 rounded-2xl border shadow-lg outline-hidden"
       >
         <Effort setting={setting} conversation={conversation} value={value} onChange={onChange} />
       </Ariakit.Popover>

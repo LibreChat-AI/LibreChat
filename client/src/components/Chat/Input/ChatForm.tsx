@@ -721,7 +721,7 @@ const ChatForm = memo(function ChatForm({
               data-testid="composer-context-rail"
               className={cn(
                 'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-t-2xl',
-                'border border-border-light bg-surface-secondary px-2 pb-4 pt-1',
+                'border-border-light bg-surface-secondary border px-2 pt-1 pb-4',
                 isRTL && 'flex-row-reverse',
               )}
             >
@@ -874,14 +874,14 @@ const ChatForm = memo(function ChatForm({
                         active={dictation.active}
                         className={cn(
                           'pointer-events-none absolute inset-y-0 h-full',
-                          isMoreThanThreeRows ? 'left-5 right-2' : 'inset-x-5',
+                          isMoreThanThreeRows ? 'right-2 left-5' : 'inset-x-5',
                         )}
                       />
                     )}
                     {/* Sits over the fade scrim in the corner of the input
                         rather than in its own column beside it, so a long draft
                         does not push an orphaned control off to the side. */}
-                    <div className="absolute bottom-1 right-2 z-10">
+                    <div className="absolute right-2 bottom-1 z-10">
                       <CollapseChat
                         isCollapsed={isCollapsed}
                         isScrollable={isMoreThanThreeRows}
@@ -895,7 +895,7 @@ const ChatForm = memo(function ChatForm({
                 <p
                   id={`code-workspace-hint-${index}`}
                   role="status"
-                  className="px-5 pb-2 text-sm text-text-secondary"
+                  className="text-text-secondary px-5 pb-2 text-sm"
                 >
                   {localize('com_error_code_workspace_required')}
                 </p>

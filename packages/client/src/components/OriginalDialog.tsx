@@ -355,7 +355,7 @@ const DialogContent: React.ForwardRefExoticComponent<
           style={{ ...style, zIndex: contentZIndex }}
           onEscapeKeyDown={handleEscapeKeyDown}
           className={cn(
-            'fixed text-text-primary',
+            'text-text-primary fixed',
             !bare && DIALOG_SURFACE_CLASSES,
             focusOutlineVariants({ focusOutline }),
             className,
@@ -370,7 +370,7 @@ const DialogContent: React.ForwardRefExoticComponent<
             aria-hidden="true"
           />
           {showCloseButton && (
-            <DialogPrimitive.Close className="focus:outline-hidden absolute right-4 top-4 rounded-sm opacity-70 ring-ring-primary ring-offset-surface-dialog transition-opacity hover:opacity-100 focus:ring-2 focus:ring-text-primary focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary">
+            <DialogPrimitive.Close className="ring-ring-primary ring-offset-surface-dialog focus:ring-text-primary data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
               <X className="h-6 w-6" aria-hidden="true" />
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
@@ -412,7 +412,7 @@ const DialogTitle: React.ForwardRefExoticComponent<
   <DialogPrimitive.Title
     ref={ref}
     className={cn(
-      'text-lg font-semibold leading-none tracking-tight',
+      'text-lg leading-none font-semibold tracking-tight',
       focusOutlineVariants({ focusOutline }),
       className,
     )}
@@ -430,7 +430,7 @@ const DialogDescription: React.ForwardRefExoticComponent<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn('text-sm text-text-secondary', className)}
+    className={cn('text-text-secondary text-sm', className)}
     {...props}
   />
 ));

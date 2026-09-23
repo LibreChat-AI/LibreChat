@@ -192,13 +192,13 @@ function TokenUsageIndicator({
           popover.show();
         }}
         className={cn(
-          'flex size-theme-control items-center justify-center rounded-theme-control-round transition-colors',
-          'focus-visible:outline-hidden hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-text-primary',
-          'duration-300 animate-in fade-in zoom-in-95',
+          'size-theme-control rounded-theme-control-round flex items-center justify-center transition-colors',
+          'hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
+          'animate-in fade-in zoom-in-95 duration-300',
         )}
       >
         {showCompactingIndicator ? (
-          <Spinner className="size-5 text-text-secondary" />
+          <Spinner className="text-text-secondary size-5" />
         ) : (
           <span
             role="meter"
@@ -254,7 +254,7 @@ function TokenUsageIndicator({
           />
           {compactionAvailable && (
             <>
-              <div className="border-t border-border-light" role="separator" />
+              <div className="border-border-light border-t" role="separator" />
               <CompactAction
                 compact={compaction.compact}
                 canCompact={compaction.canCompact}

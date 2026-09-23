@@ -118,10 +118,10 @@ export function ReasoningControl({
           type="button"
           disabled={disabled}
           aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
-          className="focus-visible:outline-hidden inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-text-primary disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary"
+          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary inline-flex h-8 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
-          <span className="@sm:inline hidden max-w-24 truncate">{displayValue}</span>
+          <span className="hidden max-w-24 truncate @sm:inline">{displayValue}</span>
           <ChevronDown className="size-3" aria-hidden="true" />
         </button>
       </Popover.Trigger>
@@ -132,15 +132,15 @@ export function ReasoningControl({
           aria-label={label}
           align="end"
           sideOffset={6}
-          className="z-50 w-72 max-w-[calc(100vw-2rem)] origin-[--radix-popover-content-transform-origin] overflow-hidden rounded-2xl border border-border-light bg-surface-secondary text-text-primary shadow-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 motion-reduce:animate-none"
+          className="border-border-light bg-surface-secondary text-text-primary data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 z-50 w-72 max-w-[calc(100vw-2rem)] origin-[--radix-popover-content-transform-origin] overflow-hidden rounded-2xl border shadow-xl motion-reduce:animate-none"
         >
           <div className="flex items-center gap-2 px-4 py-3">
-            <BrainCircuit className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+            <BrainCircuit className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
             <div className="min-w-0 flex-1">
               <div id={labelId} className="truncate text-sm font-medium">
                 {label}
               </div>
-              <div className="truncate text-xs text-text-secondary">
+              <div className="text-text-secondary truncate text-xs">
                 {localize('com_ui_reasoning_for_next_message')}
               </div>
             </div>
@@ -152,16 +152,16 @@ export function ReasoningControl({
                 className="group -mr-1 shrink-0"
               >
                 <X
-                  className="size-4 text-text-secondary group-hover:text-text-primary"
+                  className="text-text-secondary group-hover:text-text-primary size-4"
                   aria-hidden="true"
                 />
               </Button>
             </Popover.Close>
           </div>
-          <div className="border-t border-border-light px-4 pb-4 pt-3">
+          <div className="border-border-light border-t px-4 pt-3 pb-4">
             {isEnum ? (
               <>
-                <div className="mb-4 text-sm font-medium text-text-primary">{displayValue}</div>
+                <div className="text-text-primary mb-4 text-sm font-medium">{displayValue}</div>
                 <div className="py-1">
                   <Slider
                     aria-labelledby={labelId}
@@ -173,7 +173,7 @@ export function ReasoningControl({
                     onValueChange={([nextIndex]) => emit(options[nextIndex])}
                   />
                 </div>
-                <div className="mt-2.5 flex justify-between gap-4 text-xs text-text-secondary">
+                <div className="text-text-secondary mt-2.5 flex justify-between gap-4 text-xs">
                   <span className="truncate">
                     {translated(setting.enumMappings?.[options[0]] ?? options[0], localize)}
                   </span>
@@ -190,7 +190,7 @@ export function ReasoningControl({
               <>
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <div className="shadow-xs h-8 w-24 shrink-0 rounded-lg bg-surface-primary font-medium">
+                    <div className="bg-surface-primary h-8 w-24 shrink-0 rounded-lg font-medium shadow-xs">
                       <Input
                         type="number"
                         aria-label={label}
@@ -204,7 +204,7 @@ export function ReasoningControl({
                         className="h-8 w-24 text-right"
                       />
                     </div>
-                    <span className="truncate text-xs text-text-secondary">
+                    <span className="text-text-secondary truncate text-xs">
                       {localize('com_ui_tokens')}
                     </span>
                   </div>
@@ -236,7 +236,7 @@ export function ReasoningControl({
                     onValueChange={([nextValue]) => emitNumericValue(nextValue)}
                   />
                 </div>
-                <div className="mt-2.5 flex justify-between gap-4 text-xs text-text-secondary">
+                <div className="text-text-secondary mt-2.5 flex justify-between gap-4 text-xs">
                   <span>{formatTokens(numericMin)}</span>
                   <span>{formatTokens(range.max)}</span>
                 </div>

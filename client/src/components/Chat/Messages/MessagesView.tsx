@@ -147,11 +147,11 @@ function MessagesViewContent({
               overflowAnchor: mountWindow != null ? 'none' : undefined,
             }}
           >
-            <div ref={contentRef} className="flex flex-col pb-9 pt-14">
+            <div ref={contentRef} className="flex flex-col pt-14 pb-9">
               {(_messagesTree && _messagesTree.length == 0) || _messagesTree === null ? (
                 <div
                   className={cn(
-                    'flex w-full items-center justify-center p-3 text-text-secondary',
+                    'text-text-secondary flex w-full items-center justify-center p-3',
                     fontSize,
                   )}
                 >

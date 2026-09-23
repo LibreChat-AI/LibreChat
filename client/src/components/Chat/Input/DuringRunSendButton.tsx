@@ -124,7 +124,7 @@ const DuringRunSendButton = React.memo(
       key: 'steer',
       label: localize('com_ui_steer'),
       kbd: steerKbd,
-      icon: <Zap className="h-4 w-4 text-status-warning" aria-hidden="true" />,
+      icon: <Zap className="text-status-warning h-4 w-4" aria-hidden="true" />,
       // A staged reasoning choice is a queued full turn, not a live steer.
       disabled: !steering.canSteer || steering.pendingReasoningOverride != null,
       onClick: () => runAction((text) => steering.steerFromComposer(text)),
@@ -133,7 +133,7 @@ const DuringRunSendButton = React.memo(
       key: 'queue',
       label: localize('com_ui_queue'),
       kbd: primary === 'queue' ? submitHint : alternateHint,
-      icon: <Clock className="h-4 w-4 text-status-info" aria-hidden="true" />,
+      icon: <Clock className="text-status-info h-4 w-4" aria-hidden="true" />,
       onClick: () => runAction((text) => steering.queueFromComposer(text)),
     };
     /** Keeps the half-written answer, unlike interrupt & send below it. */
@@ -141,7 +141,7 @@ const DuringRunSendButton = React.memo(
       key: 'interrupt-steer',
       label: localize('com_ui_interrupt_steer'),
       kbd: interruptSteerKbd,
-      icon: <ZapOff className="h-4 w-4 text-status-warning" aria-hidden="true" />,
+      icon: <ZapOff className="text-status-warning h-4 w-4" aria-hidden="true" />,
       disabled:
         steering.pausedOnApproval ||
         !steering.canControlGeneration ||
@@ -152,7 +152,7 @@ const DuringRunSendButton = React.memo(
       key: 'interrupt',
       label: localize('com_ui_interrupt_send'),
       kbd: verdicts.altEnter === 'interrupt' ? altEnter : undefined,
-      icon: <OctagonPause className="h-4 w-4 text-status-error" aria-hidden="true" />,
+      icon: <OctagonPause className="text-status-error h-4 w-4" aria-hidden="true" />,
       disabled: !steering.canControlGeneration,
       onClick: () => runAction((text) => steering.interruptAndSend(text)),
     };

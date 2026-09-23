@@ -91,7 +91,10 @@ export async function waitForPersistedAgent(
   return latestAgent!;
 }
 
-export async function openAgentBuilder(page: Page, { navigate = true }: { navigate?: boolean } = {}) {
+export async function openAgentBuilder(
+  page: Page,
+  { navigate = true }: { navigate?: boolean } = {},
+) {
   if (navigate) {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   }

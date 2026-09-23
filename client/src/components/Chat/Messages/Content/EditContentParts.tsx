@@ -398,7 +398,7 @@ export default function EditContentParts({
             <label
               key={`editor-${messageId}-${absoluteIndex}`}
               dir={isRTL ? 'rtl' : 'ltr'}
-              className="flex min-w-0 flex-col gap-1.5 text-xs font-medium text-text-secondary"
+              className="text-text-secondary flex min-w-0 flex-col gap-1.5 text-xs font-medium"
             >
               {label}
               <TextareaAutosize
@@ -423,8 +423,8 @@ export default function EditContentParts({
                 dir={isRTL ? 'rtl' : 'ltr'}
                 className={cn(
                   'message-editor-text max-h-[65vh] min-h-24 w-full resize-y rounded-lg',
-                  'border border-border-medium bg-surface-tertiary-alt px-3 py-2',
-                  'font-normal text-text-primary',
+                  'border-border-medium bg-surface-tertiary-alt border px-3 py-2',
+                  'text-text-primary font-normal',
                   isRTL ? 'text-right' : 'text-left',
                   'disabled:opacity-50 md:max-h-[75vh]',
                 )}
@@ -439,7 +439,7 @@ export default function EditContentParts({
           English labels need, and a translated label needs more still. */}
       <footer className="flex flex-wrap items-center justify-between gap-2">
         <span
-          className="line-clamp-2 min-w-0 flex-1 text-xs text-text-secondary"
+          className="text-text-secondary line-clamp-2 min-w-0 flex-1 text-xs"
           aria-live="polite"
         >
           {getStatusMessage()}

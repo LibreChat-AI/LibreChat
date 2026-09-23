@@ -785,7 +785,7 @@ function Palette({
           >
             <div
               role="columnheader"
-              className="flex flex-1 items-end px-2 pb-1 text-xs font-medium uppercase tracking-wide text-text-secondary"
+              className="text-text-secondary flex flex-1 items-end px-2 pb-1 text-xs font-medium tracking-wide uppercase"
             >
               {row.label}
             </div>
@@ -808,7 +808,7 @@ function Palette({
               setScrollToActive(false);
             }}
             className={cn(
-              'flex rounded-lg text-sm text-text-secondary',
+              'text-text-secondary flex rounded-lg text-sm',
               isActive && 'bg-surface-hover',
               arrived && 'animate-composer-palette-row',
             )}
@@ -849,7 +849,7 @@ function Palette({
               setScrollToActive(false);
             }}
             className={cn(
-              'flex rounded-lg text-sm text-text-secondary',
+              'text-text-secondary flex rounded-lg text-sm',
               isActive && 'bg-surface-hover',
               arrived && 'animate-composer-palette-row',
             )}
@@ -872,7 +872,7 @@ function Palette({
                 {file.type?.startsWith('image') === true ? (
                   <span
                     aria-hidden="true"
-                    className="size-7 shrink-0 overflow-hidden rounded-md bg-surface-tertiary"
+                    className="bg-surface-tertiary size-7 shrink-0 overflow-hidden rounded-md"
                   >
                     {/* Keyed by the path so a virtualized row that is reused for
                         another file gets a fresh image, not one still hidden by
@@ -896,7 +896,7 @@ function Palette({
                 )}
                 <span className="flex min-w-0 flex-1 flex-col justify-center">
                   <span className="truncate">{file.filename}</span>
-                  <span className="truncate text-xs text-text-secondary opacity-80">
+                  <span className="text-text-secondary truncate text-xs opacity-80">
                     {formatFileDate(file)}
                   </span>
                 </span>
@@ -948,7 +948,7 @@ function Palette({
             {checked && (
               <span
                 aria-hidden="true"
-                className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-text-primary"
+                className="bg-text-primary absolute inset-y-1 left-0 w-0.5 rounded-full"
               />
             )}
             <button
@@ -966,7 +966,7 @@ function Palette({
               <span className="flex min-w-0 flex-1 flex-col justify-center">
                 <span className={cn('truncate', checked && 'font-medium')}>{label}</span>
                 {description != null && description !== '' && (
-                  <span className="truncate text-xs text-text-secondary opacity-80">
+                  <span className="text-text-secondary truncate text-xs opacity-80">
                     {description}
                   </span>
                 )}
@@ -1006,9 +1006,9 @@ function Palette({
                       mode.onSelect();
                     }}
                     className={cn(
-                      'focus-visible:outline-hidden min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-text-primary',
+                      'focus-visible:ring-text-primary min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden',
                       mode.active
-                        ? 'border-transparent bg-surface-active-alt text-text-primary'
+                        ? 'bg-surface-active-alt text-text-primary border-transparent'
                         : 'border-border-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary',
                     )}
                   >
@@ -1123,7 +1123,7 @@ function Palette({
                 className={cn(
                   'animate-composer-icon size-5',
                   open || dictating
-                    ? 'rotate-45 text-text-primary'
+                    ? 'text-text-primary rotate-45'
                     : 'text-text-secondary group-hover:text-text-primary',
                 )}
                 aria-hidden="true"
@@ -1167,7 +1167,7 @@ function Palette({
             getAnchorRect={() => anchorRef.current?.getBoundingClientRect() ?? null}
             aria-label={localize('com_ui_composer_palette')}
             style={{ width: 'var(--popover-anchor-width)' }}
-            className="animate-composer-popover outline-hidden z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border border-border-light bg-presentation shadow-lg"
+            className="animate-composer-popover border-border-light bg-presentation z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border shadow-lg outline-hidden"
           >
             {/* The whole row is the search target, not just the input: the icon
                 and the padding around it read as part of the field, so clicking
@@ -1182,9 +1182,9 @@ function Palette({
                 event.stopPropagation();
                 inputRef.current?.focus();
               }}
-              className="flex cursor-text items-center gap-2 border-b border-border-light px-3 py-2"
+              className="border-border-light flex cursor-text items-center gap-2 border-b px-3 py-2"
             >
-              <Search className="h-4 w-4 shrink-0 text-text-secondary" aria-hidden="true" />
+              <Search className="text-text-secondary h-4 w-4 shrink-0" aria-hidden="true" />
               <input
                 ref={inputRef}
                 role="combobox"
@@ -1207,7 +1207,7 @@ function Palette({
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={handleKeyDown}
                 data-testid="composer-palette-search"
-                className="focus:outline-hidden focus-visible:outline-hidden w-full rounded-md border-0 bg-transparent text-sm text-text-primary shadow-none ring-0 placeholder:text-text-secondary focus:border-0 focus:ring-0 focus-visible:ring-2 focus-visible:ring-text-primary"
+                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-text-primary w-full rounded-md border-0 bg-transparent text-sm shadow-none ring-0 focus:border-0 focus:ring-0 focus:outline-hidden focus-visible:ring-2 focus-visible:outline-hidden"
               />
               <span id={helpId} className="sr-only">
                 {localize('com_ui_composer_palette_help', { 0: FAVORITE_MODIFIER })}
@@ -1221,7 +1221,7 @@ function Palette({
               <div
                 role="status"
                 aria-live="polite"
-                className="px-2 py-6 text-center text-sm text-text-secondary"
+                className="text-text-secondary px-2 py-6 text-center text-sm"
               >
                 {localize('com_ui_composer_no_results')}
               </div>
