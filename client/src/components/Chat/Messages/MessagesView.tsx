@@ -194,7 +194,9 @@ function MessagesViewContent({
                * conversation id still names the source chat, and its Cancel
                * and Escalate actions would mutate that run while sitting at
                * the destination thread's tail. */}
-              {treeConversationId != null && <PendingSteers conversationId={treeConversationId} />}
+              {treeConversationId != null && (
+                <PendingSteers conversationId={treeConversationId} index={index} />
+              )}
               <div id="messages-end" className="group h-0 w-full shrink-0" ref={messagesEndRef} />
             </div>
           </div>

@@ -2,8 +2,8 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
 import { Provider as JotaiProvider, createStore } from 'jotai';
-import { ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
 import type { PendingSteer } from '~/store/families';
@@ -61,7 +61,13 @@ const pending = (over: Partial<PendingSteer> = {}): PendingSteer => ({
   ...over,
 });
 
-function renderPending(steers: PendingSteer[], messages?: TMessage[], activeSiblingIndex?: number) {
+function renderPending(
+  steers: PendingSteer[],
+  messages?: TMessage[],
+  activeSiblingIndex?: number,
+  /** Split view: this tree renders in `index`, while pane 0 shows another chat. */
+  pane?: { index: number; siblingKeyId: string; otherConversationId: string },
+) {
   /* The escalation control resolves the cache through the branch-aware
      latest-message hook, using the same providers the chat view supplies. */
   const queryClient = new QueryClient({
@@ -73,7 +79,10 @@ function renderPending(steers: PendingSteer[], messages?: TMessage[], activeSibl
   queryClient.setQueryData([QueryKeys.messages, CONVO_ID], messages ?? []);
   const jotaiStore = createStore();
   if (activeSiblingIndex != null) {
-    jotaiStore.set(siblingIdxFamily(siblingKey('root-user')), activeSiblingIndex);
+    jotaiStore.set(
+      siblingIdxFamily(siblingKey(pane?.siblingKeyId ?? 'root-user')),
+      activeSiblingIndex,
+    );
   }
   return render(
     <MemoryRouter>
@@ -81,11 +90,18 @@ function renderPending(steers: PendingSteer[], messages?: TMessage[], activeSibl
         <JotaiProvider store={jotaiStore}>
           <RecoilRoot
             initializeState={({ set }) => {
-              set(store.conversationByIndex(0), { conversationId: CONVO_ID } as TConversation);
+              set(store.conversationByIndex(0), {
+                conversationId: pane?.otherConversationId ?? CONVO_ID,
+              } as TConversation);
+              if (pane != null) {
+                set(store.conversationByIndex(pane.index), {
+                  conversationId: CONVO_ID,
+                } as TConversation);
+              }
               set(store.pendingSteersByConvoId(CONVO_ID), steers);
             }}
           >
-            <PendingSteers conversationId={CONVO_ID} />
+            <PendingSteers conversationId={CONVO_ID} index={pane?.index} />
           </RecoilRoot>
         </JotaiProvider>
       </QueryClientProvider>
@@ -357,6 +373,40 @@ describe('PendingSteers', () => {
       } as unknown as TMessage;
 
       renderPending([pending({ status: 'pending' })], [root, active, inactive], 1);
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    it('reads the pause from the branch its own pane has selected', () => {
+      const paused = {
+        messageId: 'root-paused',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'root-call',
+              name: 'shell',
+              approval: { actionId: 'root' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+      const plain = {
+        messageId: 'root-plain',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+
+      renderPending([pending({ status: 'pending' })], [paused, plain], 1, {
+        index: 1,
+        siblingKeyId: CONVO_ID,
+        otherConversationId: 'other-conversation',
+      });
       expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
     });
 

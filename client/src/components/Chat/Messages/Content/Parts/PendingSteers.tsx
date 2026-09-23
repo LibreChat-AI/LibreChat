@@ -31,9 +31,12 @@ const ACTION_CLASS =
  */
 interface PendingSteersProps {
   conversationId: string;
+  /** The pane rendering this tree: its sibling selection picks the branch the
+   *  pause check reads, which another pane's selection would get wrong. */
+  index?: number;
 }
 
-function PendingSteers({ conversationId }: PendingSteersProps) {
+function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
@@ -50,7 +53,7 @@ function PendingSteers({ conversationId }: PendingSteersProps) {
   const queryClient = useQueryClient();
   const cachedMessages =
     queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]) ?? [];
-  const latestMessage = useLatestMessage(0, conversationId);
+  const latestMessage = useLatestMessage(index, conversationId);
   const { data: fallbackPaused } = useGetMessagesByConvoId<boolean>(conversationId, {
     select: hasLiveRunPause,
   });
