@@ -77,7 +77,7 @@ function QueuedIcon({ warning, hint }: { warning: boolean; hint?: string }) {
           role="img"
           aria-label={hint}
           tabIndex={0}
-          className="flex shrink-0 cursor-help rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+          className="focus-visible:outline-hidden flex shrink-0 cursor-help rounded-full focus-visible:ring-2 focus-visible:ring-text-primary"
         >
           <Clock className="h-4 w-4 text-text-secondary" aria-hidden="true" />
         </span>

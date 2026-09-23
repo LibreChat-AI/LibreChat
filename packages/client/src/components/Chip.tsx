@@ -77,7 +77,7 @@ const Chip: React.ForwardRefExoticComponent<ChipProps & React.RefAttributes<HTML
             label={removeLabel}
             size="xs"
             shape={shape === 'theme' ? 'theme' : 'round'}
-            className="hover:bg-surface-hover/50 -mr-1 text-current"
+            className="-mr-1 text-current hover:bg-surface-hover/50"
             onClick={(event) => {
               event.stopPropagation();
               onRemove(event);

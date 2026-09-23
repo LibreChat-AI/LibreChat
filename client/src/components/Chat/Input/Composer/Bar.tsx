@@ -176,7 +176,7 @@ export function ChipModes({ modes, menuLabel }: ChipModesProps) {
             : (menuLabel ?? localize('com_ui_mode'))
         }
         onClick={(e) => e.stopPropagation()}
-        className="-mr-0.5 flex shrink-0 items-center gap-0.5 rounded px-1 text-xs text-text-secondary transition-colors hover:bg-surface-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-xheavy"
+        className="focus-visible:outline-hidden -mr-0.5 flex shrink-0 items-center gap-0.5 rounded px-1 text-xs text-text-secondary transition-colors hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-2 focus-visible:ring-border-xheavy"
       >
         {active != null && <span className="max-w-[7rem] truncate">{active.label}</span>}
         <ChevronDown
@@ -192,7 +192,7 @@ export function ChipModes({ modes, menuLabel }: ChipModesProps) {
         gutter={6}
         unmountOnHide
         onClick={(event) => event.stopPropagation()}
-        className="animate-composer-popover z-50 min-w-[10rem] rounded-xl border border-border-light bg-presentation p-1 shadow-lg outline-none"
+        className="animate-composer-popover outline-hidden z-50 min-w-[10rem] rounded-xl border border-border-light bg-presentation p-1 shadow-lg"
       >
         {modes.map((mode) => (
           <Ariakit.MenuItem

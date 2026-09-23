@@ -143,7 +143,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                           }}
                           className={
                             isFilenameCell
-                              ? 'focus-visible:outline-text-primary focus-visible:outline-2 focus-visible:outline-offset-[-2px]'
+                              ? 'focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-text-primary'
                               : ''
                           }
                           data-skip-refocus="true"
@@ -188,7 +188,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                 <TableRow>
                   <TableCell
                     colSpan={columns.length}
-                    className="text-text-secondary h-24 text-center text-sm"
+                    className="h-24 text-center text-sm text-text-secondary"
                   >
                     {localize('com_files_no_results')}
                   </TableCell>

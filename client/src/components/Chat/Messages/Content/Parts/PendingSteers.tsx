@@ -20,7 +20,7 @@ import SteerPart from './SteerPart';
 import store from '~/store';
 
 const ACTION_CLASS =
-  'rounded text-xs font-medium text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-xheavy';
+  'rounded text-xs font-medium text-text-secondary hover:text-text-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy';
 
 /**
  * Steers that have not been confirmed by the server yet, rendered at the tail

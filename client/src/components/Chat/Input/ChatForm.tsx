@@ -721,7 +721,7 @@ const ChatForm = memo(function ChatForm({
               data-testid="composer-context-rail"
               className={cn(
                 'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-t-2xl',
-                'border-border-light bg-surface-secondary border px-2 pt-1 pb-4',
+                'border border-border-light bg-surface-secondary px-2 pb-4 pt-1',
                 isRTL && 'flex-row-reverse',
               )}
             >

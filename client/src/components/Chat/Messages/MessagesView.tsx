@@ -151,7 +151,7 @@ function MessagesViewContent({
               {(_messagesTree && _messagesTree.length == 0) || _messagesTree === null ? (
                 <div
                   className={cn(
-                    'text-text-secondary flex w-full items-center justify-center p-3',
+                    'flex w-full items-center justify-center p-3 text-text-secondary',
                     fontSize,
                   )}
                 >
@@ -195,11 +195,7 @@ function MessagesViewContent({
                * and Escalate actions would mutate that run while sitting at
                * the destination thread's tail. */}
               {treeConversationId != null && <PendingSteers conversationId={treeConversationId} />}
-              <div
-                id="messages-end"
-                className="group h-0 w-full flex-shrink-0"
-                ref={messagesEndRef}
-              />
+              <div id="messages-end" className="group h-0 w-full shrink-0" ref={messagesEndRef} />
             </div>
           </div>
 

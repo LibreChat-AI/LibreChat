@@ -118,7 +118,7 @@ export function ReasoningControl({
           type="button"
           disabled={disabled}
           aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
-          className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary"
+          className="focus-visible:outline-hidden inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-text-primary disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary"
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
           <span className="@sm:inline hidden max-w-24 truncate">{displayValue}</span>
@@ -190,7 +190,7 @@ export function ReasoningControl({
               <>
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <div className="h-8 w-24 shrink-0 rounded-lg bg-surface-primary font-medium shadow-sm">
+                    <div className="shadow-xs h-8 w-24 shrink-0 rounded-lg bg-surface-primary font-medium">
                       <Input
                         type="number"
                         aria-label={label}

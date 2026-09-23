@@ -103,7 +103,7 @@ function ThinkingControl({
                 type="button"
                 className={cn(
                   'gap-1 rounded-full px-2.5 text-sm text-text-primary transition-colors',
-                  'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+                  'focus-visible:outline-hidden hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-text-primary',
                   open && 'bg-surface-hover',
                 )}
               />
@@ -167,7 +167,7 @@ function ThinkingControl({
         aria-label={localize('com_ui_composer_thinking_value', { 0: display })}
         /* `border-light` resolves to the same value as `surface-tertiary`, so
            the edge was invisible against the popup's own background. */
-        className="animate-composer-popover z-50 rounded-2xl border border-border-medium bg-surface-tertiary shadow-lg outline-none"
+        className="animate-composer-popover outline-hidden z-50 rounded-2xl border border-border-medium bg-surface-tertiary shadow-lg"
       >
         <Effort setting={setting} conversation={conversation} value={value} onChange={onChange} />
       </Ariakit.Popover>

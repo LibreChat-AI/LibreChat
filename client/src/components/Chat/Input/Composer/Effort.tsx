@@ -436,7 +436,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
               }}
               onClick={() => select(value)}
               style={{ left, right }}
-              className="absolute inset-y-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+              className="focus-visible:outline-hidden absolute inset-y-0 rounded-full focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
             />
           );
         })}

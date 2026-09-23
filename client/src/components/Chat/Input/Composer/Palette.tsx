@@ -1006,7 +1006,7 @@ function Palette({
                       mode.onSelect();
                     }}
                     className={cn(
-                      'min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
+                      'focus-visible:outline-hidden min-h-6 shrink-0 rounded-full border px-2 py-0.5 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-text-primary',
                       mode.active
                         ? 'border-transparent bg-surface-active-alt text-text-primary'
                         : 'border-border-medium text-text-secondary hover:bg-surface-hover hover:text-text-primary',
@@ -1167,7 +1167,7 @@ function Palette({
             getAnchorRect={() => anchorRef.current?.getBoundingClientRect() ?? null}
             aria-label={localize('com_ui_composer_palette')}
             style={{ width: 'var(--popover-anchor-width)' }}
-            className="animate-composer-popover z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border border-border-light bg-presentation shadow-lg outline-none"
+            className="animate-composer-popover outline-hidden z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border border-border-light bg-presentation shadow-lg"
           >
             {/* The whole row is the search target, not just the input: the icon
                 and the padding around it read as part of the field, so clicking
@@ -1207,7 +1207,7 @@ function Palette({
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={handleKeyDown}
                 data-testid="composer-palette-search"
-                className="w-full rounded-md border-0 bg-transparent text-sm text-text-primary shadow-none ring-0 placeholder:text-text-secondary focus:border-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+                className="focus:outline-hidden focus-visible:outline-hidden w-full rounded-md border-0 bg-transparent text-sm text-text-primary shadow-none ring-0 placeholder:text-text-secondary focus:border-0 focus:ring-0 focus-visible:ring-2 focus-visible:ring-text-primary"
               />
               <span id={helpId} className="sr-only">
                 {localize('com_ui_composer_palette_help', { 0: FAVORITE_MODIFIER })}
@@ -1258,7 +1258,7 @@ function Palette({
                     rowHeight={measureRow}
                     height={Math.min(layout.height, LIST_MAX_HEIGHT)}
                     className={cn(
-                      'focus:outline-none',
+                      'focus:outline-hidden',
                       layout.height > LIST_MAX_HEIGHT && 'composer-palette-scroll',
                     )}
                   />

@@ -93,7 +93,7 @@ function EditingRow({
   return (
     <div ref={recorder.boundaryRef} className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-text-primary truncate text-[13px]">{label}</span>
+        <span className="truncate text-[13px] text-text-primary">{label}</span>
         <RecorderPill
           state={recorder}
           ariaLabel={localize('com_shortcut_edit_aria', { 0: label })}
@@ -177,7 +177,7 @@ function ShortcutRow({
             type="button"
             disabled={disabled}
             onClick={() => resetBinding(info.id)}
-            className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary text-[11.5px] opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:outline-hidden"
+            className="focus-visible:outline-hidden text-[11.5px] text-text-secondary opacity-0 transition-opacity hover:text-text-primary focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-text-primary group-hover:opacity-100"
           >
             {localize('com_shortcut_reset')}
           </button>
@@ -189,7 +189,7 @@ function ShortcutRow({
             onClick={() => onStartEdit(info.id)}
             aria-label={editAriaLabel}
             data-testid={`edit-shortcut-${info.id}`}
-            className="border-border-medium text-text-secondary hover:border-border-heavy hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt inline-flex h-[22px] items-center gap-1 rounded-md border border-dashed bg-transparent px-2 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            className="focus-visible:outline-hidden inline-flex h-[22px] items-center gap-1 rounded-md border border-dashed border-border-medium bg-transparent px-2 text-[11px] font-medium text-text-secondary transition-colors hover:border-border-heavy hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-2 focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt"
           >
             <Plus className="h-3 w-3" aria-hidden="true" />
             {localize('com_shortcut_set')}
@@ -201,7 +201,7 @@ function ShortcutRow({
             onClick={() => onStartEdit(info.id)}
             aria-label={editAriaLabel}
             data-testid={`edit-shortcut-${info.id}`}
-            className="hover:bg-surface-tertiary focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt rounded-md px-1 py-0.5 transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            className="focus-visible:outline-hidden rounded-md px-1 py-0.5 transition-colors hover:bg-surface-tertiary focus-visible:ring-2 focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt"
           >
             <ShortcutKeyCombo keys={displayKeys} />
           </button>
@@ -237,7 +237,7 @@ function ShortcutGroup({
   const localize = useLocalize();
   return (
     <section className="mb-6 last:mb-0">
-      <h3 className="text-text-secondary mb-2 px-2 text-[12px] font-medium">
+      <h3 className="mb-2 px-2 text-[12px] font-medium text-text-secondary">
         {localize(groupKey as TranslationKeys)}
       </h3>
       <div className="flex flex-col">
@@ -283,12 +283,12 @@ function PanelsSection({
 }) {
   const localize = useLocalize();
   return (
-    <section className="border-border-light mb-6 border-t pt-4 last:mb-0 md:col-span-2 lg:col-span-1 lg:border-t-0 lg:pt-0">
+    <section className="mb-6 border-t border-border-light pt-4 last:mb-0 md:col-span-2 lg:col-span-1 lg:border-t-0 lg:pt-0">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 px-2">
-        <h3 className="text-text-secondary text-[12px] font-medium">
+        <h3 className="text-[12px] font-medium text-text-secondary">
           {localize('com_shortcut_group_panels')}
         </h3>
-        <p className="text-text-secondary/80 text-[11.5px]">
+        <p className="text-[11.5px] text-text-secondary/80">
           {localize('com_shortcut_group_panels_hint')}
         </p>
       </div>
@@ -378,27 +378,27 @@ function KeyboardShortcutsDialog() {
         className="flex max-h-[85vh] w-11/12 max-w-3xl flex-col overflow-hidden p-0 lg:max-w-5xl"
       >
         <header className="flex shrink-0 items-center justify-between gap-4 px-7 pt-6">
-          <OGDialogTitle className="text-text-primary text-[16px] font-semibold">
+          <OGDialogTitle className="text-[16px] font-semibold text-text-primary">
             {localize('com_shortcut_keyboard_shortcuts')}
           </OGDialogTitle>
           <OGDialogClose
             focusOutline="hidden"
-            className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-2 focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt"
           >
             <X className="h-4 w-4" />
             <span className="sr-only">{localize('com_ui_close')}</span>
           </OGDialogClose>
         </header>
 
-        <div className="border-border-light mt-4 flex items-center justify-between gap-4 border-b px-7 pb-3">
+        <div className="mt-4 flex items-center justify-between gap-4 border-b border-border-light px-7 pb-3">
           <div className="min-w-0">
             <Label
               htmlFor={enableSwitchId}
-              className="text-text-primary cursor-pointer text-[13px] font-medium select-none"
+              className="cursor-pointer select-none text-[13px] font-medium text-text-primary"
             >
               {localize('com_shortcut_keyboard_shortcuts')}
             </Label>
-            <p className="text-text-secondary mt-0.5 text-[11.5px]">
+            <p className="mt-0.5 text-[11.5px] text-text-secondary">
               {localize('com_shortcut_enable_all_hint')}
             </p>
           </div>
@@ -417,7 +417,7 @@ function KeyboardShortcutsDialog() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          <div className="grid grid-cols-1 gap-x-10 px-5 pt-5 pb-2 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-x-10 px-5 pb-2 pt-5 md:grid-cols-2 lg:grid-cols-3">
             <div>
               {leftColumn.map(([groupKey, items]) => (
                 <ShortcutGroup
@@ -469,11 +469,11 @@ function KeyboardShortcutsDialog() {
         </div>
 
         {hasAnyCustom && (
-          <footer className="border-border-light flex shrink-0 justify-end border-t px-7 py-3">
+          <footer className="flex shrink-0 justify-end border-t border-border-light px-7 py-3">
             <button
               type="button"
               onClick={resetAll}
-              className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary text-[12px] transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+              className="focus-visible:outline-hidden text-[12px] text-text-secondary transition-colors hover:text-text-primary focus-visible:ring-2 focus-visible:ring-text-primary"
             >
               {localize('com_shortcut_reset_all')}
             </button>
