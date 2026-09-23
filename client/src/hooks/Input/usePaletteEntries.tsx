@@ -459,6 +459,10 @@ export default function usePaletteEntries({
     } = mcpServerManager ?? {};
     if (toolsEnabled && canUseMcp && selectableServers) {
       const selected = new Set(mcpValues ?? []);
+      const syntheticClick = {
+        stopPropagation: () => {},
+        preventDefault: () => {},
+      } as React.MouseEvent;
       for (const server of selectableServers) {
         const title = server.config?.title || server.serverName;
         const statusProps = getServerStatusIconProps?.(server.serverName);
@@ -482,16 +486,43 @@ export default function usePaletteEntries({
               return;
             }
             if (statusProps?.hasCustomUserVars) {
-              statusProps.onConfigClick({
-                stopPropagation: () => {},
-                preventDefault: () => {},
-              } as React.MouseEvent);
+              statusProps.onConfigClick(syntheticClick);
               return;
             }
             void initializeServer?.(server.serverName);
             return;
           }
           toggleServerSelection?.(server.serverName);
+        };
+        /* A connected server keeps its per-user variables editable: the
+           palette row carries the Configure action the replaced menu had. */
+        const getServerModes = (): PaletteMode[] | undefined => {
+          if (statusProps?.isInitializing === true && statusProps.canCancel === true) {
+            return [
+              {
+                id: 'cancel',
+                label: localize('com_ui_cancel'),
+                active: false,
+                icon: <X className="h-4 w-4" aria-hidden="true" />,
+                onSelect: () => statusProps.onCancel(syntheticClick),
+              },
+            ];
+          }
+          if (
+            statusProps?.hasCustomUserVars === true &&
+            connectionStatus?.[server.serverName]?.connectionState === 'connected'
+          ) {
+            return [
+              {
+                id: 'configure',
+                label: localize('com_ui_configure'),
+                active: false,
+                icon: <Settings className="h-4 w-4" aria-hidden="true" />,
+                onSelect: () => statusProps.onConfigClick(syntheticClick),
+              },
+            ];
+          }
+          return undefined;
         };
         entries.push({
           key: `mcp:${server.serverName}`,
@@ -517,22 +548,7 @@ export default function usePaletteEntries({
           active: selected.has(server.serverName),
           pinned: false,
           onSelect: selectServer,
-          modes:
-            statusProps?.isInitializing === true && statusProps.canCancel === true
-              ? [
-                  {
-                    id: 'cancel',
-                    label: localize('com_ui_cancel'),
-                    active: false,
-                    icon: <X className="h-4 w-4" aria-hidden="true" />,
-                    onSelect: () =>
-                      statusProps.onCancel({
-                        stopPropagation: () => {},
-                        preventDefault: () => {},
-                      } as React.MouseEvent),
-                  },
-                ]
-              : undefined,
+          modes: getServerModes(),
         });
       }
     }

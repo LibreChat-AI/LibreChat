@@ -516,6 +516,36 @@ describe('usePaletteEntries', () => {
       expect(onCancel).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps a connected server with custom variables configurable', () => {
+      const context = fullContext();
+      const onConfigClick = jest.fn();
+      context.mcpServerManager.connectionStatus = { github: { connectionState: 'connected' } };
+      context.mcpServerManager.getServerStatusIconProps = jest.fn(() => ({
+        hasCustomUserVars: true,
+        onConfigClick,
+      }));
+      mockContext = context;
+      const row = entries().result.current.find((item) => item.key === 'mcp:github');
+
+      act(() => row?.modes?.find((mode) => mode.id === 'configure')?.onSelect());
+      expect(onConfigClick).toHaveBeenCalledTimes(1);
+
+      act(() => row?.onSelect());
+      expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
+    });
+
+    it('offers no configure action for a connected server without custom variables', () => {
+      const context = fullContext();
+      context.mcpServerManager.connectionStatus = { github: { connectionState: 'connected' } };
+      context.mcpServerManager.getServerStatusIconProps = jest.fn(() => ({
+        hasCustomUserVars: false,
+        onConfigClick: jest.fn(),
+      }));
+      mockContext = context;
+      const row = entries().result.current.find((item) => item.key === 'mcp:github');
+      expect(row?.modes).toBeUndefined();
+    });
+
     it('lists none while the manager has no selectable servers', () => {
       const context = fullContext();
       context.mcpServerManager = { ...context.mcpServerManager, selectableServers: undefined };
