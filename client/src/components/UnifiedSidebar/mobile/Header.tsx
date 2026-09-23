@@ -1,11 +1,11 @@
 import { memo, lazy, Suspense, useEffect, useRef } from 'react';
 import { Button, Sidebar, Skeleton } from '@librechat/client';
 import type { NavLink } from '~/common';
-import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { useLocalize } from '~/hooks';
 import Switcher from './Switcher';
+import NewChat from './NewChat';
 
 const AccountSettings = lazy(() => import('~/components/Nav/AccountSettings'));
 
@@ -21,12 +21,14 @@ function Header({
   links,
   expanded,
   onClose,
+  onNewChat,
   onLeaveInsights,
   routeActiveId,
 }: {
   links: NavLink[];
   expanded: boolean;
   onClose: () => void;
+  onNewChat: (afterSlide?: () => void) => void;
   onLeaveInsights?: () => void;
   routeActiveId?: string;
 }) {
@@ -57,14 +59,17 @@ function Header({
         id={expanded ? CLOSE_SIDEBAR_ID : undefined}
         data-testid={expanded ? 'close-sidebar-button' : undefined}
         size="icon"
-        variant="header-action"
+        /** `ghost`, like the controls it shares the strip with. `header-action`
+         *  carries the chat header's bordered plate, which reads over a scrolling
+         *  gradient and reads as an odd box beside two flat icons here. */
+        variant="ghost"
         aria-label={localize('com_nav_close_sidebar')}
         aria-expanded={expanded}
         aria-controls="chat-history-nav"
         /** The only close control while open, so its binding must be discoverable here. */
         aria-keyshortcuts={toggleSidebarAriaKey}
         tabIndex={expanded ? 0 : -1}
-        className="shrink-0"
+        className="h-9 w-9 shrink-0"
         onClick={onClose}
       >
         <Sidebar className="icon-md" aria-hidden="true" />
@@ -75,7 +80,7 @@ function Header({
         onNavigate={onClose}
         routeActiveId={routeActiveId}
       />
-      <AgentMarketplaceButton side="bottom" onNavigate={onClose} />
+      <NewChat onNewChat={onNewChat} />
       <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
         <AccountSettings collapsed />
       </Suspense>

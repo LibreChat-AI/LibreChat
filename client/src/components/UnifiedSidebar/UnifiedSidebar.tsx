@@ -20,6 +20,7 @@ import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog
 import { ChatContext, ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
+import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
@@ -196,7 +197,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
         /** The close swipe reads horizontal touches here (the drawer holds no
          * horizontal scrollers), while pinch-zoom stays with the browser —
          * this full-viewport surface must not disable zooming entirely. */
-        'bg-surface-primary-alt fixed inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
+        'bg-surface-primary-alt text-text-primary fixed inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
         expanded ? 'translate-x-0' : '-translate-x-full',
       )}
       style={{
@@ -221,9 +222,17 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
             links={links}
             expanded={expanded}
             onClose={handleCollapse}
+            onNewChat={handleCollapse}
             onLeaveInsights={handleLeaveInsights}
             routeActiveId={isInsightsRoute ? 'insights' : undefined}
           />
+          {/* Above the panel rather than inside it: the marketplace is a
+              destination like the panels themselves, not a row of whichever
+              list happens to be showing, so it stays put while they change and
+              does not scroll away with the chats. */}
+          <div className="shrink-0 px-3 pt-2">
+            <AgentMarketplaceButton layout="row" onNavigate={handleCollapse} />
+          </div>
           <nav
             id="chat-history-nav"
             className="bg-surface-primary-alt min-h-0 flex-1 overflow-hidden"
@@ -235,7 +244,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
             onLeaveInsights={handleLeaveInsights}
             routeActiveId={isInsightsRoute ? 'insights' : undefined}
           />
-          <MobileBottomBar links={links} onNewChat={handleCollapse} />
+          <MobileBottomBar links={links} />
         </ActivePanelProvider>
       </SidebarChatProvider>
     </div>

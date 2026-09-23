@@ -1180,6 +1180,11 @@
       "count": 2
     }
   },
+  "client/src/components/Nav/AgentMarketplaceButton.tsx": {
+    "shadcn/no-restyle": {
+      "count": 1
+    }
+  },
   "client/src/components/Nav/ExportConversation/ExportModal.tsx": {
     "shadcn/no-restyle": {
       "count": 3
@@ -2096,9 +2101,6 @@
   "client/src/components/UnifiedSidebar/mobile/BottomBar.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 4
     }
   },
   "client/src/components/UnifiedSidebar/mobile/Scrim.tsx": {

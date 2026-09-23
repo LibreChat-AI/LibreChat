@@ -1,33 +1,13 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 import type { NavLink } from '~/common';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('~/hooks/useKeyboardShortcuts', () => ({
-  useShortcutAriaKey: () => 'Meta+Shift+O',
-}));
-
-jest.mock('@librechat/client', () => ({
-  Button: ({
-    children,
-    asChild: _asChild,
-    ...props
-  }: {
-    children: React.ReactNode;
-    asChild?: boolean;
-  }) => <div {...props}>{children}</div>,
-  /** The real `useNewChat` pulls the file-deletion mutation, which reads the toast context. */
-  useToastContext: () => ({ showToast: jest.fn() }),
-}));
+const activePanel = { active: 'conversations' };
 
 jest.mock('~/Providers', () => ({
-  useActivePanel: () => ({ active: 'conversations', setActive: jest.fn() }),
-  resolveActivePanel: () => 'conversations',
+  useActivePanel: () => ({ active: activePanel.active, setActive: jest.fn() }),
+  resolveActivePanel: (active: string) => active,
   DEFAULT_PANEL: 'conversations',
 }));
 
@@ -36,75 +16,49 @@ jest.mock('~/components/Nav/SearchBar', () => ({
   default: () => <div data-testid="search-bar" />,
 }));
 
-/** The heavy reset itself is the unit under order-test; only the navigation
- *  internals below useNewChat are stubbed. */
-const mockNewConversation = jest.fn();
-jest.mock('~/hooks/useNewConvo', () => ({
-  __esModule: true,
-  default: () => ({ newConversation: mockNewConversation }),
-}));
-
 import BottomBar from '../BottomBar';
+import store from '~/store';
 
 const links = [] as NavLink[];
-let queryClient: QueryClient;
 
-describe('mobile bottom bar — new chat ordering', () => {
-  beforeEach(() => {
-    queryClient = new QueryClient();
-    jest.clearAllMocks();
-  });
+const renderBar = (searchEnabled = true) =>
+  render(
+    <RecoilRoot
+      initializeState={({ set }) =>
+        set(store.search, (prev) => ({ ...prev, enabled: searchEnabled }))
+      }
+    >
+      <BottomBar links={links} />
+    </RecoilRoot>,
+  );
 
+describe('mobile bottom bar', () => {
   afterEach(() => {
+    activePanel.active = 'conversations';
     cleanup();
-    queryClient.clear();
   });
 
-  /**
-   * The drawer close must start BEFORE the conversation reset: run
-   * synchronously, the reset's cache clearing and navigation flush in the
-   * tap's task and stall the slide's first frame. The reset rides the
-   * close's `afterSlide` callback instead.
-   */
-  it('closes the drawer first and defers the conversation reset to afterSlide', () => {
-    const order: string[] = [];
-    let afterSlide: (() => void) | undefined;
-    const onNewChat = jest.fn((callback?: () => void) => {
-      order.push('close');
-      afterSlide = callback;
-    });
-    mockNewConversation.mockImplementation(() => {
-      order.push('reset');
-    });
+  /** New chat moved to the header strip: repeated under every panel it was a
+   *  second, larger copy of a destination the panel has nothing to do with. */
+  it('carries search and nothing else', () => {
+    renderBar();
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <RecoilRoot>
-          <BottomBar links={links} onNewChat={onNewChat} />
-        </RecoilRoot>
-      </QueryClientProvider>,
-    );
-    fireEvent.click(screen.getByTestId('nav-new-chat-fab'));
-
-    expect(order).toEqual(['close']);
-    expect(afterSlide).toBeDefined();
-
-    act(() => afterSlide?.());
-    expect(order).toEqual(['close', 'reset']);
+    expect(screen.getByTestId('search-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('nav-new-chat-fab')).not.toBeInTheDocument();
   });
 
-  it('leaves modified clicks to the browser (new tab)', () => {
-    const onNewChat = jest.fn();
-    render(
-      <QueryClientProvider client={queryClient}>
-        <RecoilRoot>
-          <BottomBar links={links} onNewChat={onNewChat} />
-        </RecoilRoot>
-      </QueryClientProvider>,
-    );
-    fireEvent.click(screen.getByTestId('nav-new-chat-fab'), { ctrlKey: true });
+  /** Searching messages only means anything from the conversation list, and an
+   *  empty footer would still take its padding out of the list above it. */
+  it('stands down on a panel that has nothing to search', () => {
+    activePanel.active = 'prompts';
+    const { container } = renderBar();
 
-    expect(onNewChat).not.toHaveBeenCalled();
-    expect(mockNewConversation).not.toHaveBeenCalled();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('stands down where the deployment has search off', () => {
+    const { container } = renderBar(false);
+
+    expect(container).toBeEmptyDOMElement();
   });
 });
