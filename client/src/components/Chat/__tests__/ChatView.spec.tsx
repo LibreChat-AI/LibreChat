@@ -142,6 +142,18 @@ describe('ChatView composer preferences', () => {
     expect(mockChatFormProps).toHaveBeenCalledWith(expect.objectContaining({ enterToSend: false }));
   });
 
+  /** The same boundary for the dictation preferences: ChatForm consumes them
+   *  but ChatView owns the reads. */
+  test('passes the persisted Auto Send Text preference and the speech init state', () => {
+    localStorage.setItem('autoSendText', JSON.stringify(3));
+
+    render(<ChatView />);
+
+    expect(mockChatFormProps).toHaveBeenCalledWith(
+      expect.objectContaining({ autoSendText: 3, speechSettingsInitialized: false }),
+    );
+  });
+
   test('falls back to the atom default when nothing is persisted', () => {
     render(<ChatView />);
 

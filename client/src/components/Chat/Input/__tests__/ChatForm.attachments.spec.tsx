@@ -69,6 +69,8 @@ let commits = 0;
 function Harness() {
   const [files, setFiles] = useRecoilState(store.filesByIndex(0));
   const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  /* ChatView owns this read and passes it in; the harness stands in for it. */
+  const [speechSettingsInitialized] = useRecoilState(store.speechSettingsInitialized);
   const [, setFilesLoading] = useState(false);
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
 
@@ -114,6 +116,7 @@ function Harness() {
             index={0}
             isLandingPage={false}
             showComposerTips={false}
+            speechSettingsInitialized={speechSettingsInitialized}
             footerBelow={false}
             centerFormOnLanding={false}
           />

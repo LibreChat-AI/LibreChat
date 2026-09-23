@@ -59,6 +59,8 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
   const saveDrafts = useRecoilValue(store.saveDrafts);
   const showComposerTips = useAtomValue(showComposerTipsAtom);
   const enterToSend = useRecoilValue(store.enterToSend);
+  const autoSendText = useRecoilValue(store.autoSendText);
+  const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const pendingAction = useAtomValue(
     pendingApprovalActionFamily(conversationId ?? Constants.NEW_CONVO),
@@ -238,6 +240,8 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                               isLandingPage={isLandingPage}
                               showComposerTips={showComposerTips}
                               enterToSend={enterToSend}
+                              autoSendText={autoSendText}
+                              speechSettingsInitialized={speechSettingsInitialized}
                               footerBelow={footerBelow}
                               centerFormOnLanding={centerFormOnLanding}
                             />

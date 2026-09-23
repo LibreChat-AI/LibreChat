@@ -105,6 +105,11 @@ interface ChatFormProps {
   /** Owned by the host: the persisted preference for whether Enter sends the
    *  message (vs. queues a newline). The composer only consumes it. */
   enterToSend: boolean;
+  /** Owned by the host: the Auto Send Text preference dictation consumes. */
+  autoSendText: number;
+  /** Owned by the host: whether the shell has loaded the speech settings yet;
+   *  dictation stays off until it has. */
+  speechSettingsInitialized: boolean;
   /** Owned by the host: the app-level preference for where the welcome-screen
    *  composer sits. The chat feature only consumes it. */
   centerFormOnLanding: boolean;
@@ -150,6 +155,8 @@ const ChatForm = memo(function ChatForm({
   isLandingPage,
   showComposerTips,
   enterToSend,
+  autoSendText,
+  speechSettingsInitialized,
   footerBelow,
   centerFormOnLanding,
   files,
@@ -179,8 +186,6 @@ const ChatForm = memo(function ChatForm({
   const measuredRowCountRef = useRef(1);
 
   const SpeechToText = useRecoilValue(store.speechToText);
-  const autoSendText = useRecoilValue(store.autoSendText);
-  const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
   const TextToSpeech = useRecoilValue(store.textToSpeech);
   const chatDirection = useRecoilValue(store.chatDirection);
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
@@ -998,6 +1003,10 @@ function ChatFormWrapper({
    *  true)`) so call sites that predate this prop, mainly tests, keep their
    *  prior behavior without passing it explicitly. */
   enterToSend = true,
+  /** Same reason, from `atomWithLocalStorage('autoSendText', -1)`. */
+  autoSendText = -1,
+  /** Same reason, from the `speechSettingsInitialized` atom's `false`. */
+  speechSettingsInitialized = false,
   footerBelow,
   centerFormOnLanding,
 }: {
@@ -1006,6 +1015,8 @@ function ChatFormWrapper({
   project?: TChatProject;
   showComposerTips: boolean;
   enterToSend?: boolean;
+  autoSendText?: number;
+  speechSettingsInitialized?: boolean;
   isLandingPage: boolean;
   footerBelow: boolean;
   centerFormOnLanding: boolean;
@@ -1081,6 +1092,8 @@ function ChatFormWrapper({
       index={index}
       showComposerTips={showComposerTips}
       enterToSend={enterToSend}
+      autoSendText={autoSendText}
+      speechSettingsInitialized={speechSettingsInitialized}
       placeholder={placeholder}
       project={project}
       isLandingPage={isLandingPage}
