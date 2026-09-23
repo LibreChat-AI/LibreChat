@@ -29,6 +29,10 @@ export interface ComposerRestore {
     context: QueuedMessageContext,
     originConversationId: string,
   ) => boolean;
+  /** Whether `restoreReclaimedSteer` would take words for this conversation
+   *  right now, without writing anything. A caller about to give up a durable
+   *  copy checks this first, so a refusal cannot strand the words locally. */
+  canRestoreToComposer: (originConversationId: string) => boolean;
 }
 
 interface UseComposerRestoreParams {
@@ -178,6 +182,24 @@ export default function useComposerRestore({
    * draft the user has since staged, or drop a steer into whatever chat they
    * navigated to.
    */
+  const canRestoreToComposer = useCallback(
+    (originConversationId: string): boolean => {
+      if (!mountedRef.current || liveAnswerModeRef.current) {
+        return false;
+      }
+      const liveConversationId = liveConversationIdRef.current;
+      if (originConversationId !== liveConversationId) {
+        return false;
+      }
+      return (
+        (methods.getValues('text') ?? '').trim().length === 0 &&
+        (liveFilesRef.current?.size ?? 0) === 0 &&
+        !hasStagedContext(liveConversationId)
+      );
+    },
+    [methods, hasStagedContext],
+  );
+
   const restoreReclaimedSteer = useCallback(
     (
       text: string,
@@ -185,27 +207,16 @@ export default function useComposerRestore({
       context: QueuedMessageContext,
       originConversationId: string,
     ): boolean => {
-      if (!mountedRef.current) {
+      if (!canRestoreToComposer(originConversationId)) {
         return false;
       }
-      const liveConversationId = liveConversationIdRef.current;
-      if (originConversationId !== liveConversationId) {
-        return false;
-      }
-      if (
-        (methods.getValues('text') ?? '').trim().length > 0 ||
-        (liveFilesRef.current?.size ?? 0) > 0 ||
-        hasStagedContext(liveConversationId)
-      ) {
-        return false;
-      }
-      /** The answer-mode refusal lives in `editToComposer`: a question can pause
+      /** `editToComposer` repeats the answer-mode refusal: a question can pause
        *  the run mid-reclaim, and restoring into the answer box would turn the
        *  steer into the tool's answer on the next Enter. */
       return editToComposer(text, steerFiles, context);
     },
-    [methods, editToComposer, hasStagedContext],
+    [canRestoreToComposer, editToComposer],
   );
 
-  return { editToComposer, restoreReclaimedSteer };
+  return { editToComposer, restoreReclaimedSteer, canRestoreToComposer };
 }

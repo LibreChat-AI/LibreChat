@@ -111,6 +111,7 @@ function renderQueue(
   handlers: {
     onEditToComposer?: jest.Mock;
     onRestoreToComposer?: jest.Mock;
+    canRestoreToComposer?: jest.Mock;
   } = {},
 ) {
   return render(
@@ -123,6 +124,7 @@ function renderQueue(
           onRestoreToComposer={
             handlers.onRestoreToComposer ?? handlers.onEditToComposer ?? jest.fn()
           }
+          canRestoreToComposer={handlers.canRestoreToComposer ?? jest.fn().mockReturnValue(true)}
         />
       </DndProvider>
     </RecoilRoot>,
@@ -351,6 +353,26 @@ describe('Queue', () => {
     expect(mockRewakeDrain).toHaveBeenCalledWith(CONVO_ID);
   });
 
+  /* Discarding the parked server copy leaves the row only in memory, so a
+     composer that refuses has to refuse before that copy is given up. */
+  it.each([
+    ['com_ui_remove_queued', 'com_ui_queue_remove_blocked'],
+    ['com_ui_edit_message', 'com_ui_queue_edit_blocked'],
+  ])('keeps the parked copy when the composer would refuse (%s)', async (label, toast) => {
+    const onRestore = jest.fn().mockReturnValue(true);
+    renderQueue([queued({ id: 'q1' })], steering, {
+      onRestoreToComposer: onRestore,
+      canRestoreToComposer: jest.fn().mockReturnValue(false),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(label));
+    });
+    expect(mockDiscardQueued).not.toHaveBeenCalled();
+    expect(onRestore).not.toHaveBeenCalled();
+    expect(mockRemoveQueued).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith(expect.objectContaining({ message: toast }));
+  });
+
   it('hands the whole message to the composer to edit', async () => {
     const onEdit = jest.fn().mockReturnValue(true);
     renderQueue(
@@ -471,7 +493,12 @@ describe('Queue', () => {
             ])
           }
         >
-          <Queue steering={steering} conversationId={CONVO_ID} onRestoreToComposer={jest.fn()} />
+          <Queue
+            steering={steering}
+            conversationId={CONVO_ID}
+            onRestoreToComposer={jest.fn()}
+            canRestoreToComposer={() => true}
+          />
         </RecoilRoot>
         <RecoilRoot
           initializeState={({ set }) =>
@@ -481,7 +508,12 @@ describe('Queue', () => {
             ])
           }
         >
-          <Queue steering={steering} conversationId={CONVO_ID} onRestoreToComposer={jest.fn()} />
+          <Queue
+            steering={steering}
+            conversationId={CONVO_ID}
+            onRestoreToComposer={jest.fn()}
+            canRestoreToComposer={() => true}
+          />
         </RecoilRoot>
       </DndProvider>,
     );
@@ -514,7 +546,12 @@ describe('Queue', () => {
       >
         <Driver />
         <DndProvider backend={HTML5Backend}>
-          <Queue steering={steering} conversationId={CONVO_ID} onRestoreToComposer={jest.fn()} />
+          <Queue
+            steering={steering}
+            conversationId={CONVO_ID}
+            onRestoreToComposer={jest.fn()}
+            canRestoreToComposer={() => true}
+          />
         </DndProvider>
       </RecoilRoot>,
     );

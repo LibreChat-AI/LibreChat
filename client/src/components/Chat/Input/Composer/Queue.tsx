@@ -35,6 +35,8 @@ interface QueueProps {
   steering: SteeringControls;
   conversationId: string;
   onRestoreToComposer: RestoreToComposer;
+  /** Whether the composer would take this conversation's words right now. */
+  canRestoreToComposer: (conversationId: string) => boolean;
 }
 
 interface QueueRowProps {
@@ -54,6 +56,7 @@ interface QueueRowProps {
    *  and scoped to THIS rail, so a split view has one hint per pane. */
   reorderHintId: string;
   onRestoreToComposer: RestoreToComposer;
+  canRestoreToComposer: (conversationId: string) => boolean;
   /** The server has revealed this row as the next user turn; only removal remains meaningful. */
   revealed?: boolean;
   onAnnounce: (message: string) => void;
@@ -94,6 +97,7 @@ function QueueRow({
   interruptPending,
   reorderHintId,
   onRestoreToComposer,
+  canRestoreToComposer,
   onAnnounce,
   revealed = false,
 }: QueueRowProps) {
@@ -247,6 +251,13 @@ function QueueRow({
   const editToComposer = useCallback(
     () =>
       handOff(async () => {
+        /* Refuse before the parked copy is given up: once it is discarded the
+           row only lives in memory, and a composer that then refused would
+           leave the words to vanish on the next reload. */
+        if (!canRestoreToComposer(conversationId)) {
+          showToast({ message: localize('com_ui_queue_edit_blocked'), status: 'warning' });
+          return false;
+        }
         /* A recovered row still has a parked copy on the server; discard it
            through its durable receipt first, or the edited words would come
            back as a second message on the next reload. */
@@ -275,12 +286,25 @@ function QueueRow({
         showToast({ message: localize('com_ui_queue_edit_blocked'), status: 'warning' });
         return false;
       }),
-    [handOff, steering, message, onRestoreToComposer, conversationId, showToast, localize],
+    [
+      handOff,
+      steering,
+      message,
+      onRestoreToComposer,
+      canRestoreToComposer,
+      conversationId,
+      showToast,
+      localize,
+    ],
   );
 
   const removeToComposer = useCallback(
     () =>
       handOff(async () => {
+        if (!canRestoreToComposer(conversationId)) {
+          showToast({ message: localize('com_ui_queue_remove_blocked'), status: 'warning' });
+          return false;
+        }
         /* Discard the parked server copy first, as on Edit above. */
         if (!(await steering.discardQueued(message))) {
           return false;
@@ -310,7 +334,16 @@ function QueueRow({
         showToast({ message: localize('com_ui_queue_remove_blocked'), status: 'warning' });
         return false;
       }),
-    [handOff, steering, message, onRestoreToComposer, conversationId, showToast, localize],
+    [
+      handOff,
+      steering,
+      message,
+      onRestoreToComposer,
+      canRestoreToComposer,
+      conversationId,
+      showToast,
+      localize,
+    ],
   );
 
   drop(rowRef);
@@ -516,7 +549,12 @@ function QueueRow({
  * the front with no visible effect, so the button disables itself for that
  * case instead of pretending to act.
  */
-function Queue({ steering, conversationId, onRestoreToComposer }: QueueProps) {
+function Queue({
+  steering,
+  conversationId,
+  onRestoreToComposer,
+  canRestoreToComposer,
+}: QueueProps) {
   const localize = useLocalize();
   /* A revealed server turn is already shown in the live thread. Keep its
      queue receipt visible only long enough to offer safe cancellation. */
@@ -586,6 +624,7 @@ function Queue({ steering, conversationId, onRestoreToComposer }: QueueProps) {
             interruptPending={interruptPending}
             reorderHintId={reorderHintId}
             onRestoreToComposer={onRestoreToComposer}
+            canRestoreToComposer={canRestoreToComposer}
             revealed={
               revealed != null &&
               message.clientRequestId != null &&

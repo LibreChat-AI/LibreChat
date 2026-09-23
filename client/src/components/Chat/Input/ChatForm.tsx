@@ -363,7 +363,7 @@ const ChatForm = memo(function ChatForm({
       }),
     [submitMessage],
   );
-  const { restoreReclaimedSteer } = useComposerRestore({
+  const { restoreReclaimedSteer, canRestoreToComposer } = useComposerRestore({
     index,
     conversationId,
     methods,
@@ -712,6 +712,7 @@ const ChatForm = memo(function ChatForm({
               steering={steering}
               conversationId={conversationId}
               onRestoreToComposer={restoreReclaimedSteer}
+              canRestoreToComposer={canRestoreToComposer}
             />
           )}
           {(project ||
