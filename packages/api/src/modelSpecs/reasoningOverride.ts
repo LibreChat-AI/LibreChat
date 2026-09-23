@@ -156,25 +156,30 @@ export type RequestReasoningOverrideInput = Omit<
   ReasoningOverrideInput,
   'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase'
 > & {
-  reasoningOverride?: TReasoningOverride;
+  /** The raw request field; validated here, so the caller passes it unparsed. */
+  reasoningOverride?: unknown;
 };
 
 /**
- * Applies a validated request override to the built endpoint option and records
- * the trusted base snapshot on the request. A request without an override is left
- * untouched; `false` means the override was refused and the caller must reject
- * the request.
+ * Validates a request's reasoning override, applies it to the built endpoint
+ * option and records the trusted base snapshot on the request. A request without
+ * an override is left untouched; `false` means the override was malformed or
+ * refused and the caller must reject the request.
  */
 export async function applyRequestReasoningOverride<T extends EndpointOption>(
   req: { reasoningOverrideBase?: ReasoningOverrideBase; body: { endpointOption: T } },
-  { reasoningOverride, ...input }: RequestReasoningOverrideInput,
+  { reasoningOverride: raw, ...input }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
-  if (reasoningOverride == null) {
+  const request = parseReasoningOverrideRequest(raw);
+  if (!request.ok) {
+    return false;
+  }
+  if (request.reasoningOverride == null) {
     return true;
   }
   const resolution = await resolveReasoningOverride({
     ...input,
-    reasoningOverride,
+    reasoningOverride: request.reasoningOverride,
     endpointOption: req.body.endpointOption,
     reasoningOverrideBase: req.reasoningOverrideBase,
   });

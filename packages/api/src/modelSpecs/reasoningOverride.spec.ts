@@ -337,6 +337,21 @@ describe('applyRequestReasoningOverride', () => {
     });
   });
 
+  it('refuses a malformed override without touching the request', async () => {
+    const req = request();
+    const before = req.body.endpointOption;
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...input,
+        reasoningOverride: { key: 'not_a_reasoning_field', value: 'high' },
+      }),
+    ).resolves.toBe(false);
+
+    expect(req.body.endpointOption).toBe(before);
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
+
   it('refuses an unsupported override without touching the request', async () => {
     const req = request();
     const before = req.body.endpointOption;

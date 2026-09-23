@@ -7,7 +7,6 @@ const {
   extractChatContent,
   contentFilterBlockResponse,
   applyRequestReasoningOverride,
-  parseReasoningOverrideRequest,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
@@ -70,11 +69,6 @@ async function buildEndpointOption(req, res, next) {
   }
 
   const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
-
-  const reasoningOverrideRequest = parseReasoningOverrideRequest(req.body.reasoningOverride);
-  if (!reasoningOverrideRequest.ok) {
-    return handleError(res, { text: 'Invalid reasoning override' });
-  }
 
   let parsedBody;
   try {
@@ -190,7 +184,7 @@ async function buildEndpointOption(req, res, next) {
     req.body.endpointOption = await builder(endpoint, parsedBody, endpointType);
 
     const reasoningApplied = await applyRequestReasoningOverride(req, {
-      reasoningOverride: reasoningOverrideRequest.reasoningOverride,
+      reasoningOverride: req.body.reasoningOverride,
       endpoint,
       endpointType,
       parsedModel: parsedBody.model,
