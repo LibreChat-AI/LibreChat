@@ -578,7 +578,6 @@
   "com_files_result_found": "{{count}} result found",
   "com_files_results_found": "{{count}} results found",
   "com_files_sharepoint_picker_title": "Pick Files",
-  "com_files_table": "Files Table",
   "com_files_upload_local_machine": "From Local Computer",
   "com_files_upload_sharepoint": "From SharePoint",
   "com_generated_files": "Generated files:",
