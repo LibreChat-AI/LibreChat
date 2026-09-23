@@ -2,6 +2,7 @@ import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import { Constants } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
+import type { createStore } from 'jotai';
 
 /** Unsaved split panes share the sentinel conversation id, so include the pane
  * index until a durable id exists. Saved conversations keep their stable id. */
@@ -21,7 +22,19 @@ export const pendingReasoningOverrideFamily = atomFamily((_conversationId: strin
 /** Landing-page lift is composer-owned UI state, scoped to its split pane. */
 export const composerLiftFamily = atomFamily((_index: number) => atom(0));
 
-/** Release a conversation member when its composer state is cleared. */
-export const removePendingReasoningOverride = (conversationId: string) => {
-  pendingReasoningOverrideFamily.remove(conversationId);
+/** Release every staged reasoning selection except the `keep` keys. A selection
+ * survives navigation by design, so members of conversations no longer on
+ * screen still hold one; clearing only the mounted panes would carry them
+ * across a sign-out. */
+export const clearPendingReasoningOverrides = (
+  jotaiStore: ReturnType<typeof createStore>,
+  keep: ReadonlySet<string> = new Set(),
+) => {
+  for (const key of Array.from(pendingReasoningOverrideFamily.getParams())) {
+    if (keep.has(key)) {
+      continue;
+    }
+    jotaiStore.set(pendingReasoningOverrideFamily(key), undefined);
+    pendingReasoningOverrideFamily.remove(key);
+  }
 };

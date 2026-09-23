@@ -2,8 +2,7 @@ import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import {
   getReasoningStateKey,
-  pendingReasoningOverrideFamily,
-  removePendingReasoningOverride,
+  clearPendingReasoningOverrides,
 } from '~/components/Chat/Input/Composer/state';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';
@@ -28,6 +27,14 @@ export default function useClearStates() {
         jotaiStore.set(filesDialogTriggerAtom, null);
 
         const keys = await snapshot.getPromise(store.conversationKeysAtom);
+        const keptReasoningKeys = new Set<string>();
+        if (skipFirst === true) {
+          const firstConvoId = (await snapshot.getPromise(store.conversationByIndex(0)))
+            ?.conversationId;
+          keptReasoningKeys.add(getReasoningStateKey(null, 0));
+          keptReasoningKeys.add(getReasoningStateKey(firstConvoId, 0));
+        }
+        clearPendingReasoningOverrides(jotaiStore, keptReasoningKeys);
 
         for (const key of keys) {
           if (skipFirst === true && key === 0) {
@@ -48,9 +55,6 @@ export default function useClearStates() {
           jotaiStore.set(showSkillsPopoverFamily(key), false);
           reset(store.pendingManualSkillsByConvoId(key.toString()));
           reset(store.pendingQuotesByConvoId(key.toString()));
-          const newConversationKey = getReasoningStateKey(null, key);
-          jotaiStore.set(pendingReasoningOverrideFamily(newConversationKey), undefined);
-          removePendingReasoningOverride(newConversationKey);
           /**
            * Pending skill/quote queues are keyed by the conversation id the
            * composer wrote under, not this UI index — also clear by the resolved
@@ -61,9 +65,6 @@ export default function useClearStates() {
           if (convoId != null) {
             reset(store.pendingManualSkillsByConvoId(convoId));
             reset(store.pendingQuotesByConvoId(convoId));
-            const reasoningStateKey = getReasoningStateKey(convoId, key);
-            jotaiStore.set(pendingReasoningOverrideFamily(reasoningStateKey), undefined);
-            removePendingReasoningOverride(reasoningStateKey);
           }
           reset(store.activePromptByIndex(key));
           reset(store.globalAudioURLFamily(key));
