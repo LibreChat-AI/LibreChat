@@ -389,6 +389,8 @@ describe('Queue', () => {
         createdAt: 42,
         quotes: ['a quote'],
         server: { id: 'server-q1', status: 'queued' },
+        parentMessageId: 'original-parent',
+        expectedPredecessorCreatedAt: 41,
       });
       renderQueue([row], steering, {
         onRestoreToComposer: jest.fn().mockReturnValue(false),
@@ -406,6 +408,7 @@ describe('Queue', () => {
           createdAt: 42,
           quotes: ['a quote'],
           skipUsageMark: true,
+          lineage: { parentMessageId: 'original-parent', predecessorCreatedAt: 41 },
         }),
       );
       expect(mockShowToast).toHaveBeenCalledWith(expect.objectContaining({ message: toast }));
