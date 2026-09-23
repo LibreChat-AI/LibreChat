@@ -1,11 +1,16 @@
 import { useCallback } from 'react';
+import { useSetRecoilState } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import {
   megabyte,
+  Constants,
+  EToolResources,
   mergeFileConfig,
   checkOpenAIStorage,
+  isEphemeralAgentId,
   isAssistantsEndpoint,
   getEndpointFileConfig,
+  defaultAgentCapabilities,
   fileConfig as defaultFileConfig,
 } from 'librechat-data-provider';
 import type {
@@ -15,7 +20,9 @@ import type {
   EndpointFileConfig,
 } from 'librechat-data-provider';
 import type { ExtendedFile, FileSetter } from '~/common';
+import { useAgentCapabilities, useGetAgentsConfig } from '~/hooks/Agents';
 import { useGetFileConfig } from '~/data-provider';
+import { ephemeralAgentByConvoId } from '~/store';
 import useLocalize from '~/hooks/useLocalize';
 import useUpdateFiles from './useUpdateFiles';
 
@@ -55,6 +62,13 @@ export default function useAttachExisting(context: AttachExistingContext): (file
     select: (data) => mergeFileConfig(data),
   });
   const { addFile } = useUpdateFiles(setFiles);
+  const setEphemeralAgent = useSetRecoilState(
+    ephemeralAgentByConvoId(conversation?.conversationId ?? Constants.NEW_CONVO),
+  );
+  const { agentsConfig } = useGetAgentsConfig();
+  const { fileSearchEnabled } = useAgentCapabilities(
+    agentsConfig?.capabilities ?? defaultAgentCapabilities,
+  );
 
   return useCallback(
     (file: TFile) => {
@@ -144,6 +158,18 @@ export default function useAttachExisting(context: AttachExistingContext): (file
         }
       }
 
+      /* An embedded file is unreadable unless file search is on, so attaching one
+         turns it on, as the attach menu does. The ephemeral flag governs direct
+         chats only: a saved agent's own tools decide, and writing it there would
+         be dead state the chips still reflect. */
+      if (
+        fileData.embedded === true &&
+        fileSearchEnabled &&
+        isEphemeralAgentId(conversation?.agent_id)
+      ) {
+        setEphemeralAgent((prev) => ({ ...prev, [EToolResources.file_search]: true }));
+      }
+
       addFile({
         progress: 1,
         attached: true,
@@ -173,6 +199,8 @@ export default function useAttachExisting(context: AttachExistingContext): (file
       localize,
       showToast,
       fileConfig,
+      fileSearchEnabled,
+      setEphemeralAgent,
     ],
   );
 }

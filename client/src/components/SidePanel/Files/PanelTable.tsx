@@ -22,20 +22,7 @@ import {
   type VisibilityState,
   type ColumnFiltersState,
 } from '@tanstack/react-table';
-import {
-  megabyte,
-  Constants,
-  EToolResources,
-  mergeFileConfig,
-  checkOpenAIStorage,
-  isEphemeralAgentId,
-  isAssistantsEndpoint,
-  getEndpointFileConfig,
-  defaultAgentCapabilities,
-  fileConfig as defaultFileConfig,
-} from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
-import { useLocalize, useUpdateFiles, useGetAgentsConfig, useAgentCapabilities } from '~/hooks';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import useAttachExisting from '~/hooks/Files/useAttachExisting';
 import { useChatContext } from '~/Providers';

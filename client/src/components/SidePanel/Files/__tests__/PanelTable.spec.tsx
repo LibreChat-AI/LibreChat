@@ -87,6 +87,13 @@ jest.mock('~/hooks', () => ({
 
 /* The attach logic moved into `useAttachExisting`, which reaches its
    dependencies by their own paths rather than through the `~/hooks` barrel. */
+jest.mock('~/hooks/Agents', () => ({
+  useGetAgentsConfig: () => ({ agentsConfig: mockAgentsConfig }),
+  useAgentCapabilities: (capabilities?: string[]) => ({
+    fileSearchEnabled: capabilities?.includes('file_search') ?? false,
+  }),
+}));
+
 jest.mock('~/hooks/useLocalize', () => ({
   __esModule: true,
   default: () => (key: string) => key,

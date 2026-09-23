@@ -14,7 +14,13 @@ import useAttachExisting from '../useAttachExisting';
 const mockShowToast = jest.fn();
 const mockAddFile = jest.fn();
 let mockFileMap: Record<string, TFile | undefined>;
-let mockConversation: { endpoint?: string | null; endpointType?: string } | null;
+let mockConversation: {
+  endpoint?: string | null;
+  endpointType?: string;
+  agent_id?: string;
+} | null;
+const mockSetEphemeralAgent = jest.fn();
+let mockFileSearchEnabled = true;
 let mockStaged: Map<string, ExtendedFile>;
 /** Raw, not merged: the hook's own `select` merges it, and merging twice
  *  scales the megabyte limits twice and puts them out of reach. */
@@ -42,6 +48,19 @@ jest.mock('~/hooks/Files/useUpdateFiles', () => ({
 jest.mock('~/hooks/useLocalize', () => ({
   __esModule: true,
   default: () => (key: string) => key,
+}));
+
+jest.mock('recoil', () => ({
+  useSetRecoilState: () => mockSetEphemeralAgent,
+}));
+
+jest.mock('~/store', () => ({
+  ephemeralAgentByConvoId: (conversationId: string) => ({ key: conversationId }),
+}));
+
+jest.mock('~/hooks/Agents', () => ({
+  useGetAgentsConfig: () => ({ agentsConfig: undefined }),
+  useAgentCapabilities: () => ({ fileSearchEnabled: mockFileSearchEnabled }),
 }));
 
 const MB = 1024 * 1024;
@@ -81,6 +100,7 @@ describe('useAttachExisting', () => {
     jest.clearAllMocks();
     mockFileMap = { f1: file() };
     mockConversation = { endpoint: EModelEndpoint.openAI };
+    mockFileSearchEnabled = true;
     mockStaged = new Map();
     mockFileConfig = {
       endpoints: {
@@ -92,6 +112,26 @@ describe('useAttachExisting', () => {
         },
       },
     };
+  });
+
+  /* An embedded file is unreadable without file search, so attaching one turns
+     it on for a direct chat, as the attach menu does (#16223). */
+  it('turns file search on for an embedded file in a direct chat', () => {
+    attach(file({ embedded: true }));
+    expect(mockSetEphemeralAgent).toHaveBeenCalledTimes(1);
+    const update = mockSetEphemeralAgent.mock.calls[0][0] as (prev: object) => object;
+    expect(update({ execute_code: true })).toEqual({ execute_code: true, file_search: true });
+  });
+
+  it('leaves file search alone for a saved agent, a plain file or a disabled capability', () => {
+    mockConversation = { endpoint: EModelEndpoint.agents, agent_id: 'agent_saved' };
+    attach(file({ embedded: true }), { endpoint: EModelEndpoint.openAI });
+    mockConversation = { endpoint: EModelEndpoint.openAI };
+    attach(file({ embedded: false }));
+    mockFileSearchEnabled = false;
+    attach(file({ embedded: true }));
+    expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+    expect(mockAddFile).toHaveBeenCalledTimes(3);
   });
 
   it('stages the file it was given, marked as already uploaded', () => {
