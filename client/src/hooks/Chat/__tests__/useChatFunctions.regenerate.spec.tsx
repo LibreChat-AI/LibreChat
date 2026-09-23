@@ -482,6 +482,21 @@ describe('useChatFunctions ask', () => {
     expect(submission.userMessage.reasoningOverride).toEqual(override);
     expect(reasoningStore.get(pendingReasoningOverrideFamily('conversation-1'))).toBeUndefined();
   });
+  it('keeps a staged override for an ephemeral agent resolved from its encoded target', () => {
+    const override = { key: 'reasoning_effort', value: 'high' } as TReasoningOverride;
+    const { result, setSubmission } = renderAsk([], 'conversation-1', {
+      reasoningOverride: override,
+      agentId: 'openAI__gpt-5___GPT-5',
+    });
+
+    act(() => {
+      result.current.ask({ text: 'Think carefully' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.reasoningOverride).toEqual(override);
+  });
+
   it('submits the declared effort override for the mock custom endpoint', () => {
     mockEndpointsQueryData.current = {
       'Mock Provider A': {

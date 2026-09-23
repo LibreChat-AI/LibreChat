@@ -23,8 +23,8 @@ import type {
 import type { TranslationKeys } from '~/hooks';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from './Composer/state';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
+import { formatTokens, resolveAgentTarget } from '~/utils';
 import { useAgentsMapContext } from '~/Providers';
-import { formatTokens } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -330,8 +330,9 @@ export function useComposerReasoning({
   const endpoint = conversation?.endpointType ?? conversation?.endpoint ?? '';
   const agent = (fetchedAgent ?? agentsMap?.[conversation?.agent_id ?? '']) as Agent | undefined;
   const isAgent = isAgentsEndpoint(endpoint);
-  const provider = isAgent ? (agent?.provider ?? '') : (conversation?.endpoint ?? '');
-  const model = isAgent ? (agent?.model ?? '') : (conversation?.model ?? '');
+  const agentTarget = isAgent ? resolveAgentTarget(conversation?.agent_id, agent) : undefined;
+  const provider = isAgent ? (agentTarget?.provider ?? '') : (conversation?.endpoint ?? '');
+  const model = isAgent ? (agentTarget?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
@@ -351,7 +352,7 @@ export function useComposerReasoning({
       : `${setting.key}:${setting.type}:${setting.options?.join(',') ?? ''}:${setting.range?.min ?? ''}:${setting.range?.positiveMin ?? ''}:${setting.range?.max ?? ''}:${setting.range?.step ?? ''}`;
   const targetResolved =
     endpoint !== '' &&
-    (!isAgent || agent != null) &&
+    (!isAgent || agentTarget != null) &&
     (setting != null || endpointsQuery.data != null);
   const targetFingerprint = targetResolved
     ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
@@ -363,7 +364,10 @@ export function useComposerReasoning({
     isAssistantsEndpoint(endpoint) ||
     endpointsConfig[provider]?.customParams?.reasoningFormat === ReasoningParameterFormat.disabled;
   const available =
-    enabled === true && !explicitlyUnavailable && (!isAgent || agent != null) && setting != null;
+    enabled === true &&
+    !explicitlyUnavailable &&
+    (!isAgent || agentTarget != null) &&
+    setting != null;
 
   useEffect(() => {
     let targetChanged = false;
@@ -397,9 +401,8 @@ export function useComposerReasoning({
     return null;
   }
 
-  const configuredValue = isAgent
-    ? agent?.model_parameters?.[setting.key]
-    : conversation?.[setting.key];
+  const configuredValue =
+    isAgent && agent != null ? agent.model_parameters?.[setting.key] : conversation?.[setting.key];
   const displayedValue =
     value ??
     reasoningOverrideSchema.safeParse({

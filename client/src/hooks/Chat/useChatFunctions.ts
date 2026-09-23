@@ -34,6 +34,7 @@ import type { TAskFunction, ExtendedFile } from '~/common';
 import {
   logger,
   requestChatFocus,
+  resolveAgentTarget,
   markPasteSubmitted,
   hasStreamStartFailed,
   isSubmittableMessage,
@@ -506,8 +507,9 @@ export default function useChatFunctions({
         agentId != null
           ? (queryClient.getQueryData<Agent>([QueryKeys.agent, agentId]) ?? agentsMap?.[agentId])
           : undefined;
-      const effectiveEndpoint = isAgent ? savedAgent?.provider : endpoint;
-      const effectiveModel = isAgent ? savedAgent?.model : conversation?.model;
+      const agentTarget = isAgent ? resolveAgentTarget(agentId, savedAgent) : undefined;
+      const effectiveEndpoint = isAgent ? agentTarget?.provider : endpoint;
+      const effectiveModel = isAgent ? agentTarget?.model : conversation?.model;
       const effectiveEndpointType = getEndpointField(endpointsConfig, effectiveEndpoint, 'type');
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;

@@ -344,6 +344,33 @@ describe('useComposerReasoning', () => {
     );
   });
 
+  it('resolves the control for an ephemeral agent from its encoded target', async () => {
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={createStore()}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      ({ agentId }: { agentId: string }) =>
+        useComposerReasoning({
+          conversation: {
+            conversationId: 'ephemeral-agent-conversation',
+            endpoint: 'agents',
+            agent_id: agentId,
+          } as TConversation,
+          index: 0,
+          hasAddedConversation: false,
+          enabled: true,
+        }),
+      { initialProps: { agentId: 'openAI__gpt-5___GPT-5' }, wrapper },
+    );
+
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('reasoning_effort'));
+
+    rendered.rerender({ agentId: 'agent_not_loaded_yet' });
+    await waitFor(() => expect(rendered.result.current).toBeNull());
+  });
+
   it('keeps secondary-pane reasoning selection isolated and clears it on target changes', async () => {
     const reasoningStore = createStore();
     const conversation = {
