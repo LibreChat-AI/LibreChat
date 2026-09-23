@@ -26,6 +26,8 @@ const mockUseFavorites = jest.fn(() => ({
 }));
 const mockUseGetConversationTags = jest.fn(() => ({ data: [] as unknown[] }));
 const mockConversationsRender = jest.fn();
+/** What the chats list asks the server for, captured per render. */
+const mockListParams = jest.fn();
 const mockSetChatsExpanded = jest.fn();
 const mockMoveToTop = jest.fn();
 const mockUseTitleGeneration = jest.fn(() => {
@@ -80,7 +82,10 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/data-provider', () => ({
   __esModule: true,
-  useConversationsInfiniteQuery: () => mockConversationsResult,
+  useConversationsInfiniteQuery: (params: Record<string, unknown>) => {
+    mockListParams(params);
+    return mockConversationsResult;
+  },
   usePinnedConversationsQuery: () => mockPinnedResult,
   useTitleGeneration: () => mockUseTitleGeneration(),
   useGetEndpointsQuery: () => ({ data: {}, isLoading: false }),
@@ -242,6 +247,62 @@ describe('ConversationsSection streaming re-renders', () => {
     },
     TEST_TIMEOUT,
   );
+});
+
+describe('ConversationsSection project chats', () => {
+  beforeEach(() => {
+    mockListParams.mockClear();
+  });
+
+  /** A chat that belongs to a project is shown under that project. Listing it in
+   *  Chats as well puts the same conversation in two places in one sidebar. */
+  it('asks only for chats that belong to no project', async () => {
+    renderSection();
+    await settleRenders();
+
+    expect(mockListParams).toHaveBeenCalled();
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: 'unassigned' });
+  });
+
+  /** Searching is how a chat is found, and Projects is not rendered while a search
+   *  is on: excluding project chats there would make them unreachable. */
+  it('searches across every chat, project or not', async () => {
+    let setSearch: SetterOrUpdater<SearchState>;
+
+    function SearchController() {
+      setSearch = useSetRecoilState(store.search);
+      return null;
+    }
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RecoilRoot>
+          <BrowserRouter>
+            <DndProvider backend={HTML5Backend}>
+              <SearchController />
+              <ConversationsSection />
+            </DndProvider>
+          </BrowserRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    await settleRenders();
+
+    act(() => {
+      setSearch({
+        query: 'draft',
+        debouncedQuery: 'draft',
+        enabled: true,
+        isTyping: false,
+        isSearching: true,
+      });
+    });
+
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({
+      search: 'draft',
+      projectId: undefined,
+    });
+  });
 });
 
 describe('ConversationsSection shared scroll surface', () => {

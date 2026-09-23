@@ -68,6 +68,11 @@ const ConversationsSection = memo(() => {
       sortDirection: sort.direction,
       tags: tags.length === 0 ? undefined : tags,
       search: search.debouncedQuery || undefined,
+      /** A chat that belongs to a project is shown under that project, not twice.
+       *  Search and the archived view stay whole: both are places the user goes to
+       *  find something, and a project chat that appears in neither list nor result
+       *  would have no way back. */
+      projectId: isArchivedView || search.debouncedQuery ? undefined : 'unassigned',
       ...facetParams,
     },
     {
