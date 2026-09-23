@@ -271,11 +271,17 @@ describe('resolveReasoningOverride', () => {
         ok: true,
         reasoningOverride: { key: 'thinkingBudget', value: 300032 },
       });
-      await expect(wideBudget(300032)).resolves.toMatchObject({ ok: true });
+      await expect(wideBudget(300032)).resolves.toMatchObject({
+        ok: true,
+        modelParameters: { thinkingBudget: 300032 },
+      });
     });
 
     it('still rejects a budget above the configured range', async () => {
-      await expect(wideBudget(600064)).resolves.toMatchObject({ ok: false });
+      await expect(wideBudget(600064)).resolves.toEqual({
+        ok: false,
+        reason: 'invalid-reasoning-override',
+      });
     });
   });
 
@@ -294,6 +300,7 @@ describe('applyRequestReasoningOverride', () => {
     body: {
       endpointOption: {
         ...endpointOption,
+        model_parameters: { ...endpointOption.model_parameters },
         endpoint: EModelEndpoint.agents,
       },
     },
@@ -302,10 +309,12 @@ describe('applyRequestReasoningOverride', () => {
   it('leaves a request without an override untouched', async () => {
     const req = request();
     const before = req.body.endpointOption;
+    const parameters = { ...before.model_parameters };
 
     await expect(applyRequestReasoningOverride(req, input)).resolves.toBe(true);
 
     expect(req.body.endpointOption).toBe(before);
+    expect(req.body.endpointOption.model_parameters).toEqual(parameters);
     expect(req).not.toHaveProperty('reasoningOverrideBase');
   });
 
@@ -331,6 +340,7 @@ describe('applyRequestReasoningOverride', () => {
   it('refuses an unsupported override without touching the request', async () => {
     const req = request();
     const before = req.body.endpointOption;
+    const parameters = { ...before.model_parameters };
 
     await expect(
       applyRequestReasoningOverride(req, {
@@ -340,6 +350,7 @@ describe('applyRequestReasoningOverride', () => {
     ).resolves.toBe(false);
 
     expect(req.body.endpointOption).toBe(before);
+    expect(req.body.endpointOption.model_parameters).toEqual(parameters);
     expect(req).not.toHaveProperty('reasoningOverrideBase');
   });
 });
