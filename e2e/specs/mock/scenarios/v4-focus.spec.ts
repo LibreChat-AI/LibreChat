@@ -16,26 +16,36 @@ import { withMongo } from '../db';
  * when the platform forces its own colours — while v4's means `outline: none`.
  */
 
-/** The attach-file menu trigger: one Tab from the composer on the new-chat
- *  screen with no seeding, and it carries both classes under test
- *  (`focus-visible:ring-text-primary/50` and `focus-visible:outline-hidden`,
- *  client/src/components/Chat/Input/Files/AttachFileMenu.tsx). */
-const ATTACH_TRIGGER = '#attach-file-menu-button';
+/** The composer's palette trigger: reachable by Tab from the composer on the
+ *  new-chat screen with no seeding, and it carries the outline half of the pair
+ *  under test (`focus-visible:outline-hidden` beside its ring, from IconButton). */
+const PALETTE_TRIGGER = '[data-testid="composer-palette-button"]';
 
-/** Focus it by keyboard, because both classes are behind `focus-visible:`. */
-async function tabToAttachTrigger(page: Page): Promise<void> {
+/** The composer control that halves its own ring
+ *  (`focus-visible:ring-text-primary/50`, Chat/Input/CollapseChat.tsx). It only
+ *  renders once the draft outgrows three rows. */
+const HALVED_RING_CONTROL = 'button[aria-label="Collapse Chat"]';
+const TALL_DRAFT = ['one', 'two', 'three', 'four', 'five'].join('\n');
+
+/** Focus a composer control by keyboard, because both classes are behind
+ *  `focus-visible:`. */
+async function tabToComposerControl(page: Page, selector: string, draft?: string): Promise<void> {
   const composer = page.getByRole('textbox', { name: 'Message input' });
   await expect(composer).toBeVisible({ timeout: 30000 });
   await composer.click();
+  if (draft != null) {
+    await composer.fill(draft);
+    await expect(page.locator(selector)).toHaveCount(1, { timeout: 10000 });
+  }
   for (let press = 0; press < 15; press++) {
     await page.keyboard.press('Tab');
     const focused = await page.evaluate(
-      (selector) => document.activeElement?.matches(selector) ?? false,
-      ATTACH_TRIGGER,
+      (target) => document.activeElement?.matches(target) ?? false,
+      selector,
     );
     if (focused) return;
   }
-  throw new Error('the attach-file trigger was never reached by Tab');
+  throw new Error(`${selector} was never reached by Tab`);
 }
 
 test.describe('Tailwind v4 focus treatment', () => {
@@ -50,28 +60,28 @@ test.describe('Tailwind v4 focus treatment', () => {
     test.setTimeout(120_000);
 
     await page.goto('/c/new', { timeout: 30000 });
-    await tabToAttachTrigger(page);
+    await tabToComposerControl(page, HALVED_RING_CONTROL, TALL_DRAFT);
 
     /** Without the mode, the control's own halved ring is what shows. */
-    const halved = await computedStyles(page.locator(ATTACH_TRIGGER), ['--tw-ring-color']);
+    const halved = await computedStyles(page.locator(HALVED_RING_CONTROL), ['--tw-ring-color']);
     expect(halved['--tw-ring-color']).toContain('color-mix');
 
     await page.emulateMedia({ contrast: 'more' });
     await expect(page.locator('html.high-contrast')).toHaveCount(1, { timeout: 30000 });
-    await tabToAttachTrigger(page);
+    await tabToComposerControl(page, HALVED_RING_CONTROL, TALL_DRAFT);
 
     /** With it, the ring is restored to the ink token at full strength: the
      *  stylesheet re-declares the colour, because v4 has no ring-opacity. */
-    const restored = await computedStyles(page.locator(ATTACH_TRIGGER), ['--tw-ring-color']);
+    const restored = await computedStyles(page.locator(HALVED_RING_CONTROL), ['--tw-ring-color']);
     const opaque = await normalizeColor(page, `rgb(${await themeValue(page, '--text-primary')})`);
     expect(await normalizeColor(page, restored['--tw-ring-color'])).toBe(opaque);
     expect(restored['--tw-ring-color']).not.toContain('color-mix');
 
     /** The restoring rule is `html.high-contrast *`, so it has to hold for every
      *  control that halves its own ring rather than only the one focused above:
-     *  the attach-file button, the composer's collapse and its tools menu all
-     *  write the same class. */
-    for (const selector of ['#attach-file', '#collapse-chat-button', '#tools-menu-button']) {
+     *  the assistants attach button and the composer's collapse both write the
+     *  same class. */
+    for (const selector of ['#attach-file', HALVED_RING_CONTROL]) {
       const control = page.locator(selector);
       if ((await control.count()) === 0) continue;
       const ring = await computedStyles(control, ['--tw-ring-color']);
@@ -88,13 +98,13 @@ test.describe('Tailwind v4 focus treatment', () => {
 
     await page.emulateMedia({ forcedColors: 'active' });
     await page.goto('/c/new', { timeout: 30000 });
-    await tabToAttachTrigger(page);
+    await tabToComposerControl(page, PALETTE_TRIGGER);
 
     /** `outline-hidden` keeps v3's transparent outline, which the platform
      *  repaints in forced colours; `outline-none` would remove the outline box
      *  and leave the keyboard user with the ring alone, which forced colours
      *  flattens. */
-    const outline = await computedStyles(page.locator(ATTACH_TRIGGER), [
+    const outline = await computedStyles(page.locator(PALETTE_TRIGGER), [
       'outlineStyle',
       'outlineWidth',
     ]);
@@ -108,10 +118,13 @@ test.describe('Tailwind v4 focus treatment', () => {
   }) => {
     test.setTimeout(120_000);
     await useStoredTheme(page, 'light');
+    /* Pin the scheme with the stored theme: a dark system scheme still brings in
+       the dark theme's own `:focus-visible` outline, which is not under test. */
+    await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('/c/new', { timeout: 30000 });
-    await tabToAttachTrigger(page);
+    await tabToComposerControl(page, PALETTE_TRIGGER);
 
-    const focused = await computedStyles(page.locator(ATTACH_TRIGGER), [
+    const focused = await computedStyles(page.locator(PALETTE_TRIGGER), [
       'outlineStyle',
       'boxShadow',
     ]);
