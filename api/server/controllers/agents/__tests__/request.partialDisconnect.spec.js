@@ -48,8 +48,8 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
-  resolvePersistedReasoningOverride:
-    jest.requireActual('@librechat/api').resolvePersistedReasoningOverride,
+  persistedReasoningOverrideFields:
+    jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   isScheduleFireRequest: jest.fn(() => false),
   exemptFromConcurrencyLimiter: jest.fn(() => false),
   toPendingSteer: jest.fn((item) => item),

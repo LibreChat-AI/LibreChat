@@ -31,7 +31,7 @@ const {
   announceReply,
   needsRetentionConversation,
   getConversationWriteContext,
-  resolvePersistedReasoningOverride,
+  persistedReasoningOverrideFields,
 } = require('@librechat/api');
 const {
   Constants,
@@ -611,14 +611,14 @@ class BaseClient {
       }
     }
 
-    const persistedReasoningOverride = resolvePersistedReasoningOverride({
-      rawReasoningOverride: this.options.req?.body?.reasoningOverride,
-      isEdited: opts.isEdited,
-      isCompaction: opts.isCompaction,
-    });
-    if (persistedReasoningOverride !== undefined) {
-      userMessage.reasoningOverride = persistedReasoningOverride;
-    }
+    Object.assign(
+      userMessage,
+      persistedReasoningOverrideFields({
+        rawReasoningOverride: this.options.req?.body?.reasoningOverride,
+        isEdited: opts.isEdited,
+        isCompaction: opts.isCompaction,
+      }),
+    );
 
     if (typeof opts?.getReqData === 'function') {
       opts.getReqData({

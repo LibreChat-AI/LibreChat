@@ -9,6 +9,7 @@ import {
 import {
   parseReasoningOverrideRequest,
   resolveReasoningOverride,
+  applyRequestReasoningOverride,
   type ReasoningOverrideInput,
   type ReasoningOverrideResult,
 } from './reasoningOverride';
@@ -283,5 +284,60 @@ describe('resolveReasoningOverride', () => {
     });
 
     expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+});
+
+describe('applyRequestReasoningOverride', () => {
+  const { reasoningOverride, endpointOption, ...input } = baseInput;
+  const request = () => ({
+    body: {
+      endpointOption: {
+        ...endpointOption,
+        endpoint: EModelEndpoint.agents,
+      },
+    },
+  });
+
+  it('leaves a request without an override untouched', async () => {
+    const req = request();
+    const before = req.body.endpointOption;
+
+    await expect(applyRequestReasoningOverride(req, input)).resolves.toBe(true);
+
+    expect(req.body.endpointOption).toBe(before);
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
+
+  it('applies the override and records the base snapshot on the request', async () => {
+    const req: ReturnType<typeof request> & { reasoningOverrideBase?: unknown } = request();
+
+    await expect(applyRequestReasoningOverride(req, { ...input, reasoningOverride })).resolves.toBe(
+      true,
+    );
+
+    expect(req.body.endpointOption).toMatchObject({
+      endpoint: EModelEndpoint.agents,
+      model_parameters: { model: 'gpt-5.1', reasoning_effort: 'high' },
+    });
+    expect(req.reasoningOverrideBase).toEqual({
+      key: 'reasoning_effort',
+      hadValue: true,
+      value: 'low',
+    });
+  });
+
+  it('refuses an unsupported override without touching the request', async () => {
+    const req = request();
+    const before = req.body.endpointOption;
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...input,
+        reasoningOverride: { key: 'effort', value: AnthropicEffort.high },
+      }),
+    ).resolves.toBe(false);
+
+    expect(req.body.endpointOption).toBe(before);
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
   });
 });

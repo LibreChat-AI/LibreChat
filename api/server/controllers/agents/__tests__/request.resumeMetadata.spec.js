@@ -258,8 +258,8 @@ jest.mock('@librechat/api', () => ({
   isAnnounceableReply: jest.requireActual('@librechat/api').isAnnounceableReply,
   announceReply: jest.requireActual('@librechat/api').announceReply,
   announceErrorTurn: jest.requireActual('@librechat/api').announceErrorTurn,
-  resolvePersistedReasoningOverride:
-    jest.requireActual('@librechat/api').resolvePersistedReasoningOverride,
+  persistedReasoningOverrideFields:
+    jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   logAgentMemorySnapshot: jest.fn(),
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),
   exemptFromConcurrencyLimiter: (...args) => mockExemptFromConcurrencyLimiter(...args),

@@ -25,3 +25,14 @@ export function resolvePersistedReasoningOverride({
   const parsed = reasoningOverrideSchema.safeParse(rawReasoningOverride);
   return parsed.success ? parsed.data : undefined;
 }
+
+/**
+ * The same resolution shaped as message fields, so a caller spreads or assigns
+ * the result instead of branching on whether the turn carries an override.
+ */
+export function persistedReasoningOverrideFields(input: PersistedReasoningOverrideInput): {
+  reasoningOverride?: TReasoningOverride;
+} {
+  const reasoningOverride = resolvePersistedReasoningOverride(input);
+  return reasoningOverride === undefined ? {} : { reasoningOverride };
+}

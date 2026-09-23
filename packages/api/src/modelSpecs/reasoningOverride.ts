@@ -151,3 +151,40 @@ export async function resolveReasoningOverride({
     },
   };
 }
+
+export type RequestReasoningOverrideInput = Omit<
+  ReasoningOverrideInput,
+  'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase'
+> & {
+  reasoningOverride?: TReasoningOverride;
+};
+
+/**
+ * Applies a validated request override to the built endpoint option and records
+ * the trusted base snapshot on the request. A request without an override is left
+ * untouched; `false` means the override was refused and the caller must reject
+ * the request.
+ */
+export async function applyRequestReasoningOverride<T extends EndpointOption>(
+  req: { reasoningOverrideBase?: ReasoningOverrideBase; body: { endpointOption: T } },
+  { reasoningOverride, ...input }: RequestReasoningOverrideInput,
+): Promise<boolean> {
+  if (reasoningOverride == null) {
+    return true;
+  }
+  const resolution = await resolveReasoningOverride({
+    ...input,
+    reasoningOverride,
+    endpointOption: req.body.endpointOption,
+    reasoningOverrideBase: req.reasoningOverrideBase,
+  });
+  if (!resolution.ok) {
+    return false;
+  }
+  req.reasoningOverrideBase = resolution.reasoningOverrideBase;
+  req.body.endpointOption = {
+    ...req.body.endpointOption,
+    model_parameters: resolution.modelParameters,
+  };
+  return true;
+}

@@ -1,5 +1,6 @@
 import { ReasoningEffort } from 'librechat-data-provider';
 import {
+  persistedReasoningOverrideFields,
   resolvePersistedReasoningOverride,
   type PersistedReasoningOverride,
   type PersistedReasoningOverrideInput,
@@ -32,5 +33,24 @@ describe('resolvePersistedReasoningOverride', () => {
     ['compaction', { isCompaction: true }],
   ])('omits the override on a %s turn', (_name, flags) => {
     expect(resolve(flags)).toBeUndefined();
+  });
+});
+
+describe('persistedReasoningOverrideFields', () => {
+  it('carries a fresh turn override as a message field', () => {
+    expect(
+      persistedReasoningOverrideFields({
+        rawReasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      }),
+    ).toEqual({ reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high } });
+  });
+
+  it('adds no field for an edit, a compaction or an invalid payload', () => {
+    const rawReasoningOverride = { key: 'reasoning_effort', value: ReasoningEffort.high };
+    expect(persistedReasoningOverrideFields({ rawReasoningOverride, isEdited: true })).toEqual({});
+    expect(persistedReasoningOverrideFields({ rawReasoningOverride, isCompaction: true })).toEqual(
+      {},
+    );
+    expect(persistedReasoningOverrideFields({ rawReasoningOverride: { key: 'x' } })).toEqual({});
   });
 });

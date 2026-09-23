@@ -808,6 +808,14 @@ describe('computeAgentRequestFingerprint', () => {
 });
 
 describe('pickResumeContext / applyResumeContext', () => {
+  it('captures the trusted reasoning snapshot alongside the body fields', () => {
+    const base = { key: 'reasoning_effort' as const, hadValue: true, value: 'low' };
+    const ctx = pickResumeContext({ endpoint: 'agents' }, base);
+    expect(ctx).toEqual({ endpoint: 'agents', reasoningOverrideBase: base });
+    expect(ctx.reasoningOverrideBase).not.toBe(base);
+    expect(pickResumeContext({ endpoint: 'agents' }, null)).toEqual({ endpoint: 'agents' });
+  });
+
   it('picks only the graph-determining fields (incl. addedConvo + timezone), dropping unrelated keys', () => {
     const ctx = pickResumeContext({
       endpoint: 'agents',

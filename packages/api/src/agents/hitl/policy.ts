@@ -725,9 +725,14 @@ export function captureResumeModelParameters(
   return Object.keys(captured).length > 0 ? captured : undefined;
 }
 
-/** Extract the graph-determining fields from a request body for durable replay. */
-export function pickResumeContext(body: Record<string, unknown> | undefined | null): ResumeContext {
-  const ctx: ResumeContext = {};
+/** Extract the graph-determining fields from a request body, and the trusted reasoning
+ *  snapshot when the request resolved one, for durable replay. */
+export function pickResumeContext(
+  body: Record<string, unknown> | undefined | null,
+  reasoningOverrideBase?: ResumeContext['reasoningOverrideBase'] | null,
+): ResumeContext {
+  const ctx: ResumeContext =
+    reasoningOverrideBase != null ? { reasoningOverrideBase: { ...reasoningOverrideBase } } : {};
   if (body == null) {
     return ctx;
   }

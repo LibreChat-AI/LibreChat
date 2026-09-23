@@ -6,7 +6,7 @@ const {
   inspectContent,
   extractChatContent,
   contentFilterBlockResponse,
-  resolveReasoningOverride,
+  applyRequestReasoningOverride,
   parseReasoningOverrideRequest,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -189,29 +189,19 @@ async function buildEndpointOption(req, res, next) {
     req.body = req.body || {}; // Express 5: ensure req.body exists
     req.body.endpointOption = await builder(endpoint, parsedBody, endpointType);
 
-    const { reasoningOverride } = reasoningOverrideRequest;
-    if (reasoningOverride != null) {
-      const resolution = await resolveReasoningOverride({
-        reasoningOverride,
-        endpointOption: req.body.endpointOption,
-        endpoint,
-        endpointType,
-        parsedModel: parsedBody.model,
-        isAgent: isAgents,
-        endpointsConfig,
-        defaultParamsEndpoint,
-        appliedModelSpecPrivateFields,
-        enforcedModelSpecFields,
-        reasoningOverrideBase: req.reasoningOverrideBase,
-      });
-      if (!resolution.ok) {
-        return handleError(res, { text: 'Invalid reasoning override' });
-      }
-      req.reasoningOverrideBase = resolution.reasoningOverrideBase;
-      req.body.endpointOption = {
-        ...req.body.endpointOption,
-        model_parameters: resolution.modelParameters,
-      };
+    const reasoningApplied = await applyRequestReasoningOverride(req, {
+      reasoningOverride: reasoningOverrideRequest.reasoningOverride,
+      endpoint,
+      endpointType,
+      parsedModel: parsedBody.model,
+      isAgent: isAgents,
+      endpointsConfig,
+      defaultParamsEndpoint,
+      appliedModelSpecPrivateFields,
+      enforcedModelSpecFields,
+    });
+    if (!reasoningApplied) {
+      return handleError(res, { text: 'Invalid reasoning override' });
     }
 
     if (req.body.files && !isAgents) {
