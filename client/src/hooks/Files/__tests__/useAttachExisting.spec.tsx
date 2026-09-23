@@ -170,7 +170,7 @@ describe('useAttachExisting', () => {
         ['c', staged({ file_id: 'c' })],
       ]);
       attach();
-      refused('com_ui_attach_error_limit');
+      refused('com_ui_attach_error_file_limit');
     });
 
     it('refuses a file bigger than the endpoint takes', () => {
@@ -228,7 +228,9 @@ describe('useAttachExisting', () => {
     attach();
     expect(mockAddFile).toHaveBeenCalled();
     expect(mockShowToast).not.toHaveBeenCalledWith(
-      expect.objectContaining({ message: expect.stringContaining('com_ui_attach_error_limit') }),
+      expect.objectContaining({
+        message: expect.stringContaining('com_ui_attach_error_file_limit'),
+      }),
     );
   });
 

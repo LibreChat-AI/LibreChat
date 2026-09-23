@@ -242,7 +242,7 @@ describe('PanelTable handleFileClick', () => {
     expect(mockAddFile).not.toHaveBeenCalled();
     expect(mockShowToast).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: expect.stringContaining('com_ui_attach_error_limit'),
+        message: expect.stringContaining('com_ui_attach_error_file_limit'),
         status: 'error',
       }),
     );

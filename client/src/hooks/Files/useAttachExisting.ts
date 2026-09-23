@@ -99,7 +99,12 @@ export default function useAttachExisting(context: AttachExistingContext): (file
         files.size >= endpointFileConfig.fileLimit
       ) {
         showToast({
-          message: `${localize('com_ui_attach_error_limit')} ${endpointFileConfig.fileLimit} files (${endpoint})`,
+          message: localize(
+            endpointFileConfig.fileLimit === 1
+              ? 'com_ui_attach_error_file_limit_one'
+              : 'com_ui_attach_error_file_limit',
+            { count: endpointFileConfig.fileLimit, 0: endpoint },
+          ),
           status: 'error',
         });
         return;
