@@ -18,6 +18,7 @@ import {
   sanitizeResumeModelParameters,
   pickResumeContext,
   applyResumeContext,
+  applyResumeRequest,
   applyResumeModelParameters,
   exemptAskUserQuestionFromApproval,
   isToolApprovalPauseCapable,
@@ -992,6 +993,38 @@ describe('pickResumeContext / applyResumeContext', () => {
     applyResumeContext(reloadedBody, action.resumeContext);
     expect(reloadedBody.ephemeralAgent).toEqual({ execute_code: true });
     expect(reloadedBody.promptPrefix).toBe('p');
+  });
+});
+
+describe('applyResumeRequest', () => {
+  it('restores the body, the reasoning snapshot and the generation params together', () => {
+    const reasoningOverrideBase = { key: 'reasoning_effort' as const, hadValue: false };
+    const req: {
+      body: Record<string, unknown>;
+      reasoningOverrideBase?: typeof reasoningOverrideBase;
+    } = { body: { conversationId: 'c', addedConvo: { endpoint: 'x' } } };
+    applyResumeRequest(req, {
+      endpoint: 'agents',
+      reasoningOverrideBase,
+      model_parameters: { temperature: 0.3, conversationId: 'forged' },
+    });
+    expect(req.body).toEqual({ conversationId: 'c', endpoint: 'agents', temperature: 0.3 });
+    expect(req.reasoningOverrideBase).toEqual(reasoningOverrideBase);
+    expect(req.reasoningOverrideBase).not.toBe(reasoningOverrideBase);
+  });
+
+  it('leaves the reasoning snapshot unset when the paused turn had none', () => {
+    const req: { body: Record<string, unknown>; reasoningOverrideBase?: undefined } = {
+      body: {},
+    };
+    applyResumeRequest(req, { endpoint: 'agents' });
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
+
+  it('is a no-op without a persisted context', () => {
+    const req = { body: { ephemeralAgent: null } };
+    applyResumeRequest(req, undefined);
+    expect(req).toEqual({ body: { ephemeralAgent: null } });
   });
 });
 

@@ -764,6 +764,25 @@ export function applyResumeContext(
   }
 }
 
+/**
+ * Restore a paused turn onto its resume request: the graph-determining body fields, the
+ * trusted reasoning-override snapshot that keeps a request-scoped override out of saved
+ * conversation defaults, and the resolved generation parameters.
+ */
+export function applyResumeRequest(
+  req: {
+    body?: Record<string, unknown> | null;
+    reasoningOverrideBase?: ResumeContext['reasoningOverrideBase'];
+  },
+  ctx: ResumeContext | undefined | null,
+): void {
+  applyResumeContext(req.body, ctx);
+  if (ctx?.reasoningOverrideBase != null) {
+    req.reasoningOverrideBase = { ...ctx.reasoningOverrideBase };
+  }
+  applyResumeModelParameters(req.body, ctx?.model_parameters);
+}
+
 /** Request-envelope fields that resolved provider params must never replace. */
 const RESUME_REQUEST_CONTROL_KEYS = new Set<string>([
   ...RESUME_CONTEXT_KEYS,
