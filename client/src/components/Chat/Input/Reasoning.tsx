@@ -356,7 +356,7 @@ export function useComposerReasoning({
   const targetFingerprint = targetResolved
     ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
     : null;
-  const previousTarget = useRef(targetFingerprint);
+  const previousTarget = useRef({ key: reasoningStateKey, fingerprint: targetFingerprint });
   const explicitlyUnavailable =
     enabled === false ||
     hasAddedConversation ||
@@ -368,12 +368,12 @@ export function useComposerReasoning({
   useEffect(() => {
     let targetChanged = false;
     if (targetFingerprint != null) {
-      if (previousTarget.current == null) {
-        previousTarget.current = targetFingerprint;
-      } else if (previousTarget.current !== targetFingerprint) {
-        previousTarget.current = targetFingerprint;
-        targetChanged = true;
-      }
+      const previous = previousTarget.current;
+      targetChanged =
+        previous.key === reasoningStateKey &&
+        previous.fingerprint != null &&
+        previous.fingerprint !== targetFingerprint;
+      previousTarget.current = { key: reasoningStateKey, fingerprint: targetFingerprint };
     }
     const unsupportedResolved = targetResolved && setting == null;
     const mismatchedSetting = setting != null && value?.key !== setting.key;
@@ -383,7 +383,15 @@ export function useComposerReasoning({
     ) {
       setValue(undefined);
     }
-  }, [explicitlyUnavailable, setValue, setting, targetFingerprint, targetResolved, value]);
+  }, [
+    explicitlyUnavailable,
+    reasoningStateKey,
+    setValue,
+    setting,
+    targetFingerprint,
+    targetResolved,
+    value,
+  ]);
 
   if (!available || setting == null) {
     return null;

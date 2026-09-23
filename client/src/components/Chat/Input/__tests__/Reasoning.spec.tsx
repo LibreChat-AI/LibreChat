@@ -301,6 +301,49 @@ describe('useComposerReasoning', () => {
       ).toBeUndefined(),
     );
   });
+  it('keeps a staged selection when the user returns from a conversation on another model', async () => {
+    const reasoningStore = createStore();
+    const staged = { key: 'reasoning_effort' as const, value: ReasoningEffort.high };
+    const first = {
+      conversationId: 'staged-conversation',
+      endpoint: 'openAI',
+      model: 'gpt-5',
+    } as TConversation;
+    const second = {
+      conversationId: 'other-conversation',
+      endpoint: 'openAI',
+      model: 'gpt-5-mini',
+    } as TConversation;
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      ({ activeConversation }: { activeConversation: TConversation }) =>
+        useComposerReasoning({
+          conversation: activeConversation,
+          index: 0,
+          hasAddedConversation: false,
+          enabled: true,
+        }),
+      { initialProps: { activeConversation: first }, wrapper },
+    );
+
+    await waitFor(() => expect(rendered.result.current).not.toBeNull());
+    act(() => {
+      rendered.result.current?.setValue(staged);
+    });
+
+    rendered.rerender({ activeConversation: second });
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('reasoning_effort'));
+    rendered.rerender({ activeConversation: first });
+    await waitFor(() => expect(rendered.result.current).not.toBeNull());
+    expect(reasoningStore.get(pendingReasoningOverrideFamily('staged-conversation'))).toEqual(
+      staged,
+    );
+  });
+
   it('keeps secondary-pane reasoning selection isolated and clears it on target changes', async () => {
     const reasoningStore = createStore();
     const conversation = {
