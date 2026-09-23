@@ -15,13 +15,20 @@ import {
   usePinnedConversationsQuery,
   useTitleGeneration,
 } from '~/data-provider';
-import { useLocalize, useAuthContext, useLocalStorage, useNavScrolling } from '~/hooks';
+import {
+  useLocalize,
+  useAuthContext,
+  useLocalStorage,
+  useNavScrolling,
+  useScrollFade,
+} from '~/hooks';
 import ProjectsSection from '~/components/Conversations/ProjectsSection';
+import { chatFacetParamsAtom } from '~/components/Conversations/facets';
 import ChatFilterMenu from '~/components/Conversations/ChatFilterMenu';
 import PinnedSection from '~/components/Conversations/PinnedSection';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { Conversations } from '~/components/Conversations';
-import { collectPinnedConversations } from '~/utils';
+import { cn, collectPinnedConversations } from '~/utils';
 import SearchBar from '~/components/Nav/SearchBar';
 import store from '~/store';
 
@@ -39,6 +46,8 @@ const ConversationsSection = memo(() => {
   const tags = useAtomValue(chatFilterTagsAtom);
   const sort = useAtomValue(chatSortAtom);
   const isArchivedView = useAtomValue(isArchivedChatViewAtom);
+  /** Date, endpoint and attachment facets, already shaped as list parameters. */
+  const facetParams = useAtomValue(chatFacetParamsAtom);
   const search = useRecoilValue(store.search);
 
   const {
@@ -59,6 +68,7 @@ const ConversationsSection = memo(() => {
       sortDirection: sort.direction,
       tags: tags.length === 0 ? undefined : tags,
       search: search.debouncedQuery || undefined,
+      ...facetParams,
     },
     {
       enabled: isAuthenticated,
@@ -160,6 +170,16 @@ const ConversationsSection = memo(() => {
    *  as a single surface: the chats list is virtualized against this viewport
    *  rather than scrolling inside a pane of its own. */
   const [scrollViewport, setScrollViewport] = useState<HTMLDivElement | null>(null);
+  const { attach: attachScrollFade, hasMore: hasMoreBelow } = useScrollFade<HTMLDivElement>();
+  /** The viewport is both the element sections measure against and the one that
+   *  scrolls, so the fade and the state setter share one callback ref. */
+  const setScrollViewportNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      setScrollViewport(node);
+      attachScrollFade(node);
+    },
+    [attachScrollFade],
+  );
   const [scrollContent, setScrollContent] = useState<HTMLDivElement | null>(null);
 
   /** Searching replaces what the surface holds: Projects and Pinned leave and
@@ -176,7 +196,7 @@ const ConversationsSection = memo(() => {
 
   return (
     <div
-      className="flex h-full min-h-0 flex-col overflow-hidden pb-3 pt-2"
+      className="flex h-full min-h-0 flex-col overflow-hidden pt-2 pb-3"
       role="region"
       aria-label={localize('com_ui_chat_history')}
     >
@@ -188,48 +208,59 @@ const ConversationsSection = memo(() => {
           <SearchBar isSmallScreen={isSmallScreen} />
         </div>
       )}
-      <div
-        ref={setScrollViewport}
-        className="scrollbar-gutter-stable min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
-      >
-        {/* `min-h-full` keeps the sections filling a tall sidebar, so the chats
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={setScrollViewportNode}
+          className="min-h-0 flex-1 scrollbar-gutter-stable overflow-x-hidden overflow-y-auto"
+        >
+          {/* `min-h-full` keeps the sections filling a tall sidebar, so the chats
             list still claims the space below them when there is little to show. */}
-        <div ref={setScrollContent} className="flex min-h-full flex-col">
-          {!search.query && (
-            <ProjectsSection toggleNav={toggleNav} isAuthenticated={isAuthenticated} />
-          )}
-          {!search.query && (
-            <PinnedSection
-              conversations={pinnedConversations}
-              toggleNav={toggleNav}
-              isSmallScreen={isSmallScreen}
-              /* Only a successful drain proves the list is whole: a failed later
+          <div ref={setScrollContent} className="flex min-h-full flex-col">
+            {!search.query && (
+              <ProjectsSection toggleNav={toggleNav} isAuthenticated={isAuthenticated} />
+            )}
+            {!search.query && (
+              <PinnedSection
+                conversations={pinnedConversations}
+                toggleNav={toggleNav}
+                isSmallScreen={isSmallScreen}
+                /* Only a successful drain proves the list is whole: a failed later
                  page still publishes partial data and stops fetching. The Chats filters
                  never reach this query, so nothing else can truncate it. */
-              membershipComplete={isPinnedComplete}
-              /* When that drain last ran, which decides whether it is current
+                membershipComplete={isPinnedComplete}
+                /* When that drain last ran, which decides whether it is current
                  enough to prune the stored order against. */
-              membershipUpdatedAt={pinnedUpdatedAt}
+                membershipUpdatedAt={pinnedUpdatedAt}
+              />
+            )}
+            <Conversations
+              conversations={conversations}
+              moveToTop={moveToTop}
+              toggleNav={toggleNav}
+              containerRef={conversationsRef}
+              loadMoreConversations={loadMoreConversations}
+              isLoading={isFetchingNextPage || isLoading}
+              isSearchLoading={isSearchLoading || isPreviousData}
+              isChatsExpanded={isChatsExpanded}
+              setIsChatsExpanded={setIsChatsExpanded}
+              hasNextPage={computedHasNextPage}
+              isError={isError}
+              onRetry={retryConversations}
+              chatsHeaderTrailing={chatsHeaderTrailing}
+              scrollViewport={scrollViewport}
+              scrollContent={scrollContent}
             />
-          )}
-          <Conversations
-            conversations={conversations}
-            moveToTop={moveToTop}
-            toggleNav={toggleNav}
-            containerRef={conversationsRef}
-            loadMoreConversations={loadMoreConversations}
-            isLoading={isFetchingNextPage || isLoading}
-            isSearchLoading={isSearchLoading || isPreviousData}
-            isChatsExpanded={isChatsExpanded}
-            setIsChatsExpanded={setIsChatsExpanded}
-            hasNextPage={computedHasNextPage}
-            isError={isError}
-            onRetry={retryConversations}
-            chatsHeaderTrailing={chatsHeaderTrailing}
-            scrollViewport={scrollViewport}
-            scrollContent={scrollContent}
-          />
+          </div>
         </div>
+        {/* The last row fades rather than being cut off, so a list that continues
+          below the fold says so without a scrollbar having to appear. */}
+        <div
+          aria-hidden="true"
+          className={cn(
+            'from-surface-primary-alt pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent transition-opacity duration-200 motion-reduce:transition-none',
+            hasMoreBelow ? 'opacity-100' : 'opacity-0',
+          )}
+        />
       </div>
     </div>
   );

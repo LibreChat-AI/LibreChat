@@ -71,6 +71,7 @@ jest.mock('~/hooks', () => ({
   useAuthContext: () => ({ isAuthenticated: true }),
   useLocalStorage: () => [true, mockSetChatsExpanded],
   useNavScrolling: () => ({ moveToTop: mockMoveToTop }),
+  useScrollFade: () => ({ attach: jest.fn(), hasMore: false }),
   useFavorites: () => mockUseFavorites(),
   useShowMarketplace: () => false,
   useNewConvo: () => ({ newConversation: jest.fn() }),

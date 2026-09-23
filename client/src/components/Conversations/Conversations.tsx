@@ -2,11 +2,19 @@ import { useMemo, memo, type FC, useCallback, useEffect, useRef } from 'react';
 import { useDrop } from 'react-dnd';
 import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
-import { ChevronDown } from 'lucide-react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
-import { Spinner, useMediaQuery, buttonVariants } from '@librechat/client';
+import { Button, EmptyState, Spinner, useMediaQuery, buttonVariants } from '@librechat/client';
+import {
+  Archive,
+  ChevronDown,
+  MessageSquareDashed,
+  MessageSquareOff,
+  SearchX,
+  TriangleAlert,
+} from 'lucide-react';
 import type { TConversation } from 'librechat-data-provider';
+import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { ConversationDragItem } from './dnd';
 import {
@@ -25,6 +33,7 @@ import {
   useUnpinDroppedConversation,
 } from './dnd';
 import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
+import { facetFilterCountAtom, resetFacetsAtom } from './facets';
 import { groupConversations, cn } from '~/utils';
 import { useActiveJobs } from '~/data-provider';
 import Convo from './Convo';
@@ -104,7 +113,7 @@ const LoadingSpinner = memo(() => {
   return (
     <div className="mx-auto mt-2 flex items-center justify-center gap-2">
       <Spinner className="text-text-primary" />
-      <span className="text-text-primary animate-pulse">{localize('com_ui_loading')}</span>
+      <span className="shimmer text-text-primary">{localize('com_ui_loading')}</span>
     </div>
   );
 });
@@ -202,7 +211,19 @@ const Conversations: FC<ConversationsProps> = ({
   const isArchivedView = useAtomValue(isArchivedChatViewAtom);
   const activeFilterCount = useAtomValue(chatFilterCountAtom);
   const filterTags = useAtomValue(chatFilterTagsAtom);
+  /** Date, endpoint and attachment facets narrow the same list as the bookmark tags,
+   *  so an empty result under either has to read as "nothing matched", not as an
+   *  account with no chats in it. */
+  const facetFilterCount = useAtomValue(facetFilterCountAtom);
   const resetFilters = useSetAtom(resetChatFiltersAtom);
+  const resetFacets = useSetAtom(resetFacetsAtom);
+  /** What the menu's Reset clears, counted the same way: the empty state offers the
+   *  way out of every narrowing, not only of the ones the tag filters know about. */
+  const narrowedCount = activeFilterCount + facetFilterCount;
+  const clearNarrowing = useCallback(() => {
+    resetFilters();
+    resetFacets();
+  }, [resetFilters, resetFacets]);
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   /* Dropping a chat on the Chats section makes it an ordinary chat: out of its
    * project, and unpinned. A root-list chat that is not pinned already is one,
@@ -494,7 +515,11 @@ const Conversations: FC<ConversationsProps> = ({
    *  it is empty and offer the way back. A drained page can still contain only pinned rows,
    *  which render in PinnedSection and do not make the account empty. */
   const hasUnfilteredRows =
-    !search.query && filterTags.length === 0 && !isArchivedView && filteredConversations.length > 0;
+    !search.query &&
+    filterTags.length === 0 &&
+    facetFilterCount === 0 &&
+    !isArchivedView &&
+    filteredConversations.length > 0;
   const isEmpty =
     isChatsExpanded &&
     !isLoading &&
@@ -504,14 +529,24 @@ const Conversations: FC<ConversationsProps> = ({
     groupedConversations.length === 0 &&
     !hasUnfilteredRows;
 
+  /** Which dead end this is decides both the line and the glyph above it: a search
+   *  that found nothing, a filter that matched nothing, an empty archive, and an
+   *  account with no chats yet are four different situations wearing one sentence. */
   let emptyLabel: TranslationKeys = 'com_ui_no_chats';
+  let emptyIcon: LucideIcon = MessageSquareDashed;
   if (search.query) {
     emptyLabel = 'com_ui_no_search_results';
-  } else if (filterTags.length > 0) {
+    emptyIcon = SearchX;
+  } else if (filterTags.length > 0 || facetFilterCount > 0) {
     emptyLabel = 'com_ui_no_chats_match_filters';
+    emptyIcon = MessageSquareOff;
   } else if (isArchivedView) {
     emptyLabel = 'com_ui_no_archived_chats';
+    emptyIcon = Archive;
   }
+  /** Nothing has been narrowed: the list is empty because the account is. That reads
+   *  as a heading, where the three narrowed states are a single line under the glyph. */
+  const isUntouched = emptyLabel === 'com_ui_no_chats';
 
   let body: ReactNode = (
     <div ref={setListNode} className="flex-1">
@@ -540,44 +575,44 @@ const Conversations: FC<ConversationsProps> = ({
     body = (
       <div className="flex flex-1 items-center justify-center">
         <Spinner className="text-text-primary" />
-        <span className="text-text-primary ml-2">{localize('com_ui_loading')}</span>
+        <span className="shimmer text-text-primary ml-2">{localize('com_ui_loading')}</span>
       </div>
     );
   } else if (isListError) {
     body = (
       <div
-        className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+        className="flex flex-1 items-center justify-center"
         data-testid="convo-list-error"
         role="alert"
       >
-        <span className="text-text-secondary text-sm">{localize('com_ui_chats_load_error')}</span>
-        {onRetry && (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="text-text-primary focus-visible:ring-text-primary rounded-lg px-2 py-1 text-sm underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
-          >
-            {localize('com_ui_retry')}
-          </button>
-        )}
+        <EmptyState
+          icon={TriangleAlert}
+          title={localize('com_ui_chats_load_error')}
+          action={
+            onRetry && (
+              <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+                {localize('com_ui_retry')}
+              </Button>
+            )
+          }
+        />
       </div>
     );
   } else if (isEmpty) {
     body = (
-      <div
-        className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
-        data-testid="convo-list-empty"
-      >
-        <span className="text-text-secondary text-sm">{localize(emptyLabel)}</span>
-        {activeFilterCount > 0 && (
-          <button
-            type="button"
-            onClick={() => resetFilters()}
-            className="text-text-primary focus-visible:ring-text-primary rounded-lg px-2 py-1 text-sm underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
-          >
-            {localize('com_ui_clear_filters')}
-          </button>
-        )}
+      <div className="flex flex-1 items-center justify-center" data-testid="convo-list-empty">
+        <EmptyState
+          icon={emptyIcon}
+          title={isUntouched ? localize(emptyLabel) : undefined}
+          description={isUntouched ? undefined : localize(emptyLabel)}
+          action={
+            narrowedCount > 0 && (
+              <Button type="button" variant="secondary" size="xs" onClick={clearNarrowing}>
+                {localize('com_ui_clear_filters')}
+              </Button>
+            )
+          }
+        />
       </div>
     );
   }
