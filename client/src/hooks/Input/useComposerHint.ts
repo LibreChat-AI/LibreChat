@@ -25,6 +25,9 @@ export interface ComposerHintState {
    *  later, and until it lands every chord that touches the live run refuses.
    *  Queueing is local, so it works throughout. */
   canControlGeneration: boolean;
+  /** Whether the stop control can act yet; the stop shortcut presses it, so
+   *  the key is named only once it does something. Defaults to reachable. */
+  canStop?: boolean;
   /** Which action Enter takes during a run, per the effective setting. */
   duringRunAction: 'steer' | 'queue';
   steerInterruptsByDefault?: boolean;
@@ -153,9 +156,10 @@ export function composeHint(
        is right there, and naming a key that does nothing is worse than saying
        only that a reply is running. */
     return {
-      text: stopShortcut
-        ? `${stopShortcut} ${localize('com_ui_composer_hint_stop')}`
-        : localize('com_ui_composer_hint_running'),
+      text:
+        stopShortcut && state.canStop !== false
+          ? `${stopShortcut} ${localize('com_ui_composer_hint_stop')}`
+          : localize('com_ui_composer_hint_running'),
       kind: 'state',
     };
   }

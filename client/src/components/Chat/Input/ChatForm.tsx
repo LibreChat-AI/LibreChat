@@ -536,6 +536,10 @@ const ChatForm = memo(function ChatForm({
     return count;
   }, [files]);
 
+  /* The abort is generation-scoped and inert until the start POST installs the
+     epoch; assistants abort through their own path and need no epoch. */
+  const canStop = steering.canControlGeneration || isAssistantsEndpoint(endpoint);
+
   /** One button slot while a run is generating: with composer text the send
    *  button takes over (Enter steers/queues; hover reveals all actions);
    *  clearing the text restores Stop. */
@@ -550,10 +554,7 @@ const ChatForm = memo(function ChatForm({
       <StopButton
         stop={handleStopGenerating}
         setShowStopButton={setShowStopButton}
-        /* The abort is generation-scoped and inert until the start POST
-           installs the epoch; assistants abort through their own path and
-           need no epoch. */
-        canStop={steering.canControlGeneration || isAssistantsEndpoint(endpoint)}
+        canStop={canStop}
         hidden={sendOwnsSlot}
       />
     ) : null;
@@ -591,7 +592,7 @@ const ChatForm = memo(function ChatForm({
     showStopButton,
     setShowStopButton,
     handleStopGenerating,
-    endpoint,
+    canStop,
   ]);
 
   /* Memoized for `memo(Bar)`: an inline element is a new identity every render,
@@ -965,6 +966,7 @@ const ChatForm = memo(function ChatForm({
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
             canControlGeneration={steering.canControlGeneration}
+            canStop={canStop}
             steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
             canSteer={steering.canSteer}

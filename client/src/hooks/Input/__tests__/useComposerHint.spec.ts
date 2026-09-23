@@ -47,6 +47,11 @@ describe('composeHint', () => {
     );
   });
 
+  it('names no stop key until the stop control can act', () => {
+    expect(hint({ isSubmitting: true, canStop: false })).toBe('com_ui_composer_hint_running');
+    expect(hint({ isSubmitting: true, canStop: true })).toBe('⌘ ⇧ X com_ui_composer_hint_stop');
+  });
+
   it('names no key at all once the binding is cleared', () => {
     expect(hint({ isSubmitting: true }, true, '')).toBe('com_ui_composer_hint_running');
   });
