@@ -23,6 +23,7 @@ jest.mock('~/hooks', () => ({
     handleNearBottomChange: jest.fn(),
   }),
   useScrollbarGutter: jest.fn(),
+  useConversationSeen: () => jest.fn(),
   useLocalize: () => (key: string) => key,
 }));
 
