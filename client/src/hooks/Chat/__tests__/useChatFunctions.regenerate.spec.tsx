@@ -213,8 +213,13 @@ describe('useChatFunctions ask', () => {
   it.each([EModelEndpoint.agents, EModelEndpoint.openAI])(
     'binds the optimistic %s response before publishing its messages',
     (endpoint) => {
-      const { result, setMessages, setSubmission } = renderAsk([], 'conversation-1', { endpoint });
-      const store = getDefaultStore();
+      /* The helper renders under its own Jotai store; the hook writes there. */
+      const {
+        result,
+        setMessages,
+        setSubmission,
+        reasoningStore: store,
+      } = renderAsk([], 'conversation-1', { endpoint });
       store.set(activeUsageResponseIdFamily('conversation-1'), null);
       setMessages.mockImplementation((messages: TMessage[]) => {
         expect(store.get(activeUsageResponseIdFamily('conversation-1'))).toBe(
