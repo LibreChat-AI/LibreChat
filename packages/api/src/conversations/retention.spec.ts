@@ -4,6 +4,7 @@ import {
   applyForcedTemporaryRequest,
   applyForcedRetention,
   resolveResumableRetention,
+  persistForcedTemporaryMetadata,
   resolveImportRetentionFields,
   resolveImportTagCounts,
 } from './retention';
@@ -138,6 +139,35 @@ describe('applyForcedTemporaryRequest', () => {
         config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
       }),
     ).not.toThrow();
+  });
+});
+
+describe('persistForcedTemporaryMetadata', () => {
+  it.each([RetentionMode.TEMPORARY, RetentionMode.ALL, undefined])(
+    'does not write job metadata under %s',
+    async (retentionMode) => {
+      const store = { updateMetadata: jest.fn() };
+      await persistForcedTemporaryMetadata(
+        { config: { interfaceConfig: { retentionMode } } },
+        { streamId: 'conversation-1', createdAt: 1000 },
+        store,
+      );
+      expect(store.updateMetadata).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fences the persisted temporary flag to the generation being resumed', async () => {
+    const store = { updateMetadata: jest.fn() };
+    await persistForcedTemporaryMetadata(
+      { config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } } },
+      { streamId: 'conversation-1', createdAt: 1000 },
+      store,
+    );
+    expect(store.updateMetadata).toHaveBeenCalledWith(
+      'conversation-1',
+      { isTemporary: true },
+      1000,
+    );
   });
 });
 

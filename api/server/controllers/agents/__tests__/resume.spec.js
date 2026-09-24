@@ -3265,6 +3265,14 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         await flush();
 
         expect(mockInitializeClient.mock.calls[0][0].req.body.isTemporary).toBe(true);
+        expect(mockGenerationJobManager.updateMetadata).toHaveBeenCalledWith(
+          CONVO_ID,
+          { isTemporary: true },
+          1000,
+        );
+        expect(mockGenerationJobManager.updateMetadata.mock.invocationCallOrder[0]).toBeLessThan(
+          mockInitializeClient.mock.invocationCallOrder[0],
+        );
         expect(mockSaveMessage).toHaveBeenCalledWith(
           expect.objectContaining({ isTemporary: true }),
           expect.anything(),

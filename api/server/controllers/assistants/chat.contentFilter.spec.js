@@ -280,6 +280,21 @@ describe.each([
     expect(mockHandleError).not.toHaveBeenCalled();
     expect(mockSendResponse).not.toHaveBeenCalled();
   }
+
+  it.each([false, undefined])(
+    'applies forced temporary retention before assistant initialization (%s)',
+    async (isTemporary) => {
+      req.body.isTemporary = isTemporary;
+      req.config.interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 1 };
+      mockInitThread.mockRejectedValueOnce(new Error('stop after retention setup'));
+
+      await chatController(req, res);
+
+      expect(mockInitThread).toHaveBeenCalledTimes(1);
+      expect(req.body.isTemporary).toBe(true);
+    },
+  );
+
   it('persists the assistant before FINAL and forwards the settled read-state stamp', async () => {
     const stamp = new Date('2026-09-08T12:00:00.000Z');
     const settledConversation = {

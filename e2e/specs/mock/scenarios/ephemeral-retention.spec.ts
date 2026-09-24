@@ -202,6 +202,16 @@ test.describe('ephemeral retention', () => {
     try {
       await page.goto(NEW_CHAT_PATH);
       const userToken = await getAccessToken(page);
+      await expect(async () => {
+        const tools = await requestJson<{
+          servers?: Record<string, { tools?: Array<{ pluginKey: string }> }>;
+        }>(page, { path: '/api/mcp/tools', token: userToken });
+        expect(tools.servers?.['e2e-memory']?.tools).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ pluginKey: 'approval_probe_mcp_e2e-memory' }),
+          ]),
+        );
+      }).toPass({ timeout: 30000 });
       const agentName = uniqueAgentName('Retention resume');
       const agent = await requestJson<AgentDetail>(page, {
         path: '/api/agents',
@@ -223,6 +233,7 @@ test.describe('ephemeral retention', () => {
 
       const response = await sendMessage(page, `E2E_TOOL_APPROVAL:retention-${randomUUID()}`);
       expect(response.ok()).toBe(true);
+      await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
       await expect(messagesView(page).getByTestId('tool-approval').first()).toBeVisible({
         timeout: 30000,
       });
@@ -256,6 +267,77 @@ test.describe('ephemeral retention', () => {
       expect(history.text).not.toContain(conversationId);
     } finally {
       await cleanupAgent(page, agentId);
+    }
+  });
+
+  test('Assistant chats are forced temporary @scenario:assistant-chats-are-forced-temporary', async ({
+    request,
+  }) => {
+    await setRetentionMode(request, token, userId);
+    const created = await requestResult(request, {
+      path: '/api/assistants/v2',
+      token,
+      method: 'POST',
+      data: {
+        endpoint: 'assistants',
+        model: 'gpt-4o-mini',
+        name: `Retention Assistant ${randomUUID()}`,
+        instructions: 'Answer the user briefly.',
+        tools: [],
+      },
+    });
+    expect(created.ok, created.text).toBe(true);
+    const assistantId = (created.body as { id: string }).id;
+    expect(assistantId).toBeTruthy();
+    try {
+      const messageId = randomUUID();
+      const result = await requestResult(request, {
+        path: '/api/assistants/v2/chat',
+        token,
+        method: 'POST',
+        data: {
+          text: 'E2E_REPLY:temporary Assistant reply',
+          sender: 'User',
+          clientTimestamp: new Date().toISOString(),
+          isCreatedByUser: true,
+          parentMessageId: NO_PARENT,
+          conversationId: null,
+          messageId,
+          responseMessageId: `${messageId}_response`,
+          endpoint: 'assistants',
+          endpointType: 'assistants',
+          model: 'gpt-4o-mini',
+          assistant_id: assistantId,
+          files: [],
+          isTemporary: false,
+          isRegenerate: false,
+          error: false,
+        },
+      });
+      expect(result.ok, result.text).toBe(true);
+      expect(result.text).toContain('"final":true');
+      expect(result.text).not.toContain('event: error');
+      const conversationId = result.text.match(/"conversationId":"([^"]+)"/)?.[1];
+      if (!conversationId) {
+        throw new Error('Assistant completion did not identify its conversation');
+      }
+      cleanupConversationIds.push(conversationId);
+      expectForcedTemporary(await readConversation(conversationId));
+      const messages = await readMessages(conversationId);
+      expect(messages).toHaveLength(2);
+      for (const message of messages) {
+        expectForcedTemporary(message);
+      }
+      const history = await requestResult(request, { path: '/api/convos?limit=25', token });
+      expect(history.ok).toBe(true);
+      expect(history.text).not.toContain(conversationId);
+    } finally {
+      await requestResult(request, {
+        path: `/api/assistants/v2/${encodeURIComponent(assistantId)}?endpoint=assistants&model=gpt-4o-mini`,
+        token,
+        method: 'DELETE',
+        data: { endpoint: 'assistants' },
+      });
     }
   });
 

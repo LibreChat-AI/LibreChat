@@ -60,6 +60,24 @@ export function applyForcedTemporaryRequest(
   }
 }
 
+/** Makes a converted resume's policy survive a later pause, reload, or configuration change. */
+export async function persistForcedTemporaryMetadata(
+  req: ForcedTemporaryRequest,
+  { streamId, createdAt }: { streamId: string; createdAt: number },
+  store: {
+    updateMetadata: (
+      streamId: string,
+      metadata: Pick<GenerationJobMetadata, 'isTemporary'>,
+      expectedCreatedAt: number,
+    ) => Promise<void>;
+  },
+): Promise<void> {
+  if (!isForcedTemporaryRetention(req.config?.interfaceConfig?.retentionMode)) {
+    return;
+  }
+  await store.updateMetadata(streamId, { isTemporary: true }, createdAt);
+}
+
 /** Captures the effective retention policy for a paused turn without re-reading its records. */
 export function resolveResumableRetention(
   req: TurnConversationRequest,

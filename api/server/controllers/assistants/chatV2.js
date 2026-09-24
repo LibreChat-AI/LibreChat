@@ -18,6 +18,7 @@ const {
   settleAssistantFinal,
   resolveAssistantProjectTurn,
   joinChatProjectInstructions,
+  applyForcedTemporaryRequest,
 } = require('@librechat/api');
 const {
   Time,
@@ -67,6 +68,7 @@ const { getOpenAIClient } = require('./helpers');
  * @returns {void}
  */
 const chatV2 = async (req, res) => {
+  applyForcedTemporaryRequest(req);
   const appConfig = req.config;
 
   /** @type {{files: MongoFile[]}} */
