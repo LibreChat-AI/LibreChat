@@ -47,6 +47,10 @@ export type ApplyModelSpecPresetParams = {
 export type ApplyModelSpecPresetResult = {
   parsedBody: ModelSpecParsedBody;
   appliedPrivateFields: Set<PrivateModelSpecPresetField>;
+  /** The keys an enforced spec locks: exactly the fields its preset defines.
+   *  Refusal rules downstream (reasoning-override validation) key off this set,
+   *  so its derivation lives with the facade rather than in route wiring. */
+  enforcedFields: Set<string>;
 };
 
 function hasModelSpecValue(field: PrivateModelSpecPresetField, value: unknown): boolean {
@@ -85,7 +89,7 @@ function mergeModelSpecPreset(
   modelSpec: TModelSpec,
   parsedBody: ModelSpecParsedBody,
   { includePresetDefaults = false }: Pick<ApplyModelSpecPresetParams, 'includePresetDefaults'> = {},
-): ApplyModelSpecPresetResult {
+): Pick<ApplyModelSpecPresetResult, 'parsedBody' | 'appliedPrivateFields'> {
   const preset = modelSpec.preset;
   const requestFields = includePresetDefaults
     ? pickEnforcedModelSpecRequestFields(parsedBody)
@@ -195,7 +199,11 @@ export function applyModelSpecPreset({
     modelSpecParsedBody.iconURL = modelSpec.iconURL;
   }
 
-  return { parsedBody: modelSpecParsedBody, appliedPrivateFields };
+  return {
+    parsedBody: modelSpecParsedBody,
+    appliedPrivateFields,
+    enforcedFields: new Set(Object.keys(modelSpec.preset)),
+  };
 }
 
 export function resolveModelSpecPromptPrefixVariables<T extends { promptPrefix?: string | null }>(

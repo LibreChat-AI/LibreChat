@@ -116,7 +116,6 @@ async function buildEndpointOption(req, res, next) {
       });
     }
     const { modelSpec: currentModelSpec } = modelSpecResolution;
-    enforcedModelSpecFields = new Set(Object.keys(currentModelSpec.preset));
 
     try {
       const result = applyModelSpecPreset({
@@ -129,6 +128,7 @@ async function buildEndpointOption(req, res, next) {
       });
       parsedBody = result.parsedBody;
       appliedModelSpecPrivateFields = result.appliedPrivateFields;
+      enforcedModelSpecFields = result.enforcedFields;
     } catch (error) {
       logger.error('Error parsing model spec', error);
       return handleError(res, { text: 'Error parsing model spec' });
