@@ -1,4 +1,5 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { act, render, renderHook } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
 import type { RewakeDrain } from '~/Providers/ComposerRestoreContext';
@@ -6,13 +7,16 @@ import {
   ComposerRestoreProvider,
   useComposerRestoreHost,
 } from '~/Providers/ComposerRestoreContext';
+import { pendingSteerCancelClientIdsFamily } from '~/store/steer';
 import useSteerRecovery from '../useSteerRecovery';
 import store from '~/store';
 
 const mockMutateAsync = jest.fn();
+const mockCancelSteer = jest.fn();
 
 jest.mock('~/data-provider', () => ({
   useSteerMessageMutation: () => ({ mutateAsync: mockMutateAsync }),
+  useCancelSteerMutation: () => ({ mutateAsync: mockCancelSteer }),
 }));
 
 /** The POST settles through the returned promise, so every case has to let the
@@ -69,6 +73,7 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void, rewake?: Rewake
 describe('useSteerRecovery', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    getDefaultStore().set(pendingSteerCancelClientIdsFamily(CONVO_ID), []);
   });
 
   describe('retry', () => {
@@ -213,6 +218,214 @@ describe('useSteerRecovery', () => {
       await flush();
       expect(result.current.queue).toEqual([]);
       expect(rewake).not.toHaveBeenCalled();
+    });
+
+    /* The user can hit Cancel while a retry POST is already on the wire. The
+       marker the optimistic cancel arms has to be consulted when the POST
+       settles: accepting its ack would inject words the user asked back, and
+       clearing the marker without a deferred cancel loses them entirely. */
+    describe('a cancel that raced the retry POST', () => {
+      const armCancelMarker = (clientId: string) => {
+        getDefaultStore().set(pendingSteerCancelClientIdsFamily(CONVO_ID), [clientId]);
+      };
+
+      it('returns the words instead of injecting them when the cancel wins', async () => {
+        let settlePost: (value: unknown) => void = () => undefined;
+        mockMutateAsync.mockReturnValue(new Promise((resolve) => (settlePost = resolve)));
+        mockCancelSteer.mockResolvedValue({ removed: true });
+        const rewake = jest.fn();
+        let recovery: ReturnType<typeof useSteerRecovery> | undefined;
+        let chips: unknown[] = [];
+        let queue: unknown[] = [];
+        let accepted: unknown[] = [];
+        let cancelLikeTheUiDoes: () => void = () => undefined;
+        function Tree() {
+          recovery = useSteerRecovery(CONVO_ID);
+          chips = useRecoilValue(store.pendingSteersByConvoId(CONVO_ID));
+          queue = useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID));
+          accepted = useRecoilValue(store.acceptedSteerClientIdsByConvoId(CONVO_ID));
+          const setChips = useSetRecoilState(store.pendingSteersByConvoId(CONVO_ID));
+          /* What the optimistic cancel does to a `sending` chip: hide it and
+             arm the marker the deferred settle has to consult. */
+          cancelLikeTheUiDoes = () =>
+            setChips((prev) => prev.filter((chip) => chip.steerId !== 'local-race'));
+          return null;
+        }
+        render(
+          <ComposerRestoreProvider>
+            <RecoilRoot
+              initializeState={(snapshot) => {
+                seedRun(snapshot, true);
+                snapshot.set(store.pendingSteersByConvoId(CONVO_ID), [
+                  {
+                    steerId: 'local-race',
+                    text: 'changed my mind',
+                    status: 'failed',
+                    createdAt: 4,
+                  },
+                ]);
+              }}
+            >
+              <RewakePublisher rewake={rewake}>
+                <Tree />
+              </RewakePublisher>
+            </RecoilRoot>
+          </ComposerRestoreProvider>,
+        );
+        act(() => {
+          recovery?.retry('local-race');
+        });
+        act(() => {
+          cancelLikeTheUiDoes();
+          armCancelMarker('local-race');
+        });
+        await act(async () => {
+          settlePost({ steerId: 'srv-race', preempt: false });
+        });
+        await flush();
+        expect(mockCancelSteer).toHaveBeenCalledWith(
+          expect.objectContaining({ steerId: 'srv-race', clientSteerId: 'local-race' }),
+        );
+        /* The words came back through the queue, not the run: no chip was
+           re-minted and no accepted id was recorded for the server steer. */
+        expect(chips).toEqual([]);
+        expect(queue).toEqual([
+          expect.objectContaining({ id: 'srv-race', text: 'changed my mind' }),
+        ]);
+        expect(accepted).toEqual([]);
+        expect(getDefaultStore().get(pendingSteerCancelClientIdsFamily(CONVO_ID))).toEqual([]);
+      });
+
+      it('settles the steer as live when the racing cancel lost', async () => {
+        mockMutateAsync.mockResolvedValue({ steerId: 'srv-kept', preempt: false });
+        mockCancelSteer.mockResolvedValue({ removed: false });
+        const { result } = setup(({ set }) => {
+          set(store.pendingSteersByConvoId(CONVO_ID), [
+            { steerId: 'local-kept', text: 'still wanted', status: 'failed', createdAt: 4 },
+          ]);
+        });
+        act(() => {
+          result.current.recovery.retry('local-kept');
+        });
+        armCancelMarker('local-kept');
+        await flush();
+        await flush();
+        expect(result.current.chips).toEqual([
+          expect.objectContaining({ steerId: 'srv-kept', status: 'pending' }),
+        ]);
+        expect(result.current.queue).toEqual([]);
+      });
+
+      it('treats the steer as live when the racing cancel POST fails', async () => {
+        mockMutateAsync.mockResolvedValue({ steerId: 'srv-unknown', preempt: false });
+        mockCancelSteer.mockRejectedValue(new Error('network'));
+        const { result } = setup(({ set }) => {
+          set(store.pendingSteersByConvoId(CONVO_ID), [
+            { steerId: 'local-unknown', text: 'unknown outcome', status: 'failed', createdAt: 4 },
+          ]);
+        });
+        act(() => {
+          result.current.recovery.retry('local-unknown');
+        });
+        armCancelMarker('local-unknown');
+        await flush();
+        await flush();
+        expect(result.current.chips).toEqual([
+          expect.objectContaining({ steerId: 'srv-unknown', status: 'pending' }),
+        ]);
+        expect(getDefaultStore().get(pendingSteerCancelClientIdsFamily(CONVO_ID))).toEqual([]);
+      });
+
+      /* The optimistic cancel removes the `sending` chip, and the failure path
+         settles by mapping chips that still exist: without the chip back the
+         words vanish, unsent and unqueued both. */
+      it('keeps the words when the POST fails after the user cancelled', async () => {
+        let rejectPost: (reason?: unknown) => void = () => undefined;
+        mockMutateAsync.mockReturnValue(new Promise((_resolve, reject) => (rejectPost = reject)));
+        let recovery: ReturnType<typeof useSteerRecovery> | undefined;
+        let chips: unknown[] = [];
+        let dropChip: () => void = () => undefined;
+        const Tree = () => {
+          recovery = useSteerRecovery(CONVO_ID);
+          chips = useRecoilValue(store.pendingSteersByConvoId(CONVO_ID));
+          const setChips = useSetRecoilState(store.pendingSteersByConvoId(CONVO_ID));
+          dropChip = () =>
+            setChips((prev) => prev.filter((chip) => chip.steerId !== 'local-vanish'));
+          return null;
+        };
+        render(
+          <ComposerRestoreProvider>
+            <RecoilRoot
+              initializeState={(snapshot) => {
+                seedRun(snapshot, true);
+                snapshot.set(store.pendingSteersByConvoId(CONVO_ID), [
+                  {
+                    steerId: 'local-vanish',
+                    text: 'do not lose me',
+                    status: 'failed',
+                    createdAt: 4,
+                  },
+                ]);
+              }}
+            >
+              <Tree />
+            </RecoilRoot>
+          </ComposerRestoreProvider>,
+        );
+        act(() => {
+          recovery?.retry('local-vanish');
+        });
+        act(() => {
+          dropChip();
+          armCancelMarker('local-vanish');
+        });
+        await act(async () => {
+          rejectPost(new Error('network'));
+        });
+        await flush();
+        expect(chips).toEqual([
+          expect.objectContaining({ steerId: 'local-vanish', status: 'failed' }),
+        ]);
+        expect(getDefaultStore().get(pendingSteerCancelClientIdsFamily(CONVO_ID))).toEqual([]);
+      });
+    });
+
+    /* Binding a queued retry to its durable receipt is a v2-only capability:
+       a v1 server never parks the receipt, and the drain's explicit send dies
+       mid-commit when the row points at machinery that is not there. */
+    it('binds a queued retry ack to its receipt only under protocol v2', async () => {
+      mockMutateAsync.mockResolvedValue({ steerId: 'srv-bound', preempt: false });
+      const bind = async (generationProtocolVersion: 1 | 2) => {
+        const { result, unmount } = setup(({ set }) => {
+          set(store.isSubmittingFamily(0), false);
+          set(store.pendingSteersByConvoId(CONVO_ID), [
+            {
+              steerId: `local-v${generationProtocolVersion}`,
+              text: 'landed after the end',
+              status: 'failed',
+              createdAt: 4,
+              generationProtocolVersion,
+            },
+          ]);
+        });
+        act(() => {
+          result.current.recovery.retry(`local-v${generationProtocolVersion}`);
+        });
+        await flush();
+        const row = result.current.queue[0];
+        unmount();
+        return row;
+      };
+      const v2Row = await bind(2);
+      expect(v2Row).toEqual(
+        expect.objectContaining({
+          recoverySteerId: 'srv-bound',
+          clientRequestId: expect.any(String),
+        }),
+      );
+      const v1Row = await bind(1);
+      expect(v1Row?.recoverySteerId).toBeUndefined();
+      expect(v1Row?.clientRequestId).toBeUndefined();
     });
 
     /* RUN_REPLACED belongs with the rest: the retry pins `generationCreatedAt`
