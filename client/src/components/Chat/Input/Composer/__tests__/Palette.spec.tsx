@@ -134,9 +134,10 @@ function renderPalette(
     dictating?: boolean;
     onCancel?: () => void;
     anchorBottom?: number | (() => number);
+    anchor?: HTMLElement;
   } = {},
 ) {
-  const anchorRef = { current: document.createElement('div') };
+  const anchorRef = { current: over.anchor ?? document.createElement('div') };
   if (over.anchorBottom != null) {
     jest.spyOn(anchorRef.current, 'getBoundingClientRect').mockImplementation(
       () =>
@@ -416,6 +417,125 @@ describe('Palette', () => {
       clickRow(ATTACH[0].id);
 
       expect(onContainerClick).toHaveBeenCalled();
+    });
+  });
+
+  /* A tablet with a hardware keyboard stays `(pointer: coarse)` while it types,
+     so the device's primary pointer cannot decide whether closing may focus the
+     message field; the interaction that closed the palette does. */
+  describe('focus after closing on a touch-primary device', () => {
+    const realMatchMedia = window.matchMedia;
+    beforeEach(() => {
+      window.matchMedia = ((query: string) => ({
+        matches: query === '(pointer: coarse)',
+        media: query,
+        onchange: null,
+        addListener: jest.fn(),
+        removeListener: jest.fn(),
+        addEventListener: jest.fn(),
+        removeEventListener: jest.fn(),
+        dispatchEvent: jest.fn(),
+      })) as unknown as typeof window.matchMedia;
+    });
+    afterEach(() => {
+      window.matchMedia = realMatchMedia;
+    });
+
+    /** jsdom has no PointerEvent, so `pointerType` is defined on the event by hand. */
+    const press = (target: Element, pointerType: string) => {
+      const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'pointerType', { value: pointerType });
+      act(() => {
+        target.dispatchEvent(event);
+      });
+    };
+
+    const composer = () => {
+      const anchor = document.createElement('div');
+      const field = document.createElement('textarea');
+      field.dataset.testid = 'text-input';
+      anchor.appendChild(field);
+      document.body.appendChild(anchor);
+      return { anchor, field };
+    };
+
+    it('returns a keyboard close to the message field', async () => {
+      const { anchor, field } = composer();
+      renderPalette({ anchor });
+      const input = await screen.findByTestId('composer-palette-search');
+      await waitFor(() => expect(document.activeElement).toBe(input));
+
+      await userEvent.keyboard('{Escape}');
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('composer-palette-search')).not.toBeInTheDocument(),
+      );
+      await waitFor(() => expect(document.activeElement).toBe(field));
+      anchor.remove();
+    });
+
+    it('returns a mouse press outside to the message field after a touch inside', async () => {
+      const { anchor, field } = composer();
+      renderPalette({ anchor });
+      const input = await screen.findByTestId('composer-palette-search');
+
+      press(input, 'touch');
+      press(document.body, 'mouse');
+      fireEvent.mouseDown(document.body);
+      fireEvent.click(document.body);
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('composer-palette-search')).not.toBeInTheDocument(),
+      );
+      await waitFor(() => expect(document.activeElement).toBe(field));
+      anchor.remove();
+    });
+
+    it('does not carry a touch session into the next opening', async () => {
+      const { anchor, field } = composer();
+      renderPalette({ anchor });
+      const row = await waitFor(() => {
+        const found = document.querySelector<HTMLElement>(`[data-row-key="${ATTACH[0].id}"]`);
+        expect(found).not.toBeNull();
+        return found as HTMLElement;
+      });
+      press(row, 'touch');
+      fireEvent.click(row);
+      await waitFor(() =>
+        expect(screen.queryByTestId('composer-palette-search')).not.toBeInTheDocument(),
+      );
+      await act(() => new Promise((resolve) => window.requestAnimationFrame(resolve)));
+      field.blur();
+      window.matchMedia = realMatchMedia;
+
+      fireEvent.click(screen.getByTestId('composer-palette-button'));
+      await screen.findByTestId('composer-palette-search');
+      act(() => {
+        screen.getByTestId('composer-palette-button').click();
+      });
+
+      await waitFor(() => expect(document.activeElement).toBe(field));
+      anchor.remove();
+    });
+
+    it('leaves focus alone when a touch press closes it', async () => {
+      const { anchor, field } = composer();
+      renderPalette({ anchor });
+      const row = await waitFor(() => {
+        const found = document.querySelector<HTMLElement>(`[data-row-key="${ATTACH[0].id}"]`);
+        expect(found).not.toBeNull();
+        return found as HTMLElement;
+      });
+
+      press(row, 'touch');
+      fireEvent.click(row);
+
+      await waitFor(() =>
+        expect(screen.queryByTestId('composer-palette-search')).not.toBeInTheDocument(),
+      );
+      await act(() => new Promise((resolve) => window.requestAnimationFrame(resolve)));
+      expect(document.activeElement).not.toBe(field);
+      anchor.remove();
     });
   });
 

@@ -249,6 +249,31 @@ function Palette({
   const listRef = useRef<List>(null);
   const listBodyRef = useRef<HTMLDivElement>(null);
   const disclosureRef = useRef<HTMLButtonElement>(null);
+  /** Whether the latest interaction with the palette was a touch or pen press,
+   *  or `null` before any. The device's primary pointer cannot answer this: a
+   *  tablet with a hardware keyboard stays `(pointer: coarse)` while typing. */
+  const touchInteractionRef = useRef<boolean | null>(null);
+  const recordPointer = useCallback((event: { pointerType?: string }) => {
+    if (typeof event.pointerType === 'string') {
+      touchInteractionRef.current = event.pointerType !== 'mouse';
+    }
+  }, []);
+  const recordKeyboard = useCallback(() => {
+    touchInteractionRef.current = false;
+  }, []);
+  /* Window capture sees every press and key while the palette is up, including
+     the outside press that closes it, whatever event shape Ariakit acts on. */
+  useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+    window.addEventListener('pointerdown', recordPointer, true);
+    window.addEventListener('keydown', recordKeyboard, true);
+    return () => {
+      window.removeEventListener('pointerdown', recordPointer, true);
+      window.removeEventListener('keydown', recordKeyboard, true);
+    };
+  }, [mounted, recordPointer, recordKeyboard]);
   const liftAtom = useMemo(() => composerLiftFamily(index), [index]);
   const setLift = useSetAtom(liftAtom);
   const { ref: popoverRef, height: popupHeight } = useElementSize<HTMLDivElement>();
@@ -1100,6 +1125,8 @@ function Palette({
                  at its final angle, and the turn is the whole point. Ariakit
                  honours `defaultPrevented`, so claiming the click here stops the
                  popover from opening. */
+              onPointerDown={recordPointer}
+              onKeyDown={recordKeyboard}
               onClick={(event) => {
                 if (!dictating) {
                   return;
@@ -1142,15 +1169,25 @@ function Palette({
             initialFocus={inputRef}
             /* Ariakit otherwise restores focus to the disclosure, leaving the
                composer inert after Escape, an outside click, or a terminal
-               upload row. Keep touch users from getting a summoned keyboard,
-               but return keyboard users to the message field for every close
-               path through the popover itself. */
+               upload row. Keep a touch close from summoning the on-screen
+               keyboard, but return keyboard users to the message field for
+               every close path through the popover itself. */
             autoFocusOnHide={false}
             onClose={() => {
-              if (window.matchMedia('(pointer: coarse)').matches) {
-                return;
-              }
               window.requestAnimationFrame(() => {
+                /* Reopened within the frame: that session owns the input and
+                   the field must not take focus from it. */
+                if (popover.getState().open) {
+                  return;
+                }
+                const touch =
+                  touchInteractionRef.current ?? window.matchMedia('(pointer: coarse)').matches;
+                /* Each opening answers for itself: a later one opened by the
+                   upload shortcut must not inherit this session's input. */
+                touchInteractionRef.current = null;
+                if (touch) {
+                  return;
+                }
                 anchorRef.current
                   ?.querySelector<HTMLElement>('[data-testid="text-input"]')
                   ?.focus();
