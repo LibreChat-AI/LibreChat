@@ -226,13 +226,9 @@ test.describe('composer palette', () => {
 
     await page.keyboard.press('Escape');
     await expect(palette(page)).toBeHidden();
-    const hasHoverPointer = await page.evaluate(() => matchMedia('(hover: hover)').matches);
-    if (hasHoverPointer) {
-      await expect(messageInput).toBeFocused();
-    } else {
-      /* Touch composers deliberately avoid reclaiming focus so closing the
-       * palette does not raise the on-screen keyboard again. */
-      await expect(messageInput).not.toBeFocused();
-    }
+    /* The close was a key press, so focus returns to the message field on every
+     * project, a touch-primary one included: only a touch or pen close leaves
+     * it alone, to keep the on-screen keyboard from rising again. */
+    await expect(messageInput).toBeFocused();
   });
 });
