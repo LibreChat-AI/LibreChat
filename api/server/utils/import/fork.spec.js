@@ -532,7 +532,7 @@ describe('duplicateConversation', () => {
     expect(result.conversation.isTemporary).toBe(false);
   });
 
-  test('does not increment tag counts for forced-temporary duplicates', async () => {
+  test('neither counts nor stores tags on forced-temporary duplicates', async () => {
     getConvo.mockResolvedValue({ ...mockConversation, tags: ['important', 'work'] });
 
     await duplicateConversation({
@@ -542,6 +542,7 @@ describe('duplicateConversation', () => {
     });
 
     expect(bulkIncrementTagCounts.mock.calls.flatMap(([, tags]) => tags)).toEqual([]);
+    expect(bulkSaveConvos.mock.calls[0][0].map((convo) => convo.tags)).toEqual([[]]);
   });
 
   test('should duplicate conversation and increment tag counts', async () => {

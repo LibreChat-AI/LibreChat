@@ -33,6 +33,7 @@ type StoredConversation = {
   conversationId: string;
   isTemporary?: boolean;
   expiredAt?: Date | null;
+  tags?: string[];
 };
 
 type StoredMessage = StoredConversation & { messageId: string };
@@ -474,7 +475,9 @@ test.describe('ephemeral retention', () => {
     expect(duplicatedId, 'the duplicate must identify its conversation').toBeTruthy();
     cleanupConversationIds.push(duplicatedId as string);
 
-    expectForcedTemporary(await readConversation(duplicatedId as string));
+    const duplicated = await readConversation(duplicatedId as string);
+    expectForcedTemporary(duplicated);
+    expect(duplicated?.tags ?? [], 'a hidden copy must not store uncounted tags').toEqual([]);
 
     const tagRow = await withMongo(async (db) =>
       db.collection('conversationtags').findOne({ user: userId, tag }),

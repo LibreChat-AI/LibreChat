@@ -162,6 +162,9 @@ class ImportBatchBuilder {
       endpoint: this.endpoint,
       model: originalConvo.model ?? fallbackModel,
       ...this.getRetentionFields(),
+      ...(originalConvo.tags != null && {
+        tags: resolveImportTagCounts(this.getRetentionFields(), originalConvo.tags),
+      }),
     };
     convo._id && delete convo._id;
     delete convo.subagentThread;

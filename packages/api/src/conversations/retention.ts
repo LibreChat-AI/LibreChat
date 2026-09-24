@@ -144,11 +144,12 @@ export function resolveImportRetentionFields(
 }
 
 /**
- * The bookmark tags an import should count.
+ * The bookmark tags an import should store and count.
  *
  * Forced-temporary records are excluded from every bookmark-filtered conversation query and
  * are removed by TTL without a matching decrement, so counting their tags would leave
- * permanent phantom totals behind chats a user can never reach.
+ * permanent phantom totals behind chats a user can never reach. They store none either, so an
+ * explicit delete never decrements tags the copy did not count.
  */
 export function resolveImportTagCounts(
   retention: ImportRetentionFields,
