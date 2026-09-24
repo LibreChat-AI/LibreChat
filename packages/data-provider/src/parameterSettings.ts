@@ -19,8 +19,13 @@ import {
   BedrockProviders,
   anthropicSettings,
 } from './types';
+import {
+  getModelKey,
+  getSettingsKeys,
+  reasoningOverrideSchema,
+  ReasoningParameterFormat,
+} from './schemas';
 import { isOpus55Model, supportsPromptCache, supportsAdaptiveThinking } from './bedrock';
-import { ReasoningParameterFormat, getModelKey, getSettingsKeys } from './schemas';
 import { resolveEffectiveUseResponsesApi } from './file-config';
 import { clampSettingRange } from './generate';
 
@@ -1410,6 +1415,24 @@ export function resolveReasoningSetting({
   );
 }
 
+/** Narrows an enum reasoning setting to the options a request-scoped override
+ * can carry. A deployment may declare provider values the override schema does
+ * not accept; offering them rendered a choice that could never be submitted. */
+const toSubmittableReasoningSetting = (
+  setting: SettingDefinition | undefined,
+): SettingDefinition | undefined => {
+  if (setting?.options == null) {
+    return setting;
+  }
+  const options = setting.options.filter(
+    (option) => reasoningOverrideSchema.safeParse({ key: setting.key, value: option }).success,
+  );
+  if (options.length === setting.options.length) {
+    return setting;
+  }
+  return options.length === 0 ? undefined : { ...setting, options };
+};
+
 /** Builds the effective reasoning definition shared by the composer and the server.
  * A model-spec lock is part of capability resolution, not a caller-only UI check:
  * both surfaces must see the same unavailable result before an override is staged. */
@@ -1486,7 +1509,7 @@ export function resolveReasoningSettingForTarget({
     const explicitSetting = findReasoningSetting(effectiveSettings, explicitReasoningKey);
     return explicitSetting != null && blockedReasoningKeys?.has(explicitSetting.key)
       ? undefined
-      : explicitSetting;
+      : toSubmittableReasoningSetting(explicitSetting);
   }
   const resolutionEndpoint = isKnownReasoningProvider(effectiveDefaultParamsEndpoint)
     ? effectiveDefaultParamsEndpoint
@@ -1506,7 +1529,7 @@ export function resolveReasoningSettingForTarget({
   });
   return resolvedSetting != null && blockedReasoningKeys?.has(resolvedSetting.key)
     ? undefined
-    : resolvedSetting;
+    : toSubmittableReasoningSetting(resolvedSetting);
 }
 
 /** Confirms that a stored one-shot override still belongs to the selected

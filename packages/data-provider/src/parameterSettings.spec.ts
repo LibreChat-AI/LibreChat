@@ -327,6 +327,17 @@ describe('resolveReasoningSettingForTarget', () => {
     ).toBeUndefined();
   });
 
+  it('offers only the declared options a request override can carry', () => {
+    const declared = (options: string[]) =>
+      resolveReasoningSettingForTarget({
+        endpoint: EModelEndpoint.custom,
+        model: 'deployment-model',
+        paramDefinitions: [{ key: 'thinkingLevel', type: 'enum', options }],
+      });
+    expect(declared(['', 'low', 'ultra', 'high'])?.options).toEqual(['', 'low', 'high']);
+    expect(declared(['ultra', 'turbo'])).toBeUndefined();
+  });
+
   it('merges a deployment-owned reasoning definition into provider defaults', () => {
     expect(
       resolveReasoningSettingForTarget({
