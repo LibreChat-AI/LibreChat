@@ -8,6 +8,7 @@ import type { Dictation } from '~/hooks/Input/useDictation';
 import type { ExtendedFile, FileSetter } from '~/common';
 import usePaletteEntries from '~/hooks/Input/usePaletteEntries';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
+import useToolFavorites from '~/hooks/Input/useToolFavorites';
 import useElementSize from '~/hooks/Generic/useElementSize';
 import useChipPacking from '~/hooks/Input/useChipPacking';
 import { useBadgeRowContext } from '~/Providers';
@@ -285,6 +286,7 @@ function Bar({
     setCatalogWanted(true);
     setCatalogOpenRevision((revision) => revision + 1);
   }, []);
+  const favorites = useToolFavorites();
   const allEntries = usePaletteEntries({
     conversationId,
     agentId,
@@ -292,6 +294,7 @@ function Bar({
     toolsEnabled: showTools,
     catalogEnabled: catalogWanted,
     catalogOpenRevision,
+    favoriteKeys: favorites.keys,
   });
 
   /* Servers with required variables open this before they can be selected; it

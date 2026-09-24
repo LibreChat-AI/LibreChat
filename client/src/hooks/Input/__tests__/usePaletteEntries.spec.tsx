@@ -342,6 +342,21 @@ describe('usePaletteEntries', () => {
       ]);
     });
 
+    it('represents a shared name by the copy the user favorited', () => {
+      const { result } = renderHook(
+        () =>
+          usePaletteEntries({
+            conversationId: 'convo-1',
+            favoriteKeys: new Set(['skill:s2']),
+          }),
+        { wrapper },
+      );
+      expect(keysOf(result).filter((key) => key.startsWith('skill:'))).toEqual([
+        'skill:s2',
+        'skill:s3',
+      ]);
+    });
+
     it('falls back to the name when a skill has no title', () => {
       const listed = entries().result.current;
       expect(listed.find((item) => item.key === 'skill:s3')?.label).toBe('researcher');

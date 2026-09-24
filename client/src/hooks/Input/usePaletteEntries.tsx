@@ -33,6 +33,7 @@ import { filterSkillsForPopover } from '~/components/Chat/Input/SkillsCommand';
 import { useAgentsMapContext, useBadgeRowContext } from '~/Providers';
 import { useSkillsInfiniteQuery } from '~/data-provider';
 import store, { ephemeralAgentByConvoId } from '~/store';
+import { favoriteKey } from './useToolFavorites';
 import useLocalize from '~/hooks/useLocalize';
 
 export type PaletteSection = 'tool' | 'skill' | 'mcp';
@@ -134,6 +135,7 @@ export default function usePaletteEntries({
   toolsEnabled = enabled,
   catalogEnabled = true,
   catalogOpenRevision = 0,
+  favoriteKeys,
 }: {
   conversationId: string;
   agentId?: string | null;
@@ -148,6 +150,9 @@ export default function usePaletteEntries({
   catalogEnabled?: boolean;
   /** Increments on each palette open so a failed catalog walk can retry. */
   catalogOpenRevision?: number;
+  /** Favorited `${itemType}:${itemId}` keys, so a name shared by several skill
+   *  records is represented by the one the user starred. */
+  favoriteKeys?: ReadonlySet<string>;
 }): PaletteEntry[] {
   const localize = useLocalize();
   const context = useBadgeRowContext();
@@ -412,12 +417,18 @@ export default function usePaletteEntries({
          so records sharing a name are one selectable thing however many of them
          the catalog holds. Listed once each: otherwise every copy lit up when
          any was picked, while the tray (keyed by name) showed a single chip. */
-      const listed = new Set<string>();
+      const listed = new Map<string, TSkillSummary>();
+      const isFavorite = (skill: TSkillSummary) =>
+        favoriteKeys?.has(favoriteKey('skill', skill._id)) === true;
       for (const skill of filterSkillsForPopover(allSkills, { agentSkillIds, isActive })) {
-        if (listed.has(skill.name)) {
-          continue;
+        const held = listed.get(skill.name);
+        /* The favorite is keyed by id, so the copy the user starred represents
+           the name; keeping the first copy dropped the star and the favorite. */
+        if (held == null || (!isFavorite(held) && isFavorite(skill))) {
+          listed.set(skill.name, skill);
         }
-        listed.add(skill.name);
+      }
+      for (const skill of listed.values()) {
         entries.push({
           key: `skill:${skill._id}`,
           itemType: 'skill',
@@ -434,11 +445,10 @@ export default function usePaletteEntries({
       /* Skills staged by name (the slash command, or a draft restored before
          the catalog loads) still need an entry, or their chips in the bar
          would vanish while the catalog is not held. */
-      for (const name of pendingManualSkills) {
+      for (const name of staged) {
         if (listed.has(name)) {
           continue;
         }
-        listed.add(name);
         entries.push({
           key: `skill:staged:${name}`,
           itemType: 'skill',
@@ -570,6 +580,7 @@ export default function usePaletteEntries({
     allSkills,
     isActive,
     toggleSkill,
+    favoriteKeys,
     pendingManualSkills,
     canUseMemory,
     memoryEnabled,
