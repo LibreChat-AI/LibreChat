@@ -230,6 +230,10 @@ test.describe('ephemeral retention', () => {
       await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
       await page.getByRole('option', { name: agentName }).click();
       await form.getByRole('button', { name: 'Select Agent' }).click();
+      if ((page.viewportSize()?.width ?? 1280) <= 768) {
+        await page.getByTestId('close-sidebar-button').click();
+        await expect(page.locator('#mobile-drawer')).toHaveAttribute('inert', '');
+      }
 
       const response = await sendMessage(page, `E2E_TOOL_APPROVAL:retention-${randomUUID()}`);
       expect(response.ok()).toBe(true);
