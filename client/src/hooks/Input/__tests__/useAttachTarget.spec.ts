@@ -10,7 +10,7 @@ import useAttachTarget from '../useAttachTarget';
  * the layer above it is missing.
  */
 
-const mockEndpointsConfig: TEndpointsConfig = {
+let mockEndpointsConfig: TEndpointsConfig = {
   [EModelEndpoint.openAI]: { userProvide: false, order: 0 },
   [EModelEndpoint.agents]: { userProvide: false, order: 1 },
   Moonshot: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
@@ -65,6 +65,48 @@ describe('useAttachTarget', () => {
     mockAgentsMap = {};
     mockFetchedAgent = undefined;
     mockAgentQueryEnabled = undefined;
+    mockEndpointsConfig = {
+      [EModelEndpoint.openAI]: { userProvide: false, order: 0 },
+      [EModelEndpoint.agents]: { userProvide: false, order: 1 },
+      Moonshot: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
+    };
+  });
+
+  /* The saved flag says what the conversation chose; the request the upload
+     rides may be auto-routed to Responses by policy, and the picker has to
+     follow the route or Azure chats lose provider-document uploads. */
+  describe('the effective responses route', () => {
+    const routedAzure = {
+      [EModelEndpoint.azureOpenAI]: {
+        userProvide: false,
+        order: 2,
+        responsesApiRouting: { '*': { default: true, on: true, off: false } },
+      },
+    } as unknown as TEndpointsConfig;
+
+    it('follows a routing policy that enables Responses by default', () => {
+      mockEndpointsConfig = { ...mockEndpointsConfig, ...routedAzure };
+      expect(
+        target({ endpoint: EModelEndpoint.azureOpenAI, model: 'gpt-5.2' }).useResponsesApi,
+      ).toBe(true);
+    });
+
+    it('keeps an explicit conversation opt-out off under the same policy', () => {
+      mockEndpointsConfig = { ...mockEndpointsConfig, ...routedAzure };
+      expect(
+        target({
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'gpt-5.2',
+          useResponsesApi: false,
+        }).useResponsesApi,
+      ).toBe(false);
+    });
+
+    it('returns the saved flag when no policy applies', () => {
+      expect(
+        target({ endpoint: EModelEndpoint.azureOpenAI, model: 'gpt-5.2' }).useResponsesApi,
+      ).toBeUndefined();
+    });
   });
 
   describe('endpoint type behind an agent', () => {

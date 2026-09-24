@@ -4,6 +4,7 @@ import {
   mergeFileConfig,
   isAgentsEndpoint,
   isEphemeralAgentId,
+  resolveEffectiveUseResponsesApi,
   resolveEndpointType,
   resolveUseResponsesApi,
   getEndpointFileConfig,
@@ -46,17 +47,6 @@ export default function useAttachTarget(
     enabled: needsAgentFetch,
   });
 
-  const useResponsesApi = useMemo(() => {
-    if (!isAgents || !conversation?.agent_id) {
-      return conversation?.useResponsesApi;
-    }
-    return resolveUseResponsesApi(
-      agentData?.model_parameters?.useResponsesApi ??
-        agentsMap?.[conversation.agent_id]?.model_parameters?.useResponsesApi,
-      conversation?.useResponsesApi,
-    );
-  }, [isAgents, conversation?.agent_id, conversation?.useResponsesApi, agentData, agentsMap]);
-
   const { data: fileConfig = null, isSuccess: isFileConfigLoaded } = useGetFileConfig({
     select: (data) => mergeFileConfig(data),
   });
@@ -73,6 +63,50 @@ export default function useAttachTarget(
     () => resolveEndpointType(endpointsConfig, endpoint, agentProvider),
     [endpointsConfig, endpoint, agentProvider],
   );
+
+  /* The effective route, not the saved flag: when responsesApiRouting turns the
+   * Responses API on by default for a model, the upload picker has to follow the
+   * route the request will actually take or Azure chats preflight against the
+   * chat-completions limits and lose provider-document uploads. Mirrors the
+   * resolution useAgentUploadTarget applies for the same decision. */
+  const useResponsesApi = useMemo(() => {
+    const mappedAgent = conversation?.agent_id ? agentsMap?.[conversation.agent_id] : undefined;
+    const savedValue =
+      isAgents && conversation?.agent_id
+        ? resolveUseResponsesApi(
+            agentData?.model_parameters?.useResponsesApi ??
+              mappedAgent?.model_parameters?.useResponsesApi,
+            conversation?.useResponsesApi,
+          )
+        : conversation?.useResponsesApi;
+    const model = isAgents
+      ? (agentData?.model_parameters?.model ??
+        mappedAgent?.model_parameters?.model ??
+        agentData?.model ??
+        mappedAgent?.model)
+      : conversation?.model;
+    return resolveEffectiveUseResponsesApi({
+      value: savedValue,
+      endpoint: endpointType,
+      model,
+      webSearch: isAgents
+        ? (agentData?.model_parameters?.web_search ?? mappedAgent?.model_parameters?.web_search)
+        : conversation?.web_search,
+      routing: endpointsConfig?.[agentProvider ?? endpoint ?? '']?.responsesApiRouting,
+    });
+  }, [
+    isAgents,
+    conversation?.agent_id,
+    conversation?.model,
+    conversation?.useResponsesApi,
+    conversation?.web_search,
+    agentData,
+    agentsMap,
+    endpointType,
+    endpoint,
+    agentProvider,
+    endpointsConfig,
+  ]);
 
   const endpointFileConfig = useMemo(
     () =>
