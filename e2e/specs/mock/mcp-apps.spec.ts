@@ -236,13 +236,24 @@ async function rawAuthenticatedRequest(
   );
 }
 
+/** The redesigned composer seats MCP servers in the attach-and-tools palette as
+ *  toggleable rows, so enabling one for the run opens the palette, waits for the
+ *  server wave of the catalog, and flips the row's pressed state. */
 async function selectMcpAppServer(page: Page) {
-  await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-  const server = page.getByRole('menuitemcheckbox', { name: new RegExp(MCP_SERVER_TITLE) });
+  const paletteButton = page.getByRole('button', { name: 'Attach and tools' });
+  await expect(paletteButton).toBeVisible();
+  await paletteButton.click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+  await expect(palette).toBeVisible();
+  await expect(palette.getByRole('columnheader', { name: 'MCP Servers', exact: true })).toBeVisible(
+    { timeout: 20000 },
+  );
+  const server = palette.locator('[data-row-key]').filter({ hasText: MCP_SERVER_TITLE });
   await expect(server).toBeVisible();
   await server.click();
-  await expect(server).toHaveAttribute('aria-checked', 'true');
+  await expect(server.getByRole('button').first()).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
+  await expect(palette).toBeHidden();
 }
 
 function appFrame(page: Page, toolName = 'show_app', occurrence = 0): FrameLocator {
