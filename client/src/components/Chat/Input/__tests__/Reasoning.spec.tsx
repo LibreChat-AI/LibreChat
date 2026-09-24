@@ -185,6 +185,47 @@ describe('ReasoningControl', () => {
 
     expect(onChange).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: 128 });
   });
+
+  it.each([undefined, -1, 4096])('does not stage an unchanged numeric budget (%s)', (value) => {
+    const onChange = jest.fn();
+    render(
+      <ReasoningControl
+        index={0}
+        setting={budgetSetting}
+        value={value == null ? undefined : { key: 'thinkingBudget', value }}
+        onChange={onChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
+    fireEvent.focus(input);
+    fireEvent.blur(input);
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 0])(
+    'restores the supported minimum (%s) when the numeric field is cleared',
+    (min) => {
+      const onChange = jest.fn();
+      render(
+        <ReasoningControl
+          index={0}
+          setting={{ ...budgetSetting, range: { ...budgetSetting.range!, min } }}
+          value={{ key: 'thinkingBudget', value: 4096 }}
+          onChange={onChange}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+      const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
+      fireEvent.change(input, { target: { value: '' } });
+      fireEvent.blur(input);
+
+      expect(onChange).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: min });
+    },
+  );
 });
 
 describe('useComposerReasoning', () => {

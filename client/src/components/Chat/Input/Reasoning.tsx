@@ -98,13 +98,15 @@ export function ReasoningControl({
   };
 
   const commitNumericValue = () => {
-    const parsed = Number(numericValue);
+    const parsed = numericValue.trim() === '' ? range.min : Number(numericValue);
     const nextValue = clampSettingRange(
       Number.isFinite(parsed) ? Math.round(parsed) : range.min,
       range,
     );
     setNumericValue(String(nextValue));
-    emit(nextValue);
+    if (nextValue !== (selectedValue ?? range.min)) {
+      emit(nextValue);
+    }
   };
 
   return (
