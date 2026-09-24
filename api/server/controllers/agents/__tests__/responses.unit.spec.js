@@ -200,6 +200,9 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  getConversationWriteContext: (...args) =>
+    jest.requireActual('@librechat/api').getConversationWriteContext(...args),
+  announceReply: jest.fn().mockResolvedValue(undefined),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
   createAgentExecutionContext: (context) => context,
@@ -1040,7 +1043,7 @@ describe('createResponse controller', () => {
 
     expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123');
     expect(saveMessage).toHaveBeenCalledWith(
-      req,
+      expect.objectContaining({ userId: 'user-123' }),
       expect.objectContaining({
         messageId: 'resp_mock-123',
         isCreatedByUser: false,
@@ -1051,6 +1054,41 @@ describe('createResponse controller', () => {
       { context: 'Responses API - save assistant response' },
     );
   });
+
+  it.each([false, true])(
+    'stores input and output under the retention write context: stream=%s',
+    async (stream) => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      req.config.interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 1 };
+      req.body.isTemporary = false;
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { ...req.body, stream, store: true },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        { role: 'user', content: 'Hello', messageId: 'input-123' },
+      ]);
+      const savedResponse = { messageId: 'resp_mock-123', isTemporary: true };
+      db.saveMessage.mockResolvedValueOnce({ messageId: 'input-123' });
+      db.saveMessage.mockResolvedValueOnce(savedResponse);
+
+      await createResponse(req, res);
+
+      expect(db.saveMessage).toHaveBeenCalledTimes(2);
+      for (const [context] of db.saveMessage.mock.calls) {
+        expect(context).toEqual({
+          userId: 'user-123',
+          isTemporary: false,
+          expiredAt: undefined,
+          interfaceConfig: req.config.interfaceConfig,
+        });
+      }
+      expect(api.announceReply).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ reply: savedResponse }),
+      );
+    },
+  );
 
   describe('execution envelope', () => {
     it('creates the portable run input before agent initialization', async () => {

@@ -90,6 +90,7 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
   announceReply,
+  getConversationWriteContext,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -375,7 +376,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
   for (const msg of inputMessages) {
     if (msg.role === 'user') {
       await db.saveMessage(
-        req,
+        getConversationWriteContext(req),
         {
           messageId: msg.messageId || nanoid(),
           conversationId,
@@ -426,7 +427,7 @@ async function saveResponseOutput(
 
   // Save the assistant message
   return db.saveMessage(
-    req,
+    getConversationWriteContext(req),
     {
       messageId: responseId,
       conversationId,
@@ -456,12 +457,7 @@ async function saveResponseOutput(
 async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
   const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
   await db.saveConvo(
-    {
-      userId: req?.user?.id,
-      isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-      expiredAt: req?.resolvedConversation?.expiredAt,
-      interfaceConfig: req?.config?.interfaceConfig,
-    },
+    getConversationWriteContext(req),
     {
       conversationId,
       endpoint: EModelEndpoint.agents,
@@ -1453,10 +1449,7 @@ const executeResponse = async (envelope, { req, res }) => {
             await announceReply(db, {
               userId: req?.user?.id,
               conversationId,
-              reply: {
-                ...savedResponse,
-                isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-              },
+              reply: savedResponse,
               context: 'Responses API - announce stored reply',
             });
 
@@ -1696,10 +1689,7 @@ const executeResponse = async (envelope, { req, res }) => {
             await announceReply(db, {
               userId: req?.user?.id,
               conversationId,
-              reply: {
-                ...savedResponse,
-                isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-              },
+              reply: savedResponse,
               context: 'Responses API - announce stored reply',
             });
 
