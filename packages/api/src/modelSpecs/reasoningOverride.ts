@@ -181,6 +181,34 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
 ): Promise<boolean> {
   const stripReplayedOverride = (): boolean => {
     delete req.body.reasoningOverride;
+    /* The resume already replayed the paused turn's model parameters, override
+     * applied, into the endpoint option; dropping only the metadata field would
+     * still send the now-unsupported override to the provider. The base the
+     * resume replayed alongside it holds the pre-override values, so the strip
+     * inverts the application it was captured from. */
+    const base = req.reasoningOverrideBase;
+    if (base == null) {
+      return true;
+    }
+    const parameters: Record<string, unknown> = {
+      ...req.body.endpointOption.model_parameters,
+    };
+    if (base.hadValue) {
+      parameters[base.key] = base.value;
+    } else {
+      delete parameters[base.key];
+    }
+    if (base.thinkingHadValue != null) {
+      if (base.thinkingHadValue) {
+        parameters.thinking = base.thinkingValue;
+      } else {
+        delete parameters.thinking;
+      }
+    }
+    req.body.endpointOption = {
+      ...req.body.endpointOption,
+      model_parameters: parameters,
+    };
     return true;
   };
   const request = parseReasoningOverrideRequest(raw);

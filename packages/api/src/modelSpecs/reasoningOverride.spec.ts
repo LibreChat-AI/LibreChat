@@ -422,4 +422,54 @@ describe('applyRequestReasoningOverride', () => {
     expect(req.body.endpointOption.model_parameters).toEqual(parameters);
     expect(req).not.toHaveProperty('reasoningOverrideBase');
   });
+
+  /* The resume replays the paused turn's parameters with the override already
+     applied, so degrading has to invert that application from the replayed
+     base: the pre-override value returns and the thinking flag the override
+     forced on comes off, or the provider still receives what was refused. */
+  it('restores the pre-override parameters from the replayed base when degrading', async () => {
+    const base = request();
+    const req = {
+      resumeReplayed: true,
+      reasoningOverrideBase: {
+        key: 'reasoning_effort' as const,
+        hadValue: true,
+        value: 'low',
+        thinkingHadValue: false,
+      },
+      ...base,
+      body: {
+        ...base.body,
+        reasoningOverride: { key: 'effort', value: 'high' },
+        endpointOption: {
+          ...base.body.endpointOption,
+          model_parameters: {
+            ...base.body.endpointOption.model_parameters,
+            reasoning_effort: 'high',
+            thinking: true,
+          },
+        },
+      },
+    };
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...input,
+        reasoningOverride: { key: 'effort', value: 'high' },
+      }),
+    ).resolves.toBe(true);
+
+    expect(req.body.reasoningOverride).toBeUndefined();
+    expect(req.body.endpointOption.model_parameters).toMatchObject({
+      model: 'gpt-5.1',
+      reasoning_effort: 'low',
+    });
+    expect(req.body.endpointOption.model_parameters).not.toHaveProperty('thinking');
+    expect(req.reasoningOverrideBase).toEqual({
+      key: 'reasoning_effort',
+      hadValue: true,
+      value: 'low',
+      thinkingHadValue: false,
+    });
+  });
 });
