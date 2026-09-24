@@ -1010,6 +1010,7 @@ describe('applyResumeRequest', () => {
     const req: {
       body: Record<string, unknown>;
       reasoningOverrideBase?: typeof reasoningOverrideBase;
+      resumeReplayed?: boolean;
     } = { body: { conversationId: 'c', addedConvo: { endpoint: 'x' } } };
     applyResumeRequest(req, {
       endpoint: 'agents',
@@ -1019,6 +1020,9 @@ describe('applyResumeRequest', () => {
     expect(req.body).toEqual({ conversationId: 'c', endpoint: 'agents', temperature: 0.3 });
     expect(req.reasoningOverrideBase).toEqual(reasoningOverrideBase);
     expect(req.reasoningOverrideBase).not.toBe(reasoningOverrideBase);
+    /* Marks the request as carrying trusted replayed state, so a replayed
+       override that no longer validates degrades instead of refusing. */
+    expect(req.resumeReplayed).toBe(true);
   });
 
   it('leaves the reasoning snapshot unset when the paused turn had none', () => {

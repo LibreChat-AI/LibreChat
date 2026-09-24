@@ -165,14 +165,27 @@ export type RequestReasoningOverrideInput = Omit<
  * option and records the trusted base snapshot on the request. A request without
  * an override is left untouched; `false` means the override was malformed or
  * refused and the caller must reject the request.
+ *
+ * A replayed resume override is trusted server state, not fresh client input:
+ * when it no longer validates (the endpoint's reasoning config changed between
+ * pause and resume) it is stripped and the resume proceeds on defaults, because
+ * rejecting would make the paused checkpoint permanently unresumable.
  */
 export async function applyRequestReasoningOverride<T extends EndpointOption>(
-  req: { reasoningOverrideBase?: ReasoningOverrideBase; body: { endpointOption: T } },
+  req: {
+    reasoningOverrideBase?: ReasoningOverrideBase;
+    resumeReplayed?: boolean;
+    body: { endpointOption: T; reasoningOverride?: unknown };
+  },
   { reasoningOverride: raw, ...input }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
+  const stripReplayedOverride = (): boolean => {
+    delete req.body.reasoningOverride;
+    return true;
+  };
   const request = parseReasoningOverrideRequest(raw);
   if (!request.ok) {
-    return false;
+    return req.resumeReplayed === true ? stripReplayedOverride() : false;
   }
   if (request.reasoningOverride == null) {
     return true;
@@ -184,7 +197,7 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
     reasoningOverrideBase: req.reasoningOverrideBase,
   });
   if (!resolution.ok) {
-    return false;
+    return req.resumeReplayed === true ? stripReplayedOverride() : false;
   }
   req.reasoningOverrideBase = resolution.reasoningOverrideBase;
   req.body.endpointOption = {

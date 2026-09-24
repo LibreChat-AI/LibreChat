@@ -368,4 +368,58 @@ describe('applyRequestReasoningOverride', () => {
     expect(req.body.endpointOption.model_parameters).toEqual(parameters);
     expect(req).not.toHaveProperty('reasoningOverrideBase');
   });
+
+  /* A replayed resume override is trusted server state captured when it was
+     valid; the endpoint's config may have moved on since the pause. Refusing
+     would brick the checkpoint, so the stale override is stripped and the
+     resume proceeds on defaults. */
+  it('strips a malformed replayed override instead of refusing the resume', async () => {
+    const base = request();
+    const req = {
+      resumeReplayed: true,
+      ...base,
+      body: {
+        ...base.body,
+        reasoningOverride: { key: 'not_a_reasoning_field', value: 'high' },
+      },
+    };
+    const before = req.body.endpointOption;
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...input,
+        reasoningOverride: req.body.reasoningOverride,
+      }),
+    ).resolves.toBe(true);
+
+    expect(req.body.reasoningOverride).toBeUndefined();
+    expect(req.body.endpointOption).toBe(before);
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
+
+  it('strips a replayed override the endpoint no longer accepts instead of refusing the resume', async () => {
+    const base = request();
+    const req = {
+      resumeReplayed: true,
+      ...base,
+      body: {
+        ...base.body,
+        reasoningOverride: { key: 'effort', value: AnthropicEffort.high },
+      },
+    };
+    const before = req.body.endpointOption;
+    const parameters = { ...before.model_parameters };
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...input,
+        reasoningOverride: req.body.reasoningOverride,
+      }),
+    ).resolves.toBe(true);
+
+    expect(req.body.reasoningOverride).toBeUndefined();
+    expect(req.body.endpointOption).toBe(before);
+    expect(req.body.endpointOption.model_parameters).toEqual(parameters);
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
 });

@@ -778,10 +778,18 @@ export function applyResumeRequest(
   req: {
     body?: Record<string, unknown> | null;
     reasoningOverrideBase?: ResumeContext['reasoningOverrideBase'];
+    resumeReplayed?: boolean;
   },
   ctx: ResumeContext | undefined | null,
 ): void {
   applyResumeContext(req.body, ctx);
+  if (ctx != null) {
+    /* Marks the request as carrying trusted server state rather than fresh
+     * client input: a replayed `reasoningOverride` that no longer validates
+     * (the endpoint's reasoning config changed between pause and resume) is
+     * degraded rather than rejected, because a 400 would brick the checkpoint. */
+    req.resumeReplayed = true;
+  }
   if (ctx?.reasoningOverrideBase != null) {
     req.reasoningOverrideBase = { ...ctx.reasoningOverrideBase };
   }
