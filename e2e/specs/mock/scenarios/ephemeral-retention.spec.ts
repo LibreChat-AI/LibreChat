@@ -257,7 +257,10 @@ test.describe('ephemeral retention', () => {
         timeout: 30000,
       });
 
-      expectForcedTemporary(await readConversation(conversationId));
+      /** Streamed text can render before the resumed turn finishes its database writes. */
+      await expect(async () => {
+        expectForcedTemporary(await readConversation(conversationId));
+      }).toPass({ timeout: 10000 });
       const storedMessages = await readMessages(conversationId);
       const responseMessage = storedMessages.find((message) => message.isTemporary === true);
       expect(responseMessage, 'the resumed response must be saved temporary').toBeDefined();
