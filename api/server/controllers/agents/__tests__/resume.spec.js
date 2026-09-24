@@ -3249,6 +3249,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         mockGenerationJobManager.getJob.mockResolvedValue(
           makeToolApprovalJob({ metadata: { isTemporary: false } }),
         );
+        mockSaveMessage.mockImplementation(async (_ctx, message) => message);
         if (rePause) {
           mockInitializeClient.mockResolvedValue({
             client: makeClient({
@@ -3280,8 +3281,9 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         );
         expect(mockStampForcedRetention).toHaveBeenCalledWith(
           { userId: USER_ID, interfaceConfig: requestConfigOverrides.interfaceConfig },
-          { conversationId: CONVO_ID, messageIds: [] },
+          { conversationId: CONVO_ID, messageIds: [mockSaveMessage.mock.calls[0][1].messageId] },
         );
+        expect(mockSaveMessage.mock.calls[0][1].messageId).toEqual(expect.any(String));
         expect(mockSaveMessage.mock.invocationCallOrder[0]).toBeLessThan(
           mockStampForcedRetention.mock.invocationCallOrder[0],
         );
