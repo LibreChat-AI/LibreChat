@@ -1,3 +1,4 @@
+/** Installed packages need real module IDs when Jest reuses a resolver across suites. */
 jest.mock(
   '@librechat/data-schemas',
   () => ({
@@ -7,7 +8,7 @@ jest.mock(
     DEFAULT_SESSION_EXPIRY: 900000,
     DEFAULT_REFRESH_TOKEN_EXPIRY: 604800000,
   }),
-  { virtual: true },
+  { virtual: false },
 );
 jest.mock(
   'librechat-data-provider',
@@ -16,7 +17,7 @@ jest.mock(
     SystemRoles: { USER: 'USER', ADMIN: 'ADMIN' },
     errorsToString: jest.fn(),
   }),
-  { virtual: true },
+  { virtual: false },
 );
 jest.mock(
   '@librechat/api',
@@ -95,7 +96,7 @@ jest.mock(
       CLOUDFRONT_SCOPE_COOKIE: 'LibreChat-CloudFront-Scope',
     };
   },
-  { virtual: true },
+  { virtual: false },
 );
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
