@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { LocalizeFunction } from '~/common';
-import { isMacPlatform, bindingDisplayString } from '~/utils/shortcuts';
+import { isMacPlatform, bindingDisplayString, resolveComposerKeyDown } from '~/utils/shortcuts';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
 import { useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
 import useLocalize from '~/hooks/useLocalize';
@@ -76,6 +76,10 @@ export function composeHint(
   /** The live `submitMessage` binding, for the same reason: the send chords
    *  named below follow the customization instead of asserting the stock one. */
   sendBinding: SendBinding = DEFAULT_SEND_BINDING,
+  /** Whether the keydown resolver still returns the interrupt action for the
+   *  Alt+Enter chord; when a rebound submit or disabled shortcuts claim it,
+   *  the hint must not name a key that does something else. */
+  altEnterInterrupt: boolean = true,
 ): ComposerHint {
   if (state.answerModeActive) {
     return { text: localize('com_ui_composer_hint_answer'), kind: 'state' };
@@ -145,8 +149,15 @@ export function composeHint(
         kind: 'state',
       };
     }
+    /* The interrupt chord is named only while the keydown resolver still hands
+       it back: a `submitMessage` rebound to Alt+Enter, a chord yielded to a
+       global shortcut, or shortcuts disabled altogether each make the key do
+       something else, and advertising it is worse than omitting it. */
+    const text = altEnterInterrupt
+      ? [...parts, `${alt} ${localize('com_ui_composer_hint_interrupt')}`].join(SEPARATOR)
+      : parts.join(SEPARATOR);
     return {
-      text: [...parts, `${alt} ${localize('com_ui_composer_hint_interrupt')}`].join(SEPARATOR),
+      text: text || localize('com_ui_composer_hint_running'),
       kind: 'state',
     };
   }
@@ -187,7 +198,7 @@ export function composeHint(
 export default function useComposerHint(state: ComposerHintState): ComposerHint {
   const localize = useLocalize();
   const stopShortcut = useShortcutDisplay('stopGenerating');
-  const { submitOverride } = useComposerBindings();
+  const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
   const sendBinding = useMemo<SendBinding>(
     () => ({
       customized: submitOverride !== undefined,
@@ -195,5 +206,30 @@ export default function useComposerHint(state: ComposerHintState): ComposerHint 
     }),
     [submitOverride],
   );
-  return composeHint(state, localize, isMacPlatform, stopShortcut, sendBinding);
+  /* The same verdict the during-run send button reads, so the hint and the
+     button can never disagree about whether Alt+Enter still interrupts. */
+  const altEnterInterrupt = useMemo(
+    () =>
+      resolveComposerKeyDown(
+        {
+          key: 'Enter',
+          altKey: true,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+        },
+        {
+          isComposing: false,
+          isSubmitting: true,
+          allowSubmitWhileGenerating: true,
+          hasDuringRunModifier: true,
+          shortcutsEnabled,
+          enterToSend: state.enterToSend,
+          submitOverride,
+          yieldedChords,
+        },
+      ) === 'interrupt',
+    [shortcutsEnabled, state.enterToSend, submitOverride, yieldedChords],
+  );
+  return composeHint(state, localize, isMacPlatform, stopShortcut, sendBinding, altEnterInterrupt);
 }

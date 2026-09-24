@@ -22,8 +22,14 @@ const baseState: ComposerHintState = {
 /** What `useShortcutDisplay('stopGenerating')` resolves to by default on a Mac. */
 const STOP = '⌘ ⇧ X';
 
-const hint = (overrides: Partial<ComposerHintState>, isMac = true, stop = STOP) =>
-  composeHint({ ...baseState, ...overrides }, localize, isMac, stop).text;
+const hint = (
+  overrides: Partial<ComposerHintState>,
+  isMac = true,
+  stop = STOP,
+  altEnterInterrupt = true,
+) =>
+  composeHint({ ...baseState, ...overrides }, localize, isMac, stop, undefined, altEnterInterrupt)
+    .text;
 
 const kindOf = (overrides: Partial<ComposerHintState>) =>
   composeHint({ ...baseState, ...overrides }, localize, true, STOP).kind;
@@ -123,6 +129,16 @@ describe('composeHint', () => {
         const result = hint({ ...preEpoch, canControlGeneration: true });
         expect(result).toContain('com_ui_composer_hint_send_now');
         expect(result).toContain('com_ui_composer_hint_interrupt');
+      });
+
+      /* A submit rebound to Alt+Enter, a chord yielded to a global shortcut,
+         or disabled shortcuts each make the chord do something else; the hint
+         follows the same verdict the during-run button reads. */
+      it('omits the interrupt chord when the resolver no longer returns it', () => {
+        const result = hint({ ...preEpoch, canControlGeneration: true }, true, STOP, false);
+        expect(result).not.toContain('com_ui_composer_hint_interrupt');
+        expect(result).not.toContain('⌥⏎');
+        expect(result).toContain('com_ui_composer_hint_send_now');
       });
     });
   });
