@@ -163,14 +163,23 @@ test.describe('unseen replies', () => {
       await page.goto(NEW_CHAT_PATH);
       await openSidebar(page);
       await expect(page.getByTestId('convo-item').filter({ hasText: firstTitle })).toBeVisible();
-      const baseline = await titleCount(page);
       await expect(
         page
           .getByTestId('convo-item')
           .filter({ hasText: firstTitle })
           .locator('span[aria-hidden="true"].bg-status-info'),
       ).toBeVisible();
-      await expect.poll(() => titleCount(page)).toBe(baseline + 2);
+      await expect(
+        page
+          .getByTestId('convo-item')
+          .filter({ hasText: secondTitle })
+          .locator('span[aria-hidden="true"].bg-status-info'),
+      ).toBeVisible();
+      /* Both seeded dots are on screen, so the count read here already includes
+       * them; the away poll can still discover older conversations the client
+       * had not counted yet (a shared run leaves many), so what opening has to
+       * do is clear THIS conversation's contribution, not land on a fixed sum. */
+      const settled = await titleCount(page);
       await page
         .getByTestId('convo-item')
         .filter({ hasText: firstTitle })
@@ -186,7 +195,7 @@ test.describe('unseen replies', () => {
           .filter({ hasText: firstTitle })
           .locator('span[aria-hidden="true"].bg-status-info'),
       ).toHaveCount(0);
-      await expect.poll(() => titleCount(page)).toBe(baseline + 1);
+      await expect.poll(() => titleCount(page)).toBeLessThanOrEqual(settled - 1);
     } finally {
       await cleanup(first);
       await cleanup(second);
@@ -352,7 +361,10 @@ test.describe('unseen replies', () => {
         await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible({
           timeout: 75_000,
         });
-        await expect.poll(() => titleCount(page)).toBe(baseline + 1);
+        /* The away poll that lights the dot also discovers conversations the
+         * client had not counted yet, so the count must rise past the baseline
+         * rather than land on an exact sum over state this tab never owned. */
+        await expect.poll(() => titleCount(page)).toBeGreaterThan(baseline);
       } finally {
         await second.close();
       }
