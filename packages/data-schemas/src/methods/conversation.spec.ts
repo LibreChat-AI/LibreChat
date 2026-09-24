@@ -8953,6 +8953,21 @@ describe('stampForcedRetention', () => {
     expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(0);
   });
 
+  it('does not release the bookmark count again when the converted chat is deleted', async () => {
+    await Conversation.create({
+      conversationId: uuidv4(),
+      user: userId,
+      endpoint: EModelEndpoint.openAI,
+      tags: ['work'],
+    });
+    await ConversationTag.updateOne({ user: userId, tag: 'work' }, { count: 2 });
+
+    await methods.stampForcedRetention({ userId, interfaceConfig: ephemeral }, { conversationId });
+    await methods.deleteConvos(userId, { conversationId });
+
+    expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(1);
+  });
+
   it('never recreates a conversation or message that is gone', async () => {
     await Conversation.deleteOne({ conversationId });
     await MessageModel().deleteOne({ messageId });

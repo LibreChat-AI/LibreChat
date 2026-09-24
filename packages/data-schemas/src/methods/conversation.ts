@@ -2312,10 +2312,13 @@ export function createConversationMethods(
     }
 
     if (stored.isTemporary !== true) {
-      /** Conditional on the transition, so concurrent stamps release the bookmark counts once. */
+      /**
+       * Conditional on the transition, so concurrent stamps release the bookmark counts once;
+       * the released tags are cleared with it so a later delete cannot release them again.
+       */
       const converted = await Conversation.updateOne(
         { _id: stored._id, isTemporary: { $ne: true } },
-        { $set: { isTemporary: true, expiredAt } },
+        { $set: { isTemporary: true, expiredAt, tags: [] } },
         { timestamps: false },
       );
       if (converted.modifiedCount > 0 && stored.tags?.length) {
