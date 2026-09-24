@@ -138,6 +138,14 @@ async function seedReplyMessage(id: string, label: string) {
 }
 
 test.describe('unseen replies', () => {
+  /* The tab title counts every unseen conversation, and a shared verification run leaves
+   * legitimately-unseen conversations from earlier scenarios behind, so these tests assert
+   * the count they add and clear rather than a pristine zero baseline. */
+  async function titleCount(page: Page): Promise<number> {
+    const match = (await page.title()).match(/^\((\d+)\)/);
+    return match ? Number(match[1]) : 0;
+  }
+
   test('opening a conversation clears its dot and the title count @scenario:open-conversation-clears-dot-and-title-count', async ({
     page,
   }) => {
@@ -155,13 +163,14 @@ test.describe('unseen replies', () => {
       await page.goto(NEW_CHAT_PATH);
       await openSidebar(page);
       await expect(page.getByTestId('convo-item').filter({ hasText: firstTitle })).toBeVisible();
+      const baseline = await titleCount(page);
       await expect(
         page
           .getByTestId('convo-item')
           .filter({ hasText: firstTitle })
           .locator('span[aria-hidden="true"].bg-status-info'),
       ).toBeVisible();
-      await expect.poll(() => page.title()).toMatch(/^\(2\)/);
+      await expect.poll(() => titleCount(page)).toBe(baseline + 2);
       await page
         .getByTestId('convo-item')
         .filter({ hasText: firstTitle })
@@ -177,7 +186,7 @@ test.describe('unseen replies', () => {
           .filter({ hasText: firstTitle })
           .locator('span[aria-hidden="true"].bg-status-info'),
       ).toHaveCount(0);
-      await expect.poll(() => page.title()).toMatch(/^\(1\)/);
+      await expect.poll(() => titleCount(page)).toBe(baseline + 1);
     } finally {
       await cleanup(first);
       await cleanup(second);
@@ -231,12 +240,13 @@ test.describe('unseen replies', () => {
       await openSidebar(page);
       const row = page.getByTestId('convo-item').filter({ hasText: title });
       await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toHaveCount(0);
+      const baseline = await titleCount(page);
       await openConversationMenu(row);
       /* Dispatched rather than clicked, like the row controls around it: the menu is portaled,
          and on the mobile project the drawer's scrim sits over it and intercepts the pointer. */
       await page.getByRole('menuitem', { name: 'Mark as unread' }).dispatchEvent('click');
       await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible();
-      await expect.poll(() => page.title()).toMatch(/^\(1\)/);
+      await expect.poll(() => titleCount(page)).toBe(baseline + 1);
 
       const token = await getAccessToken(page);
       const neverReplied = conversationId();
@@ -309,6 +319,7 @@ test.describe('unseen replies', () => {
       await openSidebar(page);
       const row = page.getByTestId('convo-item').filter({ hasText: title });
       await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toHaveCount(0);
+      const baseline = await titleCount(page);
       await unfocus(page);
 
       const second = await context.newPage();
@@ -341,7 +352,7 @@ test.describe('unseen replies', () => {
         await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible({
           timeout: 75_000,
         });
-        await expect.poll(() => page.title()).toMatch(/^\(1\)/);
+        await expect.poll(() => titleCount(page)).toBe(baseline + 1);
       } finally {
         await second.close();
       }
