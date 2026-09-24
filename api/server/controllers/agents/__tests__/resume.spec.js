@@ -96,6 +96,7 @@ const mockCheckAccess = jest.fn();
 const mockCheckPermission = jest.fn();
 const mockDecryptMetadata = jest.fn();
 const mockStampConvoLastResponse = jest.fn().mockResolvedValue(undefined);
+const mockStampForcedRetention = jest.fn().mockResolvedValue(undefined);
 const mockDisposeClient = jest.fn();
 const mockGetMCPRequestContext = jest.fn();
 const mockCleanupMCPRequestContextForReq = jest.fn();
@@ -152,6 +153,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
+  stampForcedRetention: (...args) => mockStampForcedRetention(...args),
   getConvo: (...args) => mockGetConvo(...args),
   getChatProject: (...args) => mockGetChatProject(...args),
   getMessages: (...args) => mockGetMessages(...args),
@@ -3236,6 +3238,55 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
 
       expect(capturedInit.files).toEqual([{ file_id: 'f1' }]);
     });
+
+    it.each([false, true])(
+      'converts a pre-policy paused chat when re-pause=%s',
+      async (rePause) => {
+        requestConfigOverrides.interfaceConfig = {
+          retentionMode: 'ephemeral',
+          temporaryChatRetention: 1,
+        };
+        mockGenerationJobManager.getJob.mockResolvedValue(
+          makeToolApprovalJob({ metadata: { isTemporary: false } }),
+        );
+        if (rePause) {
+          mockInitializeClient.mockResolvedValue({
+            client: makeClient({
+              pendingApproval: { actionId: NEXT_ACTION_ID },
+              contentParts: [{ type: 'text', text: 'partial' }],
+            }),
+            userMCPAuthMap: {},
+          });
+        }
+
+        const res = await post(approveBody({ isTemporary: false }));
+        expect(res.status).toBe(200);
+        await settled;
+        await flush();
+
+        expect(mockInitializeClient.mock.calls[0][0].req.body.isTemporary).toBe(true);
+        expect(mockSaveMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ isTemporary: true }),
+          expect.anything(),
+          expect.anything(),
+        );
+        expect(mockStampForcedRetention).toHaveBeenCalledWith(
+          { userId: USER_ID, interfaceConfig: requestConfigOverrides.interfaceConfig },
+          { conversationId: CONVO_ID, messageIds: [] },
+        );
+        expect(mockSaveMessage.mock.invocationCallOrder[0]).toBeLessThan(
+          mockStampForcedRetention.mock.invocationCallOrder[0],
+        );
+        const publication = rePause
+          ? mockGenerationJobManager.approvals.finishPausePersistence
+          : mockGenerationJobManager.publishTerminalClaim;
+        expect(mockStampForcedRetention.mock.invocationCallOrder[0]).toBeLessThan(
+          publication.mock.invocationCallOrder[0],
+        );
+        expect(mockStampConvoLastResponse).not.toHaveBeenCalled();
+        expect(mockAddTitle).not.toHaveBeenCalled();
+      },
+    );
 
     it.each([false, true])('preserves the job deadline when re-pause=%s', async (rePause) => {
       const expiredAt = new Date('2030-01-01T00:00:00.000Z');

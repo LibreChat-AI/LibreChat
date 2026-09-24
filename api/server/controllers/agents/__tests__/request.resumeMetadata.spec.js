@@ -262,6 +262,7 @@ jest.mock('@librechat/api', () => ({
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   applyForcedTemporaryRequest: jest.fn(),
+  resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   sendEvent: jest.fn(),
   /** Real, because whether a skipped-persistence turn may raise an indicator is under test. */
   isAnnounceableReply: jest.requireActual('@librechat/api').isAnnounceableReply,

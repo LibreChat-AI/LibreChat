@@ -3,6 +3,7 @@ import type { ForcedRetentionStore } from './retention';
 import {
   applyForcedTemporaryRequest,
   applyForcedRetention,
+  resolveResumableRetention,
   resolveImportRetentionFields,
   resolveImportTagCounts,
 } from './retention';
@@ -89,6 +90,19 @@ describe('applyForcedRetention', () => {
 });
 
 describe('applyForcedTemporaryRequest', () => {
+  it('overrides a pre-policy paused job along with the resume request', () => {
+    const req = {
+      body: { isTemporary: false },
+      config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
+    };
+    const metadata = { isTemporary: false };
+
+    applyForcedTemporaryRequest(req, metadata);
+
+    expect(req.body.isTemporary).toBe(true);
+    expect(metadata.isTemporary).toBe(true);
+  });
+
   it.each([false, undefined, 'false'])(
     'marks the request temporary under ephemeral whatever the client sent (%s)',
     (isTemporary) => {
@@ -124,6 +138,59 @@ describe('applyForcedTemporaryRequest', () => {
         config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
       }),
     ).not.toThrow();
+  });
+});
+
+describe('resolveResumableRetention', () => {
+  const deadline = new Date('2030-01-01T00:00:00.000Z');
+  const createExpiration = jest.fn(() => deadline);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([RetentionMode.TEMPORARY, undefined])(
+    'keeps the stored temporary state without inventing a deadline under %s',
+    (retentionMode) => {
+      expect(
+        resolveResumableRetention(
+          {
+            body: { isTemporary: false },
+            resolvedConversation: { isTemporary: true },
+            config: { interfaceConfig: { retentionMode } },
+          },
+          createExpiration,
+        ),
+      ).toEqual({ isTemporary: true });
+      expect(createExpiration).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves the bound deadline while forcing an ephemeral turn temporary', () => {
+    expect(
+      resolveResumableRetention(
+        {
+          _agentEventBindingRetention: { isTemporary: false, expiredAt: deadline },
+          resolvedConversation: { expiredAt: new Date('2031-01-01T00:00:00.000Z') },
+          config: { interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL } },
+        },
+        createExpiration,
+      ),
+    ).toEqual({ isTemporary: true, retentionExpiresAt: deadline.toISOString() });
+    expect(createExpiration).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { retentionMode: RetentionMode.ALL, isTemporary: false },
+    { retentionMode: RetentionMode.EPHEMERAL, isTemporary: true },
+  ])('captures a deadline for $retentionMode turns', ({ retentionMode, isTemporary }) => {
+    expect(
+      resolveResumableRetention(
+        { body: { isTemporary: false }, config: { interfaceConfig: { retentionMode } } },
+        createExpiration,
+      ),
+    ).toEqual({ isTemporary, retentionExpiresAt: deadline.toISOString() });
+    expect(createExpiration).toHaveBeenCalledTimes(1);
   });
 });
 

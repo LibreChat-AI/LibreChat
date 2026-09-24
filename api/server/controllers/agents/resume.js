@@ -52,6 +52,8 @@ const {
   PROJECT_CONTEXT_CHANGED_RESPONSE,
   restoreScheduledTokenContext,
   recoverTurnMessageReference,
+  applyForcedRetention,
+  applyForcedTemporaryRequest,
   announceReply,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -86,6 +88,7 @@ const {
   settleAgentEventActorDetachedAction,
   appendConvoMessageReference,
   stampConvoLastResponse,
+  stampForcedRetention,
 } = require('~/models');
 const {
   acquireEventChildGenerationLease,
@@ -363,6 +366,10 @@ async function persistRePauseProgress({ req, client, job, streamId, conversation
   if (!savedResponseMessage) {
     throw new Error('Re-pause response progress could not be persisted');
   }
+  await applyForcedRetention(
+    { stampForcedRetention },
+    { ctx: { userId, interfaceConfig: req.config?.interfaceConfig }, conversationId },
+  );
   await recoverResumedResponseReference(
     { userId, conversationId, client, savedResponseMessage },
     'api/server/controllers/agents/resume.js - recovered re-paused response reference',
@@ -563,6 +570,10 @@ async function finalizeResumedTurn({
     if (!savedResponseMessage) {
       throw new Error('Resumed response could not be persisted before terminal publication');
     }
+    await applyForcedRetention(
+      { stampForcedRetention },
+      { ctx: { userId, interfaceConfig: req.config?.interfaceConfig }, conversationId },
+    );
     await recoverResumedResponseReference(
       { userId, conversationId, client, savedResponseMessage },
       'api/server/controllers/agents/resume.js - recovered resumed response reference',
@@ -1050,6 +1061,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
   // Rebuild the same persistence/retention mode as the paused turn. The resume body
   // is not authoritative: tools inspect this field during client initialization.
   req.body.isTemporary = job.metadata.isTemporary === true;
+  applyForcedTemporaryRequest(req, job.metadata);
   const metaFiles = job.metadata.userMessage?.files;
   if (Array.isArray(metaFiles) && metaFiles.length > 0) {
     req.body.files = metaFiles;

@@ -1,6 +1,8 @@
 import { isAllDataRetention, isForcedTemporaryRetention } from 'librechat-data-provider';
 import type { ConversationMethods } from '@librechat/data-schemas';
-import type { ConversationWriteContext } from './save';
+import type { ConversationWriteContext, TurnConversationRequest } from './save';
+import type { GenerationJobMetadata } from '~/types';
+import { getConversationWriteContext } from './save';
 
 export type ForcedRetentionStore = Pick<ConversationMethods, 'stampForcedRetention'>;
 
@@ -45,11 +47,37 @@ export interface ForcedTemporaryRequest {
  * own flag (title eligibility, the title generators, resumable job state) treats a chat the
  * server will hide exactly like a temporary chat the user chose, whatever the client sent.
  */
-export function applyForcedTemporaryRequest(req: ForcedTemporaryRequest): void {
+export function applyForcedTemporaryRequest(
+  req: ForcedTemporaryRequest,
+  metadata?: Pick<GenerationJobMetadata, 'isTemporary'>,
+): void {
   if (req.body == null || !isForcedTemporaryRetention(req.config?.interfaceConfig?.retentionMode)) {
     return;
   }
   req.body.isTemporary = true;
+  if (metadata != null) {
+    metadata.isTemporary = true;
+  }
+}
+
+/** Captures the effective retention policy for a paused turn without re-reading its records. */
+export function resolveResumableRetention(
+  req: TurnConversationRequest,
+  createChatExpirationDate: ImportRetentionDependencies['createChatExpirationDate'],
+): Pick<GenerationJobMetadata, 'isTemporary' | 'retentionExpiresAt'> {
+  const { isTemporary, expiredAt, interfaceConfig } = getConversationWriteContext(req);
+  const retention: Pick<GenerationJobMetadata, 'isTemporary' | 'retentionExpiresAt'> = {
+    isTemporary: isForcedTemporaryRetention(interfaceConfig?.retentionMode) || isTemporary,
+  };
+  if (expiredAt != null) {
+    retention.retentionExpiresAt = new Date(expiredAt).toISOString();
+  } else if (isAllDataRetention(interfaceConfig?.retentionMode)) {
+    retention.retentionExpiresAt = createChatExpirationDate(
+      interfaceConfig,
+      req.resolvedConversation?.isTemporary ?? req.body?.isTemporary,
+    ).toISOString();
+  }
+  return retention;
 }
 
 export interface ImportRetentionFields {

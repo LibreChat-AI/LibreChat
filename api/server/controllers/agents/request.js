@@ -6,14 +6,13 @@ const {
   ErrorTypes,
   ViolationTypes,
   isEphemeralAgentId,
-  isAllDataRetention,
-  isForcedTemporaryRetention,
 } = require('librechat-data-provider');
 const {
   toPendingSteer,
   persistedReasoningOverrideFields,
   getViolationInfo,
   applyForcedTemporaryRequest,
+  resolveResumableRetention,
   buildMessageFiles,
   getReferencedQuotes,
   resolveTitleTiming,
@@ -1683,25 +1682,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         agent_id: endpointOption.agent_id ?? req.body?.agent_id,
         // Persist temporary-chat state so a HITL resume keeps the resumed response
         // non-persisted instead of trusting the resume request to re-send the flag.
-        isTemporary:
-          isForcedTemporaryRetention(req.config?.interfaceConfig?.retentionMode) ||
-          (req._agentEventBindingRetention?.isTemporary ??
-            req.resolvedConversation?.isTemporary ??
-            req.body?.isTemporary),
-        ...((req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt) !=
-          null && {
-          retentionExpiresAt: new Date(
-            req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation.expiredAt,
-          ).toISOString(),
-        }),
-        ...((req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt) ==
-          null &&
-          isAllDataRetention(req.config?.interfaceConfig?.retentionMode) && {
-            retentionExpiresAt: createChatExpirationDate(
-              req.config.interfaceConfig,
-              req.resolvedConversation?.isTemporary ?? req.body?.isTemporary,
-            ).toISOString(),
-          }),
+        ...resolveResumableRetention(req, createChatExpirationDate),
         ...(agentEventDelivery != null && {
           agentEventDeliveryKey: agentEventDelivery.deliveryKey,
           ...(internalDetachedCompletion == null

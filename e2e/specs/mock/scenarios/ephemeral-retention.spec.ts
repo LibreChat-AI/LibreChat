@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
+import type { AgentDetail } from '../agents.helpers';
+import { cleanupAgent, openAgentBuilder, uniqueAgentName } from '../agents.helpers';
 import { getE2EUser } from '../../../setup/user';
 import { loginAdmin, requestResult } from '../content-filters.helpers';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from '../db';
@@ -8,6 +10,10 @@ import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   mockReply,
+  getAccessToken,
+  messagesView,
+  requestJson,
+  sendMessage,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -185,6 +191,72 @@ test.describe('ephemeral retention', () => {
 
     const history = await requestResult(request, { path: '/api/convos?limit=25', token });
     expect(history.text).not.toContain(conversationId as string);
+  });
+
+  test('resuming a chat after enabling ephemeral converts its parent @scenario:resuming-a-chat-after-enabling-ephemeral-converts-its-parent', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120000);
+    let agentId: string | undefined;
+    try {
+      await page.goto(NEW_CHAT_PATH);
+      const userToken = await getAccessToken(page);
+      const agentName = uniqueAgentName('Retention resume');
+      const agent = await requestJson<AgentDetail>(page, {
+        path: '/api/agents',
+        token: userToken,
+        method: 'POST',
+        body: {
+          name: agentName,
+          instructions: 'Use the requested approval probe tools and report their results.',
+          provider: MOCK_ENDPOINTS[0].label,
+          model: MOCK_ENDPOINTS[0].model,
+          tools: ['sys__server__sys_mcp_e2e-memory', 'approval_probe_mcp_e2e-memory'],
+        },
+      });
+      agentId = agent.id;
+      const form = await openAgentBuilder(page);
+      await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
+      await page.getByRole('option', { name: agentName }).click();
+      await form.getByRole('button', { name: 'Select Agent' }).click();
+
+      const response = await sendMessage(page, `E2E_TOOL_APPROVAL:retention-${randomUUID()}`);
+      expect(response.ok()).toBe(true);
+      await expect(messagesView(page).getByTestId('tool-approval').first()).toBeVisible({
+        timeout: 30000,
+      });
+      const conversationId = new URL(page.url()).pathname.replace('/c/', '');
+      cleanupConversationIds.push(conversationId);
+      expect((await readConversation(conversationId))?.isTemporary).not.toBe(true);
+
+      await setRetentionMode(request, token, userId);
+      await page.reload();
+      const panel = page.locator('#pending-tool-approval-panel');
+      await expect(panel).toBeVisible({ timeout: 30000 });
+      await panel.getByRole('button', { name: 'Collapse', exact: true }).click();
+      const card = messagesView(page).getByTestId('tool-approval').first();
+      await card.getByRole('button', { name: 'Approve', exact: true }).click();
+      await card.getByRole('button', { name: 'Submit', exact: true }).click();
+      await expect(
+        messagesView(page)
+          .getByText(/^E2E approval outcomes:/)
+          .last(),
+      ).toBeVisible({
+        timeout: 30000,
+      });
+
+      expectForcedTemporary(await readConversation(conversationId));
+      const storedMessages = await readMessages(conversationId);
+      const responseMessage = storedMessages.find((message) => message.isTemporary === true);
+      expect(responseMessage, 'the resumed response must be saved temporary').toBeDefined();
+      expectForcedTemporary(responseMessage ?? null);
+      const history = await requestResult(request, { path: '/api/convos?limit=25', token });
+      expect(history.ok).toBe(true);
+      expect(history.text).not.toContain(conversationId);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
   });
 
   test('the temporary toggle is locked on @scenario:the-temporary-toggle-is-locked-on-under-ephemeral-retention', async ({
