@@ -87,6 +87,11 @@ jest.mock('~/data-provider', () => ({
     return mockConversationsResult;
   },
   usePinnedConversationsQuery: () => mockPinnedResult,
+  /** The section reads the same projects ProjectsSection does, to tell an empty
+   *  unassigned list from an empty account; these specs carry no projects. */
+  useProjectsInfiniteQuery: () => ({
+    data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
+  }),
   useTitleGeneration: () => mockUseTitleGeneration(),
   useGetEndpointsQuery: () => ({ data: {}, isLoading: false }),
   useGetStartupConfig: () => ({ data: { modelSpecs: { list: [] } } }),
