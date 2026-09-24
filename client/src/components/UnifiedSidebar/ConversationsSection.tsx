@@ -6,15 +6,16 @@ import type { InfiniteQueryObserverResult } from '@tanstack/react-query';
 import type { ConversationListResponse } from 'librechat-data-provider';
 import type { List } from 'react-virtualized';
 import {
-  chatFilterTagsAtom,
-  chatSortAtom,
-  isArchivedChatViewAtom,
-} from '~/components/Conversations/chatFilters';
-import {
+  useProjectsInfiniteQuery,
   useConversationsInfiniteQuery,
   usePinnedConversationsQuery,
   useTitleGeneration,
 } from '~/data-provider';
+import {
+  chatFilterTagsAtom,
+  chatSortAtom,
+  isArchivedChatViewAtom,
+} from '~/components/Conversations/chatFilters';
 import {
   useLocalize,
   useAuthContext,
@@ -22,8 +23,8 @@ import {
   useNavScrolling,
   useScrollFade,
 } from '~/hooks';
+import { chatFacetParamsAtom, useFreshLocalDay } from '~/components/Conversations/facets';
 import ProjectsSection from '~/components/Conversations/ProjectsSection';
-import { chatFacetParamsAtom } from '~/components/Conversations/facets';
 import ChatFilterMenu from '~/components/Conversations/ChatFilterMenu';
 import PinnedSection from '~/components/Conversations/PinnedSection';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
@@ -48,7 +49,17 @@ const ConversationsSection = memo(() => {
   const isArchivedView = useAtomValue(isArchivedChatViewAtom);
   /** Date, endpoint and attachment facets, already shaped as list parameters. */
   const facetParams = useAtomValue(chatFacetParamsAtom);
+  /** Keeps the date facets' midnight anchor advancing while the list is mounted. */
+  useFreshLocalDay();
   const search = useRecoilValue(store.search);
+  /** The same projects ProjectsSection reads, so an empty Chats list can tell "every
+   *  chat lives under a project" from "this account has nothing yet". Shared key, so
+   *  this costs no second request. */
+  const { data: projectsData } = useProjectsInfiniteQuery(
+    { sortBy: 'lastConversationAt', sortDirection: 'desc', limit: 25 },
+    { enabled: isAuthenticated, staleTime: 30000, cacheTime: 300000 },
+  );
+  const hasProjects = (projectsData?.pages[0]?.projects?.length ?? 0) > 0;
 
   const {
     data,
@@ -252,6 +263,7 @@ const ConversationsSection = memo(() => {
               isError={isError}
               onRetry={retryConversations}
               chatsHeaderTrailing={chatsHeaderTrailing}
+              accountHasProjects={hasProjects}
               scrollViewport={scrollViewport}
               scrollContent={scrollContent}
             />

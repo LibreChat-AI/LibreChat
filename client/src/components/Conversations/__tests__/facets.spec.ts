@@ -5,6 +5,7 @@ import {
   endpointFilterAtom,
   facetFilterCountAtom,
   hasAttachmentsAtom,
+  localDayStartAtom,
   rangeCutoff,
   sharedOnlyAtom,
   resetFacetsAtom,
@@ -88,6 +89,19 @@ describe('chatFacetParamsAtom', () => {
     expect(store.get(chatFacetParamsAtom).updatedAfter).toBe(
       store.get(chatFacetParamsAtom).updatedAfter,
     );
+  });
+
+  it('advances the cutoff when the local day anchor moves past midnight', () => {
+    /** A derived atom caches until a source changes, so the cutoff follows the day
+     *  anchor rather than the clock: a tab open across midnight must not keep serving
+     *  yesterday's "today". */
+    const store = createStore();
+    store.set(localDayStartAtom, new Date(2026, 8, 20).getTime());
+    store.set(updatedRangeAtom, 'today');
+    expect(store.get(chatFacetParamsAtom).updatedAfter).toBe(new Date(2026, 8, 20).toISOString());
+
+    store.set(localDayStartAtom, new Date(2026, 8, 21).getTime());
+    expect(store.get(chatFacetParamsAtom).updatedAfter).toBe(new Date(2026, 8, 21).toISOString());
   });
 
   it('toggles an endpoint off again rather than repeating it', () => {

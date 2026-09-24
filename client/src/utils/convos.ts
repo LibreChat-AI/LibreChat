@@ -248,6 +248,11 @@ function getConversationListQueryParams(queryKey: readonly unknown[]): {
   sortBy?: string;
   sortDirection?: string;
   isArchived?: boolean;
+  updatedAfter?: string;
+  createdAfter?: string;
+  endpoints?: string[];
+  hasFiles?: boolean;
+  sharedOnly?: boolean;
 } {
   const params = queryKey[1];
   if (!params || typeof params !== 'object') {
@@ -259,6 +264,11 @@ function getConversationListQueryParams(queryKey: readonly unknown[]): {
     sortBy?: string;
     sortDirection?: string;
     isArchived?: boolean;
+    updatedAfter?: string;
+    createdAfter?: string;
+    endpoints?: string[];
+    hasFiles?: boolean;
+    sharedOnly?: boolean;
   };
 }
 
@@ -334,39 +344,78 @@ function conversationBelongsToListQuery(
 }
 
 /**
- * Whether only the server can say what a variant holds after a write. Two things put it
+ * Whether only the server can say what a variant holds after a write. Three things put it
  * out of the client's reach: an order keyed on something other than last activity, which
- * these writers cannot place a row against, and a search, which the server evaluates —
- * a title edit or a new message can make a row start or stop matching one.
+ * these writers cannot place a row against; a search, which the server evaluates —
+ * a title edit or a new message can make a row start or stop matching one; and the
+ * attachment and sharing facets, whose truth lives in collections the list row does
+ * not carry.
  */
 function queryNeedsServerReconciliation(queryKey: readonly unknown[]): boolean {
   if (!queryListsNewestFirst(queryKey)) {
     return true;
   }
-  const { search } = getConversationListQueryParams(queryKey);
-  return typeof search === 'string' && search.trim() !== '';
+  const { search, hasFiles, sharedOnly } = getConversationListQueryParams(queryKey);
+  if (typeof search === 'string' && search.trim() !== '') {
+    return true;
+  }
+  return hasFiles === true || sharedOnly === true;
 }
 
 /**
  * What a writer may do with a row it wants to add to a variant.
  *
  * `skip` is only for a variant the row provably does not belong to, by the facets the
- * client decides: project, archive state, bookmarks. Anything left to the server is
- * refetched instead — skipping it silently would leave a mounted list missing a row.
+ * client decides: project, archive state, bookmarks, the endpoint it ran on, and the
+ * date cutoffs it carries. Anything left to the server — attachments, sharing — is
+ * refetched instead; skipping it silently would leave a mounted list missing a row.
  */
 type ListInsertVerdict = 'insert' | 'skip' | 'refetch';
 
 function conversationInsertVerdict(
   queryKey: readonly unknown[],
-  conversation: Pick<TConversation, 'chatProjectId' | 'tags' | 'isArchived'>,
+  conversation: Pick<
+    TConversation,
+    'chatProjectId' | 'tags' | 'isArchived' | 'endpoint' | 'createdAt' | 'updatedAt'
+  >,
 ): ListInsertVerdict {
   if (!conversationBelongsToListQuery(queryKey, conversation)) {
     return 'skip';
   }
-  const { tags } = getConversationListQueryParams(queryKey);
+  const { tags, endpoints, updatedAfter, createdAfter } = getConversationListQueryParams(queryKey);
   if (Array.isArray(tags) && tags.length > 0) {
     const conversationTags = conversation.tags;
     if (!Array.isArray(conversationTags) || !tags.some((tag) => conversationTags.includes(tag))) {
+      return 'skip';
+    }
+  }
+  if (Array.isArray(endpoints) && endpoints.length > 0) {
+    if (typeof conversation.endpoint === 'string') {
+      if (!endpoints.includes(conversation.endpoint)) {
+        return 'skip';
+      }
+    } else {
+      /* An endpoint-less row cannot be proven either way, and inserting it on a guess
+       * would put a chat the server excluded into the filtered list. */
+      return 'refetch';
+    }
+  }
+  const dateFacets: Array<[cutoff: string | undefined, at: string | null | undefined]> = [
+    [updatedAfter, conversation.updatedAt ?? null],
+    [createdAfter, conversation.createdAt ?? null],
+  ];
+  for (const [cutoff, at] of dateFacets) {
+    if (typeof cutoff !== 'string') {
+      continue;
+    }
+    const cutoffMs = Date.parse(cutoff);
+    if (Number.isNaN(cutoffMs)) {
+      continue;
+    }
+    if (at == null) {
+      return 'refetch';
+    }
+    if (Date.parse(at) < cutoffMs) {
       return 'skip';
     }
   }

@@ -1,4 +1,5 @@
-import { atom } from 'jotai';
+import { useEffect } from 'react';
+import { atom, useSetAtom } from 'jotai';
 import type { ConversationListParams } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 
@@ -36,6 +37,41 @@ export function rangeCutoff(range: DateRange, now: Date = new Date()): Date | un
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   startOfToday.setDate(startOfToday.getDate() - (RANGE_DAYS[range] - 1));
   return startOfToday;
+}
+
+const startOfLocalDay = (now: Date = new Date()): number =>
+  new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+/**
+ * The local midnight the cutoffs are anchored to, as a timestamp. A derived atom would
+ * otherwise cache a cutoff computed yesterday and keep serving it until a facet changes,
+ * so the anchor is its own atom that a mounted consumer advances at midnight.
+ */
+export const localDayStartAtom = atom(startOfLocalDay());
+
+/**
+ * Advances the day anchor when the local day changes, then sleeps until the next
+ * midnight. One mounted consumer is enough for every reader of the cutoffs; a day with
+ * no date facet selected costs a single timer that fires once.
+ */
+export function useFreshLocalDay(): void {
+  const setDay = useSetAtom(localDayStartAtom);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      const now = new Date();
+      const todayStart = startOfLocalDay(now);
+      setDay((previous) => (previous === todayStart ? previous : todayStart));
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      timer = setTimeout(check, Math.max(0, nextMidnight.getTime() - Date.now()) + 500);
+    };
+    check();
+    return () => {
+      if (timer != null) {
+        clearTimeout(timer);
+      }
+    };
+  }, [setDay]);
 }
 
 export const updatedRangeAtom = atom<DateRange>('any');
@@ -91,8 +127,11 @@ export const chatFacetParamsAtom = atom<
     'updatedAfter' | 'createdAfter' | 'endpoints' | 'hasFiles' | 'sharedOnly'
   >
 >((get) => {
-  const updatedAfter = rangeCutoff(get(updatedRangeAtom));
-  const createdAfter = rangeCutoff(get(createdRangeAtom));
+  /** Anchored to the advancing day rather than `new Date()`: the cutoff must be stable
+   *  within a day (it is the query key) yet must not outlive the day it names. */
+  const day = new Date(get(localDayStartAtom));
+  const updatedAfter = rangeCutoff(get(updatedRangeAtom), day);
+  const createdAfter = rangeCutoff(get(createdRangeAtom), day);
   const endpoints = get(endpointFilterAtom);
   const hasFiles = get(hasAttachmentsAtom);
   const sharedOnly = get(sharedOnlyAtom);

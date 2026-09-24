@@ -438,8 +438,9 @@ const FilterFacets = ({
   const resetFacets = useSetAtom(resetFacetsAtom);
 
   /** Searching reaches into the categories, so both lists have to be here rather than
-   *  inside the submenu that normally owns them. Both are cached queries. */
-  const { data: bookmarkData } = useGetConversationTags();
+   *  inside the submenu that normally owns them. Both are cached queries. The bookmark
+   *  one stays off without `BOOKMARKS:USE`, whose route would only answer 403. */
+  const { data: bookmarkData } = useGetConversationTags({ enabled: showBookmarks });
   const { data: endpointsConfig } = useGetEndpointsQuery();
   /** A deployment with sharing switched off has no shared chats to filter to. */
   const { data: startupConfig } = useGetStartupConfig();
@@ -836,9 +837,9 @@ const ChatFilterMenu = () => {
         gutter={8}
         unmountOnHide={true}
         aria-label={localize('com_ui_filter_and_sort_chats')}
-        className="popover-ui max-w-80 min-w-60"
+        className="popover-ui pointer-events-auto max-w-80 min-w-60"
         /** Portaled beside modal dialog layers, which disable pointer events on body. */
-        style={{ zIndex, pointerEvents: 'auto' }}
+        style={{ zIndex }}
       >
         <div className="flex items-center justify-between gap-2 px-2 pt-0.5 pb-1.5">
           <span className="text-text-secondary text-xs font-medium">

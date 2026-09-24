@@ -1050,19 +1050,6 @@
       "count": 8
     }
   },
-  "client/src/components/Conversations/ChatFilterMenu.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Conversations/Conversations.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    },
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Conversations/Convo.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1

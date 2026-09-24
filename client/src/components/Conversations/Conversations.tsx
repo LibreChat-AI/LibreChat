@@ -73,6 +73,10 @@ interface ConversationsProps {
   /** Wrapper around everything inside that viewport, whose height changes when a
    *  section above the list expands or collapses. */
   scrollContent: HTMLElement | null;
+  /** The account holds projects, rendered above this list. The Chats section asks for
+   *  chats that belong to no project, so its emptiness then means "everything is filed"
+   *  rather than "the account has nothing". */
+  accountHasProjects?: boolean;
 }
 
 interface MeasuredRowProps {
@@ -111,9 +115,9 @@ const LoadingSpinner = memo(() => {
   const localize = useLocalize();
 
   return (
-    <div className="mx-auto mt-2 flex items-center justify-center gap-2">
-      <Spinner className="text-text-primary" />
-      <span className="shimmer text-text-primary">{localize('com_ui_loading')}</span>
+    <div className="text-text-primary mx-auto mt-2 flex items-center justify-center gap-2">
+      <Spinner className="m-0" />
+      <span className="shimmer">{localize('com_ui_loading')}</span>
     </div>
   );
 });
@@ -172,8 +176,10 @@ const DateLabel: FC<{ groupName: string; isFirst?: boolean; isAlphabetical?: boo
           isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
           isAlphabetical ? { letter: displayName } : { date: displayName },
         )}
-        className={cn('text-text-secondary pt-0.5 pl-1', isFirst === true ? 'mt-0' : 'mt-1.5')}
-        style={{ fontSize: '0.7rem' }}
+        className={cn(
+          'text-text-secondary pt-0.5 pl-1 text-xs',
+          isFirst === true ? 'mt-0' : 'mt-1.5',
+        )}
       >
         {displayName}
       </h2>
@@ -204,6 +210,7 @@ const Conversations: FC<ConversationsProps> = ({
   onRetry,
   scrollViewport,
   scrollContent,
+  accountHasProjects = false,
 }) => {
   const localize = useLocalize();
   const search = useRecoilValue(store.search);
@@ -530,8 +537,9 @@ const Conversations: FC<ConversationsProps> = ({
     !hasUnfilteredRows;
 
   /** Which dead end this is decides both the line and the glyph above it: a search
-   *  that found nothing, a filter that matched nothing, an empty archive, and an
-   *  account with no chats yet are four different situations wearing one sentence. */
+   *  that found nothing, a filter that matched nothing, an empty archive, an account
+   *  whose chats all live under projects, and an account with no chats yet are five
+   *  different situations wearing one sentence. */
   let emptyLabel: TranslationKeys = 'com_ui_no_chats';
   let emptyIcon: LucideIcon = MessageSquareDashed;
   if (search.query) {
@@ -543,9 +551,12 @@ const Conversations: FC<ConversationsProps> = ({
   } else if (isArchivedView) {
     emptyLabel = 'com_ui_no_archived_chats';
     emptyIcon = Archive;
+  } else if (accountHasProjects) {
+    emptyLabel = 'com_ui_no_unassigned_chats';
+    emptyIcon = MessageSquareDashed;
   }
   /** Nothing has been narrowed: the list is empty because the account is. That reads
-   *  as a heading, where the three narrowed states are a single line under the glyph. */
+   *  as a heading, where the narrowed states are a single line under the glyph. */
   const isUntouched = emptyLabel === 'com_ui_no_chats';
 
   let body: ReactNode = (
@@ -566,16 +577,15 @@ const Conversations: FC<ConversationsProps> = ({
         aria-label="Conversations"
         onRowsRendered={handleRowsRendered}
         tabIndex={-1}
-        style={{ outline: 'none' }}
         containerRole="rowgroup"
       />
     </div>
   );
   if (isSearchLoading) {
     body = (
-      <div className="flex flex-1 items-center justify-center">
-        <Spinner className="text-text-primary" />
-        <span className="shimmer text-text-primary ml-2">{localize('com_ui_loading')}</span>
+      <div className="text-text-primary flex flex-1 items-center justify-center">
+        <Spinner className="m-0" />
+        <span className="shimmer ml-2">{localize('com_ui_loading')}</span>
       </div>
     );
   } else if (isListError) {

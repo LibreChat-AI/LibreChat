@@ -1893,6 +1893,7 @@
   "com_ui_no_category": "No category",
   "com_ui_no_changes": "No changes were made",
   "com_ui_no_chats": "No chats yet",
+  "com_ui_no_unassigned_chats": "No chats outside your projects yet",
   "com_ui_no_chats_match_filters": "No chats match your filters",
   "com_ui_no_data": "Nothing here yet",
   "com_ui_no_individual_resource_access": "No individual users or groups have access",
