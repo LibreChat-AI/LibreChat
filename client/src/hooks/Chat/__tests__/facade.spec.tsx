@@ -192,6 +192,53 @@ describe('useChat', () => {
     expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
   });
 
+  it('remaps a response whose content the stream replaced in place', () => {
+    const streaming = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    const messages = [userMessage, streaming];
+    const { result, update } = renderChat(turn(messages, true));
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hel' }]);
+
+    streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello' }];
+    update(turn([...messages], true));
+
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
+  });
+
+  it('keeps a stepless call clear of attachments its repeated id owns elsewhere', () => {
+    const memoryError = {
+      conversationId: 'convo-1',
+      messageId: 'response-1',
+      toolCallId: 'mem-1',
+      stepId: 'step-old',
+      type: 'memory',
+      memory: { type: 'error', key: 'k', value: 'v' },
+    } as unknown as NonNullable<TMessage['attachments']>[number];
+    const repeated = response({
+      attachments: [memoryError],
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'mem-1',
+            stepId: 'step-old',
+            type: 'tool_call',
+            name: 'set_memory',
+            args: '{}',
+            output: 'Memory set',
+            progress: 1,
+          },
+        },
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: { id: 'mem-1', type: 'tool_call', name: 'set_memory', args: '{}' },
+        },
+      ],
+    });
+    const { result } = renderChat(turn([userMessage, repeated], true));
+
+    expect(result.current.messages[1].parts[1]).toMatchObject({ state: 'input-available' });
+  });
+
   it('joins an inserted message to the conversation under the one before it', () => {
     const contract = createContract();
     const { result } = renderChat(contract);

@@ -37,22 +37,66 @@ export type UseChatHelpers = {
   setMessages: (messages: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => void;
 };
 
-const attachmentsByMessage = new WeakMap<TMessage, Record<string, TAttachment[] | undefined>>();
+type ToolContext = {
+  content: TMessage['content'];
+  attachments: TMessage['attachments'];
+  byToolCall: Record<string, TAttachment[] | undefined>;
+  /** Step ids each provider tool-call id already owns, for calls that have no step yet. */
+  stepIdsById: Map<string, Set<string>>;
+};
+
+const toolContexts = new WeakMap<TMessage, ToolContext>();
+
+/**
+ * Built once per message snapshot. The stream reuses a response object across frames and
+ * replaces its `content` and `attachments` arrays, so both are checked, not only the object.
+ */
+const getToolContext = (message: TMessage): ToolContext => {
+  const cached = toolContexts.get(message);
+  if (cached && cached.content === message.content && cached.attachments === message.attachments) {
+    return cached;
+  }
+  const stepIdsById = new Map<string, Set<string>>();
+  for (const part of message.content ?? []) {
+    if (part?.type !== ContentTypes.TOOL_CALL) {
+      continue;
+    }
+    const { id, stepId } = part.tool_call as { id?: string; stepId?: string };
+    if (!id || !stepId) {
+      continue;
+    }
+    const owned = stepIdsById.get(id) ?? new Set<string>();
+    owned.add(stepId);
+    stepIdsById.set(id, owned);
+  }
+  const context: ToolContext = {
+    content: message.content,
+    attachments: message.attachments,
+    byToolCall: mapAttachments(message.attachments ?? []),
+    stepIdsById,
+  };
+  toolContexts.set(message, context);
+  return context;
+};
 
 /**
  * The client's own tool outcome rules (`getToolMeta`: memory failure prose, background task
  * status attachments), handed to the parts mapping, which reads only markers stored on the call.
+ * A call with no step yet is scoped away from attachments its repeated provider id's other
+ * steps own, as `summarizeSpan` does.
  */
 const resolveToolFailure: NonNullable<UIMappingOptions['resolveToolFailure']> = (
   toolCall,
   message,
 ) => {
-  let byToolCall = message ? attachmentsByMessage.get(message) : undefined;
-  if (message && !byToolCall) {
-    byToolCall = mapAttachments(message.attachments ?? []);
-    attachmentsByMessage.set(message, byToolCall);
-  }
-  const meta = getToolMeta({ type: ContentTypes.TOOL_CALL, tool_call: toolCall }, byToolCall);
+  const context = message ? getToolContext(message) : undefined;
+  const { id, stepId } = toolCall as { id?: string; stepId?: string };
+  const siblingStepIds = stepId == null && id ? context?.stepIdsById.get(id) : undefined;
+  const meta = getToolMeta(
+    { type: ContentTypes.TOOL_CALL, tool_call: toolCall },
+    context?.byToolCall,
+    siblingStepIds,
+  );
   if (meta?.cancelled) {
     return 'cancelled';
   }
@@ -61,18 +105,31 @@ const resolveToolFailure: NonNullable<UIMappingOptions['resolveToolFailure']> = 
 
 const mappingOptions: UIMappingOptions = { resolveToolFailure };
 
-const views = new WeakMap<TMessage, UIMessage>();
+/** The message fields a view is built from; a stream frame replaces these, not the object. */
+const viewSourceKeys = ['content', 'text', 'files', 'attachments', 'error', 'unfinished'] as const;
+
+type CachedView = { view: UIMessage; source: Pick<TMessage, (typeof viewSourceKeys)[number]> };
+
+const views = new WeakMap<TMessage, CachedView>();
+
+const isSameSource = (cached: CachedView, message: TMessage) =>
+  viewSourceKeys.every((key) => cached.source[key] === message[key]);
 
 /**
- * Cached by message reference: a stream write replaces only the messages it changed, so the
- * rest of the transcript is not remapped on every chunk.
+ * Cached per message and per snapshot of the fields a view reads: a stream frame that replaces a
+ * response's content remaps that response, while untouched messages keep their views.
  */
 const toView = (message: TMessage) => {
-  let view = views.get(message);
-  if (!view) {
-    view = toUIMessage(message, mappingOptions);
-    views.set(message, view);
+  const cached = views.get(message);
+  if (cached && isSameSource(cached, message)) {
+    return cached.view;
   }
+  const view = toUIMessage(message, mappingOptions);
+  const source = {} as CachedView['source'];
+  for (const key of viewSourceKeys) {
+    Object.assign(source, { [key]: message[key] });
+  }
+  views.set(message, { view, source });
   return view;
 };
 
