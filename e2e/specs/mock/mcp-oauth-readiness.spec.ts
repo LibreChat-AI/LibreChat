@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 const SERVER_NAME = 'e2e-memory';
 const SERVER_TITLE = 'E2E Memory';
@@ -13,6 +13,12 @@ async function openMcpPanel(page: Page) {
   }
 }
 const serverCard = (page: Page) => page.getByLabel(new RegExp(`^${SERVER_TITLE} - `));
+/** Row actions reveal on hover on pointer devices, so reach Connect the way a
+ *  pointer does: over the row first. */
+async function connectButton(card: Locator) {
+  await card.hover();
+  return card.getByRole('button', { name: 'Connect', exact: true });
+}
 
 /** Selection state lives in the composer palette; open it fresh per check and
  *  close with Escape so the panel underneath stays interactable. */
@@ -143,7 +149,7 @@ test.describe('MCP OAuth readiness', () => {
 
     await openMcpPanel(page);
     const card = serverCard(page);
-    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await (await connectButton(card)).click();
     await pendingPolled;
     await dismissOAuthDialog(page);
 
@@ -215,14 +221,14 @@ test.describe('MCP OAuth readiness', () => {
     await page.goto('/c/new', { timeout: 10000 });
     await openMcpPanel(page);
     const card = serverCard(page);
-    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await (await connectButton(card)).click();
 
     await expect(page.getByText(`OAuth login timed out for ${SERVER_NAME}`).first()).toBeVisible({
       timeout: 15000,
     });
     expect(flowStatusCalls).toBe(2);
 
-    await expect(card.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
+    await expect(await connectButton(card)).toBeVisible();
   });
 
   test('accepts completion found by the final poll after the attempt deadline', async ({
@@ -287,7 +293,7 @@ test.describe('MCP OAuth readiness', () => {
     await page.goto('/c/new', { timeout: 10000 });
     await openMcpPanel(page);
     const card = serverCard(page);
-    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await (await connectButton(card)).click();
 
     await expect(
       page.getByText(`MCP server '${SERVER_NAME}' authenticated successfully`).first(),
@@ -348,7 +354,7 @@ test.describe('MCP OAuth readiness', () => {
     await page.goto('/c/new', { timeout: 10000 });
     await openMcpPanel(page);
     const card = serverCard(page);
-    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await (await connectButton(card)).click();
 
     await expect(page.getByText(`OAuth login timed out for ${SERVER_NAME}`).first()).toBeVisible({
       timeout: 15000,
@@ -418,7 +424,7 @@ test.describe('MCP OAuth readiness', () => {
     await page.goto('/c/new', { timeout: 10000 });
     await openMcpPanel(page);
     const card = serverCard(page);
-    await card.getByRole('button', { name: 'Connect', exact: true }).click();
+    await (await connectButton(card)).click();
     await dismissOAuthDialog(page);
 
     await expect(card.getByRole('button', { name: 'Cancel' })).toBeVisible({
