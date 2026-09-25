@@ -1061,6 +1061,9 @@ function ChatFormWrapper({
       conversation?.effort,
       conversation?.thinkingLevel,
       conversation?.thinkingBudget,
+      /** The attach picker resolves the upload route from it, and a Responses
+       *  routing policy can send web-search turns to a different route. */
+      conversation?.web_search,
       hasMessages,
     ],
   );
