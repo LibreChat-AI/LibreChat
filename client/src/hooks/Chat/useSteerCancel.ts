@@ -82,6 +82,7 @@ export function useSteerReclaim(conversationId: string) {
 export function useSteerMoveToQueue(conversationId: string) {
   const reclaim = useSteerReclaim(conversationId);
   const convertSteersToQueued = useSteerConvert();
+  const { rewakeDrain } = useComposerRestoreHost();
 
   return useCallback(
     async (steer: PendingSteer): Promise<SteerCancelOutcome> => {
@@ -92,10 +93,13 @@ export function useSteerMoveToQueue(conversationId: string) {
           allowPreviouslyConvertedIds: [steer.steerId],
           bindRecoverySource: false,
         });
+        /* The run may have finished while the cancel was in flight, spending
+           the drain's one-shot signal on a queue this row was not in yet. */
+        rewakeDrain(conversationId);
       }
       return outcome;
     },
-    [conversationId, convertSteersToQueued, reclaim],
+    [conversationId, convertSteersToQueued, reclaim, rewakeDrain],
   );
 }
 
@@ -122,7 +126,7 @@ export interface SteerRehomeOptions {
 }
 
 export function useSteerRehome(conversationId: string) {
-  const { restore } = useComposerRestoreHost();
+  const { restore, rewakeDrain } = useComposerRestoreHost();
   const convertSteersToQueued = useSteerConvert();
   const dropPendingSteer = useRecoilCallback(
     ({ set }) =>
@@ -154,9 +158,12 @@ export function useSteerRehome(conversationId: string) {
         bindRecoverySource: false,
         ...(options?.rejectedByServer === true && { needsExplicitSend: true }),
       });
+      if (options?.rejectedByServer !== true) {
+        rewakeDrain(conversationId);
+      }
       return 'queue';
     },
-    [conversationId, convertSteersToQueued, dropPendingSteer, restore],
+    [conversationId, convertSteersToQueued, dropPendingSteer, restore, rewakeDrain],
   );
 }
 

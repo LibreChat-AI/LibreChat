@@ -103,6 +103,40 @@ describe('useSteerMoveToQueue', () => {
     expect(result.current.queue).toEqual([original]);
   });
 
+  /* The run can finish while the cancel is in flight; its drain signal was
+     spent on a queue this row was not in yet, so the conversion re-posts it. */
+  it('re-arms the run-end drain after converting a reclaimed steer', async () => {
+    mockCancelAsync.mockResolvedValue({ removed: true });
+    const rewake = jest.fn();
+    const steer = pending();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), 100);
+          set(store.pendingSteersByConvoId(CONVO_ID), [steer]);
+        }}
+      >
+        <ComposerRestoreProvider>
+          <RewakePublisher rewake={rewake}>{children}</RewakePublisher>
+        </ComposerRestoreProvider>
+      </RecoilRoot>
+    );
+    const { result } = renderHook(
+      () => ({
+        moveToQueue: useSteerMoveToQueue(CONVO_ID),
+        queue: useRecoilValue(store.queuedMessagesByConvoId(CONVO_ID)),
+      }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.moveToQueue(steer);
+    });
+
+    expect(result.current.queue).toHaveLength(1);
+    expect(rewake).toHaveBeenCalledWith(CONVO_ID);
+  });
+
   it('leaves an already applied steer under server ownership', async () => {
     mockCancelAsync.mockResolvedValue({ removed: false });
     const steer = pending();
@@ -118,6 +152,22 @@ describe('useSteerMoveToQueue', () => {
     expect(result.current.queue).toEqual([]);
   });
 });
+
+/** Publishes a drain re-arm the way `ChatForm` does. */
+function RewakePublisher({
+  rewake,
+  children,
+}: {
+  rewake: (conversationId: string) => void;
+  children: React.ReactNode;
+}) {
+  const { publishRewake } = useComposerRestoreHost();
+  React.useEffect(() => {
+    publishRewake(rewake);
+    return () => publishRewake(null);
+  }, [publishRewake, rewake]);
+  return <>{children}</>;
+}
 
 /** Publishes a composer restore the way `ChatForm` does, so the cancel path
  *  runs against the real registry rather than a mocked module. */
@@ -136,7 +186,11 @@ function Publisher({
   return <>{children}</>;
 }
 
-function setupCancel(steer: PendingSteer, restore: RestoreToComposer) {
+function setupCancel(
+  steer: PendingSteer,
+  restore: RestoreToComposer,
+  rewake: (conversationId: string) => void = () => {},
+) {
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <RecoilRoot
       initializeState={({ set }) => {
@@ -145,7 +199,9 @@ function setupCancel(steer: PendingSteer, restore: RestoreToComposer) {
       }}
     >
       <ComposerRestoreProvider>
-        <Publisher restore={restore}>{children}</Publisher>
+        <RewakePublisher rewake={rewake}>
+          <Publisher restore={restore}>{children}</Publisher>
+        </RewakePublisher>
       </ComposerRestoreProvider>
     </RecoilRoot>
   );
@@ -194,13 +250,15 @@ describe('useSteerCancel', () => {
   it('queues the whole steer when the composer refuses it', async () => {
     mockCancelAsync.mockResolvedValue({ removed: true });
     const restore = jest.fn().mockReturnValue(false);
+    const rewake = jest.fn();
     const steer = pending();
-    const { result } = setupCancel(steer, restore);
+    const { result } = setupCancel(steer, restore, rewake);
 
     await act(async () => {
       await result.current.cancel(steer);
     });
 
+    expect(rewake).toHaveBeenCalledWith(CONVO_ID);
     expect(result.current.chips).toEqual([]);
     expect(result.current.queue).toEqual([
       {
