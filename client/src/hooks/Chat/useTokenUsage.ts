@@ -313,10 +313,15 @@ export default function useTokenUsage({
         effective.remainingContextTokens != null
           ? normalizeTokenCount(effective.remainingContextTokens)
           : null;
+      const breakdownUsed = instructionTokens + normalizeTokenCount(breakdown.messageTokens);
+      /** A remaining count measured against a smaller instruction total than the
+       *  snapshot publishes would put used below the instruction share the
+       *  breakdown subtracts, hiding the Messages row. Used never undercuts the
+       *  parts the breakdown itself reports. */
       const baseUsed =
         remainingContextTokens != null
-          ? maxTokens - remainingContextTokens
-          : instructionTokens + normalizeTokenCount(breakdown.messageTokens);
+          ? Math.max(maxTokens - remainingContextTokens, breakdownUsed)
+          : breakdownUsed;
       /** The snapshot is pre-invoke: in-flight output rides on `liveTokens` (0
        *  unless streaming this branch), the last call's finalized output on
        *  `completedOutputTokens`, and retained tool results on

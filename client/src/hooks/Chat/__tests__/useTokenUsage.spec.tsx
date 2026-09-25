@@ -138,6 +138,28 @@ describe('useTokenUsage — post-snapshot output', () => {
     expect(result.current.runwayTurns).toBe(2);
   });
 
+  it('never reports less than the instructions and messages the snapshot breaks down', () => {
+    /** Remaining was measured as if only the 2 message tokens were sent, while the
+     *  same snapshot publishes a 57-token system prompt: 7 used would leave the
+     *  breakdown a negative message share. */
+    const inconsistent = {
+      ...tailSnapshot,
+      remainingContextTokens: 199998,
+      completedOutputTokens: 5,
+      breakdown: { maxContextTokens: 200000, instructionTokens: 57, messageTokens: 2 },
+    } as ContextSnapshot;
+    const { result } = renderTokenUsage(undefined, { snapshot: inconsistent });
+
+    expect(result.current.usedTokens).toBe(57 + 2 + 5);
+  });
+
+  it('keeps the remaining-based count when it exceeds the breakdown', () => {
+    const { result } = renderTokenUsage();
+
+    /** 195000 pre-invoke used covers content the 14000-token breakdown omits. */
+    expect(result.current.usedTokens).toBe(197000);
+  });
+
   it('counts the finalized output in what a summarization could reclaim', () => {
     const { result } = renderTokenUsage();
 
