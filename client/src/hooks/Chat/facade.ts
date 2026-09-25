@@ -1,8 +1,10 @@
 import { useCallback, useMemo } from 'react';
 import { ContentTypes, fromUIMessage, toUIMessage } from 'librechat-data-provider';
-import type { TMessage, UIMessage } from 'librechat-data-provider';
+import type { TAttachment, TMessage, UIMessage, UIMappingOptions } from 'librechat-data-provider';
 import type { TAskFunction } from '~/common';
+import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
+import { mapAttachments } from '~/utils/map';
 
 /** AI SDK `ChatStatus`. */
 export type ChatStatus = 'submitted' | 'streaming' | 'ready' | 'error';
@@ -28,6 +30,32 @@ export type UseChatHelpers = {
   /** Writes messages back to the cache, keeping the stored fields the UI view omits. */
   setMessages: (messages: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => void;
 };
+
+const attachmentsByMessage = new WeakMap<TMessage, Record<string, TAttachment[] | undefined>>();
+
+/**
+ * The client's own tool outcome rules (`getToolMeta`: memory failure prose, background task
+ * status attachments), handed to the parts mapping, which reads only markers stored on the call.
+ */
+const resolveToolFailure: NonNullable<UIMappingOptions['resolveToolFailure']> = (
+  toolCall,
+  message,
+) => {
+  let byToolCall = message ? attachmentsByMessage.get(message) : undefined;
+  if (message && !byToolCall) {
+    byToolCall = mapAttachments(message.attachments ?? []);
+    attachmentsByMessage.set(message, byToolCall);
+  }
+  const meta = getToolMeta({ type: ContentTypes.TOOL_CALL, tool_call: toolCall }, byToolCall);
+  if (meta?.cancelled) {
+    return 'cancelled';
+  }
+  return meta?.failed ? 'failed' : undefined;
+};
+
+const mappingOptions: UIMappingOptions = { resolveToolFailure };
+
+const toView = (message: TMessage) => toUIMessage(message, mappingOptions);
 
 const hasStreamed = (message: TMessage) =>
   (message.content?.length ?? 0) > 0 || (message.text?.length ?? 0) > 0;
@@ -79,7 +107,7 @@ export function useChat(): UseChatHelpers {
     const views: UIMessage[] = [];
     let latestMessage: TMessage | undefined;
     for (const message of stored ?? []) {
-      views.push(toUIMessage(message));
+      views.push(toView(message));
       if (message.messageId === latestMessageId) {
         latestMessage = message;
       }
@@ -114,7 +142,7 @@ export function useChat(): UseChatHelpers {
   const setMessages = useCallback(
     (update: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => {
       const current = getMessages() ?? [];
-      const next = typeof update === 'function' ? update(current.map(toUIMessage)) : update;
+      const next = typeof update === 'function' ? update(current.map(toView)) : update;
       const byId = new Map(current.map((message) => [message.messageId, message]));
       setStoredMessages(next.map((message) => fromUIMessage(message, byId.get(message.id))));
     },
