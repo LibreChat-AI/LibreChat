@@ -179,27 +179,9 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/Artifacts.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/AskUserQuestionPopover.tsx": {
     "shadcn/no-restyle": {
       "count": 13
-    }
-  },
-  "client/src/components/Chat/Input/AudioRecorder.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    }
-  },
-  "client/src/components/Chat/Input/BadgeRow.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
     }
   },
   "client/src/components/Chat/Input/ChatForm.tsx": {
@@ -221,11 +203,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/CodeInterpreter.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/CodeWorkspaceMenu.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -233,21 +210,6 @@
   },
   "client/src/components/Chat/Input/ConversationStarters.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/EditBadges.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/FileSearch.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/Files/AttachFileMenu.tsx": {
-    "shadcn/no-restyle": {
       "count": 2
     }
   },
@@ -261,7 +223,7 @@
   },
   "client/src/components/Chat/Input/Files/FileRow.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 10
+      "count": 7
     }
   },
   "client/src/components/Chat/Input/Files/FileUpload.tsx": {
@@ -321,32 +283,9 @@
       "count": 9
     }
   },
-  "client/src/components/Chat/Input/InFlightSteers.tsx": {
-    "shadcn/no-unknown-classes": {
-      "count": 1
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/MCPConfigDialog.tsx": {
     "shadcn/no-restyle": {
       "count": 17
-    }
-  },
-  "client/src/components/Chat/Input/MCPSelect.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/MCPSubMenu.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/Memory.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Input/Mention.tsx": {
@@ -360,11 +299,6 @@
     },
     "shadcn/no-restyle": {
       "count": 5
-    }
-  },
-  "client/src/components/Chat/Input/PendingSteerChips.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
     }
   },
   "client/src/components/Chat/Input/PopoverButtons.tsx": {
@@ -385,22 +319,9 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/Skills.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/SkillsCommand.tsx": {
     "shadcn/no-restyle": {
       "count": 6
-    }
-  },
-  "client/src/components/Chat/Input/SteerMenu.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/require-static-classes": {
-      "count": 3
     }
   },
   "client/src/components/Chat/Input/StreamAudio.tsx": {
@@ -423,16 +344,6 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/ToolsDropdown.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/WebSearch.tsx": {
-    "shadcn/require-static-classes": {
       "count": 1
     }
   },
@@ -918,7 +829,7 @@
   },
   "client/src/components/Chat/Messages/MessagesView.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 3
+      "count": 2
     }
   },
   "client/src/components/Chat/Messages/MinimalHoverButtons.tsx": {
@@ -2035,11 +1946,6 @@
   "client/src/components/SidePanel/Builder/Knowledge.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Files/PanelColumns.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
     }
   },
   "client/src/components/SidePanel/Files/PanelTable.tsx": {
