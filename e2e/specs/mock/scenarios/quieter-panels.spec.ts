@@ -352,8 +352,8 @@ test.describe('quieter management panels', () => {
     }));
     await page.route('**/api/files', (route) => route.fulfill({ json: files }));
     await page.goto('/c/new');
-    await openPanel(page, 'files', 'Attach Files');
-    await page.getByRole('button', { name: 'Manage Files', exact: true }).click();
+    await page.getByTestId('nav-user').click();
+    await page.getByRole('menu').getByRole('menuitem', { name: 'My Files', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'My Files' });
     const header = dialog.locator('thead');
     await expect(header).toBeVisible();
