@@ -423,6 +423,58 @@ describe('applyRequestReasoningOverride', () => {
     expect(req).not.toHaveProperty('reasoningOverrideBase');
   });
 
+  /* A durable queued turn carries the override it was validated with at
+     enqueue time; the agent may have changed while it waited. Refusing would
+     dead-letter the turn, so its admission degrades to defaults like a resume. */
+  it('strips an override a queued turn admission no longer supports instead of refusing it', async () => {
+    const base = request();
+    const req = {
+      _isAgentTrigger: true,
+      ...base,
+      body: {
+        ...base.body,
+        reasoningOverride: { key: 'effort', value: AnthropicEffort.high },
+        agentContinuationAdmission: {
+          source: 'agent-queued-turn',
+          sourceId: 'queued-turn-1',
+          claimId: 'claim-1',
+          claimBy: 'worker-1',
+        },
+      },
+    };
+    const before = req.body.endpointOption;
+    const parameters = { ...before.model_parameters };
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...input,
+        reasoningOverride: req.body.reasoningOverride,
+      }),
+    ).resolves.toBe(true);
+
+    expect(req.body.reasoningOverride).toBeUndefined();
+    expect(req.body.endpointOption.model_parameters).toEqual(parameters);
+  });
+
+  it('still refuses an unsupported override on a trigger request that is not a queued turn admission', async () => {
+    const base = request();
+    const req = {
+      _isAgentTrigger: true,
+      ...base,
+      body: {
+        ...base.body,
+        reasoningOverride: { key: 'effort', value: AnthropicEffort.high },
+      },
+    };
+
+    await expect(
+      applyRequestReasoningOverride(req, {
+        ...input,
+        reasoningOverride: req.body.reasoningOverride,
+      }),
+    ).resolves.toBe(false);
+  });
+
   /* The resume replays the paused turn's parameters with the override already
      applied, so degrading has to invert that application from the replayed
      base: the pre-override value returns and the thinking flag the override

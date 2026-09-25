@@ -6,6 +6,7 @@ import {
   type TEndpointsConfig,
   type TReasoningOverride,
 } from 'librechat-data-provider';
+import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
 
 export type ReasoningOverrideRequest =
   | { ok: true; reasoningOverride?: TReasoningOverride }
@@ -169,13 +170,20 @@ export type RequestReasoningOverrideInput = Omit<
  * A replayed resume override is trusted server state, not fresh client input:
  * when it no longer validates (the endpoint's reasoning config changed between
  * pause and resume) it is stripped and the resume proceeds on defaults, because
- * rejecting would make the paused checkpoint permanently unresumable.
+ * rejecting would make the paused checkpoint permanently unresumable. A durable
+ * queued turn's admission is the same: the override was validated when it was
+ * queued, and rejecting it after the agent changed would dead-letter the turn.
  */
 export async function applyRequestReasoningOverride<T extends EndpointOption>(
   req: {
     reasoningOverrideBase?: ReasoningOverrideBase;
     resumeReplayed?: boolean;
-    body: { endpointOption: T; reasoningOverride?: unknown };
+    _isAgentTrigger?: boolean;
+    body: {
+      endpointOption: T;
+      reasoningOverride?: unknown;
+      agentContinuationAdmission?: AgentContinuationAdmissionSource;
+    };
   },
   { reasoningOverride: raw, ...input }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
@@ -211,9 +219,12 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
     };
     return true;
   };
+  const replayed =
+    req.resumeReplayed === true ||
+    (req._isAgentTrigger === true && req.body.agentContinuationAdmission != null);
   const request = parseReasoningOverrideRequest(raw);
   if (!request.ok) {
-    return req.resumeReplayed === true ? stripReplayedOverride() : false;
+    return replayed ? stripReplayedOverride() : false;
   }
   if (request.reasoningOverride == null) {
     return true;
@@ -225,7 +236,7 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
     reasoningOverrideBase: req.reasoningOverrideBase,
   });
   if (!resolution.ok) {
-    return req.resumeReplayed === true ? stripReplayedOverride() : false;
+    return replayed ? stripReplayedOverride() : false;
   }
   req.reasoningOverrideBase = resolution.reasoningOverrideBase;
   req.body.endpointOption = {
