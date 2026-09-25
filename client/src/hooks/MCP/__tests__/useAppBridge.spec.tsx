@@ -1109,7 +1109,12 @@ describe('useAppBridge', () => {
       expect(mockAsk).toHaveBeenCalledTimes(1);
       expect(mockAsk).toHaveBeenCalledWith(
         { text: 'approved\nmessage' },
-        { overrideFiles: [], overrideManualSkills: [], overrideQuotes: [] },
+        {
+          overrideFiles: [],
+          overrideManualSkills: [],
+          overrideQuotes: [],
+          overrideReasoning: null,
+        },
       );
       view.unmount();
     });

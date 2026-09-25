@@ -60,7 +60,15 @@ export default function ToolCallLimitNotice({ message }: { message: TMessage }) 
    * staged in the composer. The agent and MCP server selection remains in scope.
    */
   const recover = (text: string) =>
-    chat?.ask({ text }, { overrideFiles: [], overrideManualSkills: [], overrideQuotes: [] });
+    chat?.ask(
+      { text },
+      {
+        overrideFiles: [],
+        overrideManualSkills: [],
+        overrideQuotes: [],
+        overrideReasoning: null,
+      },
+    );
 
   return (
     <div

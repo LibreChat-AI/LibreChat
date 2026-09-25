@@ -75,6 +75,7 @@ describe('ToolCallLimitNotice', () => {
         overrideFiles: [],
         overrideManualSkills: [],
         overrideQuotes: [],
+        overrideReasoning: null,
       },
     );
   });
@@ -93,6 +94,7 @@ describe('ToolCallLimitNotice', () => {
         overrideFiles: [],
         overrideManualSkills: [],
         overrideQuotes: [],
+        overrideReasoning: null,
       },
     );
   });

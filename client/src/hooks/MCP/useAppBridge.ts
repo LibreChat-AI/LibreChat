@@ -365,10 +365,16 @@ export function useAppBridge({
           );
           if (!allowed || actionSignal.aborted || cancelled) return { isError: true };
           // The selected agent and MCP servers belong to the conversation. Only the
-          // next composer's staged files, manual skill picks and quotes are excluded.
+          // next composer's staged files, manual skill picks, quotes and reasoning
+          // level are excluded.
           const accepted = askRef.current(
             { text },
-            { overrideFiles: [], overrideManualSkills: [], overrideQuotes: [] },
+            {
+              overrideFiles: [],
+              overrideManualSkills: [],
+              overrideQuotes: [],
+              overrideReasoning: null,
+            },
           );
           if (accepted === false) {
             return { isError: true };
