@@ -655,7 +655,14 @@ export function useShortcutActions(): ShortcutAction[] {
       '[data-testid="stop-generation-button"]',
     );
     if (focusedPane == null) {
-      return clickElement('[data-testid="stop-generation-button"]');
+      /** A run with a drafted follow-up keeps its stop control mounted but
+       *  hidden behind the send button, and stop must still reach it. */
+      return (
+        clickElement('[data-testid="stop-generation-button"]') ||
+        Array.from(
+          document.querySelectorAll<HTMLElement>('[data-testid="stop-generation-button"]'),
+        ).some(clickTarget)
+      );
     }
     return scoped != null ? clickTarget(scoped) : false;
   }, []);

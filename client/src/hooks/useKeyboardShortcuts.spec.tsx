@@ -635,6 +635,26 @@ describe('stop generating shortcut', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  /* A drafted follow-up gives the send button the composer slot during a run,
+     leaving the stop control mounted but hidden; with focus in a dialog there
+     is no focused pane, and stop must still reach that control. */
+  it('clicks a hidden stop control when no visible one exists and no pane is focused', () => {
+    renderHarness();
+    const hiddenClick = jest.fn();
+    const hidden = document.createElement('button');
+    hidden.dataset.testid = 'stop-generation-button';
+    hidden.hidden = true;
+    hidden.addEventListener('click', hiddenClick);
+    const dialogInput = document.createElement('input');
+    document.body.append(hidden, dialogInput);
+    dialogInput.focus();
+
+    const event = dispatchKey({ key: 'x', ctrlKey: true, shiftKey: true }, dialogInput);
+
+    expect(hiddenClick).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('uses the visible model selector when a hidden selector is mounted first', () => {
     renderHarness();
     const hiddenClick = jest.fn();
