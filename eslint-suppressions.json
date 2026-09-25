@@ -1948,17 +1948,6 @@
       "count": 1
     }
   },
-  "client/src/components/SidePanel/Files/PanelTable.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 3
-    },
-    "shadcn/no-restyle": {
-      "count": 6
-    }
-  },
   "client/src/components/SidePanel/MCPBuilder/MCPBuilderPanel.tsx": {
     "shadcn/no-restyle": {
       "count": 2

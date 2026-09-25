@@ -1323,7 +1323,6 @@
   "com_ui_conversation_load_error": "Could not load this chat. Please try again.",
   "com_ui_conversation_not_found": "Conversation not found",
   "com_ui_conversation_summarized": "Conversation summarized",
-  "com_ui_conversations": "conversations",
   "com_ui_convert_to_queue": "Queue for after the response",
   "com_ui_convo_archived": "Conversation archived",
   "com_ui_convo_delete_error": "Failed to delete conversation",
