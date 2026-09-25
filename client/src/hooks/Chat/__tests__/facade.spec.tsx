@@ -1,7 +1,8 @@
 import React from 'react';
-import { renderHook } from '@testing-library/react';
-import { ContentTypes } from 'librechat-data-provider';
-import type { TConversation, TMessage } from 'librechat-data-provider';
+import { act, renderHook } from '@testing-library/react';
+import { QueryKeys, ContentTypes } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import { ChatContext } from '~/Providers/ChatContext';
 import { useChat } from '../facade';
@@ -13,6 +14,8 @@ const userMessage: TMessage = {
   isCreatedByUser: true,
   text: 'Hi',
 };
+
+const initialMessages = [userMessage];
 
 const response = (overrides: Partial<TMessage> = {}): TMessage => ({
   messageId: 'response-1',
@@ -35,7 +38,7 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     setPreset: noop,
     optionSettings: {},
     setOptionSettings: noop,
-    getMessages: jest.fn(() => [userMessage]),
+    getMessages: jest.fn(() => initialMessages),
     setMessages: jest.fn(),
     setSiblingIdx: noop,
     latestMessageId: 'user-1',
@@ -64,11 +67,15 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
 /** Renders `useChat` under the real `ChatContext`; `rerender` swaps the contract value. */
 const renderChat = (initial: ChatContract) => {
   let contract = initial;
+  const queryClient = new QueryClient();
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+    <QueryClientProvider client={queryClient}>
+      <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+    </QueryClientProvider>
   );
   const view = renderHook(() => useChat(), { wrapper });
   return {
+    queryClient,
     ...view,
     update: (next: ChatContract) => {
       contract = next;
@@ -124,6 +131,85 @@ describe('useChat', () => {
       type: 'tool-set_memory',
       state: 'output-error',
     });
+  });
+
+  it('stays submitted while the response holds only placeholder parts', () => {
+    const placeholder = response({
+      content: [
+        { type: ContentTypes.TEXT, text: '' },
+        { type: '' } as unknown as TMessageContentParts,
+      ],
+    });
+    const { result } = renderChat(turn([userMessage, placeholder], true));
+
+    expect(result.current.status).toBe('submitted');
+  });
+
+  it('reads the error text of an Assistants error part', () => {
+    const failed = response({
+      content: [{ type: ContentTypes.ERROR, text: { value: 'Run failed' } }],
+    });
+    const { result } = renderChat(turn([userMessage, failed], false));
+
+    expect(result.current.error?.message).toBe('Run failed');
+  });
+
+  it('re-reads messages when the message cache is written', () => {
+    let messages: TMessage[] = [userMessage, response({ text: 'Old' })];
+    const contract = createContract({
+      getMessages: jest.fn(() => messages),
+      latestMessageId: 'response-1',
+    });
+    const { result, queryClient } = renderChat(contract);
+    (contract.setMessages as jest.Mock).mockImplementation((next: TMessage[]) => {
+      messages = next;
+      queryClient.setQueryData([QueryKeys.messages, 'convo-1'], next);
+    });
+
+    act(() => {
+      result.current.setMessages((views) => [
+        { ...views[0], parts: [{ type: 'text', text: 'Edited' }] },
+        views[1],
+      ]);
+    });
+
+    expect(result.current.messages[0].parts).toEqual([{ type: 'text', text: 'Edited' }]);
+  });
+
+  it('keeps unchanged message views across a streamed update', () => {
+    const first = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    const { result, update } = renderChat(turn([userMessage, first], true));
+    const userView = result.current.messages[0];
+
+    update(
+      turn(
+        [userMessage, response({ content: [{ type: ContentTypes.TEXT, text: 'Hello' }] })],
+        true,
+      ),
+    );
+
+    expect(result.current.messages[0]).toBe(userView);
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
+  });
+
+  it('joins an inserted message to the conversation under the one before it', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      { id: 'note-1', role: 'assistant', parts: [{ type: 'text', text: 'Note' }] },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      userMessage,
+      expect.objectContaining({
+        messageId: 'note-1',
+        conversationId: 'convo-1',
+        parentMessageId: 'user-1',
+        content: [{ type: ContentTypes.TEXT, text: 'Note' }],
+      }),
+    ]);
   });
 
   it('walks submit, stream, and finish', () => {
