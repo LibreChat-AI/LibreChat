@@ -242,6 +242,18 @@ export interface RunDiscoverySnapshot {
   getRunMessages?: () => BaseMessage[] | undefined;
 }
 
+/**
+ * Joins additional instructions with per-request tool context. The dynamic part
+ * (e.g. the current date/time) goes last so that provider-side prefix caches
+ * can reuse the static part, such as the artifacts prompt, across requests.
+ */
+export function buildAdditionalInstructions(
+  additionalInstructions: string | null | undefined,
+  dynamicToolInstructions: string,
+): string {
+  return [additionalInstructions ?? '', dynamicToolInstructions].join('\n').trim();
+}
+
 /** Reads canonical run discovery state, with best-effort history parsing for older releases. */
 export function getRunDiscoveredTools(run: RunDiscoverySnapshot): string[] {
   if (typeof run.getDiscoveredTools === 'function') {
@@ -2498,9 +2510,10 @@ export async function createRun({
 
     const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
 
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
-      .join('\n')
-      .trim();
+    const additionalInstructions = buildAdditionalInstructions(
+      agent.additional_instructions,
+      dynamicToolInstructions,
+    );
 
     /** Resolves issues with new OpenAI usage field */
     if (
