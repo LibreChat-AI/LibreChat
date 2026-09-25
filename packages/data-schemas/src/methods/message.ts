@@ -1,10 +1,10 @@
+import { Types, type DeleteResult, type FilterQuery, type Model, type UpdateQuery } from 'mongoose';
 import {
   backgroundResultMetadata,
   HITL_MESSAGE_FILTER_FIELDS,
   isForcedTemporaryRetention,
   RetentionMode,
 } from 'librechat-data-provider';
-import type { DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
@@ -13,6 +13,7 @@ import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { isValidObjectIdString } from '~/utils/objectId';
 import { tenantStorage } from '~/config/tenantContext';
 import logger from '~/config/winston';
 
@@ -947,6 +948,8 @@ export interface MessageMethods {
       sortOrder?: 1 | -1;
       limit?: number;
       cursor?: string | null;
+      /** Projection for the page, e.g. `CLIENT_MESSAGE_SELECT` for client-facing reads. */
+      select?: string;
     },
   ): Promise<{ messages: IMessage[]; nextCursor: string | null }>;
   searchMessages(
@@ -1013,6 +1016,98 @@ type SteplessToolCallFallback = {
   content: NonNullable<IMessage['content']>;
   hasResultClaim: boolean;
 };
+
+type MessagesCursor = { primary: string | null; id: string };
+
+/**
+ * Message list cursors carry the sort value and the `_id` that broke its tie,
+ * base64-encoded so callers treat them as opaque. Older plain-value cursors
+ * decode to null here and fall back to a single-field boundary.
+ */
+function decodeMessagesCursor(pageParam: string): MessagesCursor | 'invalid' | null {
+  try {
+    const decoded = JSON.parse(Buffer.from(pageParam, 'base64').toString('utf8')) as {
+      primary?: unknown;
+      id?: unknown;
+    };
+    if (decoded && typeof decoded === 'object' && ('primary' in decoded || 'id' in decoded)) {
+      const hasPrimary = typeof decoded.primary === 'string' || decoded.primary === null;
+      if (hasPrimary && typeof decoded.id === 'string' && isValidObjectIdString(decoded.id)) {
+        return { primary: decoded.primary as string | null, id: decoded.id };
+      }
+      return 'invalid';
+    }
+  } catch {
+    /* not a composite cursor */
+  }
+  return null;
+}
+
+function encodeMessagesCursor(
+  message: IMessage & { _id?: Types.ObjectId },
+  sortField: string,
+  dateSortField: boolean,
+): string {
+  const raw =
+    sortField === 'createdAt' ? message.createdAt : message[sortField as keyof IMessage];
+  let primary: string | null = null;
+  if (raw instanceof Date) {
+    primary = raw.toISOString();
+  } else if (raw != null) {
+    if (dateSortField) {
+      const asDate = new Date(raw as string | number | Date);
+      primary = Number.isNaN(asDate.getTime()) ? String(raw) : asDate.toISOString();
+    } else {
+      primary = String(raw);
+    }
+  }
+  return Buffer.from(JSON.stringify({ primary, id: String(message._id) })).toString('base64');
+}
+
+function buildMessagesCursorFilter(
+  cursor: string,
+  sortField: string,
+  op: '$lt' | '$gt',
+  dateSortField: boolean,
+): FilterQuery<IMessage> | null {
+  const decoded = decodeMessagesCursor(cursor);
+  if (decoded === 'invalid') {
+    logger.warn('[getMessagesByCursor] Invalid cursor format, starting from beginning');
+    return null;
+  }
+
+  if (decoded) {
+    const boundaryId = { [op]: new Types.ObjectId(decoded.id) };
+    if (decoded.primary === null) {
+      return {
+        $or: [{ [sortField]: null, _id: boundaryId }],
+      } as FilterQuery<IMessage>;
+    }
+    const primaryValue = dateSortField ? new Date(decoded.primary) : decoded.primary;
+    if (dateSortField && Number.isNaN((primaryValue as Date).getTime())) {
+      logger.warn('[getMessagesByCursor] Invalid cursor format, starting from beginning');
+      return null;
+    }
+    return {
+      $or: [
+        { [sortField]: { [op]: primaryValue } },
+        { [sortField]: primaryValue, _id: boundaryId },
+      ],
+    } as FilterQuery<IMessage>;
+  }
+
+  /* Legacy scalar cursor: single-field comparison. */
+  if (dateSortField) {
+    const asDate = new Date(cursor);
+    if (Number.isNaN(asDate.getTime())) {
+      logger.warn('[getMessagesByCursor] Invalid cursor format, starting from beginning');
+      return null;
+    }
+    return { [sortField]: { [op]: asDate } } as FilterQuery<IMessage>;
+  }
+
+  return { [sortField]: { [op]: cursor } } as FilterQuery<IMessage>;
+}
 
 export interface MessageDependencies {
   /** Read from deployment config, never from a message/request or a principal override. */
@@ -4232,6 +4327,11 @@ export function createMessageMethods(
 
   /**
    * Retrieves paginated messages with custom sorting and cursor support.
+   *
+   * Cursors are composite `{ primary, id }` values (base64 JSON) so rows that
+   * share the sort-field timestamp are not skipped at a page boundary. Plain
+   * scalar cursors from older clients still resume with a single-field
+   * comparison when they parse cleanly.
    */
   async function getMessagesByCursor(
     filter: FilterQuery<IMessage>,
@@ -4246,28 +4346,49 @@ export function createMessageMethods(
   ) {
     const Message = mongoose.models.Message as Model<IMessage>;
     const { sortField = 'createdAt', sortOrder = -1, limit = 25, cursor, select } = options;
-    const queryFilter = { ...filter };
+    const descending = sortOrder !== 1;
+    const op = descending ? '$lt' : '$gt';
+    const dateSortField = sortField === 'createdAt' || sortField === 'updatedAt';
+
+    let queryFilter: FilterQuery<IMessage> = { ...filter };
     if (cursor) {
-      queryFilter[sortField] = sortOrder === 1 ? { $gt: cursor } : { $lt: cursor };
+      const cursorFilter = buildMessagesCursorFilter(cursor, sortField, op, dateSortField);
+      if (cursorFilter) {
+        queryFilter = { $and: [filter, cursorFilter] } as FilterQuery<IMessage>;
+      }
     }
+
+    /* CLIENT_MESSAGE_SELECT excludes `_id`, but the composite cursor needs it
+       as the tie-breaker. Fetch with `_id`, then strip it before returning. */
+    const stripsId =
+      typeof select === 'string' && /(^|\s)-_id(\s|$)/.test(select);
+    const querySelect = stripsId
+      ? select.replace(/(^|\s)-_id(\s|$)/g, ' ').replace(/\s+/g, ' ').trim()
+      : select;
+
     const query = Message.find(queryFilter);
-    if (select) {
-      query.select(select);
+    if (querySelect) {
+      query.select(querySelect);
     }
     const messages = await query
-      .sort({ [sortField]: sortOrder })
+      .sort({ [sortField]: sortOrder, _id: sortOrder })
       .limit(limit + 1)
-      .lean<IMessage[]>();
+      .lean<(IMessage & { _id?: Types.ObjectId })[]>();
 
     let nextCursor: string | null = null;
     if (messages.length > limit) {
       messages.pop();
       const last = messages[messages.length - 1];
-      const cursorValue =
-        sortField === 'createdAt' ? last.createdAt : last[sortField as keyof IMessage];
-      nextCursor = String(cursorValue ?? '');
+      nextCursor = encodeMessagesCursor(last, sortField, dateSortField);
     }
-    return { messages, nextCursor };
+
+    if (stripsId) {
+      for (const message of messages) {
+        delete (message as { _id?: Types.ObjectId })._id;
+      }
+    }
+
+    return { messages: messages as IMessage[], nextCursor };
   }
 
   /**
