@@ -255,7 +255,9 @@ test.describe('unseen replies', () => {
          and on the mobile project the drawer's scrim sits over it and intercepts the pointer. */
       await page.getByRole('menuitem', { name: 'Mark as unread' }).dispatchEvent('click');
       await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible();
-      await expect.poll(() => titleCount(page)).toBe(baseline + 1);
+      /* At least one more, not exactly one: the other projects share this user
+       * and seed unseen conversations of their own while this one runs. */
+      await expect.poll(() => titleCount(page)).toBeGreaterThanOrEqual(baseline + 1);
 
       const token = await getAccessToken(page);
       const neverReplied = conversationId();
