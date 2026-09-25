@@ -102,6 +102,30 @@ describe('useChat', () => {
     expect(result.current.error).toBeUndefined();
   });
 
+  it('applies the client tool outcome rules to tool parts', () => {
+    const memoryFailure = response({
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'mem-1',
+            type: 'tool_call',
+            name: 'set_memory',
+            args: '{"key":"bad key","value":"x"}',
+            output: 'Invalid key: bad key',
+            progress: 1,
+          },
+        },
+      ],
+    });
+    const { result } = renderChat(turn([userMessage, memoryFailure], false));
+
+    expect(result.current.messages[1].parts[0]).toMatchObject({
+      type: 'tool-set_memory',
+      state: 'output-error',
+    });
+  });
+
   it('walks submit, stream, and finish', () => {
     const { result, update } = renderChat(turn([userMessage], false));
     expect(result.current.status).toBe('ready');
