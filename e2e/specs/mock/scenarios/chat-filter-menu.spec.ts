@@ -377,4 +377,95 @@ test.describe('chat list properties menu', () => {
       await cleanupUser(user);
     }
   });
+
+  test('a role without bookmark access opens the Filter submenu without asking for bookmarks @scenario:bookmark-filter-quiet-without-access', async ({
+    browser,
+    baseURL,
+  }) => {
+    if (typeof baseURL !== 'string') {
+      throw new Error('baseURL must be configured for mock scenarios');
+    }
+    const suffix = randomUUID().slice(0, 8);
+    const roleName = `E2E_NO_BOOKMARKS_${suffix}`;
+    const user: User = {
+      name: 'No Bookmarks',
+      email: `no-bookmarks-${suffix}@example.com`,
+      password: `Pw-${randomUUID()}`,
+    };
+    await cleanupUser(user);
+    /* A copy of the default role with only bookmarks switched off, held by this test's
+     * own account: the role every other spec signs in with stays untouched. */
+    await withMongo(async (db) => {
+      const fields = await db
+        .collection('roles')
+        .findOne({ name: 'USER' }, { projection: { _id: 0 } });
+      if (!fields) throw new Error('E2E seed: USER role not found');
+      await db.collection('roles').insertOne({
+        ...fields,
+        name: roleName,
+        permissions: {
+          ...(fields.permissions ?? {}),
+          BOOKMARKS: { ...(fields.permissions?.BOOKMARKS ?? {}), USE: false },
+        },
+      });
+    });
+
+    const context = await browser.newContext({ storageState: undefined, baseURL });
+    await context.addInitScript(() => {
+      localStorage.setItem('navVisible', 'true');
+    });
+    const page = await context.newPage();
+    try {
+      const registered = await context.request.post('/api/auth/register', {
+        data: {
+          email: user.email,
+          name: user.name,
+          password: user.password,
+          confirm_password: user.password,
+        },
+      });
+      expect(registered.ok()).toBeTruthy();
+      await withMongo((db) =>
+        db.collection('users').updateOne({ email: user.email }, { $set: { role: roleName } }),
+      );
+
+      /* The page header asks for bookmarks on its own, gated or not, and retries the
+       * refusal; that request predates this menu. Its cycle is let to settle first, so
+       * what is counted afterwards is only what the Filter submenu asks for. */
+      let tagRequests = 0;
+      let lastTagRequestAt = Date.now();
+      page.on('request', (request) => {
+        if (new URL(request.url()).pathname.startsWith('/api/tags')) {
+          tagRequests += 1;
+          lastTagRequestAt = Date.now();
+        }
+      });
+
+      await page.goto('/login', { timeout: 10000 });
+      await page.getByLabel('Email').fill(user.email);
+      await page.getByLabel('Password').fill(user.password);
+      await page.getByTestId('login-button').click();
+      await page.waitForURL(/\/c\/new/, { timeout: 10000 });
+      await showSidebar(page);
+      await expect
+        .poll(() => Date.now() - lastTagRequestAt, { timeout: 30000, intervals: [500] })
+        .toBeGreaterThan(8000);
+      const settledRequests = tagRequests;
+
+      await openFilterSubmenu(page);
+      await expect(page.getByRole('menuitem', { name: /^Updated\b/ })).toBeVisible();
+      await expect(page.getByRole('menuitem', { name: /^Bookmarks\b/ })).toHaveCount(0);
+      await page.getByRole('menuitemcheckbox', { name: 'Has attachments' }).click();
+      await closeMenus(page);
+      await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 1');
+      await openFilterSubmenu(page);
+      await closeMenus(page);
+
+      expect(tagRequests).toBe(settledRequests);
+    } finally {
+      await context.close().catch(() => undefined);
+      await cleanupUser(user);
+      await withMongo((db) => db.collection('roles').deleteOne({ name: roleName }));
+    }
+  });
 });
