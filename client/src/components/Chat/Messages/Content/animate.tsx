@@ -327,38 +327,26 @@ const PREFIX_PROBE_LENGTH = 32;
  * sides of the cut, so a cut inside a part is invisible.
  */
 const MAX_UNSETTLED_LENGTH = 64;
-/** Code units that continue the preceding glyph, for runtimes without `Intl.Segmenter`. */
-const GLYPH_CONTINUATION_REGEX = /^(?:[\uDC00-\uDFFF]|\p{M}|\u200C|\u200D|\uFE0E|\uFE0F)/u;
-
 /**
  * Moves a cut offset in `tail` back to a grapheme-cluster boundary, so emoji
  * modifier, flag, ZWJ and combining sequences stay whole. `tail` starts at the
  * committed settled boundary, which is itself a cluster boundary, and is
  * bounded by the cap, so segmenting it stays proportional to the unsettled text.
+ * Without a grapheme segmenter there is no safe cut, so the cap is not applied.
  */
 function glyphBoundary(tail: string, index: number): number {
-  if (index <= 0) {
+  const segmenter = getGraphemeSegmenter();
+  if (index <= 0 || segmenter == null) {
     return 0;
   }
-  const segmenter = getGraphemeSegmenter();
-  if (segmenter != null) {
-    let boundary = 0;
-    for (const segment of segmenter.segment(tail)) {
-      if (segment.index > index) {
-        break;
-      }
-      boundary = segment.index;
+  let boundary = 0;
+  for (const segment of segmenter.segment(tail)) {
+    if (segment.index > index) {
+      break;
     }
-    return boundary;
+    boundary = segment.index;
   }
-  let cut = index;
-  while (
-    cut > 0 &&
-    (GLYPH_CONTINUATION_REGEX.test(tail[cut] ?? '') || tail[cut - 1] === '\u200D')
-  ) {
-    cut -= 1;
-  }
-  return cut;
+  return boundary;
 }
 
 /** Offset of the last whitespace-delimited word, which appended text can still extend. */

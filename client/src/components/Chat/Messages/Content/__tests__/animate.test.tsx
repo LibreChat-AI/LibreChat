@@ -345,6 +345,32 @@ describe('AnimatedText', () => {
     expect(container.textContent).toBe(text);
   });
 
+  it('does not cut inside a spaceless run when Intl.Segmenter is unavailable', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const segmenter = Intl.Segmenter;
+    const flags = '\u{1F1FA}\u{1F1F8}\u{1F1EF}\u{1F1F5}';
+    try {
+      Object.defineProperty(Intl, 'Segmenter', { value: undefined, configurable: true });
+      let Isolated: typeof AnimatedText = AnimatedText;
+      jest.isolateModules(() => {
+        jest.doMock('react', () => React);
+        Isolated = jest.requireActual<typeof import('../animate')>('../animate').AnimatedText;
+      });
+      let text = `a ${flags.repeat(20)}`;
+      const { container, rerender } = render(<Isolated text={text} />);
+      for (let step = 1; step <= 6; step++) {
+        setTime(settle * step);
+        text += step % 2 === 0 ? 'x' : flags;
+        rerender(<Isolated text={text} />);
+        const settledLength = container.firstChild?.textContent?.length ?? 0;
+        expect(settledLength).toBeLessThanOrEqual(2);
+      }
+      expect(container.textContent).toBe(text);
+    } finally {
+      Object.defineProperty(Intl, 'Segmenter', { value: segmenter, configurable: true });
+    }
+  });
+
   it('re-classifies from the start when the text no longer extends the settled prefix', () => {
     const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
     const { container, rerender } = render(<AnimatedText text="first draft here" />);
