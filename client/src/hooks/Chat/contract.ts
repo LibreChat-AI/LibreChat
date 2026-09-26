@@ -78,7 +78,8 @@ export type ChatSubmissionContract = {
    * at their indices: the stream appends after them or fills an empty one, and never rewrites a
    * seeded part that has content. Compare by position, not identity, since the cache may hold
    * equal copies. `undefined` while no turn is in flight, for a run restored after a reload
-   * (whose response already holds streamed output), and in any chat but the one it was sent from.
+   * (whose response already holds streamed output), and in any chat but the one it was sent from,
+   * which includes a new chat once it takes its saved id (its seed holds only empty placeholders).
    */
   initialResponse: TMessage | undefined;
   /** Sets the in-flight flag for this pane. */
