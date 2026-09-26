@@ -2,6 +2,7 @@ import { useRef, useMemo, useCallback, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, ContentTypes, fromUIMessage, toUIMessage } from 'librechat-data-provider';
 import type { TAttachment, TMessage, UIMessage, UIMappingOptions } from 'librechat-data-provider';
+import type { Query, QueryClient } from '@tanstack/react-query';
 import type { TAskFunction } from '~/common';
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
@@ -165,6 +166,15 @@ export const getChatStatus = (isSubmitting: boolean, latest: TMessage | undefine
   return latest && !latest.isCreatedByUser && isErrorMessage(latest) ? 'error' : 'ready';
 };
 
+/** The message queries caching `stored`; the key `getMessages` reads is not on the contract. */
+const findHolders = (queryClient: QueryClient, stored: TMessage[] | undefined): Query[] =>
+  stored
+    ? queryClient
+        .getQueryCache()
+        .findAll({ queryKey: [QueryKeys.messages] })
+        .filter((query) => query.state.data === stored)
+    : [];
+
 /**
  * AI SDK `useChat`, read and called through `ChatContext`. It holds no state of its own:
  * `messages` is `getMessages()` mapped per message, re-read when the message query cache is
@@ -192,28 +202,27 @@ export function useChat(): UseChatHelpers {
       }),
     [queryClient],
   );
-  const snapshot = useRef<{ writes: number; stored?: TMessage[] }>();
+  const snapshot = useRef<{ writes: number; stored?: TMessage[]; holders: Query[] }>();
   /**
    * A stream frame replaces a response's content on the same object, so structural sharing can
    * keep the cached array. Every write still counts on the queries holding it, so the snapshot is
    * keyed by that store-owned count and by the array: a write to another conversation changes
-   * neither, and one that lands before the listener subscribes is still seen.
+   * neither, and one that lands before the listener subscribes is still seen. The holders are
+   * looked up once per array, not once per frame.
    */
   const readSnapshot = useCallback(() => {
     const stored = getMessages();
-    let writes = 0;
-    if (stored) {
-      for (const query of queryClient.getQueryCache().findAll({ queryKey: [QueryKeys.messages] })) {
-        if (query.state.data === stored) {
-          writes += query.state.dataUpdateCount;
-        }
-      }
-    }
     const current = snapshot.current;
+    const holders =
+      current && current.stored === stored ? current.holders : findHolders(queryClient, stored);
+    let writes = 0;
+    for (const query of holders) {
+      writes += query.state.dataUpdateCount;
+    }
     if (current?.writes === writes && current.stored === stored) {
       return current;
     }
-    snapshot.current = { writes, stored };
+    snapshot.current = { writes, stored, holders };
     return snapshot.current;
   }, [getMessages, queryClient]);
   const cache = useSyncExternalStore(subscribe, readSnapshot, readSnapshot);
