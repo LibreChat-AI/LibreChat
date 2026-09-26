@@ -261,4 +261,49 @@ describe('AnimatedText', () => {
     );
     expect(animated).toEqual(['appended', 'tail']);
   });
+
+  it('collapses the settled prefix into one text node and only renders the tail per word', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const base = Array.from({ length: 40 }, (_, i) => `w${i}`).join(' ');
+    const { container, rerender } = render(<AnimatedText text={base} />);
+
+    setTime(settle);
+    rerender(<AnimatedText text={`${base} next`} />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text={`${base} next one`} />);
+
+    const [first, ...rest] = Array.from(container.childNodes);
+    expect(first.nodeType).toBe(Node.TEXT_NODE);
+    expect(first.textContent).toBe(`${base} `);
+    expect(rest.length).toBeLessThanOrEqual(2);
+    const animated = Array.from(container.querySelectorAll('span[data-lc-fade]')).map((span) =>
+      span.textContent?.trim(),
+    );
+    expect(animated).toEqual(['one']);
+    expect(container.textContent).toBe(`${base} next one`);
+  });
+
+  it('keeps the last word out of the settled prefix so it can keep growing', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const { container, rerender } = render(<AnimatedText text="alpha beta" />);
+    setTime(settle);
+    rerender(<AnimatedText text="alpha beta" />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text="alpha betamax" />);
+
+    expect(container.firstChild?.textContent).toBe('alpha ');
+    expect(container.childNodes).toHaveLength(2);
+    expect(container.textContent).toBe('alpha betamax');
+  });
+
+  it('re-classifies from the start when the text no longer extends the settled prefix', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const { container, rerender } = render(<AnimatedText text="first draft here" />);
+    setTime(settle);
+    rerender(<AnimatedText text="first draft here now" />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text="replaced text" />);
+
+    expect(container.textContent).toBe('replaced text');
+  });
 });
