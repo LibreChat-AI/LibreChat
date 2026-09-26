@@ -1,19 +1,10 @@
-import {
-  memo,
-  useId,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useLayoutEffect,
-} from 'react';
+import { memo, useId, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { Button } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import type { CSSProperties, ReactNode, RefObject } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import {
   useLocalize,
   useExpandCollapse,
@@ -26,6 +17,7 @@ import {
   getLiveActivity,
   getSpanIconNames,
   LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
 } from './live';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
@@ -115,12 +107,8 @@ function PhaseGlyph({ failed }: { failed: boolean }) {
  * from adding descender space, which made a live row 2px taller than the
  * settled row it becomes.
  */
-function LiveLine({ text, previewRef }: { text: string; previewRef?: RefObject<HTMLSpanElement> }) {
-  return (
-    <span ref={previewRef} className="shimmer max-w-full truncate align-top">
-      {text}
-    </span>
-  );
+function LiveLine({ text }: { text: string }) {
+  return <span className="shimmer max-w-full truncate align-top">{text}</span>;
 }
 
 const PhaseLabel = memo(function PhaseLabel({
@@ -131,7 +119,6 @@ const PhaseLabel = memo(function PhaseLabel({
   live = false,
   grow = true,
   lineId,
-  previewRef,
 }: {
   text: string;
   animate: boolean;
@@ -147,7 +134,6 @@ const PhaseLabel = memo(function PhaseLabel({
   grow?: boolean;
   /** Id for the current line, so a live disclosure can be named by it alone. */
   lineId?: string;
-  previewRef?: RefObject<HTMLSpanElement>;
 }) {
   const [lines, setLines] = useState<{
     current: string;
@@ -216,7 +202,7 @@ const PhaseLabel = memo(function PhaseLabel({
           failed && 'text-text-warning',
         )}
       >
-        {live ? <LiveLine text={lines.current} previewRef={previewRef} /> : lines.current}
+        {live ? <LiveLine text={lines.current} /> : lines.current}
       </span>
     </span>
   );
@@ -271,8 +257,8 @@ function SpanGlyph({
  *
  * Its own component so only a live card pays for it — the localization and MCP
  * lookups, and the throttle. `liveParts` is rebuilt on every streamed delta;
- * full reasoning lines and tool activity repaint at most twice a second.
- * Short reasoning sentences stream freely until they fill the available row.
+ * tool activity repaints at most twice a second and a finished reasoning
+ * sentence holds the line for at least a second.
  */
 function LivePhaseHeader({
   parts,
@@ -312,36 +298,12 @@ function LivePhaseHeader({
   const comboCount = showSandboxStartup ? 1 : activity.comboCount;
   const { source } = activity;
   const line = useMemo(() => ({ text, source, comboCount }), [text, source, comboCount]);
-  const previewRef = useRef<HTMLSpanElement>(null);
-  /** The full width the line may occupy, which is the flex track rather than
-   *  the label box: the box shrinks to its text whenever the multiplier rides
-   *  beside it, and measuring that would call every line full. */
-  const lineRowRef = useRef<HTMLSpanElement>(null);
-  const [isPreviewFull, setIsPreviewFull] = useState(false);
+  /** A thought's line is a finished sentence and holds for a beat; everything
+   *  else repaints at the ordinary cadence. */
   const painted = useThrottledValue(
     line,
-    source.startsWith('think:') && !isPreviewFull ? 0 : LIVE_ACTIVITY_THROTTLE_MS,
+    source.startsWith('think:') ? LIVE_REASONING_HOLD_MS : LIVE_ACTIVITY_THROTTLE_MS,
   );
-  const measurePreview = useCallback(() => {
-    const preview = previewRef.current;
-    const width = lineRowRef.current?.clientWidth ?? 0;
-    setIsPreviewFull(width > 0 && (preview?.scrollWidth ?? 0) >= width);
-  }, []);
-
-  /** Measure the painted sentence, not the accumulated reasoning or the next
-   *  queued line: a newly displayed short sentence must fill before it waits. */
-  useLayoutEffect(measurePreview, [measurePreview, painted.text, painted.source]);
-  useLayoutEffect(() => {
-    const preview = previewRef.current;
-    const row = lineRowRef.current;
-    if (!preview || !row || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-    const observer = new ResizeObserver(measurePreview);
-    observer.observe(row);
-    observer.observe(preview);
-    return () => observer.disconnect();
-  }, [measurePreview, painted.source]);
   const iconKey = activity.iconNames.join('|');
   const iconNames = useMemo(() => (iconKey ? iconKey.split('|') : []), [iconKey]);
   const sourceDomains = useMemo(() => getSourceDomains(attachments, SPAN_SITES), [attachments]);
@@ -411,7 +373,7 @@ function LivePhaseHeader({
        *  separate element rather than part of the line's text so the
        *  disclosure's name keeps a space before it and the ticker still
        *  animates one sentence at a time. */}
-      <span className="flex min-w-0 flex-1 items-center gap-1.5" ref={lineRowRef}>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
         <PhaseLabel
           text={painted.text}
           source={painted.source}
@@ -420,7 +382,6 @@ function LivePhaseHeader({
           live
           grow={combo === ''}
           lineId={lineId}
-          previewRef={previewRef}
         />
         {combo !== '' && (
           <span

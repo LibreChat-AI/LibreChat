@@ -148,8 +148,20 @@ function toolCallLine(
 /** Bounds the sentence scan on long reasoning, like the streaming peek. */
 const REASONING_TAIL_CHARS = 1200;
 
+/** How long a completed reasoning sentence holds the line before the next
+ *  one may replace it. Sentences can close a few hundred milliseconds apart;
+ *  a line that swaps that often cannot be read, and the header is there to be
+ *  read, not to keep pace with the stream. */
+export const LIVE_REASONING_HOLD_MS = 1000;
+
 /**
- * A bounded preview of the sentence the thought is currently writing.
+ * The last COMPLETE sentence of a thought: the one that ends at the newest
+ * sentence mark, never the one still being written. A line that grew word by
+ * word read as disjointed fragments ("This is a simple greeting, not") and
+ * was gone before it made sense; a finished sentence says one thing and stays
+ * until the next is finished. Undefined until the first mark lands, so the
+ * header keeps its generic line rather than showing a fragment.
+ *
  * Preview offsets are not activity identities: a sliding window, whitespace
  * or a resumed snapshot can move them without starting a new thought.
  */
@@ -162,18 +174,17 @@ function lastReasoningSentence(reasoning: string): string | undefined {
   if (!tail) {
     return undefined;
   }
+  /** A Latin mark closes a sentence only when followed by space or the end
+   *  of the text, so "3.5" and "v2.1" stay whole; CJK marks need no space. */
+  const boundary = /[.!?](?:\s+|$)|[。！？]\s*/g;
   let start = 0;
-  /** CJK sentences end in full-width marks with no space after them. */
-  const boundary = /[.!?]\s+|[。！？]\s*/g;
+  let complete: string | undefined;
   for (let match = boundary.exec(tail); match != null; match = boundary.exec(tail)) {
-    const end = match.index + match[0].length;
-    /** A mark that closes the tail ends the CURRENT sentence; it does not
-     *  start an empty one. The finished sentence stays until the next begins. */
-    if (end < tail.length) {
-      start = end;
-    }
+    /** The mark itself is one code unit in both scripts. */
+    complete = tail.slice(start, match.index + 1);
+    start = match.index + match[0].length;
   }
-  return boundIntentLabel(tail.slice(start));
+  return complete == null ? undefined : boundIntentLabel(complete);
 }
 
 /**
