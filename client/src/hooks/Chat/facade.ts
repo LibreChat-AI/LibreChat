@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useRef, useMemo, useCallback, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, ContentTypes, fromUIMessage, toUIMessage } from 'librechat-data-provider';
 import type { TAttachment, TMessage, UIMessage, UIMappingOptions } from 'librechat-data-provider';
@@ -61,7 +61,7 @@ const getToolContext = (message: TMessage): ToolContext => {
     if (part?.type !== ContentTypes.TOOL_CALL) {
       continue;
     }
-    const { id, stepId } = part.tool_call as { id?: string; stepId?: string };
+    const { id, stepId } = (part.tool_call ?? {}) as { id?: string; stepId?: string };
     if (!id || !stepId) {
       continue;
     }
@@ -185,29 +185,49 @@ export function useChat(): UseChatHelpers {
   } = useChatContext();
 
   const queryClient = useQueryClient();
+  const writes = useRef(0);
   const subscribe = useCallback(
     (onChange: () => void) =>
       queryClient.getQueryCache().subscribe((event) => {
-        if (event.query.queryKey[0] === QueryKeys.messages) {
+        if (event.query.queryKey[0] !== QueryKeys.messages) {
+          return;
+        }
+        if (
+          event.type === 'removed' ||
+          (event.type === 'updated' && event.action.type === 'success')
+        ) {
+          writes.current += 1;
           onChange();
         }
       }),
     [queryClient],
   );
-  const readMessages = useCallback(() => getMessages(), [getMessages]);
-  const stored = useSyncExternalStore(subscribe, readMessages, readMessages);
+  const snapshot = useRef<{ writes: number; read: typeof getMessages; stored?: TMessage[] }>();
+  /**
+   * A stream frame replaces a response's content on the same object, so structural sharing can
+   * keep the cached array; the snapshot is keyed by the write count, not by the array.
+   */
+  const readSnapshot = useCallback(() => {
+    const current = snapshot.current;
+    if (current?.writes === writes.current && current.read === getMessages) {
+      return current;
+    }
+    snapshot.current = { writes: writes.current, read: getMessages, stored: getMessages() };
+    return snapshot.current;
+  }, [getMessages]);
+  const cache = useSyncExternalStore(subscribe, readSnapshot, readSnapshot);
 
   const { messages, latest } = useMemo(() => {
     const list: UIMessage[] = [];
     let latestMessage: TMessage | undefined;
-    for (const message of stored ?? []) {
+    for (const message of cache.stored ?? []) {
       list.push(toView(message));
       if (message.messageId === latestMessageId) {
         latestMessage = message;
       }
     }
     return { messages: list, latest: latestMessage };
-  }, [stored, latestMessageId]);
+  }, [cache, latestMessageId]);
 
   const status = getChatStatus(isSubmitting, latest);
   const errorText = status === 'error' && latest ? getErrorText(latest) : undefined;
