@@ -1422,6 +1422,13 @@ export default function useSteering({
     [queueKey],
   );
 
+  /** Keeps a row in the queue but out of the run-end drain, for words that
+   *  already reached the composer while their parked copy could not be let go. */
+  const holdQueued = useCallback(
+    (id: string) => updateQueuedMessage(id, (item) => ({ ...item, needsExplicitSend: true })),
+    [updateQueuedMessage],
+  );
+
   const downgradeServerQueuedTurn = useRecoilCallback(
     ({ snapshot, set }) =>
       (id: string): boolean => {
@@ -2588,6 +2595,7 @@ export default function useSteering({
       queueReclaimedSteer,
       enqueue,
       removeQueued,
+      holdQueued,
       discardQueued,
       rewakeDrain,
       reorderQueued,
@@ -2619,6 +2627,7 @@ export default function useSteering({
       queueReclaimedSteer,
       enqueue,
       removeQueued,
+      holdQueued,
       discardQueued,
       rewakeDrain,
       reorderQueued,

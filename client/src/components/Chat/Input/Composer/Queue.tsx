@@ -250,10 +250,10 @@ function QueueRow({
 
   /* The composer can change while the parked copy is being cancelled, so a
      refusal after that await would leave the words only in memory, gone on the
-     next reload. Put a row that had a durable copy back on the durable queue,
+     next reload. Put a row that had a server copy back on the durable queue,
      in its place, instead of keeping the downgraded local one. */
   const requeueDurably = useCallback(() => {
-    if (message.server == null && message.recoverySteerId == null) {
+    if (message.server == null) {
       return;
     }
     steering.removeQueued(message.id);
@@ -275,43 +275,67 @@ function QueueRow({
     });
   }, [message, steering]);
 
-  const editToComposer = useCallback(
-    () =>
+  /* Edit and Remove both move the row's words into the composer; they differ
+     only in what the refusal says. */
+  const handToComposer = useCallback(
+    (blockedKey: 'com_ui_queue_edit_blocked' | 'com_ui_queue_remove_blocked') =>
       handOff(async () => {
         /* Refuse before the parked copy is given up: once it is discarded the
            row only lives in memory, and a composer that then refused would
            leave the words to vanish on the next reload. */
         if (!canRestoreToComposer(conversationId)) {
-          showToast({ message: localize('com_ui_queue_edit_blocked'), status: 'warning' });
+          showToast({ message: localize(blockedKey), status: 'warning' });
           return false;
         }
-        /* A recovered row still has a parked copy on the server; discard it
-           through its durable receipt first, or the edited words would come
-           back as a second message on the next reload. */
+        const restore = () =>
+          onRestoreToComposer(
+            message.text,
+            message.files,
+            {
+              quotes: message.quotes,
+              manualSkills: message.manualSkills,
+              ...(message.reasoningOverride != null && {
+                reasoningOverride: message.reasoningOverride,
+              }),
+            },
+            conversationId,
+          );
+        /* A recovered row's only durable copy is the steer parked on the
+           server, and nothing can re-create it: its run ended, so there is no
+           live generation to queue behind. The composer takes the words first,
+           and the parked copy is cancelled only once they are there. */
+        if (message.server == null && message.recoverySteerId != null) {
+          if (!restore()) {
+            showToast({ message: localize(blockedKey), status: 'warning' });
+            return false;
+          }
+          if (await steering.discardQueued(message)) {
+            steering.removeQueued(message.id);
+            return true;
+          }
+          /* The words are in the composer and the parked copy survived, so the
+             row stays for the user to settle; the drain must not send it too. */
+          steering.holdQueued(message.id);
+          return false;
+        }
+        /* A server row still has a parked copy; discard it through its durable
+           receipt first, or the edited words would come back as a second
+           message on the next reload. */
         if (!(await steering.discardQueued(message))) {
           return false;
         }
-        /* Same order as the trash below: dropped only once the words are
-           somewhere else. A paused question owns the composer, and removing
-           the row anyway would leave the message nowhere at all. */
-        const taken = onRestoreToComposer(
-          message.text,
-          message.files,
-          {
-            quotes: message.quotes,
-            manualSkills: message.manualSkills,
-            ...(message.reasoningOverride != null && {
-              reasoningOverride: message.reasoningOverride,
-            }),
-          },
-          conversationId,
-        );
-        if (taken) {
+        /* Dropped only once the words are somewhere else. A paused question
+           owns the composer, and removing the row anyway would leave the
+           message nowhere at all. */
+        if (restore()) {
           steering.removeQueued(message.id);
           return true;
         }
+        /* Refusing silently reads as a dead button: the row stays, nothing
+           moves, and the reason (a draft in the box, another chat on screen)
+           is somewhere the click was not. */
         requeueDurably();
-        showToast({ message: localize('com_ui_queue_edit_blocked'), status: 'warning' });
+        showToast({ message: localize(blockedKey), status: 'warning' });
         return false;
       }),
     [
@@ -327,54 +351,14 @@ function QueueRow({
     ],
   );
 
+  const editToComposer = useCallback(
+    () => handToComposer('com_ui_queue_edit_blocked'),
+    [handToComposer],
+  );
+
   const removeToComposer = useCallback(
-    () =>
-      handOff(async () => {
-        if (!canRestoreToComposer(conversationId)) {
-          showToast({ message: localize('com_ui_queue_remove_blocked'), status: 'warning' });
-          return false;
-        }
-        /* Discard the parked server copy first, as on Edit above. */
-        if (!(await steering.discardQueued(message))) {
-          return false;
-        }
-        /* Only dropped once the words are somewhere else. The composer refuses
-           when it is occupied or the user has moved to another chat, and
-           removing the message anyway destroyed it. */
-        const restored = onRestoreToComposer(
-          message.text,
-          message.files,
-          {
-            quotes: message.quotes,
-            manualSkills: message.manualSkills,
-            ...(message.reasoningOverride != null && {
-              reasoningOverride: message.reasoningOverride,
-            }),
-          },
-          conversationId,
-        );
-        if (restored) {
-          steering.removeQueued(message.id);
-          return true;
-        }
-        /* Refusing silently reads as a dead button: the row stays, nothing
-           moves, and the reason (a draft in the box, another chat on screen)
-           is somewhere the click was not. */
-        requeueDurably();
-        showToast({ message: localize('com_ui_queue_remove_blocked'), status: 'warning' });
-        return false;
-      }),
-    [
-      handOff,
-      steering,
-      message,
-      onRestoreToComposer,
-      canRestoreToComposer,
-      requeueDurably,
-      conversationId,
-      showToast,
-      localize,
-    ],
+    () => handToComposer('com_ui_queue_remove_blocked'),
+    [handToComposer],
   );
 
   drop(rowRef);

@@ -67,6 +67,7 @@ const mockReorderQueued = jest.fn();
 const mockRestoreQueuedOrder = jest.fn();
 const mockDiscardQueued = jest.fn().mockResolvedValue(true);
 const mockRewakeDrain = jest.fn();
+const mockHoldQueued = jest.fn();
 const mockEnqueue = jest.fn();
 
 /** Only what the rail reads, filled out against the real type so a change to
@@ -83,6 +84,7 @@ const steeringWith = (over: Partial<SteeringControls> = {}): SteeringControls =>
     restoreQueuedOrder: mockRestoreQueuedOrder,
     discardQueued: mockDiscardQueued,
     rewakeDrain: mockRewakeDrain,
+    holdQueued: mockHoldQueued,
     enqueue: mockEnqueue,
     ...over,
   }) as SteeringControls;
@@ -414,6 +416,59 @@ describe('Queue', () => {
       expect(mockShowToast).toHaveBeenCalledWith(expect.objectContaining({ message: toast }));
     },
   );
+
+  /* A recovered row's parked steer is its only durable copy and cannot be
+     re-created once its run has ended, so the composer has to take the words
+     before that copy is cancelled. */
+  describe('handing a recovered row to the composer', () => {
+    const recovered = () =>
+      queued({ id: 'q1', recoverySteerId: 'steer-1', recoveryClientSteerId: 'client-1' });
+
+    it.each([
+      ['com_ui_remove_queued', 'com_ui_queue_remove_blocked'],
+      ['com_ui_edit_message', 'com_ui_queue_edit_blocked'],
+    ])('keeps the parked copy when the composer refuses (%s)', async (label, toast) => {
+      renderQueue([recovered()], steering, {
+        onRestoreToComposer: jest.fn().mockReturnValue(false),
+        canRestoreToComposer: jest.fn().mockReturnValue(true),
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText(label));
+      });
+      expect(mockDiscardQueued).not.toHaveBeenCalled();
+      expect(mockRemoveQueued).not.toHaveBeenCalled();
+      expect(mockEnqueue).not.toHaveBeenCalled();
+      expect(mockShowToast).toHaveBeenCalledWith(expect.objectContaining({ message: toast }));
+    });
+
+    it('cancels the parked copy only after the composer took the words', async () => {
+      const onRestore = jest.fn().mockReturnValue(true);
+      mockDiscardQueued.mockImplementationOnce(async () => {
+        expect(onRestore).toHaveBeenCalled();
+        return true;
+      });
+      renderQueue([recovered()], steering, { onRestoreToComposer: onRestore });
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText('com_ui_edit_message'));
+      });
+      expect(mockDiscardQueued).toHaveBeenCalledWith(expect.objectContaining({ id: 'q1' }));
+      expect(mockRemoveQueued).toHaveBeenCalledWith('q1');
+      expect(mockHoldQueued).not.toHaveBeenCalled();
+    });
+
+    it('holds the row out of the drain when the parked copy cannot be cancelled', async () => {
+      mockDiscardQueued.mockResolvedValueOnce(false);
+      renderQueue([recovered()], steering, {
+        onRestoreToComposer: jest.fn().mockReturnValue(true),
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+      });
+      expect(mockRemoveQueued).not.toHaveBeenCalled();
+      expect(mockHoldQueued).toHaveBeenCalledWith('q1');
+      expect(mockEnqueue).not.toHaveBeenCalled();
+    });
+  });
 
   it('keeps a local-only row in place when the composer refuses it', async () => {
     renderQueue([queued({ id: 'q1' })], steering, {
