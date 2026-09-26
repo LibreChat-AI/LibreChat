@@ -203,7 +203,7 @@ export function useChat(): UseChatHelpers {
     const stored = getMessages();
     let writes = 0;
     if (stored) {
-      for (const query of queryClient.getQueryCache().findAll([QueryKeys.messages])) {
+      for (const query of queryClient.getQueryCache().findAll({ queryKey: [QueryKeys.messages] })) {
         if (query.state.data === stored) {
           writes += query.state.dataUpdateCount;
         }
