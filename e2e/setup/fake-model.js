@@ -36,6 +36,9 @@ const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
+/** A reasoning part long enough that its settled prefix dwarfs the words still fading in. */
+const LONG_THINK_REPLY_MARKER = 'E2E_LONG_THINK_REPLY:';
+const LONG_THINK_WORDS = 400;
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
@@ -621,6 +624,19 @@ function replyResponses(text) {
      *  yields a reasoning part followed by a text part: two separately editable parts. */
     return {
       responses: [`<think>E2E reasoning ${thinkName}</think>\n\nE2E reply ${thinkName}`],
+    };
+  }
+
+  const longThinkName = getMarkerValue(text, LONG_THINK_REPLY_MARKER);
+  if (longThinkName) {
+    const words = Array.from(
+      { length: LONG_THINK_WORDS },
+      (_, index) => `r${String(index).padStart(3, '0')}`,
+    );
+    return {
+      responses: [
+        `<think>E2E long reasoning ${longThinkName} ${words.join(' ')} end</think>\n\nE2E reply ${longThinkName}`,
+      ],
     };
   }
 

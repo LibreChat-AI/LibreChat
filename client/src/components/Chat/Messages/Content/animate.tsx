@@ -308,6 +308,7 @@ export function createFadePlugin(hydrated = false): FadePlugin {
 
 const DELAY_VAR = '--lc-delay';
 const WHITESPACE_REGEX = /\s/;
+const PREFIX_PROBE_LENGTH = 32;
 
 /** Offset of the last whitespace-delimited word, which appended text can still extend. */
 function lastWordStart(value: string): number {
@@ -319,6 +320,25 @@ function lastWordStart(value: string): number {
     index -= 1;
   }
   return index;
+}
+
+/**
+ * Whether `text` still extends the settled `prefix`. Probes only the prefix's
+ * head and the region at its boundary so the per-token check stays constant
+ * rather than rescanning the whole accumulated prefix; an append-only stream
+ * always passes, and a rewrite that shifts or replaces text fails a probe. The
+ * settled region is always rendered from the current text, so a rewrite that
+ * slips past the probes can only affect fade timing, never the characters shown.
+ */
+function extendsPrefix(text: string, prefix: string): boolean {
+  if (text.length < prefix.length) {
+    return false;
+  }
+  const probe = Math.min(PREFIX_PROBE_LENGTH, prefix.length);
+  const boundary = prefix.length - probe;
+  return (
+    text.startsWith(prefix.slice(0, probe)) && text.startsWith(prefix.slice(boundary), boundary)
+  );
 }
 
 /**
@@ -338,21 +358,22 @@ export const AnimatedText = memo(function AnimatedText({ text }: { text: string 
     stateRef.current = createFadeState();
   }
   const state = stateRef.current;
-  const settled = text.startsWith(settledRef.current) ? settledRef.current : '';
-  const tail = text.slice(settled.length);
+  const settledLength = extendsPrefix(text, settledRef.current) ? settledRef.current.length : 0;
+  const settled = text.slice(0, settledLength);
+  const tail = text.slice(settledLength);
   const suppress = state.firstRun && text.length > FADE_HYDRATION_THRESHOLD;
   const run = beginRun(state, suppress);
-  run.count = settled.length;
+  run.count = settledLength;
   const segments = classifyValue(run, tail);
   stageRun(run);
 
-  const limit = settled.length + lastWordStart(tail);
+  const limit = settledLength + lastWordStart(tail);
   const boundary = segments.find((segment) => segment.animated || segment.start >= limit);
-  const settledLength = boundary?.start ?? limit;
+  const nextSettledLength = boundary?.start ?? limit;
 
   useLayoutEffect(() => {
     commitRun(state);
-    settledRef.current = text.slice(0, settledLength);
+    settledRef.current = text.slice(0, nextSettledLength);
   });
 
   return (

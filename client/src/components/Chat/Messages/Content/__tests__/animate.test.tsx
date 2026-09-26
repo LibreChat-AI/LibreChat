@@ -306,4 +306,19 @@ describe('AnimatedText', () => {
 
     expect(container.textContent).toBe('replaced text');
   });
+
+  it('renders the current characters when a rewrite keeps the probed prefix regions', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const head = 'h'.repeat(40);
+    const edge = 'e'.repeat(40);
+    const original = `${head} ${'a'.repeat(30)} ${edge} tail`;
+    const rewritten = `${head} ${'b'.repeat(30)} ${edge} tail more`;
+    const { container, rerender } = render(<AnimatedText text={original} />);
+    setTime(settle);
+    rerender(<AnimatedText text={`${original} next`} />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text={rewritten} />);
+
+    expect(container.textContent).toBe(rewritten);
+  });
 });
