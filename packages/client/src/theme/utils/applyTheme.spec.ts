@@ -340,10 +340,18 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--border-control')).toBe('110 111 112');
   });
 
-  it('leaves the bundled outline when the theme paints no light border', () => {
+  it('carries a legacy medium border onto the control outline', () => {
     const root = document.documentElement;
 
     applyTheme({ 'rgb-border-medium': '60 61 62' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--border-control')).toBe('60 61 62');
+  });
+
+  it('leaves the bundled outline when the theme paints no border', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '250 250 250' }, root, defaultTheme);
 
     expect(root.style.getPropertyValue('--border-control')).toBe('');
   });

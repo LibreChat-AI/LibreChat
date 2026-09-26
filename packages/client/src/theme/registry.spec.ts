@@ -265,16 +265,25 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-border-control']).toBe('110 111 112');
   });
 
-  it('gives a theme that leaves the light border alone the bundled control outline', () => {
+  it('keeps the medium border a legacy theme drew its selects with', () => {
     const resolved = resolveTheme(
       {
         version: 1,
         name: 'medium-border-reference',
-        modes: {
-          dark: {
-            colors: { 'rgb-surface-primary': '10 10 10', 'rgb-border-medium': '150 151 152' },
-          },
-        },
+        modes: { dark: { colors: { 'rgb-border-medium': '150 151 152' } } },
+      },
+      'dark',
+    );
+
+    expect(resolved.colors['rgb-border-control']).toBe('150 151 152');
+  });
+
+  it('gives a theme that leaves every border alone the bundled control outline', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'surface-only-reference',
+        modes: { dark: { colors: { 'rgb-surface-primary': '10 10 10' } } },
       },
       'dark',
     );

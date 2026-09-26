@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { openAgentBuilder } from '../agents.helpers';
 import { themeValue } from './style.helpers';
 
 /**
@@ -137,6 +138,63 @@ test.describe('form control outline', () => {
     expect(await themeValue(page, '--border-light')).toBe(darkTheme['rgb-border-light']);
     expect(await themeValue(page, '--border-medium')).toBe(darkTheme['rgb-border-medium']);
     expect(await themeValue(page, '--border-control')).toBe(darkTheme['rgb-border-control']);
+  });
+
+  for (const appearance of ['light', 'dark'] as const) {
+    test(`a stock ${appearance} dropdown outline matches the card border @scenario:stock-control-outline-matches-card-border-${appearance}`, async ({
+      page,
+    }) => {
+      await installAppearance(page, appearance);
+      await openSettings(page);
+
+      const light = await themeValue(page, '--border-light');
+      expect(await themeValue(page, '--border-control')).toBe(light);
+      expect((await outlineAgainstSurface(page)).border).toBe(
+        `rgb(${light.split(/\s+/).join(', ')})`,
+      );
+    });
+  }
+
+  test('a legacy theme that painted only its medium border keeps it on controls @scenario:legacy-medium-border-theme-keeps-its-control-outline', async ({
+    page,
+  }) => {
+    const definition = {
+      version: 1,
+      name: 'legacy-medium-outline',
+      modes: { light: { colors: { 'rgb-border-medium': '70 90 110' } } },
+    };
+    await installAppearance(page, 'light', definition);
+    await openSettings(page);
+
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'legacy-medium-outline');
+    expect(await themeValue(page, '--border-control')).toBe('70 90 110');
+    expect((await outlineAgainstSurface(page)).border).toBe('rgb(70, 90, 110)');
+  });
+
+  test('the empty tools card edge sits one step above the field outline @scenario:empty-tools-card-edge-steps-above-field-outline', async ({
+    page,
+  }) => {
+    await installAppearance(page, 'dark');
+    let form = await openAgentBuilder(page);
+    const createNew = form.getByRole('button', { name: 'Create New Agent' });
+    if (await createNew.isVisible().catch(() => false)) {
+      await createNew.click();
+      form = page.getByRole('form', { name: 'Agent configuration form' });
+    }
+
+    const emptyTools = form.getByRole('button', { name: /No tools yet/ });
+    await expect(emptyTools).toBeVisible();
+    const medium = await themeValue(page, '--border-medium');
+    const edge = await emptyTools.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { color: style.borderTopColor, style: style.borderTopStyle };
+    });
+    const field = await form
+      .getByRole('textbox', { name: 'Agent name' })
+      .evaluate((node) => getComputedStyle(node).borderTopColor);
+
+    expect(edge).toEqual({ color: `rgb(${medium.split(/\s+/).join(', ')})`, style: 'dashed' });
+    expect(field).not.toBe(edge.color);
   });
 
   test('a custom theme without the control role keeps the outline it drew @scenario:custom-theme-keeps-its-control-outline', async ({

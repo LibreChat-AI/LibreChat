@@ -49,15 +49,16 @@ export const MARK_NEIGHBOURHOOD: readonly (keyof IThemeRGB)[] = Object.freeze([
 /**
  * The control outline for a stored or environment theme that predates
  * `rgb-border-control`. Fields, dropdowns and comboboxes drew `border-light`
- * before the role existed, so a theme that painted it keeps that edge on its
- * controls. A theme that does not keeps the bundled role, and one that names
- * the role keeps it as written.
+ * and selects and OTP slots drew `border-medium` before the role existed, so a
+ * theme that painted either keeps that edge on its controls, the light border
+ * first. A theme that painted neither keeps the bundled role, and one that
+ * names the role keeps it as written.
  */
 export function controlBorderFallback(colors: IThemeRGB): string | undefined {
   if (colors['rgb-border-control'] !== undefined) {
     return undefined;
   }
-  return colors['rgb-border-light'];
+  return colors['rgb-border-light'] ?? colors['rgb-border-medium'];
 }
 
 export const themeAppearanceProperties: Readonly<
