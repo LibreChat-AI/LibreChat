@@ -64,15 +64,26 @@ const SPACELESS_REGEX =
   /[\u0E00-\u0EFF\u0F00-\u0FFF\u1000-\u109F\u1780-\u17FF\u2E80-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/;
 
 let wordSegmenter: Intl.Segmenter | null | undefined;
+let graphemeSegmenter: Intl.Segmenter | null | undefined;
+
+function createSegmenter(granularity: 'word' | 'grapheme'): Intl.Segmenter | null {
+  return typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity })
+    : null;
+}
 
 function getWordSegmenter(): Intl.Segmenter | null {
   if (wordSegmenter === undefined) {
-    wordSegmenter =
-      typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
-        ? new Intl.Segmenter(undefined, { granularity: 'word' })
-        : null;
+    wordSegmenter = createSegmenter('word');
   }
   return wordSegmenter;
+}
+
+function getGraphemeSegmenter(): Intl.Segmenter | null {
+  if (graphemeSegmenter === undefined) {
+    graphemeSegmenter = createSegmenter('grapheme');
+  }
+  return graphemeSegmenter;
 }
 
 function pushSegmentedParts(parts: string[], token: string): void {
@@ -316,15 +327,34 @@ const PREFIX_PROBE_LENGTH = 32;
  * sides of the cut, so a cut inside a part is invisible.
  */
 const MAX_UNSETTLED_LENGTH = 64;
-/** Code units that continue the preceding glyph: low surrogates, combining marks, joiners, variation selectors. */
+/** Code units that continue the preceding glyph, for runtimes without `Intl.Segmenter`. */
 const GLYPH_CONTINUATION_REGEX = /^(?:[\uDC00-\uDFFF]|\p{M}|\u200C|\u200D|\uFE0E|\uFE0F)/u;
 
-/** Moves a cut offset back so it never splits a surrogate pair or a joined/combining sequence. */
-function glyphBoundary(text: string, index: number): number {
+/**
+ * Moves a cut offset in `tail` back to a grapheme-cluster boundary, so emoji
+ * modifier, flag, ZWJ and combining sequences stay whole. `tail` starts at the
+ * committed settled boundary, which is itself a cluster boundary, and is
+ * bounded by the cap, so segmenting it stays proportional to the unsettled text.
+ */
+function glyphBoundary(tail: string, index: number): number {
+  if (index <= 0) {
+    return 0;
+  }
+  const segmenter = getGraphemeSegmenter();
+  if (segmenter != null) {
+    let boundary = 0;
+    for (const segment of segmenter.segment(tail)) {
+      if (segment.index > index) {
+        break;
+      }
+      boundary = segment.index;
+    }
+    return boundary;
+  }
   let cut = index;
   while (
     cut > 0 &&
-    (GLYPH_CONTINUATION_REGEX.test(text[cut] ?? '') || text[cut - 1] === '\u200D')
+    (GLYPH_CONTINUATION_REGEX.test(tail[cut] ?? '') || tail[cut - 1] === '\u200D')
   ) {
     cut -= 1;
   }
@@ -391,7 +421,7 @@ export const AnimatedText = memo(function AnimatedText({ text }: { text: string 
 
   const limit = Math.max(
     settledLength + lastWordStart(tail),
-    glyphBoundary(text, text.length - MAX_UNSETTLED_LENGTH),
+    settledLength + glyphBoundary(tail, tail.length - MAX_UNSETTLED_LENGTH),
   );
   const firstAnimated = segments.find((segment) => segment.animated);
   const nextSettledLength = Math.min(limit, firstAnimated?.start ?? limit);

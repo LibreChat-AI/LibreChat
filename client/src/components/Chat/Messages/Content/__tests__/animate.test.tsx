@@ -323,20 +323,24 @@ describe('AnimatedText', () => {
     expect(container.textContent).toBe(`${base}${appended}${appended}`);
   });
 
-  it('never cuts the settled prefix inside a surrogate pair or joined emoji sequence', () => {
+  it.each([
+    ['ZWJ families and combining marks', ['\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', 'e\u0301']],
+    ['skin-tone modifiers', ['\u{1F44D}\u{1F3FD}', '\u{1F44B}\u{1F3FF}']],
+    ['regional-indicator flags', ['\u{1F1FA}\u{1F1F8}', '\u{1F1EF}\u{1F1F5}']],
+  ])('never cuts the settled prefix inside a grapheme cluster: %s', (_label, clusters) => {
     const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
-    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
-    const base = `${family}e\u0301`.repeat(40);
-    let text = base;
+    let text = clusters.join('').repeat(40);
     const { container, rerender } = render(<AnimatedText text={text} />);
     for (let step = 1; step <= 12; step++) {
       setTime(settle * step);
-      text += step % 2 === 0 ? family : 'e\u0301';
+      text += step % 3 === 0 ? 'x' : clusters[step % clusters.length];
       rerender(<AnimatedText text={text} />);
       const first = container.firstChild?.textContent ?? '';
-      const next = text.slice(first.length);
-      expect(/^[\uDC00-\uDFFF\p{M}\u200D]/u.test(next)).toBe(false);
-      expect(first.endsWith('\u200D')).toBe(false);
+      expect(first.length).toBeGreaterThan(0);
+      const units = Array.from(
+        new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+      );
+      expect(units.some((unit) => unit.index === first.length)).toBe(true);
     }
     expect(container.textContent).toBe(text);
   });
