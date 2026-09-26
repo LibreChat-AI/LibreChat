@@ -75,9 +75,9 @@ export type ChatSubmissionContract = {
   /**
    * The response `ask` submitted the in-flight turn with, before any streamed output. Its content
    * holds the parts the response was seeded with (a retained edit prefix, empty lane placeholders)
-   * at their indices: the stream appends after them or fills an empty one, and never rewrites a
-   * seeded part that has content. Compare by position, not identity, since the cache may hold
-   * equal copies. `undefined` while no turn is in flight, for a run restored after a reload
+   * at their indices: the stream appends after them, fills an empty one, or continues the last one
+   * when it is text or reasoning of the same kind, and rewrites no other seeded part. Compare by
+   * position and content, not identity, since the cache may hold equal copies. `undefined` while no turn is in flight, for a run restored after a reload
    * (whose response already holds streamed output), and in any chat but the one it was sent from,
    * which includes a new chat once it takes its saved id (its seed holds only empty placeholders).
    */

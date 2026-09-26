@@ -120,6 +120,18 @@ describe('useChatHelpers contract members', () => {
     expect(result.current.initialResponse).toBeUndefined();
   });
 
+  it('forgets a settled turn when a later run in the same chat is restored', () => {
+    const { result } = renderChatHelpers('convo-1', ({ set }) => {
+      set(store.isSubmittingFamily(0), true);
+    });
+    act(() => submit?.({ initialResponse } as TSubmission));
+    act(() => result.current.setIsSubmitting(false));
+
+    act(() => result.current.setIsSubmitting(true));
+
+    expect(result.current.initialResponse).toBeUndefined();
+  });
+
   it('has no submitted response for a run restored outside ask', () => {
     const { result } = renderChatHelpers('convo-1', ({ set }) => {
       set(store.isSubmittingFamily(0), true);

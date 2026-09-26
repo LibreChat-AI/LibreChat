@@ -161,6 +161,14 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     },
     [queryParam, setStoredSubmission],
   );
+  /** A settled turn ends the snapshot, so a later run restored outside `ask` never reuses it. */
+  const [wasSubmitting, setWasSubmitting] = useState(isSubmitting);
+  if (wasSubmitting !== isSubmitting) {
+    setWasSubmitting(isSubmitting);
+    if (!isSubmitting) {
+      setSubmitted(undefined);
+    }
+  }
   const initialResponse =
     isSubmitting && submitted?.key === queryParam ? submitted.response : undefined;
 
