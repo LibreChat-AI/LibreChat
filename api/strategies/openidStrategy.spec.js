@@ -387,20 +387,20 @@ describe('setupOpenId', () => {
       issuer: 'https://fake-issuer.com',
     };
 
-    beforeEach(() => {
-      openidClient = require('openid-client');
+    const resetDiscovery = () => {
       openidClient.discovery.mockReset();
       openidClient.discovery.mockResolvedValue(DEFAULT_DISCOVERY_RESULT);
+    };
+
+    beforeEach(() => {
+      openidClient = require('openid-client');
+      resetDiscovery();
     });
 
     afterEach(() => {
-      delete process.env.OPENID_DISCOVERY_RETRIES;
-      delete process.env.OPENID_DISCOVERY_RETRY_DELAY_MS;
       // The outer beforeEach calls setupOpenId() and relies on discovery resolving;
       // restore it so a rejected mock from these tests never leaks into later tests.
-      const client = require('openid-client');
-      client.discovery.mockReset();
-      client.discovery.mockResolvedValue(DEFAULT_DISCOVERY_RESULT);
+      resetDiscovery();
     });
 
     it('registers the strategy after transient discovery failures', async () => {
@@ -422,7 +422,6 @@ describe('setupOpenId', () => {
     it('gives up and returns null after exhausting the retry budget', async () => {
       process.env.OPENID_DISCOVERY_RETRIES = '1';
       process.env.OPENID_DISCOVERY_RETRY_DELAY_MS = '1';
-      openidClient.discovery.mockReset();
       openidClient.discovery.mockRejectedValue(new Error('503 Service Unavailable'));
 
       const result = await setupOpenId();
@@ -434,13 +433,91 @@ describe('setupOpenId', () => {
 
     it('makes a single attempt when retries are disabled', async () => {
       process.env.OPENID_DISCOVERY_RETRIES = '0';
-      openidClient.discovery.mockReset();
       openidClient.discovery.mockRejectedValue(new Error('503 Service Unavailable'));
 
       const result = await setupOpenId();
 
       expect(result).toBeNull();
       expect(openidClient.discovery).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('ensureOpenIdConfigured', () => {
+    let openidClient;
+
+    const DEFAULT_DISCOVERY_RESULT = {
+      clientId: 'fake_client_id',
+      clientSecret: 'fake_client_secret',
+      issuer: 'https://fake-issuer.com',
+    };
+
+    /** Fresh module instance whose openidConfig starts null (boot never succeeded). */
+    const requireFreshStrategy = () => {
+      let strategy;
+      jest.isolateModules(() => {
+        strategy = require('./openidStrategy');
+      });
+      return strategy;
+    };
+
+    beforeEach(() => {
+      openidClient = require('openid-client');
+      openidClient.discovery.mockReset();
+      openidClient.discovery.mockResolvedValue(DEFAULT_DISCOVERY_RESULT);
+    });
+
+    afterEach(() => {
+      // Restore the resolved mock so the outer beforeEach of later tests never burns retries.
+      openidClient.discovery.mockReset();
+      openidClient.discovery.mockResolvedValue(DEFAULT_DISCOVERY_RESULT);
+    });
+
+    it('returns the existing config without re-discovering', async () => {
+      const before = openidClient.discovery.mock.calls.length;
+
+      const config = await require('./openidStrategy').ensureOpenIdConfigured();
+
+      expect(config).toBeTruthy();
+      expect(openidClient.discovery.mock.calls.length).toBe(before);
+    });
+
+    it('discovers and registers the strategy when boot-time setup failed', async () => {
+      process.env.OPENID_DISCOVERY_RETRIES = '0';
+      const before = openidClient.discovery.mock.calls.length;
+      const strategy = requireFreshStrategy();
+
+      const config = await strategy.ensureOpenIdConfigured();
+
+      expect(config).toBeTruthy();
+      expect(openidClient.discovery.mock.calls.length).toBe(before + 1);
+    });
+
+    it('resolves null (no throw) while the provider is still down', async () => {
+      process.env.OPENID_DISCOVERY_RETRIES = '0';
+      openidClient.discovery.mockRejectedValue(new Error('ECONNREFUSED'));
+      const strategy = requireFreshStrategy();
+
+      await expect(strategy.ensureOpenIdConfigured()).resolves.toBeNull();
+    });
+
+    it('shares one in-flight discovery across concurrent logins', async () => {
+      const lateConfig = { issuer: 'https://late-issuer.com' };
+      let resolveLateDiscovery;
+      const lateDiscovery = new Promise((resolve) => {
+        resolveLateDiscovery = resolve;
+      });
+      openidClient.discovery.mockImplementationOnce(() => lateDiscovery);
+      const before = openidClient.discovery.mock.calls.length;
+      const strategy = requireFreshStrategy();
+
+      const first = strategy.ensureOpenIdConfigured();
+      const second = strategy.ensureOpenIdConfigured();
+      resolveLateDiscovery(lateConfig);
+      const [configA, configB] = await Promise.all([first, second]);
+
+      expect(configA).toBe(lateConfig);
+      expect(configB).toBe(lateConfig);
+      expect(openidClient.discovery.mock.calls.length).toBe(before + 1);
     });
   });
 
