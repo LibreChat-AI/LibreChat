@@ -18,11 +18,11 @@ jest.mock('~/hooks/Messages/useLatestMessage', () => ({
   useLatestMessageId: () => null,
 }));
 
-let submit: ((submission: TSubmission | null) => void) | undefined;
+let submit: ((submission: TSubmission) => void) | undefined;
 
 jest.mock('~/hooks/Chat/useChatFunctions', () => ({
   __esModule: true,
-  default: (options: { setSubmission: (submission: TSubmission | null) => void }) => {
+  default: (options: { setSubmission: (submission: TSubmission) => void }) => {
     submit = options.setSubmission;
     return { ask: jest.fn(), regenerate: jest.fn() };
   },
@@ -70,6 +70,10 @@ describe('useChatHelpers contract members', () => {
     expect(result.current.messagesKey).toBe('convo-2');
   });
 
+  it('reports an empty messages key before the pane has a conversation', () => {
+    expect(renderChatHelpers().result.current.messagesKey).toBe('');
+  });
+
   it('falls back to the conversation id without a route id', () => {
     const { result } = renderChatHelpers(undefined, ({ set }) => {
       set(store.conversationByIndex(0), { conversationId: 'convo-1' } as TConversation);
@@ -89,11 +93,14 @@ describe('useChatHelpers contract members', () => {
   });
 
   it('drops the submitted response once the turn settles', () => {
-    const { result } = renderChatHelpers('convo-1');
-
+    const { result } = renderChatHelpers('convo-1', ({ set }) => {
+      set(store.isSubmittingFamily(0), true);
+    });
     act(() => submit?.({ initialResponse } as TSubmission));
+    expect(result.current.initialResponse).toBe(initialResponse);
 
-    expect(result.current.isSubmitting).toBe(false);
+    act(() => result.current.setIsSubmitting(false));
+
     expect(result.current.initialResponse).toBeUndefined();
   });
 
