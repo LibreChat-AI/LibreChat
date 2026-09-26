@@ -30,6 +30,7 @@ const mockConversationsRender = jest.fn();
 type ProjectsResult = {
   data?: { pages: { projects: unknown[]; nextCursor: null }[]; pageParams: undefined[] };
   isSuccess: boolean;
+  isError?: boolean;
 };
 const mockUseProjectsInfiniteQuery = jest.fn(
   (): ProjectsResult => ({
@@ -341,11 +342,26 @@ describe('ConversationsSection empty Chats wording', () => {
     expect(lastAccountHasProjects()).toBe(false);
   });
 
-  it('does not call the account empty while its projects failed to load', async () => {
+  it('does not call the account empty while its projects are still loading', async () => {
     mockUseProjectsInfiniteQuery.mockReturnValue({ data: undefined, isSuccess: false });
     renderSection();
     await settleRenders();
     expect(lastAccountHasProjects()).toBe(true);
+  });
+
+  it('lists every chat when the projects failed to load, so project chats keep a way back', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({
+      data: undefined,
+      isSuccess: false,
+      isError: true,
+    });
+    mockListParams.mockClear();
+    renderSection();
+    await settleRenders();
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({ projectId: undefined }),
+    );
+    expect(lastAccountHasProjects()).toBe(false);
   });
 });
 

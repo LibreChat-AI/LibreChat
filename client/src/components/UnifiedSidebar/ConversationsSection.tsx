@@ -55,7 +55,11 @@ const ConversationsSection = memo(() => {
   /** The same projects ProjectsSection reads, so an empty Chats list can tell "every
    *  chat lives under a project" from "this account has nothing yet". Shared key, so
    *  this costs no second request. */
-  const { data: projectsData, isSuccess: projectsLoaded } = useProjectsInfiniteQuery(
+  const {
+    data: projectsData,
+    isSuccess: projectsLoaded,
+    isError: projectsFailed,
+  } = useProjectsInfiniteQuery(
     { sortBy: 'lastConversationAt', sortDirection: 'desc', limit: 25 },
     { enabled: isAuthenticated, staleTime: 30000, cacheTime: 300000 },
   );
@@ -63,6 +67,13 @@ const ConversationsSection = memo(() => {
    *  projects are loading or failed to load, an empty Chats list claims no more than
    *  that nothing sits outside a project. */
   const hasProjects = !projectsLoaded || (projectsData?.pages[0]?.projects?.length ?? 0) > 0;
+  /** A chat that belongs to a project is shown under that project, not twice. Search and
+   *  the archived view stay whole: both are places the user goes to find something, and a
+   *  project chat that appears in neither list nor result would have no way back. So does
+   *  a list whose projects failed to load, which would otherwise hide every project chat
+   *  behind a section that cannot show them. */
+  const scopeToUnassigned =
+    !isArchivedView && !search.debouncedQuery && !(projectsFailed && projectsData == null);
 
   const {
     data,
@@ -82,11 +93,7 @@ const ConversationsSection = memo(() => {
       sortDirection: sort.direction,
       tags: tags.length === 0 ? undefined : tags,
       search: search.debouncedQuery || undefined,
-      /** A chat that belongs to a project is shown under that project, not twice.
-       *  Search and the archived view stay whole: both are places the user goes to
-       *  find something, and a project chat that appears in neither list nor result
-       *  would have no way back. */
-      projectId: isArchivedView || search.debouncedQuery ? undefined : 'unassigned',
+      projectId: scopeToUnassigned ? 'unassigned' : undefined,
       ...facetParams,
     },
     {
@@ -266,7 +273,7 @@ const ConversationsSection = memo(() => {
               isError={isError}
               onRetry={retryConversations}
               chatsHeaderTrailing={chatsHeaderTrailing}
-              accountHasProjects={hasProjects}
+              accountHasProjects={scopeToUnassigned && hasProjects}
               scrollViewport={scrollViewport}
               scrollContent={scrollContent}
             />
