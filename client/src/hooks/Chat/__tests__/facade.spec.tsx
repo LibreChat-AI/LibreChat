@@ -184,6 +184,13 @@ describe('useChat', () => {
     expect(result.current.status).toBe('submitted');
   });
 
+  it('streams once the response carries a generated file and nothing else', () => {
+    const withFile = response({ files: [{ file_id: 'file-1' }] as TMessage['files'] });
+    const { result } = renderChat(turn([userMessage, withFile], true));
+
+    expect(result.current.status).toBe('streaming');
+  });
+
   it('reads the error text of an Assistants error part', () => {
     const failed = response({
       content: [{ type: ContentTypes.ERROR, text: { value: 'Run failed' } }],
@@ -420,6 +427,19 @@ describe('useChat', () => {
     expect(contract.setMessages).toHaveBeenCalledWith([
       userMessage,
       expect.objectContaining({ messageId: 'note-1', conversationId: null }),
+    ]);
+  });
+
+  it('keeps a stored message in its conversation when its view names another', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      { ...views[0], metadata: { ...views[0].metadata!, conversationId: 'convo-2' } },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      expect.objectContaining({ messageId: 'user-1', conversationId: 'convo-1' }),
     ]);
   });
 
