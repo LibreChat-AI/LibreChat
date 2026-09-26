@@ -151,17 +151,18 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   // );
 
   const setStoredSubmission = useSetRecoilState(store.submissionByIndex(index));
-  const [submittedResponse, setSubmittedResponse] = useState<TMessage>();
-  /** Keeps the response `ask` submits, as it submits it; a run restored after a reload sets the
-   *  submission elsewhere, so it has no pre-stream response here. */
+  const [submitted, setSubmitted] = useState<{ key: string; response?: TMessage }>();
+  /** Keeps the response `ask` submits, as it submits it, under the chat it was sent from; a run
+   *  restored after a reload, or in another chat, sets the submission elsewhere. */
   const setSubmission = useCallback(
     (submission: TSubmission) => {
-      setSubmittedResponse(submission.initialResponse);
+      setSubmitted({ key: queryParam, response: submission.initialResponse });
       setStoredSubmission(submission);
     },
-    [setStoredSubmission],
+    [queryParam, setStoredSubmission],
   );
-  const initialResponse = isSubmitting ? submittedResponse : undefined;
+  const initialResponse =
+    isSubmitting && submitted?.key === queryParam ? submitted.response : undefined;
 
   const { ask: _ask, regenerate: _regenerate } = useChatFunctions({
     index,

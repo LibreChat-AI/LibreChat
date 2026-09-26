@@ -57,7 +57,10 @@ function renderChatHelpers(
       <RecoilRoot initializeState={initializeState}>{children}</RecoilRoot>
     </QueryClientProvider>
   );
-  return renderHook(() => useChatHelpers(0, paramId), { wrapper });
+  return renderHook((route: string | undefined = paramId) => useChatHelpers(0, route), {
+    wrapper,
+    initialProps: paramId,
+  });
 }
 
 describe('useChatHelpers contract members', () => {
@@ -101,6 +104,19 @@ describe('useChatHelpers contract members', () => {
 
     act(() => result.current.setIsSubmitting(false));
 
+    expect(result.current.initialResponse).toBeUndefined();
+  });
+
+  it('hides the submitted response once the pane moves to another chat', () => {
+    const { result, rerender } = renderChatHelpers('convo-1', ({ set }) => {
+      set(store.isSubmittingFamily(0), true);
+    });
+    act(() => submit?.({ initialResponse } as TSubmission));
+    expect(result.current.initialResponse).toBe(initialResponse);
+
+    rerender('convo-2');
+
+    expect(result.current.isSubmitting).toBe(true);
     expect(result.current.initialResponse).toBeUndefined();
   });
 

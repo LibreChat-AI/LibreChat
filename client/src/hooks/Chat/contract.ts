@@ -73,11 +73,12 @@ export type ChatSubmissionContract = {
    */
   isSubmitting: boolean;
   /**
-   * The response `ask` submitted the in-flight turn with, before any streamed output. Parts it was
-   * seeded with (a retained edit prefix, lane placeholders) stay these same objects in the cache
-   * until the stream replaces them, so a part that is not one of them has streamed. `undefined`
-   * while no turn is in flight, and for a run restored after a reload, whose response already
-   * holds streamed output.
+   * The response `ask` submitted the in-flight turn with, before any streamed output. Its content
+   * holds the parts the response was seeded with (a retained edit prefix, empty lane placeholders)
+   * at their indices: the stream appends after them or fills an empty one, and never rewrites a
+   * seeded part that has content. Compare by position, not identity, since the cache may hold
+   * equal copies. `undefined` while no turn is in flight, for a run restored after a reload
+   * (whose response already holds streamed output), and in any chat but the one it was sent from.
    */
   initialResponse: TMessage | undefined;
   /** Sets the in-flight flag for this pane. */
