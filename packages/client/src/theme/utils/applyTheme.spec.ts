@@ -332,14 +332,6 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--chart-widget-stroke')).toBe('50 51 52');
   });
 
-  it('carries a legacy medium border onto the control outline', () => {
-    const root = document.documentElement;
-
-    applyTheme({ 'rgb-border-medium': '60 61 62' }, root);
-
-    expect(root.style.getPropertyValue('--border-control')).toBe('60 61 62');
-  });
-
   it('carries a legacy light border onto the control outline', () => {
     const root = document.documentElement;
 
@@ -348,14 +340,12 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--border-control')).toBe('110 111 112');
   });
 
-  it('keeps the bundled outline when the legacy borders are too quiet', () => {
+  it('leaves the bundled outline when the theme paints no light border', () => {
     const root = document.documentElement;
 
-    applyTheme({ 'rgb-border-medium': '240 240 240' }, root, defaultTheme);
+    applyTheme({ 'rgb-border-medium': '60 61 62' }, root, defaultTheme);
 
-    expect(root.style.getPropertyValue('--border-control')).toBe(
-      defaultTheme['rgb-border-control'],
-    );
+    expect(root.style.getPropertyValue('--border-control')).toBe('');
   });
 
   it('leaves an explicit control outline alone', () => {

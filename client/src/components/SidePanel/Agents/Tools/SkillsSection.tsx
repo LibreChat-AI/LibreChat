@@ -413,7 +413,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               <button
                 type="button"
                 onClick={onAdd}
-                className="border-border-light text-text-secondary hover:border-border-medium hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary flex w-full flex-col items-center gap-1 rounded-xl border border-dashed px-2 py-4 transition-colors focus:outline-hidden focus-visible:ring-2"
+                className="border-border-medium text-text-secondary hover:border-border-heavy hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary flex w-full flex-col items-center gap-1 rounded-xl border border-dashed px-2 py-4 transition-colors focus:outline-hidden focus-visible:ring-2"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 <span className="text-xs">{localize('com_ui_skills_add_row')}</span>
