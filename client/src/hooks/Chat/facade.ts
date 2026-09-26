@@ -40,7 +40,7 @@ export type UseChatHelpers = {
    * Writes messages back to the cache, keeping the stored fields the UI view omits. A message
    * with no stored counterpart joins the active conversation under the message before it, or
    * under the active branch's tail when the message before it is on another branch, unless its
-   * metadata names a parent.
+   * metadata names a parent. A message keeps the conversation it is stored under.
    */
   setMessages: (messages: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => void;
 };
@@ -173,6 +173,9 @@ const toView = (message: TMessage) => {
  */
 const hasStreamed = (message: TMessage, seed?: TMessage) => {
   if ((message.text?.length ?? 0) > 0 && message.text !== seed?.text) {
+    return true;
+  }
+  if ((message.files?.length ?? 0) > (seed?.files?.length ?? 0)) {
     return true;
   }
   const seeded = seed?.content;
@@ -324,8 +327,8 @@ export function useChat(): UseChatHelpers {
       const stored = next.map((view) => {
         const base = byId.get(view.id);
         const message = fromUIMessage(view, base);
+        message.conversationId = base ? base.conversationId : conversationId;
         if (!base) {
-          message.conversationId = conversationId;
           if (view.metadata?.parentMessageId === undefined) {
             message.parentMessageId =
               previous == null || previous.joined
