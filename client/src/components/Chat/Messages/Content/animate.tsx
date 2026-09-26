@@ -316,6 +316,20 @@ const PREFIX_PROBE_LENGTH = 32;
  * sides of the cut, so a cut inside a part is invisible.
  */
 const MAX_UNSETTLED_LENGTH = 64;
+/** Code units that continue the preceding glyph: low surrogates, combining marks, joiners, variation selectors. */
+const GLYPH_CONTINUATION_REGEX = /^(?:[\uDC00-\uDFFF]|\p{M}|\u200C|\u200D|\uFE0E|\uFE0F)/u;
+
+/** Moves a cut offset back so it never splits a surrogate pair or a joined/combining sequence. */
+function glyphBoundary(text: string, index: number): number {
+  let cut = index;
+  while (
+    cut > 0 &&
+    (GLYPH_CONTINUATION_REGEX.test(text[cut] ?? '') || text[cut - 1] === '\u200D')
+  ) {
+    cut -= 1;
+  }
+  return cut;
+}
 
 /** Offset of the last whitespace-delimited word, which appended text can still extend. */
 function lastWordStart(value: string): number {
@@ -375,7 +389,10 @@ export const AnimatedText = memo(function AnimatedText({ text }: { text: string 
   const segments = classifyValue(run, tail);
   stageRun(run);
 
-  const limit = Math.max(settledLength + lastWordStart(tail), text.length - MAX_UNSETTLED_LENGTH);
+  const limit = Math.max(
+    settledLength + lastWordStart(tail),
+    glyphBoundary(text, text.length - MAX_UNSETTLED_LENGTH),
+  );
   const firstAnimated = segments.find((segment) => segment.animated);
   const nextSettledLength = Math.min(limit, firstAnimated?.start ?? limit);
 

@@ -323,6 +323,24 @@ describe('AnimatedText', () => {
     expect(container.textContent).toBe(`${base}${appended}${appended}`);
   });
 
+  it('never cuts the settled prefix inside a surrogate pair or joined emoji sequence', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
+    const base = `${family}e\u0301`.repeat(40);
+    let text = base;
+    const { container, rerender } = render(<AnimatedText text={text} />);
+    for (let step = 1; step <= 12; step++) {
+      setTime(settle * step);
+      text += step % 2 === 0 ? family : 'e\u0301';
+      rerender(<AnimatedText text={text} />);
+      const first = container.firstChild?.textContent ?? '';
+      const next = text.slice(first.length);
+      expect(/^[\uDC00-\uDFFF\p{M}\u200D]/u.test(next)).toBe(false);
+      expect(first.endsWith('\u200D')).toBe(false);
+    }
+    expect(container.textContent).toBe(text);
+  });
+
   it('re-classifies from the start when the text no longer extends the settled prefix', () => {
     const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
     const { container, rerender } = render(<AnimatedText text="first draft here" />);
