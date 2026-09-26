@@ -610,7 +610,7 @@ describe('ActivityPhaseGroup open live header', () => {
 describe('ActivityPhaseGroup streaming thought peek', () => {
   const thought: TMessageContentParts = {
     type: ContentTypes.THINK,
-    think: 'The refs share a commit. Next I check the ordering. Then the tags.',
+    think: '<think>The refs share a commit. Next I check the ordering. Then the tags.',
   } as unknown as TMessageContentParts;
   const call: TMessageContentParts = {
     type: ContentTypes.TOOL_CALL,
@@ -631,6 +631,8 @@ describe('ActivityPhaseGroup streaming thought peek', () => {
     );
     const peek = screen.getByTestId('streaming-thought-peek');
     expect(peek).toHaveTextContent('Next I check the ordering. Then the tags.');
+    /** Straight from the stream, the thought still carries its opening tag. */
+    expect(peek).not.toHaveTextContent('<think>');
     expect(screen.queryByTestId('activity-phase-cursor')).toBeNull();
     /** Under the header, not inside the fold that would unmount it. */
     expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(peek);

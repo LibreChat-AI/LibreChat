@@ -34,7 +34,9 @@ const PEEK_SENTENCES = 4;
  *  live peek. Bounds work on long reasoning by scanning only the trailing
  *  slice before splitting on sentence boundaries. */
 const lastSentences = (text: string): string => {
-  const tail = text.trim().slice(-1200);
+  /** Stripped here as well as by the disclosures that own the text: the
+   *  live card hands the peek a thought straight from the stream, tags on. */
+  const tail = stripThinkTags(text).slice(-1200);
   if (!tail) {
     return '';
   }

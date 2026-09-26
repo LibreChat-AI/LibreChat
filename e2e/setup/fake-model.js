@@ -36,6 +36,7 @@ const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
+const SLOW_THINK_REPLY_MARKER = 'E2E_SLOW_THINK_REPLY:';
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
@@ -615,6 +616,19 @@ function replyResponses(text) {
   if (replyName) {
     return {
       responses: [`E2E reply ${replyName}`],
+    };
+  }
+
+  const slowThinkName = getMarkerValue(text, SLOW_THINK_REPLY_MARKER);
+  if (slowThinkName) {
+    /** Three sentences of reasoning, word by word at a readable pace, so a
+     *  spec can watch the live header and the thought peek while it streams. */
+    return {
+      responses: [
+        '<think>First I read the request slowly. Then I gather the evidence with some care. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E slow think reply done ${slowThinkName}`,
+      ],
+      sleep: 120,
     };
   }
 
