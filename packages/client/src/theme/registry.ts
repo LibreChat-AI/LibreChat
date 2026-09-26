@@ -9,7 +9,6 @@ import type {
   ThemeMode,
 } from './types';
 import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
-import { contrastRatio } from './utils/contrast';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
 export const THEME_VERSION = 1 as const;
@@ -47,68 +46,18 @@ export const MARK_NEIGHBOURHOOD: readonly (keyof IThemeRGB)[] = Object.freeze([
   'rgb-surface-tertiary',
 ]);
 
-const NON_TEXT_CONTRAST = 3;
-
-/** The canvases a form control is painted on, which its outline is measured against. */
-const CONTROL_CANVASES: readonly (keyof IThemeRGB)[] = Object.freeze([
-  'rgb-surface-primary',
-  'rgb-surface-secondary',
-  'rgb-surface-tertiary',
-  'rgb-surface-dialog',
-  'rgb-surface-chat',
-]);
-
-/** What a theme has to paint to have coordinated the outline its controls wore. */
-const CONTROL_SURROUNDINGS: readonly (keyof IThemeRGB)[] = Object.freeze([
-  'rgb-border-light',
-  'rgb-border-medium',
-  ...CONTROL_CANVASES,
-]);
-
-/** The outline's lowest contrast across the canvases a theme paints. */
-const weakestContrast = (outline: string, palette: IThemeRGB): number =>
-  CONTROL_CANVASES.reduce((weakest, canvas) => {
-    const surface = palette[canvas];
-    const ratio = surface === undefined ? undefined : contrastRatio(outline, surface);
-    return ratio === undefined ? weakest : Math.min(weakest, ratio);
-  }, Number.POSITIVE_INFINITY);
-
 /**
  * The control outline for a stored or environment theme that predates
- * `rgb-border-control`. Controls drew `border-light` (fields, dropdowns,
- * comboboxes) or `border-medium` (select, OTP) before the role existed, so a
- * theme that painted either, or the canvases they sit on, coordinated an
- * outline this role now replaces. The first candidate that clears the 3:1
- * non-text floor on the theme's own canvases wins: its light border, its
- * medium border, the bundled role, then its secondary and primary text. When
- * none clears, the one that comes closest does. A theme that names none of
- * these keeps the bundled role, and one that names the role keeps it as written.
- * `base` is the bundled palette for the mode, which the theme is painted over.
+ * `rgb-border-control`. Fields, dropdowns and comboboxes drew `border-light`
+ * before the role existed, so a theme that painted it keeps that edge on its
+ * controls. A theme that does not keeps the bundled role, and one that names
+ * the role keeps it as written.
  */
-export function controlBorderFallback(colors: IThemeRGB, base: IThemeRGB = {}): string | undefined {
+export function controlBorderFallback(colors: IThemeRGB): string | undefined {
   if (colors['rgb-border-control'] !== undefined) {
     return undefined;
   }
-  const ownsControlSurroundings = CONTROL_SURROUNDINGS.some((token) => colors[token] !== undefined);
-  if (!ownsControlSurroundings) {
-    return undefined;
-  }
-  const palette: IThemeRGB = { ...base, ...colors };
-  const ranked = [
-    colors['rgb-border-light'],
-    colors['rgb-border-medium'],
-    base['rgb-border-control'],
-    palette['rgb-text-secondary'],
-    palette['rgb-text-primary'],
-  ]
-    .filter((value): value is string => value !== undefined)
-    .map((outline) => ({ outline, contrast: weakestContrast(outline, palette) }));
-  const clearing = ranked.find(({ contrast }) => contrast >= NON_TEXT_CONTRAST);
-  const closest = ranked.reduce<(typeof ranked)[number] | undefined>(
-    (best, entry) => (best === undefined || entry.contrast > best.contrast ? entry : best),
-    undefined,
-  );
-  return (clearing ?? closest)?.outline;
+  return colors['rgb-border-light'];
 }
 
 export const themeAppearanceProperties: Readonly<
@@ -646,7 +595,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ? { 'rgb-chart-widget-stroke': customColors['rgb-border-light'] }
       : {};
   const borderControlSource =
-    customColors != null ? controlBorderFallback(customColors, baseColors) : undefined;
+    customColors != null ? controlBorderFallback(customColors) : undefined;
   const borderControlFallback =
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
   /**

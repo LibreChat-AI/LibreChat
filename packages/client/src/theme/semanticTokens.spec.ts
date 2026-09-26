@@ -613,14 +613,12 @@ describe('syntax highlighting palette', () => {
 });
 
 /** `border-control` is the only edge a form control has (`Field`, `Select`,
- *  `InputOTP`, the dropdown and combobox triggers), so it is a UI component
- *  boundary under WCAG 1.4.11 and owes 3:1 on every canvas a form can sit on.
- *  The separator roles are deliberately quieter and are not held to this. */
+ *  `InputOTP`, the dropdown and combobox triggers). The stock light and dark
+ *  palettes keep it at their quiet `border-light` value by design; the high
+ *  contrast and ClickHouse palettes hold it to the WCAG 1.4.11 3:1 floor. */
 const controlCanvases: Array<keyof IThemeRGB> = [...canvasSurfaces, 'rgb-surface-tertiary'];
 
 describe.each([
-  ['default', defaultTheme],
-  ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
   ['clickhouse light', clickHouseLightTheme],

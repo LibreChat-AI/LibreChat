@@ -5,11 +5,12 @@ import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
 import { themeValue } from './style.helpers';
 
 /**
- * A form control's outline is the only edge it has, so it owes the WCAG 1.4.11
- * 3:1 non-text floor against whatever the control is painted on. The separators
- * are a different role and stay quiet. The probe is a real control, the week
+ * A form control's outline is the only edge it has. The stock light and dark
+ * palettes keep it at their quiet light border, and the high contrast and
+ * ClickHouse palettes hold it to the WCAG 1.4.11 3:1 non-text floor against
+ * whatever the control is painted on. The probe is a real control, the week
  * start `Dropdown` in the settings dialog, measured against the first opaque
- * surface behind it, in every palette the app ships.
+ * surface behind it.
  */
 
 type Rgb = [number, number, number];
@@ -85,16 +86,6 @@ const PALETTES: Array<{
   definition?: unknown;
 }> = [
   {
-    name: 'default light',
-    tag: '@scenario:control-outline-clears-3-to-1-default-light',
-    appearance: 'light',
-  },
-  {
-    name: 'default dark',
-    tag: '@scenario:control-outline-clears-3-to-1-default-dark',
-    appearance: 'dark',
-  },
-  {
     name: 'high contrast light',
     tag: '@scenario:control-outline-clears-3-to-1-high-contrast-light',
     appearance: 'high-contrast-light',
@@ -154,7 +145,7 @@ test.describe('form control outline', () => {
     const definition = {
       version: 1,
       name: 'legacy-outline',
-      modes: { light: { colors: { 'rgb-border-medium': '70 90 110' } } },
+      modes: { light: { colors: { 'rgb-border-light': '70 90 110' } } },
     };
     await installAppearance(page, 'light', definition);
     await openSettings(page);

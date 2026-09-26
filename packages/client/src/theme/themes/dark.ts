@@ -69,7 +69,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-border-heavy': '89 89 89', // #595959 (gray-500)
   'rgb-border-xheavy': '153 150 150', // #999696 (gray-400)
   'rgb-border-destructive': '239 68 68', // #ef4444 (red-500)
-  'rgb-border-control': '125 125 125', // #7d7d7d, 3.25:1 on gray-700, the lightest canvas
+  'rgb-border-control': '33 33 33', // #212121 (gray-800), the stock field edge
 
   // Status colors
   'rgb-status-success': '110 231 183', // #6ee7b7 (green-300)

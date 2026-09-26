@@ -69,7 +69,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-heavy': '153 150 150', // #999696 (gray-400)
   'rgb-border-xheavy': '89 89 89', // #595959 (gray-500)
   'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
-  'rgb-border-control': '133 133 133', // #858585, 3.12:1 on gray-100, the lightest canvas
+  'rgb-border-control': '227 227 227', // #e3e3e3 (gray-200), the stock field edge
 
   // Status colors
   'rgb-status-success': '4 120 87', // #047857 (green-700)
