@@ -1,8 +1,14 @@
 import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import { useWatch } from 'react-hook-form';
 import { useRecoilState, useRecoilValue } from 'recoil';
-import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
 import { composerSurfaceClasses, composerSurfaceShadow, TextareaAutosize } from '@librechat/client';
+import {
+  Constants,
+  Permissions,
+  PermissionTypes,
+  isAgentsEndpoint,
+  isAssistantsEndpoint,
+} from 'librechat-data-provider';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { ExtendedFile, FileSetter, ConvoGenerator, TAskFunction } from '~/common';
@@ -50,6 +56,7 @@ import Hints, { composerHintId } from './Composer/Hints';
 import PastedTextDialog from './Files/PastedTextDialog';
 import DuringRunSendButton from './DuringRunSendButton';
 import ProjectLandingChip from '../ProjectLandingChip';
+import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
 import { useGetStartupConfig } from '~/data-provider';
 import CodeWorkspaceMenu from './CodeWorkspaceMenu';
@@ -498,6 +505,20 @@ const ChatForm = memo(function ChatForm({
 
   const composerItems = useComposerItems(conversationId, quotesEnabled);
   const attachTarget = useAttachTarget(conversation, disableInputs);
+  const hasPromptsAccess = useHasAccess({
+    permissionType: PermissionTypes.PROMPTS,
+    permission: Permissions.USE,
+  });
+  const slashCommandEnabled = useRecoilValue(store.slashCommand);
+  const atCommandEnabled = useRecoilValue(store.atCommand);
+  const idleActions = useMemo(
+    () => ({
+      prompts: hasPromptsAccess && slashCommandEnabled,
+      mentions: atCommandEnabled,
+      attach: attachTarget.canAttach,
+    }),
+    [hasPromptsAccess, slashCommandEnabled, atCommandEnabled, attachTarget.canAttach],
+  );
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
   const speechDisabled =
@@ -980,6 +1001,7 @@ const ChatForm = memo(function ChatForm({
             canSteer={steering.canSteer && steering.pendingReasoningOverride == null}
             answerModeActive={answerMode.active}
             uploadingCount={uploadingCount}
+            idleActions={idleActions}
           />
         </div>
       </div>

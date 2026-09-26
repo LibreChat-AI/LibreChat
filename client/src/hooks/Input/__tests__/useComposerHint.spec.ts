@@ -17,6 +17,7 @@ const baseState: ComposerHintState = {
   answerModeActive: false,
   uploadingCount: 0,
   enterToSend: true,
+  idleActions: { prompts: true, mentions: true, attach: true },
 };
 
 /** What `useShortcutDisplay('stopGenerating')` resolves to by default on a Mac. */
@@ -36,7 +37,21 @@ const kindOf = (overrides: Partial<ComposerHintState>) =>
 
 describe('composeHint', () => {
   it('shows discovery affordances on an untouched composer', () => {
-    expect(hint({})).toBe('com_ui_composer_hint_idle');
+    expect(hint({})).toBe(
+      'com_ui_composer_hint_prompts · com_ui_composer_hint_mentions · com_ui_composer_hint_attach',
+    );
+  });
+
+  /* The hint is also the textarea's description, so an affordance the
+     composer would refuse is named to screen-reader users as if it worked. */
+  it('names only the idle affordances that act', () => {
+    expect(hint({ idleActions: { prompts: false, mentions: true, attach: true } })).toBe(
+      'com_ui_composer_hint_mentions · com_ui_composer_hint_attach',
+    );
+    expect(hint({ idleActions: { prompts: true, mentions: false, attach: false } })).toBe(
+      'com_ui_composer_hint_prompts',
+    );
+    expect(hint({ idleActions: { prompts: false, mentions: false, attach: false } })).toBe('');
   });
 
   it('switches to send/newline once there is text', () => {
