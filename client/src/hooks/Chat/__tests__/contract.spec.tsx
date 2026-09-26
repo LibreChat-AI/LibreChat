@@ -1,6 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TConversation, TMessage, TSubmission } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
@@ -18,9 +18,14 @@ jest.mock('~/hooks/Messages/useLatestMessage', () => ({
   useLatestMessageId: () => null,
 }));
 
+let submit: ((submission: TSubmission | null) => void) | undefined;
+
 jest.mock('~/hooks/Chat/useChatFunctions', () => ({
   __esModule: true,
-  default: () => ({ ask: jest.fn(), regenerate: jest.fn() }),
+  default: (options: { setSubmission: (submission: TSubmission | null) => void }) => {
+    submit = options.setSubmission;
+    return { ask: jest.fn(), regenerate: jest.fn() };
+  },
 }));
 
 jest.mock('~/hooks/useNewConvo', () => ({
@@ -73,15 +78,31 @@ describe('useChatHelpers contract members', () => {
     expect(result.current.messagesKey).toBe('convo-1');
   });
 
-  it('serves the response the in-flight submission was seeded with', () => {
+  it('serves the response ask submitted while the turn is in flight', () => {
     const { result } = renderChatHelpers('convo-1', ({ set }) => {
+      set(store.isSubmittingFamily(0), true);
+    });
+
+    act(() => submit?.({ initialResponse } as TSubmission));
+
+    expect(result.current.initialResponse).toBe(initialResponse);
+  });
+
+  it('drops the submitted response once the turn settles', () => {
+    const { result } = renderChatHelpers('convo-1');
+
+    act(() => submit?.({ initialResponse } as TSubmission));
+
+    expect(result.current.isSubmitting).toBe(false);
+    expect(result.current.initialResponse).toBeUndefined();
+  });
+
+  it('has no submitted response for a run restored outside ask', () => {
+    const { result } = renderChatHelpers('convo-1', ({ set }) => {
+      set(store.isSubmittingFamily(0), true);
       set(store.submissionByIndex(0), { initialResponse } as TSubmission);
     });
 
-    expect(result.current.initialResponse).toEqual(initialResponse);
-  });
-
-  it('has no initial response before a turn is submitted', () => {
-    expect(renderChatHelpers('convo-1').result.current.initialResponse).toBeUndefined();
+    expect(result.current.initialResponse).toBeUndefined();
   });
 });
