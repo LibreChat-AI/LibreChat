@@ -323,6 +323,26 @@ function lastWordStart(value: string): number {
 }
 
 /**
+ * Offset past which appended text can still change the classified parts. A
+ * whitespace-delimited word can keep growing, so the limit is its start; a
+ * spaceless run (CJK, Thai) never reaches whitespace, so everything before its
+ * final segment is treated as stable. Re-segmenting there can only change fade
+ * granularity, since the parts always concatenate back to the exact text.
+ */
+function stableLimit(tail: string, offset: number, segments: FadeSegment[]): number {
+  const wordStart = lastWordStart(tail);
+  if (!SPACELESS_REGEX.test(tail.slice(wordStart))) {
+    return offset + wordStart;
+  }
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (NON_WHITESPACE_REGEX.test(segments[i].value)) {
+      return segments[i].start;
+    }
+  }
+  return offset + wordStart;
+}
+
+/**
  * Whether `text` still extends the settled `prefix`. Probes only the prefix's
  * head and the region at its boundary so the per-token check stays constant
  * rather than rescanning the whole accumulated prefix; an append-only stream
@@ -348,8 +368,8 @@ function extendsPrefix(text: string, prefix: string): boolean {
  * once settled. Classification is append-only: the leading run of parts that
  * finished fading collapses into a single committed text node and is never
  * re-split, so each streamed token costs work proportional to the unsettled
- * tail rather than the accumulated text. The settled boundary stops before the
- * last word, since appended text can still extend or re-segment it.
+ * tail rather than the accumulated text. The settled boundary stops at
+ * {@link stableLimit}, since appended text can still extend the last word.
  */
 export const AnimatedText = memo(function AnimatedText({ text }: { text: string }) {
   const stateRef = useRef<FadeState | null>(null);
@@ -367,7 +387,7 @@ export const AnimatedText = memo(function AnimatedText({ text }: { text: string 
   const segments = classifyValue(run, tail);
   stageRun(run);
 
-  const limit = settledLength + lastWordStart(tail);
+  const limit = stableLimit(tail, settledLength, segments);
   const boundary = segments.find((segment) => segment.animated || segment.start >= limit);
   const nextSettledLength = boundary?.start ?? limit;
 

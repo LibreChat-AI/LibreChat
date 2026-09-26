@@ -296,6 +296,22 @@ describe('AnimatedText', () => {
     expect(container.textContent).toBe('alpha betamax');
   });
 
+  it('settles a spaceless run before its final segment so it does not stay in the tail', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const base = '我们需要先分析这个问题然后给出答案';
+    const { container, rerender } = render(<AnimatedText text={base} />);
+    setTime(settle);
+    rerender(<AnimatedText text={`${base}首先`} />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text={`${base}首先考虑`} />);
+
+    const first = container.firstChild;
+    expect(first?.nodeType).toBe(Node.TEXT_NODE);
+    expect(first?.textContent?.startsWith(base)).toBe(true);
+    expect(container.childNodes.length).toBeLessThanOrEqual(3);
+    expect(container.textContent).toBe(`${base}首先考虑`);
+  });
+
   it('re-classifies from the start when the text no longer extends the settled prefix', () => {
     const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
     const { container, rerender } = render(<AnimatedText text="first draft here" />);
