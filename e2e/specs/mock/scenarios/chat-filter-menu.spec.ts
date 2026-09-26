@@ -274,6 +274,31 @@ test.describe('chat list properties menu', () => {
     await expect(chatsRow(page, archivedInProject)).toBeVisible();
   });
 
+  test('a project chat stays in Chats when the projects fail to load @scenario:project-chats-reachable-when-projects-fail', async ({
+    page,
+  }) => {
+    const inProject = uniqueTitle('orphaned');
+    const unassigned = uniqueTitle('unassigned');
+    /* No project document is needed: the list request is what hides a project chat, and
+     * the project list it depends on is made to fail below. */
+    await seedRows([
+      { title: inProject, chatProjectId: randomUUID().replace(/-/g, '').slice(0, 24) },
+      { title: unassigned },
+    ]);
+    await page.route(
+      (url) => url.pathname === '/api/projects',
+      (route) =>
+        route.request().method() === 'GET'
+          ? route.fulfill({ status: 500, body: '{}' })
+          : route.continue(),
+    );
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await showSidebar(page);
+
+    await expect(chatsRow(page, unassigned)).toBeVisible();
+    await expect(chatsRow(page, inProject)).toBeVisible({ timeout: 30000 });
+  });
+
   test('a chat sent while a server-only facet is active is not added to the filtered list @scenario:live-chat-respects-active-facet', async ({
     page,
   }) => {
