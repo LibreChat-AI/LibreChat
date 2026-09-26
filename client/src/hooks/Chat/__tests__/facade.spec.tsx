@@ -39,6 +39,7 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     optionSettings: {},
     setOptionSettings: noop,
     getMessages: jest.fn(() => initialMessages),
+    messagesKey: 'convo-1',
     setMessages: jest.fn(),
     setSiblingIdx: noop,
     latestMessageId: 'user-1',
@@ -46,6 +47,7 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     ask: jest.fn(),
     regenerate: jest.fn(),
     isSubmitting: false,
+    initialResponse: undefined,
     setIsSubmitting: noop,
     handleRegenerate: noop,
     handleContinue: noop,
@@ -130,7 +132,44 @@ describe('useChat', () => {
     expect(result.current.messages[1].parts[0]).toMatchObject({
       type: 'tool-set_memory',
       state: 'output-error',
+      errorText: 'Invalid key: bad key',
     });
+  });
+
+  it('reports the chat the messages are read from while the conversation catches up', () => {
+    const { result } = renderChat(createContract({ messagesKey: 'convo-2' }));
+
+    expect(result.current.id).toBe('convo-2');
+  });
+
+  it('stays submitted while a rerun edit holds only its retained prefix', () => {
+    const prefix: TMessageContentParts = { type: ContentTypes.TEXT, text: 'Edited answer' };
+    const seed = response({ content: [prefix] });
+    const seeded = [userMessage, seed];
+    const { result, update } = renderChat(
+      createContract({
+        getMessages: jest.fn(() => seeded),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+    expect(result.current.status).toBe('submitted');
+
+    const streamed = [
+      userMessage,
+      response({ content: [prefix, { type: ContentTypes.TEXT, text: ' and more' }] }),
+    ];
+    update(
+      createContract({
+        getMessages: jest.fn(() => streamed),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+
+    expect(result.current.status).toBe('streaming');
   });
 
   it('stays submitted while the response holds only placeholder parts', () => {
@@ -362,6 +401,30 @@ describe('useChat', () => {
       userMessage,
       expect.objectContaining({ messageId: 'note-1', conversationId: 'convo-1' }),
     ]);
+  });
+
+  it('parents an appended message to the active branch, not a hidden sibling', () => {
+    const shown = response({ messageId: 'response-a', text: 'Shown' });
+    const hidden = response({ messageId: 'response-b', text: 'Hidden' });
+    const branches = [userMessage, shown, hidden];
+    const contract = createContract({
+      getMessages: jest.fn(() => branches),
+      latestMessageId: 'response-a',
+    });
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      { id: 'note-1', role: 'assistant', parts: [{ type: 'text', text: 'Note' }] },
+      { id: 'note-2', role: 'assistant', parts: [{ type: 'text', text: 'Next' }] },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: 'note-1', parentMessageId: 'response-a' }),
+        expect.objectContaining({ messageId: 'note-2', parentMessageId: 'note-1' }),
+      ]),
+    );
   });
 
   it('walks submit, stream, and finish', () => {
