@@ -65,7 +65,7 @@ const PEEK_FADE =
  * out loud" treatment popularized by Grok). Decorative only (aria-hidden); the
  * toggle button above it provides the accessible control.
  */
-const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
+export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
   const ref = useRef<HTMLDivElement>(null);
   const fontSize = useAtomValue(fontSizeAtom);
   const peek = useMemo(() => lastSentences(text), [text]);
@@ -88,6 +88,7 @@ const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
     <div
       aria-hidden="true"
       className="mt-1 overflow-hidden rounded-2xl border border-border-light px-4 py-3"
+      data-testid="streaming-thought-peek"
     >
       <div
         ref={ref}

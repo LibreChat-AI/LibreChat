@@ -76,6 +76,9 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('../Parts', () => ({
+  StreamingThoughtPeek: ({ text }: { text: string }) => (
+    <div data-testid="streaming-thought-peek">{text}</div>
+  ),
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div
       data-testid="attachment-group"

@@ -606,3 +606,58 @@ describe('ActivityPhaseGroup open live header', () => {
     expect(within(screen.getByRole('button')).getByTitle('com_ui_thinking')).toBeInTheDocument();
   });
 });
+
+describe('ActivityPhaseGroup streaming thought peek', () => {
+  const thought: TMessageContentParts = {
+    type: ContentTypes.THINK,
+    think: 'The refs share a commit. Next I check the ordering. Then the tags.',
+  } as unknown as TMessageContentParts;
+  const call: TMessageContentParts = {
+    type: ContentTypes.TOOL_CALL,
+    [ContentTypes.TOOL_CALL]: {
+      id: 'c1',
+      name: 'lookup',
+      args: '{}',
+      type: 'tool_call',
+      output: '',
+    },
+  } as unknown as TMessageContentParts;
+
+  test("shows the streaming thought under a collapsed live card, in the cursor's place", () => {
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought]} showCursor>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    const peek = screen.getByTestId('streaming-thought-peek');
+    expect(peek).toHaveTextContent('Next I check the ordering. Then the tags.');
+    expect(screen.queryByTestId('activity-phase-cursor')).toBeNull();
+    /** Under the header, not inside the fold that would unmount it. */
+    expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(peek);
+  });
+
+  test('gives way to the rows once the card is open', () => {
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+  });
+
+  test('keeps the cursor when a call, not a thought, is at the tail', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought, call]}
+        showCursor
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+    expect(screen.getByTestId('activity-phase-cursor')).toBeInTheDocument();
+  });
+});
