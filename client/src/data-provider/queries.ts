@@ -86,12 +86,39 @@ export const useConversationsInfiniteQuery = (
   params: ConversationListParams,
   config?: UseInfiniteQueryOptions<ConversationListResponse, unknown>,
 ) => {
-  const { isArchived, sortBy, sortDirection, tags, search, projectId } = params;
+  const {
+    isArchived,
+    sortBy,
+    sortDirection,
+    tags,
+    search,
+    projectId,
+    updatedAfter,
+    createdAfter,
+    endpoints,
+    hasFiles,
+    sharedOnly,
+  } = params;
 
   return useInfiniteQuery<ConversationListResponse>({
+    /* Every filter belongs in the key: a facet left out would serve one filter's pages
+       to another and, because the cursor is part of that cache entry, keep paging the
+       wrong list. */
     queryKey: [
       isArchived ? QueryKeys.archivedConversations : QueryKeys.allConversations,
-      { isArchived, sortBy, sortDirection, tags, search, projectId },
+      {
+        isArchived,
+        sortBy,
+        sortDirection,
+        tags,
+        search,
+        projectId,
+        updatedAfter,
+        createdAfter,
+        endpoints,
+        hasFiles,
+        sharedOnly,
+      },
     ],
     queryFn: async ({ pageParam }) => {
       const page = await dataService.listConversations({
@@ -101,6 +128,11 @@ export const useConversationsInfiniteQuery = (
         tags,
         search,
         projectId,
+        updatedAfter,
+        createdAfter,
+        endpoints,
+        hasFiles,
+        sharedOnly,
         cursor: pageParam?.toString(),
       });
       /* A row's own `isArchived` decides what its menu offers, so a backend that predates

@@ -1,3 +1,4 @@
+import { EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, InfiniteData } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationCursorData } from './convos';
@@ -1558,6 +1559,128 @@ describe('Conversation Utilities', () => {
 
         expect(queryClient.getQueryState(['allConversations'])?.isInvalidated).toBe(true);
         expect(queryClient.getQueryState(archivedKey)?.isInvalidated).toBe(true);
+      });
+    });
+
+    describe('addConversationToAllConversationsQueries with list facets', () => {
+      const emptyPages = { pages: [{ conversations: [], nextCursor: null }], pageParams: [] };
+      /** A row the endpoint and date facets can judge from its own fields. */
+      const facetConvo = {
+        conversationId: 'facet',
+        endpoint: 'openAI',
+        createdAt: '2026-09-20T10:00:00.000Z',
+        updatedAt: '2026-09-24T10:00:00.000Z',
+        isArchived: false,
+      } as TConversation;
+
+      it('skips a variant whose endpoint facet excludes the row', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { endpoints: ['google'] }];
+        queryClient.setQueryData(key, emptyPages);
+
+        addConversationToAllConversationsQueries(queryClient, facetConvo);
+
+        expect(
+          queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations,
+        ).toHaveLength(0);
+      });
+
+      it('skips a row older than the variant date cutoff', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { updatedAfter: '2026-09-25T00:00:00.000Z' }];
+        queryClient.setQueryData(key, emptyPages);
+
+        addConversationToAllConversationsQueries(queryClient, facetConvo);
+
+        expect(
+          queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations,
+        ).toHaveLength(0);
+      });
+
+      it('keeps inserting into a date facet the row satisfies', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { updatedAfter: '2026-09-24T00:00:00.000Z' }];
+        queryClient.setQueryData(key, emptyPages);
+
+        addConversationToAllConversationsQueries(queryClient, facetConvo);
+
+        expect(
+          queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations[0]
+            .conversationId,
+        ).toBe('facet');
+      });
+
+      it('drops a cached row from an endpoint facet once the chat moves to another provider', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { endpoints: ['openAI'] }];
+        queryClient.setQueryData(key, {
+          pages: [{ conversations: [facetConvo], nextCursor: null }],
+          pageParams: [],
+        });
+
+        upsertConvoInAllQueries(queryClient, { ...facetConvo, endpoint: EModelEndpoint.google });
+
+        expect(
+          queryClient
+            .getQueryData<InfiniteData<any>>(key)!
+            .pages.flatMap((page) => page.conversations),
+        ).toHaveLength(0);
+      });
+
+      it('drops a row from an endpoint facet when an in-place update changes its provider', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { endpoints: ['openAI'] }];
+        queryClient.setQueryData(key, {
+          pages: [{ conversations: [facetConvo], nextCursor: null }],
+          pageParams: [],
+        });
+
+        updateConvoInAllQueries(queryClient, 'facet', (convo) => ({
+          ...convo,
+          endpoint: EModelEndpoint.google,
+        }));
+
+        expect(
+          queryClient
+            .getQueryData<InfiniteData<any>>(key)!
+            .pages.flatMap((page) => page.conversations),
+        ).toHaveLength(0);
+      });
+
+      it('keeps a cached row whose update carries no endpoint to judge', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { endpoints: ['openAI'] }];
+        queryClient.setQueryData(key, {
+          pages: [{ conversations: [{ ...facetConvo, endpoint: null }], nextCursor: null }],
+          pageParams: [],
+        });
+
+        upsertConvoInAllQueries(queryClient, { ...facetConvo, endpoint: null, title: 'Renamed' });
+
+        expect(
+          queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations[0].title,
+        ).toBe('Renamed');
+      });
+
+      /** Attachments and sharing live in collections the list row does not carry, so
+       *  only the server can place a row in those variants. */
+      it.each([
+        ['attachments', { hasFiles: true }],
+        ['sharing', { sharedOnly: true }],
+      ])('refetches a variant filtered on %s instead of inserting', (_name, facet) => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', facet];
+        queryClient.setQueryData(key, emptyPages);
+        const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+
+        addConversationToAllConversationsQueries(queryClient, facetConvo);
+
+        expect(invalidate).toHaveBeenCalledWith(
+          expect.objectContaining({ queryKey: key, refetchType: 'active' }),
+        );
+        expect(
+          queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations,
+        ).toHaveLength(0);
       });
     });
   });
