@@ -256,6 +256,15 @@ describe('useChat', () => {
     expect(queryClient.getQueryData<TMessage[]>(key)).toBe(before);
     expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
     expect(result.current.status).toBe('streaming');
+
+    const findAll = jest.spyOn(queryClient.getQueryCache(), 'findAll');
+    act(() => {
+      streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello there' }];
+      queryClient.setQueryData(key, [userMessage, streaming]);
+    });
+
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello there' }]);
+    expect(findAll).not.toHaveBeenCalled();
   });
 
   it('keeps its messages when another conversation is written', () => {
