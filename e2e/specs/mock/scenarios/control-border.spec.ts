@@ -140,10 +140,22 @@ test.describe('form control outline', () => {
     expect(await themeValue(page, '--border-control')).toBe(darkTheme['rgb-border-control']);
   });
 
-  for (const appearance of ['light', 'dark'] as const) {
-    test(`a stock ${appearance} dropdown outline matches the card border @scenario:stock-control-outline-matches-card-border-${appearance}`, async ({
-      page,
-    }) => {
+  /** Each tag is written out whole: the runner finds a scenario by its literal tag. */
+  const STOCK: Array<{ appearance: Appearance; title: string }> = [
+    {
+      appearance: 'light',
+      title:
+        'a stock light dropdown outline matches the card border @scenario:stock-control-outline-matches-card-border-light',
+    },
+    {
+      appearance: 'dark',
+      title:
+        'a stock dark dropdown outline matches the card border @scenario:stock-control-outline-matches-card-border-dark',
+    },
+  ];
+
+  for (const { appearance, title } of STOCK) {
+    test(title, async ({ page }) => {
       await installAppearance(page, appearance);
       await openSettings(page);
 
