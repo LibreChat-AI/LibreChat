@@ -216,7 +216,8 @@ export default function useChatFunctions({
   setMessages: (messages: TMessage[]) => void;
   files?: Map<string, ExtendedFile>;
   setFiles?: SetterOrUpdater<Map<string, ExtendedFile>>;
-  setSubmission: SetterOrUpdater<TSubmission | null>;
+  /** Starts the turn; `ask` always passes the submission it built. */
+  setSubmission: (submission: TSubmission) => void;
 }) {
   const navigate = useNavigate();
   const getSender = useGetSender();

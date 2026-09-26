@@ -4,7 +4,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
-import type { SetterOrUpdater } from 'recoil';
 import type { ChatContract } from './contract';
 import {
   useGetStartupConfig,
@@ -155,12 +154,10 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   const [submittedResponse, setSubmittedResponse] = useState<TMessage>();
   /** Keeps the response `ask` submits, as it submits it; a run restored after a reload sets the
    *  submission elsewhere, so it has no pre-stream response here. */
-  const setSubmission = useCallback<SetterOrUpdater<TSubmission | null>>(
-    (update) => {
-      if (typeof update !== 'function') {
-        setSubmittedResponse(update?.initialResponse);
-      }
-      setStoredSubmission(update);
+  const setSubmission = useCallback(
+    (submission: TSubmission) => {
+      setSubmittedResponse(submission.initialResponse);
+      setStoredSubmission(submission);
     },
     [setStoredSubmission],
   );
