@@ -296,20 +296,31 @@ describe('AnimatedText', () => {
     expect(container.textContent).toBe('alpha betamax');
   });
 
-  it('settles a spaceless run before its final segment so it does not stay in the tail', () => {
+  it.each([
+    ['a spaceless CJK run', '我们需要先分析这个问题然后给出答案'.repeat(8), '首先考虑'],
+    ['an unsegmented run without whitespace', 'x'.repeat(200), 'yyyy'],
+    ['spaced words', 'word '.repeat(60), 'more '],
+  ])('only classifies a bounded tail per render for %s', (_label, base, appended) => {
     const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
-    const base = '我们需要先分析这个问题然后给出答案';
     const { container, rerender } = render(<AnimatedText text={base} />);
     setTime(settle);
-    rerender(<AnimatedText text={`${base}首先`} />);
+    rerender(<AnimatedText text={`${base}${appended}`} />);
     setTime(settle * 2);
-    rerender(<AnimatedText text={`${base}首先考虑`} />);
 
-    const first = container.firstChild;
-    expect(first?.nodeType).toBe(Node.TEXT_NODE);
-    expect(first?.textContent?.startsWith(base)).toBe(true);
-    expect(container.childNodes.length).toBeLessThanOrEqual(3);
-    expect(container.textContent).toBe(`${base}首先考虑`);
+    const execSpy = jest.spyOn(RegExp.prototype, 'exec');
+    rerender(<AnimatedText text={`${base}${appended}${appended}`} />);
+    const classified = execSpy.mock.calls.reduce(
+      (longest, [input], index) =>
+        execSpy.mock.contexts[index].source === '\\S+\\s*'
+          ? Math.max(longest, input.length)
+          : longest,
+      0,
+    );
+    execSpy.mockRestore();
+
+    expect(classified).toBeGreaterThan(0);
+    expect(classified).toBeLessThanOrEqual(64 + appended.length * 2);
+    expect(container.textContent).toBe(`${base}${appended}${appended}`);
   });
 
   it('re-classifies from the start when the text no longer extends the settled prefix', () => {

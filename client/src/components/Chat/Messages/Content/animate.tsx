@@ -309,6 +309,13 @@ export function createFadePlugin(hydrated = false): FadePlugin {
 const DELAY_VAR = '--lc-delay';
 const WHITESPACE_REGEX = /\s/;
 const PREFIX_PROBE_LENGTH = 32;
+/**
+ * Longest trailing run kept unsettled. Bounds per-token work when the last
+ * word never reaches whitespace (CJK, Thai, unspaced Hangul, URLs). Only
+ * settled, non-animated text is cut, and it renders as plain text on both
+ * sides of the cut, so a cut inside a part is invisible.
+ */
+const MAX_UNSETTLED_LENGTH = 64;
 
 /** Offset of the last whitespace-delimited word, which appended text can still extend. */
 function lastWordStart(value: string): number {
@@ -320,26 +327,6 @@ function lastWordStart(value: string): number {
     index -= 1;
   }
   return index;
-}
-
-/**
- * Offset past which appended text can still change the classified parts. A
- * whitespace-delimited word can keep growing, so the limit is its start; a
- * spaceless run (CJK, Thai) never reaches whitespace, so everything before its
- * final segment is treated as stable. Re-segmenting there can only change fade
- * granularity, since the parts always concatenate back to the exact text.
- */
-function stableLimit(tail: string, offset: number, segments: FadeSegment[]): number {
-  const wordStart = lastWordStart(tail);
-  if (!SPACELESS_REGEX.test(tail.slice(wordStart))) {
-    return offset + wordStart;
-  }
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (NON_WHITESPACE_REGEX.test(segments[i].value)) {
-      return segments[i].start;
-    }
-  }
-  return offset + wordStart;
 }
 
 /**
@@ -368,8 +355,9 @@ function extendsPrefix(text: string, prefix: string): boolean {
  * once settled. Classification is append-only: the leading run of parts that
  * finished fading collapses into a single committed text node and is never
  * re-split, so each streamed token costs work proportional to the unsettled
- * tail rather than the accumulated text. The settled boundary stops at
- * {@link stableLimit}, since appended text can still extend the last word.
+ * tail rather than the accumulated text. The settled boundary never passes a
+ * word that is still fading, and stops before the last word (which appended
+ * text can still extend) unless that word outgrows MAX_UNSETTLED_LENGTH.
  */
 export const AnimatedText = memo(function AnimatedText({ text }: { text: string }) {
   const stateRef = useRef<FadeState | null>(null);
@@ -387,9 +375,9 @@ export const AnimatedText = memo(function AnimatedText({ text }: { text: string 
   const segments = classifyValue(run, tail);
   stageRun(run);
 
-  const limit = stableLimit(tail, settledLength, segments);
-  const boundary = segments.find((segment) => segment.animated || segment.start >= limit);
-  const nextSettledLength = boundary?.start ?? limit;
+  const limit = Math.max(settledLength + lastWordStart(tail), text.length - MAX_UNSETTLED_LENGTH);
+  const firstAnimated = segments.find((segment) => segment.animated);
+  const nextSettledLength = Math.min(limit, firstAnimated?.start ?? limit);
 
   useLayoutEffect(() => {
     commitRun(state);
