@@ -133,17 +133,20 @@ describe('credentials', () => {
     ['short IV', 'b'.repeat(30)],
     ['overlong IV', 'b'.repeat(64)],
     ['trailing non-hex', `${'b'.repeat(32)}!`],
-  ])('refuses startup for a configured %s even when temporary credentials exist', (_case, value) => {
-    fs.writeFileSync(tempFile, `CREDS_IV=${'b'.repeat(32)}\n`);
-    process.env.CREDS_IV = value;
+  ])(
+    'refuses startup for a configured %s even when temporary credentials exist',
+    (_case, value) => {
+      fs.writeFileSync(tempFile, `CREDS_IV=${'b'.repeat(32)}\n`);
+      process.env.CREDS_IV = value;
 
-    expect(() => bootstrapCredentials()).toThrow(
-      '[credentials] CREDS_IV must be exactly 32 hexadecimal characters (16 bytes).',
-    );
-    expect(getCredentialRuntimeState()).toBeUndefined();
-    expect(process.env.CREDS_KEY).toBeUndefined();
-    expect(process.env.CREDS_IV).toBe(value);
-  });
+      expect(() => bootstrapCredentials()).toThrow(
+        '[credentials] CREDS_IV must be exactly 32 hexadecimal characters (16 bytes).',
+      );
+      expect(getCredentialRuntimeState()).toBeUndefined();
+      expect(process.env.CREDS_KEY).toBeUndefined();
+      expect(process.env.CREDS_IV).toBe(value);
+    },
+  );
 
   it('accepts exact-length uppercase hex credentials without replacing them', () => {
     process.env.CREDS_KEY = 'A'.repeat(64);
