@@ -55,11 +55,14 @@ const ConversationsSection = memo(() => {
   /** The same projects ProjectsSection reads, so an empty Chats list can tell "every
    *  chat lives under a project" from "this account has nothing yet". Shared key, so
    *  this costs no second request. */
-  const { data: projectsData } = useProjectsInfiniteQuery(
+  const { data: projectsData, isSuccess: projectsLoaded } = useProjectsInfiniteQuery(
     { sortBy: 'lastConversationAt', sortDirection: 'desc', limit: 25 },
     { enabled: isAuthenticated, staleTime: 30000, cacheTime: 300000 },
   );
-  const hasProjects = (projectsData?.pages[0]?.projects?.length ?? 0) > 0;
+  /** Only a loaded, empty project list proves the account has nothing yet. While the
+   *  projects are loading or failed to load, an empty Chats list claims no more than
+   *  that nothing sits outside a project. */
+  const hasProjects = !projectsLoaded || (projectsData?.pages[0]?.projects?.length ?? 0) > 0;
 
   const {
     data,

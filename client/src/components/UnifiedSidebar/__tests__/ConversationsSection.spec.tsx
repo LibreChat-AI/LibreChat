@@ -26,6 +26,17 @@ const mockUseFavorites = jest.fn(() => ({
 }));
 const mockUseGetConversationTags = jest.fn(() => ({ data: [] as unknown[] }));
 const mockConversationsRender = jest.fn();
+/** The projects the section reads to word an empty Chats list; none, loaded, by default. */
+type ProjectsResult = {
+  data?: { pages: { projects: unknown[]; nextCursor: null }[]; pageParams: undefined[] };
+  isSuccess: boolean;
+};
+const mockUseProjectsInfiniteQuery = jest.fn(
+  (): ProjectsResult => ({
+    data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
+    isSuccess: true,
+  }),
+);
 /** What the chats list asks the server for, captured per render. */
 const mockListParams = jest.fn();
 const mockSetChatsExpanded = jest.fn();
@@ -89,9 +100,7 @@ jest.mock('~/data-provider', () => ({
   usePinnedConversationsQuery: () => mockPinnedResult,
   /** The section reads the same projects ProjectsSection does, to tell an empty
    *  unassigned list from an empty account; these specs carry no projects. */
-  useProjectsInfiniteQuery: () => ({
-    data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
-  }),
+  useProjectsInfiniteQuery: () => mockUseProjectsInfiniteQuery(),
   useTitleGeneration: () => mockUseTitleGeneration(),
   useGetEndpointsQuery: () => ({ data: {}, isLoading: false }),
   useGetStartupConfig: () => ({ data: { modelSpecs: { list: [] } } }),
@@ -111,8 +120,10 @@ jest.mock('~/hooks/Input/useSelectMention', () => ({
 
 jest.mock('~/components/Conversations', () => {
   const { memo } = jest.requireActual('react');
-  const ConversationsStub = memo(function ConversationsStub() {
-    mockConversationsRender();
+  const ConversationsStub = memo(function ConversationsStub(props: {
+    accountHasProjects?: boolean;
+  }) {
+    mockConversationsRender(props);
     return <div data-testid="conversations-stub" />;
   });
   return { __esModule: true, Conversations: ConversationsStub };
@@ -307,6 +318,34 @@ describe('ConversationsSection project chats', () => {
       search: 'draft',
       projectId: undefined,
     });
+  });
+});
+
+describe('ConversationsSection empty Chats wording', () => {
+  const lastAccountHasProjects = () =>
+    (mockConversationsRender.mock.calls.at(-1)?.[0] as { accountHasProjects?: boolean })
+      .accountHasProjects;
+
+  beforeEach(() => {
+    mockConversationsRender.mockClear();
+    mockUseProjectsInfiniteQuery.mockReset();
+  });
+
+  it('calls the account empty only once its projects have loaded and there are none', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({
+      data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
+      isSuccess: true,
+    });
+    renderSection();
+    await settleRenders();
+    expect(lastAccountHasProjects()).toBe(false);
+  });
+
+  it('does not call the account empty while its projects failed to load', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({ data: undefined, isSuccess: false });
+    renderSection();
+    await settleRenders();
+    expect(lastAccountHasProjects()).toBe(true);
   });
 });
 
