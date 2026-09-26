@@ -143,9 +143,12 @@ describe('useChat', () => {
   });
 
   it('stays submitted while a rerun edit holds only its retained prefix', () => {
-    const prefix: TMessageContentParts = { type: ContentTypes.TEXT, text: 'Edited answer' };
-    const seed = response({ content: [prefix] });
-    const seeded = [userMessage, seed];
+    const seed = response({ content: [{ type: ContentTypes.TEXT, text: 'Edited answer' }] });
+    /** The cache holds equal copies of the seeded parts, not the submitted objects. */
+    const seeded = [
+      userMessage,
+      response({ content: [{ type: ContentTypes.TEXT, text: 'Edited answer' }] }),
+    ];
     const { result, update } = renderChat(
       createContract({
         getMessages: jest.fn(() => seeded),
@@ -158,7 +161,12 @@ describe('useChat', () => {
 
     const streamed = [
       userMessage,
-      response({ content: [prefix, { type: ContentTypes.TEXT, text: ' and more' }] }),
+      response({
+        content: [
+          { type: ContentTypes.TEXT, text: 'Edited answer' },
+          { type: ContentTypes.TEXT, text: ' and more' },
+        ],
+      }),
     ];
     update(
       createContract({
@@ -170,6 +178,39 @@ describe('useChat', () => {
     );
 
     expect(result.current.status).toBe('streaming');
+  });
+
+  it('streams once a seeded lane placeholder is filled', () => {
+    const seed = response({
+      content: [{ type: '' }, { type: '' }] as unknown as TMessageContentParts[],
+    });
+    const filled = [
+      userMessage,
+      response({
+        content: [
+          { type: ContentTypes.TEXT, text: 'Lane one' },
+          { type: '' },
+        ] as unknown as TMessageContentParts[],
+      }),
+    ];
+    const { result } = renderChat(
+      createContract({
+        getMessages: jest.fn(() => filled),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+
+    expect(result.current.status).toBe('streaming');
+  });
+
+  it('reports a failed user message at the tail as an error', () => {
+    const failedUser = { ...userMessage, error: true };
+    const { result } = renderChat(turn([failedUser], false));
+
+    expect(result.current.status).toBe('error');
+    expect(result.current.error?.message).toBe('');
   });
 
   it('stays submitted while the response holds only placeholder parts', () => {

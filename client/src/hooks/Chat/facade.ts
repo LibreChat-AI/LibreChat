@@ -168,8 +168,9 @@ const toView = (message: TMessage) => {
 
 /**
  * Placeholder slots (empty text or think, lane placeholders) are not streamed output, and neither
- * is a part the turn was submitted with, such as a retained edit prefix: the stream replaces a
- * part before it changes it, so a seeded part is still the same object until then.
+ * is a part the turn was submitted with, such as a retained edit prefix. Seeded parts keep their
+ * indices (the cache may hold equal copies, so identity says nothing): the stream appends after
+ * them or fills a seeded placeholder, and never rewrites a seeded part that has content.
  */
 const hasStreamed = (message: TMessage, seed?: TMessage) => {
   if ((message.text?.length ?? 0) > 0 && message.text !== seed?.text) {
@@ -178,19 +179,26 @@ const hasStreamed = (message: TMessage, seed?: TMessage) => {
   if ((message.files?.length ?? 0) > (seed?.files?.length ?? 0)) {
     return true;
   }
-  const seeded = seed?.content;
+  const seeded = seed?.content ?? [];
   return (
-    message.content?.some(
-      (part) => part != null && !isEmptyContentPart(part) && !seeded?.includes(part),
-    ) ?? false
+    message.content?.some((part, index) => {
+      if (part == null || isEmptyContentPart(part)) {
+        return false;
+      }
+      const seededPart = seeded[index];
+      return seededPart == null || isEmptyContentPart(seededPart);
+    }) ?? false
   );
 };
 
-/** The error part names the failure; top-level text is only the fallback for legacy error rows. */
+/**
+ * The error part names the failure; top-level text is only the fallback for legacy error rows,
+ * and never for a failed user message, whose text is what the user sent.
+ */
 const getErrorText = (message: TMessage) => {
   const part = message.content?.find((item) => item?.type === ContentTypes.ERROR);
   if (part?.type !== ContentTypes.ERROR) {
-    return message.text ?? '';
+    return message.isCreatedByUser ? '' : (message.text ?? '');
   }
   const text = typeof part.text === 'string' ? part.text : part.text?.value;
   return part.error || text || message.text || '';
@@ -202,7 +210,8 @@ const isErrorMessage = (message: TMessage) =>
 
 /**
  * `submitted` until the response for the in-flight turn has content, then `streaming`; once the
- * turn ends, `error` when its message failed and `ready` otherwise, a stopped turn included.
+ * turn ends, `error` when the latest message failed (a user message that never got a response
+ * included) and `ready` otherwise, a stopped turn included.
  * `abortScroll` is a scroll hold rather than an abort flag, so a stop is read from the settled
  * message, not from it.
  */
@@ -216,7 +225,7 @@ export const getChatStatus = (
       ? 'streaming'
       : 'submitted';
   }
-  return latest && !latest.isCreatedByUser && isErrorMessage(latest) ? 'error' : 'ready';
+  return latest && isErrorMessage(latest) ? 'error' : 'ready';
 };
 
 /** Ids on the active branch: the contract's tail and its ancestors. */
