@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
-import { useRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
+import { useRecoilState, useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
+import type { TMessage, TSubmission } from 'librechat-data-provider';
+import type { SetterOrUpdater } from 'recoil';
 import type { ChatContract } from './contract';
 import {
   useGetStartupConfig,
@@ -150,8 +151,20 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   //   [_setConversation, setActiveConvos],
   // );
 
-  const [submission, setSubmission] = useRecoilState(store.submissionByIndex(index));
-  const initialResponse = submission?.initialResponse;
+  const setStoredSubmission = useSetRecoilState(store.submissionByIndex(index));
+  const [submittedResponse, setSubmittedResponse] = useState<TMessage>();
+  /** Keeps the response `ask` submits, as it submits it; a run restored after a reload sets the
+   *  submission elsewhere, so it has no pre-stream response here. */
+  const setSubmission = useCallback<SetterOrUpdater<TSubmission | null>>(
+    (update) => {
+      if (typeof update !== 'function') {
+        setSubmittedResponse(update?.initialResponse);
+      }
+      setStoredSubmission(update);
+    },
+    [setStoredSubmission],
+  );
+  const initialResponse = isSubmitting ? submittedResponse : undefined;
 
   const { ask: _ask, regenerate: _regenerate } = useChatFunctions({
     index,
