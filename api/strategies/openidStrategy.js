@@ -8,6 +8,7 @@ const { Strategy: OpenIDStrategy } = require('openid-client/passport');
 const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider');
 const {
   isEnabled,
+  math,
   logHeaders,
   logOpenIdRequestBody,
   findOpenIDUser,
@@ -99,6 +100,28 @@ This violates RFC 7235 and may cause issues with strict OAuth clients. Removing 
     throw error;
   }
 }
+
+const DEFAULT_OPENID_DISCOVERY_RETRIES = 5;
+const DEFAULT_OPENID_DISCOVERY_RETRY_DELAY_MS = 5000;
+
+/**
+ * @param {number} ms
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Retry budget for the initial OIDC discovery fetch. Without retries, a provider that is
+ * momentarily unreachable while the app boots (e.g. started in the same outage) leaves the
+ * openid strategy unregistered permanently, until someone notices and restarts the app.
+ */
+const getDiscoveryRetryBudget = () => ({
+  maxAttempts:
+    1 + Math.max(0, math(process.env.OPENID_DISCOVERY_RETRIES, DEFAULT_OPENID_DISCOVERY_RETRIES)),
+  delayMs: Math.max(
+    0,
+    math(process.env.OPENID_DISCOVERY_RETRY_DELAY_MS, DEFAULT_OPENID_DISCOVERY_RETRY_DELAY_MS),
+  ),
+});
 
 /** @typedef {Configuration | null}  */
 let openidConfig = null;
@@ -922,16 +945,42 @@ async function setupOpenId() {
       clientMetadata.token_endpoint_auth_method = 'none';
     }
 
-    /** @type {Configuration} */
-    openidConfig = await client.discovery(
-      new URL(process.env.OPENID_ISSUER),
-      process.env.OPENID_CLIENT_ID,
-      clientMetadata,
-      undefined,
-      {
-        [client.customFetch]: customFetch,
-      },
-    );
+    const { maxAttempts, delayMs } = getDiscoveryRetryBudget();
+
+    /** @type {Configuration | undefined} */
+    let discoveredConfig;
+    let lastDiscoveryError;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        /** @type {Configuration} */
+        discoveredConfig = await client.discovery(
+          new URL(process.env.OPENID_ISSUER),
+          process.env.OPENID_CLIENT_ID,
+          clientMetadata,
+          undefined,
+          {
+            [client.customFetch]: customFetch,
+          },
+        );
+        break;
+      } catch (discoveryError) {
+        lastDiscoveryError = discoveryError;
+        if (attempt === maxAttempts) {
+          break;
+        }
+        logger.warn(
+          `[openidStrategy] OIDC discovery failed (attempt ${attempt}/${maxAttempts}), retrying in ${delayMs}ms: ${discoveryError.message}`,
+        );
+        await sleep(delayMs);
+      }
+    }
+
+    if (!discoveredConfig) {
+      throw lastDiscoveryError;
+    }
+
+    openidConfig = discoveredConfig;
 
     logger.info(`[openidStrategy] OpenID authentication configuration`, {
       usePKCE,

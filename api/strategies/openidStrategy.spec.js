@@ -249,6 +249,8 @@ describe('setupOpenId', () => {
     delete process.env.PROXY;
     delete process.env.OPENID_USE_PKCE;
     delete process.env.OPENID_GENERATE_NONCE;
+    delete process.env.OPENID_DISCOVERY_RETRIES;
+    delete process.env.OPENID_DISCOVERY_RETRY_DELAY_MS;
     delete process.env.OPENID_ROLE_SYNC_ENABLED;
     delete process.env.OPENID_ROLE_SYNC_API_ENABLED;
     delete process.env.OPENID_ROLE_SYNC_SOURCE;
@@ -373,6 +375,72 @@ describe('setupOpenId', () => {
           dispatcher,
         },
       );
+    });
+  });
+
+  describe('OIDC discovery retry', () => {
+    let openidClient;
+
+    const DEFAULT_DISCOVERY_RESULT = {
+      clientId: 'fake_client_id',
+      clientSecret: 'fake_client_secret',
+      issuer: 'https://fake-issuer.com',
+    };
+
+    beforeEach(() => {
+      openidClient = require('openid-client');
+      openidClient.discovery.mockReset();
+      openidClient.discovery.mockResolvedValue(DEFAULT_DISCOVERY_RESULT);
+    });
+
+    afterEach(() => {
+      delete process.env.OPENID_DISCOVERY_RETRIES;
+      delete process.env.OPENID_DISCOVERY_RETRY_DELAY_MS;
+      // The outer beforeEach calls setupOpenId() and relies on discovery resolving;
+      // restore it so a rejected mock from these tests never leaks into later tests.
+      const client = require('openid-client');
+      client.discovery.mockReset();
+      client.discovery.mockResolvedValue(DEFAULT_DISCOVERY_RESULT);
+    });
+
+    it('registers the strategy after transient discovery failures', async () => {
+      process.env.OPENID_DISCOVERY_RETRIES = '3';
+      process.env.OPENID_DISCOVERY_RETRY_DELAY_MS = '1';
+      openidClient.discovery
+        .mockRejectedValueOnce(new Error('connect ECONNREFUSED'))
+        .mockRejectedValueOnce(new Error('503 Service Unavailable'));
+
+      const result = await setupOpenId();
+
+      expect(result).toEqual(DEFAULT_DISCOVERY_RESULT);
+      expect(openidClient.discovery).toHaveBeenCalledTimes(3);
+      expect(require('@librechat/data-schemas').logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('retrying in 1ms'),
+      );
+    });
+
+    it('gives up and returns null after exhausting the retry budget', async () => {
+      process.env.OPENID_DISCOVERY_RETRIES = '1';
+      process.env.OPENID_DISCOVERY_RETRY_DELAY_MS = '1';
+      openidClient.discovery.mockReset();
+      openidClient.discovery.mockRejectedValue(new Error('503 Service Unavailable'));
+
+      const result = await setupOpenId();
+
+      expect(result).toBeNull();
+      expect(openidClient.discovery).toHaveBeenCalledTimes(2);
+      expect(require('@librechat/data-schemas').logger.error).toHaveBeenCalled();
+    });
+
+    it('makes a single attempt when retries are disabled', async () => {
+      process.env.OPENID_DISCOVERY_RETRIES = '0';
+      openidClient.discovery.mockReset();
+      openidClient.discovery.mockRejectedValue(new Error('503 Service Unavailable'));
+
+      const result = await setupOpenId();
+
+      expect(result).toBeNull();
+      expect(openidClient.discovery).toHaveBeenCalledTimes(1);
     });
   });
 
