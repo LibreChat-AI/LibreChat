@@ -329,17 +329,30 @@ function queryListsArchived(queryKey: readonly unknown[]): boolean {
 
 /**
  * Whether a row still belongs in a variant at all, by the facets the client can decide:
- * its project and whether it is archived. Bookmark and search membership are deliberately
- * excluded — a search cache matches nothing client-side, so judging a row that is already
- * in one by that rule would evict every row it holds.
+ * its project, whether it is archived, and the endpoint it ran on. Bookmark and search
+ * membership are deliberately excluded — a search cache matches nothing client-side, so
+ * judging a row that is already in one by that rule would evict every row it holds. The
+ * date cutoffs are left out too: `updatedAt` only moves forward and `createdAt` never
+ * moves, so a row that matched them keeps matching.
  */
 function conversationBelongsToListQuery(
   queryKey: readonly unknown[],
-  conversation: Pick<TConversation, 'chatProjectId' | 'isArchived'>,
+  conversation: Pick<TConversation, 'chatProjectId' | 'isArchived' | 'endpoint'>,
 ): boolean {
+  if (!conversationMatchesProjectQuery(queryKey, conversation)) {
+    return false;
+  }
+  if (queryListsArchived(queryKey) !== (conversation.isArchived === true)) {
+    return false;
+  }
+  /* A chat switched to another provider leaves an endpoint-filtered list; an endpoint-less
+   * row cannot be proven either way and stays until the server says otherwise. */
+  const { endpoints } = getConversationListQueryParams(queryKey);
   return (
-    conversationMatchesProjectQuery(queryKey, conversation) &&
-    queryListsArchived(queryKey) === (conversation.isArchived === true)
+    !Array.isArray(endpoints) ||
+    endpoints.length === 0 ||
+    typeof conversation.endpoint !== 'string' ||
+    endpoints.includes(conversation.endpoint)
   );
 }
 

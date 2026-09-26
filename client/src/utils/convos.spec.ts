@@ -1,3 +1,4 @@
+import { EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, InfiniteData } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationCursorData } from './convos';
@@ -1607,6 +1608,58 @@ describe('Conversation Utilities', () => {
           queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations[0]
             .conversationId,
         ).toBe('facet');
+      });
+
+      it('drops a cached row from an endpoint facet once the chat moves to another provider', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { endpoints: ['openAI'] }];
+        queryClient.setQueryData(key, {
+          pages: [{ conversations: [facetConvo], nextCursor: null }],
+          pageParams: [],
+        });
+
+        upsertConvoInAllQueries(queryClient, { ...facetConvo, endpoint: EModelEndpoint.google });
+
+        expect(
+          queryClient
+            .getQueryData<InfiniteData<any>>(key)!
+            .pages.flatMap((page) => page.conversations),
+        ).toHaveLength(0);
+      });
+
+      it('drops a row from an endpoint facet when an in-place update changes its provider', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { endpoints: ['openAI'] }];
+        queryClient.setQueryData(key, {
+          pages: [{ conversations: [facetConvo], nextCursor: null }],
+          pageParams: [],
+        });
+
+        updateConvoInAllQueries(queryClient, 'facet', (convo) => ({
+          ...convo,
+          endpoint: EModelEndpoint.google,
+        }));
+
+        expect(
+          queryClient
+            .getQueryData<InfiniteData<any>>(key)!
+            .pages.flatMap((page) => page.conversations),
+        ).toHaveLength(0);
+      });
+
+      it('keeps a cached row whose update carries no endpoint to judge', () => {
+        const queryClient = new QueryClient();
+        const key = ['allConversations', { endpoints: ['openAI'] }];
+        queryClient.setQueryData(key, {
+          pages: [{ conversations: [{ ...facetConvo, endpoint: null }], nextCursor: null }],
+          pageParams: [],
+        });
+
+        upsertConvoInAllQueries(queryClient, { ...facetConvo, endpoint: null, title: 'Renamed' });
+
+        expect(
+          queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations[0].title,
+        ).toBe('Renamed');
       });
 
       /** Attachments and sharing live in collections the list row does not carry, so
