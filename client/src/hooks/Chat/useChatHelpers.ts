@@ -3,7 +3,7 @@ import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { ChatContract } from './contract';
 import {
   useGetStartupConfig,
@@ -150,7 +150,27 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   //   [_setConversation, setActiveConvos],
   // );
 
-  const setSubmission = useSetRecoilState(store.submissionByIndex(index));
+  const setStoredSubmission = useSetRecoilState(store.submissionByIndex(index));
+  const [submitted, setSubmitted] = useState<{ key: string; response?: TMessage }>();
+  /** Keeps the response `ask` submits, as it submits it, under the chat it was sent from; a run
+   *  restored after a reload, or in another chat, sets the submission elsewhere. */
+  const setSubmission = useCallback(
+    (submission: TSubmission) => {
+      setSubmitted({ key: queryParam, response: submission.initialResponse });
+      setStoredSubmission(submission);
+    },
+    [queryParam, setStoredSubmission],
+  );
+  /** A settled turn ends the snapshot, so a later run restored outside `ask` never reuses it. */
+  const [wasSubmitting, setWasSubmitting] = useState(isSubmitting);
+  if (wasSubmitting !== isSubmitting) {
+    setWasSubmitting(isSubmitting);
+    if (!isSubmitting) {
+      setSubmitted(undefined);
+    }
+  }
+  const initialResponse =
+    isSubmitting && submitted?.key === queryParam ? submitted.response : undefined;
 
   const { ask: _ask, regenerate: _regenerate } = useChatFunctions({
     index,
@@ -397,8 +417,10 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       conversation,
       setConversation,
       isSubmitting,
+      initialResponse,
       setIsSubmitting,
       getMessages,
+      messagesKey: queryParam,
       setMessages,
       setSiblingIdx,
       latestMessageId,
@@ -429,8 +451,10 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       conversation,
       setConversation,
       isSubmitting,
+      initialResponse,
       setIsSubmitting,
       getMessages,
+      queryParam,
       setMessages,
       setSiblingIdx,
       latestMessageId,
