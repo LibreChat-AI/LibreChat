@@ -183,18 +183,10 @@ export function useChat(): UseChatHelpers {
   } = useChatContext();
 
   const queryClient = useQueryClient();
-  const writes = useRef(0);
   const subscribe = useCallback(
     (onChange: () => void) =>
       queryClient.getQueryCache().subscribe((event) => {
-        if (event.query.queryKey[0] !== QueryKeys.messages) {
-          return;
-        }
-        if (
-          event.type === 'removed' ||
-          (event.type === 'updated' && event.action.type === 'success')
-        ) {
-          writes.current += 1;
+        if (event.query.queryKey[0] === QueryKeys.messages) {
           onChange();
         }
       }),
@@ -203,18 +195,27 @@ export function useChat(): UseChatHelpers {
   const snapshot = useRef<{ writes: number; stored?: TMessage[] }>();
   /**
    * A stream frame replaces a response's content on the same object, so structural sharing can
-   * keep the cached array: the write count catches those frames, and the array itself catches a
-   * write that lands before the listener is subscribed.
+   * keep the cached array. Every write still counts on the queries holding it, so the snapshot is
+   * keyed by that store-owned count and by the array: a write to another conversation changes
+   * neither, and one that lands before the listener subscribes is still seen.
    */
   const readSnapshot = useCallback(() => {
     const stored = getMessages();
+    let writes = 0;
+    if (stored) {
+      for (const query of queryClient.getQueryCache().findAll([QueryKeys.messages])) {
+        if (query.state.data === stored) {
+          writes += query.state.dataUpdateCount;
+        }
+      }
+    }
     const current = snapshot.current;
-    if (current?.writes === writes.current && current.stored === stored) {
+    if (current?.writes === writes && current.stored === stored) {
       return current;
     }
-    snapshot.current = { writes: writes.current, stored };
+    snapshot.current = { writes, stored };
     return snapshot.current;
-  }, [getMessages]);
+  }, [getMessages, queryClient]);
   const cache = useSyncExternalStore(subscribe, readSnapshot, readSnapshot);
 
   const { messages, latest } = useMemo(() => {

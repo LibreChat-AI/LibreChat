@@ -258,6 +258,28 @@ describe('useChat', () => {
     expect(result.current.status).toBe('streaming');
   });
 
+  it('keeps its messages when another conversation is written', () => {
+    const key = [QueryKeys.messages, 'convo-1'];
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(key, [userMessage]);
+    const contract = createContract({
+      getMessages: jest.fn(() => queryClient.getQueryData<TMessage[]>(key)),
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+      </QueryClientProvider>
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    const before = result.current.messages;
+
+    act(() => {
+      queryClient.setQueryData([QueryKeys.messages, 'convo-2'], [response()]);
+    });
+
+    expect(result.current.messages).toBe(before);
+  });
+
   it('keeps a stepless call clear of attachments its repeated id owns elsewhere', () => {
     const memoryError = {
       conversationId: 'convo-1',
