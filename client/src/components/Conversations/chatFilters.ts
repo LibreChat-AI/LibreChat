@@ -70,9 +70,11 @@ export const chatSortAtom = atom(
 export const isArchivedChatViewAtom = atom((get) => get(chatFilterStatusAtom) === 'archived');
 
 /** Drives the trigger's badge: how many choices differ from the default list. */
+/** Each property that departs from the default counts once, however many values it
+ *  carries: bookmarks count as one, the way the Filter row and the endpoint facet count. */
 export const chatFilterCountAtom = atom((get) => {
   const sort = get(chatSortAtom);
-  let count = get(chatFilterTagsAtom).length;
+  let count = get(chatFilterTagsAtom).length > 0 ? 1 : 0;
   if (get(chatFilterStatusAtom) !== 'active') {
     count += 1;
   }
