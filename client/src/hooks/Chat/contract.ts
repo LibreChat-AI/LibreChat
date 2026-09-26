@@ -45,6 +45,11 @@ export type ChatMessagesContract = {
    * AI SDK: `messages`, read on demand instead of subscribed.
    */
   getMessages: (targetConversationId?: string | null) => TMessage[] | undefined;
+  /**
+   * The conversation key `getMessages()` reads when called without one: the route's id, which
+   * can run ahead of `conversation` while navigation settles. AI SDK: the chat `id`.
+   */
+  messagesKey: string;
   /** Writes the full message list to every cache key this pane reads. AI SDK: `setMessages`. */
   setMessages: (messages: TMessage[]) => void;
   /** Selects the visible sibling under the latest message's parent. */
@@ -66,6 +71,13 @@ export type ChatSubmissionContract = {
    * `submitted | streaming` (true) versus `ready | error` (false).
    */
   isSubmitting: boolean;
+  /**
+   * The response the in-flight turn was submitted with, before any streamed output. Parts it was
+   * seeded with (a retained edit prefix, lane placeholders) stay these same objects in the cache
+   * until the stream replaces them, so a part that is not one of them has streamed. `undefined`
+   * when no turn has been submitted from this pane.
+   */
+  initialResponse: TMessage | undefined;
   /** Sets the in-flight flag for this pane. */
   setIsSubmitting: Dispatch<SetStateAction<boolean>>;
   /** Button handler that regenerates the latest response. AI SDK: `regenerate`. */

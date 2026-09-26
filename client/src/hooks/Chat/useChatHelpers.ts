@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
+import { useRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
-import { useRecoilState, useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { ChatContract } from './contract';
 import {
@@ -150,7 +150,8 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   //   [_setConversation, setActiveConvos],
   // );
 
-  const setSubmission = useSetRecoilState(store.submissionByIndex(index));
+  const [submission, setSubmission] = useRecoilState(store.submissionByIndex(index));
+  const initialResponse = submission?.initialResponse;
 
   const { ask: _ask, regenerate: _regenerate } = useChatFunctions({
     index,
@@ -397,8 +398,10 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       conversation,
       setConversation,
       isSubmitting,
+      initialResponse,
       setIsSubmitting,
       getMessages,
+      messagesKey: queryParam,
       setMessages,
       setSiblingIdx,
       latestMessageId,
@@ -429,8 +432,10 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
       conversation,
       setConversation,
       isSubmitting,
+      initialResponse,
       setIsSubmitting,
       getMessages,
+      queryParam,
       setMessages,
       setSiblingIdx,
       latestMessageId,
