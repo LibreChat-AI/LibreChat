@@ -67,6 +67,8 @@ function renderPending(
   activeSiblingIndex?: number,
   /** Split view: this tree renders in `index`, while pane 0 shows another chat. */
   pane?: { index: number; siblingKeyId: string; otherConversationId: string },
+  /** Pane 0 still names the previous chat while this one renders from cache. */
+  stalePaneConversationId?: string,
 ) {
   /* The escalation control resolves the cache through the branch-aware
      latest-message hook, using the same providers the chat view supplies. */
@@ -80,7 +82,11 @@ function renderPending(
   const jotaiStore = createStore();
   if (activeSiblingIndex != null) {
     jotaiStore.set(
-      siblingIdxFamily(siblingKey(pane?.siblingKeyId ?? 'root-user')),
+      siblingIdxFamily(
+        siblingKey(
+          pane?.siblingKeyId ?? (stalePaneConversationId != null ? CONVO_ID : 'root-user'),
+        ),
+      ),
       activeSiblingIndex,
     );
   }
@@ -91,7 +97,7 @@ function renderPending(
           <RecoilRoot
             initializeState={({ set }) => {
               set(store.conversationByIndex(0), {
-                conversationId: pane?.otherConversationId ?? CONVO_ID,
+                conversationId: pane?.otherConversationId ?? stalePaneConversationId ?? CONVO_ID,
               } as TConversation);
               if (pane != null) {
                 set(store.conversationByIndex(pane.index), {
@@ -407,6 +413,42 @@ describe('PendingSteers', () => {
         siblingKeyId: CONVO_ID,
         otherConversationId: 'other-conversation',
       });
+      expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
+    });
+
+    it('keeps escalation off until the pane owns the rendered conversation', () => {
+      const plain = {
+        messageId: 'root-plain',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [],
+      } as unknown as TMessage;
+      const paused = {
+        messageId: 'root-paused',
+        parentMessageId: Constants.NO_PARENT,
+        conversationId: CONVO_ID,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'root-call',
+              name: 'shell',
+              approval: { actionId: 'root' },
+              output: '',
+            },
+          },
+        ],
+      } as unknown as TMessage;
+
+      renderPending(
+        [pending({ status: 'pending' })],
+        [paused, plain],
+        1,
+        undefined,
+        'previous-conversation',
+      );
       expect(screen.getByTestId('steer-escalate-now')).toBeDisabled();
     });
 

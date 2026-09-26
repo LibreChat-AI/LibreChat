@@ -54,22 +54,28 @@ function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
   const cachedMessages =
     queryClient.getQueryData<TMessage[]>([QueryKeys.messages, conversationId]) ?? [];
   const latestMessage = useLatestMessage(index, conversationId);
+  const paneConversationId = useRecoilValue(store.conversationIdByIndex(index));
   const { data: fallbackPaused } = useGetMessagesByConvoId<boolean>(conversationId, {
     select: hasLiveRunPause,
   });
   /* A one-message cache is necessarily the active branch. Until the
      conversation atom reaches useLatestMessage, retain the query's established
-     single-branch result so a live question cannot re-enable escalation. */
+     single-branch result so a live question cannot re-enable escalation. The
+     branch tail is keyed by the pane's conversation, which can still name the
+     previous chat while this one renders from cache; until the pane owns this
+     conversation, a pause on any branch keeps escalation off. */
   const resolvePaused = (): boolean => {
     if (cachedMessages.length > 1) {
-      return latestMessage != null && hasLiveRunPause(latestMessage);
+      if (paneConversationId === conversationId && latestMessage != null) {
+        return hasLiveRunPause(latestMessage);
+      }
+      return cachedMessages.some((message) => hasLiveRunPause(message));
     }
     if (fallbackPaused != null) {
       return fallbackPaused;
     }
     return cachedMessages.length === 1 && hasLiveRunPause(cachedMessages[0]);
   };
-  const paused = resolvePaused();
   /** Arming removes the control that was activated, so the row's Cancel button
    *  (which survives the `preempt` flip) is where keyboard focus goes next. */
   const cancelButtonRefs = useRef(new Map<string, HTMLButtonElement | null>());
@@ -81,6 +87,7 @@ function PendingSteers({ conversationId, index = 0 }: PendingSteersProps) {
   if (steers.length === 0) {
     return null;
   }
+  const paused = resolvePaused();
 
   const queueSteer = async (steer: (typeof steers)[number]) => {
     if (movingId != null) {
