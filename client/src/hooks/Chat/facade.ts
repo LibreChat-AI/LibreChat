@@ -7,7 +7,13 @@ import {
   fromUIMessage,
   toUIMessage,
 } from 'librechat-data-provider';
-import type { TMessage, UIMessage, TAttachment, UIMappingOptions } from 'librechat-data-provider';
+import type {
+  TMessage,
+  UIMessage,
+  TAttachment,
+  UIMappingOptions,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import type { TAskFunction } from '~/common';
 import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/MemoryCall';
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
@@ -138,8 +144,26 @@ const resolveToolFailure: NonNullable<UIMappingOptions['resolveToolFailure']> = 
 
 const mappingOptions: UIMappingOptions = { resolveToolFailure };
 
-/** The message fields a view is built from; a stream frame replaces these, not the object. */
-const viewSourceKeys = ['content', 'text', 'files', 'attachments', 'error', 'unfinished'] as const;
+/**
+ * Every message field a view is built from, identity and metadata included: a stream frame or a
+ * new chat's promotion can replace these on the same object.
+ */
+const viewSourceKeys = [
+  'messageId',
+  'isCreatedByUser',
+  'conversationId',
+  'parentMessageId',
+  'content',
+  'text',
+  'files',
+  'attachments',
+  'error',
+  'unfinished',
+  'sender',
+  'model',
+  'endpoint',
+  'createdAt',
+] as const;
 
 type CachedView = { view: UIMessage; source: Pick<TMessage, (typeof viewSourceKeys)[number]> };
 
@@ -166,11 +190,21 @@ const toView = (message: TMessage) => {
   return view;
 };
 
+/** Text of a text or reasoning part, the two kinds the stream can continue in place. */
+const getContinuableText = (part: TMessageContentParts) => {
+  if (part.type !== ContentTypes.TEXT && part.type !== ContentTypes.THINK) {
+    return undefined;
+  }
+  const value = part.type === ContentTypes.TEXT ? part.text : part.think;
+  return typeof value === 'string' ? value : value?.value;
+};
+
 /**
  * Placeholder slots (empty text or think, lane placeholders) are not streamed output, and neither
  * is a part the turn was submitted with, such as a retained edit prefix. Seeded parts keep their
  * indices (the cache may hold equal copies, so identity says nothing): the stream appends after
- * them or fills a seeded placeholder, and never rewrites a seeded part that has content.
+ * them, fills a seeded placeholder, or continues the last seeded part when it is text or
+ * reasoning, which then reads differently from the seed.
  */
 const hasStreamed = (message: TMessage, seed?: TMessage) => {
   if ((message.text?.length ?? 0) > 0 && message.text !== seed?.text) {
@@ -186,7 +220,14 @@ const hasStreamed = (message: TMessage, seed?: TMessage) => {
         return false;
       }
       const seededPart = seeded[index];
-      return seededPart == null || isEmptyContentPart(seededPart);
+      if (seededPart == null || isEmptyContentPart(seededPart)) {
+        return true;
+      }
+      return (
+        index === seeded.length - 1 &&
+        part.type === seededPart.type &&
+        getContinuableText(part) !== getContinuableText(seededPart)
+      );
     }) ?? false
   );
 };

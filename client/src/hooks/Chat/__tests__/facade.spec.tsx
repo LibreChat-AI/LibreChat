@@ -180,6 +180,24 @@ describe('useChat', () => {
     expect(result.current.status).toBe('streaming');
   });
 
+  it('streams once the stream continues the last seeded part', () => {
+    const seed = response({ content: [{ type: ContentTypes.TEXT, text: 'kept tail' }] });
+    const continued = [
+      userMessage,
+      response({ content: [{ type: ContentTypes.TEXT, text: 'kept tail!' }] }),
+    ];
+    const { result } = renderChat(
+      createContract({
+        getMessages: jest.fn(() => continued),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+
+    expect(result.current.status).toBe('streaming');
+  });
+
   it('streams once a seeded lane placeholder is filled', () => {
     const seed = response({
       content: [{ type: '' }, { type: '' }] as unknown as TMessageContentParts[],
@@ -374,6 +392,18 @@ describe('useChat', () => {
     });
 
     expect(result.current.messages).toBe(before);
+  });
+
+  it('remaps a message whose conversation id was set in place', () => {
+    const promoted = response({ conversationId: null as unknown as string, text: 'Hi there' });
+    const messages = [userMessage, promoted];
+    const { result, update } = renderChat(turn(messages, false));
+    expect(result.current.messages[1].metadata?.conversationId).toBeNull();
+
+    promoted.conversationId = 'convo-1';
+    update(turn([...messages], false));
+
+    expect(result.current.messages[1].metadata?.conversationId).toBe('convo-1');
   });
 
   it('keeps a stepless call clear of attachments its repeated id owns elsewhere', () => {
