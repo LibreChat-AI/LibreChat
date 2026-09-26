@@ -1,0 +1,662 @@
+import React from 'react';
+import { act, renderHook } from '@testing-library/react';
+import { QueryKeys, ContentTypes } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { ChatContract } from '../contract';
+import { ChatContext } from '~/Providers/ChatContext';
+import { useChat } from '../facade';
+
+const userMessage: TMessage = {
+  messageId: 'user-1',
+  conversationId: 'convo-1',
+  parentMessageId: null,
+  isCreatedByUser: true,
+  text: 'Hi',
+};
+
+const initialMessages = [userMessage];
+
+const response = (overrides: Partial<TMessage> = {}): TMessage => ({
+  messageId: 'response-1',
+  conversationId: 'convo-1',
+  parentMessageId: 'user-1',
+  isCreatedByUser: false,
+  text: '',
+  content: [],
+  ...overrides,
+});
+
+const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => {
+  const noop = jest.fn();
+  return {
+    index: 0,
+    conversation: { conversationId: 'convo-1' } as TConversation,
+    setConversation: noop,
+    newConversation: noop,
+    preset: null,
+    setPreset: noop,
+    optionSettings: {},
+    setOptionSettings: noop,
+    getMessages: jest.fn(() => initialMessages),
+    messagesKey: 'convo-1',
+    setMessages: jest.fn(),
+    setSiblingIdx: noop,
+    latestMessageId: 'user-1',
+    latestMessageDepth: 0,
+    ask: jest.fn(),
+    regenerate: jest.fn(),
+    isSubmitting: false,
+    initialResponse: undefined,
+    setIsSubmitting: noop,
+    handleRegenerate: noop,
+    handleContinue: noop,
+    stopGenerating: jest.fn(() => Promise.resolve()),
+    handleStopGenerating: noop,
+    abortScroll: false,
+    setAbortScroll: noop,
+    files: new Map(),
+    setFiles: noop,
+    filesLoading: false,
+    setFilesLoading: noop,
+    showPopover: false,
+    setShowPopover: noop,
+    feedbackEnabled: false,
+    ...overrides,
+  };
+};
+
+/** Renders `useChat` under the real `ChatContext`; `rerender` swaps the contract value. */
+const renderChat = (initial: ChatContract) => {
+  let contract = initial;
+  const queryClient = new QueryClient();
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>
+      <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+    </QueryClientProvider>
+  );
+  const view = renderHook(() => useChat(), { wrapper });
+  return {
+    queryClient,
+    ...view,
+    update: (next: ChatContract) => {
+      contract = next;
+      view.rerender();
+    },
+  };
+};
+
+/** A turn as the contract reports it: the cached messages, the branch tail, and the flag. */
+const turn = (messages: TMessage[], isSubmitting: boolean) =>
+  createContract({
+    getMessages: jest.fn(() => messages),
+    latestMessageId: messages[messages.length - 1]?.messageId,
+    isSubmitting,
+  });
+
+describe('useChat', () => {
+  it('views the cached messages as UI messages', () => {
+    const { result } = renderChat(createContract());
+
+    expect(result.current.id).toBe('convo-1');
+    expect(result.current.messages).toEqual([
+      {
+        id: 'user-1',
+        role: 'user',
+        metadata: { conversationId: 'convo-1', parentMessageId: null, contentless: true },
+        parts: [{ type: 'text', text: 'Hi' }],
+      },
+    ]);
+    expect(result.current.status).toBe('ready');
+    expect(result.current.error).toBeUndefined();
+  });
+
+  it('applies the client tool outcome rules to tool parts', () => {
+    const memoryFailure = response({
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'mem-1',
+            type: 'tool_call',
+            name: 'set_memory',
+            args: '{"key":"bad key","value":"x"}',
+            output: 'Invalid key: bad key',
+            progress: 1,
+          },
+        },
+      ],
+    });
+    const { result } = renderChat(turn([userMessage, memoryFailure], false));
+
+    expect(result.current.messages[1].parts[0]).toMatchObject({
+      type: 'tool-set_memory',
+      state: 'output-error',
+      errorText: 'Invalid key: bad key',
+    });
+  });
+
+  it('reports the chat the messages are read from while the conversation catches up', () => {
+    const { result } = renderChat(createContract({ messagesKey: 'convo-2' }));
+
+    expect(result.current.id).toBe('convo-2');
+  });
+
+  it('stays submitted while a rerun edit holds only its retained prefix', () => {
+    const seed = response({ content: [{ type: ContentTypes.TEXT, text: 'Edited answer' }] });
+    /** The cache holds equal copies of the seeded parts, not the submitted objects. */
+    const seeded = [
+      userMessage,
+      response({ content: [{ type: ContentTypes.TEXT, text: 'Edited answer' }] }),
+    ];
+    const { result, update } = renderChat(
+      createContract({
+        getMessages: jest.fn(() => seeded),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+    expect(result.current.status).toBe('submitted');
+
+    const streamed = [
+      userMessage,
+      response({
+        content: [
+          { type: ContentTypes.TEXT, text: 'Edited answer' },
+          { type: ContentTypes.TEXT, text: ' and more' },
+        ],
+      }),
+    ];
+    update(
+      createContract({
+        getMessages: jest.fn(() => streamed),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+
+    expect(result.current.status).toBe('streaming');
+  });
+
+  it('streams once the stream continues the last seeded part', () => {
+    const seed = response({ content: [{ type: ContentTypes.TEXT, text: 'kept tail' }] });
+    const continued = [
+      userMessage,
+      response({ content: [{ type: ContentTypes.TEXT, text: 'kept tail!' }] }),
+    ];
+    const { result } = renderChat(
+      createContract({
+        getMessages: jest.fn(() => continued),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+
+    expect(result.current.status).toBe('streaming');
+  });
+
+  it('streams once a seeded lane placeholder is filled', () => {
+    const seed = response({
+      content: [{ type: '' }, { type: '' }] as unknown as TMessageContentParts[],
+    });
+    const filled = [
+      userMessage,
+      response({
+        content: [
+          { type: ContentTypes.TEXT, text: 'Lane one' },
+          { type: '' },
+        ] as unknown as TMessageContentParts[],
+      }),
+    ];
+    const { result } = renderChat(
+      createContract({
+        getMessages: jest.fn(() => filled),
+        latestMessageId: 'response-1',
+        isSubmitting: true,
+        initialResponse: seed,
+      }),
+    );
+
+    expect(result.current.status).toBe('streaming');
+  });
+
+  it('reports a failed user message at the tail as an error', () => {
+    const failedUser = { ...userMessage, error: true };
+    const { result } = renderChat(turn([failedUser], false));
+
+    expect(result.current.status).toBe('error');
+    expect(result.current.error?.message).toBe('');
+  });
+
+  it('stays submitted while the response holds only placeholder parts', () => {
+    const placeholder = response({
+      content: [
+        { type: ContentTypes.TEXT, text: '' },
+        { type: '' } as unknown as TMessageContentParts,
+      ],
+    });
+    const { result } = renderChat(turn([userMessage, placeholder], true));
+
+    expect(result.current.status).toBe('submitted');
+  });
+
+  it('streams once the response carries a generated file and nothing else', () => {
+    const withFile = response({ files: [{ file_id: 'file-1' }] as TMessage['files'] });
+    const { result } = renderChat(turn([userMessage, withFile], true));
+
+    expect(result.current.status).toBe('streaming');
+  });
+
+  it('reads the error text of an Assistants error part', () => {
+    const failed = response({
+      content: [{ type: ContentTypes.ERROR, text: { value: 'Run failed' } }],
+    });
+    const { result } = renderChat(turn([userMessage, failed], false));
+
+    expect(result.current.error?.message).toBe('Run failed');
+  });
+
+  it('reports the error part rather than text the failed response kept', () => {
+    const failed = response({
+      text: 'Partial answer',
+      content: [
+        { type: ContentTypes.TEXT, text: 'Partial answer' },
+        { type: ContentTypes.ERROR, error: 'Provider timed out' },
+      ] as TMessageContentParts[],
+    });
+    const { result } = renderChat(turn([userMessage, failed], false));
+
+    expect(result.current.status).toBe('error');
+    expect(result.current.error?.message).toBe('Provider timed out');
+  });
+
+  it('reads messages a write the listener never saw replaced', () => {
+    let messages: TMessage[] = [userMessage];
+    const contract = createContract({ getMessages: jest.fn(() => messages) });
+    const { result, update } = renderChat(contract);
+    expect(result.current.messages).toHaveLength(1);
+
+    messages = [userMessage, response({ text: 'Loaded' })];
+    update({ ...contract });
+
+    expect(result.current.messages).toHaveLength(2);
+  });
+
+  it('re-reads messages when the message cache is written', () => {
+    let messages: TMessage[] = [userMessage, response({ text: 'Old' })];
+    const contract = createContract({
+      getMessages: jest.fn(() => messages),
+      latestMessageId: 'response-1',
+    });
+    const { result, queryClient } = renderChat(contract);
+    (contract.setMessages as jest.Mock).mockImplementation((next: TMessage[]) => {
+      messages = next;
+      queryClient.setQueryData([QueryKeys.messages, 'convo-1'], next);
+    });
+
+    act(() => {
+      result.current.setMessages((views) => [
+        { ...views[0], parts: [{ type: 'text', text: 'Edited' }] },
+        views[1],
+      ]);
+    });
+
+    expect(result.current.messages[0].parts).toEqual([{ type: 'text', text: 'Edited' }]);
+  });
+
+  it('keeps unchanged message views across a streamed update', () => {
+    const first = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    const { result, update } = renderChat(turn([userMessage, first], true));
+    const userView = result.current.messages[0];
+
+    update(
+      turn(
+        [userMessage, response({ content: [{ type: ContentTypes.TEXT, text: 'Hello' }] })],
+        true,
+      ),
+    );
+
+    expect(result.current.messages[0]).toBe(userView);
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
+  });
+
+  it('remaps a response whose content the stream replaced in place', () => {
+    const streaming = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    const messages = [userMessage, streaming];
+    const { result, update } = renderChat(turn(messages, true));
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hel' }]);
+
+    streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello' }];
+    update(turn([...messages], true));
+
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
+  });
+
+  it('follows each stream frame written to the cache with the same message references', () => {
+    const key = [QueryKeys.messages, 'convo-1'];
+    const streaming = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(key, [userMessage, streaming]);
+    const contract = createContract({
+      getMessages: jest.fn(() => queryClient.getQueryData<TMessage[]>(key)),
+      latestMessageId: 'response-1',
+      isSubmitting: true,
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+      </QueryClientProvider>
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    const before = queryClient.getQueryData<TMessage[]>(key);
+
+    act(() => {
+      streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello' }];
+      queryClient.setQueryData(key, [userMessage, streaming]);
+    });
+
+    expect(queryClient.getQueryData<TMessage[]>(key)).toBe(before);
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
+    expect(result.current.status).toBe('streaming');
+
+    const findAll = jest.spyOn(queryClient.getQueryCache(), 'findAll');
+    act(() => {
+      streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello there' }];
+      queryClient.setQueryData(key, [userMessage, streaming]);
+    });
+
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello there' }]);
+    expect(findAll).not.toHaveBeenCalled();
+  });
+
+  it('keeps its messages when another conversation is written', () => {
+    const key = [QueryKeys.messages, 'convo-1'];
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(key, [userMessage]);
+    const contract = createContract({
+      getMessages: jest.fn(() => queryClient.getQueryData<TMessage[]>(key)),
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+      </QueryClientProvider>
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    const before = result.current.messages;
+
+    act(() => {
+      queryClient.setQueryData([QueryKeys.messages, 'convo-2'], [response()]);
+    });
+
+    expect(result.current.messages).toBe(before);
+  });
+
+  it('remaps a message whose conversation id was set in place', () => {
+    const promoted = response({ conversationId: null as unknown as string, text: 'Hi there' });
+    const messages = [userMessage, promoted];
+    const { result, update } = renderChat(turn(messages, false));
+    expect(result.current.messages[1].metadata?.conversationId).toBeNull();
+
+    promoted.conversationId = 'convo-1';
+    update(turn([...messages], false));
+
+    expect(result.current.messages[1].metadata?.conversationId).toBe('convo-1');
+  });
+
+  it('keeps a stepless call clear of attachments its repeated id owns elsewhere', () => {
+    const memoryError = {
+      conversationId: 'convo-1',
+      messageId: 'response-1',
+      toolCallId: 'mem-1',
+      stepId: 'step-old',
+      type: 'memory',
+      memory: { type: 'error', key: 'k', value: 'v' },
+    } as unknown as NonNullable<TMessage['attachments']>[number];
+    const repeated = response({
+      attachments: [memoryError],
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'mem-1',
+            stepId: 'step-old',
+            type: 'tool_call',
+            name: 'set_memory',
+            args: '{}',
+            output: 'Memory set',
+            progress: 1,
+          },
+        },
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: { id: 'mem-1', type: 'tool_call', name: 'set_memory', args: '{}' },
+        },
+      ],
+    });
+    const { result } = renderChat(turn([userMessage, repeated], true));
+
+    expect(result.current.messages[1].parts[1]).toMatchObject({ state: 'input-available' });
+  });
+
+  it('joins an inserted message to the conversation under the one before it', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      { id: 'note-1', role: 'assistant', parts: [{ type: 'text', text: 'Note' }] },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      userMessage,
+      expect.objectContaining({
+        messageId: 'note-1',
+        conversationId: 'convo-1',
+        parentMessageId: 'user-1',
+        content: [{ type: ContentTypes.TEXT, text: 'Note' }],
+      }),
+    ]);
+  });
+
+  it('joins an inserted message that names another chat to the active conversation', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      {
+        id: 'note-1',
+        role: 'assistant',
+        metadata: { conversationId: 'convo-2', parentMessageId: 'user-1' },
+        parts: [{ type: 'text', text: 'Note' }],
+      },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      userMessage,
+      expect.objectContaining({ messageId: 'note-1', conversationId: 'convo-1' }),
+    ]);
+  });
+
+  it('leaves an inserted message unassigned in a new chat even when it names another', () => {
+    const contract = createContract({ messagesKey: 'new' });
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      {
+        id: 'note-1',
+        role: 'assistant',
+        metadata: { conversationId: 'convo-2', parentMessageId: 'user-1' },
+        parts: [{ type: 'text', text: 'Note' }],
+      },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      userMessage,
+      expect.objectContaining({ messageId: 'note-1', conversationId: null }),
+    ]);
+  });
+
+  it('keeps a stored message in its conversation when its view names another', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      { ...views[0], metadata: { ...views[0].metadata!, conversationId: 'convo-2' } },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      expect.objectContaining({ messageId: 'user-1', conversationId: 'convo-1' }),
+    ]);
+  });
+
+  it('parents an appended message to the active branch, not a hidden sibling', () => {
+    const shown = response({ messageId: 'response-a', text: 'Shown' });
+    const hidden = response({ messageId: 'response-b', text: 'Hidden' });
+    const branches = [userMessage, shown, hidden];
+    const contract = createContract({
+      getMessages: jest.fn(() => branches),
+      latestMessageId: 'response-a',
+    });
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      { id: 'note-1', role: 'assistant', parts: [{ type: 'text', text: 'Note' }] },
+      { id: 'note-2', role: 'assistant', parts: [{ type: 'text', text: 'Next' }] },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: 'note-1', parentMessageId: 'response-a' }),
+        expect.objectContaining({ messageId: 'note-2', parentMessageId: 'note-1' }),
+      ]),
+    );
+  });
+
+  it('walks submit, stream, and finish', () => {
+    const { result, update } = renderChat(turn([userMessage], false));
+    expect(result.current.status).toBe('ready');
+
+    update(turn([userMessage], true));
+    expect(result.current.status).toBe('submitted');
+
+    update(turn([userMessage, response()], true));
+    expect(result.current.status).toBe('submitted');
+
+    const streaming = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    update(turn([userMessage, streaming], true));
+    expect(result.current.status).toBe('streaming');
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hel' }]);
+
+    const finished = response({
+      text: 'Hello',
+      content: [{ type: ContentTypes.TEXT, text: 'Hello' }],
+    });
+    update(turn([userMessage, finished], false));
+    expect(result.current.status).toBe('ready');
+    expect(result.current.error).toBeUndefined();
+  });
+
+  it('returns to ready after an abort', () => {
+    const streaming = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    const { result, update } = renderChat(turn([userMessage, streaming], true));
+    expect(result.current.status).toBe('streaming');
+
+    const stopped = response({
+      unfinished: true,
+      content: [{ type: ContentTypes.TEXT, text: 'Hel' }],
+    });
+    update(turn([userMessage, stopped], false));
+
+    expect(result.current.status).toBe('ready');
+    expect(result.current.messages[1].metadata?.unfinished).toBe(true);
+  });
+
+  it('reports a failed turn as an error', () => {
+    const failed = response({ error: true, text: 'Rate limited', content: undefined });
+    const { result, update } = renderChat(turn([userMessage, failed], false));
+
+    expect(result.current.status).toBe('error');
+    expect(result.current.error).toBeInstanceOf(Error);
+    expect(result.current.error?.message).toBe('Rate limited');
+
+    const errorPart = response({
+      content: [{ type: ContentTypes.ERROR, error: 'Context too long' }],
+    });
+    update(turn([userMessage, errorPart], false));
+    expect(result.current.error?.message).toBe('Context too long');
+  });
+
+  it('keeps the same error while the failed message is unchanged', () => {
+    const failed = response({ error: true, text: 'Rate limited', content: undefined });
+    const { result, update } = renderChat(turn([userMessage, failed], false));
+    const first = result.current.error;
+
+    update(turn([userMessage, failed], false));
+
+    expect(result.current.error).toBe(first);
+  });
+
+  it('forwards sendMessage to ask with the same arguments', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.sendMessage({ text: 'Hello', conversationId: 'convo-1' }, { isEdited: true });
+
+    expect(contract.ask).toHaveBeenCalledTimes(1);
+    expect(contract.ask).toHaveBeenCalledWith(
+      { text: 'Hello', conversationId: 'convo-1' },
+      { isEdited: true },
+    );
+  });
+
+  it('forwards regenerate for a given message and for the branch tail', () => {
+    const answered = response({ text: 'Hello' });
+    const contract = turn([userMessage, answered], false);
+    const { result } = renderChat(contract);
+
+    result.current.regenerate();
+    result.current.regenerate({ messageId: 'user-1' });
+
+    expect(contract.regenerate).toHaveBeenNthCalledWith(1, {
+      messageId: 'response-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+    });
+    expect(contract.regenerate).toHaveBeenNthCalledWith(2, {
+      messageId: 'user-1',
+      parentMessageId: null,
+      isCreatedByUser: true,
+    });
+  });
+
+  it('forwards stop to stopGenerating', async () => {
+    const contract = createContract({ isSubmitting: true });
+    const { result } = renderChat(contract);
+
+    await result.current.stop();
+
+    expect(contract.stopGenerating).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes UI messages back onto the stored messages', () => {
+    const answered = response({
+      text: 'Hello',
+      content: [{ type: ContentTypes.TEXT, text: 'Hello' }],
+      tokenCount: 3,
+    });
+    const contract = turn([userMessage, answered], false);
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((messages) => messages.slice(0, 1));
+    result.current.setMessages(result.current.messages);
+
+    expect(contract.setMessages).toHaveBeenNthCalledWith(1, [userMessage]);
+    expect(contract.setMessages).toHaveBeenNthCalledWith(2, [userMessage, answered]);
+  });
+});
