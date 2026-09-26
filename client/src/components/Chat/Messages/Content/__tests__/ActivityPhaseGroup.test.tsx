@@ -547,3 +547,62 @@ describe('ActivityPhaseGroup open header', () => {
     expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('pl-6');
   });
 });
+
+describe('ActivityPhaseGroup open live header', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+  /** A thought's line holds for a second; the retired line lingers in the
+   *  ticker, so the current line is read from its own title. */
+  const settle = () => act(() => jest.advanceTimersByTime(1000));
+  const thought = (reasoning_label?: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.THINK,
+      think: 'The refs share a commit. Next I check the ordering.',
+      ...(reasoning_label == null ? {} : { reasoning_label }),
+    }) as unknown as TMessageContentParts;
+
+  test('previews the newest finished sentence while collapsed', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought('Comparing refs')]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByRole('button')).toHaveTextContent('Next I check the ordering.');
+  });
+
+  test("titles an open card by the thought's label instead of repeating its text", () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought('Comparing refs')]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    const header = screen.getByRole('button');
+    expect(within(header).getByTitle('Comparing refs')).toBeInTheDocument();
+    expect(within(header).queryByTitle('Next I check the ordering.')).toBeNull();
+  });
+
+  test('falls back to the generic thinking line when no label has landed', () => {
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought()]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    expect(within(screen.getByRole('button')).getByTitle('com_ui_thinking')).toBeInTheDocument();
+  });
+});

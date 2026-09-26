@@ -269,6 +269,7 @@ function newestLine(
   localize: Localize,
   serverNames: readonly string[],
   span: SpanSummary,
+  preferLabels: boolean,
 ): Pick<LiveActivity, 'text' | 'source' | 'pendingToolCallId' | 'comboCount'> {
   for (let position = parts.length - 1; position >= 0; position -= 1) {
     const part = parts[position];
@@ -278,9 +279,12 @@ function newestLine(
     if (part.type === ContentTypes.THINK) {
       /** Reached before any call or label, this thought IS the tail — the
        *  model is reasoning about its next step. Its multi-line peek stays
-       *  inside the fold, so the header previews it one sentence at a time. */
+       *  inside the fold, so the header previews it one sentence at a time.
+       *  Unless the fold is open: the text is on screen then, and a header
+       *  repeating a line of it under the reader's eyes is noise, so the
+       *  header keeps to the thought's label. */
       const reasoning = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
-      const sentence = lastReasoningSentence(reasoning);
+      const sentence = preferLabels ? undefined : lastReasoningSentence(reasoning);
       if (sentence != null) {
         return { text: sentence, source: `think:${position}`, comboCount: 1 };
       }
@@ -300,7 +304,7 @@ function newestLine(
        *  leaving it unnamed would hold a stale call on screen while new prose
        *  piles up behind the disclosure. */
       const value = typeof part.text === 'string' ? part.text : (part.text?.value ?? '');
-      const commentary = boundIntentLabel(value);
+      const commentary = preferLabels ? undefined : boundIntentLabel(value);
       if (commentary != null) {
         return { text: commentary, source: `text:${position}`, comboCount: 1 };
       }
@@ -346,10 +350,15 @@ export function getLiveActivity(
   localize: Localize,
   serverNames: readonly string[],
   attachmentsById?: Record<string, TAttachment[] | undefined>,
+  /** Name the span by its newest LABEL: a thought's generated label or the
+   *  generic thinking line, a batch label, a call's line — never a line of
+   *  reasoning or commentary. For a header whose rows are on screen, where
+   *  quoting them back is repetition. */
+  preferLabels = false,
 ): LiveActivity {
   const span = summarizeSpan(parts, attachmentsById);
   return {
-    ...newestLine(parts, localize, serverNames, span),
+    ...newestLine(parts, localize, serverNames, span, preferLabels),
     outcome: { failed: span.failed, cancelled: span.cancelled },
     iconNames: getSpanIconNames(parts),
   };

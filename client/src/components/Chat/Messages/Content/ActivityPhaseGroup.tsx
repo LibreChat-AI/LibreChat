@@ -263,6 +263,7 @@ function SpanGlyph({
 function LivePhaseHeader({
   parts,
   animate,
+  expanded,
   lineId,
   comboId,
   detailId,
@@ -271,6 +272,9 @@ function LivePhaseHeader({
 }: {
   parts: ReadonlyArray<TMessageContentParts | undefined>;
   animate: boolean;
+  /** The rows are on screen: title the span by its newest label rather than
+   *  repeat a line the reader can see below. */
+  expanded: boolean;
   lineId: string;
   comboId: string;
   detailId: string;
@@ -282,8 +286,8 @@ function LivePhaseHeader({
   const mcpServerNames = useMCPServerNames();
   const attachmentsById = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
   const activity = useMemo(
-    () => getLiveActivity(parts, localize, mcpServerNames, attachmentsById),
-    [parts, localize, mcpServerNames, attachmentsById],
+    () => getLiveActivity(parts, localize, mcpServerNames, attachmentsById, expanded),
+    [parts, localize, mcpServerNames, attachmentsById, expanded],
   );
   /** A code card names its sandbox startup from events outside the content
    *  array. The row reads the same signal for its newest call, so the span
@@ -774,6 +778,7 @@ export default function ActivityPhaseGroup({
               <LivePhaseHeader
                 parts={liveParts}
                 animate={smoothStreaming}
+                expanded={isExpanded}
                 lineId={lineId}
                 comboId={comboId}
                 detailId={detailId}
