@@ -1,9 +1,15 @@
 import { useRef, useMemo, useCallback, useSyncExternalStore } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, ContentTypes, fromUIMessage, toUIMessage } from 'librechat-data-provider';
-import type { TAttachment, TMessage, UIMessage, UIMappingOptions } from 'librechat-data-provider';
-import type { Query, QueryClient } from '@tanstack/react-query';
+import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
+import {
+  QueryKeys,
+  Constants,
+  ContentTypes,
+  fromUIMessage,
+  toUIMessage,
+} from 'librechat-data-provider';
+import type { TMessage, UIMessage, TAttachment, UIMappingOptions } from 'librechat-data-provider';
 import type { TAskFunction } from '~/common';
+import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/MemoryCall';
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { useChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
@@ -18,7 +24,7 @@ export type ChatStatus = 'submitted' | 'streaming' | 'ready' | 'error';
  * are left out rather than stubbed.
  */
 export type UseChatHelpers = {
-  /** The conversation id; AI SDK's chat id. */
+  /** The conversation the messages are read from (the contract's `messagesKey`); AI SDK's chat id. */
   id: string | undefined;
   /** The cached messages as `UIMessage`s, re-read whenever the message cache is written. */
   messages: UIMessage[];
@@ -32,8 +38,9 @@ export type UseChatHelpers = {
   stop: () => Promise<void>;
   /**
    * Writes messages back to the cache, keeping the stored fields the UI view omits. A message
-   * with no stored counterpart joins the active conversation under the message before it,
-   * unless its metadata names a parent.
+   * with no stored counterpart joins the active conversation under the message before it, or
+   * under the active branch's tail when the message before it is on another branch, unless its
+   * metadata names a parent.
    */
   setMessages: (messages: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => void;
 };
@@ -80,6 +87,28 @@ const getToolContext = (message: TMessage): ToolContext => {
   return context;
 };
 
+type MemoryToolName = Parameters<typeof isMemoryFailureOutput>[0];
+
+const isMemoryTool = (name: string | undefined): name is MemoryToolName =>
+  name === 'set_memory' || name === 'delete_memory';
+
+type StoredToolCall = Parameters<NonNullable<UIMappingOptions['resolveToolFailure']>>[0];
+
+/**
+ * A memory call's output is its own failure message; a background task's output is only its
+ * dispatch handle, so its reason stands instead.
+ */
+const getFailureProse = (toolCall: StoredToolCall, background: boolean) => {
+  const { name, output } = toolCall as { name?: string; output?: unknown };
+  if (background || typeof output !== 'string' || !output) {
+    return undefined;
+  }
+  if (!isMemoryTool(name)) {
+    return undefined;
+  }
+  return isMemoryFailureOutput(name, output) ? output : undefined;
+};
+
 /**
  * The client's own tool outcome rules (`getToolMeta`: memory failure prose, background task
  * status attachments), handed to the parts mapping, which reads only markers stored on the call.
@@ -101,7 +130,10 @@ const resolveToolFailure: NonNullable<UIMappingOptions['resolveToolFailure']> = 
   if (meta?.cancelled) {
     return 'cancelled';
   }
-  return meta?.failed ? 'failed' : undefined;
+  if (!meta?.failed) {
+    return undefined;
+  }
+  return getFailureProse(toolCall, meta.background != null) ?? 'failed';
 };
 
 const mappingOptions: UIMappingOptions = { resolveToolFailure };
@@ -134,10 +166,22 @@ const toView = (message: TMessage) => {
   return view;
 };
 
-/** Placeholder slots (empty text or think, lane placeholders) are not streamed output. */
-const hasStreamed = (message: TMessage) =>
-  (message.text?.length ?? 0) > 0 ||
-  (message.content?.some((part) => part != null && !isEmptyContentPart(part)) ?? false);
+/**
+ * Placeholder slots (empty text or think, lane placeholders) are not streamed output, and neither
+ * is a part the turn was submitted with, such as a retained edit prefix: the stream replaces a
+ * part before it changes it, so a seeded part is still the same object until then.
+ */
+const hasStreamed = (message: TMessage, seed?: TMessage) => {
+  if ((message.text?.length ?? 0) > 0 && message.text !== seed?.text) {
+    return true;
+  }
+  const seeded = seed?.content;
+  return (
+    message.content?.some(
+      (part) => part != null && !isEmptyContentPart(part) && !seeded?.includes(part),
+    ) ?? false
+  );
+};
 
 /** The error part names the failure; top-level text is only the fallback for legacy error rows. */
 const getErrorText = (message: TMessage) => {
@@ -159,21 +203,29 @@ const isErrorMessage = (message: TMessage) =>
  * `abortScroll` is a scroll hold rather than an abort flag, so a stop is read from the settled
  * message, not from it.
  */
-export const getChatStatus = (isSubmitting: boolean, latest: TMessage | undefined): ChatStatus => {
+export const getChatStatus = (
+  isSubmitting: boolean,
+  latest: TMessage | undefined,
+  seed?: TMessage,
+): ChatStatus => {
   if (isSubmitting) {
-    return latest && !latest.isCreatedByUser && hasStreamed(latest) ? 'streaming' : 'submitted';
+    return latest && !latest.isCreatedByUser && hasStreamed(latest, seed)
+      ? 'streaming'
+      : 'submitted';
   }
   return latest && !latest.isCreatedByUser && isErrorMessage(latest) ? 'error' : 'ready';
 };
 
-/** The message queries caching `stored`; the key `getMessages` reads is not on the contract. */
-const findHolders = (queryClient: QueryClient, stored: TMessage[] | undefined): Query[] =>
-  stored
-    ? queryClient
-        .getQueryCache()
-        .findAll({ queryKey: [QueryKeys.messages] })
-        .filter((query) => query.state.data === stored)
-    : [];
+/** Ids on the active branch: the contract's tail and its ancestors. */
+const getActiveBranch = (byId: Map<string, TMessage>, tailId: string | undefined) => {
+  const branch = new Set<string>();
+  let id: string | null | undefined = tailId;
+  while (id != null && !branch.has(id)) {
+    branch.add(id);
+    id = byId.get(id)?.parentMessageId;
+  }
+  return branch;
+};
 
 /**
  * AI SDK `useChat`, read and called through `ChatContext`. It holds no state of its own:
@@ -184,47 +236,44 @@ export function useChat(): UseChatHelpers {
   const {
     conversation,
     getMessages,
+    messagesKey,
     setMessages: setStoredMessages,
     latestMessageId,
     isSubmitting,
+    initialResponse,
     ask,
     regenerate: regenerateTarget,
     stopGenerating,
   } = useChatContext();
 
   const queryClient = useQueryClient();
+  const queryHash = useMemo(() => hashQueryKey([QueryKeys.messages, messagesKey]), [messagesKey]);
   const subscribe = useCallback(
     (onChange: () => void) =>
       queryClient.getQueryCache().subscribe((event) => {
-        if (event.query.queryKey[0] === QueryKeys.messages) {
+        if (event.query.queryHash === queryHash) {
           onChange();
         }
       }),
-    [queryClient],
+    [queryClient, queryHash],
   );
-  const snapshot = useRef<{ writes: number; stored?: TMessage[]; holders: Query[] }>();
+  const snapshot = useRef<{ writes: number; stored?: TMessage[] }>();
   /**
    * A stream frame replaces a response's content on the same object, so structural sharing can
-   * keep the cached array. Every write still counts on the queries holding it, so the snapshot is
-   * keyed by that store-owned count and by the array: a write to another conversation changes
-   * neither, and one that lands before the listener subscribes is still seen. The holders are
-   * looked up once per array, not once per frame.
+   * keep the cached array. Every write still counts on the query, so the snapshot is keyed by that
+   * store-owned count and by the array; a write that lands before the listener subscribes is
+   * still seen.
    */
   const readSnapshot = useCallback(() => {
     const stored = getMessages();
+    const writes = queryClient.getQueryCache().get(queryHash)?.state.dataUpdateCount ?? 0;
     const current = snapshot.current;
-    const holders =
-      current && current.stored === stored ? current.holders : findHolders(queryClient, stored);
-    let writes = 0;
-    for (const query of holders) {
-      writes += query.state.dataUpdateCount;
-    }
     if (current?.writes === writes && current.stored === stored) {
       return current;
     }
-    snapshot.current = { writes, stored, holders };
+    snapshot.current = { writes, stored };
     return snapshot.current;
-  }, [getMessages, queryClient]);
+  }, [getMessages, queryClient, queryHash]);
   const cache = useSyncExternalStore(subscribe, readSnapshot, readSnapshot);
 
   const { messages, latest } = useMemo(() => {
@@ -239,7 +288,8 @@ export function useChat(): UseChatHelpers {
     return { messages: list, latest: latestMessage };
   }, [cache, latestMessageId]);
 
-  const status = getChatStatus(isSubmitting, latest);
+  const chatId = messagesKey || conversation?.conversationId || undefined;
+  const status = getChatStatus(isSubmitting, latest, initialResponse);
   const errorText = status === 'error' && latest ? getErrorText(latest) : undefined;
   const error = useMemo(
     () => (errorText === undefined ? undefined : new Error(errorText)),
@@ -268,27 +318,31 @@ export function useChat(): UseChatHelpers {
       const current = getMessages() ?? [];
       const next = typeof update === 'function' ? update(current.map(toView)) : update;
       const byId = new Map(current.map((message) => [message.messageId, message]));
-      const conversationId = conversation?.conversationId ?? null;
-      let previousId: string | null = null;
+      const branch = getActiveBranch(byId, latestMessageId);
+      const conversationId = chatId === Constants.NEW_CONVO ? null : chatId;
+      let previous: { id: string; joined: boolean } | null = null;
       const stored = next.map((view) => {
         const base = byId.get(view.id);
         const message = fromUIMessage(view, base);
         if (!base) {
           message.conversationId = conversationId ?? message.conversationId;
           if (view.metadata?.parentMessageId === undefined) {
-            message.parentMessageId = previousId;
+            message.parentMessageId =
+              previous == null || previous.joined
+                ? (previous?.id ?? null)
+                : (latestMessageId ?? null);
           }
         }
-        previousId = message.messageId;
+        previous = { id: message.messageId, joined: !base || branch.has(message.messageId) };
         return message;
       });
       setStoredMessages(stored);
     },
-    [conversation?.conversationId, getMessages, setStoredMessages],
+    [chatId, getMessages, latestMessageId, setStoredMessages],
   );
 
   return {
-    id: conversation?.conversationId ?? undefined,
+    id: chatId,
     messages,
     status,
     error,
