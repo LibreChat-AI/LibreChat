@@ -403,6 +403,26 @@ describe('useChat', () => {
     ]);
   });
 
+  it('leaves an inserted message unassigned in a new chat even when it names another', () => {
+    const contract = createContract({ messagesKey: 'new' });
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      {
+        id: 'note-1',
+        role: 'assistant',
+        metadata: { conversationId: 'convo-2', parentMessageId: 'user-1' },
+        parts: [{ type: 'text', text: 'Note' }],
+      },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      userMessage,
+      expect.objectContaining({ messageId: 'note-1', conversationId: null }),
+    ]);
+  });
+
   it('parents an appended message to the active branch, not a hidden sibling', () => {
     const shown = response({ messageId: 'response-a', text: 'Shown' });
     const hidden = response({ messageId: 'response-b', text: 'Hidden' });

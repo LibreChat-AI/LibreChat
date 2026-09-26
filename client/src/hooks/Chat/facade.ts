@@ -319,13 +319,13 @@ export function useChat(): UseChatHelpers {
       const next = typeof update === 'function' ? update(current.map(toView)) : update;
       const byId = new Map(current.map((message) => [message.messageId, message]));
       const branch = getActiveBranch(byId, latestMessageId);
-      const conversationId = chatId === Constants.NEW_CONVO ? null : chatId;
+      const conversationId = chatId === Constants.NEW_CONVO ? null : (chatId ?? null);
       let previous: { id: string; joined: boolean } | null = null;
       const stored = next.map((view) => {
         const base = byId.get(view.id);
         const message = fromUIMessage(view, base);
         if (!base) {
-          message.conversationId = conversationId ?? message.conversationId;
+          message.conversationId = conversationId;
           if (view.metadata?.parentMessageId === undefined) {
             message.parentMessageId =
               previous == null || previous.joined
