@@ -204,6 +204,34 @@ describe('useChat', () => {
     expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
   });
 
+  it('follows each stream frame written to the cache with the same message references', () => {
+    const key = [QueryKeys.messages, 'convo-1'];
+    const streaming = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(key, [userMessage, streaming]);
+    const contract = createContract({
+      getMessages: jest.fn(() => queryClient.getQueryData<TMessage[]>(key)),
+      latestMessageId: 'response-1',
+      isSubmitting: true,
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+      </QueryClientProvider>
+    );
+    const { result } = renderHook(() => useChat(), { wrapper });
+    const before = queryClient.getQueryData<TMessage[]>(key);
+
+    act(() => {
+      streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello' }];
+      queryClient.setQueryData(key, [userMessage, streaming]);
+    });
+
+    expect(queryClient.getQueryData<TMessage[]>(key)).toBe(before);
+    expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
+    expect(result.current.status).toBe('streaming');
+  });
+
   it('keeps a stepless call clear of attachments its repeated id owns elsewhere', () => {
     const memoryError = {
       conversationId: 'convo-1',
