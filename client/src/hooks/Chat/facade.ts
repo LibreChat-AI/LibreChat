@@ -138,16 +138,14 @@ const hasStreamed = (message: TMessage) =>
   (message.text?.length ?? 0) > 0 ||
   (message.content?.some((part) => part != null && !isEmptyContentPart(part)) ?? false);
 
+/** The error part names the failure; top-level text is only the fallback for legacy error rows. */
 const getErrorText = (message: TMessage) => {
-  if (message.text) {
-    return message.text;
-  }
   const part = message.content?.find((item) => item?.type === ContentTypes.ERROR);
   if (part?.type !== ContentTypes.ERROR) {
-    return '';
+    return message.text ?? '';
   }
   const text = typeof part.text === 'string' ? part.text : part.text?.value;
-  return part.error || text || '';
+  return part.error || text || message.text || '';
 };
 
 const isErrorMessage = (message: TMessage) =>
@@ -202,17 +200,19 @@ export function useChat(): UseChatHelpers {
       }),
     [queryClient],
   );
-  const snapshot = useRef<{ writes: number; read: typeof getMessages; stored?: TMessage[] }>();
+  const snapshot = useRef<{ writes: number; stored?: TMessage[] }>();
   /**
    * A stream frame replaces a response's content on the same object, so structural sharing can
-   * keep the cached array; the snapshot is keyed by the write count, not by the array.
+   * keep the cached array: the write count catches those frames, and the array itself catches a
+   * write that lands before the listener is subscribed.
    */
   const readSnapshot = useCallback(() => {
+    const stored = getMessages();
     const current = snapshot.current;
-    if (current?.writes === writes.current && current.read === getMessages) {
+    if (current?.writes === writes.current && current.stored === stored) {
       return current;
     }
-    snapshot.current = { writes: writes.current, read: getMessages, stored: getMessages() };
+    snapshot.current = { writes: writes.current, stored };
     return snapshot.current;
   }, [getMessages]);
   const cache = useSyncExternalStore(subscribe, readSnapshot, readSnapshot);
@@ -264,7 +264,7 @@ export function useChat(): UseChatHelpers {
         const base = byId.get(view.id);
         const message = fromUIMessage(view, base);
         if (!base) {
-          message.conversationId ??= conversationId;
+          message.conversationId = conversationId ?? message.conversationId;
           if (view.metadata?.parentMessageId === undefined) {
             message.parentMessageId = previousId;
           }

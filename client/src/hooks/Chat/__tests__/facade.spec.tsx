@@ -154,6 +154,32 @@ describe('useChat', () => {
     expect(result.current.error?.message).toBe('Run failed');
   });
 
+  it('reports the error part rather than text the failed response kept', () => {
+    const failed = response({
+      text: 'Partial answer',
+      content: [
+        { type: ContentTypes.TEXT, text: 'Partial answer' },
+        { type: ContentTypes.ERROR, error: 'Provider timed out' },
+      ] as TMessageContentParts[],
+    });
+    const { result } = renderChat(turn([userMessage, failed], false));
+
+    expect(result.current.status).toBe('error');
+    expect(result.current.error?.message).toBe('Provider timed out');
+  });
+
+  it('reads messages a write the listener never saw replaced', () => {
+    let messages: TMessage[] = [userMessage];
+    const contract = createContract({ getMessages: jest.fn(() => messages) });
+    const { result, update } = renderChat(contract);
+    expect(result.current.messages).toHaveLength(1);
+
+    messages = [userMessage, response({ text: 'Loaded' })];
+    update({ ...contract });
+
+    expect(result.current.messages).toHaveLength(2);
+  });
+
   it('re-reads messages when the message cache is written', () => {
     let messages: TMessage[] = [userMessage, response({ text: 'Old' })];
     const contract = createContract({
@@ -284,6 +310,26 @@ describe('useChat', () => {
         parentMessageId: 'user-1',
         content: [{ type: ContentTypes.TEXT, text: 'Note' }],
       }),
+    ]);
+  });
+
+  it('joins an inserted message that names another chat to the active conversation', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.setMessages((views) => [
+      ...views,
+      {
+        id: 'note-1',
+        role: 'assistant',
+        metadata: { conversationId: 'convo-2', parentMessageId: 'user-1' },
+        parts: [{ type: 'text', text: 'Note' }],
+      },
+    ]);
+
+    expect(contract.setMessages).toHaveBeenCalledWith([
+      userMessage,
+      expect.objectContaining({ messageId: 'note-1', conversationId: 'convo-1' }),
     ]);
   });
 
