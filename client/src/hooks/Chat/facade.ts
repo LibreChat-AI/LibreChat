@@ -7,13 +7,7 @@ import {
   fromUIMessage,
   toUIMessage,
 } from 'librechat-data-provider';
-import type {
-  TMessage,
-  UIMessage,
-  TAttachment,
-  UIMappingOptions,
-  TMessageContentParts,
-} from 'librechat-data-provider';
+import type { TMessage, UIMessage, TAttachment, UIMappingOptions } from 'librechat-data-provider';
 import type { TAskFunction } from '~/common';
 import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/MemoryCall';
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
@@ -190,47 +184,15 @@ const toView = (message: TMessage) => {
   return view;
 };
 
-/** Text of a text or reasoning part, the two kinds the stream can continue in place. */
-const getContinuableText = (part: TMessageContentParts) => {
-  if (part.type !== ContentTypes.TEXT && part.type !== ContentTypes.THINK) {
-    return undefined;
-  }
-  const value = part.type === ContentTypes.TEXT ? part.text : part.think;
-  return typeof value === 'string' ? value : value?.value;
-};
-
 /**
- * Placeholder slots (empty text or think, lane placeholders) are not streamed output, and neither
- * is a part the turn was submitted with, such as a retained edit prefix. Seeded parts keep their
- * indices (the cache may hold equal copies, so identity says nothing): the stream appends after
- * them, fills a seeded placeholder, or continues the last seeded part when it is text or
- * reasoning, which then reads differently from the seed.
+ * Placeholder slots (empty text or think, lane placeholders) are not streamed output. A rerun edit
+ * seeds its response with the retained prefix, which reads as streamed from the start: the
+ * contract carries no first-delta signal a restored or replaced run could keep correct.
  */
-const hasStreamed = (message: TMessage, seed?: TMessage) => {
-  if ((message.text?.length ?? 0) > 0 && message.text !== seed?.text) {
-    return true;
-  }
-  if ((message.files?.length ?? 0) > (seed?.files?.length ?? 0)) {
-    return true;
-  }
-  const seeded = seed?.content ?? [];
-  return (
-    message.content?.some((part, index) => {
-      if (part == null || isEmptyContentPart(part)) {
-        return false;
-      }
-      const seededPart = seeded[index];
-      if (seededPart == null || isEmptyContentPart(seededPart)) {
-        return true;
-      }
-      return (
-        index === seeded.length - 1 &&
-        part.type === seededPart.type &&
-        getContinuableText(part) !== getContinuableText(seededPart)
-      );
-    }) ?? false
-  );
-};
+const hasStreamed = (message: TMessage) =>
+  (message.text?.length ?? 0) > 0 ||
+  (message.files?.length ?? 0) > 0 ||
+  (message.content?.some((part) => part != null && !isEmptyContentPart(part)) ?? false);
 
 /**
  * The error part names the failure; top-level text is only the fallback for legacy error rows,
@@ -256,15 +218,9 @@ const isErrorMessage = (message: TMessage) =>
  * `abortScroll` is a scroll hold rather than an abort flag, so a stop is read from the settled
  * message, not from it.
  */
-export const getChatStatus = (
-  isSubmitting: boolean,
-  latest: TMessage | undefined,
-  seed?: TMessage,
-): ChatStatus => {
+export const getChatStatus = (isSubmitting: boolean, latest: TMessage | undefined): ChatStatus => {
   if (isSubmitting) {
-    return latest && !latest.isCreatedByUser && hasStreamed(latest, seed)
-      ? 'streaming'
-      : 'submitted';
+    return latest && !latest.isCreatedByUser && hasStreamed(latest) ? 'streaming' : 'submitted';
   }
   return latest && isErrorMessage(latest) ? 'error' : 'ready';
 };
@@ -293,7 +249,6 @@ export function useChat(): UseChatHelpers {
     setMessages: setStoredMessages,
     latestMessageId,
     isSubmitting,
-    initialResponse,
     ask,
     regenerate: regenerateTarget,
     stopGenerating,
@@ -342,7 +297,7 @@ export function useChat(): UseChatHelpers {
   }, [cache, latestMessageId]);
 
   const chatId = messagesKey || conversation?.conversationId || undefined;
-  const status = getChatStatus(isSubmitting, latest, initialResponse);
+  const status = getChatStatus(isSubmitting, latest);
   const errorText = status === 'error' && latest ? getErrorText(latest) : undefined;
   const error = useMemo(
     () => (errorText === undefined ? undefined : new Error(errorText)),

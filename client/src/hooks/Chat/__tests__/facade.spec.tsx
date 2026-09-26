@@ -47,7 +47,6 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     ask: jest.fn(),
     regenerate: jest.fn(),
     isSubmitting: false,
-    initialResponse: undefined,
     setIsSubmitting: noop,
     handleRegenerate: noop,
     handleContinue: noop,
@@ -142,66 +141,7 @@ describe('useChat', () => {
     expect(result.current.id).toBe('convo-2');
   });
 
-  it('stays submitted while a rerun edit holds only its retained prefix', () => {
-    const seed = response({ content: [{ type: ContentTypes.TEXT, text: 'Edited answer' }] });
-    /** The cache holds equal copies of the seeded parts, not the submitted objects. */
-    const seeded = [
-      userMessage,
-      response({ content: [{ type: ContentTypes.TEXT, text: 'Edited answer' }] }),
-    ];
-    const { result, update } = renderChat(
-      createContract({
-        getMessages: jest.fn(() => seeded),
-        latestMessageId: 'response-1',
-        isSubmitting: true,
-        initialResponse: seed,
-      }),
-    );
-    expect(result.current.status).toBe('submitted');
-
-    const streamed = [
-      userMessage,
-      response({
-        content: [
-          { type: ContentTypes.TEXT, text: 'Edited answer' },
-          { type: ContentTypes.TEXT, text: ' and more' },
-        ],
-      }),
-    ];
-    update(
-      createContract({
-        getMessages: jest.fn(() => streamed),
-        latestMessageId: 'response-1',
-        isSubmitting: true,
-        initialResponse: seed,
-      }),
-    );
-
-    expect(result.current.status).toBe('streaming');
-  });
-
-  it('streams once the stream continues the last seeded part', () => {
-    const seed = response({ content: [{ type: ContentTypes.TEXT, text: 'kept tail' }] });
-    const continued = [
-      userMessage,
-      response({ content: [{ type: ContentTypes.TEXT, text: 'kept tail!' }] }),
-    ];
-    const { result } = renderChat(
-      createContract({
-        getMessages: jest.fn(() => continued),
-        latestMessageId: 'response-1',
-        isSubmitting: true,
-        initialResponse: seed,
-      }),
-    );
-
-    expect(result.current.status).toBe('streaming');
-  });
-
-  it('streams once a seeded lane placeholder is filled', () => {
-    const seed = response({
-      content: [{ type: '' }, { type: '' }] as unknown as TMessageContentParts[],
-    });
+  it('streams once a lane placeholder is filled', () => {
     const filled = [
       userMessage,
       response({
@@ -216,7 +156,6 @@ describe('useChat', () => {
         getMessages: jest.fn(() => filled),
         latestMessageId: 'response-1',
         isSubmitting: true,
-        initialResponse: seed,
       }),
     );
 
