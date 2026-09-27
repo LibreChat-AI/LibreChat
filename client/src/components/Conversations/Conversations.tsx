@@ -25,8 +25,9 @@ import {
   useUnpinDroppedConversation,
 } from './dnd';
 import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
-import { groupConversations, cn } from '~/utils';
+import { groupConversationsWithRunning, RUNNING_CHATS_GROUP } from './running';
 import { useActiveJobs } from '~/data-provider';
+import { cn } from '~/utils';
 import Convo from './Convo';
 import store from '~/store';
 
@@ -159,10 +160,14 @@ const DateLabel: FC<{ groupName: string; isFirst?: boolean; isAlphabetical?: boo
     const displayName = localize(groupName as TranslationKeys) || groupName;
     return (
       <h2
-        aria-label={localize(
-          isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
-          isAlphabetical ? { letter: displayName } : { date: displayName },
-        )}
+        aria-label={
+          groupName === RUNNING_CHATS_GROUP
+            ? localize('com_a11y_chats_running_section')
+            : localize(
+                isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
+                isAlphabetical ? { letter: displayName } : { date: displayName },
+              )
+        }
         className={cn('pl-1 pt-1 text-text-secondary', isFirst === true ? 'mt-0' : 'mt-2')}
         style={{ fontSize: '0.7rem' }}
       >
@@ -277,12 +282,12 @@ const Conversations: FC<ConversationsProps> = ({
    *  absent from the sidebar entirely rather than merely further down it. */
   const groupedConversations = useMemo(
     () =>
-      groupConversations(filteredConversations, {
+      groupConversationsWithRunning(filteredConversations, activeJobIds, {
         field: sort.field,
         direction: sort.direction,
         includePinned: isArchivedView,
       }),
-    [filteredConversations, isArchivedView, sort.direction, sort.field],
+    [filteredConversations, activeJobIds, isArchivedView, sort.direction, sort.field],
   );
 
   /* Pins are stripped from the date groups. An all-pin page leaves the
