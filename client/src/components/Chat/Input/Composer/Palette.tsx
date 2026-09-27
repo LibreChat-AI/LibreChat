@@ -1265,9 +1265,6 @@ function Palette({
             )}
             <div
               ref={listBodyRef}
-              id={listId}
-              role="grid"
-              aria-label={localize('com_ui_composer_palette')}
               className={cn(
                 'composer-palette-rows',
                 rows.length > 0 && 'p-1.5',
@@ -1281,14 +1278,15 @@ function Palette({
                     width={width}
                     overscanRowCount={8}
                     rowCount={rows.length}
-                    /* The list defaults to a `grid` of `row`s, labelled
-                         "grid" in English and holding its own tab stop. Left
-                         alone it sits between this listbox and its options, so
-                         none of them are owned by it, and it announces a
-                         second, empty widget where the rows should be. */
-                    role="presentation"
-                    containerRole="presentation"
-                    aria-label=""
+                    /* The virtualized scroller is the grid itself, so its rows
+                       are owned by it directly. A presentational scroller
+                       between a wrapper grid and the rows cannot be made
+                       transparent: it always renders `aria-label` and
+                       `aria-readonly`, which only a grid may carry. */
+                    id={listId}
+                    role="grid"
+                    aria-label={localize('com_ui_composer_palette')}
+                    containerRole="rowgroup"
                     tabIndex={-1}
                     scrollToIndex={scrollToActive ? activeIndex : undefined}
                     rowRenderer={rowRenderer}

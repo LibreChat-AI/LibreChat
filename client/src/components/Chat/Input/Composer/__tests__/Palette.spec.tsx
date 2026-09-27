@@ -672,8 +672,11 @@ describe('Palette', () => {
       renderPalette();
       const list = document.querySelector('.ReactVirtualized__Grid');
       expect(list?.getAttribute('tabindex')).toBe('-1');
-      expect(list?.getAttribute('role')).toBe('presentation');
-      expect(list?.getAttribute('aria-label')).toBe('');
+      expect(list).toBe(screen.getByRole('grid', { name: 'com_ui_composer_palette' }));
+      expect(screen.getByTestId('composer-palette-search').getAttribute('aria-controls')).toBe(
+        list?.id,
+      );
+      expect(list?.querySelector('[role="rowgroup"] [role="row"]')).not.toBeNull();
     });
 
     it('steps over headers on the way down', () => {
