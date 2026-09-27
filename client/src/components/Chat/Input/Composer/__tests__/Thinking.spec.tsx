@@ -138,7 +138,7 @@ describe('Thinking', () => {
     expect(button.querySelector('.composer-label-in-up')).toHaveTextContent('High');
     expect(button.querySelector('.composer-label-out-up')).toHaveTextContent('Low');
 
-    mockPendingOverride = { key: 'reasoning_effort', value: 'auto' } as TReasoningOverride;
+    mockPendingOverride = { key: 'reasoning_effort', value: ReasoningEffort.unset };
     rerenderConversation();
     expect(button).toHaveTextContent('Auto');
     expect(button.querySelector('.composer-label-in-down')).toHaveTextContent('Auto');
