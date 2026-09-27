@@ -695,6 +695,26 @@ describe('Palette', () => {
       );
     });
 
+    /* The highlight follows the pointer too, so a kept one lit up whatever the
+       pointer last crossed (a star's row, "Show all") on the next opening. */
+    it('starts each opening fresh rather than where the last one was left', async () => {
+      renderPalette();
+      const input = screen.getByTestId('composer-palette-search');
+      const first = input.getAttribute('aria-activedescendant');
+      const webRow = document.querySelector('[data-row-key="web_search"]');
+      fireEvent.mouseEnter(webRow as Element);
+      expect(input.getAttribute('aria-activedescendant')).not.toBe(first);
+
+      fireEvent.keyDown(input, { key: 'Escape' });
+      await waitFor(() =>
+        expect(screen.queryByTestId('composer-palette-search')).not.toBeInTheDocument(),
+      );
+      fireEvent.click(screen.getByTestId('composer-palette-button'));
+
+      const reopened = await screen.findByTestId('composer-palette-search');
+      expect(reopened.getAttribute('aria-activedescendant')).toBe(first);
+    });
+
     /* An id that names nothing is the failure mode here: screen readers lose
        the active option entirely and announce nothing in its place. */
     it('always points at a row that is in the document', () => {

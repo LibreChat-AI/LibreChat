@@ -686,12 +686,17 @@ function Palette({
 
   /* Cleared on unmount rather than on close: the popup stays up through its
      leave animation, so clearing on close emptied the field and repopulated the
-     list in full view of the user. */
+     list in full view of the user.
+     The highlight goes with it. It follows the pointer as well as the arrows,
+     so keeping it made the next opening light up whatever row or "Show all"
+     the pointer last crossed, wherever the pointer now is. */
   const [wasMounted, setWasMounted] = useState(false);
   if (mounted !== wasMounted) {
     setWasMounted(mounted);
     if (!mounted) {
       setSearch('');
+      setActiveKey('');
+      setScrollToActive(false);
     }
   }
 
