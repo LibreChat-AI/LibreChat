@@ -1842,16 +1842,19 @@ function buildIsolatedAgentInputs(
   child: RunAgent,
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
-  const childInputs = toInput(child, { isSubagent: true });
   const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  if (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0) {
-    const skillInstructions = alwaysApplySkillPrimes
-      .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-      .join('\n\n');
-    childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .join('\n\n');
-  }
+  const skillInstructions = alwaysApplySkillPrimes
+    ?.map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+    .join('\n\n');
+  const childWithSkill = skillInstructions
+    ? {
+        ...child,
+        additional_instructions: [child.additional_instructions, skillInstructions]
+          .filter((value): value is string => typeof value === 'string' && value.length > 0)
+          .join('\n\n'),
+      }
+    : child;
+  const childInputs = toInput(childWithSkill, { isSubagent: true });
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
