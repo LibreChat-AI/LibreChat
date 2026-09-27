@@ -258,5 +258,19 @@ describe('useAttachTarget', () => {
     it('withholds them with no conversation at all', () => {
       expect(target(null).canAttach).toBe(false);
     });
+
+    it('keeps assistant uploads when the file config fails to load', () => {
+      mockFileConfigLoaded = false;
+      expect(target({ endpoint: EModelEndpoint.assistants }).canAttach).toBe(true);
+      expect(target({ endpoint: EModelEndpoint.azureAssistants }).canAttach).toBe(true);
+    });
+
+    it('still withholds policy-routed uploads when the file config fails to load', () => {
+      mockFileConfigLoaded = false;
+      expect(target({ endpoint: EModelEndpoint.openAI }).canAttach).toBe(false);
+      expect(
+        target({ endpoint: EModelEndpoint.agents, agent_id: 'ephemeral-convo-1' }).canAttach,
+      ).toBe(false);
+    });
   });
 });

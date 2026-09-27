@@ -4,6 +4,7 @@ import {
   mergeFileConfig,
   isAgentsEndpoint,
   isEphemeralAgentId,
+  isAssistantsEndpoint,
   resolveEffectiveUseResponsesApi,
   resolveEndpointType,
   resolveUseResponsesApi,
@@ -121,13 +122,19 @@ export default function useAttachTarget(
   const isSavedAgent =
     isAgents && conversation?.agent_id != null && !isEphemeralAgentId(conversation.agent_id);
   const isPolicyResolved = isFileConfigLoaded && (!isSavedAgent || agentProvider != null);
+  /* Assistants upload directly, with no destination policy to resolve, so a file
+     config that failed or is paused must not take their uploads away. */
+  const isAssistants = isAssistantsEndpoint(endpoint);
 
   const canAttach = useMemo(() => {
     const endpointSupportsFiles = supportsFiles[endpointType ?? endpoint ?? ''] ?? false;
     const uploadDisabled = (disableInputs || endpointFileConfig?.disabled) ?? false;
-    return isPolicyResolved && (isAgents || endpointSupportsFiles) && !uploadDisabled;
+    return (
+      (isPolicyResolved || isAssistants) && (isAgents || endpointSupportsFiles) && !uploadDisabled
+    );
   }, [
     isAgents,
+    isAssistants,
     endpointType,
     endpoint,
     disableInputs,
