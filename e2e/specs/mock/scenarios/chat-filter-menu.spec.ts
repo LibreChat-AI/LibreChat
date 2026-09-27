@@ -299,6 +299,39 @@ test.describe('chat list properties menu', () => {
     await expect(chatsRow(page, inProject)).toBeVisible({ timeout: 30000 });
   });
 
+  test('the Endpoint facet stops at the limit the deployment publishes @scenario:endpoint-filter-stops-at-limit', async ({
+    page,
+  }) => {
+    /* The harness serves one librechat.yaml to every spec, so the published limit is set
+     * on the startup config this page reads; the route spec covers the server side. */
+    await page.route(
+      (url) => url.pathname === '/api/config',
+      async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({ response, json: { ...body, maxEndpointFilters: 1 } });
+      },
+    );
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await showSidebar(page);
+
+    await openFilterSubmenu(page);
+    await page.getByRole('menuitem', { name: /^Endpoint\b/ }).click();
+    const endpoints = page.getByRole('menu').last().getByRole('menuitemcheckbox');
+    await expect(endpoints.nth(1)).toBeVisible();
+    await endpoints.first().click();
+    await expect(endpoints.first()).toHaveAttribute('aria-checked', 'true');
+
+    await expect(endpoints.nth(1)).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.getByText('Endpoint limit reached (1)')).toBeVisible();
+    await endpoints.nth(1).click({ force: true });
+    await expect(endpoints.nth(1)).toHaveAttribute('aria-checked', 'false');
+
+    await closeMenus(page);
+    await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 1');
+    await expect(page.getByTestId('convo-list-error')).toHaveCount(0);
+  });
+
   test('a chat sent while a server-only facet is active is not added to the filtered list @scenario:live-chat-respects-active-facet', async ({
     page,
   }) => {
