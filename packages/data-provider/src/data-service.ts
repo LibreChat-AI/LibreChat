@@ -1304,6 +1304,12 @@ export function listSkillFiles(skillId: string): Promise<sk.TListSkillFilesRespo
 }
 
 export function uploadSkillFile(skillId: string, formData: FormData): Promise<sk.TSkillFile> {
+  const relativePath = formData.get('relativePath');
+  // Conditional edits use a new route: older servers must reject the request,
+  // not silently ignore expectedFileId and perform an unconditional replacement.
+  if (formData.has('expectedFileId') && typeof relativePath === 'string') {
+    return request.postMultiPart(endpoints.skillFile(skillId, relativePath), formData);
+  }
   return request.postMultiPart(endpoints.skillFiles(skillId), formData);
 }
 

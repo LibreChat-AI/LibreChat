@@ -1,4 +1,6 @@
 import {
+  Tools,
+  FileContext,
   getCodeEnvRefs,
   getCodeEnvRefForProfile,
   resolveSandboxFilename,
@@ -6,6 +8,7 @@ import {
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import type { CodeExecutionRoute } from '../provision/service';
+import type { CodeExecutionContext } from '~/agents/execution';
 import type { ServerRequest } from '~/types';
 import {
   claimCodeDestination,
@@ -198,4 +201,86 @@ export async function selectCodeFiles({
     selected.push(candidate);
   }
   return { selected, skippedNoRef, skippedSuperseded };
+}
+
+/** Where the model can open primed code files on the selected execution route. */
+export type CodeFileLocation = 'sandbox' | 'programmatic';
+
+type CodeContextFile = Pick<TFile, 'file_id' | 'filename' | 'context' | 'status' | 'previewError'>;
+
+const CODE_FILE_CONTEXT_ROOTS: Record<CodeFileLocation, string> = {
+  sandbox: '/mnt/data',
+  programmatic: '$LIBRECHAT_CODE_DATA_DIR',
+};
+
+const CODE_FILE_CONTEXT_HEADERS: Record<CodeFileLocation, string> = {
+  sandbox: `- Note: The following files are available in the "${Tools.execute_code}" tool environment:`,
+  programmatic:
+    '- Note: The following files are not in the attached workspace, so workspace tools cannot open them. Scripts run by the programmatic Bash tool, when it is available, can read them at these paths during that run:',
+};
+
+/**
+ * An attached workspace runs every workspace tool against the user's own directory, and
+ * primed files never land there: only programmatic Bash stages them, per run, in the
+ * worker's private data directory. An attached environment without a selected workspace
+ * runs a sandbox that mounts them at `/mnt/data` like the managed route.
+ */
+export function getCodeFileLocation(
+  context?: Pick<CodeExecutionContext, 'environmentType' | 'codeWorkspace'> | null,
+): CodeFileLocation {
+  return context?.environmentType === 'attached' && context.codeWorkspace != null
+    ? 'programmatic'
+    : 'sandbox';
+}
+
+function getPreviewContextSuffix(file: CodeContextFile): string {
+  if (file.status === 'pending') {
+    return ' (preview not yet generated)';
+  }
+  if (file.status !== 'failed') {
+    return '';
+  }
+  return file.previewError
+    ? ` (preview unavailable: ${file.previewError})`
+    : ' (preview unavailable)';
+}
+
+/**
+ * A generated output is normally left out — the model already knows what it
+ * wrote. That only holds while the file is still where it wrote it: once a
+ * newer same-named file takes the bare path, the output mounts under a
+ * suffixed name the model has never seen, and silence would leave it reading
+ * the newcomer or failing to find its own artifact.
+ */
+export function getCodeFileContextLine(
+  file: CodeContextFile,
+  agentResourceIds: ReadonlySet<string>,
+  destination: string,
+  location: CodeFileLocation = 'sandbox',
+): string {
+  const displaced = destination !== file.filename;
+  if (file.context === FileContext.execute_code && !displaced) {
+    return '';
+  }
+  const origin =
+    file.context === FileContext.execute_code
+      ? ` (written earlier as ${file.filename})`
+      : `${agentResourceIds.has(file.file_id) ? '' : ' (attached by user)'}${
+          displaced ? ` (uploaded as ${file.filename})` : ''
+        }`;
+  return `\n\t- ${CODE_FILE_CONTEXT_ROOTS[location]}/${destination}${origin}${getPreviewContextSuffix(file)}`;
+}
+
+export function appendCodeFileContextLine(
+  toolContext: string,
+  contextLine: string,
+  location: CodeFileLocation = 'sandbox',
+): string {
+  if (!contextLine) {
+    return toolContext;
+  }
+  if (toolContext) {
+    return `${toolContext}${contextLine}`;
+  }
+  return `${CODE_FILE_CONTEXT_HEADERS[location]}${contextLine}`;
 }

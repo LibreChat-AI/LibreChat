@@ -783,9 +783,12 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         }
         return retired;
       }),
+    // A background tool keeps running while the server drains, and its result must
+    // still reach the durable receipt, so producer writes stay available after
+    // admissions and the delivery engine stop.
     renewProducerLease: (deliveryKey, sourceId, leaseUntil) =>
       runAsSystem(async () =>
-        requireMethods().renewAgentTriggerDeliveryProducerLease({
+        requireCleanupMethods().renewAgentTriggerDeliveryProducerLease({
           deliveryKey,
           sourceId,
           leaseUntil,
@@ -793,7 +796,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
       ),
     persistBackgroundToolResult: (input) =>
       runAsSystem(async () => {
-        const persist = requireMethods().persistAgentBackgroundToolResult;
+        const persist = requireCleanupMethods().persistAgentBackgroundToolResult;
         const persisted = persist == null ? false : await persist(input);
         if (persisted) {
           expediteCompletions({ deliveryKeys: [input.deliveryKey] });

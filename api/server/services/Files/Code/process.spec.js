@@ -67,6 +67,8 @@ jest.mock('@librechat/api', () => {
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
     prepareCodeOutputBufferForInspection:
       jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
+    getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
+    appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in
@@ -3499,6 +3501,24 @@ describe('Code Process', () => {
       });
 
       expect(result.files?.[0]?.name).toBe('photo.webp');
+    });
+
+    it('tells the model an attached workspace cannot open primed files', async () => {
+      setupSessionInfoOk();
+      getFiles.mockResolvedValue([makeFile({ status: 'ready' })]);
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: ['fid-ready'], files: [] } },
+        agentId: 'agent-id',
+        codeFileLocation: 'programmatic',
+      });
+
+      expect(result.toolContext).toContain('not in the attached workspace');
+      expect(result.toolContext).toContain('$LIBRECHAT_CODE_DATA_DIR/data-ready.xlsx');
+      expect(result.toolContext).not.toContain('/mnt/data');
+      expect(result.toolContext).not.toContain('tool environment:');
+      expect(result.files).toHaveLength(1);
     });
 
     it('annotates a pending file with "(preview not yet generated)"', async () => {

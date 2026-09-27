@@ -25,6 +25,7 @@ import {
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
+export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
 import {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
@@ -1575,6 +1576,15 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Cooperative cancellation for process-local ordinary tools. Off
            * by default so existing deployments opt into the new control. */
           ordinaryToolCancellation: z.boolean().optional().default(false),
+          /** During graceful shutdown, how long an interrupted background tool gets to
+           * settle on its own before its result is recorded as interrupted. */
+          shutdownInterruptGraceMs: z
+            .number()
+            .int()
+            .min(0)
+            .max(60_000)
+            .optional()
+            .default(AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT),
         })
         .optional(),
       skills: z

@@ -25,4 +25,17 @@ describe('OutputRenderer', () => {
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
   });
+
+  /** The server's `completedToolExecutionStatus` counts this shape as a
+   *  failure while the run step stays `completed`; the card must agree with
+   *  the label the server wrote for the same call. */
+  it('treats schema-validation feedback as a failed call', () => {
+    expect(
+      isError(
+        'Error: Tool "slow_echo" input failed schema validation. Missing required fields: text.' +
+          "Use this tool's declared arguments.\n Please fix your mistakes.",
+      ),
+    ).toBe(true);
+    expect(isError('Error: something went wrong, then it recovered')).toBe(false);
+  });
 });
