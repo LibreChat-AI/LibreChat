@@ -313,11 +313,13 @@ export default function useTokenUsage({
         effective.remainingContextTokens != null
           ? normalizeTokenCount(effective.remainingContextTokens)
           : null;
-      const breakdownUsed = instructionTokens + normalizeTokenCount(breakdown.messageTokens);
+      const breakdownUsed =
+        instructionTokens +
+        normalizeTokenCount(breakdown.summaryTokens) +
+        normalizeTokenCount(breakdown.messageTokens);
       /** A remaining count measured against a smaller instruction total than the
-       *  snapshot publishes would put used below the instruction share the
-       *  breakdown subtracts, hiding the Messages row. Used never undercuts the
-       *  parts the breakdown itself reports. */
+       *  snapshot publishes would put used below the instruction and summary
+       *  shares the breakdown subtracts, hiding the Messages row. */
       const baseUsed =
         remainingContextTokens != null
           ? Math.max(maxTokens - remainingContextTokens, breakdownUsed)
