@@ -88,6 +88,68 @@ const toolCallPart = (name: string, args = '{"code":"echo hi"}'): TMessageConten
   }) as unknown as TMessageContentParts;
 
 describe('Part tool renderer selection', () => {
+  it.each(['image_gen_oai', 'image_edit_oai', 'gemini_image_gen'])(
+    'keeps a successful %s call on the image renderer',
+    (name) => {
+      renderPart(toolCallPart(name));
+      expect(screen.getByTestId('image-gen')).toBeInTheDocument();
+    },
+  );
+
+  it.each(['completed', 'failed'] as const)(
+    'makes a failed image-generation step with %s status revealable',
+    (runStepStatus) => {
+      renderPart({
+        ...toolCallPart('image_gen_oai'),
+        tool_call: {
+          id: 'call_1',
+          name: 'image_gen_oai',
+          args: '{}',
+          output: 'Error: Invalid image arguments\n Please fix your mistakes.',
+          progress: 1,
+          runStepStatus,
+        },
+      } as TMessageContentParts);
+      expect(screen.getByTestId('tool-call')).toHaveAttribute(
+        'data-run-step-status',
+        runStepStatus,
+      );
+      expect(screen.queryByTestId('image-gen')).not.toBeInTheDocument();
+    },
+  );
+
+  it('keeps a cancelled image-generation step out of the failed disclosure', () => {
+    renderPart({
+      ...toolCallPart('image_gen_oai'),
+      tool_call: {
+        id: 'call_1',
+        name: 'image_gen_oai',
+        args: '{}',
+        output: 'Error: Invalid image arguments\n Please fix your mistakes.',
+        progress: 1,
+        runStepStatus: 'cancelled',
+      },
+    } as TMessageContentParts);
+    expect(screen.getByTestId('image-gen')).toBeInTheDocument();
+    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+  });
+
+  it('routes a failed function-style image call through the shared disclosure', () => {
+    renderPart({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        type: 'function',
+        progress: 1,
+        function: {
+          name: 'image_gen_oai',
+          arguments: '{}',
+          output: 'Error: Invalid image arguments\n Please fix your mistakes.',
+        },
+      },
+    } as TMessageContentParts);
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
   it('routes bash PTC tool calls through the BashCall renderer', () => {
     renderPart(toolCallPart(Constants.BASH_PROGRAMMATIC_TOOL_CALLING));
 

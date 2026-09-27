@@ -449,6 +449,24 @@ describe('ActivityPhaseGroup failure fast path', () => {
     expect(onReveal).toHaveBeenCalledTimes(1);
   });
 
+  test('keeps the error action and remaining count outside the shrinking peek label', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[failedCall, failedCall]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+
+    const peek = screen.getByTestId('activity-phase-failed-peek');
+    const label = screen.getByText('com_ui_failed_subject');
+    const box = label.parentElement;
+    expect(box).toHaveClass('min-w-0', 'flex');
+    expect(label).toHaveClass('max-w-full', 'shrink-0', 'truncate');
+    expect(box).toContainElement(screen.getByText('HTTP 429'));
+    expect(screen.getByText('com_ui_plus_n_more')).toHaveClass('shrink-0');
+    expect(screen.getByText('com_ui_show_error')).toHaveClass('shrink-0');
+    expect(peek.firstElementChild).toHaveClass('shrink-0');
+  });
+
   test('the pill beside the header does the same on an open card', () => {
     const onReveal = jest.fn();
     render(

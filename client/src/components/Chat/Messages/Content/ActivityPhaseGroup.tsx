@@ -495,14 +495,14 @@ function FailedPeek({
       <span className={cn(ROW_GLYPH_SLOT, 'text-status-error')} aria-hidden="true">
         <TriangleAlert size={14} />
       </span>
-      <span className="tool-status-text min-w-0 shrink-0 truncate font-medium text-status-error">
-        {first.text}
-      </span>
-      {first.detail !== '' && (
-        <span className="tool-status-text min-w-0 shrink-[100] truncate font-normal">
-          {first.detail}
+      <span className="tool-status-text flex min-w-0 items-center gap-2">
+        <span className="min-w-0 max-w-full shrink-0 truncate font-medium text-status-error">
+          {first.text}
         </span>
-      )}
+        {first.detail !== '' && (
+          <span className="min-w-0 shrink truncate font-normal">{first.detail}</span>
+        )}
+      </span>
       {count > 1 && (
         <span className="shrink-0 text-xs font-normal">
           {localize('com_ui_plus_n_more', { 0: String(count - 1) })}
