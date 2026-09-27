@@ -484,7 +484,12 @@ export default function ToolCallGroup({
     ? groupDetailParts.filter((part) => part && part !== failedNote).join(' · ')
     : groupDetail;
   /** Single category glyph for homogeneous groups (else StackedToolIcons). */
-  const CategoryIcon = allSubagents ? Users : allAskQuestions ? MessageCircleQuestion : ListChecks;
+  let CategoryIcon = ListChecks;
+  if (allSubagents) {
+    CategoryIcon = Users;
+  } else if (allAskQuestions) {
+    CategoryIcon = MessageCircleQuestion;
+  }
   const iconStatus = getOutcomeStatus({
     failed: activityFailed ? 1 : activitySummary.failedCount,
     cancelled: activitySummary.cancelledCount,
