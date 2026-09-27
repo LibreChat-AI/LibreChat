@@ -41,30 +41,23 @@ const ConversationsSection = memo(() => {
   const isArchivedView = useAtomValue(isArchivedChatViewAtom);
   const search = useRecoilValue(store.search);
 
-  const {
-    data,
-    fetchNextPage,
-    isFetchingNextPage,
-    isLoading,
-    isPreviousData,
-    isError,
-    refetch,
-  } = useConversationsInfiniteQuery(
-    {
-      /** Omitted rather than `false`: the parameter's absence is what the server reads
-       *  as "not archived", and a stray `isArchived=false` would key a third cache. */
-      isArchived: isArchivedView ? true : undefined,
-      sortBy: sort.field,
-      sortDirection: sort.direction,
-      tags: tags.length === 0 ? undefined : tags,
-      search: search.debouncedQuery || undefined,
-    },
-    {
-      enabled: isAuthenticated,
-      staleTime: 30000,
-      cacheTime: 300000,
-    },
-  );
+  const { data, fetchNextPage, isFetchingNextPage, isLoading, isPreviousData, isError, refetch } =
+    useConversationsInfiniteQuery(
+      {
+        /** Omitted rather than `false`: the parameter's absence is what the server reads
+         *  as "not archived", and a stray `isArchived=false` would key a third cache. */
+        isArchived: isArchivedView ? true : undefined,
+        sortBy: sort.field,
+        sortDirection: sort.direction,
+        tags: tags.length === 0 ? undefined : tags,
+        search: search.debouncedQuery || undefined,
+      },
+      {
+        enabled: isAuthenticated,
+        staleTime: 30000,
+        cacheTime: 300000,
+      },
+    );
 
   const computedHasNextPage = useMemo(() => {
     if (data?.pages && data.pages.length > 0) {
