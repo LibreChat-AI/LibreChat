@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -190,6 +191,21 @@ test.describe('composer palette', () => {
     } finally {
       await requestJson(page, { path: TOOL_FAVORITE_PATH, token, method: 'DELETE' });
     }
+  });
+
+  test('open palette has no detectable accessibility violations @scenario:open-palette-has-no-accessibility-violations', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await selectMockChat(page);
+    await openPalette(page);
+    await settledRowCount(page);
+
+    const results = await new AxeBuilder({ page })
+      .include('[role="dialog"][aria-label="Attach and tools"]')
+      .analyze();
+
+    expect(results.violations).toEqual([]);
   });
 
   test('palette is operable from the keyboard alone @scenario:palette-is-operable-from-the-keyboard-alone', async ({
