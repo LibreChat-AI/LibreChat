@@ -554,6 +554,9 @@ const ChatForm = memo(function ChatForm({
     speechToText: SpeechToText,
     index,
   });
+  /** The waveform stands in for the placeholder until words arrive, and is
+   *  then the only thing drawn on that line. */
+  const listening = dictation.active && (textValue?.trim() ?? '') === '';
   const uploadingCount = useMemo(() => {
     let count = 0;
     for (const file of files.values()) {
@@ -843,7 +846,11 @@ const ChatForm = memo(function ChatForm({
               {endpoint && (
                 <div className={cn('flex', isRTL ? 'flex-row-reverse' : 'flex-row')}>
                   <div
-                    className="relative flex-1"
+                    className={cn(
+                      'relative flex-1',
+                      listening &&
+                        '[&_textarea]:caret-transparent [&_textarea]:placeholder:text-transparent',
+                    )}
                     style={
                       isCollapsed
                         ? {
@@ -895,14 +902,14 @@ const ChatForm = memo(function ChatForm({
                         'scrollbar-hover transition-[max-height] duration-200 disabled:cursor-not-allowed',
                       )}
                     />
-                    {dictation.active && (textValue?.trim() ?? '') === '' && (
+                    {listening && (
                       /* Stands in for the placeholder: same inset, same line, so
                          it reads as the input listening rather than as a widget
                          bolted on. Once words arrive the transcript takes over. */
                       <Waveform
                         active={dictation.active}
                         className={cn(
-                          'pointer-events-none absolute inset-y-0 h-full',
+                          'pointer-events-none absolute inset-y-2',
                           isMoreThanThreeRows ? 'right-2 left-5' : 'inset-x-5',
                         )}
                       />
