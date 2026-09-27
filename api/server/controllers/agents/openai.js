@@ -2,6 +2,9 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
+  createOpenAIToolCallStream: createAcceptedToolCallStream,
+} = require('@librechat/agents/openai');
+const {
   EModelEndpoint,
   ResourceType,
   PermissionBits,
@@ -60,9 +63,6 @@ const {
   createToolExecuteHandler,
   createOwnedToolEndHandler,
   buildNonStreamingResponse,
-  OpenAIRunStepHandler,
-  OpenAIRunStepDeltaHandler,
-  createOpenAIToolCallStream,
   completeOpenAIToolCalls,
   createOpenAIStreamTracker,
   resolveAgentScopedSkillIds,
@@ -981,12 +981,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         }
       };
 
-      /**
-       * Shared by both run-step events, because the outward index a client keys
-       * tool-call fragments by is allocated per call and belongs to neither
-       * event alone.
-       */
-      const toolCallStream = createOpenAIToolCallStream({
+      const toolCallStream = createAcceptedToolCallStream({
         signal: execution.signal,
         toolCalls: isStreaming ? tracker.toolCalls : aggregator.toolCalls,
         ...(isStreaming && {
@@ -996,6 +991,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
 
       // Event handlers for OpenAI-compatible streaming
       const handlers = {
+        ...toolCallStream.handlers,
         // Text content streaming
         on_message_delta: createHandler((data) => {
           const content = data?.delta?.content;
@@ -1021,12 +1017,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           }
         }),
 
-        // Tool call initiation - declares id and name (from on_run_step)
-        on_run_step: new OpenAIRunStepHandler(toolCallStream),
-
-        // Tool call argument streaming (from on_run_step_delta)
-        on_run_step_delta: new OpenAIRunStepDeltaHandler(toolCallStream),
-
         // Usage tracking
         on_chat_model_end: {
           handle: (_event, data, metadata, graph) => {
@@ -1038,7 +1028,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             }
           },
         },
-        on_run_step_completed: new OpenAIRunStepHandler(toolCallStream),
         // Use proper ToolEndHandler for processing artifacts (images, file citations, code output)
         on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
         on_chain_stream: createHandler(),
@@ -1191,7 +1180,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       // Finalize response
       const duration = Date.now() - requestStartTime;
       if (isStreaming) {
-        sendFinalChunk(handlerConfig, 'stop', usage);
+        sendFinalChunk(handlerConfig, 'stop', usage, true);
         res.end();
         logger.debug(`[OpenAI API] Response ${responseId} completed in ${duration}ms (streaming)`);
 
@@ -1227,6 +1216,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           aggregator.getReasoning(),
           aggregator.toolCalls,
           usage,
+          true,
         );
         res.json(response);
         logger.debug(

@@ -807,14 +807,16 @@ export function sendFinalChunk(
   config: OpenAIContentStreamConfig,
   finishReason: ChatCompletionChunkChoice['finish_reason'] = 'stop',
   usageOverride?: CompletionUsage,
+  /** True when the map contains only accepted client-owned calls, not legacy run-step history. */
+  acceptedToolCallsOnly = false,
 ): void {
   const { context, tracker } = config;
   const writer = getStreamWriter(config);
   tracker.finishToolCalls?.();
 
-  // Determine finish reason based on content
+  // Legacy run-step history followed by text stays 'stop'; accepted client calls must be executed.
   let reason = finishReason;
-  if (tracker.toolCalls.size > 0 && !tracker.hasText) {
+  if (tracker.toolCalls.size > 0 && (acceptedToolCallsOnly || !tracker.hasText)) {
     reason = 'tool_calls';
   }
 

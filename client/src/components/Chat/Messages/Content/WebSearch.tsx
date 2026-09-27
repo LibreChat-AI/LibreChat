@@ -22,11 +22,13 @@ import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { toolPanelSpacingClassName } from './disclosure';
+import { isError } from './ToolOutput/OutputRenderer';
 import parseJsonField from './Parts/parseJsonField';
 import { useToolCallIntent } from './Parts/intent';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
 import { ROW_GLYPH_SLOT } from './rows';
+import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
 import store from '~/store';
 
@@ -85,9 +87,9 @@ export default function WebSearch({
    *  persists as the settled label like the other tool cards. */
   const intent = useToolCallIntent(args);
   const { searchResults } = useSearchContext();
-  const error =
-    (typeof output === 'string' && output.toLowerCase().includes('error processing')) ||
-    runStepStatus === 'failed';
+  const error = (typeof output === 'string' && isError(output)) || runStepStatus === 'failed';
+  const legacyError =
+    !error && typeof output === 'string' && output.toLowerCase().includes('error processing');
   const isClosed = runStepStatus != null;
 
   // Server tool calls (srvtoolu_) never receive ON_RUN_STEP_COMPLETED, so progress
@@ -98,16 +100,13 @@ export default function WebSearch({
     [attachments],
   );
   const effectiveProgress = isClosed || (hasResults && !isSubmitting) ? 1 : progress;
-  /**
-   * `error` folds into this branch deliberately: an errored search has always
-   * rendered as nothing (the `cancelled` early-return below), so a step closed
-   * as `failed` lands in the same place rather than inventing a failure UI
-   * this component has never had — or worse, falling through to the streaming
-   * branch and shimmering forever.
-   */
+  /** Older search errors with only the loose "error processing" text were
+   * hidden, not counted as failures. Preserve that legacy behavior rather
+   * than labeling them completed; recognized failures get a real disclosure
+   * below so the group pill can reach their error. */
   const cancelled = isClosed
-    ? runStepStatus === 'cancelled' || error
-    : (!isSubmitting && effectiveProgress < 1) || error === true;
+    ? runStepStatus === 'cancelled' || legacyError
+    : (!isSubmitting && effectiveProgress < 1) || legacyError;
 
   const finalizing = !isClosed && isSubmitting && isLast && effectiveProgress === 1;
   /** A search that is the message's FINAL part stays "finalizing" only while
@@ -223,6 +222,23 @@ export default function WebSearch({
       return next;
     });
   };
+
+  if (error && runStepStatus !== 'cancelled') {
+    return (
+      <ToolCall
+        name={Tools.web_search}
+        args={args ?? ''}
+        output={output}
+        initialProgress={progress}
+        isSubmitting={isSubmitting}
+        isLast={isLast}
+        runStepStatus={runStepStatus}
+        attachments={attachments}
+        hideAttachments={hideAttachments}
+        onExpand={onExpand}
+      />
+    );
+  }
 
   if (cancelled) {
     return null;

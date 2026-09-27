@@ -19,6 +19,7 @@ const {
   buildImageToolContext,
   buildToolClassification,
   supportsProgrammaticCodeExecution,
+  getCodeFileLocation,
   getMissingCustomUserVars,
   buildWebSearchDynamicContext,
   getCodeApiAuthHeaders,
@@ -1482,6 +1483,7 @@ async function loadToolDefinitionsWrapper({
         codeApiBaseUrl: resolvedCodeExecutionContext.baseUrl,
         executionProfile: resolvedCodeExecutionContext.executionProfile,
         executionRouteKey: resolvedCodeExecutionContext.executionRouteKey,
+        codeFileLocation: getCodeFileLocation(resolvedCodeExecutionContext),
         ...(resolvedCodeExecutionContext.bridgeWorkerId
           ? { bridgeWorkerId: resolvedCodeExecutionContext.bridgeWorkerId }
           : {}),

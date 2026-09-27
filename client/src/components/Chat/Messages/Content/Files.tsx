@@ -43,6 +43,7 @@ const Files = ({ message }: { message?: TMessage }) => {
         imageFiles.map((file) => (
           <Image
             key={file.file_id}
+            alignRight
             imagePath={file.preview ?? file.filepath ?? ''}
             height={file.height ?? 1920}
             width={file.width ?? 1080}

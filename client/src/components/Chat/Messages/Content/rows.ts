@@ -18,3 +18,16 @@ export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center 
  * and would carry a taller slot 2px below the row's center.
  */
 export const ROW_GLYPH_SLOT = 'flex h-5 min-w-6 shrink-0 items-center justify-center';
+
+/**
+ * The panel under an open header: its rows step in by one glyph slot and a
+ * hairline hangs from the header's glyph down their left, so what is under the
+ * header reads as under it. Carried by the panel's clipping wrapper, the one
+ * `overflow-hidden` element the fold animation needs: the inset then lies
+ * INSIDE the clip, which is what lets a failed row's stripe, drawn 12px left
+ * of the row, show at all. The line is a pseudo-element, out of flow, so the
+ * height animation is untouched; it starts at the wrapper's top and stops
+ * short of the last row's bottom margin.
+ */
+export const FOLD_RAIL_CLASSES =
+  "relative pl-6 before:absolute before:bottom-1.5 before:left-[11px] before:top-0.5 before:w-px before:bg-border-medium before:content-['']";
