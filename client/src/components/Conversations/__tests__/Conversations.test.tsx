@@ -215,8 +215,42 @@ describe('Conversations: pinned chats live in PinnedSection', () => {
     );
 
   it('does not render a pinned header inside the chats list', () => {
-    const { queryByText } = renderConversations([pinnedConvo]);
+    const { queryByText, queryByTestId } = renderConversations([pinnedConvo]);
     expect(queryByText('com_ui_pinned')).not.toBeInTheDocument();
+    expect(queryByTestId('convo')).not.toBeInTheDocument();
+  });
+
+  it('shows pinned search matches in Chats while the Pinned section is hidden', () => {
+    renderConversations([pinnedConvo, pinnedConvo], 'Pinned Chat');
+
+    expect(screen.getAllByTestId('convo')).toHaveLength(1);
+    expect(screen.getByTestId('convo')).toHaveTextContent('Pinned Chat');
+    expect(screen.queryByText('com_ui_no_search_results')).not.toBeInTheDocument();
+  });
+
+  it('keeps running matches promoted when search includes pinned chats', () => {
+    mockActiveJobIds = ['running'];
+    const running = {
+      ...pinnedConvo,
+      conversationId: 'running',
+      title: 'Running match',
+      pinned: false,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    } as TConversation;
+
+    try {
+      renderConversations([pinnedConvo, running], 'match');
+
+      expect(screen.getAllByTestId('convo').map((row) => row.textContent)).toEqual([
+        'Running match',
+        'Pinned Chat',
+      ]);
+      expect(
+        screen.getByRole('heading', { name: 'com_a11y_chats_running_section' }),
+      ).toBeInTheDocument();
+    } finally {
+      mockActiveJobIds = [];
+    }
   });
 
   it('does not render a duplicate new chat button in the chats header', () => {

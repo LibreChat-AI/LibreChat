@@ -284,18 +284,19 @@ const Conversations: FC<ConversationsProps> = ({
     [rawConversations],
   );
 
-  /** The pinned section above carries pins, so they stay out of these groups — except in
-   *  the archive, which that section does not cover: an archived pin would otherwise be
-   *  absent from the sidebar entirely rather than merely further down it. */
+  /** The pinned section carries pins except in the archive or during search, when it is
+   *  hidden. Keep matching pins in the Chats results instead of showing an empty list. */
+  const includePinned = isArchivedView || !!search.query;
   const datedConversations = useMemo(
     () =>
       groupConversations(filteredConversations, {
         field: sort.field,
         direction: sort.direction,
-        includePinned: isArchivedView,
+        includePinned,
       }),
-    [filteredConversations, isArchivedView, sort.direction, sort.field],
+    [filteredConversations, includePinned, sort.direction, sort.field],
   );
+  /** The archive keeps its server order, while search still promotes active matches. */
   const groupedConversations = useMemo(
     () =>
       groupConversationsWithRunning(datedConversations, activeJobIds, {
@@ -306,8 +307,8 @@ const Conversations: FC<ConversationsProps> = ({
     [datedConversations, activeJobIds, isArchivedView, sort.direction, sort.field],
   );
 
-  /* Pins are stripped from the date groups. An all-pin page leaves the
-     virtual list with no rows, so onRowsRendered never fires and later
+  /* Outside search, pins are stripped from the date groups. An all-pin page leaves
+     the virtual list with no rows, so onRowsRendered never fires and later
      unpinned chats stay unreachable. Ask for another page only when the
      conversations input actually changes; a failed fetchNextPage leaves
      the same array and must not loop. */
