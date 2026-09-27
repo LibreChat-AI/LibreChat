@@ -12,6 +12,7 @@ import {
   isAgentsEndpoint,
   isAssistantsEndpoint,
   reasoningOverrideSchema,
+  isReasoningOverrideSupported,
   resolveReasoningSettingForTarget,
 } from 'librechat-data-provider';
 import type {
@@ -381,7 +382,10 @@ export function useComposerReasoning({
       previousTarget.current = { key: reasoningStateKey, fingerprint: targetFingerprint };
     }
     const unsupportedResolved = targetResolved && setting == null;
-    const mismatchedSetting = setting != null && value?.key !== setting.key;
+    /* A restored override can predate a capability change on the same target: its
+       key may survive while its enum value or number no longer does. */
+    const mismatchedSetting =
+      setting != null && value != null && !isReasoningOverrideSupported(value, setting);
     if (
       (explicitlyUnavailable || unsupportedResolved || targetChanged || mismatchedSetting) &&
       value != null

@@ -758,4 +758,45 @@ describe('useComposerReasoning', () => {
       reasoningStore.get(pendingReasoningOverrideFamily('loading-reasoning-conversation')),
     ).toEqual({ key: 'reasoning_effort', value: ReasoningEffort.high });
   });
+
+  it('clears a restored override whose value the current setting no longer offers', async () => {
+    mockEndpointsConfig = {
+      custom: {
+        type: 'openAI',
+        customParams: { defaultParamsEndpoint: 'openAI' },
+      },
+    };
+    const reasoningStore = createStore();
+    const conversation = {
+      conversationId: 'stale-reasoning-conversation',
+      endpoint: 'custom',
+      model: 'gpt-5',
+    } as TConversation;
+    reasoningStore.set(pendingReasoningOverrideFamily('stale-reasoning-conversation'), {
+      key: 'reasoning_effort',
+      value: 'retired-effort' as ReasoningEffort,
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation,
+          index: 0,
+          hasAddedConversation: false,
+          enabled: true,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(
+        reasoningStore.get(pendingReasoningOverrideFamily('stale-reasoning-conversation')),
+      ).toBeUndefined(),
+    );
+    expect(rendered.result.current?.setting.key).toBe('reasoning_effort');
+  });
 });
