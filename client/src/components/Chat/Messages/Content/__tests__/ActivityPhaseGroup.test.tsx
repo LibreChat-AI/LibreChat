@@ -595,7 +595,7 @@ describe('ActivityPhaseGroup open live header', () => {
     expect(within(header).queryByTitle('Next I check the ordering.')).toBeNull();
   });
 
-  test('falls back to the generic thinking line when no label has landed', () => {
+  test('falls back to a running line no row uses when no label has landed', () => {
     render(
       <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought()]}>
         <div data-testid="phase-content" />
@@ -603,7 +603,62 @@ describe('ActivityPhaseGroup open live header', () => {
     );
     fireEvent.click(screen.getByRole('button'));
     settle();
-    expect(within(screen.getByRole('button')).getByTitle('com_ui_thinking')).toBeInTheDocument();
+    const header = screen.getByRole('button');
+    expect(within(header).getByTitle('com_ui_running')).toBeInTheDocument();
+    expect(within(header).queryByTitle('com_ui_thinking')).toBeNull();
+  });
+
+  const runningCall = (intent: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'r1',
+        name: 'list_documents',
+        args: JSON.stringify({ intent }),
+        type: 'tool_call',
+        progress: 0.5,
+        output: '',
+      },
+    }) as unknown as TMessageContentParts;
+  const batchLabel = (text: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.ACTIVITY_LABEL,
+      activity_label: text,
+      activity_label_type: 'batch',
+      pending: false,
+    }) as unknown as TMessageContentParts;
+
+  test("does not repeat the newest call's intent, which is its own row", () => {
+    const intent = 'Reading the roadmap card so edits preserve project choices';
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[runningCall(intent)]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    const header = screen.getByRole('button');
+    expect(within(header).queryByTitle(intent)).toBeNull();
+    expect(within(header).getByTitle('com_ui_running')).toBeInTheDocument();
+  });
+
+  test('titles an open card by the newest batch label behind a running call', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[batchLabel('Found the recap'), runningCall('Reading the roadmap card')]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    expect(within(screen.getByRole('button')).getByTitle('Found the recap')).toBeInTheDocument();
   });
 });
 

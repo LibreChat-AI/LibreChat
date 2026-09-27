@@ -284,11 +284,19 @@ function newestLine(
        *  repeating a line of it under the reader's eyes is noise, so the
        *  header keeps to the thought's label. */
       const reasoning = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
-      const sentence = preferLabels ? undefined : lastReasoningSentence(reasoning);
+      const label = part.reasoning_label?.trim();
+      if (preferLabels) {
+        /** Only a generated label will do: the generic thinking line is what
+         *  the grouped thought row itself says. */
+        if (label) {
+          return { text: label, source: `think:${position}`, comboCount: 1 };
+        }
+        continue;
+      }
+      const sentence = lastReasoningSentence(reasoning);
       if (sentence != null) {
         return { text: sentence, source: `think:${position}`, comboCount: 1 };
       }
-      const label = part.reasoning_label?.trim();
       if (label || reasoning.trim()) {
         return {
           text: label || localize('com_ui_thinking'),
@@ -315,6 +323,11 @@ function newestLine(
       return { text: labelText, source: `label:${position}`, comboCount: 1 };
     }
     const toolCall = getStandardToolCall(part);
+    /** A call's line, intent or generic, is the text of its own row, so an
+     *  open card walks past it to the newest label instead. */
+    if (toolCall != null && preferLabels) {
+      continue;
+    }
     if (toolCall != null) {
       const line = toolCallLine(part, toolCall, localize, serverNames, span);
       return {
@@ -330,6 +343,10 @@ function newestLine(
         ...(isAwaitingStartup(part, toolCall, span) && { pendingToolCallId: toolCall.id }),
       };
     }
+  }
+  /** An open card with no label yet is titled by a line no row uses. */
+  if (preferLabels && parts.some((part) => part != null)) {
+    return { text: localize('com_ui_running'), source: 'running', comboCount: 1 };
   }
   return { text: '', source: '', comboCount: 1 };
 }
@@ -350,10 +367,11 @@ export function getLiveActivity(
   localize: Localize,
   serverNames: readonly string[],
   attachmentsById?: Record<string, TAttachment[] | undefined>,
-  /** Name the span by its newest LABEL: a thought's generated label or the
-   *  generic thinking line, a batch label, a call's line — never a line of
-   *  reasoning or commentary. For a header whose rows are on screen, where
-   *  quoting them back is repetition. */
+  /** Name the span by its newest generated LABEL alone: a batch label or a
+   *  thought's label, else a generic running line. Never a call's intent, a
+   *  reasoning sentence, commentary or the generic thinking line, since each
+   *  of those is the text of a row. For a header whose rows are on screen,
+   *  where quoting any of them back is repetition. */
   preferLabels = false,
 ): LiveActivity {
   const span = summarizeSpan(parts, attachmentsById);
