@@ -28,7 +28,7 @@ describe('Experimental server configuration', () => {
       /registerBackgroundTaskShutdown\(\{[\s\S]*?getBudgetMs: clusterShutdownBudgetMs,[\s\S]*?\}\);/,
     );
     expect(source).toMatch(
-      /const clusterShutdownBudgetMs = \(\) =>\s*getClusterShutdownBudgetMs\(\{ deadlineAt: clusterShutdownDeadlineAt, forceExitMs: CLUSTER_FORCE_EXIT_MS \}\);/,
+      /const clusterShutdownBudgetMs = \(\) =>\s*getClusterShutdownBudgetMs\(\{\s*deadlineAt: clusterShutdownDeadlineAt,\s*forceExitMs: CLUSTER_FORCE_EXIT_MS,\s*\}\);/,
     );
     expect(source).toMatch(
       /const destroyGenerationJobManager = \(\) => \{\s*const budgetMs = clusterShutdownBudgetMs\(\);/,
