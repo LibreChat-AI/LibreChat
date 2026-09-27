@@ -865,7 +865,7 @@ function Palette({
                   setScrollToActive(false);
                 }}
                 className={cn(
-                  'flex shrink-0 items-end self-end rounded-md',
+                  'text-text-secondary flex shrink-0 items-end self-end rounded-md',
                   index === activeIndex && 'bg-surface-hover',
                 )}
               >
