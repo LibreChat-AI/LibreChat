@@ -998,7 +998,9 @@ const setupOpenIdAdmin = (openidConfig) => {
  * @param {Object} [options]
  * @param {Omit<import('@librechat/api').OAuthStateStoreOptions, 'provider'>} [options.stateOptions] -
  *   Required in OAuth2-only mode, which verifies `state` itself.
- * @returns {Promise<Configuration | null>} A promise that resolves when the OpenID strategy is set up and returns the openid client config object.
+ * @returns {Promise<Configuration | typeof OAUTH2_ONLY_CONFIG | null>} The openid-client config object
+ *   once the OIDC strategy is set up; the `OAUTH2_ONLY_CONFIG` sentinel in OAuth2-only mode, which has
+ *   no config object; null on failure.
  * @throws {Error} If an error occurs during the setup process.
  */
 async function setupOpenId({ stateOptions } = {}) {

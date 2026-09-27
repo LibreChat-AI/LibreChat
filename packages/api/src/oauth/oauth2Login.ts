@@ -89,6 +89,14 @@ export function resolveOAuth2Subject(
   return undefined;
 }
 
+/** Enough of a provider's error body to diagnose a failure without flooding the log. */
+const MAX_LOGGED_BODY_LENGTH = 300;
+
+const truncateForLog = (value: string): string =>
+  value.length <= MAX_LOGGED_BODY_LENGTH
+    ? value
+    : `${value.slice(0, MAX_LOGGED_BODY_LENGTH)}... [truncated]`;
+
 /** Bearer request to the userinfo endpoint; honours the OpenID proxy config. Null on failure. */
 export async function fetchOAuth2UserInfo(
   userInfoURL: string,
@@ -108,14 +116,15 @@ export async function fetchOAuth2UserInfo(
     if (!response.ok) {
       const body = await response.text().catch(() => '<unreadable>');
       logger.error(
-        `[oauth2Login] userinfo request failed: HTTP ${response.status} ${response.statusText} :: ${body}`,
+        `[oauth2Login] userinfo request failed: HTTP ${response.status} ${response.statusText} :: ${truncateForLog(body)}`,
       );
       return null;
     }
 
     return (await response.json()) as Record<string, unknown>;
   } catch (error) {
-    logger.error('[oauth2Login] userinfo request error:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`[oauth2Login] userinfo request error: ${message}`, error);
     return null;
   }
 }

@@ -1,4 +1,5 @@
-import { fetch as undiciFetch } from 'undici';
+import { logger } from '@librechat/data-schemas';
+import { fetch as undiciFetch, Response } from 'undici';
 import {
   fetchOAuth2UserInfo,
   resolveOAuth2Subject,
@@ -8,6 +9,7 @@ import {
 } from './oauth2Login';
 
 jest.mock('undici', () => ({
+  ...jest.requireActual('undici'),
   fetch: jest.fn(),
 }));
 jest.mock('@librechat/data-schemas', () => ({
@@ -22,7 +24,9 @@ jest.mock('~/utils/proxy', () => ({
   getOpenIdProxyDispatcher: jest.fn(() => undefined),
 }));
 
-const mockFetch = undiciFetch as unknown as jest.Mock;
+const mockFetch = jest.mocked(undiciFetch);
+const jsonResponse = (body: unknown) =>
+  new Response(JSON.stringify(body), { status: 200, statusText: 'OK' });
 const { getOpenIdProxyDispatcher } = jest.requireMock('~/utils/proxy');
 
 describe('getMissingOAuth2LoginConfig', () => {
@@ -159,12 +163,7 @@ describe('fetchOAuth2UserInfo', () => {
   });
 
   it('sends the access token as a bearer credential', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => ({ account_id: 'abc' }),
-    });
+    mockFetch.mockResolvedValue(jsonResponse({ account_id: 'abc' }));
 
     await expect(fetchOAuth2UserInfo(url, 'the-token')).resolves.toEqual({ account_id: 'abc' });
     expect(mockFetch).toHaveBeenCalledWith(
@@ -179,54 +178,48 @@ describe('fetchOAuth2UserInfo', () => {
   it('applies the OpenID proxy dispatcher when one is configured', async () => {
     const dispatcher = { proxy: true };
     getOpenIdProxyDispatcher.mockReturnValue(dispatcher);
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => ({ sub: 'abc' }),
-    });
+    mockFetch.mockResolvedValue(jsonResponse({ sub: 'abc' }));
 
     await fetchOAuth2UserInfo(url, 'the-token');
     expect(mockFetch).toHaveBeenCalledWith(url, expect.objectContaining({ dispatcher }));
   });
 
   it('omits the dispatcher key when no proxy is configured', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => ({ sub: 'abc' }),
-    });
+    mockFetch.mockResolvedValue(jsonResponse({ sub: 'abc' }));
 
     await fetchOAuth2UserInfo(url, 'the-token');
     expect(mockFetch.mock.calls[0][1]).not.toHaveProperty('dispatcher');
   });
 
   it('returns null on a non-ok response', async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 401,
-      statusText: 'Unauthorized',
-      text: async () => 'unauthorized',
-    });
+    mockFetch.mockResolvedValue(
+      new Response('unauthorized', { status: 401, statusText: 'Unauthorized' }),
+    );
 
     await expect(fetchOAuth2UserInfo(url, 'the-token')).resolves.toBeNull();
+  });
+
+  it('truncates a long error body in the log', async () => {
+    mockFetch.mockResolvedValue(new Response('x'.repeat(5000), { status: 500 }));
+
+    await fetchOAuth2UserInfo(url, 'the-token');
+
+    const [message] = jest.mocked(logger.error).mock.calls[0];
+    expect(message).toContain('... [truncated]');
+    expect(String(message).length).toBeLessThan(400);
   });
 
   it('returns null when the request throws', async () => {
     mockFetch.mockRejectedValue(new Error('network down'));
     await expect(fetchOAuth2UserInfo(url, 'the-token')).resolves.toBeNull();
+    expect(logger.error).toHaveBeenCalledWith(
+      '[oauth2Login] userinfo request error: network down',
+      expect.any(Error),
+    );
   });
 
   it('returns null when the body cannot be decoded', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => {
-        throw new Error('not json');
-      },
-    });
+    mockFetch.mockResolvedValue(new Response('not json', { status: 200 }));
 
     await expect(fetchOAuth2UserInfo(url, 'the-token')).resolves.toBeNull();
   });
