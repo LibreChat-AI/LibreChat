@@ -5610,7 +5610,7 @@ describe('createToolExecuteHandler', () => {
               workspaceInstanceId: 'a'.repeat(64),
               operations: TEST_ATTACHED_WORKSPACE_OPERATIONS,
             },
-            codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0 } },
+            codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 } },
             bridgeWorkerId: 'user-worker',
           },
         },
@@ -5642,6 +5642,8 @@ describe('createToolExecuteHandler', () => {
         workspace_id: 'project-a',
         workspace_instance_id: 'a'.repeat(64),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: 125_000,
+        deadlineAtMs: expect.any(Number),
         codeApiBaseUrl: 'https://code.example.com',
         executionProfile: 'stateful',
         bridgeWorkerId: 'user-worker',
@@ -5845,7 +5847,8 @@ describe('createToolExecuteHandler', () => {
     ])(
       'shares a protected edit retry horizon ($budget ms, preview $elapsed ms)',
       async ({ budget, elapsed, remaining }) => {
-        let nowMs = Date.now();
+        const startedAt = Date.now();
+        let nowMs = startedAt;
         jest.spyOn(Date, 'now').mockImplementation(() => nowMs);
         const previewWorkspaceEdit = jest.fn(async () => {
           nowMs += elapsed;
@@ -5899,7 +5902,7 @@ describe('createToolExecuteHandler', () => {
               executionProfile: 'stateful',
               statefulSessions: true,
               environmentType: 'attached',
-              codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: budget } },
+              codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: budget, maxRequestTimeoutMs: 125_000 } },
               bridgeWorkerId: 'user-worker',
             },
           },
@@ -5918,7 +5921,7 @@ describe('createToolExecuteHandler', () => {
         ]);
 
         expect(previewWorkspaceEdit).toHaveBeenCalledWith(
-          expect.objectContaining({ maxQueueWaitMs: budget }),
+          expect.objectContaining({ maxQueueWaitMs: budget, maxRequestTimeoutMs: 125_000, deadlineAtMs: startedAt + 125_000 }),
         );
         if (remaining == null) {
           expect(result.status).toBe('error');
@@ -5931,6 +5934,8 @@ describe('createToolExecuteHandler', () => {
           expect.objectContaining({
             expected_base_sha256: 'b'.repeat(64),
             maxQueueWaitMs: remaining,
+            maxRequestTimeoutMs: 125_000,
+            deadlineAtMs: startedAt + 125_000,
           }),
         );
       },
@@ -6626,7 +6631,7 @@ describe('createToolExecuteHandler', () => {
             workspaceInstanceId: 'b'.repeat(64),
             operations: TEST_ATTACHED_WORKSPACE_OPERATIONS,
           },
-          codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0 } },
+          codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 } },
           bridgeWorkerId: 'personal-worker-1',
           statefulSessions: true,
         },
@@ -6647,6 +6652,7 @@ describe('createToolExecuteHandler', () => {
         workspace_id: 'project-a',
         workspace_instance_id: 'b'.repeat(64),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: 125_000,
         start_line: 1,
         max_lines: 200,
         codeApiBaseUrl: 'https://code.example.com/v1',
@@ -6930,6 +6936,7 @@ describe('createToolExecuteHandler', () => {
           executionProfile: 'stateful',
           environmentType: 'attached',
           bridgeWorkerId: 'personal-worker-1',
+          codeEnvironmentConfigSchema: { limits: { maxRequestTimeoutMs: 125_000 } },
           statefulSessions: true,
         },
         searchWorkspace,
@@ -6954,6 +6961,7 @@ describe('createToolExecuteHandler', () => {
         query: 'needle',
         workspace_id: 'project-a',
         maxQueueWaitMs: 300000,
+        maxRequestTimeoutMs: 125_000,
         path: 'src',
         max_results: 20,
         codeApiBaseUrl: 'https://code.example.com/v1',
@@ -7084,6 +7092,7 @@ describe('createToolExecuteHandler', () => {
           executionProfile: 'stateful',
           environmentType: 'attached',
           bridgeWorkerId: 'personal-worker-1',
+          codeEnvironmentConfigSchema: { limits: { maxRequestTimeoutMs: 125_000 } },
           statefulSessions: true,
         },
         listWorkspaceFiles,
@@ -7107,6 +7116,7 @@ describe('createToolExecuteHandler', () => {
       expect(listWorkspaceFiles).toHaveBeenCalledWith({
         workspace_id: 'project-a',
         maxQueueWaitMs: 300000,
+        maxRequestTimeoutMs: 125_000,
         path: 'src',
         after_path: 'src/app.ts',
         max_results: 20,

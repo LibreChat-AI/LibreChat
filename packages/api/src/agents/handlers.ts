@@ -120,6 +120,10 @@ import {
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
 import {
+  resolveAttachedWorkspaceQueueWaitMs,
+  resolveAttachedWorkspaceRequestTimeoutMs,
+} from '~/code/command';
+import {
   hasIntentArg,
   stripIntentArg,
   stripIntentLabelsFromToolDefinitions,
@@ -127,7 +131,6 @@ import {
 } from './intent';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
-import { resolveAttachedWorkspaceQueueWaitMs } from '~/code/command';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -568,6 +571,8 @@ export interface ToolExecuteOptions {
     req?: ServerRequest;
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
+    maxRequestTimeoutMs?: number;
+    deadlineAtMs?: number;
   }) => Promise<WorkspaceReadResult>;
   /** Searches literal text within an attached worker's logical workspace. */
   searchWorkspace?: (params: {
@@ -582,6 +587,8 @@ export interface ToolExecuteOptions {
     req?: ServerRequest;
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
+    maxRequestTimeoutMs?: number;
+    deadlineAtMs?: number;
   }) => Promise<WorkspaceSearchResult>;
   /** Lists relative file paths within an attached worker's logical workspace. */
   listWorkspaceFiles?: (params: {
@@ -596,6 +603,8 @@ export interface ToolExecuteOptions {
     req?: ServerRequest;
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
+    maxRequestTimeoutMs?: number;
+    deadlineAtMs?: number;
   }) => Promise<WorkspaceListResult>;
   /** Writes a UTF-8 file within an attached worker's logical workspace. */
   writeWorkspaceFile?: (params: {
@@ -610,6 +619,8 @@ export interface ToolExecuteOptions {
     req?: ServerRequest;
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
+    maxRequestTimeoutMs?: number;
+    deadlineAtMs?: number;
   }) => Promise<WorkspaceWriteResult>;
   /** Previews exact replacements without mutating an attached worker workspace. */
   previewWorkspaceEdit?: (params: {
@@ -623,6 +634,8 @@ export interface ToolExecuteOptions {
     req?: ServerRequest;
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
+    maxRequestTimeoutMs?: number;
+    deadlineAtMs?: number;
   }) => Promise<WorkspacePreviewEditResult>;
   /** Applies exact replacements atomically within an attached worker workspace. */
   editWorkspaceFile?: (params: {
@@ -637,6 +650,8 @@ export interface ToolExecuteOptions {
     req?: ServerRequest;
     signal?: AbortSignal;
     maxQueueWaitMs?: number;
+    maxRequestTimeoutMs?: number;
+    deadlineAtMs?: number;
   }) => Promise<WorkspaceEditResult>;
   /**
    * Reads a code-execution sandbox file by shelling `cat` through the
@@ -2462,9 +2477,7 @@ async function handleWorkspaceFileRead(
       start_line: startLine,
       max_lines: maxLines,
       codeApiBaseUrl: codeExecutionContext.baseUrl,
-      maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(
-        codeExecutionContext.codeEnvironmentConfigSchema,
-      ),
+      ...attachedWorkspaceRequestLimits(codeExecutionContext),
       executionProfile: codeExecutionContext.executionProfile,
       ...(codeExecutionContext.bridgeWorkerId
         ? { bridgeWorkerId: codeExecutionContext.bridgeWorkerId }
@@ -2570,9 +2583,7 @@ async function handleWorkspaceSearchCall(
       ...(typeof args.path === 'string' && args.path.length > 0 ? { path: args.path } : {}),
       max_results: Number(maxResults),
       codeApiBaseUrl: codeExecutionContext.baseUrl,
-      maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(
-        codeExecutionContext.codeEnvironmentConfigSchema,
-      ),
+      ...attachedWorkspaceRequestLimits(codeExecutionContext),
       executionProfile: codeExecutionContext.executionProfile,
       ...(codeExecutionContext.bridgeWorkerId
         ? { bridgeWorkerId: codeExecutionContext.bridgeWorkerId }
@@ -2663,9 +2674,7 @@ async function handleWorkspaceListCall(
         : {}),
       max_results: Number(maxResults),
       codeApiBaseUrl: codeExecutionContext.baseUrl,
-      maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(
-        codeExecutionContext.codeEnvironmentConfigSchema,
-      ),
+      ...attachedWorkspaceRequestLimits(codeExecutionContext),
       executionProfile: codeExecutionContext.executionProfile,
       ...(codeExecutionContext.bridgeWorkerId
         ? { bridgeWorkerId: codeExecutionContext.bridgeWorkerId }
@@ -3910,6 +3919,17 @@ function attachedWorkspaceAuthoringPath(
   return pathError ? errorResult(tc, pathError) : { filePath: relativePath };
 }
 
+function attachedWorkspaceRequestLimits(
+  codeExecutionContext: CodeExecutionContext,
+): { maxQueueWaitMs: number; maxRequestTimeoutMs?: number } {
+  const config = codeExecutionContext.codeEnvironmentConfigSchema;
+  const maxRequestTimeoutMs = resolveAttachedWorkspaceRequestTimeoutMs(config);
+  return {
+    maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(config),
+    ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
+  };
+}
+
 function attachedWorkspaceMutationParams(
   codeExecutionContext: CodeExecutionContext,
   workspaceId: string,
@@ -3924,16 +3944,20 @@ function attachedWorkspaceMutationParams(
   req?: ServerRequest;
   signal?: AbortSignal;
   maxQueueWaitMs: number;
+  maxRequestTimeoutMs?: number;
+  deadlineAtMs?: number;
 } {
+  const limits = attachedWorkspaceRequestLimits(codeExecutionContext);
   return {
     workspace_id: workspaceId,
     ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
       ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
       : {}),
     codeApiBaseUrl: codeExecutionContext.baseUrl,
-    maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(
-      codeExecutionContext.codeEnvironmentConfigSchema,
-    ),
+    ...limits,
+    ...(limits.maxRequestTimeoutMs == null
+      ? {}
+      : { deadlineAtMs: Date.now() + limits.maxRequestTimeoutMs }),
     executionProfile: codeExecutionContext.executionProfile,
     ...(codeExecutionContext.bridgeWorkerId
       ? { bridgeWorkerId: codeExecutionContext.bridgeWorkerId }

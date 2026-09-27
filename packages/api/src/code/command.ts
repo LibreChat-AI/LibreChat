@@ -1,5 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { tool } from '@librechat/agents/langchain/tools';
+import { CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS } from 'librechat-data-provider';
 import {
   BashExecutionToolDefinition,
   BashToolOutputReferencesGuide,
@@ -138,6 +139,21 @@ export function resolveAttachedWorkspaceQueueWaitMs(
     return WORKSPACE_QUEUE_MAX_WAIT_MS;
   }
   return Math.min(WORKSPACE_QUEUE_MAX_WAIT_MS, configured);
+}
+
+export function resolveAttachedWorkspaceRequestTimeoutMs(
+  configSchema?: CodeEnvironmentUserConfigSchema,
+): number | undefined {
+  const configured = configSchema?.limits?.maxRequestTimeoutMs;
+  if (
+    configured == null ||
+    !Number.isSafeInteger(configured) ||
+    configured < 1 ||
+    configured > CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS
+  ) {
+    return undefined;
+  }
+  return configured;
 }
 
 export function buildAttachedWorkspaceBashSchema(
@@ -286,6 +302,7 @@ export function createAttachedWorkspaceBashTool({
   gitIdentity,
   maxTimeoutMs = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
   fetchImpl,
 }: {
   baseUrl: string;
@@ -296,8 +313,10 @@ export function createAttachedWorkspaceBashTool({
   gitIdentity?: AgentGitIdentity | null;
   /** Effective admin/upstream ceiling already intersected with the protocol hard cap. */
   maxTimeoutMs?: number;
-  /** Deployment admission budget; omitted keeps the built-in default. */
+  /** Retry horizon across typed queue expirations, not an admission budget. */
   maxQueueWaitMs?: number;
+  /** Verified total HTTP budget; omission keeps the legacy per-attempt timeout. */
+  maxRequestTimeoutMs?: number;
   fetchImpl?: CodeBridgeFetch;
 }): DynamicStructuredTool {
   const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
@@ -376,6 +395,7 @@ export function createAttachedWorkspaceBashTool({
           signal,
           fetchImpl,
           ...(maxQueueWaitMs == null ? {} : { maxQueueWaitMs }),
+          ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
         });
         if (result.operation !== 'execute_command') {
           throw new Error('Attached workspace returned an unexpected command result.');

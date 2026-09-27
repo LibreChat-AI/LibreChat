@@ -1205,6 +1205,11 @@ export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS = 5 * 60_000;
  * initial admission wait or an already-admitted operation's execution budget.
  */
 export const CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS = 5 * 60_000;
+/** Code API's per-request admission ceiling, independent of the retry horizon. */
+export const CODE_ENVIRONMENT_ADMISSION_MAX_MS = 5 * 60_000;
+/** Maximum opt-in HTTP budget: five minutes of admission and execution plus ten seconds for settlement and delivery. */
+export const CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS =
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS + CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS + 10_000;
 
 /**
  * Typed user-tunable surface for one attached code environment. Omitted fields
@@ -1239,6 +1244,17 @@ export const codeEnvironmentUserConfigSchema = z
           .int()
           .min(0)
           .max(CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS)
+          .optional(),
+        /** Total HTTP budget for one workspace tool call, including retries,
+         * execution, settlement, and delivery. Only set this after verifying
+         * the shortest timeout on the actual Code API path and updating Code API
+         * to honor per-request queue allowances. Omission keeps the 30-second
+         * per-attempt admission budget. */
+        maxRequestTimeoutMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS)
           .optional(),
       })
       .strict()

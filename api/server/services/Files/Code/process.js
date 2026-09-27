@@ -1088,10 +1088,14 @@ async function readWorkspaceFile({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1137,10 +1141,14 @@ async function searchWorkspace({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1186,10 +1194,14 @@ async function listWorkspaceFiles({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1221,10 +1233,14 @@ async function writeWorkspaceFile({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1256,10 +1272,14 @@ async function editWorkspaceFile({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
@@ -1290,10 +1310,14 @@ async function previewWorkspaceEdit({
   req,
   signal,
   maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  deadlineAtMs,
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    maxRequestTimeoutMs,
+    deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
       ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
