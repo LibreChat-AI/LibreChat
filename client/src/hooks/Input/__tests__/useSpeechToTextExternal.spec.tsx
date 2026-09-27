@@ -118,14 +118,19 @@ function setup({ autoSendText = -1 }: { autoSendText?: number } = {}) {
       initializeState={({ set }) => {
         set(store.speechToText, true);
         set(store.autoTranscribeAudio, true);
-        set(store.autoSendText, autoSendText);
       }}
     >
       {children}
     </RecoilRoot>
   );
   const rendered = renderHook(
-    () => useSpeechToTextExternal(setText, onTranscriptionComplete, onTranscriptionSettled),
+    () =>
+      useSpeechToTextExternal(
+        setText,
+        onTranscriptionComplete,
+        onTranscriptionSettled,
+        autoSendText,
+      ),
     { wrapper },
   );
   return { ...rendered, setText, onTranscriptionComplete, onTranscriptionSettled };

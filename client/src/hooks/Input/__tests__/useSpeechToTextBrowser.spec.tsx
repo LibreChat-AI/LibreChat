@@ -2,7 +2,6 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import useSpeechToTextBrowser from '../useSpeechToTextBrowser';
-import store from '~/store';
 
 /**
  * Dropping a take. The auto-send timer is the load-bearing part: a transcript
@@ -51,16 +50,16 @@ function setup() {
   const onTranscriptionComplete = jest.fn();
   const onTranscriptionSettled = jest.fn();
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <RecoilRoot
-      initializeState={({ set }) => {
-        set(store.autoSendText, AUTO_SEND_SECONDS);
-      }}
-    >
-      {children}
-    </RecoilRoot>
+    <RecoilRoot>{children}</RecoilRoot>
   );
   const rendered = renderHook(
-    () => useSpeechToTextBrowser(setText, onTranscriptionComplete, onTranscriptionSettled),
+    () =>
+      useSpeechToTextBrowser(
+        setText,
+        onTranscriptionComplete,
+        onTranscriptionSettled,
+        AUTO_SEND_SECONDS,
+      ),
     { wrapper },
   );
   return { ...rendered, setText, onTranscriptionComplete, onTranscriptionSettled };

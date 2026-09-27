@@ -23,6 +23,8 @@ type DuringRunSendButtonProps = {
   onConsumed: () => void;
   /** External hold (e.g. uploads in flight), mirroring the normal send button. */
   disabled?: boolean;
+  /** Host-owned: whether Enter sends, so the rows advertise what the key handler does. */
+  enterToSend: boolean;
 };
 
 /**
@@ -39,9 +41,8 @@ const DuringRunSendButton = React.memo(
   forwardRef((props: DuringRunSendButtonProps, ref: React.ForwardedRef<HTMLButtonElement>) => {
     const localize = useLocalize();
     const steerInterruptsByDefault = useRecoilValue(store.steerInterruptsByDefault);
-    const enterToSend = useRecoilValue(store.enterToSend);
     const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
-    const { steering } = props;
+    const { steering, enterToSend } = props;
     const data = useWatch({ control: props.control });
     const content = data?.text?.trim();
     const primary = steering.effectiveAction;

@@ -6,6 +6,8 @@ const useSpeechToText = (
   setText: (text: string, takeId?: number) => void,
   onTranscriptionComplete: (text: string, takeId?: number) => void,
   onTranscriptionSettled: (takeId?: number) => void,
+  /** Host-owned Auto Send Text preference. */
+  autoSendText: number,
 ): {
   isLoading?: boolean;
   isListening?: boolean;
@@ -23,7 +25,12 @@ const useSpeechToText = (
     startRecording: startSpeechRecordingBrowser,
     stopRecording: stopSpeechRecordingBrowser,
     abortRecording: abortSpeechRecordingBrowser,
-  } = useSpeechToTextBrowser(setText, onTranscriptionComplete, onTranscriptionSettled);
+  } = useSpeechToTextBrowser(
+    setText,
+    onTranscriptionComplete,
+    onTranscriptionSettled,
+    autoSendText,
+  );
 
   const {
     isListening: speechIsListeningExternal,
@@ -31,7 +38,12 @@ const useSpeechToText = (
     externalStartRecording: startSpeechRecordingExternal,
     externalStopRecording: stopSpeechRecordingExternal,
     externalAbortRecording: abortSpeechRecordingExternal,
-  } = useSpeechToTextExternal(setText, onTranscriptionComplete, onTranscriptionSettled);
+  } = useSpeechToTextExternal(
+    setText,
+    onTranscriptionComplete,
+    onTranscriptionSettled,
+    autoSendText,
+  );
 
   const isListening = externalSpeechToText ? speechIsListeningExternal : speechIsListeningBrowser;
   const isLoading = externalSpeechToText ? speechIsLoadingExternal : speechIsLoadingBrowser;

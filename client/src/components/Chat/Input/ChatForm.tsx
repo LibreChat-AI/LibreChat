@@ -459,6 +459,7 @@ const ChatForm = memo(function ChatForm({
     allowSubmitWhileGenerating: steering.duringRunActive || answerMode.composerAnswers,
     onDuringRunModifier: steering.duringRunActive ? handleDuringRunModifier : undefined,
     answerModeActive: answerMode.composerAnswers,
+    enterToSend,
   });
 
   useQueryParams({ textAreaRef });
@@ -602,6 +603,7 @@ const ChatForm = memo(function ChatForm({
             getText={() => methods.getValues('text')}
             onConsumed={consumeComposer}
             disabled={filesLoading}
+            enterToSend={enterToSend}
           />
           {stopButton}
         </>
@@ -619,6 +621,7 @@ const ChatForm = memo(function ChatForm({
     setShowStopButton,
     handleStopGenerating,
     canStop,
+    enterToSend,
   ]);
 
   /* Memoized for `memo(Bar)`: an inline element is a new identity every render,

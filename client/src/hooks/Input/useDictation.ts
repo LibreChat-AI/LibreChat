@@ -201,6 +201,7 @@ export default function useDictation({
     setText,
     onTranscriptionComplete,
     onTranscriptionSettled,
+    autoSendText,
   );
 
   const active = isListening === true;

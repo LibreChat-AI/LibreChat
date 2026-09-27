@@ -38,6 +38,7 @@ const useSpeechToTextExternal = (
   setText: (text: string, takeId?: number) => void,
   onTranscriptionComplete: (text: string, takeId?: number) => void,
   onTranscriptionSettled: (takeId?: number) => void,
+  autoSendText: number,
 ) => {
   const { showToast } = useToastContext();
   const audioStream = useRef<MediaStream | null>(null);
@@ -63,7 +64,6 @@ const useSpeechToTextExternal = (
   const [isRequestBeingMade, setIsRequestBeingMade] = useState(false);
 
   const [minDecibels] = useRecoilState(store.decibelValue);
-  const [autoSendText] = useRecoilState(store.autoSendText);
   const [languageSTT] = useRecoilState<string>(store.languageSTT);
   const [speechToText] = useRecoilState<boolean>(store.speechToText);
   const [autoTranscribeAudio] = useRecoilState<boolean>(store.autoTranscribeAudio);

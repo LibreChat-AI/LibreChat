@@ -32,6 +32,7 @@ const useSpeechToTextBrowser = (
   setText: (text: string, takeId?: number) => void,
   onTranscriptionComplete: (text: string, takeId?: number) => void,
   onTranscriptionSettled: (takeId?: number) => void,
+  autoSendText: number,
 ) => {
   const localize = useLocalize();
   const { showToast } = useToastContext();
@@ -44,7 +45,6 @@ const useSpeechToTextBrowser = (
   const timeoutRef = useRef<NodeJS.Timeout | null>();
   const [languageSTT] = useRecoilState<string>(store.languageSTT);
   const [autoTranscribeAudio] = useRecoilState<boolean>(store.autoTranscribeAudio);
-  const [autoSendText] = useRecoilState(store.autoSendText);
 
   const {
     listening,
