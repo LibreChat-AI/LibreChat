@@ -98,15 +98,24 @@ test.describe('activity fold', () => {
     await peek.click();
     await expect(header).toHaveAttribute('aria-expanded', 'true');
     await expect(peek).toBeHidden();
-    const failedRow = messagesView(page).locator('[data-testid="tool-call"][tabindex="-1"]');
+    const failedRow = messagesView(page)
+      .locator('[data-testid="tool-call"]')
+      .filter({ hasText: /^Failed:/ });
     await expect(failedRow).toBeVisible();
     await expect(failedRow).toContainText('failed');
     const failedId = await failedRow.getAttribute('data-tool-call-id');
     const panel = messagesView(page).locator(`[data-tool-call-output-id="${failedId}"]`);
     await expect(panel).toContainText(/error/i, { timeout: 5000 });
-    expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe(
-      'tool-call',
-    );
+    /** Focus lands on the failed row's own disclosure button, not a wrapper. */
+    expect(
+      await page.evaluate(() => {
+        const active = document.activeElement;
+        return {
+          tag: active?.tagName,
+          row: active?.closest('[data-testid="tool-call"]')?.getAttribute('data-tool-call-id'),
+        };
+      }),
+    ).toEqual({ tag: 'BUTTON', row: failedId });
     await shot(page, 'revealed');
 
     /** The open header is the title: primary, semibold, over railed rows. */
@@ -116,8 +125,7 @@ test.describe('activity fold', () => {
     await expect(rail).toHaveClass(/pl-6/);
     /** Only the group holding the failure opened; its sibling groups stay
      *  folded under the phase. The slow echo shares that batch. */
-    const successRows = messagesView(page).locator('[data-testid="tool-call"]:not([tabindex])');
-    expect(await successRows.count()).toBe(1);
+    expect(await messagesView(page).locator('[data-testid="tool-call"]').count()).toBe(2);
     await expect(messagesView(page).getByTestId('tool-call-group-panel')).toHaveCount(3);
 
     /** Closing by the header brings the peek back; the pill then does the

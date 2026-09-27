@@ -1155,6 +1155,18 @@ describe('ToolCallGroup failure fast path', () => {
     expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
   });
 
+  it('shows the failure count once, on the pill, when it stands alone', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    expect(header).not.toHaveTextContent('1 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1 failed');
+  });
+
+  it("keeps the count in text inside a phase, where the pill is the phase's", () => {
+    renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
+    expect(screen.getByRole('button', { name: /· 1 failed$/ })).toHaveTextContent('1 failed');
+  });
+
   it('leaves the pill to the phase header when nested in one', () => {
     renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
     expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
@@ -1164,7 +1176,7 @@ describe('ToolCallGroup failure fast path', () => {
     const onReveal = jest.fn();
     const { rerender } = render(
       <RecoilRoot>
-        <FailedRevealContext.Provider value={0}>
+        <FailedRevealContext.Provider value={{ tick: 0, claimFocus: null }}>
           <ToolCallGroup {...props(onReveal)} withinActivityPhase />
         </FailedRevealContext.Provider>
       </RecoilRoot>,
@@ -1173,7 +1185,7 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).toHaveAttribute('aria-expanded', 'false');
     rerender(
       <RecoilRoot>
-        <FailedRevealContext.Provider value={1}>
+        <FailedRevealContext.Provider value={{ tick: 1, claimFocus: null }}>
           <ToolCallGroup {...props(onReveal)} withinActivityPhase />
         </FailedRevealContext.Provider>
       </RecoilRoot>,

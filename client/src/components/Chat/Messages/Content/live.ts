@@ -15,6 +15,7 @@ import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
 import { boundIntentLabel, getToolCallIntent } from './Parts/intent';
 import { isBashProgrammaticToolCall } from './routing';
 import { getToolMeta, summarizeSpan } from './outcome';
+import { isError } from './ToolOutput';
 
 /** How often a live fold's header may repaint. A streamed intent moves the
  *  newest line on nearly every delta; the header is a glanceable status, not a
@@ -358,7 +359,10 @@ const GENERIC_ERROR_PREFIX = /^Error:\s*/i;
 
 /** The opening line of an error, for a peek row that has one line to spend. */
 export function firstErrorLine(output: string | null | undefined): string {
-  if (!output) {
+  /** Only output that IS an error. A step the run closed as failed, or a
+   *  task failed by its status attachment, can carry ordinary output, and
+   *  showing that in red as the reason would misreport the failure. */
+  if (!output || !isError(output)) {
     return '';
   }
   const cleaned = stripToolCallErrorPrefix(output)

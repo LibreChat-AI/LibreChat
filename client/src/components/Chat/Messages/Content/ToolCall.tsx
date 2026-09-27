@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import {
@@ -16,7 +16,6 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { toolPanelSpacingClassName } from './disclosure';
 import { useToolCallIntent } from './Parts/intent';
-import { useFailedReveal } from './reveal';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
@@ -293,25 +292,6 @@ export default function ToolCall({
     setShowInfo((prev) => !prev);
   }, [mountBody, onExpand, showInfo]);
 
-  const rowRef = useRef<HTMLDivElement>(null);
-  /** A header above asked for its failures: open this card's panel, bring
-   *  the row into view and hand it focus, so a keyboard reader lands on the
-   *  error rather than on the pill they pressed. */
-  const revealError = useCallback(() => {
-    mountBody();
-    onExpand?.();
-    setShowInfo(true);
-    const row = rowRef.current;
-    if (row == null) {
-      return;
-    }
-    if (typeof row.scrollIntoView === 'function') {
-      row.scrollIntoView({ block: 'nearest' });
-    }
-    row.focus({ preventScroll: true });
-  }, [mountBody, onExpand]);
-  useFailedReveal(phase === 'failed' && hasInfo, revealError);
-
   /** A failed row spends its subtitle on the error's first line: what went
    *  wrong is the fact the reader needs from that slot, ahead of which server
    *  the call went through. */
@@ -384,13 +364,7 @@ export default function ToolCall({
           return getFinishedText();
         })()}
       </span>
-      <div
-        className={TOOL_ROW_CLASSES}
-        data-testid="tool-call"
-        data-tool-call-id={toolCallId}
-        ref={rowRef}
-        tabIndex={phase === 'failed' ? -1 : undefined}
-      >
+      <div className={TOOL_ROW_CLASSES} data-testid="tool-call" data-tool-call-id={toolCallId}>
         <ProgressText
           phase={phase}
           onClick={handleToggleInfo}

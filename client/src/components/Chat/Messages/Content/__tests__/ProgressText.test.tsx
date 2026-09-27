@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { FailedRevealContext } from '../reveal';
 import ProgressText from '../ProgressText';
 
 jest.mock('~/hooks', () => ({
@@ -172,5 +173,67 @@ describe('ProgressText failure', () => {
     expect(container.querySelector('.progress-text-wrapper')).not.toHaveClass(
       'before:bg-status-error',
     );
+  });
+});
+
+describe('ProgressText failed reveal', () => {
+  const reveal = (tick: number, claim = true) => ({ tick, claimFocus: () => claim });
+  let onClick: jest.Mock;
+  beforeEach(() => {
+    onClick = jest.fn();
+  });
+  const tree = (value: { tick: number; claimFocus: () => boolean }, props = {}) => (
+    <FailedRevealContext.Provider value={value}>
+      <ProgressText {...defaults} phase="failed" onClick={onClick} {...props} />
+    </FailedRevealContext.Provider>
+  );
+
+  it('opens through its own toggle and takes focus on the labeled button', () => {
+    const { rerender } = render(tree(reveal(0)));
+    expect(onClick).not.toHaveBeenCalled();
+    rerender(tree(reveal(1)));
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button')).toHaveFocus();
+  });
+
+  it('opens but leaves focus alone when another row already claimed it', () => {
+    const { rerender } = render(tree(reveal(0, false)));
+    rerender(tree(reveal(1, false)));
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button')).not.toHaveFocus();
+  });
+
+  it('does not toggle a panel that is already open', () => {
+    const { rerender } = render(tree(reveal(0), { isExpanded: true }));
+    rerender(tree(reveal(1), { isExpanded: true }));
+    expect(onClick).not.toHaveBeenCalled();
+    expect(screen.getByRole('button')).toHaveFocus();
+  });
+
+  it('ignores the request on a row that did not fail or cannot open', () => {
+    const pair = (tick: number) => (
+      <FailedRevealContext.Provider value={reveal(tick)}>
+        <ProgressText {...defaults} phase="completed" onClick={onClick} />
+        <ProgressText {...defaults} phase="failed" hasInput={false} onClick={onClick} />
+      </FailedRevealContext.Provider>
+    );
+    const { rerender } = render(pair(0));
+    rerender(pair(1));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProgressText fixed siblings', () => {
+  it('keeps the verdict, duration and chevron out of the shrinking label box', () => {
+    const { container } = renderProgressText({
+      phase: 'completed',
+      subtitle: 'a very long subtitle',
+      durationMs: 3500,
+    });
+    const box = screen.getByText('Completed foo').parentElement;
+    expect(box).toHaveClass('min-w-0');
+    expect(box).toContainElement(screen.getByText('a very long subtitle'));
+    expect(screen.getByText('· 3.5s')).toHaveClass('shrink-0');
+    expect(container.querySelector('svg')).toHaveClass('shrink-0');
   });
 });

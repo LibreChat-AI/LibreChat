@@ -613,7 +613,9 @@ export default function ActivityPhaseGroup({
     isExpanded,
     hasPendingApproval,
   );
-  const { tick: revealTick, reveal } = useFailedRevealTrigger(isExpanded && shouldRenderBody);
+  const { value: revealValue, requestReveal } = useFailedRevealTrigger(
+    isExpanded && shouldRenderBody,
+  );
 
   useEffect(() => {
     if (!foldsIn || userOverrideRef.current) {
@@ -671,8 +673,8 @@ export default function ActivityPhaseGroup({
       onExpansionChange?.(true);
       setIsExpanded(true);
     }
-    reveal();
-  }, [mountBody, isExpanded, onExpansionChange, reveal]);
+    requestReveal();
+  }, [mountBody, isExpanded, onExpansionChange, requestReveal]);
 
   /** An open card is titled by its stable label: the rows themselves carry
    *  the live line now, and a header that kept tickering above them would
@@ -848,7 +850,7 @@ export default function ActivityPhaseGroup({
       >
         {shouldRenderBody && (
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
-            <FailedRevealContext.Provider value={revealTick}>
+            <FailedRevealContext.Provider value={revealValue}>
               {children}
             </FailedRevealContext.Provider>
           </div>

@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { TriangleAlert } from 'lucide-react';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -11,7 +19,15 @@ import { cn } from '~/utils';
  * request is a new number, and a consumer opens once per number it has not
  * seen. Zero is the resting value and never opens anything.
  */
-export const FailedRevealContext = createContext(0);
+export type FailedReveal = {
+  tick: number;
+  /** One row per request takes scroll and focus: the first failed row in
+   *  document order to ask. Every other failed row still opens its panel.
+   *  Null outside any provider. */
+  claimFocus: (() => boolean) | null;
+};
+
+export const FailedRevealContext = createContext<FailedReveal>({ tick: 0, claimFocus: null });
 
 /**
  * Issues requests to the consumers below. A request made while the body is
@@ -20,11 +36,30 @@ export const FailedRevealContext = createContext(0);
  * counter would take it as the resting value and never open. Deferring the
  * increment to the commit after the rows exist is what lets one click on a
  * closed card reach an error three disclosures down.
+ *
+ * A provider nested under another (a group inside a phase) relays the outer
+ * focus claim, so one click on the phase focuses one row across all of its
+ * groups rather than one per group.
  */
-export function useFailedRevealTrigger(ready: boolean): { tick: number; reveal: () => void } {
+export function useFailedRevealTrigger(ready: boolean): {
+  value: FailedReveal;
+  requestReveal: () => void;
+} {
+  const outer = useContext(FailedRevealContext);
   const [tick, setTick] = useState(0);
   const [pending, setPending] = useState(false);
-  const reveal = useCallback(() => setPending(true), []);
+  const claimedRef = useRef(false);
+  const requestReveal = useCallback(() => {
+    claimedRef.current = false;
+    setPending(true);
+  }, []);
+  const ownClaim = useCallback(() => {
+    if (claimedRef.current) {
+      return false;
+    }
+    claimedRef.current = true;
+    return true;
+  }, []);
   useEffect(() => {
     if (!pending || !ready) {
       return;
@@ -32,16 +67,22 @@ export function useFailedRevealTrigger(ready: boolean): { tick: number; reveal: 
     setPending(false);
     setTick((previous) => previous + 1);
   }, [pending, ready]);
-  return { tick, reveal };
+  const claimFocus = outer.claimFocus ?? ownClaim;
+  const value = useMemo(() => ({ tick, claimFocus }), [tick, claimFocus]);
+  return { value, requestReveal };
 }
 
 /**
  * Runs `onReveal` once for each request above this consumer, when the
- * consumer holds a failure. The seen counter is a ref, so a call that fails
- * AFTER an earlier request does not open itself on that stale request.
+ * consumer holds a failure, handing it the request's focus claim. The seen
+ * counter is a ref, so a call that fails AFTER an earlier request does not
+ * open itself on that stale request.
  */
-export function useFailedReveal(hasFailure: boolean, onReveal: () => void): void {
-  const tick = useContext(FailedRevealContext);
+export function useFailedReveal(
+  hasFailure: boolean,
+  onReveal: (claimFocus: () => boolean) => void,
+): void {
+  const { tick, claimFocus } = useContext(FailedRevealContext);
   const seenRef = useRef(tick);
   useEffect(() => {
     if (tick === seenRef.current) {
@@ -49,9 +90,9 @@ export function useFailedReveal(hasFailure: boolean, onReveal: () => void): void
     }
     seenRef.current = tick;
     if (hasFailure) {
-      onReveal();
+      onReveal(claimFocus ?? (() => true));
     }
-  }, [tick, hasFailure, onReveal]);
+  }, [tick, hasFailure, onReveal, claimFocus]);
 }
 
 /**

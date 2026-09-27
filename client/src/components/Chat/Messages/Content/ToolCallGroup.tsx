@@ -335,11 +335,13 @@ export default function ToolCallGroup({
    *  own header when it stands alone, or from a phase above. Either way it
    *  opens, then issues the request to its rows once they are mounted — a
    *  request passed straight through would reach rows that do not exist yet. */
-  const { tick: revealTick, reveal } = useFailedRevealTrigger(isExpanded && shouldRenderBody);
+  const { value: revealValue, requestReveal } = useFailedRevealTrigger(
+    isExpanded && shouldRenderBody,
+  );
   const handleRevealFailed = useCallback(() => {
     handleToolExpand();
-    reveal();
-  }, [handleToolExpand, reveal]);
+    requestReveal();
+  }, [handleToolExpand, requestReveal]);
   useFailedReveal(activitySummary.failedCount > 0, handleRevealFailed);
 
   const handleTransitionEnd = useCallback(
@@ -431,13 +433,17 @@ export default function ToolCallGroup({
   } else if (!allSubagents && !allAskQuestions && count > 1) {
     groupDetailParts.push(activitySummary.toolNameSummary);
   }
-  if (activitySummary.failedCount > 0) {
-    groupDetailParts.push(
-      localize(
-        activitySummary.failedCount === 1 ? 'com_ui_one_action_failed' : 'com_ui_n_actions_failed',
-        { 0: String(activitySummary.failedCount) },
-      ),
-    );
+  const failedNote =
+    activitySummary.failedCount > 0
+      ? localize(
+          activitySummary.failedCount === 1
+            ? 'com_ui_one_action_failed'
+            : 'com_ui_n_actions_failed',
+          { 0: String(activitySummary.failedCount) },
+        )
+      : '';
+  if (failedNote !== '') {
+    groupDetailParts.push(failedNote);
   }
   /** A stopped action is settled but not successful, and its only other notice
    *  lives inside the panel the group is about to collapse, so the header has
@@ -456,6 +462,14 @@ export default function ToolCallGroup({
   const groupAriaLabel = [groupLabel, groupDetail, hasReasoning ? localize('com_ui_thoughts') : '']
     .filter(Boolean)
     .join(', ');
+  /** Standing alone, the group shows its failure count on the pill beside
+   *  the header, which is also the way to the failed rows; the text keeps it
+   *  only for the accessible name. Inside a phase the pill is the phase's,
+   *  so the group's detail says it in text. */
+  const showsFailurePill = !withinActivityPhase && activitySummary.failedCount > 0;
+  const visibleGroupDetail = showsFailurePill
+    ? groupDetailParts.filter((part) => part && part !== failedNote).join(' · ')
+    : groupDetail;
   /** Single category glyph for homogeneous groups (else StackedToolIcons). */
   const CategoryIcon = allSubagents ? Users : MessageCircleQuestion;
   const iconStatus = getOutcomeStatus({
@@ -533,12 +547,12 @@ export default function ToolCallGroup({
           >
             {groupLabel}
           </span>
-          {groupDetail && (
+          {visibleGroupDetail && (
             <span
               className="min-w-0 max-w-[40%] truncate text-xs font-normal text-text-secondary"
-              title={groupDetail}
+              title={visibleGroupDetail}
             >
-              · {groupDetail}
+              · {visibleGroupDetail}
             </span>
           )}
           <ChevronDown
@@ -562,7 +576,7 @@ export default function ToolCallGroup({
         {shouldRenderBody && (
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
             <ToolAuthWarningContext.Provider value>
-              <FailedRevealContext.Provider value={revealTick}>
+              <FailedRevealContext.Provider value={revealValue}>
                 <div className="flex flex-col py-0.5">
                   {parts.map(({ part, idx }, partIndex) => {
                     if (part.type === ContentTypes.THINK) {

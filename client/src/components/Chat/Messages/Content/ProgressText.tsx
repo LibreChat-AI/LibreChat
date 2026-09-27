@@ -1,3 +1,4 @@
+import { useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
@@ -6,6 +7,7 @@ import { isReportableRunStepDuration } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { cn, getRunStepDurationLabels } from '~/utils';
 import CancelledIcon from './CancelledIcon';
+import { useFailedReveal } from './reveal';
 import { ROW_GLYPH_SLOT } from './rows';
 import { useLocalize } from '~/hooks';
 
@@ -29,15 +31,17 @@ const failedStripeClass =
 const Wrapper = ({
   popover,
   failed,
+  rootRef,
   children,
 }: {
   popover: boolean;
   failed: boolean;
+  rootRef: React.RefObject<HTMLDivElement>;
   children: React.ReactNode;
 }) => {
   if (popover) {
     return (
-      <div className={cn(wrapperClass, failed && failedStripeClass)}>
+      <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
         <Popover.Trigger asChild>
           <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
             {children}
@@ -48,7 +52,7 @@ const Wrapper = ({
   }
 
   return (
-    <div className={cn(wrapperClass, failed && failedStripeClass)}>
+    <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
       <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
         {children}
       </div>
@@ -95,6 +99,32 @@ export default function ProgressText({
   /** For locale-aware decimal formatting of the sub-10s duration value. */
   const { i18n } = useTranslation();
   const isRunning = phase === 'running';
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** A header above asked for its failures. This control is the disclosure
+   *  every card renders, so answering here reaches a failed bash, code,
+   *  memory or file card the same as a generic one: open through the card's
+   *  own toggle, and, for the one row the request lets take focus, land the
+   *  reader on the labeled button rather than on a wrapper. */
+  const revealFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!isExpanded) {
+        onClick?.();
+      }
+      if (!claimFocus()) {
+        return;
+      }
+      const button = rootRef.current?.querySelector('button');
+      if (button == null) {
+        return;
+      }
+      if (typeof button.scrollIntoView === 'function') {
+        button.scrollIntoView({ block: 'nearest' });
+      }
+      button.focus({ preventScroll: true });
+    },
+    [isExpanded, onClick],
+  );
+  useFailedReveal(phase === 'failed' && hasInput, revealFailure);
 
   /** Every branch below reads `phase`, so the label, the icon, the shimmer,
    *  the failure suffix and the duration cannot disagree about what state
@@ -115,7 +145,7 @@ export default function ProgressText({
       : undefined;
 
   return (
-    <Wrapper popover={popover} failed={phase === 'failed'}>
+    <Wrapper popover={popover} failed={phase === 'failed'} rootRef={rootRef}>
       <Button
         type="button"
         variant="ghost"
@@ -141,23 +171,29 @@ export default function ProgressText({
             the message column. All, not most: a weighted share left the label
             a fraction of a pixel short of its text, and that fraction is
             enough for `truncate` to swap its last letters for an ellipsis.
-            `max-w-full` keeps a label wider than the row from overflowing it
-            now that nothing else can shrink the label. */}
-        <span
-          className={cn(
-            showShimmer ? 'shimmer' : '',
-            'min-w-0 max-w-full truncate font-medium',
-            subtitle && 'shrink-0',
-          )}
-        >
-          {text}
-        </span>
-        {subtitle && (
-          <span className="min-w-0 shrink truncate font-normal text-text-secondary">
-            {subtitle}
+            The pair sits in its own shrinking box so the verdict, the
+            duration and the chevron after it never lose width: the box gives
+            up the subtitle first, and a label wider than the box truncates at
+            the box (`max-w-full`), not past the row. */}
+        <span className="flex min-w-0 items-center gap-2">
+          <span
+            className={cn(
+              showShimmer ? 'shimmer' : '',
+              'min-w-0 max-w-full truncate font-medium',
+              subtitle && 'shrink-0',
+            )}
+          >
+            {text}
           </span>
+          {subtitle && (
+            <span className="min-w-0 shrink truncate font-normal text-text-secondary">
+              {subtitle}
+            </span>
+          )}
+        </span>
+        {errorSuffix && (
+          <span className="shrink-0 font-normal text-status-error">· {errorSuffix}</span>
         )}
-        {errorSuffix && <span className="font-normal text-status-error">· {errorSuffix}</span>}
         {duration && (
           <>
             {/* The compact form is the readable one on screen but a poor
@@ -166,7 +202,7 @@ export default function ProgressText({
                 Both live inside the button, so its accessible name carries
                 the duration — this is not an `aria-live` region and does not
                 re-announce. */}
-            <span className="font-normal text-text-secondary" aria-hidden="true">
+            <span className="shrink-0 font-normal text-text-secondary" aria-hidden="true">
               · {localize(duration.key, duration.values)}
             </span>
             <span className="sr-only">
@@ -178,7 +214,7 @@ export default function ProgressText({
           <ChevronDown
             className={cn(
               disclosureChevronVariants({ expanded: isExpanded }),
-              'size-4 translate-y-[1px]',
+              'size-4 shrink-0 translate-y-[1px]',
             )}
             aria-hidden="true"
           />

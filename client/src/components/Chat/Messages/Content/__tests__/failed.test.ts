@@ -32,9 +32,10 @@ describe('firstErrorLine', () => {
     ).toBe('Tool "slow_echo" input failed schema validation.');
   });
 
-  it('is empty for no output', () => {
+  it('is empty for no output or output that is not an error', () => {
     expect(firstErrorLine(undefined)).toBe('');
     expect(firstErrorLine('')).toBe('');
+    expect(firstErrorLine('{"background_task_id":"bg1","status":"running"}')).toBe('');
   });
 });
 
@@ -55,7 +56,8 @@ describe('getFailedLines', () => {
     ];
     expect(getFailedLines(parts, localize, [])).toEqual([
       { text: 'Failed: Read a page', detail: 'HTTP 429', iconName: 'fetch_page' },
-      { text: 'Failed: lookup', detail: 'rows', iconName: 'lookup' },
+      /** Failed by its run step, with ordinary output: no line of it is the reason. */
+      { text: 'Failed: lookup', detail: '', iconName: 'lookup' },
     ]);
   });
 
