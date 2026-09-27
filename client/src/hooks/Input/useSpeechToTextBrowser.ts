@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRecoilState } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { useGetCustomConfigSpeechQuery } from 'librechat-data-provider/react-query';
@@ -94,6 +94,22 @@ const useSpeechToTextBrowser = (
       }
     };
   }, [setText, onTranscriptionComplete, resetTranscript, finalTranscript, autoSendText]);
+
+  /**
+   * The recognizer's final result lands in `useSpeechRecognition`'s reducer before
+   * `stopListening` resolves, but reaches `setText` only through the effect above.
+   * Settling from an effect declared after it, off a state update queued behind that
+   * result, keeps the take busy until the final transcript is in the composer.
+   */
+  const [stoppedTake, setStoppedTake] = useState<{ takeId?: number } | null>(null);
+  useEffect(() => {
+    if (stoppedTake == null) {
+      return;
+    }
+    setStoppedTake(null);
+    onTranscriptionSettled(stoppedTake.takeId);
+  }, [stoppedTake, onTranscriptionSettled]);
+
   const startRecording = useCallback(
     (takeId?: number) => {
       activeTakeIdRef.current = takeId;
@@ -148,9 +164,9 @@ const useSpeechToTextBrowser = (
         await SpeechRecognition.stopListening();
       }
     } finally {
-      onTranscriptionSettled(takeId);
+      setStoppedTake({ takeId });
     }
-  }, [onTranscriptionSettled]);
+  }, []);
 
   /**
    * Drops the take without emitting a transcript. `abortListening` discards the

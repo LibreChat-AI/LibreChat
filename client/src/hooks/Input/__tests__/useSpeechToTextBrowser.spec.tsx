@@ -13,23 +13,33 @@ const mockAbortListening = jest.fn();
 const mockStopListening = jest.fn();
 const mockResetTranscript = jest.fn();
 let mockFinalTranscript = '';
+/** Delivers a recognizer result the way the library does: a reducer update that
+ *  reaches the consumer only on React's next commit. */
+let mockDeliverFinal: (transcript: string) => void = () => undefined;
 
-jest.mock('react-speech-recognition', () => ({
-  __esModule: true,
-  default: {
-    startListening: jest.fn(),
-    stopListening: (...args: unknown[]) => mockStopListening(...args),
-    abortListening: (...args: unknown[]) => mockAbortListening(...args),
-  },
-  useSpeechRecognition: () => ({
-    listening: true,
-    finalTranscript: mockFinalTranscript,
-    interimTranscript: '',
-    resetTranscript: mockResetTranscript,
-    isMicrophoneAvailable: true,
-    browserSupportsSpeechRecognition: true,
-  }),
-}));
+jest.mock('react-speech-recognition', () => {
+  const { useState } = jest.requireActual<typeof import('react')>('react');
+  return {
+    __esModule: true,
+    default: {
+      startListening: jest.fn(),
+      stopListening: (...args: unknown[]) => mockStopListening(...args),
+      abortListening: (...args: unknown[]) => mockAbortListening(...args),
+    },
+    useSpeechRecognition: () => {
+      const [finalTranscript, setFinalTranscript] = useState(mockFinalTranscript);
+      mockDeliverFinal = setFinalTranscript;
+      return {
+        listening: true,
+        finalTranscript,
+        interimTranscript: '',
+        resetTranscript: mockResetTranscript,
+        isMicrophoneAvailable: true,
+        browserSupportsSpeechRecognition: true,
+      };
+    },
+  };
+});
 
 jest.mock('@librechat/client', () => ({
   useToastContext: () => ({ showToast: jest.fn() }),
@@ -145,5 +155,36 @@ describe('useSpeechToTextBrowser', () => {
       await stopping;
     });
     expect(onTranscriptionSettled).toHaveBeenCalledTimes(1);
+  });
+
+  /* The final result arrives before the stop resolves, as the Web Speech API orders
+     `result` ahead of `end`, but React has not committed it yet. Settling in that gap
+     let an armed stop-and-send read the interim text, or nothing at all. */
+  it('settles only after the final transcript reaches the composer', async () => {
+    let finishStop: () => void = () => undefined;
+    mockStopListening.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishStop = resolve;
+      }),
+    );
+    const { result, setText, onTranscriptionSettled } = setup();
+
+    let stopping: Promise<void> | undefined;
+    act(() => {
+      stopping = result.current.stopRecording();
+    });
+
+    await act(async () => {
+      mockDeliverFinal('the final words');
+      finishStop();
+      await stopping;
+      expect(onTranscriptionSettled).not.toHaveBeenCalled();
+    });
+
+    expect(setText).toHaveBeenCalledWith('the final words', undefined);
+    expect(onTranscriptionSettled).toHaveBeenCalledTimes(1);
+    expect(setText.mock.invocationCallOrder[0]).toBeLessThan(
+      onTranscriptionSettled.mock.invocationCallOrder[0],
+    );
   });
 });
