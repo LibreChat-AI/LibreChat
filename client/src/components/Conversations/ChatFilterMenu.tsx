@@ -212,8 +212,12 @@ const BookmarkChoices = memo(() => {
   const toggleTag = useSetAtom(toggleChatFilterTagAtom);
   const { data } = useGetConversationTags();
 
-  /** A bookmark no chat carries filters the list down to nothing. */
-  const bookmarks = useMemo(() => data?.filter((tag) => tag.count > 0) ?? [], [data]);
+  /** A bookmark no chat carries filters the list down to nothing, unless it is already
+   *  selected, where it stays so it can be turned off. */
+  const bookmarks = useMemo(
+    () => data?.filter((tag) => tag.count > 0 || tags.includes(tag.tag)) ?? [],
+    [data, tags],
+  );
 
   if (bookmarks.length === 0) {
     return (
@@ -305,15 +309,13 @@ const DateFacet = ({ label, icon, value, onSelect }: DateFacetProps) => {
  * Whether the endpoint selection has reached what the server accepts in one request
  * (`conversationList.maxEndpointFilters`). Past it the list request would be refused and
  * the Chats section would show its error, so further endpoints are offered disabled, as
- * they are until the post-login config that carries the limit has loaded.
+ * they are while the post-login config that carries the limit is loading. A config that
+ * failed leaves the server's own validation as the only check.
  */
 const useEndpointFilterLimit = (selectedCount: number) => {
-  const { data: startupConfig } = useGetStartupConfig();
+  const { data: startupConfig, isLoading } = useGetStartupConfig();
   const limit = startupConfig?.maxEndpointFilters;
-  return {
-    limit,
-    atLimit: startupConfig == null || (limit != null && selectedCount >= limit),
-  };
+  return { limit, atLimit: isLoading || (limit != null && selectedCount >= limit) };
 };
 
 const EndpointLimitNote = ({ limit }: { limit: number }) => {
@@ -510,7 +512,7 @@ const FilterFacets = ({
       collect(
         localize('com_ui_bookmarks'),
         (bookmarkData ?? [])
-          .filter((bookmark) => bookmark.count > 0)
+          .filter((bookmark) => bookmark.count > 0 || tags.includes(bookmark.tag))
           .map((bookmark) => ({
             id: `bookmark:${bookmark.tag}`,
             label: bookmark.tag,
