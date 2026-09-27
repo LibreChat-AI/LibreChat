@@ -57,7 +57,9 @@ test.describe('live reasoning', () => {
         if (process.env.E2E_FOLD_SHOTS) {
           await page.screenshot({ path: `${process.env.E2E_FOLD_SHOTS}/thought-open.png` });
         }
-        expect(open, 'open card title').not.toMatch(/[a-z]\.$/);
+        /** No label has landed on this span, so the open card takes the
+         *  generic running line, never a sentence of the thought below. */
+        expect(open, 'open card title').toBe('Running...');
         expect(await messagesView(page).getByTestId('streaming-thought-peek').count()).toBe(0);
       }
     }
