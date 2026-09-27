@@ -232,8 +232,8 @@ export default function Catalog({
     >
       {current != null && (
         <OGDialogContent className="flex h-[80vh] max-h-[720px] w-11/12 max-w-[960px] flex-col overflow-hidden">
-          <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 p-4 md:p-6">
-            <div className="flex flex-col gap-3 pr-8">
+          <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
+            <div className="flex flex-col gap-3">
               <OGDialogTitle>{localize(TITLE[current])}</OGDialogTitle>
               <OGDialogDescription className="sr-only">
                 {localize(SEARCH[current])}
@@ -264,7 +264,9 @@ export default function Catalog({
                 )}
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto">
+            {/* Reaches into the dialog's right padding so the scrollbar sits at the
+                edge, and pads the content back so the cards keep their inset. */}
+            <div className="-mr-5 min-h-0 flex-1 overflow-y-auto pr-5">
               {current === 'files' ? (
                 <FileList query={query} onAttach={onAttach} />
               ) : (
