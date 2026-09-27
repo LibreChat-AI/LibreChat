@@ -120,6 +120,8 @@ const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
 const { resolveConversationTitle } = require('~/server/services/Endpoints/titlePolicy');
+const addTitle = require('~/server/services/Endpoints/agents/title');
+const { generateRunTitle } = require('~/server/services/Endpoints/agents/runTitle');
 const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
@@ -391,24 +393,11 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
 }
 
 /**
- * Save response output to database
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {string} responseId
+ * Extract the concatenated output text from a built response
  * @param {import('@librechat/api').Response} response
- * @param {string} agentId
- * @param {number | undefined} visibleOutputTokens
- * @returns {Promise<void>}
+ * @returns {string}
  */
-async function saveResponseOutput(
-  req,
-  conversationId,
-  responseId,
-  response,
-  agentId,
-  visibleOutputTokens,
-) {
-  // Extract text content from output items
+function extractOutputText(response) {
   let responseText = '';
   for (const item of response.output) {
     if (item.type === 'message' && item.content) {
@@ -419,6 +408,154 @@ async function saveResponseOutput(
       }
     }
   }
+  return responseText;
+}
+
+/**
+ * Extract the first user message text from Open Responses input
+ * @param {string | import('@librechat/api').InputItem[]} input
+ * @returns {string}
+ */
+function getFirstUserInputText(input) {
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (!Array.isArray(input)) {
+    return '';
+  }
+  for (const item of input) {
+    if (item?.type !== 'message' || item.role !== 'user') {
+      continue;
+    }
+    if (typeof item.content === 'string' && item.content.trim()) {
+      return item.content;
+    }
+    if (Array.isArray(item.content)) {
+      const text = item.content
+        .filter((part) => part?.type === 'input_text' && typeof part.text === 'string')
+        .map((part) => part.text)
+        .join('\n')
+        .trim();
+      if (text) {
+        return text;
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Generate an LLM title for a stored Responses-API conversation, through the
+ * same pipeline the chat flow uses (`addTitle`) and the shared run-based title
+ * generation (`generateRunTitle`), reusing the completed agent run.
+ *
+ * The returned promise is fire-and-forget: callers track it so execution
+ * settlement waits for the write, but the HTTP response is never delayed. The
+ * `addTitle` service persists the generated title honoring `TITLE_CONVO`,
+ * `titleConvo`/`titleModel` endpoint config, and the title policy.
+ *
+ * @param {import('express').Request} req
+ * @param {object} params
+ * @param {object} params.agent
+ * @param {object} params.run - The completed agent run
+ * @param {string} params.conversationId
+ * @param {string} params.responseMessageId
+ * @param {string} params.userId
+ * @param {string} params.text - The user's first input text
+ * @param {string} params.responseText - The assistant response text
+ * @param {AbortSignal} params.signal - Aborting (client disconnect / stopped
+ *   run) cancels the in-flight title
+ * @param {object} params.primaryConfig - The primary agent's run config
+ * @param {(usage: object) => object} params.resolveEndpointTokenConfig
+ * @returns {Promise<void>}
+ */
+function generateConversationTitle(
+  req,
+  {
+    agent,
+    run,
+    conversationId,
+    responseMessageId,
+    userId,
+    text,
+    responseText,
+    signal,
+    primaryConfig,
+    resolveEndpointTokenConfig,
+  },
+) {
+  const titleClient = {
+    options: {},
+    titleConvo: ({ text: titleText, abortController }) =>
+      generateRunTitle({
+        req,
+        agent,
+        run,
+        text: titleText,
+        contentParts: responseText ? [{ type: 'text', text: responseText }] : [],
+        conversationId,
+        responseMessageId,
+        parentMessageId: null,
+        userId,
+        abortController,
+        recordUsage: ({ collectedUsage: titleUsage, model, balance, transactions }) =>
+          recordCollectedUsage(
+            {
+              spendTokens: db.spendTokens,
+              spendStructuredTokens: db.spendStructuredTokens,
+              pricing: {
+                getMultiplier: db.getMultiplier,
+                getCacheMultiplier: db.getCacheMultiplier,
+              },
+              bulkWriteOps: {
+                insertMany: db.bulkInsertTransactions,
+                updateBalance: db.updateBalance,
+              },
+            },
+            {
+              user: userId,
+              conversationId,
+              collectedUsage: titleUsage,
+              context: 'title',
+              messageId: responseMessageId,
+              balance,
+              transactions,
+              model,
+              endpointTokenConfig: primaryConfig.endpointTokenConfig,
+              resolveEndpointTokenConfig,
+            },
+          ),
+      }),
+  };
+
+  return addTitle(req, {
+    text,
+    client: titleClient,
+    conversationId,
+    signal,
+  });
+}
+
+/**
+ * Save response output to database
+ * @param {import('express').Request} req
+ * @param {string} conversationId
+ * @param {string} responseId
+ * @param {import('@librechat/api').Response} response
+ * @param {string} agentId
+ * @param {number | undefined} visibleOutputTokens
+ * @returns {Promise<string>} The extracted response text
+ */
+async function saveResponseOutput(
+  req,
+  conversationId,
+  responseId,
+  response,
+  agentId,
+  visibleOutputTokens,
+) {
+  // Extract text content from output items
+  const responseText = extractOutputText(response);
 
   const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
 
@@ -440,6 +577,7 @@ async function saveResponseOutput(
     },
     { context: 'Responses API - save assistant response' },
   );
+  return responseText;
 }
 
 /**
@@ -449,10 +587,21 @@ async function saveResponseOutput(
  * @param {string} agentId
  * @param {object} agent
  * @param {import('@librechat/api').ConversationCodeEnvironmentDecision} codeEnvironmentDecision
+ * @param {boolean} isNewConversation - False for continuations
+ *   (`previous_response_id` set), where an existing title must not be clobbered
  * @returns {Promise<void>}
  */
-async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
-  const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
+async function saveConversation(
+  req,
+  conversationId,
+  agentId,
+  agent,
+  codeEnvironmentDecision,
+  isNewConversation,
+) {
+  const title = isNewConversation
+    ? resolveConversationTitle(req, agent?.name || 'Open Responses Conversation')
+    : null;
   await db.saveConvo(
     {
       userId: req?.user?.id,
@@ -1406,16 +1555,25 @@ const executeResponse = async (envelope, { req, res }) => {
 
         // Save to database if store: true
         if (request.store === true) {
+          const isNewConversation = request.previous_response_id == null;
+          let storedResponseText = '';
           try {
             // Save conversation
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+            await saveConversation(
+              req,
+              conversationId,
+              agentId,
+              agent,
+              codeEnvironmentDecision,
+              isNewConversation,
+            );
 
             // Save input messages
             await saveInputMessages(req, conversationId, inputMessages, agentId);
 
             // Build response for saving (use tracker with buildResponse for streaming)
             const finalResponse = buildResponse(context, tracker, 'completed');
-            await saveResponseOutput(
+            storedResponseText = await saveResponseOutput(
               req,
               conversationId,
               responseId,
@@ -1430,6 +1588,30 @@ const executeResponse = async (envelope, { req, res }) => {
           } catch (saveError) {
             logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
             // Don't fail the request if saving fails
+          }
+
+          // Generate a conversation title from the first exchange (fire-and-forget)
+          const titleText = getFirstUserInputText(request.input);
+          if (isNewConversation && titleText) {
+            execution.track(
+              generateConversationTitle(req, {
+                agent,
+                run,
+                conversationId,
+                responseMessageId: responseId,
+                userId,
+                text: titleText,
+                responseText: storedResponseText,
+                signal: execution.signal,
+                primaryConfig,
+                resolveEndpointTokenConfig,
+              }).catch((titleError) => {
+                logger.error(
+                  '[Responses API] Error generating title:',
+                  getSafeErrorMetadata(titleError),
+                );
+              }),
+            );
           }
         }
 
@@ -1644,12 +1826,21 @@ const executeResponse = async (envelope, { req, res }) => {
         );
 
         if (request.store === true) {
+          const isNewConversation = request.previous_response_id == null;
+          let storedResponseText = '';
           try {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+            await saveConversation(
+              req,
+              conversationId,
+              agentId,
+              agent,
+              codeEnvironmentDecision,
+              isNewConversation,
+            );
 
             await saveInputMessages(req, conversationId, inputMessages, agentId);
 
-            await saveResponseOutput(
+            storedResponseText = await saveResponseOutput(
               req,
               conversationId,
               responseId,
@@ -1664,6 +1855,30 @@ const executeResponse = async (envelope, { req, res }) => {
           } catch (saveError) {
             logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
             // Don't fail the request if saving fails
+          }
+
+          // Generate a conversation title from the first exchange (fire-and-forget)
+          const titleText = getFirstUserInputText(request.input);
+          if (isNewConversation && titleText) {
+            execution.track(
+              generateConversationTitle(req, {
+                agent,
+                run,
+                conversationId,
+                responseMessageId: responseId,
+                userId,
+                text: titleText,
+                responseText: storedResponseText,
+                signal: execution.signal,
+                primaryConfig,
+                resolveEndpointTokenConfig,
+              }).catch((titleError) => {
+                logger.error(
+                  '[Responses API] Error generating title:',
+                  getSafeErrorMetadata(titleError),
+                );
+              }),
+            );
           }
         }
 

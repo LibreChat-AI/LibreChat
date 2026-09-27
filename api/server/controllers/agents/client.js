@@ -7,16 +7,12 @@ const {
   checkAccess,
   buildRunToolSet,
   logToolError,
-  sanitizeTitle,
   payloadParser,
   createSafeUser,
   initializeAgent,
-  resolveConfigHeaders,
   resolveRequestTenantId,
   countTokens,
   getBalanceConfig,
-  omitTitleOptions,
-  getProviderConfig,
   formatMemoryContext,
   createCachedTokenCounter,
   applyContextToAgent,
@@ -189,7 +185,6 @@ const {
   Run,
   Callback,
   Providers,
-  TitleMethod,
   formatMessage,
   formatAgentMessages,
   createMetadataAggregator,
@@ -223,6 +218,7 @@ const { getMCPServerTools } = require('~/server/services/Config');
 const { getAccessibleMCPServers } = require('~/server/services/MCP');
 const BaseClient = require('~/app/clients/BaseClient');
 const { getMCPManager } = require('~/config');
+const { generateRunTitle } = require('~/server/services/Endpoints/agents/runTitle');
 const db = require('~/models');
 
 const loadAgent = (params) =>
@@ -5964,224 +5960,27 @@ class AgentClient extends BaseClient {
         return;
       }
     }
-    const { handleLLMEnd, collected: collectedMetadata } = createMetadataAggregator();
-    const { req, agent } = this.options;
-
-    if (req?.body?.isTemporary) {
-      logger.debug(
-        `[api/server/controllers/agents/client.js #titleConvo] Skipping title generation for temporary conversation`,
-      );
-      return;
-    }
-
-    const appConfig = req.config;
-    let endpoint = agent.endpoint;
-
-    /** @type {import('@librechat/agents').ClientOptions} */
-    let clientOptions = {
-      model: agent.model || agent.model_parameters.model,
-    };
-
-    let titleProviderConfig = getProviderConfig({ provider: endpoint, appConfig });
-
-    /** @type {TEndpoint | undefined} */
-    const endpointConfig =
-      appConfig.endpoints?.all ??
-      appConfig.endpoints?.[endpoint] ??
-      titleProviderConfig.customEndpointConfig;
-    if (!endpointConfig) {
-      logger.debug(
-        `[api/server/controllers/agents/client.js #titleConvo] No endpoint config for "${endpoint}"`,
-      );
-    }
-
-    if (endpointConfig?.titleConvo === false) {
-      logger.debug(
-        `[api/server/controllers/agents/client.js #titleConvo] Title generation disabled for endpoint "${endpoint}"`,
-      );
-      return;
-    }
-
-    if (endpointConfig?.titleEndpoint && endpointConfig.titleEndpoint !== endpoint) {
-      try {
-        titleProviderConfig = getProviderConfig({
-          provider: endpointConfig.titleEndpoint,
-          appConfig,
-        });
-        endpoint = endpointConfig.titleEndpoint;
-      } catch (error) {
-        logger.warn(
-          `[api/server/controllers/agents/client.js #titleConvo] Error getting title endpoint config for "${endpointConfig.titleEndpoint}", falling back to default`,
-          getSafeErrorMetadata(error),
-        );
-        // Fall back to original provider config
-        endpoint = agent.endpoint;
-        titleProviderConfig = getProviderConfig({ provider: endpoint, appConfig });
-      }
-    }
-
-    if (
-      endpointConfig &&
-      endpointConfig.titleModel &&
-      endpointConfig.titleModel !== Constants.CURRENT_MODEL
-    ) {
-      clientOptions.model = endpointConfig.titleModel;
-    }
-
-    const options = await titleProviderConfig.getOptions({
-      req,
-      endpoint,
-      model_parameters: clientOptions,
-      db: {
-        getUserKey: db.getUserKey,
-        getUserKeyValues: db.getUserKeyValues,
-      },
+    return generateRunTitle({
+      req: this.options.req,
+      agent: this.options.agent,
+      run: this.run,
+      text,
+      contentParts: immediate ? [] : this.contentParts,
+      conversationId: this.conversationId,
+      responseMessageId: this.responseMessageId,
+      parentMessageId: this.parentMessageId,
+      userId: this.user,
+      abortController,
+      recordUsage: ({ collectedUsage, model, balance, transactions }) =>
+        this.recordCollectedUsage({
+          collectedUsage,
+          context: 'title',
+          model,
+          balance,
+          transactions,
+          messageId: this.responseMessageId,
+        }),
     });
-
-    let provider = options.provider ?? titleProviderConfig.overrideProvider ?? agent.provider;
-    if (
-      endpoint === EModelEndpoint.azureOpenAI &&
-      options.llmConfig?.azureOpenAIApiInstanceName == null
-    ) {
-      provider = Providers.OPENAI;
-    } else if (
-      endpoint === EModelEndpoint.azureOpenAI &&
-      options.llmConfig?.azureOpenAIApiInstanceName != null &&
-      provider !== Providers.AZURE
-    ) {
-      provider = Providers.AZURE;
-    }
-
-    /** @type {import('@librechat/agents').ClientOptions} */
-    clientOptions = { ...options.llmConfig };
-    if (options.configOptions) {
-      clientOptions.configuration = options.configOptions;
-    }
-
-    if (clientOptions.maxTokens != null) {
-      delete clientOptions.maxTokens;
-    }
-    if (clientOptions?.modelKwargs?.max_completion_tokens != null) {
-      delete clientOptions.modelKwargs.max_completion_tokens;
-    }
-    if (clientOptions?.modelKwargs?.max_output_tokens != null) {
-      delete clientOptions.modelKwargs.max_output_tokens;
-    }
-
-    /** `omitTitleOptions` drops the Anthropic `clientOptions` carrier (thinking,
-     *  streaming, etc.), which would also drop its `defaultHeaders` — preserve the
-     *  original `clientOptions` object so gateway/reverse-proxy metadata still
-     *  reaches title requests (the proxy may require it for auth/routing). Restore
-     *  the SAME object reference, not a copy: the Vertex `createClient` closure from
-     *  `getLLMConfig` closes over this object, so `resolveConfigHeaders` must mutate
-     *  the very object the client is built from. */
-    const anthropicClientOptions = clientOptions?.clientOptions;
-
-    clientOptions = Object.assign(
-      Object.fromEntries(
-        Object.entries(clientOptions).filter(([key]) => !omitTitleOptions.has(key)),
-      ),
-    );
-
-    if (anthropicClientOptions?.defaultHeaders != null && clientOptions.clientOptions == null) {
-      clientOptions.clientOptions = anthropicClientOptions;
-    }
-
-    if (
-      provider === Providers.GOOGLE &&
-      (endpointConfig?.titleMethod === TitleMethod.FUNCTIONS ||
-        endpointConfig?.titleMethod === TitleMethod.STRUCTURED)
-    ) {
-      clientOptions.json = true;
-    }
-
-    /** Resolve request-based headers across provider-specific header locations:
-     *  OpenAI `configuration.defaultHeaders`, Anthropic `clientOptions.defaultHeaders`
-     *  (preserved above), and Google `customHeaders`. Uses the `req` captured at
-     *  entry — `disposeClient` nulls `this.options.req` and can race this async
-     *  title flow, which would blank the user context mid-generation.
-     */
-    resolveConfigHeaders({
-      llmConfig: clientOptions,
-      user: createSafeUser(req?.user),
-      tenantId: resolveRequestTenantId(req ?? {}),
-      body: {
-        messageId: this.responseMessageId,
-        conversationId: this.conversationId,
-        parentMessageId: this.parentMessageId,
-      },
-    });
-
-    try {
-      const titleResult = await this.run.generateTitle({
-        provider,
-        clientOptions,
-        inputText: text,
-        contentParts: immediate ? [] : this.contentParts,
-        titleMethod: endpointConfig?.titleMethod,
-        titlePrompt: endpointConfig?.titlePrompt,
-        titlePromptTemplate: endpointConfig?.titlePromptTemplate,
-        chainOptions: {
-          runName: 'TitleRun',
-          signal: abortController.signal,
-          callbacks: [
-            {
-              handleLLMEnd,
-            },
-          ],
-          configurable: {
-            thread_id: this.conversationId,
-            user_id: this.user ?? this.options.req.user?.id,
-          },
-        },
-      });
-
-      const collectedUsage = collectedMetadata.map((item) => {
-        let input_tokens, output_tokens;
-
-        if (item.usage) {
-          input_tokens =
-            item.usage.prompt_tokens || item.usage.input_tokens || item.usage.inputTokens;
-          output_tokens =
-            item.usage.completion_tokens || item.usage.output_tokens || item.usage.outputTokens;
-        } else if (item.tokenUsage) {
-          input_tokens = item.tokenUsage.promptTokens;
-          output_tokens = item.tokenUsage.completionTokens;
-        } else if (item.usage_metadata) {
-          input_tokens = item.usage_metadata.input_tokens;
-          output_tokens = item.usage_metadata.output_tokens;
-        }
-
-        return {
-          input_tokens: input_tokens,
-          output_tokens: output_tokens,
-        };
-      });
-
-      const balanceConfig = getBalanceConfig(appConfig);
-      const transactionsConfig = getTransactionsConfig(appConfig);
-      await this.recordCollectedUsage({
-        collectedUsage,
-        context: 'title',
-        model: clientOptions.model,
-        balance: balanceConfig,
-        transactions: transactionsConfig,
-        messageId: this.responseMessageId,
-      }).catch((err) => {
-        logger.error(
-          '[api/server/controllers/agents/client.js #titleConvo] Error recording collected usage',
-          getSafeErrorMetadata(err),
-        );
-      });
-
-      return sanitizeTitle(titleResult.title);
-    } catch (err) {
-      logger.error(
-        '[api/server/controllers/agents/client.js #titleConvo] Error',
-        getSafeErrorMetadata(err),
-      );
-      return;
-    }
   }
 
   /**

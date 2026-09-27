@@ -4150,8 +4150,9 @@ describe('AgentClient - titleConvo', () => {
 
       expect(result).toBeUndefined();
       expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateValue);
+      // The title core moved to the shared runTitle service; the error is logged there
       expect(errorSpy).toHaveBeenCalledWith(
-        '[api/server/controllers/agents/client.js #titleConvo] Error',
+        '[api/server/services/Endpoints/agents/runTitle.js #generateRunTitle] Error',
         expect.objectContaining({ type: 'Error' }),
       );
       errorSpy.mockRestore();
