@@ -5,7 +5,15 @@ import { composerSubmitClasses } from '~/utils/composer';
 import { cn } from '~/utils';
 
 type IconButtonVariantProps = {
-  variant?: 'default' | 'primary' | 'secondary' | 'ghost' | 'destructive' | 'submit' | null;
+  variant?:
+    | 'default'
+    | 'primary'
+    | 'secondary'
+    | 'ghost'
+    | 'row-action'
+    | 'destructive'
+    | 'submit'
+    | null;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'theme' | null;
   shape?: 'round' | 'square' | 'theme' | null;
 };
@@ -19,6 +27,9 @@ const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string
         primary: 'bg-surface-inverted text-text-inverted hover:bg-surface-inverted-hover',
         secondary: 'border border-border-light bg-surface-secondary hover:bg-surface-hover',
         ghost: 'bg-transparent hover:bg-surface-hover',
+        /** An action inside a list row whose highlight is already `surface-hover`,
+         *  so its own hover takes the active fill to stay visible on top of it. */
+        'row-action': 'bg-transparent hover:bg-surface-active',
         destructive:
           'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
         /** The composer's submit slot: send, stop and the during-run send share it. */

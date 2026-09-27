@@ -1076,6 +1076,7 @@ function Palette({
                     <IconButton
                       size="xs"
                       shape="square"
+                      variant="row-action"
                       label={mode.label}
                       className="group"
                       onClick={(event) => {
@@ -1119,6 +1120,7 @@ function Palette({
                 <IconButton
                   size="xs"
                   shape="square"
+                  variant="row-action"
                   label={localize(favorited ? 'com_ui_unfavorite' : 'com_ui_favorite')}
                   aria-pressed={favorited}
                   onClick={(event) => {

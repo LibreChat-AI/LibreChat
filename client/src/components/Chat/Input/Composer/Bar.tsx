@@ -1,7 +1,7 @@
 import React, { memo, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { Mic, Plus, Check, Square, ChevronDown } from 'lucide-react';
-import { MCPIcon, IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
+import { IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
 import type { TConversation, EModelEndpoint, EndpointFileConfig } from 'librechat-data-provider';
 import type { PaletteEntry, PaletteMode } from '~/hooks/Input/usePaletteEntries';
 import type { Dictation } from '~/hooks/Input/useDictation';
@@ -24,14 +24,6 @@ const EMPTY_ENTRIES: PaletteEntry[] = [];
 
 /** Matches the rows' `gap-1.5`, which the split arithmetic has to account for. */
 const CHIP_GAP = 6;
-/**
- * Key of the aggregate MCP menu chip. Server rows are keyed `mcp:${serverName}`
- * (`usePaletteEntries`), so this cannot live in that namespace: a server named
- * `pinned` would produce the same key, and the bar would render two entries
- * with one React key and one packing-width slot.
- */
-export const PINNED_MCP_KEY = 'aggregate:mcp';
-
 /**
  * Whether every chip fits on the button row beside the `+` and the controls.
  *
@@ -78,35 +70,8 @@ export function chipMenuModes(modes?: PaletteMode[]) {
 }
 
 /** Projects palette state into the persistent quick controls in one pass. */
-export function projectBarEntries(
-  entries: PaletteEntry[],
-  pinnedMcpEntry?: PaletteEntry,
-): PaletteEntry[] {
-  const projected: PaletteEntry[] = [];
-  const mcpModes: PaletteMode[] = [];
-
-  for (const entry of entries) {
-    if (entry.section === 'skill') {
-      continue;
-    }
-    if (entry.section === 'mcp') {
-      mcpModes.push({
-        id: entry.itemId,
-        label: entry.label,
-        active: entry.active,
-        onSelect: entry.onSelect,
-      });
-    }
-    if (entry.active || entry.pinned) {
-      projected.push(entry);
-    }
-  }
-
-  if (pinnedMcpEntry != null && mcpModes.length > 0) {
-    projected.push({ ...pinnedMcpEntry, modes: mcpModes });
-  }
-
-  return projected;
+export function projectBarEntries(entries: PaletteEntry[]): PaletteEntry[] {
+  return entries.filter((entry) => entry.section !== 'skill' && (entry.active || entry.pinned));
 }
 
 interface RoundButtonProps {
@@ -160,10 +125,9 @@ function RoundButton({
  */
 interface ChipModesProps {
   modes: PaletteMode[];
-  menuLabel?: string;
 }
 
-export function ChipModes({ modes, menuLabel }: ChipModesProps) {
+export function ChipModes({ modes }: ChipModesProps) {
   const localize = useLocalize();
   const [open, setOpen] = useState(false);
   const active = modes.find((mode) => mode.active);
@@ -174,7 +138,7 @@ export function ChipModes({ modes, menuLabel }: ChipModesProps) {
         aria-label={
           active != null
             ? localize('com_ui_mode_value', { 0: active.label })
-            : (menuLabel ?? localize('com_ui_mode'))
+            : localize('com_ui_mode')
         }
         onClick={(e) => e.stopPropagation()}
         className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-border-xheavy -mr-0.5 flex shrink-0 items-center gap-0.5 rounded px-1 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
@@ -305,33 +269,10 @@ function Bar({
      gate lives in one place rather than being re-applied to its result here. */
   const entries = allEntries;
 
-  const manager = context?.mcpServerManager;
-  const pinnedMcpEntry = useMemo<PaletteEntry | undefined>(() => {
-    if (manager?.isPinned !== true) {
-      return undefined;
-    }
-    const { placeholderText, setIsPinned } = manager;
-    return {
-      key: PINNED_MCP_KEY,
-      itemType: 'mcp',
-      itemId: 'mcp',
-      label: placeholderText || localize('com_ui_mcp_servers'),
-      icon: <MCPIcon className="h-4 w-4" aria-hidden="true" />,
-      section: 'mcp',
-      active: true,
-      pinned: true,
-      onSelect: () => setIsPinned(false),
-    };
-  }, [manager, localize]);
-
   /* Catalog skills are excluded: a picked skill is staged context for the next
      turn, so it belongs in the tray above the textarea with files and quotes.
-     Built-in tool pins remain visible while off. The legacy aggregate MCP pin
-     remains one server menu alongside any selected server chips. */
-  const barEntries = useMemo(
-    () => projectBarEntries(entries, pinnedMcpEntry),
-    [entries, pinnedMcpEntry],
-  );
+     Built-in tool pins remain visible while off. */
+  const barEntries = useMemo(() => projectBarEntries(entries), [entries]);
   /* Catalog order puts long skill and MCP names mid-row, stranding the rest of
      that row; packing widest-first fills the rows instead. */
   const { ordered: packedEntries, rootRef, widths } = useChipPacking(barEntries);
@@ -382,12 +323,8 @@ function Bar({
 
   const renderChip = (entry: PaletteEntry) => {
     const pinnedInactive = entry.pinned && !entry.active;
-    const isPinnedMcp = entry.key === PINNED_MCP_KEY;
     const menuModes = chipMenuModes(entry.modes);
-    const modeMenu =
-      menuModes.length > 0 ? (
-        <ChipModes modes={menuModes} menuLabel={isPinnedMcp ? entry.label : undefined} />
-      ) : null;
+    const modeMenu = menuModes.length > 0 ? <ChipModes modes={menuModes} /> : null;
     const activate = pinnedInactive ? (
       <IconButton
         label={localize('com_ui_select_var', { 0: entry.label })}
@@ -417,7 +354,7 @@ function Bar({
         }
         onRemove={pinnedInactive ? entry.onUnpin : entry.onSelect}
         removeLabel={
-          isPinnedMcp || pinnedInactive
+          pinnedInactive
             ? localize('com_ui_unpin')
             : localize('com_ui_remove_var', { 0: entry.label })
         }

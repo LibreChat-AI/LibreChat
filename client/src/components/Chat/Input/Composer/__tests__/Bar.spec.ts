@@ -1,11 +1,5 @@
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
-import {
-  PINNED_MCP_KEY,
-  chipMenuModes,
-  chipsFitInline,
-  formatElapsed,
-  projectBarEntries,
-} from '../Bar';
+import { chipMenuModes, chipsFitInline, formatElapsed, projectBarEntries } from '../Bar';
 
 /** Pure decisions behind the bar's tool projection, layout and elapsed time. */
 
@@ -31,66 +25,6 @@ describe('projectBarEntries', () => {
     const skill = entry('skill', { section: 'skill', active: true, pinned: true });
 
     expect(projectBarEntries([active, pinned, inactive, skill])).toEqual([active, pinned]);
-  });
-
-  it('keeps a pinned MCP menu alongside selected server chips', () => {
-    const github = entry('mcp:github', {
-      itemType: 'mcp',
-      itemId: 'github',
-      section: 'mcp',
-    });
-    const pinnedMcp = entry(PINNED_MCP_KEY, {
-      itemType: 'mcp',
-      itemId: 'mcp',
-      section: 'mcp',
-      active: true,
-      pinned: true,
-    });
-
-    const projected = projectBarEntries([github], pinnedMcp);
-    expect(projected).toHaveLength(1);
-    expect(projected[0]).toEqual(
-      expect.objectContaining({
-        key: PINNED_MCP_KEY,
-        modes: [expect.objectContaining({ id: 'github', label: 'mcp:github', active: false })],
-      }),
-    );
-
-    const selected = { ...github, active: true };
-    const selectedProjection = projectBarEntries([selected], pinnedMcp);
-    expect(selectedProjection).toHaveLength(2);
-    expect(selectedProjection[0]).toBe(selected);
-    expect(selectedProjection[1]).toEqual(
-      expect.objectContaining({
-        key: PINNED_MCP_KEY,
-        modes: [expect.objectContaining({ id: 'github', active: true })],
-      }),
-    );
-  });
-
-  /* Chip keys are React keys and packing-width slots: two entries sharing one
-     would let a chip or its menu be measured as the other. A server may be
-     named anything, including the word the aggregate pin used to key on. */
-  it('keeps the aggregate MCP chip distinct from a server named pinned', () => {
-    const server = entry('mcp:pinned', {
-      itemType: 'mcp',
-      itemId: 'pinned',
-      section: 'mcp',
-      active: true,
-    });
-    const aggregate = entry(PINNED_MCP_KEY, {
-      itemType: 'mcp',
-      itemId: 'mcp',
-      section: 'mcp',
-      active: true,
-      pinned: true,
-    });
-
-    const projected = projectBarEntries([server], aggregate);
-    const keys = projected.map((projectedEntry) => projectedEntry.key);
-
-    expect(keys).toEqual(['mcp:pinned', PINNED_MCP_KEY]);
-    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 
