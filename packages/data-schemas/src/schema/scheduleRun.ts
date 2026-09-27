@@ -77,6 +77,7 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
             enum: [
               'ready',
               'mcp_reauth_required',
+              'mcp_unattended_auth_required',
               'mcp_configuration_missing',
               'mcp_permission_denied',
               'mcp_unavailable',

@@ -16,6 +16,7 @@ export type ScheduleTarget = (typeof scheduleTargets)[number];
 
 export type ScheduleDisabledReason =
   | 'mcp_reauth_required'
+  | 'mcp_unattended_auth_required'
   | 'mcp_configuration_missing'
   | 'mcp_permission_denied'
   | 'too_many_failures'
@@ -196,10 +197,16 @@ export type TScheduleRunNowResponse = {
 /** Only structured schedule preflight failures may request immediate suspension. */
 export function getScheduleMCPDisabledReason(
   outcomes?: ScheduleMCPOutcome[],
-): 'mcp_reauth_required' | 'mcp_configuration_missing' | 'mcp_permission_denied' | undefined {
+):
+  | 'mcp_reauth_required'
+  | 'mcp_unattended_auth_required'
+  | 'mcp_configuration_missing'
+  | 'mcp_permission_denied'
+  | undefined {
   const statuses = new Set(outcomes?.map((outcome) => outcome.status));
   if (statuses.has('mcp_permission_denied')) return 'mcp_permission_denied';
   if (statuses.has('mcp_configuration_missing')) return 'mcp_configuration_missing';
+  if (statuses.has('mcp_unattended_auth_required')) return 'mcp_unattended_auth_required';
   if (statuses.has('mcp_reauth_required')) return 'mcp_reauth_required';
   return undefined;
 }
@@ -212,6 +219,7 @@ export const scheduleMCPOutcomeSchema = z.object({
   status: z.enum([
     'ready',
     'mcp_reauth_required',
+    'mcp_unattended_auth_required',
     'mcp_configuration_missing',
     'mcp_permission_denied',
     'mcp_unavailable',
@@ -223,7 +231,8 @@ export type ScheduleMCPStatus = ScheduleMCPOutcome['status'];
 export function readScheduleMCPOutcomes(error?: string): ScheduleMCPOutcome[] {
   if (
     !error ||
-    !/^mcp_(reauth_required|configuration_missing|permission_denied|unavailable): \[/.test(error)
+    (!error.startsWith('mcp_unattended_auth_required: [') &&
+      !/^mcp_(reauth_required|configuration_missing|permission_denied|unavailable): \[/.test(error))
   )
     return [];
   try {

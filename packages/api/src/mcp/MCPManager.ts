@@ -62,6 +62,8 @@ function createOboToolCallErrorMessage(
     failureSuffix = 'Re-authenticate the user or verify the configured OBO scopes and retry.';
   } else if (error.reason === 'session_refresh_failed') {
     failureSuffix = 'Please sign in again.';
+  } else if (error.reason === 'missing_upstream_provider') {
+    failureSuffix = 'Configure a renewable upstream credential provider before retrying.';
   }
 
   return `${logPrefix} ${error.userMessage} Cannot execute tool ${toolName}. ${failureSuffix}`;

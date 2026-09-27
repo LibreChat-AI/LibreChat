@@ -3045,6 +3045,7 @@ describe('erasure sweep rotation and idempotency-key lookup', () => {
 describe('scheduled MCP failure policy', () => {
   it.each([
     'mcp_reauth_required',
+    'mcp_unattended_auth_required',
     'mcp_configuration_missing',
     'mcp_permission_denied',
     'mcp_unavailable',

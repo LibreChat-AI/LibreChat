@@ -5,6 +5,7 @@ import type { TranslationKeys, useLocalize } from '~/hooks';
 export const MCP_STATUS_LABELS: Record<ScheduleMCPStatus, TranslationKeys> = {
   ready: 'com_ui_schedule_mcp_ready',
   mcp_reauth_required: 'com_ui_schedule_mcp_reauth',
+  mcp_unattended_auth_required: 'com_ui_schedule_mcp_unattended_auth',
   mcp_configuration_missing: 'com_ui_schedule_mcp_configuration',
   mcp_permission_denied: 'com_ui_schedule_mcp_permission',
   mcp_unavailable: 'com_ui_schedule_mcp_unavailable',
@@ -16,6 +17,7 @@ export function scheduleMCPRecoveryOutcomes(
   const reason = schedule.disabledReason;
   const preservesMCPRecovery =
     reason === 'mcp_reauth_required' ||
+    reason === 'mcp_unattended_auth_required' ||
     reason === 'mcp_configuration_missing' ||
     reason === 'mcp_permission_denied' ||
     reason === 'too_many_failures';
@@ -45,7 +47,10 @@ export function scheduleMCPCardOutcomes(
 
 export function scheduleMCPNeedsAgentRecovery(outcomes: ScheduleMCPOutcome[]): boolean {
   return outcomes.some(
-    (outcome) => outcome.status !== 'ready' && outcome.status !== 'mcp_permission_denied',
+    (outcome) =>
+      outcome.status !== 'ready' &&
+      outcome.status !== 'mcp_permission_denied' &&
+      outcome.status !== 'mcp_unattended_auth_required',
   );
 }
 

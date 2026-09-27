@@ -160,6 +160,8 @@ export function getScheduleMCPFailureCode(
     return 'mcp_permission_denied';
   if (outcomes.some((item) => item.status === 'mcp_configuration_missing'))
     return 'mcp_configuration_missing';
+  if (outcomes.some((item) => item.status === 'mcp_unattended_auth_required'))
+    return 'mcp_unattended_auth_required';
   if (outcomes.some((item) => item.status === 'mcp_reauth_required')) return 'mcp_reauth_required';
   return 'mcp_unavailable';
 }
@@ -751,6 +753,12 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
                     missingOwners.size > 0 ? missingOwners : undefined,
                   );
                 } catch (error) {
+                  if (
+                    error instanceof OboTokenResolutionError &&
+                    error.reason === 'missing_upstream_provider'
+                  ) {
+                    return outcomesForOwners(server, 'mcp_unattended_auth_required');
+                  }
                   return outcomesForOwners(
                     server,
                     reauth ||

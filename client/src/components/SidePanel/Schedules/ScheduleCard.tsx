@@ -57,6 +57,7 @@ const STATUS_CHIPS: Record<ScheduleRunStatus, { label: TranslationKeys; tone: St
 
 const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = {
   mcp_reauth_required: 'com_ui_schedule_disabled_mcp_reauth',
+  mcp_unattended_auth_required: 'com_ui_schedule_disabled_mcp_unattended_auth',
   mcp_configuration_missing: 'com_ui_schedule_disabled_mcp_configuration',
   mcp_permission_denied: 'com_ui_schedule_disabled_mcp_permission',
   too_many_failures: 'com_ui_schedule_disabled_too_many_failures',

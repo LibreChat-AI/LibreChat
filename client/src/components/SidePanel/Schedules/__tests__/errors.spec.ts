@@ -74,6 +74,30 @@ it('ignores unrelated and malformed server errors', () => {
   expect(readScheduleMCPOutcomes('mcp_reauth_required: [malformed')).toEqual([]);
 });
 
+it('preserves the permanent unattended-auth failure across API errors and saved runs', () => {
+  const outcomes = [{ server: 'Company Graph', status: 'mcp_unattended_auth_required' as const }];
+  const error = Object.assign(new Error('Internal OBO credentials'), {
+    response: { status: 400, data: { code: 'mcp_unattended_auth_required', mcp: outcomes } },
+  });
+  expect(scheduleMCPErrorMessage(error, (key) => key)).toBe(
+    'Company Graph: com_ui_schedule_mcp_unattended_auth',
+  );
+  expect(scheduleMCPErrorOutcomes(error)).toEqual(outcomes);
+  expect(
+    scheduleMCPRecoveryOutcomes({
+      enabled: false,
+      disabledReason: 'mcp_unattended_auth_required',
+      lastRun: {
+        status: 'error',
+        firedAt: new Date().toISOString(),
+        error:
+          'mcp_unattended_auth_required: [{"server":"Company Graph","status":"mcp_unattended_auth_required"}]',
+      },
+    }),
+  ).toEqual(outcomes);
+  expect(scheduleMCPNeedsAgentRecovery(outcomes)).toBe(false);
+});
+
 it('explains transient MCP infrastructure failures without server outcomes', () => {
   const error = Object.assign(new Error('private infrastructure details'), {
     response: { status: 503, data: { code: 'mcp_unavailable' } },
