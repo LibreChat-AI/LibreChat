@@ -1,5 +1,6 @@
 import type { TConversation } from 'librechat-data-provider';
-import { groupConversationsWithRunning, RUNNING_CHATS_GROUP } from '../running';
+import type { ConversationGroupOptions } from '~/utils/convos';
+import { groupConversationsWithRunning as partitionGroups, RUNNING_CHATS_GROUP } from '../running';
 import { groupConversations } from '~/utils/convos';
 
 const convo = (conversationId: string, daysAgo: number, pinned = false): TConversation =>
@@ -15,8 +16,18 @@ const ids = (groups: ReturnType<typeof groupConversations>) =>
   groups.flatMap(([, conversations]) => conversations.map((c) => c.conversationId));
 
 const newestFirst = { field: 'updatedAt' as const, direction: 'desc' as const };
+const groupConversationsWithRunning = (
+  conversations: TConversation[],
+  activeJobIds: ReadonlySet<string>,
+  options: ConversationGroupOptions,
+) => partitionGroups(groupConversations(conversations, options), activeJobIds, options);
 
 describe('groupConversationsWithRunning', () => {
+  it('returns the same date groups when the polled jobs do not affect loaded rows', () => {
+    const dated = groupConversations([convo('idle', 1)], newestFirst);
+    expect(partitionGroups(dated, new Set(), newestFirst)).toBe(dated);
+    expect(partitionGroups(dated, new Set(['not-loaded']), newestFirst)).toBe(dated);
+  });
   it('lifts loaded running chats above newer idle chats without changing the server rows', () => {
     const newer = convo('newer', 0);
     const running = convo('running', 45);

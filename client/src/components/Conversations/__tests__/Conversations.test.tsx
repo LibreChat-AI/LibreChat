@@ -87,7 +87,7 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('~/utils', () => ({
-  groupConversations: jest.requireActual('~/utils/convos').groupConversations,
+  groupConversations: jest.fn(jest.requireActual('~/utils/convos').groupConversations),
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }));
 
@@ -152,6 +152,8 @@ describe('Conversations: live running order', () => {
     const rowOrder = () => screen.getAllByTestId('convo').map((row) => row.textContent);
 
     const view = render(renderList());
+    const groupConversationsMock = jest.requireMock('~/utils').groupConversations as jest.Mock;
+    groupConversationsMock.mockClear();
     expect(rowOrder()).toEqual(['Newer idle chat', 'Older running chat']);
     expect(screen.queryByRole('heading', { name: 'com_a11y_chats_running_section' })).toBeNull();
 
@@ -160,6 +162,12 @@ describe('Conversations: live running order', () => {
     expect(
       screen.getByRole('heading', { name: 'com_a11y_chats_running_section' }),
     ).toBeInTheDocument();
+    expect(rowOrder()).toEqual(['Older running chat', 'Newer idle chat']);
+    expect(groupConversationsMock).not.toHaveBeenCalled();
+
+    mockActiveJobIds = ['running'];
+    view.rerender(renderList());
+    expect(groupConversationsMock).not.toHaveBeenCalled();
     expect(rowOrder()).toEqual(['Older running chat', 'Newer idle chat']);
 
     mockActiveJobIds = [];
