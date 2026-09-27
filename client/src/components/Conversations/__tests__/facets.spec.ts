@@ -160,6 +160,13 @@ describe('selectableEndpoints', () => {
     ]);
   });
 
+  it('leaves out a served name longer than the list route accepts, unless it is selected', () => {
+    const long = 'x'.repeat(12);
+    const withLong: TEndpointsConfig = { openAI: { order: 0 }, [long]: { order: 1 } };
+    expect(selectableEndpoints(withLong, [], 10)).toEqual(['openAI']);
+    expect(selectableEndpoints(withLong, [long], 10)).toEqual(['openAI', long]);
+  });
+
   it('still lists the selection when the endpoints are unavailable', () => {
     expect(selectableEndpoints(undefined, ['openAI'])).toEqual(['openAI']);
   });

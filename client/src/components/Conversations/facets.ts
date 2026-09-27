@@ -153,14 +153,20 @@ export const resetFacetsAtom = atom(null, (_get, set) => {
   set(sharedOnlyAtom, false);
 });
 
-/** The endpoints this deployment serves, plus any still selected that it no longer lists,
- *  so a chosen endpoint can always be turned off. */
+/**
+ * The endpoints this deployment serves whose names the list route accepts
+ * (`conversationList.maxEndpointNameLength`), plus any still selected that are not among
+ * them, so a chosen endpoint can always be turned off.
+ */
 export const selectableEndpoints = (
   endpointsConfig: TEndpointsConfig | undefined,
   selected: string[],
+  maxNameLength?: number,
 ): string[] => {
   const served = Object.keys(endpointsConfig ?? {}).filter(
-    (endpoint) => endpointsConfig?.[endpoint] != null,
+    (endpoint) =>
+      endpointsConfig?.[endpoint] != null &&
+      (maxNameLength == null || endpoint.length <= maxNameLength),
   );
   const known = new Set(served);
   return served.concat(selected.filter((endpoint) => !known.has(endpoint)));

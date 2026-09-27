@@ -2605,9 +2605,9 @@ export type TStartupConfig = {
   passkeyLoginEnabled: boolean;
   /** Per-account passkey enrollment cap, from `passkeys.perUserMax`; post-login only. */
   maxPasskeysPerUser?: number;
-  /** How many endpoints one chat list filter may name, from
-   *  `conversationList.maxEndpointFilters`; post-login only. */
-  maxEndpointFilters?: number;
+  /** What one chat list filter request may name (`conversationList`), resolved from the
+   *  deployment's base config as the list route resolves it; post-login only. */
+  conversationListLimits?: TConversationListConfig;
   openidLabel: string;
   openidImageUrl: string;
   openidAutoRedirect: boolean;

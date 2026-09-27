@@ -307,16 +307,20 @@ const DateFacet = ({ label, icon, value, onSelect }: DateFacetProps) => {
 };
 
 /**
- * Whether the endpoint selection has reached what the server accepts in one request
- * (`conversationList.maxEndpointFilters`). Past it the list request would be refused and
- * the Chats section would show its error, so further endpoints are offered disabled, as
- * they are while the post-login config that carries the limit is loading. A config that
- * failed leaves the server's own validation as the only check.
+ * What the list route accepts in one request (`conversationList`). Past `maxEndpointFilters`
+ * the request would be refused and the Chats section would show its error, so further
+ * endpoints are offered disabled, as they are while the post-login config that carries the
+ * limits is loading. A config that failed leaves the server's own validation as the only check.
  */
 const useEndpointFilterLimit = (selectedCount: number) => {
   const { data: startupConfig, isLoading } = useGetStartupConfig();
-  const limit = startupConfig?.maxEndpointFilters;
-  return { limit, atLimit: isLoading || (limit != null && selectedCount >= limit) };
+  const limits = startupConfig?.conversationListLimits;
+  const limit = limits?.maxEndpointFilters;
+  return {
+    limit,
+    maxNameLength: limits?.maxEndpointNameLength,
+    atLimit: isLoading || (limit != null && selectedCount >= limit),
+  };
 };
 
 const EndpointLimitNote = ({ limit }: { limit: number }) => {
@@ -339,15 +343,15 @@ const EndpointFacet = memo(() => {
   const selected = useAtomValue(endpointFilterAtom);
   const toggleEndpoint = useSetAtom(toggleEndpointFilterAtom);
   const { data: endpointsConfig } = useGetEndpointsQuery();
-  const { limit, atLimit } = useEndpointFilterLimit(selected.length);
+  const { limit, maxNameLength, atLimit } = useEndpointFilterLimit(selected.length);
 
   const endpoints = useMemo(
     () =>
-      selectableEndpoints(endpointsConfig, selected).map((endpoint) => ({
+      selectableEndpoints(endpointsConfig, selected, maxNameLength).map((endpoint) => ({
         value: endpoint,
         label: (alternateName[endpoint] as string | undefined) ?? endpoint,
       })),
-    [endpointsConfig, selected],
+    [endpointsConfig, selected, maxNameLength],
   );
 
   const value = useMemo(() => {
@@ -479,7 +483,9 @@ const FilterFacets = ({
    *  one stays off without `BOOKMARKS:USE`, whose route would only answer 403. */
   const { data: bookmarkData } = useGetConversationTags({ enabled: showBookmarks });
   const { data: endpointsConfig } = useGetEndpointsQuery();
-  const { atLimit: endpointsAtLimit } = useEndpointFilterLimit(selectedEndpoints.length);
+  const { atLimit: endpointsAtLimit, maxNameLength: endpointNameLimit } = useEndpointFilterLimit(
+    selectedEndpoints.length,
+  );
   /** A deployment with sharing switched off has no shared chats to filter to. */
   const { data: startupConfig } = useGetStartupConfig();
   const showShared = startupConfig?.sharedLinksEnabled === true;
@@ -550,24 +556,26 @@ const FilterFacets = ({
 
     collect(
       localize('com_ui_endpoint'),
-      selectableEndpoints(endpointsConfig, selectedEndpoints).map((endpoint) => ({
-        id: `endpoint:${endpoint}`,
-        label: (alternateName[endpoint] as string | undefined) ?? endpoint,
-        checked: selectedEndpoints.includes(endpoint),
-        disabled: endpointsAtLimit && !selectedEndpoints.includes(endpoint),
-        multiple: true,
-        icon: (
-          <MinimalIcon
-            size={16}
-            model={null}
-            isCreatedByUser={false}
-            endpoint={endpoint}
-            endpointsConfig={endpointsConfig}
-            className="size-4"
-          />
-        ),
-        onSelect: () => toggleEndpoint(endpoint),
-      })),
+      selectableEndpoints(endpointsConfig, selectedEndpoints, endpointNameLimit).map(
+        (endpoint) => ({
+          id: `endpoint:${endpoint}`,
+          label: (alternateName[endpoint] as string | undefined) ?? endpoint,
+          checked: selectedEndpoints.includes(endpoint),
+          disabled: endpointsAtLimit && !selectedEndpoints.includes(endpoint),
+          multiple: true,
+          icon: (
+            <MinimalIcon
+              size={16}
+              model={null}
+              isCreatedByUser={false}
+              endpoint={endpoint}
+              endpointsConfig={endpointsConfig}
+              className="size-4"
+            />
+          ),
+          onSelect: () => toggleEndpoint(endpoint),
+        }),
+      ),
     );
 
     /** A flag is its own category and its own single option. */
@@ -610,6 +618,7 @@ const FilterFacets = ({
     endpointsConfig,
     selectedEndpoints,
     endpointsAtLimit,
+    endpointNameLimit,
     toggleEndpoint,
     hasAttachments,
     setHasAttachments,

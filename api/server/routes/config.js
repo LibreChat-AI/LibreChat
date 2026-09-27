@@ -19,7 +19,7 @@ const {
   isPasskeyEnabled,
   buildPreLoginInterface,
   resolveMaxPasskeysPerUser,
-  resolveConversationListLimits,
+  loadConversationListLimits,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
@@ -162,8 +162,6 @@ function buildPostLoginPayload(appConfig) {
       isEnabled(process.env.ALLOW_ACCOUNT_DELETION),
     allowEmailChange: resolveEmailChangeSettings(appConfig?.emailChange).enabled,
     maxPasskeysPerUser: resolveMaxPasskeysPerUser(appConfig?.passkeys),
-    maxEndpointFilters: resolveConversationListLimits(appConfig?.conversationList)
-      .maxEndpointFilters,
   };
 
   return payload;
@@ -253,10 +251,13 @@ router.get('/', async function (req, res) {
       return res.status(200).send(payload);
     }
 
-    const appConfig = await getAppConfig({
-      ...getAppConfigOptionsFromUser(req.user),
-      failClosed: true,
-    });
+    const [appConfig, conversationListLimits] = await Promise.all([
+      getAppConfig({
+        ...getAppConfigOptionsFromUser(req.user),
+        failClosed: true,
+      }),
+      loadConversationListLimits(getAppConfig),
+    ]);
     const codeEnvironmentDecisionVersion = resolveCodeEnvironmentDecisionVersion(
       process.env.CODE_ENVIRONMENT_DECISION_VERSION,
     );
@@ -298,6 +299,7 @@ router.get('/', async function (req, res) {
       ...preLoginPayload,
       ...publicSharePayload,
       ...buildPostLoginPayload(appConfig),
+      conversationListLimits,
       sharedLinksSnapshotFilesEnabled: sharedLinksEnabled && isFileSnapshotEnabled(appConfig),
       socialLogins: appConfig?.registration?.socialLogins ?? defaultSocialLogins,
       interface: appConfig?.interfaceConfig,

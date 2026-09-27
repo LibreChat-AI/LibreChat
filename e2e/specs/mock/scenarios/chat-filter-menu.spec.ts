@@ -315,7 +315,13 @@ test.describe('chat list properties menu', () => {
         const response = await route.fetch();
         const body = await response.json();
         await configHeld;
-        await route.fulfill({ response, json: { ...body, maxEndpointFilters: 1 } });
+        await route.fulfill({
+          response,
+          json: {
+            ...body,
+            conversationListLimits: { ...body.conversationListLimits, maxEndpointFilters: 1 },
+          },
+        });
       },
     );
     /* A phone's header waits for the config before it offers the sidebar, so the

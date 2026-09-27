@@ -21,10 +21,11 @@ export interface ConversationListFilterResult {
   error?: string;
 }
 
-/** Reads the deployment config; injected so this module does not reach for the app's. */
+/** Reads the deployment config; injected so this module does not reach for the app's. A
+ *  config not yet loaded reads as none, so the schema defaults apply. */
 export type ConversationListConfigReader = (options: {
   baseOnly: true;
-}) => Promise<{ conversationList?: TConversationListConfig }>;
+}) => Promise<{ conversationList?: TConversationListConfig } | undefined>;
 
 const firstValue = (value: unknown): unknown => (Array.isArray(value) ? value[0] : value);
 
@@ -193,27 +194,30 @@ export function parseConversationListFilters(
 }
 
 /**
- * The list route's entry point. The limits are deployment-level, so they come from the
- * base config rather than the caller's merged config, and only a request naming endpoints
- * reads it at all: the limits bound nothing else, and an unfiltered sidebar request should
- * not wait on, or fail with, a config cache it does not use.
+ * The list route's entry point. Only a request naming endpoints reads the limits at all:
+ * they bound nothing else, and an unfiltered sidebar request should not wait on, or fail
+ * with, a config cache it does not use.
  */
 export async function resolveConversationListFilters(
   query: Request['query'],
   getAppConfig: ConversationListConfigReader,
 ): Promise<ConversationListFilterResult> {
-  const { conversationList } =
-    query.endpoints == null ? {} : await getAppConfig({ baseOnly: true });
-  return parseConversationListFilters(query, resolveConversationListLimits(conversationList));
+  const limits =
+    query.endpoints == null
+      ? conversationListConfigSchema.parse({})
+      : await loadConversationListLimits(getAppConfig);
+  return parseConversationListFilters(query, limits);
 }
 
 /**
- * The limits a deployment enforces on list filters, with the schema defaults standing in for
- * an unconfigured one. The startup config publishes the same values, so the sidebar stops a
- * selection where this parser would refuse it.
+ * The limits a deployment enforces on list filters. They are deployment-level, so they come
+ * from the base config rather than a caller's merged one, with the schema defaults standing
+ * in for an unconfigured deployment. The startup config publishes what this returns, so the
+ * sidebar stops a selection exactly where the list route would refuse it.
  */
-export function resolveConversationListLimits(
-  conversationList?: TConversationListConfig,
-): TConversationListConfig {
-  return conversationList ?? conversationListConfigSchema.parse({});
+export async function loadConversationListLimits(
+  getAppConfig: ConversationListConfigReader,
+): Promise<TConversationListConfig> {
+  const config = await getAppConfig({ baseOnly: true });
+  return config?.conversationList ?? conversationListConfigSchema.parse({});
 }
