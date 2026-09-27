@@ -1,7 +1,7 @@
 import { memo, useRef, useMemo, useState, useLayoutEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
-import { TooltipAnchor } from '@librechat/client';
+import { TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 import Effort, { effortRank, resolveEffortLabel } from './Effort';
@@ -32,7 +32,10 @@ function ThinkingControl({
      with the controlled form, hide-on-interact-outside fired on mousedown and
      the disclosure's own click re-opened it, so a second click never closed the
      popup. */
-  const popover = Ariakit.usePopoverStore({ placement: 'bottom' });
+  /* Above the composer on a phone, where the composer sits at the bottom of the
+     screen and a popup below it would open off the edge or under the keyboard. */
+  const isMobile = useMediaQuery('(max-width: 767px)');
+  const popover = Ariakit.usePopoverStore({ placement: isMobile ? 'top' : 'bottom' });
   const open = popover.useState('open');
   const disclosureRef = useRef<HTMLButtonElement>(null);
   const ghostsRef = useRef<HTMLSpanElement>(null);
@@ -106,8 +109,8 @@ function ThinkingControl({
     }
   }, [open, display, optionLabels]);
 
-  /* Opens downward; Ariakit flips it above on its own once the composer sits
-     low enough in the viewport that there is no room below. */
+  /* Opens downward on wider screens; Ariakit flips it above on its own once
+     the composer sits low enough in the viewport that there is no room below. */
   return (
     <Ariakit.PopoverProvider store={popover}>
       {/* Named on hover like the mic and send buttons: closed, the trigger shows
@@ -211,6 +214,21 @@ function ThinkingControl({
            click immediately re-opened it. Excluding the trigger leaves a single
            clean toggle. */
         hideOnInteractOutside={(event) => !disclosureRef.current?.contains(event.target as Node)}
+        /* On a phone the button sits inside the composer, so opening above the
+           button alone would cover the message field. It rises from the
+           composer's top edge instead, still centred over its button. */
+        getAnchorRect={
+          isMobile
+            ? (anchor) => {
+                const button = anchor?.getBoundingClientRect();
+                const composer = anchor?.closest('form')?.getBoundingClientRect();
+                if (button == null || composer == null) {
+                  return null;
+                }
+                return { x: button.x, y: composer.y, width: button.width, height: 0 };
+              }
+            : undefined
+        }
         aria-label={localize('com_ui_composer_thinking_value', { 0: display })}
         /* `border-light` resolves to the same value as `surface-tertiary`, so
            the edge was invisible against the popup's own background. */

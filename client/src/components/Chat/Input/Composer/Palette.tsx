@@ -11,7 +11,7 @@ import { useSetAtom } from 'jotai';
 import * as Ariakit from '@ariakit/react';
 import { AutoSizer, List } from 'react-virtualized';
 import { Star, Plus, Search, ChevronDown } from 'lucide-react';
-import { Button, FileUpload, IconButton, TooltipAnchor } from '@librechat/client';
+import { Button, FileUpload, IconButton, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type {
   TFile,
   TConversation,
@@ -218,7 +218,10 @@ function Palette({
      with the controlled form, hide-on-interact-outside fired on mousedown and
      the disclosure's own click re-opened it, so clicking `+` while the palette
      was up reopened it instead of closing it. */
-  const popover = Ariakit.usePopoverStore({ placement: 'bottom-start' });
+  /* Above the composer on a phone, where the composer sits at the bottom of the
+     screen; the lift below exists only to make room for the downward popup. */
+  const opensUp = useMediaQuery('(max-width: 767px)');
+  const popover = Ariakit.usePopoverStore({ placement: opensUp ? 'top-start' : 'bottom-start' });
   const open = popover.useState('open');
   const context = useBadgeRowContext();
   const mcpManager = context?.mcpServerManager;
@@ -340,7 +343,7 @@ function Palette({
   useEffect(() => () => applyLift(0), [applyLift]);
   const baselineRef = useRef<number | null>(null);
   const updateLift = useCallback(() => {
-    if (!mounted) {
+    if (!mounted || opensUp) {
       baselineRef.current = null;
       applyLift(0);
       return;
@@ -361,7 +364,7 @@ function Palette({
       viewport != null ? viewport.offsetTop + viewport.height : window.innerHeight;
     applyLift(Math.max(0, Math.ceil(needed - (viewportBottom - baselineRef.current))));
     follow();
-  }, [mounted, popupHeight, applyLift, anchorRef, follow]);
+  }, [mounted, opensUp, popupHeight, applyLift, anchorRef, follow]);
 
   useLayoutEffect(updateLift, [updateLift]);
 
@@ -1180,8 +1183,9 @@ function Palette({
   return (
     <>
       <FileUpload ref={attach.inputRef} handleFileChange={attach.onFileChange}>
-        {/* Opens downward like the thinking popup; Ariakit flips it above on
-            its own once the composer sits too low for it to fit below. */}
+        {/* Opens downward like the thinking popup on wider screens, and above
+            on a phone; Ariakit flips a downward one above on its own once the
+            composer sits too low for it to fit below. */}
         <Ariakit.PopoverProvider store={popover}>
           {/* The disclosure is the outer component and the tooltip is what it
               renders through, not the other way round: passing a
