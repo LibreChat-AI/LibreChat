@@ -61,6 +61,26 @@ it('stores both views atomically and excludes ciphertext from ordinary and clien
       privacyRevision: 'turn',
       text: '[EMAIL_1_turn]',
     });
+    const protectedRow = {
+      userId: 'owner',
+      tenantId: 'tenant-a',
+      conversationId,
+      messageId,
+      text: '[EMAIL_1_turn]',
+      privacyRevision: 'turn',
+    };
+    expect(await methods.hasPersistedPrivateText(protectedRow)).toBe(true);
+    for (const mismatch of [
+      { userId: 'other' },
+      { tenantId: 'tenant-b' },
+      { conversationId: uuid() },
+      { messageId: uuid() },
+      { text: 'changed text' },
+      { privacyRevision: 'wrong' },
+    ]) {
+      expect(await methods.hasPersistedPrivateText({ ...protectedRow, ...mismatch })).toBe(false);
+    }
+
     expect(
       await methods.getPrivateMessageTexts({
         userId: 'other',
@@ -275,5 +295,15 @@ it.each([
         messageIds: [messageId],
       }),
     ).toEqual([]);
+    expect(
+      await methods.hasPersistedPrivateText({
+        userId: 'owner',
+        tenantId: 'tenant-a',
+        conversationId,
+        messageId,
+        text: '[EMAIL_1]',
+        privacyRevision: 'turn',
+      }),
+    ).toBe(false);
   });
 });

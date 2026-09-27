@@ -104,6 +104,22 @@ it('shows loading then safe unavailable text when decryption or authorization fa
   expect(screen.getByRole('status')).toHaveTextContent('com_ui_private_text_unavailable');
 });
 
+it('offers a safe retry after a transient owner-text request failure', async () => {
+  load.mockRejectedValueOnce(new Error('temporary outage'));
+  load.mockResolvedValueOnce({ messages: [original] });
+  render(<View />);
+
+  const retry = await screen.findByRole('button', { name: 'com_ui_private_text_retry' });
+  expect(screen.getByText(canonical.text)).toBeInTheDocument();
+  expect(screen.getByTestId('canonical')).not.toHaveTextContent(original.text);
+  await act(async () => {
+    retry.click();
+  });
+  expect(await screen.findByText(original.text)).toBeInTheDocument();
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole('button', { name: 'com_ui_private_text_retry' })).toBeNull();
+});
+
 it('rejects stale revisions instead of restoring a previous original', async () => {
   load.mockResolvedValue({ messages: [{ ...original, revision: 'old-revision' }] });
   render(<View />);

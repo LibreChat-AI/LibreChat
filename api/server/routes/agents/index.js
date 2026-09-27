@@ -15,6 +15,9 @@ const {
   attachAskUserQuestionAnswers,
   attachAskUserQuestionArgs,
   createMessageFilterPii,
+  createPrivateTextIngress,
+  isPrivateTextChatSubmission,
+  saveAbortedUserMessage,
   isAgentTriggerRequest,
   exemptAgentTriggerFromIpLimiter,
   captureScheduleFireContext,
@@ -49,7 +52,7 @@ const {
   getServerGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('~/server/controllers/agents/protocol');
-const { getFiles, saveMessage } = require('~/models');
+const { getFiles, saveMessage, hasPersistedPrivateText } = require('~/models');
 const {
   recordScheduleOutcome,
   beginScheduledStop,
@@ -146,6 +149,18 @@ router.use((req, _res, next) => {
   captureScheduleFireContext(req);
   next();
 });
+// Run config and the privacy boundary before ban/limiter denials, which may persist
+// the submitted user turn. Other chat routes retain their existing config path.
+const privateTextIngress = createPrivateTextIngress({
+  getFilters: (req) => req.config?.filters,
+  getLegacyPii: (req) => req.config?.messageFilter?.pii,
+  getKey: () => process.env.CREDS_KEY ?? '',
+});
+router.use(
+  '/chat',
+  unless((req) => !isPrivateTextChatSubmission(req), configMiddleware),
+  unless((req) => !isPrivateTextChatSubmission(req), privateTextIngress),
+);
 router.use(checkBan);
 router.use(uaParser);
 
@@ -829,9 +844,13 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
              * write and checkpoint cleanup so every independently useful
              * operation gets a chance to succeed. */
             try {
-              const persistedRequest = await saveMessage(messageContext, requestMessage, {
-                context: 'api/server/routes/agents/index.js - abort user prerequisite',
-              });
+              const persistedRequest = await saveAbortedUserMessage(
+                { saveMessage, hasPersistedPrivateText },
+                messageContext,
+                requestMessage,
+                { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
+                req.user?.tenantId,
+              );
               if (!persistedRequest) {
                 throw new Error('Abort user prerequisite was not persisted');
               }
@@ -1153,7 +1172,7 @@ router.use('/', v1);
 const chatRouter = express.Router();
 const useMessageIpLimiter = isEnabled(LIMIT_MESSAGE_IP);
 const useMessageUserLimiter = isEnabled(LIMIT_MESSAGE_USER);
-chatRouter.use(configMiddleware);
+chatRouter.use(unless(isPrivateTextChatSubmission, configMiddleware));
 if (useMessageIpLimiter || useMessageUserLimiter) {
   chatRouter.use(
     unless(

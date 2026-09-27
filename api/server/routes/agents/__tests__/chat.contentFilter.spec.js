@@ -14,7 +14,6 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   createMessageFilterPii: mockCreateMessageFilterPii,
-  createPrivateTextIngress: jest.fn(() => (_req, _res, next) => next()),
   generateCheckAccess: jest.fn(() => (_req, _res, next) => next()),
   skipAgentCheck: jest.fn(),
   applyResumeContext: jest.fn(),

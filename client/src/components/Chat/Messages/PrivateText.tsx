@@ -26,6 +26,7 @@ interface OwnerTextState {
   scope: string;
   messages: ReadonlyMap<string, Original>;
   loading: boolean;
+  retry?: () => void;
 }
 const empty: OwnerTextState = { scope: '', messages: new Map(), loading: false };
 const OwnerTextContext = createContext<OwnerTextState>(empty);
@@ -58,6 +59,7 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
   );
   const scope = JSON.stringify([user?.id, user?.tenantId, conversationId, selection]);
   const [state, setState] = useState<OwnerTextState>(empty);
+  const [retryAttempt, setRetryAttempt] = useState(0);
   const cached = useRef<{ scope: string; messages: Map<string, Original> }>({
     scope: '',
     messages: new Map(),
@@ -86,7 +88,8 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
     }
     // Do not retain originals from removed or edited messages.
     cached.current.messages = originals;
-    setState({ scope, messages: new Map(originals), loading: pending.length > 0 });
+    const retry = () => setRetryAttempt((attempt) => attempt + 1);
+    setState({ scope, messages: new Map(originals), loading: pending.length > 0, retry });
     if (pending.length === 0) {
       return;
     }
@@ -120,7 +123,7 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
                   cached.current.messages.set(message.messageId, original);
                 }
               }
-              setState({ scope, messages: new Map(originals), loading: true });
+              setState({ scope, messages: new Map(originals), loading: true, retry });
             } catch {
               // A failed batch does not discard successfully decrypted siblings.
             }
@@ -129,14 +132,14 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
       );
       await Promise.all(workers);
       if (!cancelled) {
-        setState({ scope, messages: new Map(originals), loading: false });
+        setState({ scope, messages: new Map(originals), loading: false, retry });
       }
     };
     void load();
     return () => {
       cancelled = true;
     };
-  }, [scope, selection, conversationId, user?.id, user?.tenantId]);
+  }, [scope, selection, conversationId, user?.id, user?.tenantId, retryAttempt]);
   const visible = state.scope === scope ? state : empty;
   return <OwnerTextContext.Provider value={visible}>{children}</OwnerTextContext.Provider>;
 }
@@ -169,6 +172,11 @@ export function PrivateText({ message }: { message: TMessage }) {
           </span>
         )}
       </p>
+      {text == null && !state.loading && state.retry != null && (
+        <button type="button" onClick={state.retry} className="text-xs text-text-primary underline">
+          {localize('com_ui_private_text_retry')}
+        </button>
+      )}
     </div>
   );
 }

@@ -673,6 +673,14 @@ export interface PrivateTextRead {
 }
 
 export interface MessageMethods {
+  hasPersistedPrivateText(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageId: string;
+    privacyRevision: string;
+    text: string;
+  }): Promise<boolean>;
   getPrivateMessageTexts(input: {
     userId: string;
     tenantId?: string;
@@ -3835,6 +3843,41 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     return Message.meiliSearch(query, searchOptions, hydrate);
   }
 
+  async function hasPersistedPrivateText(input: {
+    userId: string;
+    tenantId?: string;
+    conversationId: string;
+    messageId: string;
+    privacyRevision: string;
+    text: string;
+  }): Promise<boolean> {
+    if (
+      !input.userId ||
+      !input.messageId ||
+      !input.privacyRevision ||
+      !UUID_REGEX.test(input.conversationId)
+    ) {
+      return false;
+    }
+    const activeTenant = tenantStorage.getStore()?.tenantId;
+    if (activeTenant != null && activeTenant !== input.tenantId) {
+      return false;
+    }
+    const Message = mongoose.models.Message as Model<IMessage>;
+    return (
+      (await Message.exists({
+        user: input.userId,
+        ...traceTenantScope(input.tenantId),
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        text: input.text,
+        privacyRevision: input.privacyRevision,
+        privateText: { $exists: true },
+        $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+      })) != null
+    );
+  }
+
   async function getPrivateMessageTexts(input: {
     userId: string;
     tenantId?: string;
@@ -3864,6 +3907,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   }
 
   return {
+    hasPersistedPrivateText,
     getPrivateMessageTexts,
     saveMessage,
     bulkSaveMessages,

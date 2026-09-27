@@ -806,7 +806,14 @@ export default function useChatFunctions({
     );
     setSubmissionStart(Date.now());
     setSubmission(submission);
-    logger.dir('message_stream', submission, { depth: null });
+    logger.dir('message_stream', {
+      conversationId,
+      messageId: currentMsg.messageId,
+      parentMessageId: currentMsg.parentMessageId,
+      isEdited: isEditOrContinue,
+      isRegenerate: regenerateShaped,
+      isContinued,
+    });
   };
 
   const regenerate = (

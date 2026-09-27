@@ -6,6 +6,8 @@ import {
   savePrivateTextMessage,
   stampPrivateTextMessage,
   requirePrivateTextPersistence,
+  saveAbortedUserMessage,
+  isPrivateTextChatSubmission,
   privateTextBinding,
 } from './submission';
 import { createPrivateTextCipher } from './crypto';
@@ -52,6 +54,85 @@ function submit(overrides: object = {}, encryptionKey = key) {
 }
 
 describe('private text submission boundary', () => {
+  it('limits early processing to interactive POSTs, excluding controls and queued work', () => {
+    for (const path of ['/api/agents/chat', '/api/agents/chat/safe-ephemeral']) {
+      expect(
+        isPrivateTextChatSubmission({
+          method: 'POST',
+          originalUrl: path,
+          body: { text: original },
+        } as Request),
+      ).toBe(true);
+    }
+    for (const path of [
+      '/api/agents/chat/abort',
+      '/api/agents/chat/resume',
+      '/api/agents/chat/queued-turns',
+      '/api/agents/chat/steer',
+      '/api/agents/chat/status/one',
+    ]) {
+      expect(
+        isPrivateTextChatSubmission({
+          method: 'POST',
+          originalUrl: path,
+          body: { text: original },
+        } as Request),
+      ).toBe(false);
+    }
+    expect(
+      isPrivateTextChatSubmission({
+        method: 'GET',
+        originalUrl: '/api/agents/chat',
+        body: { text: original },
+      } as Request),
+    ).toBe(false);
+  });
+
+  it('preserves the exact encrypted user row on Stop and fails closed when missing', async () => {
+    const saveMessage: MessageMethods['saveMessage'] = jest.fn(
+      async (_ctx, message) => message as IMessage,
+    );
+    const hasPersistedPrivateText = jest.fn(async () => true);
+    const store = { saveMessage, hasPersistedPrivateText };
+    const { message } = submit();
+    expect(
+      await saveAbortedUserMessage(
+        store,
+        { userId: 'owner' },
+        message,
+        { context: 'Stop' },
+        'tenant-a',
+      ),
+    ).toBe(true);
+    expect(hasPersistedPrivateText).toHaveBeenCalledWith({
+      userId: 'owner',
+      tenantId: 'tenant-a',
+      conversationId: message.conversationId,
+      messageId: message.messageId,
+      text: message.text,
+      privacyRevision: message.privacyRevision,
+    });
+    expect(saveMessage).not.toHaveBeenCalled();
+    hasPersistedPrivateText.mockResolvedValueOnce(false);
+    await expect(
+      saveAbortedUserMessage(store, { userId: 'owner' }, message, { context: 'Stop' }, 'tenant-a'),
+    ).rejects.toThrow('private value');
+    expect(saveMessage).not.toHaveBeenCalled();
+    expect(
+      await saveAbortedUserMessage(
+        store,
+        { userId: 'owner' },
+        {
+          ...message,
+          privacyRevision: undefined,
+        },
+        { context: 'ordinary Stop' },
+        'tenant-a',
+      ),
+    ).toBe(true);
+    expect(saveMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('replaces request text before consumers and exposes no original in metadata or serialization', () => {
     const { req, message, next } = submit();
     expect(next).toHaveBeenCalledTimes(1);

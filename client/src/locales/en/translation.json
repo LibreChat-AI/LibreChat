@@ -1,6 +1,7 @@
 {
   "com_ui_private_text_hidden": "Private details hidden from the model",
   "com_ui_private_text_loading": "Loading your original message…",
+  "com_ui_private_text_retry": "Retry loading original",
   "com_ui_private_text_unavailable": "Original unavailable. Showing the filtered message.",
   "com_ui_background_tasks": "Background tasks",
   "com_ui_background_tasks_cancel_disabled": "Stopping background tools is not enabled on this server",

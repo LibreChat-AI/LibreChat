@@ -1,6 +1,6 @@
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
+import type { RequestHandler, Request, Response } from 'express';
 import type { MessageMethods } from '@librechat/data-schemas';
-import type { RequestHandler, Request } from 'express';
 import type { PrivateTextCipher } from './crypto';
 import { ContentFilterError } from '../../middleware/contentFilter';
 import { createPiiTextTransformer } from '../transform';
@@ -26,6 +26,33 @@ interface Capture {
 
 const captures = new WeakMap<object, Capture>();
 
+const CONTROL_ROUTES = new Set([
+  'abort',
+  'steer',
+  'queued-turns',
+  'stream',
+  'status',
+  'active',
+  'resume',
+]);
+
+/** Only actual interactive chat POSTs have an owner-view text sidecar in this slice. */
+export function isPrivateTextChatSubmission(req: Request): boolean {
+  if (req.method !== 'POST' || typeof req.body?.text !== 'string') {
+    return false;
+  }
+  const path = req.originalUrl?.split('?', 1)[0]?.replace(/\/$/, '');
+  const base = '/api/agents/chat';
+  if (path === base) {
+    return true;
+  }
+  if (path == null || !path.startsWith(`${base}/`)) {
+    return false;
+  }
+  const child = path.slice(base.length + 1);
+  return child.length > 0 && !child.includes('/') && !CONTROL_ROUTES.has(child.toLowerCase());
+}
+
 function unavailable(): ContentFilterError {
   return new ContentFilterError({
     detectorId: 'pii-pattern',
@@ -37,6 +64,51 @@ function unavailable(): ContentFilterError {
     fragmentId: 'chat.text',
     fragmentPath: '/text',
   });
+}
+
+type PrivateTextRequest = Request & {
+  config?: { filters?: FiltersConfig; messageFilter?: { pii?: MessageFilterPiiConfig } };
+};
+
+/** A denial may persist a turn before the regular message filter runs. Never store unfiltered PII. */
+export function rejectUnprotectedDeniedMessage(req: PrivateTextRequest, res: Response): boolean {
+  const filters = req.config?.filters;
+  const legacyPii = req.config?.messageFilter?.pii;
+  const text = req.body?.text;
+  if (
+    typeof text !== 'string' ||
+    (filters?.messages?.pii?.action !== 'redact' && legacyPii == null) ||
+    captures.get(req)?.text === text
+  ) {
+    return false;
+  }
+  try {
+    const finding = inspectContent(
+      [
+        {
+          id: 'chat.text',
+          path: '/text',
+          text,
+          source: 'message',
+          field: 'text',
+          format: 'plain',
+          treatment: 'replaceable',
+          provenance: 'user',
+        },
+      ],
+      { filters, legacyPii },
+    );
+    if (finding == null) {
+      return false;
+    }
+  } catch {
+    // A broken policy must not turn a denial into unfiltered storage.
+  }
+  res.status(400).json({
+    error: 'content_filter_block',
+    message: 'Private details could not be protected. Nothing was sent to the model.',
+  });
+  return true;
 }
 
 export function privateTextBinding(
@@ -235,4 +307,37 @@ export async function requirePrivateTextPersistence(
   ) {
     throw unavailable();
   }
+}
+
+/**
+ * A Stop request has a different Express request from the original turn and cannot
+ * retrieve the original plaintext. A protected turn already passed the pre-model
+ * persistence barrier: verify that exact owner row instead of resaving its text
+ * and unsetting its sidecar. If that prerequisite disappeared, fail closed.
+ */
+export async function saveAbortedUserMessage(
+  store: Pick<MessageMethods, 'saveMessage' | 'hasPersistedPrivateText'>,
+  ctx: Parameters<MessageMethods['saveMessage']>[0],
+  message: Parameters<MessageMethods['saveMessage']>[1],
+  metadata: Parameters<MessageMethods['saveMessage']>[2],
+  tenantId?: string,
+): Promise<boolean> {
+  if (typeof message.privacyRevision !== 'string' || message.privacyRevision.length === 0) {
+    return (await store.saveMessage(ctx, message, metadata)) != null;
+  }
+  if (!message.messageId || !message.conversationId || typeof message.text !== 'string') {
+    throw unavailable();
+  }
+  const persisted = await store.hasPersistedPrivateText({
+    userId: ctx.userId,
+    tenantId,
+    conversationId: message.conversationId,
+    messageId: message.messageId,
+    text: message.text,
+    privacyRevision: message.privacyRevision,
+  });
+  if (!persisted) {
+    throw unavailable();
+  }
+  return true;
 }
