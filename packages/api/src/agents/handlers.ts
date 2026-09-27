@@ -5963,6 +5963,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 let durableReceiptWrite: Promise<boolean> | undefined;
                 let durableReceiptAmbiguous = false;
                 let durableResultConfirmed = false;
+                let forcedShutdownResult = false;
                 let resolveDurableReceipt: () => void = () => undefined;
                 const durableReceiptSettled = new Promise<void>((resolve) => {
                   resolveDurableReceipt = resolve;
@@ -6306,11 +6307,17 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     );
                   }
                 };
-                const persistSettledBackgroundResult = async (params: {
-                  output?: string;
-                  artifact?: unknown;
-                  status: 'completed' | 'error' | 'cancelled';
-                }): Promise<void> => {
+                const persistSettledBackgroundResult = async (
+                  params: {
+                    output?: string;
+                    artifact?: unknown;
+                    status: 'completed' | 'error' | 'cancelled';
+                  },
+                  forced = false,
+                ): Promise<void> => {
+                  if (forcedShutdownResult && !forced) {
+                    return;
+                  }
                   settledReceipt = { status: params.status, output: params.output };
                   /** Held for the whole persist, including a code harvest that waits for
                    *  a long dispatch turn, so retention pressure cannot evict the task. */
@@ -6671,7 +6678,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 })();
                 void settlement.then(
                   () => {
-                    if (completionAdmission?.persistResult == null || !completionPreregistered) {
+                    if (completionAdmission == null || !completionPreregistered) {
                       resolveDurableReceipt();
                     }
                   },
@@ -6693,6 +6700,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     } else if (settledReceipt != null) {
                       await writeDurableReceipt({ ...settledReceipt, settledAt: new Date() });
                     } else {
+                      forcedShutdownResult = true;
                       const failure = toBackgroundToolFailure(tc.name, reason);
                       backgroundTaskRegistry.fail(
                         backgroundUserId,
@@ -6709,22 +6717,31 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                           detachedError,
                         );
                       }
-                      await writeDurableReceipt({
-                        status: 'error',
-                        output: failure,
-                        settledAt: new Date(),
-                      });
+                      if (completionAdmission?.persistResult != null) {
+                        await writeDurableReceipt({
+                          status: 'error',
+                          output: failure,
+                          settledAt: new Date(),
+                        });
+                      } else if (completionAdmission != null) {
+                        await persistSettledBackgroundResult(
+                          { status: 'error', output: failure },
+                          true,
+                        );
+                      }
                     }
-                    if (durableResultConfirmed || completionAdmission?.persistResult == null) {
+                    if (durableResultConfirmed || completionAdmission == null) {
                       return;
                     }
-                    if (settledReceipt != null) {
+                    if (settledReceipt != null && !forcedShutdownResult) {
                       await settlement;
                       if (durableResultConfirmed) {
                         return;
                       }
                     }
-                    throw new Error(`Background task ${task.id} has no durable shutdown result`);
+                    if (completionPreregistered) {
+                      throw new Error(`Background task ${task.id} has no durable shutdown result`);
+                    }
                   },
                 });
                 if (

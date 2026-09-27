@@ -194,6 +194,39 @@ describe('background task shutdown', () => {
       expect(summary).toEqual({ tracked: 1, interrupted: 1, flushed: 1, unsettled: 1 });
     });
 
+    it('does not retain an unconfirmed result after its task expires', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const task = createTask(registry, 'unconfirmed-expired');
+      const controlled = controlledHandle();
+      registry.trackShutdown(task, controlled.handle);
+      registry.fail('shutdown-owner', 'shutdown-conversation', task.id, 'no durable write');
+      const now = jest.spyOn(Date, 'now').mockReturnValue(task.updatedAt + 60 * 60 * 1000 + 1);
+      try {
+        expect(registry.get('shutdown-owner', 'shutdown-conversation', task.id)).toBeUndefined();
+      } finally {
+        now.mockRestore();
+      }
+
+      expect((await registry.drainForShutdown(drainOptions())).tracked).toBe(0);
+    });
+
+    it('does not retain an unconfirmed result after capacity pressure evicts its task', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const task = createTask(registry, 'unconfirmed-evicted');
+      const controlled = controlledHandle();
+      registry.trackShutdown(task, controlled.handle);
+      registry.fail('shutdown-owner', 'shutdown-conversation', task.id, 'no durable write');
+      task.updatedAt = Date.now() - 1_000;
+      for (let i = 0; i < 199; i++) {
+        const settled = createTask(registry, `completed-${i}`);
+        registry.complete('shutdown-owner', 'shutdown-conversation', settled.id, { content: 'ok' });
+      }
+      createTask(registry, 'trigger-eviction');
+
+      expect(registry.get('shutdown-owner', 'shutdown-conversation', task.id)).toBeUndefined();
+      expect((await registry.drainForShutdown(drainOptions())).tracked).toBe(0);
+    });
+
     it('stops tracking a task once its result is durable', async () => {
       const registry = new BackgroundTaskRegistryClass();
       const controlled = controlledHandle();

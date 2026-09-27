@@ -887,6 +887,12 @@ export class BackgroundTaskRegistryClass {
     return `${userId}::${conversationId}`;
   }
 
+  private releaseEvictedShutdownHandle(task: BackgroundTask): void {
+    if (this.shutdownHandles.delete(task)) {
+      logger.warn(`[background] Unconfirmed shutdown result for evicted task ${task.id}.`);
+    }
+  }
+
   private sweepBucketTasks(bucket: TaskBucket, now: number): void {
     for (const [taskId, task] of bucket.tasks) {
       if (
@@ -895,6 +901,7 @@ export class BackgroundTaskRegistryClass {
         now - task.updatedAt > COMPLETED_TASK_TTL_MS
       ) {
         bucket.tasks.delete(taskId);
+        this.releaseEvictedShutdownHandle(task);
       }
     }
     /** Drop dedupe mappings whose task was evicted (keys are
@@ -925,6 +932,9 @@ export class BackgroundTaskRegistryClass {
           (task) => task.status === 'running' || task.completionPersistencePending === true,
         )
       ) {
+        for (const task of bucket.tasks.values()) {
+          this.releaseEvictedShutdownHandle(task);
+        }
         this.buckets.delete(bucketKey);
         continue;
       }
@@ -1079,6 +1089,7 @@ export class BackgroundTaskRegistryClass {
     const touched = new Set<TaskBucket>();
     for (const [task, bucket] of selected) {
       bucket.tasks.delete(task.id);
+      this.releaseEvictedShutdownHandle(task);
       touched.add(bucket);
     }
     const now = Date.now();

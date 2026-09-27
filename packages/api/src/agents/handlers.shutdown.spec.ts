@@ -234,6 +234,221 @@ describe('createToolExecuteHandler — background tasks at shutdown', () => {
     );
   });
 
+  it('waits for a legacy pre-admitted completion projection before declaring shutdown durable', async () => {
+    const { createToolExecuteHandler, registry } = loadModules();
+    let notifyFlush: () => void = () => undefined;
+    const flushStarted = new Promise<void>((resolve) => {
+      notifyFlush = resolve;
+    });
+    const trackShutdown = registry.trackShutdown.bind(registry);
+    jest.spyOn(registry, 'trackShutdown').mockImplementation((task, handle) =>
+      trackShutdown(task, {
+        ...handle,
+        flush: (reason) => {
+          notifyFlush();
+          return handle.flush(reason);
+        },
+      }),
+    );
+    let resolveProjection: (persisted: boolean) => void = () => undefined;
+    const persist = jest.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveProjection = resolve;
+        }),
+    );
+    const retire = jest.fn(async () => true);
+    const tool = {
+      name: 'search_mcp_docs',
+      description: 'search docs',
+      schema: z.object({ q: z.string() }),
+      invoke: jest.fn(async () => ({ content: 'legacy projection result' })),
+    } as unknown as StructuredToolInterface;
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      backgroundToolCompletion: {
+        preregister: jest.fn(async () => ({ renew: async () => true, retire })),
+        persist,
+        claim: jest.fn(async () => ({ status: 'acquired' as const, results: [] })),
+      },
+    });
+
+    await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call-legacy-projection',
+          name: tool.name,
+          args: { q: 'legacy', run_in_background: true },
+          stepId: 'step-legacy',
+        },
+      ],
+      configurable: buildConfig([tool.name]),
+      metadata: { thread_id: 'shutdown_convo', run_id: 'response-legacy-projection' },
+    });
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    const draining = registry.drainForShutdown({
+      ...drainOptions(),
+      deadlineAt: Date.now() + 1_750,
+      flushReserveMs: 1_400,
+    });
+    let drained = false;
+    void draining.then(() => {
+      drained = true;
+    });
+    await flushStarted;
+    await flushMicrotasks();
+    expect(drained).toBe(false);
+    resolveProjection(true);
+    expect(await draining).toEqual({ tracked: 1, interrupted: 0, flushed: 1, unsettled: 0 });
+    expect(retire).not.toHaveBeenCalled();
+  });
+
+  it('reports a pre-admitted legacy completion with no durable projection as unsettled', async () => {
+    const { createToolExecuteHandler, registry } = loadModules();
+    const persist = jest.fn(async () => false);
+    const tool = {
+      name: 'search_mcp_docs',
+      description: 'search docs',
+      schema: z.object({ q: z.string() }),
+      invoke: jest.fn(async () => ({ content: 'missing legacy result' })),
+    } as unknown as StructuredToolInterface;
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      backgroundToolCompletion: {
+        preregister: jest.fn(async () => ({ renew: async () => true, retire: async () => true })),
+        persist,
+        claim: jest.fn(async () => ({ status: 'acquired' as const, results: [] })),
+      },
+    });
+
+    await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call-legacy-failed',
+          name: tool.name,
+          args: { q: 'failed', run_in_background: true },
+          stepId: 'step-legacy-failed',
+        },
+      ],
+      configurable: buildConfig([tool.name]),
+      metadata: { thread_id: 'shutdown_convo', run_id: 'response-legacy-failed' },
+    });
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(
+      await registry.drainForShutdown({
+        ...drainOptions(),
+        deadlineAt: Date.now() + 190,
+        interruptGraceMs: 75,
+        flushReserveMs: 40,
+      }),
+    ).toEqual({
+      tracked: 1,
+      interrupted: 0,
+      flushed: 1,
+      unsettled: 1,
+    });
+  });
+
+  it('projects an interrupted result for an uncooperative legacy completion without a receipt', async () => {
+    const { createToolExecuteHandler, registry } = loadModules();
+    const persist = jest.fn(async () => true);
+    const controlled = controlledTool({ honorAbort: false });
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [controlled.tool] }),
+      backgroundToolCompletion: {
+        preregister: jest.fn(async () => ({ renew: async () => true, retire: async () => true })),
+        persist,
+        claim: jest.fn(async () => ({ status: 'acquired' as const, results: [] })),
+      },
+    });
+
+    await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call-legacy-stubborn',
+          name: controlled.tool.name,
+          args: { q: 'stubborn', run_in_background: true },
+          stepId: 'step-legacy-stubborn',
+        },
+      ],
+      configurable: buildConfig([controlled.tool.name]),
+      metadata: { thread_id: 'shutdown_convo', run_id: 'response-legacy-stubborn' },
+    });
+
+    expect(
+      await registry.drainForShutdown({
+        ...drainOptions(),
+        deadlineAt: Date.now() + 280,
+        interruptGraceMs: 90,
+        flushReserveMs: 70,
+      }),
+    ).toEqual({
+      tracked: 1,
+      interrupted: 1,
+      flushed: 1,
+      unsettled: 0,
+    });
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        output: interruptedOutput,
+        backgroundTask: expect.objectContaining({ status: 'error' }),
+      }),
+    );
+
+    controlled.resolve('late success');
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed legacy interruption projection as unconfirmed', async () => {
+    const { createToolExecuteHandler, registry } = loadModules();
+    const persist = jest.fn(async () => false);
+    const controlled = controlledTool({ honorAbort: false });
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [controlled.tool] }),
+      backgroundToolCompletion: {
+        preregister: jest.fn(async () => ({ renew: async () => true, retire: async () => true })),
+        persist,
+        claim: jest.fn(async () => ({ status: 'acquired' as const, results: [] })),
+      },
+    });
+
+    await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call-legacy-interruption-failed',
+          name: controlled.tool.name,
+          args: { q: 'stubborn', run_in_background: true },
+          stepId: 'step-legacy-interruption-failed',
+        },
+      ],
+      configurable: buildConfig([controlled.tool.name]),
+      metadata: { thread_id: 'shutdown_convo', run_id: 'response-legacy-interruption-failed' },
+    });
+
+    expect(
+      await registry.drainForShutdown({
+        ...drainOptions(),
+        deadlineAt: Date.now() + 280,
+        interruptGraceMs: 90,
+        flushReserveMs: 70,
+      }),
+    ).toEqual({
+      tracked: 1,
+      interrupted: 1,
+      flushed: 1,
+      unsettled: 1,
+    });
+    expect(persist).toHaveBeenCalledTimes(1);
+    controlled.resolve('late success');
+    await flushMicrotasks();
+    await flushMicrotasks();
+  });
+
   it('waits for the projected result when an independent receipt write returns false', async () => {
     const { createToolExecuteHandler, registry } = loadModules();
     const adapter = completionAdapter();
