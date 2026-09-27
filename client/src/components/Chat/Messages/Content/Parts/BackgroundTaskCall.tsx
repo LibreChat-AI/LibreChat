@@ -1,10 +1,11 @@
 import { useMemo, useState, useCallback } from 'react';
 import type { PartMetadata, TAttachment } from 'librechat-data-provider';
+import { backgroundListGuidanceKeys, backgroundTaskNoticeKey } from './guidance';
+import { backgroundTaskOutcome, parseBackgroundTaskOutput } from './background';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { useLocalize, useLazyCollapseBody } from '~/hooks';
 import { toolPanelSpacingClassName } from '../disclosure';
-import { parseBackgroundTaskOutput } from './background';
 import { ToolIcon, OutputRenderer } from '../ToolOutput';
 import BackgroundTaskCard from '../BackgroundTaskCard';
 import useToolCallState from './useToolCallState';
@@ -13,16 +14,6 @@ import { useToolCallIntent } from './intent';
 import ToolCallInfo from '../ToolCallInfo';
 import { TOOL_ROW_CLASSES } from '../rows';
 import { cn } from '~/utils';
-
-const WARNING_NOTICES = new Set([
-  'error',
-  'invalid',
-  'not_found',
-  'outcome_unknown',
-  'rejected',
-  'result_unavailable',
-  'unavailable',
-]);
 
 export default function BackgroundTaskCall({
   args,
@@ -64,7 +55,15 @@ export default function BackgroundTaskCall({
     }
   }, [args]);
   const hasParams = input.trim() !== '' && input.trim() !== '{}';
-  const taskStatus = display?.kind === 'task' ? display.task.status : undefined;
+  const outcome = backgroundTaskOutcome(display);
+  const noticeText =
+    display?.kind === 'notice'
+      ? localize(backgroundTaskNoticeKey(display.status, display.message))
+      : undefined;
+  const listGuidance = useMemo(
+    () => (display?.kind === 'list' ? backgroundListGuidanceKeys(display) : []),
+    [display],
+  );
   const { showCode, toggleCode, expandStyle, expandRef, phase, hasContent } = useToolCallState({
     initialProgress,
     isSubmitting,
@@ -72,8 +71,8 @@ export default function BackgroundTaskCall({
     hasInput: hasParams || (attachments?.length ?? 0) > 0,
     onExpand,
     runStepStatus,
-    extraError: taskStatus === 'error' || taskStatus === 'failed' || taskStatus === 'interrupted',
-    extraCancelled: taskStatus === 'cancelled',
+    extraError: outcome === 'failed',
+    extraCancelled: outcome === 'cancelled',
   });
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showCode);
   const handleToggle = useCallback(() => {
@@ -81,8 +80,33 @@ export default function BackgroundTaskCall({
     toggleCode();
   }, [mountBody, toggleCode]);
 
+  let finishedText = intent ?? localize('com_ui_background_tasks_checked');
+  if (phase === 'cancelled') {
+    finishedText =
+      outcome === 'cancelled' && noticeText != null ? noticeText : localize('com_ui_cancelled');
+  } else if (phase === 'failed' && outcome !== 'failed') {
+    finishedText = intent ?? localize('com_ui_background_tasks_checked');
+  } else if (noticeText != null) {
+    finishedText = noticeText;
+  } else if (display?.kind === 'list' && outcome === 'failed') {
+    finishedText = localize('com_ui_background_tasks_incomplete');
+  }
+
+  let announcedText = finishedText;
+  if (phase === 'running') {
+    announcedText = localize('com_ui_background_tasks_checking');
+  } else if (phase === 'failed' && (noticeText == null || outcome !== 'failed')) {
+    announcedText =
+      display?.kind === 'list'
+        ? localize('com_ui_background_tasks_incomplete')
+        : localize('com_ui_failed_subject', { 0: localize('com_ui_background_tasks') });
+  }
+
   return (
     <>
+      <span className="sr-only" aria-live="polite" aria-atomic="true">
+        {announcedText}
+      </span>
       <div
         className={TOOL_ROW_CLASSES}
         data-testid="background-task-call"
@@ -92,13 +116,9 @@ export default function BackgroundTaskCall({
           phase={phase}
           onClick={handleToggle}
           inProgressText={intent ?? localize('com_ui_background_tasks_checking')}
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize('com_ui_background_tasks_checked'))
-          }
+          finishedText={finishedText}
           durationMs={runStepDurationMs}
-          icon={<ToolIcon type="background_tasks" />}
+          icon={<ToolIcon type="background_tasks" isAnimating={phase === 'running'} />}
           hasInput={hasContent}
           isExpanded={showCode}
         />
@@ -154,29 +174,28 @@ export default function BackgroundTaskCall({
                       {localize('com_ui_background_tasks_empty')}
                     </p>
                   )}
-                  {display.partial && (
+                  {(display.partial || display.warning) && (
                     <p role="alert" className="mt-2 text-xs text-status-warning">
                       {localize('com_ui_background_tasks_incomplete')}
                     </p>
                   )}
-                  {display.warning && (
-                    <p className="mt-2 text-xs text-status-warning">{display.warning}</p>
-                  )}
-                  {display.message && (
-                    <p className="mt-2 text-xs text-text-secondary">{display.message}</p>
-                  )}
+                  {listGuidance.map((key) => (
+                    <p key={key} className="mt-2 text-xs text-text-secondary">
+                      {localize(key)}
+                    </p>
+                  ))}
                 </div>
               )}
               {display?.kind === 'notice' && (
                 <p
                   className={cn(
                     'p-3 text-sm',
-                    WARNING_NOTICES.has(display.status)
+                    outcome === 'failed' || display.status === 'result_persisting'
                       ? 'text-status-warning'
                       : 'text-text-secondary',
                   )}
                 >
-                  {display.message}
+                  {noticeText}
                 </p>
               )}
               {(display == null || hasParams) && (
@@ -198,7 +217,7 @@ export default function BackgroundTaskCall({
                   </summary>
                   {showRaw && (
                     <div className="mt-2 rounded-md bg-surface-primary p-2.5">
-                      <OutputRenderer text={output} />
+                      <OutputRenderer text={output} copyText={output} />
                     </div>
                   )}
                 </details>

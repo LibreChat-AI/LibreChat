@@ -73,6 +73,37 @@ export type BackgroundTaskDisplay =
     }
   | { kind: 'notice'; message: string; status: string };
 
+const PENDING_NOTICES = new Set(['delivery_scheduled', 'result_persisting']);
+
+/** The poll step succeeding is not proof that its underlying task or control succeeded. */
+export function backgroundTaskOutcome(
+  display: BackgroundTaskDisplay | null,
+): 'failed' | 'cancelled' | undefined {
+  if (display == null) {
+    return;
+  }
+  if (display.kind === 'notice') {
+    if (display.status === 'cancelled') {
+      return 'cancelled';
+    }
+    return PENDING_NOTICES.has(display.status) ? undefined : 'failed';
+  }
+  if (display.kind === 'list') {
+    return display.partial || display.warning ? 'failed' : undefined;
+  }
+  const status = display.task.status;
+  if (status === 'cancelled') {
+    return 'cancelled';
+  }
+  return status === 'error' ||
+    status === 'failed' ||
+    status === 'interrupted' ||
+    status === 'not_running' ||
+    status === 'control_not_found'
+    ? 'failed'
+    : undefined;
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value != null && typeof value === 'object' && !Array.isArray(value);
 

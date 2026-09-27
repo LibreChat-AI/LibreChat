@@ -1,4 +1,8 @@
-import { formatBackgroundCodeOutput, parseBackgroundTaskOutput } from '../background';
+import {
+  backgroundTaskOutcome,
+  formatBackgroundCodeOutput,
+  parseBackgroundTaskOutput,
+} from '../background';
 
 describe('formatBackgroundCodeOutput', () => {
   it('indents a JSON log line without changing surrounding stdout and exit code', () => {
@@ -14,6 +18,75 @@ describe('formatBackgroundCodeOutput', () => {
     expect(formatBackgroundCodeOutput('{"ok":true}')).toBe('{"ok":true}');
     const large = `stdout:\n${'a'.repeat(64_001)}`;
     expect(formatBackgroundCodeOutput(large)).toBe(large);
+  });
+});
+
+describe('backgroundTaskOutcome', () => {
+  it.each([
+    'invalid',
+    'rejected',
+    'unavailable',
+    'not_found',
+    'outcome_unknown',
+    'result_unavailable',
+    'error',
+    'future_control_rejected',
+  ])('flags the %s notice as a failed task check, despite a successful tool run step', (status) => {
+    const display = parseBackgroundTaskOutput(JSON.stringify({ status, message: 'Host advice' }));
+    expect(backgroundTaskOutcome(display)).toBe('failed');
+  });
+
+  it.each(['delivery_scheduled', 'result_persisting'])(
+    'does not mistake the %s retry state for a failed task',
+    (status) => {
+      const display = parseBackgroundTaskOutput(JSON.stringify({ status, message: 'Host advice' }));
+      expect(backgroundTaskOutcome(display)).toBeUndefined();
+    },
+  );
+
+  it.each(['error', 'interrupted', 'failed', 'not_running', 'control_not_found'])(
+    'flags a %s task or control receipt as failed',
+    (status) => {
+      const display = parseBackgroundTaskOutput(
+        JSON.stringify({ background_task_id: 't1', tool: 'subagent', status }),
+      );
+      expect(backgroundTaskOutcome(display)).toBe('failed');
+    },
+  );
+
+  it('distinguishes a discarded result from a still-running cancellation request', () => {
+    expect(
+      backgroundTaskOutcome(
+        parseBackgroundTaskOutput(
+          JSON.stringify({ status: 'cancelled', message: 'Result discarded.' }),
+        ),
+      ),
+    ).toBe('cancelled');
+    expect(
+      backgroundTaskOutcome(
+        parseBackgroundTaskOutput(
+          JSON.stringify({
+            background_task_id: 't1',
+            tool: 'bash_tool',
+            status: 'cancellation_requested',
+          }),
+        ),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('warns about an incomplete list, not an ordinary list of already failed tasks', () => {
+    const incomplete = parseBackgroundTaskOutput(
+      JSON.stringify({ tasks: [], partial: true, warning: 'Some results are missing.' }),
+    );
+    const complete = parseBackgroundTaskOutput(
+      JSON.stringify({
+        tasks: [{ background_task_id: 't1', tool: 'bash_tool', status: 'error' }],
+        partial: false,
+      }),
+    );
+    expect(backgroundTaskOutcome(incomplete)).toBe('failed');
+    expect(backgroundTaskOutcome(complete)).toBeUndefined();
   });
 });
 

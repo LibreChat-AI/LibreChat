@@ -1,5 +1,6 @@
 import type { BackgroundTaskStatus, BackgroundTaskView } from './Parts/background';
 import type { TranslationKeys } from '~/hooks';
+import { backgroundTaskMessageKey, backgroundTaskNoteKey } from './Parts/guidance';
 import { ToolIcon, getToolIconType, OutputRenderer } from './ToolOutput';
 import { formatBackgroundCodeOutput } from './Parts/background';
 import { parseToolName } from '~/utils/toolLabels';
@@ -52,6 +53,8 @@ export default function BackgroundTaskCard({
     task.status === 'error' || task.status === 'failed' || task.status === 'interrupted';
   const result = task.result?.trim() ? task.result : undefined;
   const error = task.error?.trim() && task.error !== result ? task.error : undefined;
+  const noteKey = task.note ? backgroundTaskNoteKey(task.note) : undefined;
+  const messageKey = task.message ? backgroundTaskMessageKey(task.message) : undefined;
   let delivery: string | undefined;
   if (task.delivery === 'pending') {
     delivery = localize('com_ui_background_tasks_result_pending');
@@ -135,8 +138,10 @@ export default function BackgroundTaskCard({
           {localize('com_ui_background_tasks_result_available')}
         </p>
       )}
-      {task.note && <p className="mt-2 text-xs text-text-secondary">{task.note}</p>}
-      {task.message && <p className="mt-2 text-xs text-text-secondary">{task.message}</p>}
+      {noteKey && <p className="mt-2 text-xs text-text-secondary">{localize(noteKey)}</p>}
+      {messageKey && messageKey !== noteKey && (
+        <p className="mt-2 text-xs text-text-secondary">{localize(messageKey)}</p>
+      )}
       {!result &&
         !error &&
         !task.resultAvailable &&

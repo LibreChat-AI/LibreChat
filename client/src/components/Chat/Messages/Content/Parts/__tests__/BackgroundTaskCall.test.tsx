@@ -123,10 +123,11 @@ describe('BackgroundTaskCall', () => {
 
   it('renders an empty list as an empty state and warns when discovery is incomplete', () => {
     renderCall(JSON.stringify({ tasks: [], outstanding: 0, partial: true, warning: 'Try again.' }));
+    expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'failed');
     fireEvent.click(screen.getByTestId('task-header'));
     expect(screen.getByText('com_ui_background_tasks_empty')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_background_tasks_incomplete');
-    expect(screen.getByText('Try again.')).toBeInTheDocument();
+    expect(screen.queryByText('Try again.')).not.toBeInTheDocument();
   });
 
   it('distinguishes a running task from a finished result pending automatic delivery', () => {
@@ -223,7 +224,73 @@ describe('BackgroundTaskCall', () => {
     expect(within(card).getByText('Server restarted before completion.')).toBeInTheDocument();
   });
 
-  it('shows control notices as text and preserves unfamiliar responses as raw output', () => {
+  it.each([
+    ['invalid', 'com_ui_background_tasks_notice_invalid'],
+    ['rejected', 'com_ui_background_tasks_notice_rejected'],
+    ['unavailable', 'com_ui_background_tasks_notice_unavailable'],
+    ['not_found', 'com_ui_background_tasks_notice_not_found'],
+    ['outcome_unknown', 'com_ui_background_tasks_notice_outcome_unknown'],
+    ['result_unavailable', 'com_ui_background_tasks_notice_result_unavailable'],
+  ])(
+    'announces a %s warning notice as a failed check even if the tool step succeeded',
+    (status, label) => {
+      const hostMessage = 'Host advice in English, for the agent only.';
+      const { container } = renderCall(JSON.stringify({ status, message: hostMessage }), {
+        runStepStatus: 'completed',
+      });
+      expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'failed');
+      expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(label);
+      fireEvent.click(screen.getByTestId('task-header'));
+      expect(screen.getAllByText(label).length).toBeGreaterThan(1);
+      expect(screen.queryByText(hostMessage)).not.toBeInTheDocument();
+    },
+  );
+
+  it('localizes guidance without promising that a running task or pending result has finished', () => {
+    const note =
+      'Still running outside this turn; its result will arrive as a new turn when it finishes.';
+    const message =
+      'Automatic completion delivery is enabled for this subagent task. Continue independent work if available; otherwise end this turn and the host will resume you when the task finishes. Do not repeatedly poll an unchanged running task. Use check_background_task only for explicit status or control, or as a fallback if automatic delivery is unavailable.';
+    renderCall(
+      JSON.stringify({
+        tasks: [{ background_task_id: 'bg-1', tool: 'subagent', status: 'running', note, message }],
+        message,
+      }),
+    );
+    fireEvent.click(screen.getByTestId('task-header'));
+    expect(screen.getByText('com_ui_background_tasks_running_elsewhere')).toBeInTheDocument();
+    expect(screen.getAllByText('com_ui_background_tasks_subagent_wakeup_guidance')).toHaveLength(2);
+    expect(screen.queryByText(note)).not.toBeInTheDocument();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+  });
+
+  it('shows unknown host prose only inside raw task details, while preserving tool result text', () => {
+    const note = 'Advice from a later server version.';
+    const raw = JSON.stringify({
+      background_task_id: 'bg-1',
+      tool: 'bash_tool',
+      status: 'completed',
+      result: 'Tool-created output remains visible in its own language.',
+      note,
+    });
+    renderCall(raw);
+    fireEvent.click(screen.getByTestId('task-header'));
+    expect(screen.getByText('com_ui_background_tasks_more_in_raw_details')).toBeInTheDocument();
+    expect(
+      screen.getByText('Tool-created output remains visible in its own language.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(note)).not.toBeInTheDocument();
+    const details = screen.getByText('com_ui_background_tasks_raw_details').closest('details');
+    if (details == null) {
+      throw new Error('Task details disclosure is missing');
+    }
+    details.open = true;
+    fireEvent(details, new Event('toggle', { bubbles: true }));
+    expect(screen.getAllByTestId('task-output')).toHaveLength(2);
+    expect(screen.getAllByTestId('task-output')[1]).toHaveTextContent(note);
+  });
+
+  it('shows control notices as localized text and preserves unfamiliar responses as raw output', () => {
     const { rerender } = renderCall(
       JSON.stringify({
         status: 'delivery_scheduled',
@@ -232,7 +299,10 @@ describe('BackgroundTaskCall', () => {
       }),
     );
     fireEvent.click(screen.getByTestId('task-header'));
-    expect(screen.getByText('This result will arrive in a new turn.')).toBeInTheDocument();
+    expect(
+      screen.getAllByText('com_ui_background_tasks_notice_delivery_scheduled').length,
+    ).toBeGreaterThan(1);
+    expect(screen.queryByText('This result will arrive in a new turn.')).not.toBeInTheDocument();
     expect(screen.queryByTestId('tool-call-info')).not.toHaveAttribute('data-output');
 
     const raw = '{"status":"unexpected","result":"preserve this"}';
@@ -263,6 +333,79 @@ describe('BackgroundTaskCall', () => {
     details.open = true;
     fireEvent(details, new Event('toggle', { bubbles: true }));
     expect(screen.getByTestId('task-output')).toHaveTextContent('control-42');
+  });
+
+  it('announces stable progress across intent deltas, then the settled intent once', () => {
+    const firstArgs = '{"intent":"Checking the backgr';
+    const finalArgs = '{"intent":"Checking the background task","background_task_id":"bg-1"}';
+    const { container, rerender } = renderCall('', {
+      args: firstArgs,
+      isSubmitting: true,
+      initialProgress: 0.1,
+    });
+    const announcement = container.querySelector('[aria-live="polite"]');
+    expect(announcement).toHaveClass('sr-only');
+    expect(announcement).toHaveAttribute('aria-atomic', 'true');
+    expect(announcement).toHaveTextContent('com_ui_background_tasks_checking');
+    rerender(
+      <RecoilRoot>
+        <BackgroundTaskCall args={finalArgs} output="" isSubmitting={true} initialProgress={0.1} />
+      </RecoilRoot>,
+    );
+    expect(announcement).toHaveTextContent('com_ui_background_tasks_checking');
+    rerender(
+      <RecoilRoot>
+        <BackgroundTaskCall
+          args={finalArgs}
+          output={JSON.stringify(completed)}
+          isSubmitting={false}
+          initialProgress={1}
+          runStepStatus="completed"
+        />
+      </RecoilRoot>,
+    );
+    expect(announcement).toHaveTextContent('Checking the background task');
+  });
+
+  it.each([
+    ['delivery_scheduled', 'com_ui_background_tasks_notice_delivery_scheduled'],
+    ['result_persisting', 'com_ui_background_tasks_notice_result_persisting'],
+  ])('announces %s as a pending state rather than a task failure', (status, label) => {
+    const { container } = renderCall(
+      JSON.stringify({ status, message: 'Untranslated backend status message.' }),
+      { runStepStatus: 'completed' },
+    );
+    expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'completed');
+    expect(screen.getByTestId('task-header')).toHaveTextContent(label);
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(label);
+  });
+
+  it.each([
+    ['failed', 'com_ui_failed_subject'],
+    ['cancelled', 'com_ui_cancelled'],
+  ])('announces an explicit %s tool-run status ahead of benign output', (runStepStatus, label) => {
+    const { container } = renderCall(
+      JSON.stringify({ status: 'delivery_scheduled', message: 'The result will arrive later.' }),
+      { runStepStatus: runStepStatus as 'failed' | 'cancelled' },
+    );
+    expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', runStepStatus);
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(label);
+    expect(container.querySelector('[aria-live="polite"]')).not.toHaveTextContent(
+      'com_ui_background_tasks_notice_delivery_scheduled',
+    );
+  });
+
+  it('announces cancellation rather than a successful check when a result is discarded', () => {
+    const { container } = renderCall(
+      JSON.stringify({ status: 'cancelled', message: 'Discarded the result.' }),
+      {
+        runStepStatus: 'completed',
+      },
+    );
+    expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'cancelled');
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(
+      'com_ui_background_tasks_result_discarded',
+    );
   });
 
   it('keeps the row in progress while a poll streams and updates it after settlement', () => {

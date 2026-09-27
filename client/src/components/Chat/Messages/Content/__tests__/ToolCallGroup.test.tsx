@@ -886,6 +886,40 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByRole('button', { name: `Background tasks, ${suffix}` })).toBeInTheDocument();
   });
 
+  it.each(['invalid', 'rejected', 'unavailable', 'outcome_unknown', 'result_unavailable'])(
+    'shows a failed group for the %s background-task notice even when the poll step succeeds',
+    (status) => {
+      const part = makePart(
+        'poll-1',
+        JSON.stringify({ status, message: 'Host guidance about the failed check.' }),
+        Constants.CHECK_BACKGROUND_TASK,
+      );
+      Object.assign(part[ContentTypes.TOOL_CALL] ?? {}, { runStepStatus: 'completed' });
+      renderGroup({ ...baseProps, parts: [{ part, idx: 0 }], lastContentIdx: 0 });
+      expect(
+        screen.getByRole('button', { name: 'Background tasks, 1 failed' }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it('marks an incomplete background-task list as a failed check', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'poll-1',
+            JSON.stringify({ tasks: [], partial: true, warning: 'A replica is unreachable.' }),
+            Constants.CHECK_BACKGROUND_TASK,
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+    expect(screen.getByRole('button', { name: 'Background tasks, 1 failed' })).toBeInTheDocument();
+  });
+
   it('counts background failures per step when provider call IDs repeat', () => {
     const executions = [
       { stepId: 'step-success', status: 'completed' },

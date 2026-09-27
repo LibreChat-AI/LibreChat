@@ -6,8 +6,8 @@ import type {
   FunctionToolCall,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import { backgroundTaskOutcome, parseBackgroundTaskOutput } from './Parts/background';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './Parts/handle';
-import { parseBackgroundTaskOutput } from './Parts/background';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { isMemoryFailureOutput } from './Parts/MemoryCall';
 import { filterAttachmentsForPart } from '~/utils/map';
@@ -136,11 +136,11 @@ export function getToolMeta(
     const backgroundFailed = backgroundHandle != null && backgroundStatus === 'error';
     const polled =
       name === Constants.CHECK_BACKGROUND_TASK ? parseBackgroundTaskOutput(tc.output) : null;
-    const polledStatus = polled?.kind === 'task' ? polled.task.status : undefined;
+    const polledOutcome = backgroundTaskOutcome(polled);
     const backgroundCancelled =
       tc.backgroundTask?.cancelled === true ||
       (backgroundHandle != null && backgroundStatus === 'cancelled') ||
-      polledStatus === 'cancelled';
+      polledOutcome === 'cancelled';
     return {
       name,
       iconName,
@@ -150,11 +150,7 @@ export function getToolMeta(
       ...resolveOutcome(
         backgroundCancelled ? 'cancelled' : runStepStatus,
         completed,
-        failedOutput ||
-          backgroundFailed ||
-          polledStatus === 'error' ||
-          polledStatus === 'failed' ||
-          polledStatus === 'interrupted',
+        failedOutput || backgroundFailed || polledOutcome === 'failed',
       ),
     };
   }
