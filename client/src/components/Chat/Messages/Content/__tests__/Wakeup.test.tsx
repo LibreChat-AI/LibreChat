@@ -26,7 +26,11 @@ jest.mock('../ToolOutput', () => ({
   ToolIcon: ({ type }: { type: string }) => <span data-testid="tool-icon">{type}</span>,
   getToolIconType: (name: string) => name,
   getMCPServerName: () => '',
-  OutputRenderer: ({ text }: { text: string }) => <pre data-testid="task-output">{text}</pre>,
+  OutputRenderer: ({ text, copyText }: { text: string; copyText?: string }) => (
+    <pre data-testid="task-output" data-copy-text={copyText}>
+      {text}
+    </pre>
+  ),
 }));
 
 jest.mock('../MarkdownLite', () => ({
@@ -177,13 +181,42 @@ describe('Wakeup', () => {
     const header = screen.getByRole('button', { name: 'com_ui_wakeup_tasks_finished:2' });
     fireEvent.click(header);
     expect(screen.getByTestId('stacked-tool-icons')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_thread_status_completed')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_thread_status_failed')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_background_tasks_completed')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_failed')).toBeInTheDocument();
     expect(screen.getAllByTestId('background-task-card')).toHaveLength(2);
+    expect(screen.getByText('com_ui_error')).toHaveClass('text-status-error');
     expect(screen.queryByTestId('markdown')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'com_ui_wakeup_view_activity' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows a cancelled background result as a warning with its task details', () => {
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup
+            display={{
+              kind: 'background_tool',
+              tasks: [
+                {
+                  taskId: 'bg-cancelled',
+                  status: 'cancelled',
+                  result: 'The task was stopped.',
+                  toolCallId: 'call-cancelled',
+                  toolName: 'bash_tool',
+                },
+              ],
+            }}
+          />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    const header = screen.getByRole('button', { name: 'com_ui_wakeup_task_cancelled' });
+    expect(header.querySelector('[role="status"]')).toHaveClass('text-text-warning');
+    fireEvent.click(header);
+    expect(screen.getByTestId('background-task-card')).toHaveTextContent('com_ui_cancelled');
+    expect(screen.getByTestId('task-output')).toHaveTextContent('The task was stopped.');
   });
 
   it('renders the code completion as tool output rather than prose or host-internal JSON', () => {
@@ -210,15 +243,18 @@ describe('Wakeup', () => {
     );
 
     const header = screen.getByRole('button', { name: 'com_ui_wakeup_task_finished' });
-    expect(header.parentElement).toHaveClass('w-[36rem]');
+    expect(header.parentElement).not.toHaveClass('w-[36rem]');
     fireEvent.click(header);
+    expect(header.parentElement).toHaveClass('w-[36rem]');
 
     const card = screen.getByTestId('background-task-card');
     expect(card).toHaveTextContent('com_ui_tool_name_code');
     expect(card).toHaveTextContent('com_ui_background_tasks_completed');
     expect(screen.getByTestId('tool-icon')).toHaveTextContent('bash_tool');
     expect(screen.getByText('com_ui_output')).toBeInTheDocument();
-    expect(screen.getByTestId('task-output')).toHaveTextContent(output);
+    expect(screen.getByTestId('task-output')).toHaveTextContent('"checks": []');
+    expect(screen.getByTestId('task-output').textContent).toContain('{\n  "checks": []\n}');
+    expect(screen.getByTestId('task-output')).toHaveAttribute('data-copy-text', output);
     expect(screen.queryByText('com_ui_wakeup_explainer')).not.toBeInTheDocument();
     expect(screen.queryByTestId('markdown')).not.toBeInTheDocument();
   });

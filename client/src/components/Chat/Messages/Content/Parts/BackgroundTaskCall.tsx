@@ -72,7 +72,7 @@ export default function BackgroundTaskCall({
     hasInput: hasParams || (attachments?.length ?? 0) > 0,
     onExpand,
     runStepStatus,
-    extraError: taskStatus === 'error' || taskStatus === 'failed',
+    extraError: taskStatus === 'error' || taskStatus === 'failed' || taskStatus === 'interrupted',
     extraCancelled: taskStatus === 'cancelled',
   });
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showCode);

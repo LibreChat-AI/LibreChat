@@ -150,7 +150,11 @@ export function getToolMeta(
       ...resolveOutcome(
         backgroundCancelled ? 'cancelled' : runStepStatus,
         completed,
-        failedOutput || backgroundFailed || polledStatus === 'error' || polledStatus === 'failed',
+        failedOutput ||
+          backgroundFailed ||
+          polledStatus === 'error' ||
+          polledStatus === 'failed' ||
+          polledStatus === 'interrupted',
       ),
     };
   }

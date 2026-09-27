@@ -145,7 +145,7 @@ const Wakeup = memo(function Wakeup({
     setIsExpanded((previous) => !previous);
   }, [mountBody]);
 
-  const anyFailed = display.tasks.some((task) => task.status === 'error');
+  const anyFailed = display.tasks.some((task) => task.status !== 'completed');
   const headerLabel = useMemo(() => {
     if (display.kind === 'subagent') {
       const status = display.tasks[0]?.status ?? 'completed';
@@ -154,11 +154,13 @@ const Wakeup = memo(function Wakeup({
     if (display.tasks.length > 1) {
       return localize('com_ui_wakeup_tasks_finished', { 0: String(display.tasks.length) });
     }
-    return localize(
-      display.tasks[0]?.status === 'error'
-        ? 'com_ui_wakeup_task_errored'
-        : 'com_ui_wakeup_task_finished',
-    );
+    if (display.tasks[0]?.status === 'cancelled') {
+      return localize('com_ui_wakeup_task_cancelled');
+    }
+    if (display.tasks[0]?.status === 'error') {
+      return localize('com_ui_wakeup_task_errored');
+    }
+    return localize('com_ui_wakeup_task_finished');
   }, [display.kind, display.tasks, localize]);
 
   const nameSummary = useMemo(() => {
@@ -186,7 +188,7 @@ const Wakeup = memo(function Wakeup({
   );
 
   return (
-    <div className="w-[36rem] max-w-full">
+    <div className={cn('max-w-full', isExpanded && 'w-[36rem]')}>
       <Button
         variant="ghost"
         type="button"

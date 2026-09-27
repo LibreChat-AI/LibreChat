@@ -860,6 +860,7 @@ describe('ToolCallGroup image hoisting', () => {
   it.each([
     ['error', '1 failed'],
     ['cancelled', '1 cancelled'],
+    ['interrupted', '1 failed'],
   ])('reflects a %s task poll in the collapsed group', (status, suffix) => {
     renderGroup({
       ...baseProps,
@@ -881,9 +882,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
 
-    expect(
-      screen.getByRole('button', { name: `Background tasks · ${suffix}` }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `Background tasks, ${suffix}` })).toBeInTheDocument();
   });
 
   it('counts background failures per step when provider call IDs repeat', () => {

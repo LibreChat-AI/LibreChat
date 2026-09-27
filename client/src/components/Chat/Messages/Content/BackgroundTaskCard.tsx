@@ -1,6 +1,7 @@
 import type { BackgroundTaskStatus, BackgroundTaskView } from './Parts/background';
 import type { TranslationKeys } from '~/hooks';
 import { ToolIcon, getToolIconType, getMCPServerName, OutputRenderer } from './ToolOutput';
+import { formatBackgroundCodeOutput } from './Parts/background';
 import { getToolDisplayLabel, cn } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -8,10 +9,17 @@ const STATUS: Record<BackgroundTaskStatus, { label: TranslationKeys; dot: string
   dispatched: { label: 'com_ui_subagent_thread_status_dispatched', dot: 'bg-text-tertiary' },
   running: { label: 'com_ui_background_tasks_running', dot: 'bg-status-info' },
   stopping: { label: 'com_ui_background_tasks_stopping', dot: 'bg-status-warning' },
+  accepted: { label: 'com_ui_background_tasks_control_queued', dot: 'bg-status-info' },
+  claimed: { label: 'com_ui_background_tasks_result_claimed', dot: 'bg-text-tertiary' },
+  not_running: { label: 'com_ui_background_tasks_not_running', dot: 'bg-status-warning' },
+  control_not_found: {
+    label: 'com_ui_background_tasks_control_not_found',
+    dot: 'bg-status-warning',
+  },
   completed: { label: 'com_ui_background_tasks_completed', dot: 'bg-status-success' },
   error: { label: 'com_ui_failed', dot: 'bg-status-error' },
   failed: { label: 'com_ui_failed', dot: 'bg-status-error' },
-  interrupted: { label: 'com_ui_subagent_thread_status_interrupted', dot: 'bg-status-warning' },
+  interrupted: { label: 'com_ui_subagent_thread_status_interrupted', dot: 'bg-status-error' },
   cancelled: { label: 'com_ui_cancelled', dot: 'bg-status-warning' },
 };
 
@@ -31,15 +39,19 @@ export default function BackgroundTaskCard({
     : getToolDisplayLabel(task.toolName, localize, mcpServerNames);
   const serverName = getMCPServerName(task.toolName, mcpServerNames);
   const iconUrl = serverName ? mcpIconMap?.get(serverName) : undefined;
+  const iconType = getToolIconType(task.toolName);
+  const isCode = iconType === 'bash_tool' || iconType === 'execute_code';
   const state = STATUS[task.status];
+  const failed =
+    task.status === 'error' || task.status === 'failed' || task.status === 'interrupted';
   const result = task.result?.trim() ? task.result : undefined;
   const error = task.error?.trim() && task.error !== result ? task.error : undefined;
-  const delivery =
-    task.delivery === 'pending'
-      ? localize('com_ui_background_tasks_result_pending')
-      : task.delivery === 'failed'
-        ? localize('com_ui_background_tasks_result_undelivered')
-        : undefined;
+  let delivery: string | undefined;
+  if (task.delivery === 'pending') {
+    delivery = localize('com_ui_background_tasks_result_pending');
+  } else if (task.delivery === 'failed') {
+    delivery = localize('com_ui_background_tasks_result_undelivered');
+  }
 
   return (
     <div
@@ -48,11 +60,7 @@ export default function BackgroundTaskCard({
     >
       <div className="flex min-w-0 items-start gap-2.5">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-tertiary">
-          <ToolIcon
-            type={getToolIconType(task.toolName)}
-            iconUrl={iconUrl}
-            className="text-text-primary"
-          />
+          <ToolIcon type={iconType} iconUrl={iconUrl} className="text-text-primary" />
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="truncate text-sm font-semibold text-text-primary" title={title}>
@@ -75,7 +83,7 @@ export default function BackgroundTaskCard({
         <span
           className={cn(
             'inline-flex shrink-0 items-center gap-1.5 rounded-full bg-surface-tertiary px-2 py-1 text-xs text-text-secondary',
-            (task.status === 'error' || task.status === 'failed') && 'text-status-error',
+            failed && 'text-status-error',
           )}
         >
           <span className={cn('size-1.5 rounded-full', state.dot)} aria-hidden="true" />
@@ -84,11 +92,19 @@ export default function BackgroundTaskCard({
       </div>
       {result && (
         <div className="mt-3 border-t border-border-light pt-2.5">
-          <div className="mb-1.5 text-xs font-medium text-text-secondary">
-            {localize('com_ui_output')}
+          <div
+            className={cn(
+              'mb-1.5 text-xs font-medium',
+              failed && !error ? 'text-status-error' : 'text-text-secondary',
+            )}
+          >
+            {localize(failed && !error ? 'com_ui_error' : 'com_ui_output')}
           </div>
           <div className="min-w-0 rounded-md bg-surface-primary p-2.5">
-            <OutputRenderer text={result} />
+            <OutputRenderer
+              text={isCode ? formatBackgroundCodeOutput(result) : result}
+              copyText={result}
+            />
           </div>
         </div>
       )}
@@ -98,11 +114,19 @@ export default function BackgroundTaskCard({
             {localize('com_ui_error')}
           </div>
           <div className="min-w-0 rounded-md bg-surface-primary p-2.5">
-            <OutputRenderer text={error} />
+            <OutputRenderer
+              text={isCode ? formatBackgroundCodeOutput(error) : error}
+              copyText={error}
+            />
           </div>
         </div>
       )}
-      {!result && !error && task.resultAvailable && (
+      {!result && !error && task.resultClaimed && task.status !== 'claimed' && (
+        <p className="mt-2 text-xs text-text-secondary">
+          {localize('com_ui_background_tasks_result_claimed')}
+        </p>
+      )}
+      {!result && !error && task.resultAvailable && !task.resultClaimed && (
         <p className="mt-2 text-xs text-text-secondary">
           {localize('com_ui_background_tasks_result_available')}
         </p>
@@ -112,6 +136,7 @@ export default function BackgroundTaskCard({
       {!result &&
         !error &&
         !task.resultAvailable &&
+        !task.resultClaimed &&
         task.result === '' &&
         !task.note &&
         !task.message && (

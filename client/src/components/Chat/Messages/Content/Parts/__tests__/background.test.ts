@@ -1,4 +1,21 @@
-import { parseBackgroundTaskOutput } from '../background';
+import { formatBackgroundCodeOutput, parseBackgroundTaskOutput } from '../background';
+
+describe('formatBackgroundCodeOutput', () => {
+  it('indents a JSON log line without changing surrounding stdout and exit code', () => {
+    const raw =
+      'stdout:\nchecked at=2026-09-27T00:11:09Z\n{"checks":[{"status":"IN_PROGRESS"}]}\n[exit code: 0]';
+    expect(formatBackgroundCodeOutput(raw)).toBe(
+      'stdout:\nchecked at=2026-09-27T00:11:09Z\n{\n  "checks": [\n    {\n      "status": "IN_PROGRESS"\n    }\n  ]\n}\n[exit code: 0]',
+    );
+  });
+
+  it('leaves non-JSON lines, single JSON results, and very large outputs untouched', () => {
+    expect(formatBackgroundCodeOutput('stdout:\n[exit code: 0]')).toBe('stdout:\n[exit code: 0]');
+    expect(formatBackgroundCodeOutput('{"ok":true}')).toBe('{"ok":true}');
+    const large = `stdout:\n${'a'.repeat(64_001)}`;
+    expect(formatBackgroundCodeOutput(large)).toBe(large);
+  });
+});
 
 describe('parseBackgroundTaskOutput', () => {
   it('parses an ordinary task result with the receipt and its exact output', () => {
@@ -101,6 +118,75 @@ describe('parseBackgroundTaskOutput', () => {
       ),
     ).toMatchObject({ kind: 'task', task: { status: 'stopping' } });
   });
+
+  it('shows a cancellation_requested flag in a list as stopping, not cancelled', () => {
+    expect(
+      parseBackgroundTaskOutput(
+        JSON.stringify({
+          tasks: [
+            {
+              background_task_id: 'task-1',
+              tool: 'bash_tool',
+              status: 'running',
+              cancellation_requested: true,
+            },
+          ],
+          outstanding: 1,
+        }),
+      ),
+    ).toMatchObject({ kind: 'list', tasks: [{ status: 'stopping' }] });
+  });
+
+  it('keeps accepted subagent controls queued rather than labeling them completed', () => {
+    expect(
+      parseBackgroundTaskOutput(
+        JSON.stringify({
+          background_task_id: 'subagent-1',
+          subagent_thread_id: 'thread-1',
+          tool: 'subagent',
+          subagent_type: 'researcher',
+          status: 'accepted',
+          control_id: 'control-42',
+        }),
+      ),
+    ).toEqual({
+      kind: 'task',
+      task: {
+        taskId: 'subagent-1',
+        toolName: 'subagent',
+        subagentType: 'researcher',
+        status: 'accepted',
+      },
+    });
+  });
+
+  it.each(['claimed', 'not_running', 'control_not_found'])(
+    'renders a subagent %s receipt as a task instead of raw JSON',
+    (status) => {
+      expect(
+        parseBackgroundTaskOutput(
+          JSON.stringify({
+            background_task_id: 'task-1',
+            tool: 'subagent',
+            subagent_type: 'researcher',
+            status,
+            result_available: true,
+            result_claimed: true,
+          }),
+        ),
+      ).toEqual({
+        kind: 'task',
+        task: {
+          taskId: 'task-1',
+          toolName: 'subagent',
+          subagentType: 'researcher',
+          status,
+          resultAvailable: true,
+          resultClaimed: true,
+        },
+      });
+    },
+  );
 
   it('recognizes delivery and invalid-id notices without pretending they are tasks', () => {
     const message = 'The result is already assigned to an automatic continuation.';

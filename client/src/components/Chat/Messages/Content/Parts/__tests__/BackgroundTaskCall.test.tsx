@@ -55,7 +55,11 @@ jest.mock('../../ToolOutput', () => ({
   ToolIcon: ({ type }: { type: string }) => <span data-testid="tool-icon">{type}</span>,
   getToolIconType: (name: string) => name,
   getMCPServerName: () => '',
-  OutputRenderer: ({ text }: { text: string }) => <pre data-testid="task-output">{text}</pre>,
+  OutputRenderer: ({ text, copyText }: { text: string; copyText?: string }) => (
+    <pre data-testid="task-output" data-copy-text={copyText}>
+      {text}
+    </pre>
+  ),
   isError: () => false,
 }));
 
@@ -108,6 +112,11 @@ describe('BackgroundTaskCall', () => {
     expect(within(card).getByText('com_ui_background_tasks_completed')).toBeInTheDocument();
     expect(within(card).getByTestId('tool-icon')).toHaveTextContent('bash_tool');
     expect(within(card).getByTestId('task-output')).toHaveTextContent('checked at=2026-09-27');
+    expect(within(card).getByTestId('task-output').textContent).toContain('{\n  "checks": []\n}');
+    expect(within(card).getByTestId('task-output')).toHaveAttribute(
+      'data-copy-text',
+      completed.result,
+    );
     expect(screen.getByTestId('tool-call-info')).not.toHaveAttribute('data-output');
     expect(screen.queryByText(/"background_task_id"/)).not.toBeInTheDocument();
   });
@@ -162,6 +171,58 @@ describe('BackgroundTaskCall', () => {
     expect(screen.getByText('Disk full')).toBeInTheDocument();
   });
 
+  it('shows accepted subagent controls as queued while preserving the control id in raw details', () => {
+    renderCall(
+      JSON.stringify({
+        background_task_id: 'bg-1',
+        tool: 'subagent',
+        subagent_type: 'researcher',
+        status: 'accepted',
+        control_id: 'control-42',
+      }),
+    );
+    fireEvent.click(screen.getByTestId('task-header'));
+    const card = screen.getByTestId('background-task-card');
+    expect(within(card).getByText('com_ui_background_tasks_control_queued')).toBeInTheDocument();
+    expect(within(card).getByText('researcher')).toBeInTheDocument();
+    expect(within(card).queryByText('com_ui_background_tasks_completed')).toBeNull();
+    expect(screen.queryByText(/control-42/)).not.toBeInTheDocument();
+  });
+
+  it('keeps an already-claimed subagent result out of the available-on-request state', () => {
+    renderCall(
+      JSON.stringify({
+        background_task_id: 'bg-1',
+        tool: 'subagent',
+        subagent_type: 'researcher',
+        status: 'claimed',
+        result_available: true,
+        result_claimed: true,
+      }),
+    );
+    fireEvent.click(screen.getByTestId('task-header'));
+    const card = screen.getByTestId('background-task-card');
+    expect(within(card).getByText('com_ui_background_tasks_result_claimed')).toBeInTheDocument();
+    expect(within(card).queryByText('com_ui_background_tasks_result_available')).toBeNull();
+  });
+
+  it('marks an interrupted subagent poll as failed even when the poll run step succeeded', () => {
+    renderCall(
+      JSON.stringify({
+        background_task_id: 'bg-1',
+        tool: 'subagent',
+        status: 'interrupted',
+        error: 'Server restarted before completion.',
+      }),
+      { runStepStatus: 'completed' },
+    );
+    expect(screen.getByTestId('task-header')).toHaveAttribute('data-phase', 'failed');
+    fireEvent.click(screen.getByTestId('task-header'));
+    const card = screen.getByTestId('background-task-card');
+    expect(within(card).getByText('com_ui_subagent_thread_status_interrupted')).toBeInTheDocument();
+    expect(within(card).getByText('Server restarted before completion.')).toBeInTheDocument();
+  });
+
   it('shows control notices as text and preserves unfamiliar responses as raw output', () => {
     const { rerender } = renderCall(
       JSON.stringify({
@@ -200,7 +261,7 @@ describe('BackgroundTaskCall', () => {
       throw new Error('Task details disclosure is missing');
     }
     details.open = true;
-    fireEvent.toggle(details);
+    fireEvent(details, new Event('toggle', { bubbles: true }));
     expect(screen.getByTestId('task-output')).toHaveTextContent('control-42');
   });
 

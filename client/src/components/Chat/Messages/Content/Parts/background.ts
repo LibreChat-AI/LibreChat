@@ -1,10 +1,49 @@
 import type { BackgroundTaskDelivery } from 'librechat-data-provider';
 import type { WakeupTaskStatus } from './wakeup';
 
+export function formatBackgroundCodeOutput(output: string): string {
+  if (output.length > 64_000 || !output.includes('\n')) {
+    return output;
+  }
+  const lines = output.split('\n');
+  if (lines.length > 500) {
+    return output;
+  }
+  return lines
+    .map((line) => {
+      const trimmed = line.trim();
+      if (
+        trimmed.length < 2 ||
+        trimmed.length > 8_000 ||
+        !(
+          (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+          (trimmed.startsWith('[') && trimmed.endsWith(']'))
+        )
+      ) {
+        return line;
+      }
+      try {
+        const value: unknown = JSON.parse(trimmed);
+        if (value == null || typeof value !== 'object') {
+          return line;
+        }
+        const indent = line.slice(0, line.length - line.trimStart().length);
+        return `${indent}${JSON.stringify(value, null, 2).replace(/\n/g, `\n${indent}`)}`;
+      } catch {
+        return line;
+      }
+    })
+    .join('\n');
+}
+
 export type BackgroundTaskStatus =
   | WakeupTaskStatus
   | 'running'
   | 'stopping'
+  | 'accepted'
+  | 'claimed'
+  | 'not_running'
+  | 'control_not_found'
   | 'dispatched'
   | 'failed'
   | 'interrupted';
@@ -19,6 +58,7 @@ export type BackgroundTaskView = {
   message?: string;
   subagentType?: string;
   resultAvailable?: boolean;
+  resultClaimed?: boolean;
   delivery?: BackgroundTaskDelivery;
 };
 
@@ -45,6 +85,10 @@ const taskStatus = (value: unknown): BackgroundTaskStatus | null => {
   }
   if (
     value === 'running' ||
+    value === 'accepted' ||
+    value === 'claimed' ||
+    value === 'not_running' ||
+    value === 'control_not_found' ||
     value === 'completed' ||
     value === 'error' ||
     value === 'cancelled' ||
@@ -77,6 +121,7 @@ function parseTask(value: unknown): BackgroundTaskView | null {
     !optionalString(value.message) ||
     !optionalString(value.subagent_type) ||
     (value.result_available != null && typeof value.result_available !== 'boolean') ||
+    (value.result_claimed != null && typeof value.result_claimed !== 'boolean') ||
     !deliveryStatus(value.delivery)
   ) {
     return null;
@@ -84,13 +129,14 @@ function parseTask(value: unknown): BackgroundTaskView | null {
   return {
     taskId: value.background_task_id,
     toolName: value.tool,
-    status,
+    status: status === 'running' && value.cancellation_requested === true ? 'stopping' : status,
     ...(typeof value.result === 'string' ? { result: value.result } : {}),
     ...(typeof value.error === 'string' ? { error: value.error } : {}),
     ...(typeof value.note === 'string' ? { note: value.note } : {}),
     ...(typeof value.message === 'string' ? { message: value.message } : {}),
     ...(typeof value.subagent_type === 'string' ? { subagentType: value.subagent_type } : {}),
     ...(value.result_available === true ? { resultAvailable: true } : {}),
+    ...(value.result_claimed === true ? { resultClaimed: true } : {}),
     ...(value.delivery != null ? { delivery: value.delivery } : {}),
   };
 }
