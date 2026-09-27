@@ -39,6 +39,8 @@ export type LiveActivity = {
    *  only while the line is the tool's own generic label, which is the only
    *  thing a count of that tool can modify. */
   comboCount: number;
+  /** The generic line counts checks of a task rather than independent tool actions. */
+  isBackgroundTaskCheck?: boolean;
   /** Failed and stopped calls anywhere in the span, not just the newest line. */
   outcome: SpanOutcome;
 };
@@ -132,6 +134,16 @@ function toolCallLine(
   }
   if (intent != null) {
     return { text: intent, generic: false };
+  }
+  if (toolCall.name === Constants.CHECK_BACKGROUND_TASK) {
+    return {
+      text: localize(
+        meta?.hasOutput === true
+          ? 'com_ui_background_tasks_checked'
+          : 'com_ui_background_tasks_checking',
+      ),
+      generic: true,
+    };
   }
   if (!label) {
     return { text: localize('com_assistants_running_action'), generic: true };
@@ -270,7 +282,10 @@ function newestLine(
   serverNames: readonly string[],
   span: SpanSummary,
   preferLabels: boolean,
-): Pick<LiveActivity, 'text' | 'source' | 'pendingToolCallId' | 'comboCount'> {
+): Pick<
+  LiveActivity,
+  'text' | 'source' | 'pendingToolCallId' | 'comboCount' | 'isBackgroundTaskCheck'
+> {
   for (let position = parts.length - 1; position >= 0; position -= 1) {
     const part = parts[position];
     if (part == null) {
@@ -327,6 +342,7 @@ function newestLine(
          *  own work, or reports how it ended, the count has nothing left to
          *  multiply and reads as a claim about that sentence. */
         comboCount: line.generic ? Math.max(1, span.trailingToolCount) : 1,
+        ...(toolCall.name === Constants.CHECK_BACKGROUND_TASK && { isBackgroundTaskCheck: true }),
         ...(isAwaitingStartup(part, toolCall, span) && { pendingToolCallId: toolCall.id }),
       };
     }

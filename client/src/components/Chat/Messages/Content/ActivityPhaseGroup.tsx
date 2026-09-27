@@ -301,7 +301,10 @@ function LivePhaseHeader({
    *  and suppressed count together so neither can paint with the old value. */
   const comboCount = showSandboxStartup ? 1 : activity.comboCount;
   const { source } = activity;
-  const line = useMemo(() => ({ text, source, comboCount }), [text, source, comboCount]);
+  const line = useMemo(
+    () => ({ text, source, comboCount, isBackgroundTaskCheck: activity.isBackgroundTaskCheck }),
+    [text, source, comboCount, activity.isBackgroundTaskCheck],
+  );
   /** A thought's line is a finished sentence and holds for a beat; everything
    *  else repaints at the ordinary cadence. */
   const painted = useThrottledValue(
@@ -316,7 +319,12 @@ function LivePhaseHeader({
    *  fail while a later one runs, and the line alone would never say so. The
    *  hidden group header carries the same counts in the same words. */
   const { failed, cancelled } = activity.outcome;
-  const combo = painted.comboCount > 1 ? `×${painted.comboCount}` : '';
+  let combo = '';
+  if (painted.comboCount > 1) {
+    combo = painted.isBackgroundTaskCheck
+      ? `· ${localize('com_ui_background_tasks_n_checks', { 0: String(painted.comboCount) })}`
+      : `×${painted.comboCount}`;
+  }
   const failedNote =
     failed > 0
       ? localize(failed === 1 ? 'com_ui_one_action_failed' : 'com_ui_n_actions_failed', {

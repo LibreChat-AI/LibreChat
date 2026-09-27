@@ -309,6 +309,80 @@ describe('live fold parity with the cards it hides', () => {
     expect(screen.queryByTestId('activity-phase-card')).toBeNull();
   });
 
+  it('describes repeated background-task polls as checks in the live fold', () => {
+    jest.useFakeTimers();
+    const poll = (id: string, output: string) =>
+      toPart(
+        {
+          name: Constants.CHECK_BACKGROUND_TASK,
+          args: { background_task_id: 'same-task' },
+          output,
+        },
+        id,
+      );
+    const completed = JSON.stringify({
+      background_task_id: 'same-task',
+      tool: Tools.bash_tool,
+      status: 'running',
+    });
+    const view = mount(
+      [poll('first', completed), poll('second', completed), poll('third', completed)],
+      undefined,
+      true,
+    );
+    const header = within(screen.getByTestId('activity-phase-card')).getByRole('button');
+
+    expect(header).toHaveAccessibleName('Checked background tasks · 3 checks');
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('· 3 checks');
+    expect(header).not.toHaveTextContent('check_background_task');
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot>
+          <ContentParts
+            content={[
+              poll('first', completed),
+              poll('second', completed),
+              poll('third', completed),
+              poll('fourth', ''),
+            ]}
+            messageId="m1"
+            conversationId="c1"
+            isCreatedByUser={false}
+            isLast
+            isLatestMessage
+            isSubmitting
+            showThinking={false}
+          />
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Checking background tasks · 4 checks');
+  });
+
+  it.each([
+    ['error', 'Failed: Background tasks · 1 failed'],
+    ['cancelled', 'Cancelled · 1 cancelled'],
+  ])('keeps the %s verdict of a polled background task in the live fold', (status, label) => {
+    const output = JSON.stringify({
+      background_task_id: 'bg1',
+      tool: Tools.bash_tool,
+      status,
+    });
+    mount(
+      [toPart({ name: Constants.CHECK_BACKGROUND_TASK, output, runStepStatus: 'completed' })],
+      undefined,
+      true,
+    );
+    expect(
+      within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
+    ).toHaveAccessibleName(label);
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+  });
+
   it('shows a multiplier for consecutive uses of the same tool and resets on a different tool', () => {
     jest.useFakeTimers();
     const first = toPart({ name: 'create_file', output: 'created' }, 'first');
