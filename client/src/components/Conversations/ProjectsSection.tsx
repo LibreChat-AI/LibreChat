@@ -89,7 +89,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
   );
   /** Collapse keeps its children mounted, so without this every project row in
    *  the sidebar would fetch its chats on load whether or not it is open. */
-  const { data, isLoading } = useConversationsInfiniteQuery(
+  const { data, isLoading, isError, refetch } = useConversationsInfiniteQuery(
     { projectId, sortBy: 'updatedAt', sortDirection: 'desc' },
     { staleTime: 30000, cacheTime: 300000, enabled: expanded },
   );
@@ -111,6 +111,23 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
         {Array.from({ length: 3 }, (_, index) => (
           <ProjectChatSkeleton key={index} />
         ))}
+      </div>
+    );
+  }
+
+  /** Chats scopes itself to chats outside any project, so a project whose own list failed
+   *  says so and offers a retry rather than reading as empty. */
+  if (isError && conversations.length === 0) {
+    return (
+      <div
+        className="text-text-secondary flex items-center gap-1 py-1.5 pl-2 text-xs"
+        data-testid={`project-chats-error-${projectId}`}
+        role="alert"
+      >
+        <span>{localize('com_ui_chats_load_error')}</span>
+        <Button type="button" variant="ghost" size="sm" onClick={() => refetch()}>
+          {localize('com_ui_retry')}
+        </Button>
       </div>
     );
   }
