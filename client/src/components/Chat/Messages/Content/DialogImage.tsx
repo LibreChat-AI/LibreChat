@@ -254,11 +254,11 @@ export default function DialogImage({
     <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay
-          className="fixed inset-0 z-[100] bg-black/90"
+          className="fixed inset-0 z-[250] bg-black/90"
           onClick={handleBackgroundClick}
         />
         <DialogPrimitive.Content
-          className="fixed inset-0 z-[100] flex items-center justify-center outline-hidden"
+          className="fixed inset-0 z-[250] flex items-center justify-center outline-hidden"
           onOpenAutoFocus={(e) => {
             e.preventDefault();
             closeButtonRef.current?.focus();

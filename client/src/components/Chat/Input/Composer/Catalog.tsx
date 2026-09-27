@@ -3,7 +3,6 @@ import {
   Input,
   Label,
   Radio,
-  Button,
   OGDialog,
   OGDialogTitle,
   OGDialogContent,
@@ -13,13 +12,12 @@ import type { TFile } from 'librechat-data-provider';
 import type { AgentItem, ItemFilter } from '~/components/SidePanel/Agents/Tools/items/types';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
 import type { TranslationKeys } from '~/hooks';
+import type { FileView } from './Files';
 import MarketplaceCatalog from '~/components/SidePanel/Agents/Tools/MarketplaceCatalog';
 import { matchesView } from '~/components/SidePanel/Agents/Tools/items/filtering';
 import { itemKey } from '~/components/SidePanel/Agents/Tools/items/selectors';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { useLocalize, useToolFavorites } from '~/hooks';
-import { useGetFiles } from '~/data-provider';
-import { getFileType } from '~/utils';
+import FileGrid, { FILE_VIEWS } from './Files';
 
 export type CatalogSection = 'skill' | 'mcp' | 'files';
 
@@ -44,9 +42,10 @@ const SEARCH: Record<CatalogSection, TranslationKeys> = {
   files: 'com_ui_composer_search_files',
 };
 
-const FILTER: Record<'skill' | 'mcp', TranslationKeys> = {
+const FILTER: Record<CatalogSection, TranslationKeys> = {
   skill: 'com_ui_skills_filter',
   mcp: 'com_ui_composer_mcp_filter',
+  files: 'com_ui_composer_files_filter',
 };
 
 /** The palette row as the agent builder's card expects it. Rows without a
@@ -142,45 +141,6 @@ function EntryGrid({
   );
 }
 
-function FileList({ query, onAttach }: { query: string; onAttach: (file: TFile) => void }) {
-  const localize = useLocalize();
-  const { data: files = [] } = useGetFiles<TFile[]>();
-  const visible = useMemo(
-    () => files.filter((file) => matches(query, file.filename)),
-    [files, query],
-  );
-
-  if (visible.length === 0) {
-    return (
-      <p role="status" className="text-text-secondary py-16 text-center text-sm">
-        {localize('com_ui_composer_no_results')}
-      </p>
-    );
-  }
-
-  return (
-    <ul className="flex flex-col gap-1" aria-label={localize('com_ui_composer_files')}>
-      {visible.map((file) => (
-        <li key={file.file_id}>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => onAttach(file)}
-            className="h-auto w-full justify-start text-left"
-          >
-            <FilePreview
-              file={file}
-              fileType={getFileType(file.type)}
-              className="size-8 shrink-0 rounded-md"
-            />
-            <span className="min-w-0 flex-1 truncate">{file.filename}</span>
-          </Button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 interface CatalogProps {
   section: CatalogSection | null;
   onClose: () => void;
@@ -206,18 +166,24 @@ export default function Catalog({
   const localize = useLocalize();
   const [search, setSearch] = useState('');
   const [view, setView] = useState<View>('marketplace');
+  const [fileView, setFileView] = useState<FileView>('all');
   const [shown, setShown] = useState(section);
   if (section !== shown) {
     setShown(section);
     if (section != null) {
       setSearch('');
       setView('marketplace');
+      setFileView('all');
     }
   }
   const current = section ?? shown;
   const viewOptions = useMemo(
-    () => VIEWS.map((option) => ({ value: option.value, label: localize(option.labelKey) })),
-    [localize],
+    () =>
+      (current === 'files' ? FILE_VIEWS : VIEWS).map((option) => ({
+        value: option.value,
+        label: localize(option.labelKey),
+      })),
+    [current, localize],
   );
   const query = search.trim().toLowerCase();
 
@@ -254,23 +220,21 @@ export default function Catalog({
                     aria-label={localize(SEARCH[current])}
                   />
                 </div>
-                {current !== 'files' && (
-                  <>
-                    <Label id="composer-catalog-view-label" className="sr-only">
-                      {localize(FILTER[current])}
-                    </Label>
-                    <Radio
-                      wrap
-                      options={viewOptions}
-                      value={view}
-                      onChange={(value) => setView(value as View)}
-                      aria-labelledby="composer-catalog-view-label"
-                    />
-                  </>
-                )}
+                <Label id="composer-catalog-view-label" className="sr-only">
+                  {localize(FILTER[current])}
+                </Label>
+                <Radio
+                  wrap
+                  options={viewOptions}
+                  value={current === 'files' ? fileView : view}
+                  onChange={(value) =>
+                    current === 'files' ? setFileView(value as FileView) : setView(value as View)
+                  }
+                  aria-labelledby="composer-catalog-view-label"
+                />
               </div>
               {current === 'files' ? (
-                <FileList query={query} onAttach={onAttach} />
+                <FileGrid query={query} view={fileView} onAttach={onAttach} />
               ) : (
                 <EntryGrid section={current} entries={entries} query={query} view={view} />
               )}

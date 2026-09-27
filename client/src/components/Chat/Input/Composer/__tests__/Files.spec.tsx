@@ -1,0 +1,97 @@
+import React from 'react';
+import { RecoilRoot } from 'recoil';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import type { TFile } from 'librechat-data-provider';
+import FileGrid from '../Files';
+
+const file = (over: Partial<TFile> & Pick<TFile, 'file_id' | 'filename'>): TFile =>
+  ({
+    bytes: 2048,
+    type: 'text/plain',
+    filepath: `/uploads/${over.filename}`,
+    source: 'local',
+    createdAt: '2026-09-27T10:00:00.000Z',
+    ...over,
+  }) as TFile;
+
+let mockFiles: TFile[] = [];
+
+jest.mock('~/data-provider', () => ({
+  useGetFiles: () => ({ data: mockFiles }),
+  useFilePreviewBlob: () => ({ refetch: jest.fn().mockResolvedValue({ data: undefined }) }),
+  useFilePreview: () => ({ refetch: jest.fn() }),
+  useFileDownload: () => ({ refetch: jest.fn() }),
+  useSharedFileDownload: () => ({ refetch: jest.fn() }),
+}));
+
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string, options?: Record<string, string | number>) =>
+    options ? `${key}:${options['0']}` : key,
+  useAuthContext: () => ({ user: { id: 'user-1' } }),
+}));
+
+const renderGrid = (props: Partial<React.ComponentProps<typeof FileGrid>> = {}) => {
+  const onAttach = jest.fn();
+  render(
+    <RecoilRoot>
+      <FileGrid query="" view="all" onAttach={onAttach} {...props} />
+    </RecoilRoot>,
+  );
+  return { onAttach };
+};
+
+describe('FileGrid', () => {
+  beforeEach(() => {
+    mockFiles = [
+      file({ file_id: 'img', filename: 'photo.png', type: 'image/png' }),
+      file({ file_id: 'pdf', filename: 'report.pdf', type: 'application/pdf' }),
+      file({ file_id: 'txt', filename: 'notes.txt' }),
+    ];
+  });
+
+  it('shows every file as a card with its kind and size', () => {
+    renderGrid();
+    const cards = within(screen.getByRole('list')).getAllByRole('listitem');
+    expect(cards).toHaveLength(3);
+    expect(cards[1]).toHaveTextContent('report.pdf');
+    expect(cards[1]).toHaveTextContent('PDF · 2.0 KB');
+  });
+
+  it('offers a preview for images and PDFs only', () => {
+    renderGrid();
+    expect(
+      screen.getByRole('button', { name: 'com_ui_composer_preview_file:photo.png' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'com_ui_composer_preview_file:report.pdf' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'com_ui_composer_preview_file:notes.txt' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('filters by kind and by name', () => {
+    renderGrid({ view: 'images' });
+    expect(within(screen.getByRole('list')).getAllByRole('listitem')).toHaveLength(1);
+  });
+
+  it('matches a search against the file name', () => {
+    renderGrid({ query: 'repo' });
+    const cards = within(screen.getByRole('list')).getAllByRole('listitem');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toHaveTextContent('report.pdf');
+  });
+
+  it('says so when nothing matches', () => {
+    renderGrid({ query: 'nothing-here' });
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_composer_no_results');
+  });
+
+  it('attaches a file when its card is chosen, not when it is previewed', () => {
+    const { onAttach } = renderGrid();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_composer_preview_file:photo.png' }));
+    expect(onAttach).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('notes.txt'));
+    expect(onAttach).toHaveBeenCalledWith(expect.objectContaining({ file_id: 'txt' }));
+  });
+});

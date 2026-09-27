@@ -45,7 +45,7 @@ interface FilePreviewDialogProps {
 }
 
 /** Formats bytes with unit suffix (differs from ~/utils/formatBytes which returns a raw number). */
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes >= 1048576) {
     return `${(bytes / 1048576).toFixed(1)} MB`;
   }
@@ -55,7 +55,7 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-function getDisplayType(fileType?: string, fileName?: string): string {
+export function getDisplayType(fileType?: string, fileName?: string): string {
   if (fileType) {
     if (fileType.includes('pdf')) {
       return 'PDF';
