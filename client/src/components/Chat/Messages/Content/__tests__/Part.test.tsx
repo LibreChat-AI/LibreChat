@@ -64,7 +64,9 @@ jest.mock('../ToolCall', () => ({
 
 jest.mock('../Image', () => ({
   __esModule: true,
-  default: () => <div data-testid="image" />,
+  default: ({ alignRight }: { alignRight?: boolean }) => (
+    <div data-testid="image" data-aligned-right={String(alignRight)} />
+  ),
 }));
 
 jest.mock('~/utils', () => ({
@@ -86,6 +88,26 @@ const toolCallPart = (name: string, args = '{"code":"echo hi"}'): TMessageConten
       progress: 1,
     },
   }) as unknown as TMessageContentParts;
+
+describe('Part image alignment', () => {
+  it('right-aligns user image parts without moving assistant images', () => {
+    const imagePart = {
+      type: ContentTypes.IMAGE_FILE,
+      [ContentTypes.IMAGE_FILE]: {
+        file_id: 'image-1',
+        filename: 'upload.png',
+        filepath: '/images/upload.png',
+      },
+    } as TMessageContentParts;
+    const { rerender } = render(
+      <Part part={imagePart} isSubmitting={false} showCursor={false} isCreatedByUser={false} />,
+    );
+    expect(screen.getByTestId('image')).toHaveAttribute('data-aligned-right', 'false');
+
+    rerender(<Part part={imagePart} isSubmitting={false} showCursor={false} isCreatedByUser />);
+    expect(screen.getByTestId('image')).toHaveAttribute('data-aligned-right', 'true');
+  });
+});
 
 describe('Part tool renderer selection', () => {
   it('routes bash PTC tool calls through the BashCall renderer', () => {

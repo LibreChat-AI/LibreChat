@@ -519,6 +519,7 @@ const Part = memo(function Part({
       <Image
         imagePath={cached ?? imageFile.filepath}
         altText={imageFile.filename ?? 'Uploaded Image'}
+        alignRight={isCreatedByUser}
         width={imageFile.width}
         height={imageFile.height}
       />
