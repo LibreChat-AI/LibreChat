@@ -3919,9 +3919,10 @@ function attachedWorkspaceAuthoringPath(
   return pathError ? errorResult(tc, pathError) : { filePath: relativePath };
 }
 
-function attachedWorkspaceRequestLimits(
-  codeExecutionContext: CodeExecutionContext,
-): { maxQueueWaitMs: number; maxRequestTimeoutMs?: number } {
+function attachedWorkspaceRequestLimits(codeExecutionContext: CodeExecutionContext): {
+  maxQueueWaitMs: number;
+  maxRequestTimeoutMs?: number;
+} {
   const config = codeExecutionContext.codeEnvironmentConfigSchema;
   const maxRequestTimeoutMs = resolveAttachedWorkspaceRequestTimeoutMs(config);
   return {

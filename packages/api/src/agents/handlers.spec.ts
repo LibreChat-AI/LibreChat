@@ -5610,7 +5610,9 @@ describe('createToolExecuteHandler', () => {
               workspaceInstanceId: 'a'.repeat(64),
               operations: TEST_ATTACHED_WORKSPACE_OPERATIONS,
             },
-            codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 } },
+            codeEnvironmentConfigSchema: {
+              limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 },
+            },
             bridgeWorkerId: 'user-worker',
           },
         },
@@ -5902,7 +5904,9 @@ describe('createToolExecuteHandler', () => {
               executionProfile: 'stateful',
               statefulSessions: true,
               environmentType: 'attached',
-              codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: budget, maxRequestTimeoutMs: 125_000 } },
+              codeEnvironmentConfigSchema: {
+                limits: { maxQueueWaitMs: budget, maxRequestTimeoutMs: 125_000 },
+              },
               bridgeWorkerId: 'user-worker',
             },
           },
@@ -5921,7 +5925,11 @@ describe('createToolExecuteHandler', () => {
         ]);
 
         expect(previewWorkspaceEdit).toHaveBeenCalledWith(
-          expect.objectContaining({ maxQueueWaitMs: budget, maxRequestTimeoutMs: 125_000, deadlineAtMs: startedAt + 125_000 }),
+          expect.objectContaining({
+            maxQueueWaitMs: budget,
+            maxRequestTimeoutMs: 125_000,
+            deadlineAtMs: startedAt + 125_000,
+          }),
         );
         if (remaining == null) {
           expect(result.status).toBe('error');
@@ -6631,7 +6639,9 @@ describe('createToolExecuteHandler', () => {
             workspaceInstanceId: 'b'.repeat(64),
             operations: TEST_ATTACHED_WORKSPACE_OPERATIONS,
           },
-          codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 } },
+          codeEnvironmentConfigSchema: {
+            limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 },
+          },
           bridgeWorkerId: 'personal-worker-1',
           statefulSessions: true,
         },

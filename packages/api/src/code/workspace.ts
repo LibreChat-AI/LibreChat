@@ -273,13 +273,20 @@ export class WorkspaceToolHttpError extends Error {
     public readonly upstreamBody?: string,
     public readonly upstreamBodyTruncated = false,
   ) {
-    super(
-      (reason === 'rejected' &&
+    let message = `Workspace tool request ${reason}`;
+    if (
+      reason === 'rejected' &&
       isWorkspaceAdmissionTimeout(upstreamStatus, upstreamBody, upstreamBodyTruncated)
-        ? 'Workspace capacity was unavailable before the queue deadline. The operation was not started. Wait for active work to finish or select an independent workspace on a machine with available capacity.'
-        : reason === 'insufficient_time'
-          ? 'Workspace execution cannot fit within the remaining HTTP budget. The operation was not started.'
-          : `Workspace tool request ${reason}`) +
+    ) {
+      message =
+        'Workspace capacity was unavailable before the queue deadline. The operation was not started. Wait for active work to finish or select an independent workspace on a machine with available capacity.';
+    }
+    if (reason === 'insufficient_time') {
+      message =
+        'Workspace execution cannot fit within the remaining HTTP budget. The operation was not started.';
+    }
+    super(
+      message +
         (upstreamStatus == null ? '' : ` (upstreamStatus: ${upstreamStatus})`) +
         (upstreamBody ? `; upstreamBody: ${JSON.stringify(upstreamBody)}` : '') +
         (upstreamBodyTruncated ? ' [body truncated or incomplete]' : ''),
@@ -775,9 +782,11 @@ function getWorkspaceAuthHeaders(
       return;
     }
     try {
-      void Promise.resolve(supplier()).then(resolve, reject).finally(() => {
-        signal.removeEventListener('abort', abort);
-      });
+      void Promise.resolve(supplier())
+        .then(resolve, reject)
+        .finally(() => {
+          signal.removeEventListener('abort', abort);
+        });
     } catch (error) {
       signal.removeEventListener('abort', abort);
       reject(error);
@@ -848,9 +857,10 @@ export async function executeWorkspaceTool({
           : timeoutSignal;
       let attemptHeaders: Record<string, string>;
       try {
-        attemptHeaders = typeof authHeaders === 'function'
-          ? await getWorkspaceAuthHeaders(authHeaders, requestSignal)
-          : authHeaders;
+        attemptHeaders =
+          typeof authHeaders === 'function'
+            ? await getWorkspaceAuthHeaders(authHeaders, requestSignal)
+            : authHeaders;
       } catch (error) {
         if (timeoutSignal.aborted && signal?.aborted !== true) {
           throw lastAdmissionRejection ?? new WorkspaceToolHttpError('insufficient_time');

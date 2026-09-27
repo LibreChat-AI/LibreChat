@@ -391,12 +391,21 @@ describe('createAttachedWorkspaceBashTool', () => {
   test('opts Bash into a verified HTTP limit without changing execution or disabling the initial attempt', async () => {
     jest.spyOn(Date, 'now').mockReturnValue(1_000);
     expect(resolveAttachedWorkspaceRequestTimeoutMs()).toBeUndefined();
-    expect(resolveAttachedWorkspaceRequestTimeoutMs({ limits: { maxRequestTimeoutMs: 125_000 } })).toBe(125_000);
-    expect(resolveAttachedWorkspaceRequestTimeoutMs({ limits: { maxRequestTimeoutMs: 610_001 } })).toBeUndefined();
+    expect(
+      resolveAttachedWorkspaceRequestTimeoutMs({ limits: { maxRequestTimeoutMs: 125_000 } }),
+    ).toBe(125_000);
+    expect(
+      resolveAttachedWorkspaceRequestTimeoutMs({ limits: { maxRequestTimeoutMs: 610_001 } }),
+    ).toBeUndefined();
     const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
     const bashTool = createAttachedWorkspaceBashTool({
-      baseUrl: 'https://code.example.com/v1', authHeaders: () => ({}), workspaceId: 'project-a',
-      maxTimeoutMs: 90_000, maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000, fetchImpl,
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      maxTimeoutMs: 90_000,
+      maxQueueWaitMs: 0,
+      maxRequestTimeoutMs: 125_000,
+      fetchImpl,
     });
 
     await bashTool.func({ command: 'sleep 90', timeoutMs: 90_000 }, undefined, {});
