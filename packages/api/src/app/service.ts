@@ -1,4 +1,8 @@
-import { PrincipalType, materializeModelSpecEndpoints } from 'librechat-data-provider';
+import {
+  PrincipalType,
+  materializeModelSpecEndpoints,
+  setMaxSubagents,
+} from 'librechat-data-provider';
 import {
   logger,
   getTenantId,
@@ -195,6 +199,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       throw error;
     }
 
+    setMaxSubagents(lastGood.config?.endpoints?.agents?.maxSubagents);
     logger.error(
       '[ensureBaseConfig] Failed to reload base configuration; keeping the last good configuration.',
       error,

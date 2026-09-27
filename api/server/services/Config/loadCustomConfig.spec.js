@@ -517,6 +517,27 @@ describe('loadCustomConfig', () => {
       });
     });
 
+    it('treats an empty defaultParamsEndpoint as absent for OpenRouter', async () => {
+      const config = {
+        version: '1.0',
+        endpoints: {
+          custom: [
+            {
+              name: 'OpenRouter',
+              apiKey: 'user_provided',
+              baseURL: 'https://openrouter.ai/api/v1',
+              models: { default: ['test-model'] },
+              customParams: { defaultParamsEndpoint: '' },
+            },
+          ],
+        },
+      };
+      loadYaml.mockReturnValueOnce(config);
+
+      const loaded = await loadCustomConfig();
+      expect(loaded.endpoints.custom[0].customParams.defaultParamsEndpoint).toBe('openrouter');
+    });
+
     it('preserves explicit OpenRouter promptCache defaults', async () => {
       const openRouterConfig = {
         version: '1.0',

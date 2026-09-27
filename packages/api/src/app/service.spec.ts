@@ -1,3 +1,4 @@
+import { getMaxSubagents, setMaxSubagents } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   createAppConfigService,
@@ -121,6 +122,42 @@ describe('createAppConfigService', () => {
         expect(reloaded).toBe(initial);
         expect(deps._cache._store.get('app_config:_BASE_')).toBe(initial);
         expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload');
+      },
+    );
+
+    it.each(['tools', 'cache'])(
+      'restores the subagent cap if %s publication fails',
+      async (stage) => {
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValue({
+            config: { endpoints: { agents: { maxSubagents: 3 } } },
+            availableTools: { previous: {} },
+          }),
+        });
+        const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+        try {
+          await getAppConfig({ baseOnly: true });
+          setMaxSubagents(3);
+          await clearAppConfigCache();
+          deps.loadBaseConfig.mockImplementationOnce(async () => {
+            setMaxSubagents(20);
+            return {
+              config: { endpoints: { agents: { maxSubagents: 20 } } },
+              availableTools: { new: {} },
+            };
+          });
+          if (stage === 'tools') {
+            deps.setCachedTools.mockRejectedValueOnce(new Error('tools unavailable'));
+          } else {
+            deps._cache.set.mockRejectedValueOnce(new Error('cache unavailable'));
+          }
+
+          const kept = await getAppConfig({ baseOnly: true });
+          expect(kept.config?.endpoints?.agents?.maxSubagents).toBe(3);
+          expect(getMaxSubagents()).toBe(3);
+        } finally {
+          setMaxSubagents(undefined);
+        }
       },
     );
 
