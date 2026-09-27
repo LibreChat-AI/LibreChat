@@ -115,19 +115,21 @@ jest.mock('~/components/Conversations', () => {
     onRetry: () => void;
   }) {
     mockConversationsRender();
-    return (
-      <div data-testid="conversations-stub">
-        {isSearchLoading ? (
-          <div data-testid="search-spinner" />
-        ) : isError && conversations.length === 0 ? (
-          <button type="button" onClick={onRetry}>
-            Retry
-          </button>
-        ) : (
-          conversations.map((convo) => <span key={convo.conversationId}>{convo.title}</span>)
-        )}
-      </div>
-    );
+    const localize: (key: string) => string = jest.requireMock('~/hooks').useLocalize();
+    let body: React.ReactNode = conversations.map((convo) => (
+      <span key={convo.conversationId}>{convo.title}</span>
+    ));
+    if (isError && conversations.length === 0) {
+      body = (
+        <button type="button" onClick={onRetry}>
+          {localize('com_ui_retry')}
+        </button>
+      );
+    }
+    if (isSearchLoading) {
+      body = <div data-testid="search-spinner" />;
+    }
+    return <div data-testid="conversations-stub">{body}</div>;
   });
   return { __esModule: true, Conversations: ConversationsStub };
 });
@@ -318,14 +320,15 @@ describe('ConversationsSection search refetch', () => {
   });
 
   it('shows progress while retrying a failed cached search with no results', async () => {
+    const previousData = mockConversationsResult.data;
     mockConversationsResult.isError = true;
 
     try {
       renderSection('draft');
       await settleRenders();
-      expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'com_ui_retry' })).toBeInTheDocument();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
       expect(mockConversationsResult.refetch).toHaveBeenCalledTimes(1);
 
       act(() => {
@@ -334,8 +337,26 @@ describe('ConversationsSection search refetch', () => {
       });
 
       expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+
+      act(() => {
+        mockConversationsResult.isFetching = false;
+        mockConversationsResult.isError = false;
+        mockConversationsResult.data = {
+          pages: [
+            {
+              conversations: [{ conversationId: 'chat-1', title: 'Found match' }],
+              nextCursor: null,
+            },
+          ],
+        };
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByText('Found match')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-spinner')).not.toBeInTheDocument();
     } finally {
+      mockConversationsResult.data = previousData;
       mockConversationsResult.isError = false;
       mockConversationsResult.isFetching = false;
       mockConversationsResult.refetch.mockClear();
