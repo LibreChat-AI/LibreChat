@@ -23,6 +23,7 @@ import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from '.
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
+import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
@@ -31,7 +32,6 @@ import { StackedToolIcons } from './ToolOutput';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
 import SearchVerticals from './verticals';
-import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
 import { cn } from '~/utils';
 
 /** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
