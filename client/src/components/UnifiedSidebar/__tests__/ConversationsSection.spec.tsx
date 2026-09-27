@@ -2,7 +2,7 @@ import React from 'react';
 import { DndProvider } from 'react-dnd';
 import { BrowserRouter } from 'react-router-dom';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { render, act, screen } from '@testing-library/react';
+import { render, act, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { atom, RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import type { SetterOrUpdater } from 'recoil';
@@ -106,15 +106,23 @@ jest.mock('~/components/Conversations', () => {
   const ConversationsStub = memo(function ConversationsStub({
     conversations,
     isSearchLoading,
+    isError,
+    onRetry,
   }: {
     conversations: Array<{ conversationId: string; title: string }>;
     isSearchLoading: boolean;
+    isError: boolean;
+    onRetry: () => void;
   }) {
     mockConversationsRender();
     return (
       <div data-testid="conversations-stub">
         {isSearchLoading ? (
           <div data-testid="search-spinner" />
+        ) : isError && conversations.length === 0 ? (
+          <button type="button" onClick={onRetry}>
+            Retry
+          </button>
         ) : (
           conversations.map((convo) => <span key={convo.conversationId}>{convo.title}</span>)
         )}
@@ -156,9 +164,11 @@ import ConversationsSection from '../ConversationsSection';
 import store from '~/store';
 
 let setStreamTick: SetterOrUpdater<number>;
+let setSearchState: SetterOrUpdater<SearchState>;
 
 function TickController() {
   setStreamTick = useSetRecoilState(streamTickAtom);
+  setSearchState = useSetRecoilState(store.search);
   return null;
 }
 
@@ -273,6 +283,65 @@ describe('ConversationsSection streaming re-renders', () => {
 });
 
 describe('ConversationsSection search refetch', () => {
+  it('does not display old matches as unfiltered chats while clearing the search', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Old search match' }],
+          nextCursor: null,
+        },
+      ],
+    };
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByText('Old search match')).toBeInTheDocument();
+
+      act(() => {
+        setSearchState({
+          query: '',
+          debouncedQuery: 'draft',
+          enabled: true,
+          isTyping: true,
+          isSearching: false,
+        });
+      });
+
+      expect(screen.getByTestId('projects-stub')).toBeInTheDocument();
+      expect(screen.queryByText('Old search match')).not.toBeInTheDocument();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+    }
+  });
+
+  it('shows progress while retrying a failed cached search with no results', async () => {
+    mockConversationsResult.isError = true;
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(mockConversationsResult.refetch).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        mockConversationsResult.isFetching = true;
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.isError = false;
+      mockConversationsResult.isFetching = false;
+      mockConversationsResult.refetch.mockClear();
+    }
+  });
+
   it('shows loading for an uncached search', async () => {
     const previousData = mockConversationsResult.data;
     mockConversationsResult.data = undefined;
