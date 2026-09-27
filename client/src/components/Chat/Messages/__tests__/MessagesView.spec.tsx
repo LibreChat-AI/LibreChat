@@ -2,6 +2,8 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 
+let mockMessagesKey = 'convo-1';
+
 jest.mock('jotai', () => ({
   ...jest.requireActual('jotai'),
   useAtomValue: () => false,
@@ -29,7 +31,7 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/Providers', () => ({
   MessagesViewProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useChatContext: () => ({ index: 0, latestMessageDepth: 0 }),
+  useChatContext: () => ({ index: 0, latestMessageDepth: 0, messagesKey: mockMessagesKey }),
   useFileMapContext: () => ({}),
 }));
 
@@ -97,6 +99,10 @@ const messageTree = [
 ] as unknown as TMessage[];
 
 describe('MessagesView pending steers', () => {
+  beforeEach(() => {
+    mockMessagesKey = 'convo-1';
+  });
+
   it('keeps the failed-steer surface mounted in the recursive renderer', () => {
     render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
 
@@ -122,5 +128,14 @@ describe('MessagesView pending steers', () => {
     render(<MessagesView messagesTree={[]} messages={[]} />);
 
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-1');
+  });
+
+  it('keys an empty destination to the route, not the lagging context', () => {
+    /** Warm navigation to a chat whose tree is still empty: no message names the
+     *  destination, and the context still names the source run. */
+    mockMessagesKey = 'convo-2';
+    render(<MessagesView messagesTree={[]} messages={[]} />);
+
+    expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-2');
   });
 });
