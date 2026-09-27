@@ -1,13 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint } from '../helpers';
+import type { MockEndpoint } from '../helpers';
 import { openPanel } from './panels';
+import { withMongo } from '../db';
 
 /** Mock Provider A takes Anthropic's parameter set, which carries the thinking and
  *  prompt cache controls this panel groups. */
-async function openParameters(page: Page): Promise<void> {
+async function openParameters(
+  page: Page,
+  endpoint: MockEndpoint = MOCK_ENDPOINTS[0],
+): Promise<void> {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+  await selectMockEndpoint(page, endpoint);
   await openPanel(page, 'parameters', 'Parameters');
   await expect(page.getByRole('region', { name: 'Sampling' })).toBeVisible();
 }
@@ -29,6 +35,8 @@ test.describe('grouped model parameters', () => {
       .first()
       .click();
     await expect(reasoning.getByText(/^1$/)).toBeVisible();
+    /* The numeral is decoration; the heading says what it counts. */
+    await expect(page.getByRole('region', { name: 'Reasoning 1 changed setting' })).toBeVisible();
   });
 
   test('a parameter stays on screen when the toggle it works with is off @scenario:params-stay-visible-when-companion-off', async ({
@@ -43,6 +51,74 @@ test.describe('grouped model parameters', () => {
     await expect(thinking).toHaveAttribute('aria-checked', 'false');
 
     await expect(reasoning.getByText('Thinking Budget')).toBeVisible();
+  });
+
+  test('the preset editor keeps each label beside its control @scenario:preset-dialog-controls-keep-labels-close', async ({
+    page,
+  }) => {
+    /* The harness defines model specs, which turn the presets menu off; the editor that
+     * reuses these controls sits behind it. */
+    await page.route(
+      (url) => url.pathname === '/api/config',
+      async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({
+          response,
+          json: { ...body, interface: { ...body.interface, presets: true, modelSelect: true } },
+        });
+      },
+    );
+    const title = `Params preset ${randomUUID().slice(0, 8)}`;
+    try {
+      /* Mock Provider B is a plain custom endpoint, so its preset editor is the OpenAI
+       * one, whose left column holds far fewer controls than its right. */
+      await openParameters(page, MOCK_ENDPOINTS[1]);
+      await page.getByRole('button', { name: 'Save As Preset' }).click();
+      const saveDialog = page.getByRole('dialog');
+      await saveDialog.getByRole('textbox').first().fill(title);
+      await saveDialog.getByRole('button', { name: 'Save' }).click();
+      await expect(saveDialog).toBeHidden();
+
+      /* On a phone the drawer holding the panel covers the header's presets button. */
+      if ((page.viewportSize()?.width ?? 1280) < 768) {
+        await page.getByTestId('close-sidebar-button').click();
+      }
+      await page.getByTestId('presets-button').first().click();
+      const presets = page.getByRole('dialog', { name: 'Presets' });
+      const item = presets.getByRole('button', { name: new RegExp(`^${title}`) });
+      /* Each run has its own database, so this preset is the only one listed. */
+      await item.hover();
+      await presets.getByRole('button', { name: 'Edit' }).first().click();
+      const editor = page.getByRole('dialog').filter({ has: page.getByRole('slider') });
+      await expect(editor.getByRole('slider').first()).toBeVisible();
+
+      /* A control stretched to its column's height would push its field far below its
+       * label. */
+      /* Each control's label and field share one hover card trigger; the field is its
+       * last child, whatever kind of control it is. */
+      const gaps = await editor.evaluate((element) =>
+        Array.from(element.querySelectorAll('label'))
+          .map((label) => {
+            const trigger = label.closest('[data-state]');
+            const field = trigger?.lastElementChild;
+            if (trigger == null || field == null || field.contains(label)) {
+              return null;
+            }
+            return {
+              label: label.textContent,
+              gap: field.getBoundingClientRect().top - label.getBoundingClientRect().bottom,
+            };
+          })
+          .filter((entry) => entry != null),
+      );
+      expect(gaps.length, JSON.stringify(gaps)).toBeGreaterThan(3);
+      for (const entry of gaps) {
+        expect(entry?.gap, JSON.stringify(entry)).toBeLessThan(48);
+      }
+    } finally {
+      await withMongo((db) => db.collection('presets').deleteMany({ title }));
+    }
   });
 
   test('Reset and Save As Preset stay inside the panel in a language with long labels @scenario:params-actions-fit-long-labels', async ({
