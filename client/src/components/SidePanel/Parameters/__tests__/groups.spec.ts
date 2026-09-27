@@ -1,11 +1,6 @@
+import { ComponentTypes } from 'librechat-data-provider';
 import type { SettingDefinition } from 'librechat-data-provider';
-import {
-  availableParameters,
-  countModified,
-  groupParameters,
-  isModified,
-  isWideParameter,
-} from '../groups';
+import { countModified, groupParameters, hasControl, isModified, isWideParameter } from '../groups';
 
 const setting = (key: string, over: Partial<SettingDefinition> = {}): SettingDefinition =>
   ({ key, type: 'number', component: 'slider', ...over }) as SettingDefinition;
@@ -125,63 +120,38 @@ describe('isModified', () => {
   });
 });
 
-describe('availableParameters', () => {
-  const useResponsesApi = setting('useResponsesApi', { type: 'boolean', default: false });
-  const reasoningSummary = setting('reasoning_summary', {
-    dependsOn: [{ key: 'useResponsesApi', equals: true }],
+describe('hasControl', () => {
+  it('keeps a choice with options to pick from', () => {
+    expect(
+      hasControl(setting('region', { component: ComponentTypes.Combobox, options: ['us-east-1'] })),
+    ).toBe(true);
+    expect(
+      hasControl(
+        setting('imageDetail', { component: ComponentTypes.Dropdown, options: ['auto', 'low'] }),
+      ),
+    ).toBe(true);
   });
 
-  /** The server drops the reasoning object without the Responses API, so a control
-   *  for it is a control for nothing. */
-  it('hides a parameter whose companion is off', () => {
-    const live = availableParameters([useResponsesApi, reasoningSummary], {});
-
-    expect(live.map((s) => s.key)).toEqual(['useResponsesApi']);
+  /** Bedrock's region lists nothing of its own and takes the deployment's regions, so
+   *  with none configured its combobox renders nothing. */
+  it('drops a choice with nothing to choose', () => {
+    expect(hasControl(setting('region', { component: ComponentTypes.Combobox }))).toBe(false);
+    expect(
+      hasControl(setting('imageDetail', { component: ComponentTypes.Dropdown, options: [] })),
+    ).toBe(false);
   });
 
-  it('shows it as soon as the companion is on', () => {
-    const live = availableParameters([useResponsesApi, reasoningSummary], {
-      useResponsesApi: true,
-    });
-
-    expect(live.map((s) => s.key)).toEqual(['useResponsesApi', 'reasoning_summary']);
+  it('keeps every other kind of control', () => {
+    expect(hasControl(setting('temperature', { component: ComponentTypes.Slider }))).toBe(true);
   });
 
-  /** A companion the conversation never mentions still has whatever value the
-   *  provider will use, which is the definition's default. */
-  it('judges the companion by its effective value, not only by what was set', () => {
-    const thinking = setting('thinking', { type: 'boolean', default: true });
-    const budget = setting('thinkingBudget', {
-      dependsOn: [{ key: 'thinking', equals: true }],
-    });
+  it('leaves no section standing around a dropped control', () => {
+    const settings = [
+      setting('temperature'),
+      setting('region', { component: ComponentTypes.Combobox }),
+    ].filter(hasControl);
 
-    expect(availableParameters([thinking, budget], {}).map((s) => s.key)).toEqual([
-      'thinking',
-      'thinkingBudget',
-    ]);
-    expect(availableParameters([thinking, budget], { thinking: false }).map((s) => s.key)).toEqual([
-      'thinking',
-    ]);
-  });
-
-  /** An endpoint that drops the companion through `dropParams` leaves the dependent
-   *  parameter with nothing to attach to, and no way for the user to satisfy it. */
-  it('hides a parameter whose companion this endpoint does not offer', () => {
-    expect(availableParameters([reasoningSummary], { useResponsesApi: true })).toEqual([]);
-  });
-
-  it('leaves a parameter with no dependency alone', () => {
-    expect(availableParameters([setting('temperature')], {}).map((s) => s.key)).toEqual([
-      'temperature',
-    ]);
-  });
-
-  it('empties a section rather than leaving it standing', () => {
-    const sections = groupParameters(
-      availableParameters([setting('temperature'), reasoningSummary], {}),
-    );
-
-    expect(sections.map((section) => section.id)).toEqual(['sampling']);
+    expect(groupParameters(settings).map((section) => section.id)).toEqual(['sampling']);
   });
 });
 

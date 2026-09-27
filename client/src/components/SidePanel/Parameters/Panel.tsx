@@ -14,7 +14,7 @@ import {
   resolveDropParamsUIKeys,
 } from 'librechat-data-provider';
 import type { TPreset } from 'librechat-data-provider';
-import { availableParameters, groupParameters, countModified, isWideParameter } from './groups';
+import { groupParameters, countModified, hasControl, isWideParameter } from './groups';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import { SaveAsPresetDialog } from '~/components/Endpoints';
@@ -166,12 +166,21 @@ export default function Parameters() {
     setResetCount((count) => count + 1);
   }, [setConversation, announcePolite, localize]);
 
-  /** Only what this conversation can act on: a parameter whose companion is off is
-   *  dropped before grouping, so a section that has nothing live disappears with it
-   *  rather than standing empty. */
+  /** Region choices come from the deployment, so they are filled in before grouping,
+   *  and a control left with nothing to render is dropped there too: a section is
+   *  built only from controls that show something. */
   const sections = useMemo(
-    () => groupParameters(availableParameters(visibleParameters, conversation)),
-    [visibleParameters, conversation],
+    () =>
+      groupParameters(
+        visibleParameters
+          .map((setting) =>
+            setting.key === 'region' && bedrockRegions.length > 0
+              ? { ...setting, options: bedrockRegions }
+              : setting,
+          )
+          .filter((setting) => componentMapping[setting.component] != null && hasControl(setting)),
+      ),
+    [visibleParameters, bedrockRegions],
   );
 
   const openDialog = useCallback(() => {
@@ -219,10 +228,6 @@ export default function Parameters() {
                 }
                 const { key, default: defaultValue, ...rest } = setting;
 
-                if (key === 'region' && bedrockRegions.length) {
-                  rest.options = bedrockRegions;
-                }
-
                 /** The cell owns the span, not the control. The definitions carry a
                  *  columnSpan written for the four-column preset dialog, which says
                  *  nothing about a panel this narrow. */
@@ -242,13 +247,15 @@ export default function Parameters() {
           </section>
         );
       })}
-      <div className="mt-5 flex gap-2">
+      {/* The two share a row while their labels fit and stack when a translation is
+          too long for the panel. */}
+      <div className="mt-5 flex flex-wrap gap-2">
         <Button
           variant="outline"
           type="button"
           onClick={resetParameters}
           aria-label={localize('com_ui_reset_var', { 0: localize('com_ui_model_parameters') })}
-          className="flex flex-1 items-center justify-center gap-2 px-4 py-2 text-sm active:scale-[0.98] motion-reduce:transform-none"
+          className="flex flex-auto items-center justify-center gap-2 px-4 py-2 text-sm active:scale-[0.98] motion-reduce:transform-none"
         >
           <RotateCcw
             key={resetCount}
@@ -263,7 +270,7 @@ export default function Parameters() {
         <Button
           variant="default"
           onClick={openDialog}
-          className="flex flex-[2] items-center justify-center px-4 py-2 font-semibold"
+          className="flex flex-auto items-center justify-center px-4 py-2 font-semibold"
           type="button"
         >
           {localize('com_endpoint_save_as_preset')}

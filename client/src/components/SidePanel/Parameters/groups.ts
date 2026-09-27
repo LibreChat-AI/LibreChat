@@ -145,54 +145,18 @@ export function groupParameters(parameters: SettingDefinition[]): ParameterSecti
 }
 
 /**
- * Whether a parameter can currently do anything.
- *
- * A definition may say it only rides along with another one, and the server honours
- * that whether or not the panel does: OpenAI's reasoning summary, mode and context
- * are dropped unless the Responses API is on, a thinking budget is read only while
- * thinking is enabled, a cache lifetime only while the cache is being written.
- * Offering those controls regardless is what makes the panel feel arbitrary: half of
- * it is inert, and nothing says which half.
- *
- * The condition is judged on the EFFECTIVE value, the conversation's if it has one
- * and the definition's default otherwise, because a parameter left untouched is
- * still whatever the provider will use.
+ * Whether a parameter's control has anything to show. A combobox or dropdown with no
+ * choices renders nothing, which Bedrock's region does when the deployment lists no
+ * regions; dropping it before grouping keeps a section from standing empty around it.
  */
-export function isAvailable(
-  setting: SettingDefinition,
-  conversation: Partial<TConversation> | Partial<TPreset> | null,
-  definitions: Map<string, SettingDefinition>,
-): boolean {
-  if (setting.dependsOn == null || setting.dependsOn.length === 0) {
+export function hasControl(setting: SettingDefinition): boolean {
+  if (
+    setting.component !== ComponentTypes.Combobox &&
+    setting.component !== ComponentTypes.Dropdown
+  ) {
     return true;
   }
-  return setting.dependsOn.every((dependency) => {
-    /** A dependency this endpoint does not offer cannot be satisfied by the panel,
-     *  so the parameter that needs it has nothing to attach to either. */
-    const target = definitions.get(dependency.key);
-    if (target == null) {
-      return false;
-    }
-    const raw = conversation?.[dependency.key as keyof typeof conversation];
-    const value = raw ?? target.default;
-    if (dependency.equals !== undefined) {
-      return value === dependency.equals;
-    }
-    return value != null && value !== false && value !== '';
-  });
-}
-
-/** The parameters this conversation can actually act on, in the order given. */
-export function availableParameters(
-  parameters: SettingDefinition[],
-  conversation: Partial<TConversation> | Partial<TPreset> | null,
-): SettingDefinition[] {
-  const definitions = new Map(
-    parameters.filter((setting) => setting != null).map((setting) => [setting.key, setting]),
-  );
-  return parameters.filter(
-    (setting) => setting != null && isAvailable(setting, conversation, definitions),
-  );
+  return (setting.items?.length ?? 0) > 0 || (setting.options?.length ?? 0) > 0;
 }
 
 /**
