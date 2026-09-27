@@ -247,15 +247,15 @@ export default function Parameters() {
           </section>
         );
       })}
-      {/* The two share a row while their labels fit and stack when a translation is
-          too long for the panel. */}
+      {/* The two share a row while their labels fit, stack when a translation is too
+          long for the panel, and a label longer than the panel itself wraps. */}
       <div className="mt-5 flex flex-wrap gap-2">
         <Button
           variant="outline"
           type="button"
           onClick={resetParameters}
           aria-label={localize('com_ui_reset_var', { 0: localize('com_ui_model_parameters') })}
-          className="flex flex-auto items-center justify-center gap-2 px-4 py-2 text-sm active:scale-[0.98] motion-reduce:transform-none"
+          className="flex h-auto min-h-9 flex-auto items-center justify-center gap-2 px-4 py-2 text-sm whitespace-normal active:scale-[0.98] motion-reduce:transform-none"
         >
           <RotateCcw
             key={resetCount}
@@ -270,7 +270,7 @@ export default function Parameters() {
         <Button
           variant="default"
           onClick={openDialog}
-          className="flex flex-auto items-center justify-center px-4 py-2 font-semibold"
+          className="flex h-auto min-h-9 flex-auto items-center justify-center px-4 py-2 font-semibold whitespace-normal"
           type="button"
         >
           {localize('com_endpoint_save_as_preset')}
