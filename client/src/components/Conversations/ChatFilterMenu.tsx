@@ -27,6 +27,18 @@ import type { ChatFilterStatus, ChatSortDirection, ChatSortField } from './chatF
 import type { TranslationKeys } from '~/hooks';
 import type { DateRange } from './facets';
 import {
+  chatFilterCountAtom,
+  chatFilterStatusAtom,
+  chatFilterTagsAtom,
+  chatSortAtom,
+  isAlphabeticalSort,
+  resetChatFiltersAtom,
+  selectableBookmarks,
+  setChatFilterStatusAtom,
+  sortFieldsFor,
+  toggleChatFilterTagAtom,
+} from './chatFilters';
+import {
   createdRangeAtom,
   DATE_RANGE_OPTIONS,
   endpointFilterAtom,
@@ -38,17 +50,6 @@ import {
   toggleEndpointFilterAtom,
   updatedRangeAtom,
 } from './facets';
-import {
-  chatFilterCountAtom,
-  chatFilterStatusAtom,
-  chatFilterTagsAtom,
-  chatSortAtom,
-  isAlphabeticalSort,
-  resetChatFiltersAtom,
-  setChatFilterStatusAtom,
-  sortFieldsFor,
-  toggleChatFilterTagAtom,
-} from './chatFilters';
 import { useGetConversationTags, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
 import { useHasAccess, useLocalize } from '~/hooks';
@@ -213,12 +214,7 @@ const BookmarkChoices = memo(() => {
   const toggleTag = useSetAtom(toggleChatFilterTagAtom);
   const { data } = useGetConversationTags();
 
-  /** A bookmark no chat carries filters the list down to nothing, unless it is already
-   *  selected, where it stays so it can be turned off. */
-  const bookmarks = useMemo(
-    () => data?.filter((tag) => tag.count > 0 || tags.includes(tag.tag)) ?? [],
-    [data, tags],
-  );
+  const bookmarks = useMemo(() => selectableBookmarks(data, tags), [data, tags]);
 
   if (bookmarks.length === 0) {
     return (
@@ -516,16 +512,14 @@ const FilterFacets = ({
     if (showBookmarks) {
       collect(
         localize('com_ui_bookmarks'),
-        (bookmarkData ?? [])
-          .filter((bookmark) => bookmark.count > 0 || tags.includes(bookmark.tag))
-          .map((bookmark) => ({
-            id: `bookmark:${bookmark.tag}`,
-            label: bookmark.tag,
-            checked: tags.includes(bookmark.tag),
-            multiple: true,
-            icon: tags.includes(bookmark.tag) ? <BookmarkFilledIcon /> : <BookmarkIcon />,
-            onSelect: () => toggleTag(bookmark.tag),
-          })),
+        selectableBookmarks(bookmarkData, tags).map((bookmark) => ({
+          id: `bookmark:${bookmark.tag}`,
+          label: bookmark.tag,
+          checked: tags.includes(bookmark.tag),
+          multiple: true,
+          icon: tags.includes(bookmark.tag) ? <BookmarkFilledIcon /> : <BookmarkIcon />,
+          onSelect: () => toggleTag(bookmark.tag),
+        })),
       );
     }
 

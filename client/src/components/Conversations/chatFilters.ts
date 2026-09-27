@@ -1,5 +1,5 @@
 import { atom } from 'jotai';
-import type { ConversationListParams } from 'librechat-data-provider';
+import type { ConversationListParams, TConversationTag } from 'librechat-data-provider';
 import { createStorageAtom } from '~/store/jotai-utils';
 
 /** Which slice of the user's chats the sidebar list is showing. */
@@ -113,3 +113,26 @@ export const toggleChatFilterTagAtom = atom(null, (get, set, tag: string) => {
     tags.includes(tag) ? tags.filter((current) => current !== tag) : [...tags, tag],
   );
 });
+
+export type BookmarkChoice = Pick<TConversationTag, 'tag' | 'count'>;
+
+/**
+ * The bookmarks worth offering as filters: those some chat carries, since one no chat
+ * carries filters the list down to nothing, plus every selected one, including a bookmark
+ * no chat carries any more or one that was deleted, so a chosen bookmark can always be
+ * turned off.
+ */
+export const selectableBookmarks = (
+  bookmarks: TConversationTag[] | undefined,
+  selected: string[],
+): BookmarkChoice[] => {
+  const known = new Set<string>();
+  const listed: BookmarkChoice[] = [];
+  for (const bookmark of bookmarks ?? []) {
+    known.add(bookmark.tag);
+    if (bookmark.count > 0 || selected.includes(bookmark.tag)) {
+      listed.push(bookmark);
+    }
+  }
+  return listed.concat(selected.filter((tag) => !known.has(tag)).map((tag) => ({ tag, count: 0 })));
+};
