@@ -233,12 +233,17 @@ export default function Catalog({
       {current != null && (
         <OGDialogContent className="flex h-[80vh] max-h-[720px] w-11/12 max-w-[960px] flex-col overflow-hidden">
           <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
-            <div className="flex flex-col gap-3">
-              <OGDialogTitle>{localize(TITLE[current])}</OGDialogTitle>
-              <OGDialogDescription className="sr-only">
-                {localize(SEARCH[current])}
-              </OGDialogDescription>
-              <div className="flex flex-wrap items-center gap-2">
+            <OGDialogTitle>{localize(TITLE[current])}</OGDialogTitle>
+            <OGDialogDescription className="sr-only">
+              {localize(SEARCH[current])}
+            </OGDialogDescription>
+            {/* Reaches into the dialog's right padding so the scrollbar sits at the
+                edge, and pads the content back so the cards keep their inset. The
+                controls ride inside it as a sticky header, so they share the cards'
+                exact width whether the scrollbar takes space or overlays; the small
+                left inset keeps the search field's focus ring from being clipped. */}
+            <div className="-mr-5 -ml-1 min-h-0 flex-1 overflow-y-auto pr-5 pl-1">
+              <div className="bg-surface-dialog sticky top-0 z-10 flex flex-wrap items-center gap-2 pt-1 pb-3">
                 <div className="min-w-0 flex-1">
                   <Input
                     type="search"
@@ -263,10 +268,6 @@ export default function Catalog({
                   </>
                 )}
               </div>
-            </div>
-            {/* Reaches into the dialog's right padding so the scrollbar sits at the
-                edge, and pads the content back so the cards keep their inset. */}
-            <div className="-mr-5 min-h-0 flex-1 overflow-y-auto pr-5">
               {current === 'files' ? (
                 <FileList query={query} onAttach={onAttach} />
               ) : (
