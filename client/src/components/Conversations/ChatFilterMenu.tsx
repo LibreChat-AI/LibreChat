@@ -27,6 +27,18 @@ import type { ChatFilterStatus, ChatSortDirection, ChatSortField } from './chatF
 import type { TranslationKeys } from '~/hooks';
 import type { DateRange } from './facets';
 import {
+  createdRangeAtom,
+  DATE_RANGE_OPTIONS,
+  endpointFilterAtom,
+  facetFilterCountAtom,
+  hasAttachmentsAtom,
+  resetFacetsAtom,
+  selectableEndpoints,
+  sharedOnlyAtom,
+  toggleEndpointFilterAtom,
+  updatedRangeAtom,
+} from './facets';
+import {
   chatFilterCountAtom,
   chatFilterStatusAtom,
   chatFilterTagsAtom,
@@ -37,17 +49,6 @@ import {
   sortFieldsFor,
   toggleChatFilterTagAtom,
 } from './chatFilters';
-import {
-  createdRangeAtom,
-  DATE_RANGE_OPTIONS,
-  endpointFilterAtom,
-  facetFilterCountAtom,
-  hasAttachmentsAtom,
-  resetFacetsAtom,
-  sharedOnlyAtom,
-  toggleEndpointFilterAtom,
-  updatedRangeAtom,
-} from './facets';
 import { useGetConversationTags, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
 import { useHasAccess, useLocalize } from '~/hooks';
@@ -342,13 +343,11 @@ const EndpointFacet = memo(() => {
 
   const endpoints = useMemo(
     () =>
-      Object.keys(endpointsConfig ?? {})
-        .filter((endpoint) => endpointsConfig?.[endpoint] != null)
-        .map((endpoint) => ({
-          value: endpoint,
-          label: (alternateName[endpoint] as string | undefined) ?? endpoint,
-        })),
-    [endpointsConfig],
+      selectableEndpoints(endpointsConfig, selected).map((endpoint) => ({
+        value: endpoint,
+        label: (alternateName[endpoint] as string | undefined) ?? endpoint,
+      })),
+    [endpointsConfig, selected],
   );
 
   const value = useMemo(() => {
@@ -551,26 +550,24 @@ const FilterFacets = ({
 
     collect(
       localize('com_ui_endpoint'),
-      Object.keys(endpointsConfig ?? {})
-        .filter((endpoint) => endpointsConfig?.[endpoint] != null)
-        .map((endpoint) => ({
-          id: `endpoint:${endpoint}`,
-          label: (alternateName[endpoint] as string | undefined) ?? endpoint,
-          checked: selectedEndpoints.includes(endpoint),
-          disabled: endpointsAtLimit && !selectedEndpoints.includes(endpoint),
-          multiple: true,
-          icon: (
-            <MinimalIcon
-              size={16}
-              model={null}
-              isCreatedByUser={false}
-              endpoint={endpoint}
-              endpointsConfig={endpointsConfig}
-              className="size-4"
-            />
-          ),
-          onSelect: () => toggleEndpoint(endpoint),
-        })),
+      selectableEndpoints(endpointsConfig, selectedEndpoints).map((endpoint) => ({
+        id: `endpoint:${endpoint}`,
+        label: (alternateName[endpoint] as string | undefined) ?? endpoint,
+        checked: selectedEndpoints.includes(endpoint),
+        disabled: endpointsAtLimit && !selectedEndpoints.includes(endpoint),
+        multiple: true,
+        icon: (
+          <MinimalIcon
+            size={16}
+            model={null}
+            isCreatedByUser={false}
+            endpoint={endpoint}
+            endpointsConfig={endpointsConfig}
+            className="size-4"
+          />
+        ),
+        onSelect: () => toggleEndpoint(endpoint),
+      })),
     );
 
     /** A flag is its own category and its own single option. */

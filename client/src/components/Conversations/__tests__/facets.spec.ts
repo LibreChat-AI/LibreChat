@@ -1,4 +1,5 @@
 import { createStore } from 'jotai';
+import type { TEndpointsConfig } from 'librechat-data-provider';
 import {
   chatFacetParamsAtom,
   createdRangeAtom,
@@ -9,6 +10,7 @@ import {
   rangeCutoff,
   sharedOnlyAtom,
   resetFacetsAtom,
+  selectableEndpoints,
   toggleEndpointFilterAtom,
   updatedRangeAtom,
 } from '../facets';
@@ -140,5 +142,25 @@ describe('chatFacetParamsAtom', () => {
       hasFiles: undefined,
       sharedOnly: undefined,
     });
+  });
+});
+
+describe('selectableEndpoints', () => {
+  const served: TEndpointsConfig = { openAI: { order: 0 }, anthropic: { order: 1 }, google: null };
+
+  it('lists the endpoints the deployment serves', () => {
+    expect(selectableEndpoints(served, [])).toEqual(['openAI', 'anthropic']);
+  });
+
+  it('keeps a selected endpoint the deployment no longer serves, so it can be turned off', () => {
+    expect(selectableEndpoints(served, ['anthropic', 'bedrock'])).toEqual([
+      'openAI',
+      'anthropic',
+      'bedrock',
+    ]);
+  });
+
+  it('still lists the selection when the endpoints are unavailable', () => {
+    expect(selectableEndpoints(undefined, ['openAI'])).toEqual(['openAI']);
   });
 });

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { atom, useSetAtom } from 'jotai';
-import type { ConversationListParams } from 'librechat-data-provider';
+import type { ConversationListParams, TEndpointsConfig } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 
 /** Coarse windows, matching the headings the list already groups chats under. */
@@ -152,3 +152,16 @@ export const resetFacetsAtom = atom(null, (_get, set) => {
   set(hasAttachmentsAtom, false);
   set(sharedOnlyAtom, false);
 });
+
+/** The endpoints this deployment serves, plus any still selected that it no longer lists,
+ *  so a chosen endpoint can always be turned off. */
+export const selectableEndpoints = (
+  endpointsConfig: TEndpointsConfig | undefined,
+  selected: string[],
+): string[] => {
+  const served = Object.keys(endpointsConfig ?? {}).filter(
+    (endpoint) => endpointsConfig?.[endpoint] != null,
+  );
+  const known = new Set(served);
+  return served.concat(selected.filter((endpoint) => !known.has(endpoint)));
+};
