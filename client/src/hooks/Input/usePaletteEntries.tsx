@@ -73,6 +73,10 @@ export interface PaletteEntry {
   /** Refinements of this tool, rendered as inline pills on the row while it is
    *  on. Not separately favouritable: they only exist within the parent. */
   modes?: PaletteMode[];
+  /** The catalog record behind a skill row, for the "Show all" dialog's card. */
+  skill?: TSkillSummary;
+  /** A server's own branding, for the "Show all" dialog's card. */
+  iconUrl?: string;
 }
 
 /** Accumulates skill pages so client-side search covers the full catalog. */
@@ -440,6 +444,7 @@ export default function usePaletteEntries({
           active: staged.has(skill.name),
           pinned: false,
           onSelect: () => toggleSkill(skill.name),
+          skill,
         });
       }
       /* Skills staged by name (the slash command, or a draft restored before
@@ -564,6 +569,7 @@ export default function usePaletteEntries({
           pinned: false,
           onSelect: selectServer,
           modes: getServerModes(),
+          iconUrl: server.config?.iconPath,
         });
       }
     }

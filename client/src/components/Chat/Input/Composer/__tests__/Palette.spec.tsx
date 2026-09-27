@@ -83,6 +83,8 @@ jest.mock('~/Providers', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) =>
     options ? `${key}:${options['0'] ?? options.count}` : key,
+  useAuthContext: () => ({ user: { id: 'user-1' } }),
+  useToolFavorites: () => ({ favoriteKeys: new Set<string>(), toggle: jest.fn() }),
 }));
 
 let mockFavoriteKeys: string[] = [];
@@ -185,7 +187,9 @@ const rows = () =>
 /** Just the section headers, which is what carries the order. */
 const headers = () =>
   Array.from(
-    document.querySelectorAll<HTMLElement>('[id^="composer-palette-list"] [data-row-key^="h:"]'),
+    document.querySelectorAll<HTMLElement>(
+      '[id^="composer-palette-list"] [data-row-key^="h:"] [role="columnheader"]',
+    ),
   ).map((row) => row.textContent?.trim() ?? '');
 
 /** Row identities in list order, which is what the model actually decides. */
@@ -310,6 +314,52 @@ describe('Palette', () => {
         '0',
       ),
     );
+  });
+
+  describe('show all', () => {
+    const many = (section: 'skill' | 'mcp', count: number) =>
+      Array.from({ length: count }, (_, i) =>
+        entry({ key: `${section}:item${i}`, itemId: `item${i}`, label: `item${i}`, section }),
+      );
+
+    it('caps skills, servers and files at five rows each', () => {
+      mockRecentFiles = Array.from({ length: 7 }, (_, i) => ({
+        file_id: `f${i}`,
+        filename: `file${i}.pdf`,
+        type: 'application/pdf',
+      }));
+      /* Rendered one section at a time: the list is virtualized, so rows past
+         its height are not in the DOM to count. */
+      const { unmount } = renderPalette({ entries: [...many('skill', 8), ...many('mcp', 8)] });
+      const listed = keys();
+      expect(listed.filter((key) => key.startsWith('skill:'))).toHaveLength(5);
+      expect(listed.filter((key) => key.startsWith('mcp:'))).toHaveLength(5);
+      unmount();
+      renderPalette({ entries: [] });
+      expect(keys().filter((key) => key.startsWith('file:'))).toHaveLength(5);
+    });
+
+    it('keeps the resting highlight on a row, not on a header action', () => {
+      renderPalette({ canAttach: false, entries: many('mcp', 2) });
+      expect(screen.getByTestId('composer-palette-search')).toHaveAttribute(
+        'aria-activedescendant',
+        expect.stringContaining(
+          Array.from('mcp:item0', (c) => c.charCodeAt(0).toString(16).padStart(4, '0')).join(''),
+        ),
+      );
+    });
+
+    it('opens the section dialog, whose cards toggle the same entries', async () => {
+      const servers = many('mcp', 7);
+      renderPalette({ entries: servers });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'com_ui_composer_show_all_label:com_ui_composer_mcp' }),
+      );
+      const dialog = await screen.findByRole('dialog');
+      expect(dialog).toHaveTextContent('com_ui_mcp_servers');
+      fireEvent.click(screen.getByRole('button', { name: /item6/ }));
+      expect(servers[6].onSelect).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('section order', () => {

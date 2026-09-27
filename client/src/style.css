@@ -2659,7 +2659,10 @@ html[data-input-modality='keyboard']
 }
 /** Trigger glyphs that turn as their popover opens, on the same curve. */
 .animate-composer-icon {
-  transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
+  transition-property: transform, rotate;
+  transition-duration: 260ms;
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 /**
