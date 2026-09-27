@@ -11,6 +11,7 @@
   "com_ui_background_tasks_finished": "Finished",
   "com_ui_background_tasks_incomplete": "Some background results may not be shown. Check again later.",
   "com_ui_background_tasks_label": "Background tasks, {{0}} running",
+  "com_ui_background_tasks_n_checks": "{{0}} checks",
   "com_ui_background_tasks_no_output": "No output returned",
   "com_ui_background_tasks_not_running": "No longer running",
   "com_ui_background_tasks_pending_label": "Background tasks, {{0}} results pending",
