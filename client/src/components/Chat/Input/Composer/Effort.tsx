@@ -401,8 +401,9 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
           className="composer-effort-glide absolute top-1/2 left-0 -translate-y-1/2"
         >
           <span
+            data-dragging={dragging || undefined}
             className={cn(
-              'bg-accent-primary block h-full w-full rounded-full transition-opacity duration-100 ease-out motion-reduce:duration-0',
+              'composer-effort-fill bg-accent-primary block h-full rounded-full',
               /* At the first stop the fill lies wholly under the thumb, and a
                  thumb leaning away from the rail's end would uncover its start. */
               isUngraded || shownIndex === 0 ? 'opacity-0' : 'opacity-100',
