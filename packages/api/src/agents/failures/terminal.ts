@@ -46,13 +46,16 @@ export function isAgentRunCancellation(error: unknown, signal?: AbortSignal): bo
   return isOwnedAbortError(error, signal);
 }
 
-/** An HTTP status when the provider answered, else how the response died in transit. */
+/** Preserve rejection status; a successful status can still precede a broken response body. */
 function getUpstreamErrorType(error: unknown, status?: number): string {
-  if (status != null) {
+  if (status != null && status >= 400) {
     return String(status);
   }
   const streamFailure = getModelStreamFailure(error);
-  return streamFailure == null ? UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE : `stream_${streamFailure}`;
+  if (streamFailure != null) {
+    return `stream_${streamFailure}`;
+  }
+  return status == null ? UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE : String(status);
 }
 
 export function getUpstreamModelErrorMetadata(
@@ -102,16 +105,17 @@ export function createTerminalRunErrorObserver({
         return fallback();
       }
 
+      const { status } = getSafeErrorMetadata(upstreamModelError);
       const classifiedError =
         safelyResolveLangChainError(error) ??
         safelyResolveLangChainError(upstreamModelError) ??
-        resolveModelStreamError(upstreamModelError) ??
-        resolveModelStreamError(error);
+        (status == null || status < 400
+          ? (resolveModelStreamError(upstreamModelError) ?? resolveModelStreamError(error))
+          : undefined);
       if (classifiedError != null) {
         return classifiedError;
       }
 
-      const { status } = getSafeErrorMetadata(upstreamModelError);
       /** Unclassified: the provider's own explanation is the only account of what happened, and a
        *  rejection from a gateway or proxy carries it as the whole point of the 400. The status
        *  headlines it either way, so a deployment withholding provider text loses no taxonomy. */

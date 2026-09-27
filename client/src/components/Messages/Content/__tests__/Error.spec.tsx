@@ -199,13 +199,39 @@ describe('Error — reader-facing provider and fallback copy', () => {
   });
 
   it.each([
-    [ErrorTypes.MODEL_STREAM_CLOSED, 'com_error_model_stream_closed'],
-    [ErrorTypes.MODEL_STREAM_STALLED, 'com_error_model_stream_stalled'],
-  ])('explains a %s model response instead of the bare transport error', (type, key) => {
-    renderError({ type }, providerMessage);
+    [
+      ErrorTypes.MODEL_STREAM_CLOSED,
+      'com_error_model_stream_closed',
+      'The model provider closed the connection before the response finished. Try again.',
+    ],
+    [
+      ErrorTypes.MODEL_STREAM_STALLED,
+      'com_error_model_stream_stalled',
+      'The model provider stopped sending the response, and the request timed out. Try again.',
+    ],
+  ])(
+    'localizes a %s error even when it carries older-client fallback prose',
+    (type, key, prose) => {
+      renderError(`${prose}\n${JSON.stringify({ type })}`, providerMessage);
 
-    expect(screen.getByText(catalog[key])).toBeInTheDocument();
-    expect(screen.queryByText(/terminated/i)).not.toBeInTheDocument();
+      expect(screen.getByText(catalog[key])).toBeInTheDocument();
+      expect(screen.queryByText(prose)).not.toBeInTheDocument();
+      expect(screen.queryByText(/terminated/i)).not.toBeInTheDocument();
+      expectReadable();
+    },
+  );
+
+  it('keeps fallback prose when an older client cannot recognize the server error type', () => {
+    const prose =
+      'The model provider closed the connection before the response finished. Try again.';
+    renderError(
+      `${prose}\n${JSON.stringify({ type: 'newer_model_stream_failure' })}`,
+      providerMessage,
+    );
+
+    expect(screen.getByText(prose)).toBeInTheDocument();
+    expect(screen.queryByText(catalog.com_error_unknown)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('{');
     expectReadable();
   });
 

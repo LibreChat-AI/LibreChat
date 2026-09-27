@@ -1,9 +1,10 @@
-import { Agent, fetch } from 'undici';
 import { createServer } from 'node:http';
+import { Agent, errors, fetch } from 'undici';
 import { ErrorTypes } from 'librechat-data-provider';
 import { ChatOpenAI } from '@librechat/agents/llm/openai';
 import { GraphRecursionError } from '@langchain/langgraph';
 import type { AddressInfo } from 'node:net';
+import type { ModelErrorTrackerCallback } from './failures/tracker';
 import {
   GENERIC_PROVIDER_ERROR,
   getLangChainErrorCode,
@@ -19,6 +20,7 @@ import {
   resolveModelStreamError,
 } from './errors';
 import { MCPAuthenticationRejectedError, MCPAuthenticationRefreshError } from '~/mcp/errors';
+import { createTerminalRunErrorObserver } from './failures/terminal';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 
@@ -313,7 +315,7 @@ describe('getAgentErrorMetadata', () => {
   });
 });
 
-type StreamEnding = 'close' | 'stall' | 'abort';
+type StreamEnding = 'close' | 'stall' | 'abort' | 'headers' | 'close-before-headers';
 
 interface DyingStreamClient {
   baseURL: string;
@@ -321,11 +323,7 @@ interface DyingStreamClient {
   signal: AbortSignal;
 }
 
-/**
- * Serves a model-style SSE response that dies after its first event, the way a provider hanging
- * up, a provider going silent past the body timeout, or the user pressing Stop ends one, and
- * returns whatever `read` threw while consuming it.
- */
+/** Returns the real transport error from a provider failure before or after response headers. */
 async function readDyingStream(
   ending: StreamEnding,
   read: (client: DyingStreamClient) => Promise<void>,
@@ -333,6 +331,13 @@ async function readDyingStream(
 ): Promise<unknown> {
   const controller = new AbortController();
   const server = createServer((_req, res) => {
+    if (ending === 'headers') {
+      return;
+    }
+    if (ending === 'close-before-headers') {
+      setTimeout(() => res.socket?.destroy(), 20);
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write(firstEvent);
     if (ending === 'close') {
@@ -344,7 +349,7 @@ async function readDyingStream(
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
-  const dispatcher = new Agent({ bodyTimeout: 150 });
+  const dispatcher = new Agent({ bodyTimeout: 150, headersTimeout: 150 });
   const client: DyingStreamClient = {
     baseURL: `http://127.0.0.1:${port}/v1`,
     signal: controller.signal,
@@ -385,13 +390,18 @@ const RESPONSES_EVENT = `event: response.output_text.delta\ndata: ${JSON.stringi
   sequence_number: 1,
 })}\n\n`;
 
-function streamThroughChatOpenAI(useResponsesApi: boolean) {
+function streamThroughChatOpenAI(
+  useResponsesApi: boolean,
+  modelCallback?: ModelErrorTrackerCallback,
+) {
   return async ({ baseURL, fetch: read, signal }: DyingStreamClient) => {
     const model = new ChatOpenAI({
       apiKey: 'test-key',
       model: 'test-model',
       streaming: true,
       useResponsesApi,
+      maxRetries: 0,
+      ...(modelCallback != null ? { callbacks: [modelCallback] } : {}),
       configuration: { baseURL, fetch: read },
     } as never);
     for await (const _chunk of await model.stream('hi', { signal })) {
@@ -407,7 +417,8 @@ describe('model stream failures', () => {
     expect(error).toBeInstanceOf(TypeError);
     expect(getModelStreamFailure(error)).toBe('closed');
     expect(resolveModelStreamError(error)).toBe(
-      JSON.stringify({ type: ErrorTypes.MODEL_STREAM_CLOSED }),
+      'The model provider closed the connection before the response finished. Try again.\n' +
+        JSON.stringify({ type: ErrorTypes.MODEL_STREAM_CLOSED }),
     );
   });
 
@@ -417,7 +428,8 @@ describe('model stream failures', () => {
     expect(error).toBeInstanceOf(TypeError);
     expect(getModelStreamFailure(error)).toBe('stalled');
     expect(resolveModelStreamError(error)).toBe(
-      JSON.stringify({ type: ErrorTypes.MODEL_STREAM_STALLED }),
+      'The model provider stopped sending the response, and the request timed out. Try again.\n' +
+        JSON.stringify({ type: ErrorTypes.MODEL_STREAM_STALLED }),
     );
   });
 
@@ -425,6 +437,15 @@ describe('model stream failures', () => {
     const error = await readDyingStream('stall', readRawBody);
 
     expect(getModelStreamFailure(new Error('graph failed', { cause: error }))).toBe('stalled');
+  });
+
+  it('prefers a body timeout over a socket error found earlier in the cause chain', () => {
+    const socket = new TypeError('terminated', {
+      cause: new errors.SocketError('other side closed'),
+    });
+    const timeout = Object.assign(new errors.BodyTimeoutError(), { cause: socket });
+
+    expect(getModelStreamFailure(new Error('graph failed', { cause: timeout }))).toBe('stalled');
   });
 
   it('leaves a cancelled stream to the cancellation path', async () => {
@@ -437,21 +458,59 @@ describe('model stream failures', () => {
   it.each([
     ['Chat Completions', false, CHAT_COMPLETION_EVENT],
     ['Responses', true, RESPONSES_EVENT],
-  ])('classifies what the %s client throws for each ending', async (_api, responses, event) => {
-    const read = streamThroughChatOpenAI(responses);
-    const closed = await readDyingStream('close', read, event);
-    const stalled = await readDyingStream('stall', read, event);
-    const aborted = await readDyingStream('abort', read, event);
+  ])(
+    'tracks and classifies a real %s model stream for each ending',
+    async (_api, responses, event) => {
+      const observer = createTerminalRunErrorObserver({
+        logger: { error: jest.fn() },
+        source: '[Agent API]',
+      });
+      const read = streamThroughChatOpenAI(responses, observer.modelCallback);
+      const closed = await readDyingStream('close', read, event);
+      const stalled = await readDyingStream('stall', read, event);
+      const aborted = await readDyingStream('abort', read, event);
 
-    expect(getModelStreamFailure(closed)).toBe('closed');
-    expect(getModelStreamFailure(stalled)).toBe('stalled');
-    expect(aborted).toBeDefined();
-    expect(getModelStreamFailure(aborted)).toBeUndefined();
+      expect(getModelStreamFailure(closed)).toBe('closed');
+      expect(observer.getUserFacingError(closed, () => 'untracked')).toBe(
+        resolveModelStreamError(closed),
+      );
+      expect(getModelStreamFailure(stalled)).toBe('stalled');
+      expect(observer.getUserFacingError(stalled, () => 'untracked')).toBe(
+        resolveModelStreamError(stalled),
+      );
+      expect(aborted).toBeDefined();
+      expect(getModelStreamFailure(aborted)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ['waiting for headers', 'headers'],
+    ['a socket closing before headers', 'close-before-headers'],
+  ] as const)('does not mistake %s for a failed response body', async (_label, ending) => {
+    const raw = await readDyingStream(ending, readRawBody);
+    expect(raw).toBeDefined();
+    expect(getModelStreamFailure(raw)).toBeUndefined();
+
+    for (const responses of [false, true]) {
+      const modelError = await readDyingStream(ending, streamThroughChatOpenAI(responses));
+      expect(modelError).toBeDefined();
+      expect(getModelStreamFailure(modelError)).toBeUndefined();
+    }
   });
 
   it.each([
     ['a provider rejection', Object.assign(new Error('500 upstream failed'), { status: 500 })],
     ['prose that happens to say terminated', new Error('terminated')],
+    ['a bare terminated TypeError', new TypeError('terminated')],
+    ['a socket error before body streaming', new errors.SocketError('other side closed')],
+    [
+      'a socket close wrapped by a pre-response fetch failure',
+      new TypeError('fetch failed', { cause: new errors.SocketError('other side closed') }),
+    ],
+    [
+      'a header timeout',
+      new TypeError('fetch failed', { cause: new errors.HeadersTimeoutError() }),
+    ],
     ['a non-error value', 'terminated'],
     ['nothing', undefined],
   ])('does not classify %s', (_label, error) => {
@@ -460,12 +519,16 @@ describe('model stream failures', () => {
   });
 
   it('reads the cause chain without trusting hostile accessors', () => {
-    const hostile = Object.defineProperty(new TypeError('terminated'), 'cause', {
-      get() {
-        throw new Error('accessor exploded');
+    const hostile = Object.defineProperty(
+      new TypeError('terminated', { cause: new errors.BodyTimeoutError() }),
+      'code',
+      {
+        get() {
+          throw new Error('accessor exploded');
+        },
       },
-    });
+    );
 
-    expect(getModelStreamFailure(hostile)).toBe('closed');
+    expect(getModelStreamFailure(hostile)).toBe('stalled');
   });
 });
