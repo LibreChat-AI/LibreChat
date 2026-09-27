@@ -231,9 +231,10 @@ describe('background task shutdown', () => {
       registerBackgroundTaskShutdown({ registry, getBudgetMs: () => 10_000 });
 
       expect(registered.map(([name, , options]) => [name, options])).toEqual([
-        ['background task admission', { phase: 'pre-drain', priority: 100 }],
+        ['background task admission', { phase: 'pre-drain', priority: 110 }],
         ['background tasks', { priority: 95 }],
       ]);
+      expect(registered[0][2]?.priority).toBeGreaterThan(100);
       registered[0][1]();
       expect(registry.isAdmissionClosed()).toBe(true);
 

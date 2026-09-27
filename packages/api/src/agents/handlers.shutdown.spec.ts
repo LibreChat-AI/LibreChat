@@ -234,6 +234,89 @@ describe('createToolExecuteHandler — background tasks at shutdown', () => {
     );
   });
 
+  it('waits for the projected result when an independent receipt write returns false', async () => {
+    const { createToolExecuteHandler, registry } = loadModules();
+    const adapter = completionAdapter();
+    adapter.persistResult.mockResolvedValue(false);
+    let resolveProjection: (ready: boolean) => void = () => undefined;
+    adapter.persist.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveProjection = resolve;
+        }),
+    );
+    const tool = {
+      name: 'search_mcp_docs',
+      description: 'search docs',
+      schema: z.object({ q: z.string() }),
+      invoke: jest.fn(async () => ({ content: 'projected output' })),
+    } as unknown as StructuredToolInterface;
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      backgroundToolCompletion: adapter.backgroundToolCompletion,
+    });
+
+    await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call-projected',
+          name: tool.name,
+          args: { q: 'projected', run_in_background: true },
+          stepId: 'step-projected',
+        },
+      ],
+      configurable: buildConfig([tool.name]),
+      metadata: { thread_id: 'shutdown_convo', run_id: 'response-projected' },
+    });
+    await flushMicrotasks();
+    expect(adapter.persistResult).toHaveReturnedTimes(1);
+    expect(adapter.persist).toHaveBeenCalledTimes(1);
+
+    const draining = registry.drainForShutdown(drainOptions());
+    resolveProjection(true);
+    expect(await draining).toEqual({ tracked: 1, interrupted: 0, flushed: 0, unsettled: 0 });
+    expect(adapter.retire).not.toHaveBeenCalled();
+  });
+
+  it('reports an unconfirmed result when neither receipt nor projection becomes durable', async () => {
+    const { createToolExecuteHandler, registry } = loadModules();
+    const adapter = completionAdapter();
+    adapter.persistResult.mockResolvedValue(false);
+    adapter.persist.mockResolvedValue(false);
+    const tool = {
+      name: 'search_mcp_docs',
+      description: 'search docs',
+      schema: z.object({ q: z.string() }),
+      invoke: jest.fn(async () => ({ content: 'not durable' })),
+    } as unknown as StructuredToolInterface;
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      backgroundToolCompletion: adapter.backgroundToolCompletion,
+    });
+
+    await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call-undurable',
+          name: tool.name,
+          args: { q: 'undurable', run_in_background: true },
+          stepId: 'step-undurable',
+        },
+      ],
+      configurable: buildConfig([tool.name]),
+      metadata: { thread_id: 'shutdown_convo', run_id: 'response-undurable' },
+    });
+    await flushMicrotasks();
+    expect(adapter.retire).toHaveBeenCalledTimes(1);
+
+    expect(await registry.drainForShutdown(drainOptions())).toEqual({
+      tracked: 1,
+      interrupted: 0,
+      flushed: 1,
+      unsettled: 1,
+    });
+  });
+
   it('refuses a new background dispatch once shutdown closes admission', async () => {
     const { createToolExecuteHandler, registry } = loadModules();
     const adapter = completionAdapter();

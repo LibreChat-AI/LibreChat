@@ -25,10 +25,13 @@ describe('Experimental server configuration', () => {
 
   it("drains background tasks within the primary's cluster shutdown deadline", () => {
     expect(source).toMatch(
-      /registerBackgroundTaskShutdown\(\{[\s\S]*?getBudgetMs: getClusterShutdownBudgetMs,[\s\S]*?\}\);/,
+      /registerBackgroundTaskShutdown\(\{[\s\S]*?getBudgetMs: clusterShutdownBudgetMs,[\s\S]*?\}\);/,
     );
     expect(source).toMatch(
-      /const destroyGenerationJobManager = \(\) => \{\s*const budgetMs = getClusterShutdownBudgetMs\(\);/,
+      /const clusterShutdownBudgetMs = \(\) =>\s*getClusterShutdownBudgetMs\(\{ deadlineAt: clusterShutdownDeadlineAt, forceExitMs: CLUSTER_FORCE_EXIT_MS \}\);/,
+    );
+    expect(source).toMatch(
+      /const destroyGenerationJobManager = \(\) => \{\s*const budgetMs = clusterShutdownBudgetMs\(\);/,
     );
   });
 

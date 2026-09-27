@@ -1953,7 +1953,7 @@ export function registerBackgroundTaskShutdown(options: BackgroundTaskShutdownOp
   const getBudgetMs = options.getBudgetMs ?? getRemainingShutdownMs;
   registerShutdownTask('background task admission', () => registry.closeAdmission(), {
     phase: 'pre-drain',
-    priority: 100,
+    priority: 110,
   });
   registerShutdownTask(
     'background tasks',

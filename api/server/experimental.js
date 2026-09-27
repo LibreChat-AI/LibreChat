@@ -43,8 +43,7 @@ const {
   configureServerTimeouts,
   setupGracefulShutdown,
   registerShutdownTask,
-  getRemainingShutdownMs,
-  getShutdownElapsedMs,
+  getClusterShutdownBudgetMs,
   registerBackgroundTaskShutdown,
   configureMessageFilterRegexValidator,
   configureFileConfigRegexEngine,
@@ -387,24 +386,13 @@ if (cluster.isMaster) {
    *  after signalling. Measure against that, and hold back a reserve for the tasks after this
    *  one. Abandoning an unrecorded drain fences the next generation permanently. */
   const CLUSTER_TEARDOWN_RESERVE_MS = 3_000;
-  /** Shutdown time this worker actually has, or null when it is not shutting down. */
-  const getClusterShutdownBudgetMs = () => {
-    const remaining = getRemainingShutdownMs();
-    const elapsed = getShutdownElapsedMs();
-    if (remaining == null || elapsed == null) {
-      return null;
-    }
-    /** Prefer the deadline the primary actually set. The elapsed-based estimate starts
-     *  counting only when this worker's signal handler ran, which lags the primary's timer
-     *  by however long the event loop was blocked. */
-    const primaryRemaining =
-      clusterShutdownDeadlineAt != null
-        ? clusterShutdownDeadlineAt - Date.now()
-        : CLUSTER_FORCE_EXIT_MS - elapsed;
-    return Math.min(remaining, primaryRemaining);
-  };
+  const clusterShutdownBudgetMs = () =>
+    getClusterShutdownBudgetMs({
+      deadlineAt: clusterShutdownDeadlineAt,
+      forceExitMs: CLUSTER_FORCE_EXIT_MS,
+    });
   const destroyGenerationJobManager = () => {
-    const budgetMs = getClusterShutdownBudgetMs();
+    const budgetMs = clusterShutdownBudgetMs();
     if (budgetMs == null) {
       return GenerationJobManager.destroy();
     }
@@ -516,7 +504,7 @@ if (cluster.isMaster) {
     const baseAppConfig = await getAppConfig({ baseOnly: true });
     registerBackgroundTaskShutdown({
       interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
-      getBudgetMs: getClusterShutdownBudgetMs,
+      getBudgetMs: clusterShutdownBudgetMs,
     });
     configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
     const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;
