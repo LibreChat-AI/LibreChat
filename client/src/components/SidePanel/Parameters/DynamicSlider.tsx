@@ -166,7 +166,7 @@ function DynamicSlider({
   return (
     <div
       className={cn(
-        'flex h-full flex-col items-center justify-start gap-2',
+        'flex flex-col items-center justify-start gap-2',
         columnSpan != null ? `col-span-${columnSpan}` : 'col-span-full',
       )}
     >

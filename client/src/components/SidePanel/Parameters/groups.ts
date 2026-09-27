@@ -169,13 +169,21 @@ export function isModified(
   conversation: Partial<TConversation> | Partial<TPreset> | null,
 ): boolean {
   const value = conversation?.[setting.key as keyof typeof conversation];
-  if (value == null || value === '') {
+  if (value == null) {
     return false;
   }
-  if (Array.isArray(value)) {
-    return value.length > 0 && JSON.stringify(value) !== JSON.stringify(setting.default);
+  const fallback = setting.default;
+  /** Clearing a field reads as untouched only when there was nothing to clear. */
+  if (value === '') {
+    return fallback != null && fallback !== '';
   }
-  return value !== setting.default;
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return Array.isArray(fallback) && fallback.length > 0;
+    }
+    return JSON.stringify(value) !== JSON.stringify(fallback);
+  }
+  return value !== fallback;
 }
 
 export function countModified(

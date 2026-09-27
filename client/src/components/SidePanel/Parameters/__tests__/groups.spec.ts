@@ -120,6 +120,23 @@ describe('isModified', () => {
   });
 });
 
+describe('isModified with an operator default', () => {
+  /** A deployment can give a text or tags parameter its own default, and clearing it is
+   *  a change this conversation made. */
+  it('counts clearing a nonempty default as a change', () => {
+    expect(isModified(setting('promptPrefix', { default: 'Be brief' }), { promptPrefix: '' })).toBe(
+      true,
+    );
+    expect(isModified(setting('stop', { default: ['END'] }), { stop: [] })).toBe(true);
+  });
+
+  it('leaves an empty value untouched when the default is empty too', () => {
+    expect(isModified(setting('promptPrefix'), { promptPrefix: '' })).toBe(false);
+    expect(isModified(setting('stop', { default: [] }), { stop: [] })).toBe(false);
+    expect(isModified(setting('promptPrefix', { default: 'Be brief' }), {})).toBe(false);
+  });
+});
+
 describe('hasControl', () => {
   it('keeps a choice with options to pick from', () => {
     expect(

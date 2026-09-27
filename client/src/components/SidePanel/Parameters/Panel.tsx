@@ -215,9 +215,22 @@ export default function Parameters() {
               {/* Where this conversation's own answers are, which is what the owner
                   scans for before reaching for Reset. */}
               {changed > 0 && (
-                <span className="bg-surface-tertiary text-text-primary shrink-0 rounded-full px-1.5 text-xs font-normal tracking-normal normal-case tabular-nums">
-                  {changed}
-                </span>
+                <>
+                  <span
+                    aria-hidden="true"
+                    className="bg-surface-tertiary text-text-primary shrink-0 rounded-full px-1.5 text-xs font-normal tracking-normal normal-case tabular-nums"
+                  >
+                    {changed}
+                  </span>
+                  <span className="sr-only">
+                    {localize(
+                      changed === 1
+                        ? 'com_ui_params_changed_count_one'
+                        : 'com_ui_params_changed_count',
+                      { count: changed },
+                    )}
+                  </span>
+                </>
               )}
             </h3>
             <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
@@ -231,8 +244,17 @@ export default function Parameters() {
                 /** The cell owns the span, not the control. The definitions carry a
                  *  columnSpan written for the four-column preset dialog, which says
                  *  nothing about a panel this narrow. */
+                /** The cell stretches its control to the row, so a pair whose labels
+                 *  wrap differently still lines their inputs up. Applied here rather
+                 *  than in the shared controls, which the preset editors reuse. */
                 return (
-                  <div key={key} className={isWideParameter(setting) ? 'col-span-2' : 'col-span-1'}>
+                  <div
+                    key={key}
+                    className={cn(
+                      '*:h-full',
+                      isWideParameter(setting) ? 'col-span-2' : 'col-span-1',
+                    )}
+                  >
                     <Component
                       settingKey={key}
                       defaultValue={defaultValue}

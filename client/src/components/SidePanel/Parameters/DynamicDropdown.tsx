@@ -66,7 +66,7 @@ function DynamicDropdown({
   return (
     <div
       className={cn(
-        'flex h-full flex-col items-center justify-start gap-6',
+        'flex flex-col items-center justify-start gap-6',
         columnSpan != null ? `col-span-${columnSpan}` : 'col-span-full',
       )}
     >

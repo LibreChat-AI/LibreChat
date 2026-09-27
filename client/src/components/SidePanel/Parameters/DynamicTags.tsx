@@ -101,7 +101,7 @@ function DynamicTags({
 
   return (
     <div
-      className={`flex h-full flex-col items-center justify-start gap-6 ${
+      className={`flex flex-col items-center justify-start gap-6 ${
         columnSpan != null ? `col-span-${columnSpan}` : 'col-span-full'
       }`}
     >
