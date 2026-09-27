@@ -84,6 +84,7 @@ module.exports = {
   getLimits: invoke('getLimits'),
   fireScheduleNow: invoke('fireScheduleNow'),
   recordScheduleOutcome: invoke('recordScheduleOutcome'),
+  recordMCPToolAuthFailure: invoke('recordMCPToolAuthFailure'),
   beginScheduledStop: invoke('beginScheduledStop'),
   acknowledgeScheduledStopPersistence: invoke('acknowledgeScheduledStopPersistence'),
   claimScheduleResume: invoke('claimScheduleResume'),

@@ -18,17 +18,18 @@ import type { TSchedule, ScheduleRunStatus, ScheduleDisabledReason } from 'libre
 import type { ImmediateScheduleMCPFailure } from './errors';
 import type { TranslationKeys } from '~/hooks';
 import {
+  scheduleMCPErrorMessage,
+  scheduleMCPErrorOutcomes,
+  scheduleLastRunKey,
+  scheduleMCPCardOutcomes,
+  scheduleDisabledMCPLabel,
+} from './errors';
+import {
   useGetAgentByIdQuery,
   useDeleteScheduleMutation,
   useUpdateScheduleMutation,
   useRunScheduleNowMutation,
 } from '~/data-provider';
-import {
-  scheduleMCPErrorMessage,
-  scheduleMCPErrorOutcomes,
-  scheduleLastRunKey,
-  scheduleMCPCardOutcomes,
-} from './errors';
 import { useLocalize, useHasAccess, useClockFormat, useWeekStart } from '~/hooks';
 import ScheduleMCPRecovery from './ScheduleMCPRecovery';
 import { useAgentsMapContext } from '~/Providers';
@@ -57,7 +58,6 @@ const STATUS_CHIPS: Record<ScheduleRunStatus, { label: TranslationKeys; tone: St
 
 const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = {
   mcp_reauth_required: 'com_ui_schedule_disabled_mcp_reauth',
-  mcp_unattended_auth_required: 'com_ui_schedule_disabled_mcp_unattended_auth',
   mcp_configuration_missing: 'com_ui_schedule_disabled_mcp_configuration',
   mcp_permission_denied: 'com_ui_schedule_disabled_mcp_permission',
   too_many_failures: 'com_ui_schedule_disabled_too_many_failures',
@@ -76,6 +76,7 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
   const [immediateMCPFailure, setImmediateMCPFailure] =
     useState<ImmediateScheduleMCPFailure | null>(null);
   const mcpOutcomes = scheduleMCPCardOutcomes(schedule, immediateMCPFailure);
+  const disabledMCPLabel = scheduleDisabledMCPLabel(schedule.disabledReason, mcpOutcomes);
   const { i18n } = useTranslation();
   const { showToast } = useToastContext();
   const agentsMap = useAgentsMapContext();
@@ -294,7 +295,9 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
               <Chip tone={statusChip.tone}>{localize(statusChip.label)}</Chip>
             ))}
           {schedule.disabledReason != null && (
-            <Chip tone="error">{localize(DISABLED_REASON_LABELS[schedule.disabledReason])}</Chip>
+            <Chip tone="error">
+              {localize(disabledMCPLabel ?? DISABLED_REASON_LABELS[schedule.disabledReason])}
+            </Chip>
           )}
         </div>
       )}

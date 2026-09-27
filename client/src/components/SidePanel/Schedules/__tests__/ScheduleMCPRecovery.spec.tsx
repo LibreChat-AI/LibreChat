@@ -33,7 +33,13 @@ it('explains missing unattended credentials without suggesting interactive recon
   const onOpenAgent = jest.fn();
   render(
     <ScheduleMCPRecovery
-      outcomes={[{ server: 'Company Graph', status: 'mcp_unattended_auth_required' }]}
+      outcomes={[
+        {
+          server: 'Company Graph',
+          status: 'mcp_configuration_missing',
+          detail: 'unattended_auth_required',
+        },
+      ]}
       fallbackAgentId="root-agent"
       onOpenAgent={onOpenAgent}
     />,

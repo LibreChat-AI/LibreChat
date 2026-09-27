@@ -266,8 +266,16 @@ export type ScheduleMethods = {
     scheduledFor: Date,
   ) => Promise<Pick<
     IScheduleRun,
-    'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt'
+    'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
   > | null>;
+  /** Records an exact live generation's missing OBO authorization before the tool returns. */
+  recordMCPToolAuthFailure: (input: {
+    scheduleId: string;
+    scheduledFor: Date;
+    conversationId: string;
+    tenantId?: string;
+    server: string;
+  }) => Promise<boolean>;
   markRunResumeClaimed: (
     scheduleId: string,
     scheduledFor: Date,
@@ -1037,14 +1045,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     scheduledFor: Date,
   ): Promise<Pick<
     IScheduleRun,
-    'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt'
+    'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
   > | null> {
     return ScheduleRun()
       .findOne({ scheduleId, scheduledFor })
-      .select('status abortRequestedAt abortSource abortPersistedAt')
+      .select('status abortRequestedAt abortSource abortPersistedAt mcp')
       .lean<Pick<
         IScheduleRun,
-        'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt'
+        'status' | 'abortRequestedAt' | 'abortSource' | 'abortPersistedAt' | 'mcp'
       > | null>();
   }
 
@@ -1113,6 +1121,31 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       { $set: { abortPersistedAt: new Date() } },
       { timestamps: false },
     );
+  }
+
+  async function recordMCPToolAuthFailure({
+    scheduleId,
+    scheduledFor,
+    conversationId,
+    tenantId,
+    server,
+  }: Parameters<ScheduleMethods['recordMCPToolAuthFailure']>[0]): Promise<boolean> {
+    const updated = await ScheduleRun().updateOne(
+      {
+        scheduleId,
+        scheduledFor,
+        conversationId,
+        ...(tenantId ? { tenantId } : { tenantId: { $exists: false } }),
+        status: { $in: ['started', 'requires_action'] },
+      },
+      {
+        $addToSet: {
+          mcp: { server, status: 'mcp_configuration_missing', detail: 'unattended_auth_required' },
+        },
+      },
+      { timestamps: false },
+    );
+    return (updated.matchedCount ?? 0) > 0;
   }
 
   /** Count of in-flight scheduled runs (across all schedules) for the fire cap. */
@@ -2148,6 +2181,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     persistResolvedProject,
     getScheduleRunProject,
     getScheduleRunAbortState,
+    recordMCPToolAuthFailure,
     markRunResumeClaimed,
     releaseRunResumeClaim,
     markRunAbortPersisted,

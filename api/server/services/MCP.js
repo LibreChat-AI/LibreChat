@@ -1386,6 +1386,16 @@ function createToolInstance({
         );
       }
 
+      // The schedule service checks the typed cause and verified job identity before
+      // recording a durable tool failure; other tool errors are a cheap no-op.
+      await require('~/server/services/Schedules').recordMCPToolAuthFailure({
+        error,
+        streamId,
+        jobCreatedAt,
+        userId,
+        serverName,
+      });
+
       /** Carries the actionable re-auth message; the substring heuristic below would misreport it as an OAuth configuration problem */
       if (
         error instanceof OpenIDReauthRequiredError ||

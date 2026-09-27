@@ -169,8 +169,10 @@ it('reports missing unattended OBO credentials without offering a browser reconn
   });
 
   await expect(check('agent', principal, { scheduleId: 'schedule' })).rejects.toMatchObject({
-    code: 'mcp_unattended_auth_required',
-    outcomes: [{ server: 'docs', status: 'mcp_unattended_auth_required' }],
+    code: 'mcp_configuration_missing',
+    outcomes: [
+      { server: 'docs', status: 'mcp_configuration_missing', detail: 'unattended_auth_required' },
+    ],
   });
   expect(deps.resolveUpstreamTokenProvider).toHaveBeenCalledWith(
     expect.objectContaining({ id: 'owner' }),
@@ -313,9 +315,9 @@ it('classifies absent OBO provider wiring as a permanent unattended-auth setup f
   };
 
   await expect(check('agent', principal)).rejects.toMatchObject({
-    code: 'mcp_unattended_auth_required',
+    code: 'mcp_configuration_missing',
     message:
-      'mcp_unattended_auth_required: [{"server":"docs","status":"mcp_unattended_auth_required"}]',
+      'mcp_configuration_missing: [{"server":"docs","status":"mcp_configuration_missing","detail":"unattended_auth_required"}]',
   });
 });
 

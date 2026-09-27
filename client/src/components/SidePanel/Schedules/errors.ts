@@ -5,11 +5,26 @@ import type { TranslationKeys, useLocalize } from '~/hooks';
 export const MCP_STATUS_LABELS: Record<ScheduleMCPStatus, TranslationKeys> = {
   ready: 'com_ui_schedule_mcp_ready',
   mcp_reauth_required: 'com_ui_schedule_mcp_reauth',
-  mcp_unattended_auth_required: 'com_ui_schedule_mcp_unattended_auth',
   mcp_configuration_missing: 'com_ui_schedule_mcp_configuration',
   mcp_permission_denied: 'com_ui_schedule_mcp_permission',
   mcp_unavailable: 'com_ui_schedule_mcp_unavailable',
 };
+
+export function scheduleMCPStatusLabel(outcome: ScheduleMCPOutcome): TranslationKeys {
+  return outcome.detail === 'unattended_auth_required'
+    ? 'com_ui_schedule_mcp_unattended_auth'
+    : MCP_STATUS_LABELS[outcome.status];
+}
+
+export function scheduleDisabledMCPLabel(
+  reason: TSchedule['disabledReason'],
+  outcomes: ScheduleMCPOutcome[],
+): TranslationKeys | undefined {
+  return reason === 'mcp_configuration_missing' &&
+    outcomes.some((outcome) => outcome.detail === 'unattended_auth_required')
+    ? 'com_ui_schedule_disabled_mcp_unattended_auth'
+    : undefined;
+}
 
 export function scheduleMCPRecoveryOutcomes(
   schedule: Pick<TSchedule, 'enabled' | 'disabledReason' | 'lastRun'>,
@@ -17,7 +32,6 @@ export function scheduleMCPRecoveryOutcomes(
   const reason = schedule.disabledReason;
   const preservesMCPRecovery =
     reason === 'mcp_reauth_required' ||
-    reason === 'mcp_unattended_auth_required' ||
     reason === 'mcp_configuration_missing' ||
     reason === 'mcp_permission_denied' ||
     reason === 'too_many_failures';
@@ -50,7 +64,7 @@ export function scheduleMCPNeedsAgentRecovery(outcomes: ScheduleMCPOutcome[]): b
     (outcome) =>
       outcome.status !== 'ready' &&
       outcome.status !== 'mcp_permission_denied' &&
-      outcome.status !== 'mcp_unattended_auth_required',
+      outcome.detail !== 'unattended_auth_required',
   );
 }
 
@@ -61,7 +75,7 @@ export function scheduleMCPErrorMessage(
   const failures = scheduleMCPErrorOutcomes(error).filter((item) => item.status !== 'ready');
   if (failures.length > 0) {
     return failures
-      .map((item) => `${item.server}: ${localize(MCP_STATUS_LABELS[item.status])}`)
+      .map((item) => `${item.server}: ${localize(scheduleMCPStatusLabel(item))}`)
       .join('; ');
   }
   const response = (

@@ -3042,10 +3042,43 @@ describe('erasure sweep rotation and idempotency-key lookup', () => {
   });
 });
 
+describe('scheduled MCP tool failure receipt', () => {
+  it('records only the matching active run and preserves the backwards-compatible failure', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T14:00:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor, conversationId: 'c1' }));
+    const input = { scheduleId: schedule.id, scheduledFor, conversationId: 'c1', server: 'Graph' };
+    expect(await methods.recordMCPToolAuthFailure({ ...input, conversationId: 'another' })).toBe(
+      false,
+    );
+    expect(await methods.recordMCPToolAuthFailure({ ...input, tenantId: 'other-tenant' })).toBe(
+      false,
+    );
+    expect(await methods.recordMCPToolAuthFailure(input)).toBe(true);
+    expect(await methods.recordMCPToolAuthFailure(input)).toBe(true);
+    const run = await methods.getScheduleRunAbortState(schedule.id, scheduledFor);
+    expect(run?.mcp).toEqual([
+      { server: 'Graph', status: 'mcp_configuration_missing', detail: 'unattended_auth_required' },
+    ]);
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'error',
+      mcp: run!.mcp,
+      error: `mcp_configuration_missing: ${JSON.stringify(run!.mcp)}`,
+      autoDisableAfterFailures: 5,
+    });
+    const after = await getSchedule(schedule.id);
+    expect(after.enabled).toBe(false);
+    expect(after.disabledReason).toBe('mcp_configuration_missing');
+    expect(after.lastRun?.mcp).toEqual(run!.mcp);
+    expect(await methods.recordMCPToolAuthFailure(input)).toBe(false);
+  });
+});
+
 describe('scheduled MCP failure policy', () => {
   it.each([
     'mcp_reauth_required',
-    'mcp_unattended_auth_required',
     'mcp_configuration_missing',
     'mcp_permission_denied',
     'mcp_unavailable',
