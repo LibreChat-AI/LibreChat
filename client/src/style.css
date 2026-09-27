@@ -2657,6 +2657,79 @@ html[data-input-modality='keyboard']
   scrollbar-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1)) transparent;
   scrollbar-gutter: stable;
 }
+/**
+ * The thinking-level slider's stops. Position and size glide on a spring with a
+ * slight overshoot, so the thumb and the fill settle onto a stop rather than
+ * stopping dead; both share the curve, so the fill's end stays under the thumb
+ * throughout. Custom CSS because the overshoot curve has no theme token.
+ */
+.composer-effort-glide {
+  transition-property: left, width, height;
+  transition-duration: 280ms;
+  transition-timing-function: cubic-bezier(0.34, 1.36, 0.64, 1);
+}
+
+/**
+ * The held thumb leaning toward the pointer (set on the track as
+ * `--effort-lean`, stretched along the pull and squashed across it). It tracks
+ * the pointer directly while held and springs back on release.
+ */
+.composer-effort-thumb {
+  transform: translateX(var(--effort-lean, 0px))
+    scale(var(--effort-stretch, 1), var(--effort-squash, 1));
+  transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.composer-effort-thumb[data-dragging] {
+  transition-duration: 60ms;
+  transition-timing-function: linear;
+}
+
+/**
+ * The thinking button's label changing level: the old word blurs out in the
+ * direction of the change while the new one arrives from the other side,
+ * overlapping it briefly, like an odometer. `-up` for a higher level.
+ */
+@keyframes composer-label-out-up {
+  to {
+    transform: translateY(-70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+@keyframes composer-label-out-down {
+  to {
+    transform: translateY(70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+@keyframes composer-label-in-up {
+  from {
+    transform: translateY(70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+@keyframes composer-label-in-down {
+  from {
+    transform: translateY(-70%);
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+.composer-label-out-up {
+  animation: composer-label-out-up 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+.composer-label-out-down {
+  animation: composer-label-out-down 220ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+.composer-label-in-up {
+  animation: composer-label-in-up 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.composer-label-in-down {
+  animation: composer-label-in-down 280ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
 /** Trigger glyphs that turn as their popover opens, on the same curve. */
 .animate-composer-icon {
   /* Tailwind v4's rotate-* utilities set `rotate`, not `transform`. */
@@ -2713,11 +2786,17 @@ html[data-input-modality='keyboard']
   .animate-composer-popover[data-leave],
   .animate-composer-icon,
   .composer-slot-resize,
+  .composer-effort-glide,
+  .composer-effort-thumb,
   .composer-palette-rows .ReactVirtualized__Grid {
     transition-duration: 1ms;
   }
   .animate-composer-palette-row,
-  .animate-composer-palette-row-out {
+  .animate-composer-palette-row-out,
+  .composer-label-out-up,
+  .composer-label-out-down,
+  .composer-label-in-up,
+  .composer-label-in-down {
     animation-duration: 1ms;
   }
   .animate-composer-popover,

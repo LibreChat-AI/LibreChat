@@ -3,6 +3,7 @@ import { ReasoningEffort } from 'librechat-data-provider';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
 import type * as ReasoningModule from '../../Reasoning';
+import { effortRank, leanFor } from '../Effort';
 import Thinking from '../Thinking';
 
 const mockSetValue = jest.fn();
@@ -125,6 +126,42 @@ describe('Thinking', () => {
     fireEvent.keyDown(slider, { key: 'ArrowRight' });
 
     expect(mockSetValue).toHaveBeenLastCalledWith({ key: 'thinkingBudget', value: 4224 });
+  });
+
+  it('moves the label up for a higher level and down for a lower one', () => {
+    const { rerenderConversation } = renderInComposer();
+    const button = screen.getByTestId('composer-thinking-button');
+    expect(button.querySelector('[class*="composer-label-"]')).toBeNull();
+
+    mockPendingOverride = { key: 'reasoning_effort', value: ReasoningEffort.high };
+    rerenderConversation();
+    expect(button.querySelector('.composer-label-in-up')).toHaveTextContent('High');
+    expect(button.querySelector('.composer-label-out-up')).toHaveTextContent('Low');
+
+    mockPendingOverride = { key: 'reasoning_effort', value: 'auto' } as TReasoningOverride;
+    rerenderConversation();
+    expect(button).toHaveTextContent('Auto');
+    expect(button.querySelector('.composer-label-in-down')).toHaveTextContent('Auto');
+    expect(button.querySelector('.composer-label-out-down')).toHaveTextContent('High');
+  });
+
+  it('ranks the separate mode below every level', () => {
+    expect(effortRank(mockSetting, 'auto')).toBe(-1);
+    expect(effortRank(mockSetting, undefined)).toBe(-1);
+    expect(effortRank(mockSetting, 'low')).toBe(0);
+    expect(effortRank(mockSetting, 'high')).toBe(1);
+  });
+
+  it('leans toward the pointer with growing resistance, never past its limit', () => {
+    expect(leanFor(0)).toBe(0);
+    const small = leanFor(5);
+    const larger = leanFor(40);
+    expect(small).toBeGreaterThan(0);
+    expect(larger).toBeGreaterThan(small);
+    /* Resistance: the second 35px buys less than the first 5px did per px. */
+    expect((larger - small) / 35).toBeLessThan(small / 5);
+    expect(leanFor(10_000)).toBeLessThan(10);
+    expect(leanFor(-40)).toBeCloseTo(-larger);
   });
 
   it('shows staged one-shot effort without mutating the conversation', () => {

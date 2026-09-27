@@ -12,6 +12,7 @@ import type { SettingDefinition, TConversation, TReasoningOverride } from 'libre
 import type { CSSProperties } from 'react';
 import type { LocalizeFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks';
+import useReducedMotion from '~/hooks/Generic/useReducedMotion';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -28,6 +29,16 @@ const TRACK_H = 24;
  *  row is sized to the largest it can get and the rail is banded inside it. */
 const THUMB = 28;
 const THUMB_ACTIVE = 32;
+/** How far, in px, the held thumb can lean toward the pointer before the
+ *  gesture commits to the next stop. The lean approaches this and never
+ *  reaches it, so pulling harder only ever tightens. */
+const MAX_LEAN = 10;
+/** How quickly the lean stiffens; the constant iOS uses for rubber banding. */
+const LEAN_STIFFNESS = 0.55;
+/** Stretch along the pull and the matching squash across it, at full lean. */
+const LEAN_STRETCH = 0.16;
+const LEAN_SQUASH = 0.08;
+
 /** Which way each arrow key moves along the track. */
 const ARROW_STEP: Record<string, number | undefined> = {
   ArrowLeft: -1,
@@ -41,6 +52,27 @@ const ARROW_STEP: Record<string, number | undefined> = {
  * rendering it directly is what leaks `com_ui_medium` into the UI. Shared with
  * the trigger button, which is the only place the level is named.
  */
+/**
+ * Where a value sits on the effort scale, for telling whether a change went up
+ * or down. The separate mode ranks below every level.
+ */
+export function effortRank(setting: SettingDefinition, value: string | undefined): number {
+  if (value == null || UNGRADED_VALUES.has(value)) {
+    return -1;
+  }
+  return (setting.options ?? [])
+    .map(String)
+    .filter((option) => !UNGRADED_VALUES.has(option))
+    .indexOf(value);
+}
+
+/** Rubber-band resistance: tracks the pointer closely at first and stiffens
+ *  toward `MAX_LEAN`, the curve iOS uses at the end of a scroll view. */
+export function leanFor(distance: number): number {
+  const magnitude = MAX_LEAN * (1 - 1 / ((Math.abs(distance) * LEAN_STIFFNESS) / MAX_LEAN + 1));
+  return Math.sign(distance) * magnitude;
+}
+
 export function resolveEffortLabel(
   setting: SettingDefinition,
   value: string,
@@ -87,6 +119,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
   /** One per stop, so an arrow key can move focus along with the selection. */
   const stopRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [dragging, setDragging] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   const { levels, ungradedValue } = useMemo(() => {
     const options = (setting.options ?? []).map(String);
@@ -195,7 +228,21 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         return;
       }
       const ratio = (clientX - rect.left - THUMB / 2) / usable;
-      pendingRef.current = Math.round(Math.min(1, Math.max(0, ratio)) * (levels.length - 1));
+      const index = Math.round(Math.min(1, Math.max(0, ratio)) * (levels.length - 1));
+      pendingRef.current = index;
+      /* The thumb leans toward the pointer from the stop it is on, stretching
+         along the pull, and only moves stops once the pointer crosses halfway.
+         Written straight to the track as custom properties: the thumb follows
+         the pointer at frame rate without re-rendering anything. */
+      if (!reducedMotion) {
+        const stopX =
+          rect.left + THUMB / 2 + (levels.length === 1 ? 1 : index / (levels.length - 1)) * usable;
+        const lean = leanFor(clientX - stopX);
+        const strength = Math.abs(lean) / MAX_LEAN;
+        track.style.setProperty('--effort-lean', `${lean.toFixed(2)}px`);
+        track.style.setProperty('--effort-stretch', (1 + LEAN_STRETCH * strength).toFixed(3));
+        track.style.setProperty('--effort-squash', (1 - LEAN_SQUASH * strength).toFixed(3));
+      }
       if (frameRef.current != null) {
         return;
       }
@@ -208,8 +255,16 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         }
       });
     },
-    [levels, select],
+    [levels, select, reducedMotion],
   );
+
+  /** Lets go of the lean; the thumb springs back onto its stop. */
+  const settle = useCallback(() => {
+    const track = trackRef.current;
+    track?.style.removeProperty('--effort-lean');
+    track?.style.removeProperty('--effort-stretch');
+    track?.style.removeProperty('--effort-squash');
+  }, []);
 
   useEffect(
     () => () => {
@@ -245,16 +300,12 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
      thumb lifting rather than as a misaligned track. */
   const centerOf = (index: number) =>
     `calc(${THUMB / 2}px + ${ratioOf(index)} * (100% - ${THUMB}px))`;
-  /* Ends half a rail-height PAST the thumb's centre, which puts the fill's own
-     rounded cap concentric with the thumb. The cap's radius (TRACK_H / 2) is
-     smaller than the thumb's, so the thumb geometrically contains it at every
-     position, including the first stop where the fill disappears entirely
-     beneath it.
-     That containment holds mid-animation too, because the offset is constant:
-     collapsing to zero at the first stop instead left the fill briefly wider
-     than the thumb could cover, which flashed green on the way down. */
+  /* Ends at the thumb's centre, so the thumb covers the fill's end even while
+     it leans toward the pointer (up to MAX_LEAN, well inside its radius), and
+     the fill disappears entirely beneath it at the first stop. The two glide
+     on the same curve, so that holds mid-animation as well. */
   const fillWidth = (index: number) =>
-    `calc(${THUMB / 2 + TRACK_H / 2}px + ${ratioOf(index)} * (100% - ${THUMB}px))`;
+    `calc(${THUMB / 2}px + ${ratioOf(index)} * (100% - ${THUMB}px))`;
 
   /* `descriptionCode` is what says whether this is a translation key or the
      literal text an admin wrote. Translating it either way sent literal text
@@ -305,10 +356,12 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
           }
           draggingRef.current = false;
           setDragging(false);
+          settle();
         }}
         onPointerCancel={() => {
           draggingRef.current = false;
           setDragging(false);
+          settle();
         }}
         className={cn(
           'relative w-full touch-none transition-opacity duration-200 select-none',
@@ -345,15 +398,14 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         <span
           aria-hidden="true"
           style={{ height: TRACK_H, width: fillWidth(shownIndex) }}
-          className={cn(
-            'absolute top-1/2 left-0 -translate-y-1/2 transition-all ease-out motion-reduce:duration-0',
-            dragging ? 'duration-75' : 'duration-150',
-          )}
+          className="composer-effort-glide absolute top-1/2 left-0 -translate-y-1/2"
         >
           <span
             className={cn(
               'bg-accent-primary block h-full w-full rounded-full transition-opacity duration-100 ease-out motion-reduce:duration-0',
-              isUngraded ? 'opacity-0' : 'opacity-100',
+              /* At the first stop the fill lies wholly under the thumb, and a
+                 thumb leaning away from the rail's end would uncover its start. */
+              isUngraded || shownIndex === 0 ? 'opacity-0' : 'opacity-100',
             )}
           />
         </span>
@@ -391,17 +443,19 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
         <span
           aria-hidden="true"
           style={{ left: centerOf(shownIndex), height: thumbSize, width: thumbSize }}
-          className={cn(
-            'absolute top-1/2 -translate-x-1/2 -translate-y-1/2 transition-all ease-out motion-reduce:duration-0',
-            dragging ? 'duration-75' : 'duration-150',
-          )}
+          className="composer-effort-glide absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
         >
           <span
-            className={cn(
-              'bg-surface-fixed block h-full w-full rounded-full shadow-md transition-opacity duration-150 ease-out motion-reduce:delay-0 motion-reduce:duration-0',
-              isUngraded ? 'opacity-0 delay-100' : 'opacity-100 delay-0',
-            )}
-          />
+            data-dragging={dragging || undefined}
+            className="composer-effort-thumb block h-full w-full"
+          >
+            <span
+              className={cn(
+                'bg-surface-fixed block h-full w-full rounded-full shadow-md transition-opacity duration-150 ease-out motion-reduce:delay-0 motion-reduce:duration-0',
+                isUngraded ? 'opacity-0 delay-100' : 'opacity-100 delay-0',
+              )}
+            />
+          </span>
         </span>
 
         {levels.map((value, index) => {
