@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import {
   Input,
+  Label,
+  Radio,
   Button,
   OGDialog,
   OGDialogTitle,
@@ -8,10 +10,11 @@ import {
   OGDialogDescription,
 } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
-import type { AgentItem } from '~/components/SidePanel/Agents/Tools/items/types';
+import type { AgentItem, ItemFilter } from '~/components/SidePanel/Agents/Tools/items/types';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
 import type { TranslationKeys } from '~/hooks';
 import MarketplaceCatalog from '~/components/SidePanel/Agents/Tools/MarketplaceCatalog';
+import { matchesView } from '~/components/SidePanel/Agents/Tools/items/filtering';
 import { itemKey } from '~/components/SidePanel/Agents/Tools/items/selectors';
 import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { useLocalize, useToolFavorites } from '~/hooks';
@@ -19,6 +22,15 @@ import { useGetFiles } from '~/data-provider';
 import { getFileType } from '~/utils';
 
 export type CatalogSection = 'skill' | 'mcp' | 'files';
+
+type View = NonNullable<ItemFilter['view']>;
+
+/** The agent builder's Skills dialog views, in the same order and wording. */
+const VIEWS: Array<{ value: View; labelKey: TranslationKeys }> = [
+  { value: 'marketplace', labelKey: 'com_ui_all_proper' },
+  { value: 'mine', labelKey: 'com_ui_tools_view_made_by_you' },
+  { value: 'favorites', labelKey: 'com_ui_tools_view_favorites' },
+];
 
 const TITLE: Record<CatalogSection, TranslationKeys> = {
   skill: 'com_ui_skills',
@@ -30,6 +42,11 @@ const SEARCH: Record<CatalogSection, TranslationKeys> = {
   skill: 'com_ui_composer_search_skills',
   mcp: 'com_ui_composer_search_mcp',
   files: 'com_ui_composer_search_files',
+};
+
+const FILTER: Record<'skill' | 'mcp', TranslationKeys> = {
+  skill: 'com_ui_skills_filter',
+  mcp: 'com_ui_composer_mcp_filter',
 };
 
 /** The palette row as the agent builder's card expects it. Rows without a
@@ -47,6 +64,7 @@ function toItem(entry: PaletteEntry): AgentItem | null {
       description: entry.description ?? '',
       iconKey: 'skill',
       skill: entry.skill,
+      ownedByUser: entry.ownedByUser,
     };
   }
   if (entry.section === 'mcp') {
@@ -56,6 +74,7 @@ function toItem(entry: PaletteEntry): AgentItem | null {
       name: entry.label,
       description: entry.description ?? '',
       iconKey: 'mcp',
+      ownedByUser: entry.ownedByUser,
       toolCount: 0,
       server: {
         serverName: entry.itemId,
@@ -76,10 +95,12 @@ function EntryGrid({
   section,
   entries,
   query,
+  view,
 }: {
   section: 'skill' | 'mcp';
   entries: PaletteEntry[];
   query: string;
+  view: View;
 }) {
   const localize = useLocalize();
   const { favoriteKeys, toggle } = useToolFavorites();
@@ -93,7 +114,7 @@ function EntryGrid({
         continue;
       }
       const item = toItem(entry);
-      if (item == null) {
+      if (item == null || !matchesView(item, view, { favoritedIds: favoriteKeys })) {
         continue;
       }
       const key = itemKey(item);
@@ -104,16 +125,17 @@ function EntryGrid({
       }
     }
     return { items: nextItems, selectedIds: selected, byKey: keyed };
-  }, [entries, section, query]);
+  }, [entries, section, query, view, favoriteKeys]);
 
   return (
     <MarketplaceCatalog
       items={items}
       selectedIds={selectedIds}
       onToggle={(item) => byKey.get(itemKey(item))?.onSelect()}
+      view={view}
       favoriteKeys={favoriteKeys}
       onToggleFavorite={toggle}
-      emptyKey="com_ui_composer_no_results"
+      emptyKey={view === 'marketplace' || query !== '' ? 'com_ui_composer_no_results' : undefined}
       ariaLabel={localize(TITLE[section])}
     />
   );
@@ -182,14 +204,20 @@ export default function Catalog({
 }: CatalogProps) {
   const localize = useLocalize();
   const [search, setSearch] = useState('');
+  const [view, setView] = useState<View>('marketplace');
   const [shown, setShown] = useState(section);
   if (section !== shown) {
     setShown(section);
     if (section != null) {
       setSearch('');
+      setView('marketplace');
     }
   }
   const current = section ?? shown;
+  const viewOptions = useMemo(
+    () => VIEWS.map((option) => ({ value: option.value, label: localize(option.labelKey) })),
+    [localize],
+  );
   const query = search.trim().toLowerCase();
 
   return (
@@ -204,25 +232,43 @@ export default function Catalog({
     >
       {current != null && (
         <OGDialogContent className="flex h-[80vh] max-h-[720px] w-11/12 max-w-[960px] flex-col overflow-hidden">
-          <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
+          <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 p-4 md:p-6">
             <div className="flex flex-col gap-3 pr-8">
               <OGDialogTitle>{localize(TITLE[current])}</OGDialogTitle>
               <OGDialogDescription className="sr-only">
                 {localize(SEARCH[current])}
               </OGDialogDescription>
-              <Input
-                type="search"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder={localize(SEARCH[current])}
-                aria-label={localize(SEARCH[current])}
-              />
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <Input
+                    type="search"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder={localize(SEARCH[current])}
+                    aria-label={localize(SEARCH[current])}
+                  />
+                </div>
+                {current !== 'files' && (
+                  <>
+                    <Label id="composer-catalog-view-label" className="sr-only">
+                      {localize(FILTER[current])}
+                    </Label>
+                    <Radio
+                      wrap
+                      options={viewOptions}
+                      value={view}
+                      onChange={(value) => setView(value as View)}
+                      aria-labelledby="composer-catalog-view-label"
+                    />
+                  </>
+                )}
+              </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
               {current === 'files' ? (
                 <FileList query={query} onAttach={onAttach} />
               ) : (
-                <EntryGrid section={current} entries={entries} query={query} />
+                <EntryGrid section={current} entries={entries} query={query} view={view} />
               )}
             </div>
           </div>

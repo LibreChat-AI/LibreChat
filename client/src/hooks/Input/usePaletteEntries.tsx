@@ -15,7 +15,9 @@ import {
   AuthType,
   Permissions,
   ArtifactModes,
+  PermissionBits,
   PermissionTypes,
+  hasPermissions,
   SkillsScope,
   isEphemeralAgentId,
   defaultAgentCapabilities,
@@ -77,6 +79,9 @@ export interface PaletteEntry {
   skill?: TSkillSummary;
   /** A server's own branding, for the "Show all" dialog's card. */
   iconUrl?: string;
+  /** Authored (skill) or owned (MCP server) by the signed-in user, for the
+   *  "Show all" dialog's "Made by you" view. */
+  ownedByUser?: boolean;
 }
 
 /** Accumulates skill pages so client-side search covers the full catalog. */
@@ -445,6 +450,7 @@ export default function usePaletteEntries({
           pinned: false,
           onSelect: () => toggleSkill(skill.name),
           skill,
+          ownedByUser: user?.id != null && skill.author === user.id,
         });
       }
       /* Skills staged by name (the slash command, or a draft restored before
@@ -570,6 +576,9 @@ export default function usePaletteEntries({
           onSelect: selectServer,
           modes: getServerModes(),
           iconUrl: server.config?.iconPath,
+          /* Only the owner role carries Share, so it separates a server this
+             user made from one merely shared with them. */
+          ownedByUser: hasPermissions(server.effectivePermissions, PermissionBits.SHARE),
         });
       }
     }
@@ -597,5 +606,6 @@ export default function usePaletteEntries({
     artifactsEnabled,
     canUseFileSearch,
     fileSearchEnabled,
+    user?.id,
   ]);
 }

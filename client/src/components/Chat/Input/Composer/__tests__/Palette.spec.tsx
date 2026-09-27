@@ -360,6 +360,24 @@ describe('Palette', () => {
       fireEvent.click(screen.getByRole('button', { name: /item6/ }));
       expect(servers[6].onSelect).toHaveBeenCalledTimes(1);
     });
+
+    it('narrows the dialog to servers the user made', async () => {
+      const servers = many('mcp', 7).map((server, i) => ({ ...server, ownedByUser: i < 2 }));
+      renderPalette({ entries: servers });
+      fireEvent.click(
+        screen.getByRole('button', { name: 'com_ui_composer_show_all_label:com_ui_composer_mcp' }),
+      );
+      const dialog = await screen.findByRole('dialog');
+      const cards = () =>
+        Array.from(dialog.querySelectorAll('li > div > button[aria-pressed]')).map(
+          (card) => card.textContent?.match(/item\d/)?.[0],
+        );
+      expect(cards()).toHaveLength(7);
+      fireEvent.click(screen.getByText('com_ui_tools_view_made_by_you'));
+      expect(cards()).toEqual(['item0', 'item1']);
+      fireEvent.click(screen.getByText('com_ui_tools_view_favorites'));
+      expect(cards()).toEqual([]);
+    });
   });
 
   describe('section order', () => {
