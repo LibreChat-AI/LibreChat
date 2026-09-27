@@ -468,6 +468,92 @@ test.describe('chat list properties menu', () => {
     }
   });
 
+  test('a chosen bookmark stays in the Filter submenu after its last chat drops it @scenario:selected-bookmark-stays-removable', async ({
+    page,
+  }) => {
+    const tag = `Menu tag ${randomUUID().slice(0, 8)}`;
+    const title = uniqueTitle('bookmarked');
+    const conversationId = randomUUID();
+    createdConversationIds.push(conversationId);
+    await withMongo(async (db) => {
+      const user = await db.collection('users').findOne({ email: userEmail });
+      if (!user) throw new Error(`E2E seed: user "${userEmail}" not found`);
+      const now = new Date();
+      await db.collection('conversations').insertOne({
+        conversationId,
+        title,
+        user: user._id.toString(),
+        endpoint: 'openAI',
+        isArchived: false,
+        tags: [tag],
+        createdAt: now,
+        updatedAt: now,
+        __v: 0,
+      });
+      await db.collection('conversationtags').insertOne({
+        tag,
+        user: user._id.toString(),
+        count: 1,
+        position: 0,
+        createdAt: now,
+        updatedAt: now,
+        __v: 0,
+      });
+    });
+
+    /* Only the header's bookmark menu, shown from `md` up, can drop a bookmark while this
+     * list is open, so a phone cannot reach this state and the phone project runs wide. */
+    const viewport = page.viewportSize();
+    if (isPhone(page) && viewport) {
+      await page.setViewportSize({ width: 1280, height: viewport.height });
+    }
+
+    try {
+      await page.goto(`/c/${conversationId}`, { timeout: 10000 });
+      await showSidebar(page);
+      await openFilterSubmenu(page);
+      await page.getByRole('menuitem', { name: /^Bookmarks\b/ }).click();
+      /* A choice is named by its tag and then its count. */
+      const choice = page
+        .getByRole('menu')
+        .last()
+        .getByRole('menuitemcheckbox', {
+          name: new RegExp(`^${tag} \\d+$`),
+        });
+      await choice.click();
+      await expect(choice).toHaveAttribute('aria-checked', 'true');
+      await closeMenus(page);
+      await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 1');
+
+      /* Removing the bookmark from its only chat takes its count to zero. */
+      await hideSidebar(page);
+      const bookmarkButton = page.locator('#bookmark-menu-button');
+      await bookmarkButton.click();
+      const [untagged] = await Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.request().method() === 'PUT' &&
+            new URL(r.url()).pathname.startsWith('/api/tags/convo/'),
+        ),
+        page.getByRole('menuitemcheckbox', { name: tag, exact: true }).click(),
+      ]);
+      expect(untagged.ok()).toBeTruthy();
+      await page.keyboard.press('Escape');
+
+      await showSidebar(page);
+      await openFilterSubmenu(page);
+      await page.getByRole('menuitem', { name: /^Bookmarks\b/ }).click();
+      await expect(choice).toHaveAttribute('aria-checked', 'true');
+      /* Once turned off it is an unused bookmark again, which the list leaves out. */
+      await choice.click();
+      await expect(choice).toHaveCount(0);
+      await closeMenus(page);
+      await expect(trigger(page)).toHaveAttribute('aria-label', 'Filter and sort chats');
+    } finally {
+      await withMongo((db) => db.collection('conversationtags').deleteMany({ tag }));
+    }
+  });
+
   test('a role without bookmark access opens the Filter submenu without asking for bookmarks @scenario:bookmark-filter-quiet-without-access', async ({
     browser,
     baseURL,
