@@ -139,10 +139,7 @@ function rowHeight(row: PaletteRow): number {
   if (row.type === 'header') {
     return row.showAll != null ? HEADER_ACTION_HEIGHT : HEADER_HEIGHT;
   }
-  if (
-    row.type === 'entry' &&
-    (row.entry.status != null || (row.entry.description != null && row.entry.description !== ''))
-  ) {
+  if (row.type === 'entry' && row.entry.description != null && row.entry.description !== '') {
     return ROW_HEIGHT_DESC;
   }
   if (row.type === 'file') {
@@ -1059,33 +1056,28 @@ function Palette({
               }
               className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-lg px-2 text-left"
             >
-              <span className="shrink-0" aria-hidden="true">
+              <span className="relative flex shrink-0" aria-hidden="true">
                 {icon}
+                {status != null && (
+                  /* Sits on the icon's corner like the MCP menu's server items;
+                     the ring takes the popup's surface so the dot reads as cut
+                     out of the glyph. */
+                  <span
+                    className={cn(
+                      'border-presentation absolute -right-1 -bottom-1 size-2.5 rounded-full border-2',
+                      status.tone,
+                    )}
+                  />
+                )}
               </span>
               <span className="flex min-w-0 flex-1 flex-col justify-center">
                 <span className={cn('truncate', checked && 'font-medium')}>{label}</span>
-                {status != null ? (
-                  /* The label is the status; the dot only repeats it in color. */
-                  <span className="text-text-secondary flex min-w-0 items-center gap-1.5 text-xs opacity-80">
-                    <span
-                      aria-hidden="true"
-                      className={cn('size-2 shrink-0 rounded-full', status.tone)}
-                    />
-                    <span className="shrink-0">{status.label}</span>
-                    {description != null && description !== '' && (
-                      <span className="truncate">
-                        <span aria-hidden="true">{'\u00b7 '}</span>
-                        {description}
-                      </span>
-                    )}
+                {/* The dot is color only, so the status is still said aloud. */}
+                {status != null && <span className="sr-only">{status.label}</span>}
+                {description != null && description !== '' && (
+                  <span className="text-text-secondary truncate text-xs opacity-80">
+                    {description}
                   </span>
-                ) : (
-                  description != null &&
-                  description !== '' && (
-                    <span className="text-text-secondary truncate text-xs opacity-80">
-                      {description}
-                    </span>
-                  )
                 )}
               </span>
             </button>
