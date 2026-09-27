@@ -1180,7 +1180,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       // Finalize response
       const duration = Date.now() - requestStartTime;
       if (isStreaming) {
-        sendFinalChunk(handlerConfig, 'stop', usage);
+        sendFinalChunk(handlerConfig, 'stop', usage, true);
         res.end();
         logger.debug(`[OpenAI API] Response ${responseId} completed in ${duration}ms (streaming)`);
 
@@ -1216,6 +1216,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           aggregator.getReasoning(),
           aggregator.toolCalls,
           usage,
+          true,
         );
         res.json(response);
         logger.debug(

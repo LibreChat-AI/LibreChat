@@ -59,7 +59,7 @@ Missing names, missing arguments, malformed JSON or unattributable argument data
 
 ## Accepted-result terminal behavior
 
-The SDK projector accepts only client-disposition calls from graph-accepted responses. A newer accepted text/internal result or a model-tool claim discards superseded calls for that agent. Calls are validated, given unique outward IDs and emitted at successful response completion; failed or aborted runs never publish buffered calls. Internal tools followed by a text answer finish with `stop` and no outward calls. The shared response builders use `tool_calls` as the finish reason when client calls exist without text.
+The SDK projector accepts only client-disposition calls from graph-accepted responses. A newer accepted text/internal result or a model-tool claim discards superseded calls for that agent. Calls are validated, given unique outward IDs and emitted at successful response completion; failed or aborted runs never publish buffered calls. Internal tools followed by a text answer finish with `stop` and no outward calls. Both in-repo hosts explicitly mark the SDK map as accepted-only when calling the shared serializers: if any accepted client calls remain, the final reason is `tool_calls`, even when text was already emitted. Compatibility consumers of the legacy run-step projector retain the previous `stop` finish reason for historical calls followed by text.
 
 ## Verification and limits
 

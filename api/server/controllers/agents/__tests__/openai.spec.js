@@ -576,7 +576,7 @@ describe('OpenAIChatCompletionController', () => {
   );
 
   it.each([true, false])(
-    'publishes only the accepted client call after a model claim (stream=%s)',
+    'publishes accepted client calls after text and a model claim (stream=%s)',
     async (streaming) => {
       const api = require('@librechat/api');
       const actual = jest.requireActual('@librechat/api');
@@ -608,6 +608,9 @@ describe('OpenAIChatCompletionController', () => {
           agentId: 'agent-123',
           messageId: 'claimed-message',
         });
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'Checking the weather.' }] },
+        });
         await handlers.on_model_response.handle('on_model_response', {
           type: 'model_response',
           id: 'accepted-client',
@@ -627,6 +630,9 @@ describe('OpenAIChatCompletionController', () => {
             .map(([frame]) => frame)
             .filter((frame) => frame !== 'data: [DONE]\n\n')
             .map((frame) => JSON.parse(frame.slice(6)));
+          expect(
+            frames.some((frame) => frame.choices[0].delta.content === 'Checking the weather.'),
+          ).toBe(true);
           const calls = frames.flatMap((frame) => frame.choices[0].delta.tool_calls ?? []);
           expect(calls).toEqual([
             { index: 0, id: 'a', type: 'function', function: { name: 'get_time', arguments: '' } },
@@ -642,6 +648,7 @@ describe('OpenAIChatCompletionController', () => {
           expect(frames.at(-1).choices[0].finish_reason).toBe('tool_calls');
         } else {
           const choice = res.json.mock.calls[0][0].choices[0];
+          expect(choice.message.content).toBe('Checking the weather.');
           expect(choice.message.tool_calls).toEqual([
             {
               id: 'a',
@@ -909,6 +916,7 @@ describe('OpenAIChatCompletionController', () => {
       expect.anything(),
       expect.anything(),
       mockCompletionUsage,
+      true,
     );
   });
 
@@ -920,7 +928,12 @@ describe('OpenAIChatCompletionController', () => {
 
     await OpenAIChatCompletionController(req, res);
 
-    expect(sendFinalChunk).toHaveBeenCalledWith(expect.anything(), 'stop', mockCompletionUsage);
+    expect(sendFinalChunk).toHaveBeenCalledWith(
+      expect.anything(),
+      'stop',
+      mockCompletionUsage,
+      true,
+    );
   });
 
   describe('content filtering', () => {

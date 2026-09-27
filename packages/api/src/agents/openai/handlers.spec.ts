@@ -50,13 +50,18 @@ describe('OpenAI-compatible agent stream handlers', () => {
         invalidToolCalls: [],
       });
       expect(frames).toHaveLength(3);
-      sendFinalChunk(config, 'stop', {
-        prompt_tokens: 12,
-        completion_tokens: 3,
-        total_tokens: 15,
-        primary: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
-        subagent: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
-      });
+      sendFinalChunk(
+        config,
+        'stop',
+        {
+          prompt_tokens: 12,
+          completion_tokens: 3,
+          total_tokens: 15,
+          primary: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+          subagent: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+        },
+        true,
+      );
       return frames;
     };
 
@@ -75,7 +80,7 @@ describe('OpenAI-compatible agent stream handlers', () => {
       },
       {},
     ]);
-    expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
+    expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('tool_calls');
     expect(chunks[chunks.length - 1].usage).toMatchObject({
       total_tokens: 15,
       subagent: { total_tokens: 3 },
