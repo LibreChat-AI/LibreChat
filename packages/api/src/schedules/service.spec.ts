@@ -1,9 +1,9 @@
 import { logger } from '@librechat/data-schemas';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { SchedulesServiceDeps } from './service';
+import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { isShutdownInProgress } from '../app/shutdown';
-import { createSchedulesService } from './service';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
 let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock } | null = null;
@@ -761,6 +761,23 @@ describe('scheduled OBO tool failure settlement', () => {
     mockJobStore = store;
     return { service, methods, store };
   }
+
+  it('does not initialize the schedule service for unrelated MCP errors', async () => {
+    const getRecorder = jest.fn();
+    await expect(
+      recordScheduledMCPToolAuthFailure(
+        {
+          error: new Error('Ordinary MCP failure'),
+          streamId: 'c1',
+          jobCreatedAt: 42,
+          userId: 'owner',
+          serverName: 'Graph',
+        },
+        getRecorder,
+      ),
+    ).resolves.toBe(false);
+    expect(getRecorder).not.toHaveBeenCalled();
+  });
 
   it('records a typed tool failure only for the matching scheduled generation and owner', async () => {
     const { service, methods, store } = setup();

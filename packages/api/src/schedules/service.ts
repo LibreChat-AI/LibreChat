@@ -290,6 +290,25 @@ export interface SchedulesService {
   initializeScheduleErasureSweep: () => void;
 }
 
+/** Screening happens before the CJS facade constructs any schedule dependencies. */
+export async function recordScheduledMCPToolAuthFailure(
+  input: Parameters<SchedulesService['recordMCPToolAuthFailure']>[0],
+  getRecorder: () => SchedulesService['recordMCPToolAuthFailure'],
+): Promise<boolean> {
+  const cause = input.error instanceof Error ? input.error.cause : undefined;
+  const missing = input.error instanceof OboTokenResolutionError ? input.error : cause;
+  if (
+    !(missing instanceof OboTokenResolutionError) ||
+    missing.reason !== 'missing_upstream_provider' ||
+    !input.streamId ||
+    input.jobCreatedAt == null ||
+    !input.userId
+  ) {
+    return false;
+  }
+  return getRecorder()(input);
+}
+
 /** Test-only overrides for the service's bounded waits (drains, barriers). */
 export interface ScheduleServiceTimings {
   drainTimeoutMs?: number;
