@@ -17,12 +17,16 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/hooks/MCP', () => ({
-  useMCPIconMap: () => ({}),
-  useMCPServerNames: () => ({}),
+  useMCPIconMap: () => new Map(),
+  useMCPServerNames: () => [],
 }));
 
 jest.mock('../ToolOutput', () => ({
   StackedToolIcons: () => <div data-testid="stacked-tool-icons" />,
+  ToolIcon: ({ type }: { type: string }) => <span data-testid="tool-icon">{type}</span>,
+  getToolIconType: (name: string) => name,
+  getMCPServerName: () => '',
+  OutputRenderer: ({ text }: { text: string }) => <pre data-testid="task-output">{text}</pre>,
 }));
 
 jest.mock('../MarkdownLite', () => ({
@@ -175,8 +179,47 @@ describe('Wakeup', () => {
     expect(screen.getByTestId('stacked-tool-icons')).toBeInTheDocument();
     expect(screen.getByText('com_ui_subagent_thread_status_completed')).toBeInTheDocument();
     expect(screen.getByText('com_ui_subagent_thread_status_failed')).toBeInTheDocument();
+    expect(screen.getAllByTestId('background-task-card')).toHaveLength(2);
+    expect(screen.queryByTestId('markdown')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'com_ui_wakeup_view_activity' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('renders the code completion as tool output rather than prose or host-internal JSON', () => {
+    const output = 'stdout:\nchecked at=2026-09-27T00:11:09Z\n{"checks":[]}\n[exit code: 0]';
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup
+            display={{
+              kind: 'background_tool',
+              tasks: [
+                {
+                  taskId: 'bg-1',
+                  status: 'completed',
+                  result: output,
+                  toolCallId: 'call-1',
+                  toolName: 'bash_tool',
+                },
+              ],
+            }}
+          />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    const header = screen.getByRole('button', { name: 'com_ui_wakeup_task_finished' });
+    expect(header.parentElement).toHaveClass('w-[36rem]');
+    fireEvent.click(header);
+
+    const card = screen.getByTestId('background-task-card');
+    expect(card).toHaveTextContent('com_ui_tool_name_code');
+    expect(card).toHaveTextContent('com_ui_background_tasks_completed');
+    expect(screen.getByTestId('tool-icon')).toHaveTextContent('bash_tool');
+    expect(screen.getByText('com_ui_output')).toBeInTheDocument();
+    expect(screen.getByTestId('task-output')).toHaveTextContent(output);
+    expect(screen.queryByText('com_ui_wakeup_explainer')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('markdown')).not.toBeInTheDocument();
   });
 });

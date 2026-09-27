@@ -31,6 +31,7 @@ import {
   getActivityLabelText,
   getPartKeyIndex,
 } from '~/utils';
+import BackgroundTaskCall from './Parts/BackgroundTaskCall';
 import { getAskUserQuestionPart } from '~/utils/approval';
 import AskUserQuestionCall from './AskUserQuestionCall';
 import { isBashProgrammaticToolCall } from './routing';
@@ -276,6 +277,21 @@ const Part = memo(function Part({
               showCursor={showCursor}
               failed={'inputValidationError' in toolCall && toolCall.inputValidationError === true}
               onExpand={onToolExpand}
+            />
+          );
+        } else if (toolCall.name === Constants.CHECK_BACKGROUND_TASK) {
+          return (
+            <BackgroundTaskCall
+              args={toolCall.args}
+              output={toolCall.output ?? ''}
+              initialProgress={toolCall.progress ?? 0.1}
+              isSubmitting={isSubmitting}
+              runStepStatus={toolCall.runStepStatus}
+              runStepDurationMs={toolCall.runStepDurationMs}
+              attachments={attachments}
+              hideAttachments={hideAttachments}
+              onExpand={onToolExpand}
+              toolCallId={toolCallId}
             />
           );
         } else if (toolCall.name === 'skill') {

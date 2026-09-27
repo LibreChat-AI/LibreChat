@@ -62,6 +62,13 @@ jest.mock('../ToolCall', () => ({
   ),
 }));
 
+jest.mock('../Parts/BackgroundTaskCall', () => ({
+  __esModule: true,
+  default: ({ output }: { output: string }) => (
+    <div data-testid="background-task-call" data-output={output} />
+  ),
+}));
+
 jest.mock('../Image', () => ({
   __esModule: true,
   default: () => <div data-testid="image" />,
@@ -135,6 +142,20 @@ describe('Part tool renderer selection', () => {
       'data-tool-name',
       'edit_file',
     );
+    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+  });
+
+  it('routes the native background poll tool to its structured task renderer', () => {
+    const output = JSON.stringify({ tasks: [], outstanding: 0 });
+    const part = toolCallPart(Constants.CHECK_BACKGROUND_TASK) as Extract<
+      TMessageContentParts,
+      { type: typeof ContentTypes.TOOL_CALL }
+    >;
+    Object.assign(part[ContentTypes.TOOL_CALL], { output });
+
+    renderPart(part);
+
+    expect(screen.getByTestId('background-task-call')).toHaveAttribute('data-output', output);
     expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
   });
 

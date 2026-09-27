@@ -143,6 +143,7 @@ jest.mock('~/utils', () => ({
       create_file: 'Create File',
       edit_file: 'Edit File',
       ask_user_question: 'Question',
+      check_background_task: 'Background tasks',
     };
     return friendlyNames[name] ?? name;
   },
@@ -853,6 +854,35 @@ describe('ToolCallGroup image hoisting', () => {
       screen.getByRole('button', {
         name: 'Ran 3 actions, Create File ×2, Edit File · 1 failed',
       }),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ['error', '1 failed'],
+    ['cancelled', '1 cancelled'],
+  ])('reflects a %s task poll in the collapsed group', (status, suffix) => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'check-1',
+            JSON.stringify({
+              background_task_id: 'bg-1',
+              tool: 'bash_tool',
+              status,
+              ...(status === 'error' ? { error: 'Disk full' } : {}),
+            }),
+            Constants.CHECK_BACKGROUND_TASK,
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(
+      screen.getByRole('button', { name: `Background tasks · ${suffix}` }),
     ).toBeInTheDocument();
   });
 
