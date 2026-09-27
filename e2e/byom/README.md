@@ -23,6 +23,21 @@ From the LibreChat root:
 BYOM_CODE_REPO=/absolute/path/to/code-interpreter node e2e/byom/run.mjs
 ```
 
+To also exercise a saved non-coding chat switching to a coding agent without implicit access,
+sending and reloading in **No workspace** mode, attaching explicitly, and leaving an offline
+workspace before continuing the same chat:
+
+```sh
+BYOM_WORKSPACE_TRANSITIONS=true BYOM_CODE_REPO=/absolute/path/to/code-interpreter node e2e/byom/run.mjs
+```
+
+This enables the decision protocol and attach/detach policy only in the disposable test app.
+
+The `Native Workspace Acceptance` workflow runs this transition variant on a hosted macOS
+runner when the harness changes in a `dev` pull request. It pins the Code API/worker revision
+and uses the native Seatbelt policy unchanged. It does not upload identities, raw logs or
+browser state. This proves the macOS journey only; Linux and WSL2 require their own native run.
+
 Optional: `BYOM_REDIS_BIN` selects an absolute Redis executable,
 `BYOM_CODE_CLI` selects a separately built worker CLI, and
 `E2E_CHROMIUM_CHANNEL=chrome` uses an installed Chrome instead of Playwright Chromium.

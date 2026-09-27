@@ -383,6 +383,7 @@ const ChatForm = memo(function ChatForm({
   );
   const steering = useSteering({
     consumeDraft,
+    addedConversation: addedConvo,
     index,
     conversationId,
     conversation,
@@ -665,8 +666,7 @@ const ChatForm = memo(function ChatForm({
               onRestoreToComposer={restoreReclaimedSteer}
             />
           )}
-          {(project ||
-            (codeWorkspace.required && (!codeWorkspace.locked || !codeWorkspace.canSubmit))) && (
+          {(project || codeWorkspace.visible) && (
             <div
               data-testid="composer-context-rail"
               className={cn(
@@ -676,7 +676,7 @@ const ChatForm = memo(function ChatForm({
               )}
             >
               {project ? <ProjectLandingChip project={project} /> : null}
-              {codeWorkspace.required && (!codeWorkspace.locked || !codeWorkspace.canSubmit) ? (
+              {codeWorkspace.visible ? (
                 <div className="min-w-0 px-1 pt-1">
                   <CodeWorkspaceMenu
                     setConversation={setConversation}

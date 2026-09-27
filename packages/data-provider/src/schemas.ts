@@ -877,7 +877,7 @@ export type TExample = z.infer<typeof tExampleSchema>;
 
 /** Compact context-fading tier persisted beside a message's calibration ratio. */
 const agentFadingTierSchema = z.object({
-  v: z.literal(1),
+  v: z.union([z.literal(1), z.literal(2)]),
   budgetTokens: z.number().positive(),
   masked: z.boolean(),
 });

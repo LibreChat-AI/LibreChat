@@ -41,6 +41,7 @@ const convoSchema: Schema<IConversation> = new Schema(
       default: false,
     },
     ...conversationPreset,
+    codeEnvironmentRevision: { type: Number, select: false },
     agent_id: {
       type: String,
     },

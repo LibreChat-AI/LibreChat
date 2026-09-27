@@ -68,6 +68,25 @@ export function getRemainingShutdownMs(): number | null {
   return Math.max(0, SHUTDOWN_TIMEOUT_MS - (Date.now() - shutdownStartedAt));
 }
 
+export function getClusterShutdownBudgetMs({
+  deadlineAt,
+  forceExitMs,
+  remainingMs = getRemainingShutdownMs(),
+  elapsedMs = getShutdownElapsedMs(),
+  now = Date.now(),
+}: {
+  deadlineAt: number | null;
+  forceExitMs: number;
+  remainingMs?: number | null;
+  elapsedMs?: number | null;
+  now?: number;
+}): number | null {
+  if (remainingMs == null || elapsedMs == null) {
+    return null;
+  }
+  return Math.min(remainingMs, deadlineAt == null ? forceExitMs - elapsedMs : deadlineAt - now);
+}
+
 export function isShutdownInProgress(): boolean {
   return isShuttingDown;
 }

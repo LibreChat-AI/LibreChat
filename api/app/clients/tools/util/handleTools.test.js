@@ -401,6 +401,145 @@ describe('Tool Handlers', () => {
       );
     });
 
+    describe('MCP credential failure propagation', () => {
+      const {
+        OpenIDReauthRequiredError,
+        MCPAuthenticationRejectedError,
+        MCPAuthenticationRefreshError,
+        OboTokenResolutionError,
+      } = require('@librechat/api');
+      const failures = [
+        new OpenIDReauthRequiredError('Please sign in again'),
+        new MCPAuthenticationRejectedError('private-mcp', false),
+        new MCPAuthenticationRejectedError('private-mcp', true),
+        new MCPAuthenticationRefreshError(new Error('temporarily unavailable')),
+        new OboTokenResolutionError('session_refresh_failed', 'Please sign in again', false),
+        new OboTokenResolutionError('session_refresh_failed', 'Retry later', true),
+      ];
+      const toolKey = (name, server = 'private-mcp') =>
+        `${name}${Constants.mcp_delimiter}${server}`;
+      const load = (tools, signal) =>
+        loadTools({
+          user: fakeUser._id.toString(),
+          tools,
+          signal,
+          options: { req: { user: { id: fakeUser._id.toString(), role: 'USER' }, body: {} } },
+        });
+
+      beforeEach(() => {
+        mockGetServerConfig.mockResolvedValue({
+          type: 'streamable-http',
+          url: 'https://example.com/mcp',
+          source: 'yaml',
+        });
+        mockGetMCPServerTools.mockResolvedValue({});
+        mockCreateMCPTool.mockReset();
+        mockCreateMCPTools.mockReset();
+      });
+
+      it.each(failures)('preserves an all-tools credential failure: %s', async (error) => {
+        mockCreateMCPTools.mockRejectedValueOnce(error);
+        await expect(load([toolKey(Constants.mcp_all)])).rejects.toBe(error);
+      });
+
+      it.each(failures)('preserves a selected-tool credential failure: %s', async (error) => {
+        mockCreateMCPTool.mockRejectedValueOnce(error);
+        await expect(load([toolKey('search')])).rejects.toBe(error);
+      });
+
+      it('keeps ordinary unavailable servers optional and loads healthy tools', async () => {
+        mockCreateMCPTools.mockRejectedValueOnce(new Error('server offline'));
+        const healthyTool = { name: toolKey('search', 'healthy') };
+        mockCreateMCPTool.mockResolvedValueOnce(healthyTool);
+        await expect(load([toolKey(Constants.mcp_all), healthyTool.name])).resolves.toMatchObject({
+          loadedTools: [healthyTool],
+        });
+      });
+
+      it('preserves owned cancellation but not a dependency abort of a live run', async () => {
+        const controller = new AbortController();
+        const error = new DOMException('Stopped', 'AbortError');
+        mockCreateMCPTool.mockRejectedValueOnce(error);
+        await expect(load([toolKey('search')], controller.signal)).resolves.toMatchObject({
+          loadedTools: [],
+        });
+        mockCreateMCPTool.mockRejectedValueOnce(error);
+        controller.abort(error);
+        await expect(load([toolKey('search')], controller.signal)).rejects.toBe(error);
+      });
+
+      it('observes early bulk rejection while a selected tool is still loading', async () => {
+        const error = failures[0];
+        mockCreateMCPTools.mockRejectedValueOnce(error);
+        mockCreateMCPTool.mockImplementationOnce(
+          () => new Promise((resolve) => setImmediate(() => resolve({ name: 'healthy' }))),
+        );
+        await expect(load([toolKey(Constants.mcp_all), toolKey('search', 'healthy')])).rejects.toBe(
+          error,
+        );
+      });
+
+      it('settles outstanding bulk loads before surfacing a selected-tool failure', async () => {
+        const error = failures[0];
+        let bulkSettled = false;
+        mockCreateMCPTools.mockImplementationOnce(
+          () =>
+            new Promise((resolve) =>
+              setImmediate(() => {
+                bulkSettled = true;
+                resolve([{ name: 'healthy' }]);
+              }),
+            ),
+        );
+        mockCreateMCPTool.mockRejectedValueOnce(error);
+        await expect(load([toolKey(Constants.mcp_all, 'healthy'), toolKey('search')])).rejects.toBe(
+          error,
+        );
+        expect(bulkSettled).toBe(true);
+      });
+
+      it.each([false, true])(
+        'lets cancellation supersede an auth failure after sibling settlement: authFailure=%s',
+        async (authFailure) => {
+          const controller = new AbortController();
+          const stopped = new Error('request cancelled');
+          let siblingSettled = false;
+          mockCreateMCPTools.mockImplementationOnce(async () => {
+            if (authFailure) {
+              throw failures[0];
+            }
+            return [{ name: 'first' }];
+          });
+          mockCreateMCPTools.mockImplementationOnce(
+            () =>
+              new Promise((resolve) =>
+                setImmediate(() => {
+                  controller.abort(stopped);
+                  siblingSettled = true;
+                  resolve([{ name: 'sibling' }]);
+                }),
+              ),
+          );
+          await expect(
+            load(
+              [toolKey(Constants.mcp_all), toolKey(Constants.mcp_all, 'healthy')],
+              controller.signal,
+            ),
+          ).rejects.toBe(stopped);
+          expect(siblingSettled).toBe(true);
+        },
+      );
+
+      it('allows a later request to recover after re-authentication', async () => {
+        mockCreateMCPTools.mockRejectedValueOnce(failures[0]);
+        await expect(load([toolKey(Constants.mcp_all)])).rejects.toBe(failures[0]);
+        mockCreateMCPTools.mockResolvedValueOnce([{ name: 'search' }]);
+        await expect(load([toolKey(Constants.mcp_all)])).resolves.toMatchObject({
+          loadedTools: [{ name: 'search' }],
+        });
+      });
+    });
+
     it('passes request body to chat MCP tool creation and skips stale cache for BODY-scoped servers', async () => {
       const serverName = 'body-scoped';
       const toolKey = `search${Constants.mcp_delimiter}${serverName}`;

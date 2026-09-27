@@ -6,13 +6,14 @@ import type { CodeWorkspaceSelection, TConversation } from 'librechat-data-provi
 import type { SetterOrUpdater } from 'recoil';
 import type {
   CodeWorkspaceEnvironmentResult,
-  CodeWorkspaceRelocation,
   CodeWorkspaceResult,
+  CodeWorkspaceTransition,
   TranslationKeys,
 } from '~/hooks';
 import {
   useCodeWorkspaceRefresh,
   useMoveConversationCodeEnvironmentMutation,
+  useReconcileConversationCodeEnvironmentMutation,
 } from '~/data-provider';
 import {
   cn,
@@ -23,6 +24,7 @@ import {
 import { useLocalize } from '~/hooks';
 
 const stateLabels: Partial<Record<CodeWorkspaceResult['state'], TranslationKeys>> = {
+  not_required: 'com_ui_code_workspace',
   loading: 'com_ui_code_workspace_loading',
   choose: 'com_ui_code_workspace_choose',
   missing: 'com_ui_code_workspace_missing',
@@ -41,8 +43,8 @@ const menuItemClasses = (selected = false) =>
     selected && 'bg-surface-active-alt',
   );
 
-/** A stale view of the decision recovers on reload; the other reasons explain themselves. */
-function moveErrorKey(error: unknown): TranslationKeys {
+/** Conflicts refresh the decision; definitive rejections keep their specific explanation. */
+function transitionErrorKey(error: unknown): TranslationKeys {
   const reason = getCodeWorkspaceErrorReason(error);
   if (reason === 'locked') return 'com_ui_code_workspace_move_stale';
   if (reason != null) return codeWorkspaceErrorKeys[reason];
@@ -50,29 +52,41 @@ function moveErrorKey(error: unknown): TranslationKeys {
   return 'com_ui_code_workspace_move_error';
 }
 
-function describeRelocation(
-  relocation: CodeWorkspaceRelocation,
+function describeTransition(
+  transition: CodeWorkspaceTransition,
   localize: ReturnType<typeof useLocalize>,
 ): { label: string; info: string } {
-  if (relocation.targets.some(({ state }) => state === 'missing')) {
+  if (transition.targets.some(({ state }) => state === 'missing')) {
     return {
       label: localize('com_ui_code_workspace_recover'),
       info: localize('com_ui_code_workspace_recover_info'),
     };
   }
-  const targetNames = relocation.targets
+  const targetNames = transition.targets
     .map(({ environment }) => environment.name ?? environment.id)
     .join(', ');
-  const previousNames = relocation.previous.map(({ id, name }) => name ?? id).join(', ');
+  if (transition.kind === 'attach') {
+    return {
+      label:
+        transition.targets.length === 1
+          ? localize('com_ui_code_workspace_attach_to', { 0: targetNames })
+          : localize('com_ui_code_workspace_attach'),
+      info: localize('com_ui_code_workspace_attach_info'),
+    };
+  }
+  const previousNames = transition.previous.map(({ id, name }) => name ?? id).join(', ');
   let info = localize('com_ui_code_workspace_move_info', { 0: previousNames, 1: targetNames });
-  if (relocation.targets.length === 0) {
+  if (transition.targets.length === 0 && !previousNames) {
+    /** Nothing to move onto and nothing the agents dropped: the machine itself is the problem. */
+    info = localize('com_ui_code_workspace_detach_prompt');
+  } else if (transition.targets.length === 0) {
     info = localize('com_ui_code_workspace_move_info_removed', { 0: previousNames });
   } else if (!previousNames) {
     info = localize('com_ui_code_workspace_move_info_added', { 0: targetNames });
   }
   return {
     label:
-      relocation.targets.length === 1
+      transition.targets.length === 1
         ? localize('com_ui_code_workspace_move_to', { 0: targetNames })
         : localize('com_ui_code_workspace_move'),
     info,
@@ -176,16 +190,41 @@ export default function CodeWorkspaceMenu({
   const { showToast } = useToastContext();
   const menuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
   const isOpen = menuStore.useState('open');
-  const moveMutation = useMoveConversationCodeEnvironmentMutation();
+  const moveMutation = useMoveConversationCodeEnvironmentMutation(setConversation);
+  const reconcileMutation = useReconcileConversationCodeEnvironmentMutation(setConversation);
   const { refresh, isRefreshing } = useCodeWorkspaceRefresh();
   const [moveDraft, setMoveDraft] = useState<{
     conversationId: string;
     workspaces: Record<string, string>;
   } | null>(null);
 
-  if (!workspace.required) return null;
+  if (!workspace.visible) return null;
 
-  const { relocation } = workspace;
+  if (workspace.recovery != null) {
+    const { request, status } = workspace.recovery;
+    const pending = status === 'pending';
+    return (
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span role="status" className="text-xs text-text-secondary">
+          {localize(
+            pending
+              ? 'com_ui_code_workspace_reconciling'
+              : 'com_ui_code_workspace_reconcile_failed',
+          )}
+        </span>
+        <button
+          type="button"
+          className={composerControlClasses()}
+          disabled={disabled || pending || reconcileMutation.isLoading}
+          onClick={() => reconcileMutation.mutate(request)}
+        >
+          {localize('com_ui_code_workspace_reconcile_retry')}
+        </button>
+      </div>
+    );
+  }
+
+  const { transition } = workspace;
   const environmentIds = new Set(workspace.environments.map(({ environment }) => environment.id));
   const selectWorkspace = (selection: CodeWorkspaceSelection) => {
     workspace.rememberSelection(selection);
@@ -215,6 +254,47 @@ export default function CodeWorkspaceMenu({
           },
     );
   };
+  const transitionText = transition == null ? null : describeTransition(transition, localize);
+  /** Choices belong to the chat they were made in; another transitionable chat starts undecided. */
+  const moveChoices =
+    transition != null && moveDraft?.conversationId === transition.conversationId
+      ? moveDraft.workspaces
+      : {};
+  /** Every target needs a workspace, so the whole transition lands in one validated write. */
+  const chosenTargets =
+    transition?.targets.flatMap((target) => {
+      const workspaceId = chosenWorkspaceId(target, moveChoices);
+      return workspaceId == null ? [] : [{ environmentId: target.environment.id, workspaceId }];
+    }) ?? [];
+  /** A transition replaces the whole decision, so an empty target set is the detach and gets its
+   *  own item: this one only confirms a decision that still names at least one workspace. */
+  const proposed = transition == null ? [] : [...transition.retained, ...chosenTargets];
+  const offersMove =
+    transition != null && (transition.targets.length > 0 || transition.retained.length > 0);
+  const moveReady =
+    transition != null && chosenTargets.length === transition.targets.length && proposed.length > 0;
+  const applyTransition = (to: CodeWorkspaceSelection[]) => {
+    if (transition == null || disabled || moveMutation.isLoading) return;
+    moveMutation.mutate(
+      { conversationId: transition.conversationId, from: transition.from, to },
+      {
+        onSuccess: () => {
+          to.forEach((selection) => workspace.rememberSelection(selection));
+          setMoveDraft(null);
+        },
+        onError: (error) => {
+          showToast({ message: localize(transitionErrorKey(error)), status: 'error' });
+        },
+      },
+    );
+  };
+  const confirmMove = () => {
+    if (!moveReady) return;
+    applyTransition(proposed);
+  };
+  /** An empty target set is the detach: the chat keeps its history and continues without a
+   *  workspace, instead of waiting on a machine it cannot reach. */
+  const confirmDetach = () => applyTransition([]);
   const onlyEnvironment = workspace.environments.length === 1 ? workspace.environments[0] : null;
   const onlyDescriptor = onlyEnvironment?.workspaces.find(
     ({ id }) => id === onlyEnvironment.selected?.workspaceId,
@@ -238,9 +318,14 @@ export default function CodeWorkspaceMenu({
       ? FolderX
       : Folder;
 
-  if (workspace.locked && relocation == null) {
-    if (workspace.canSubmit) return null;
-    const recovery = localize('com_ui_code_workspace_locked_recovery');
+  if (workspace.locked && transition == null) {
+    /** A sealed decision with no transition on offer only reports where this chat runs: without a
+     *  workspace by its own recorded choice, or on a machine that needs attention. Whether that is
+     *  worth showing at all is `visible`, above. */
+    const recovery =
+      workspace.mode === 'without_attached'
+        ? localize('com_ui_code_workspace_without_attached_info')
+        : localize('com_ui_code_workspace_locked_recovery');
     return (
       <TooltipAnchor
         description={recovery}
@@ -265,59 +350,27 @@ export default function CodeWorkspaceMenu({
     );
   }
 
-  const relocationText = relocation == null ? null : describeRelocation(relocation, localize);
-  /** Choices belong to the chat they were made in; another relocatable chat starts undecided. */
-  const moveChoices =
-    relocation != null && moveDraft?.conversationId === relocation.conversationId
-      ? moveDraft.workspaces
-      : {};
-  /** Every target needs a workspace, so the whole move lands in one validated write. */
-  const chosenTargets =
-    relocation?.targets.flatMap((target) => {
-      const workspaceId = chosenWorkspaceId(target, moveChoices);
-      return workspaceId == null ? [] : [{ environmentId: target.environment.id, workspaceId }];
-    }) ?? [];
-  const moveReady = relocation != null && chosenTargets.length === relocation.targets.length;
-  const confirmMove = () => {
-    if (relocation == null || !moveReady || disabled || moveMutation.isLoading) return;
-    moveMutation.mutate(
-      {
-        conversationId: relocation.conversationId,
-        from: relocation.from,
-        to: [...relocation.retained, ...chosenTargets],
-      },
-      {
-        onSuccess: ({ conversationId, codeEnvironmentMode, codeWorkspaces }) => {
-          chosenTargets.forEach((selection) => workspace.rememberSelection(selection));
-          setMoveDraft(null);
-          setConversation((current) =>
-            current?.conversationId === conversationId
-              ? { ...current, codeEnvironmentMode, codeWorkspaces }
-              : current,
-          );
-        },
-        onError: (error) => {
-          showToast({ message: localize(moveErrorKey(error)), status: 'error' });
-        },
-      },
-    );
-  };
   const buttonDisabled = disabled || moveMutation.isLoading;
-  const ButtonIcon = relocationText == null ? Icon : FolderSync;
+  /** Only a move renames the control, because it replaces the machine the chat already runs on.
+   *  Attaching and detaching keep naming the current state, which is what their menu changes. */
+  const renamesForMove = transition?.kind === 'move' && offersMove && transitionText != null;
+  const ButtonIcon = renamesForMove ? FolderSync : Icon;
+  const ConfirmIcon = transition?.kind === 'attach' ? Folder : FolderSync;
+  const buttonLabel = renamesForMove ? transitionText.label : label;
 
   return (
     <Ariakit.MenuProvider store={menuStore}>
       <TooltipAnchor
-        description={relocationText?.info ?? localize('com_ui_code_workspace')}
+        description={transitionText?.info ?? localize('com_ui_code_workspace')}
         disabled={isOpen}
         render={
           <Ariakit.MenuButton
             disabled={buttonDisabled}
-            data-testid={relocationText == null ? 'code-workspace' : 'code-workspace-move'}
+            data-testid={renamesForMove ? 'code-workspace-move' : 'code-workspace'}
             aria-label={
-              relocationText == null
+              transitionText == null
                 ? `${localize('com_ui_code_workspace')}: ${label}`
-                : `${relocationText.label}. ${relocationText.info}`
+                : `${buttonLabel}. ${transitionText.info}`
             }
             className={cn(
               composerControlClasses(),
@@ -329,7 +382,7 @@ export default function CodeWorkspaceMenu({
         }
       >
         <ButtonIcon className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-        <span className="min-w-0 max-w-[12rem] truncate">{relocationText?.label ?? label}</span>
+        <span className="min-w-0 max-w-[12rem] truncate">{buttonLabel}</span>
         <ChevronDown
           className={cn(
             'size-3 shrink-0 text-text-secondary transition-transform',
@@ -350,13 +403,13 @@ export default function CodeWorkspaceMenu({
           'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
         )}
       >
-        {relocation != null && relocationText != null ? (
+        {transition != null && transitionText != null ? (
           <>
             <Ariakit.MenuHeading render={<div />} className={headingClasses}>
-              {relocationText.label}
+              {transitionText.label}
             </Ariakit.MenuHeading>
-            <p className="px-2.5 pb-2 text-xs text-text-secondary">{relocationText.info}</p>
-            {relocation.targets.map((target) => (
+            <p className="px-2.5 pb-2 text-xs text-text-secondary">{transitionText.info}</p>
+            {transition.targets.map((target) => (
               <EnvironmentWorkspaces
                 key={target.environment.id}
                 environment={target.environment}
@@ -366,27 +419,54 @@ export default function CodeWorkspaceMenu({
                 isSelected={(workspaceId) => chosenWorkspaceId(target, moveChoices) === workspaceId}
                 onSelect={({ environmentId, workspaceId }) =>
                   setMoveDraft({
-                    conversationId: relocation.conversationId,
+                    conversationId: transition.conversationId,
                     workspaces: { ...moveChoices, [environmentId]: workspaceId },
                   })
                 }
               />
             ))}
             <Ariakit.MenuSeparator className="my-1 h-0 w-full border-t border-border-light" />
-            <Ariakit.MenuItem
-              disabled={disabled || !moveReady || moveMutation.isLoading}
-              hideOnClick={true}
-              onClick={confirmMove}
-              className={cn(
-                menuItemClasses(),
-                'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
-              )}
-            >
-              <FolderSync className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate text-left text-sm font-medium text-text-primary">
-                {relocationText.label}
-              </span>
-            </Ariakit.MenuItem>
+            {offersMove && (
+              <Ariakit.MenuItem
+                disabled={disabled || !moveReady || moveMutation.isLoading}
+                hideOnClick={true}
+                onClick={confirmMove}
+                className={cn(
+                  menuItemClasses(),
+                  'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+                )}
+              >
+                <ConfirmIcon className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-left text-sm font-medium text-text-primary">
+                  {transitionText.label}
+                </span>
+              </Ariakit.MenuItem>
+            )}
+            {transition.detachable && (
+              <Ariakit.MenuItem
+                data-testid="code-workspace-detach"
+                disabled={disabled || moveMutation.isLoading}
+                hideOnClick={true}
+                onClick={confirmDetach}
+                className={cn(
+                  menuItemClasses(),
+                  'aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+                )}
+              >
+                <FolderX
+                  className="mt-0.5 size-4 shrink-0 text-text-secondary"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 flex-1 text-left">
+                  <div className="truncate text-sm font-medium text-text-primary">
+                    {localize('com_ui_code_workspace_detach')}
+                  </div>
+                  <p className="text-xs text-text-secondary">
+                    {localize('com_ui_code_workspace_detach_info')}
+                  </p>
+                </div>
+              </Ariakit.MenuItem>
+            )}
           </>
         ) : (
           <>

@@ -48,6 +48,8 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  getAgentErrorMetadata: (...args) =>
+    jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   sendEvent: jest.fn(),
   isScheduleFireRequest: jest.fn(() => false),
   exemptFromConcurrencyLimiter: jest.fn(() => false),

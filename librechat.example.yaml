@@ -674,6 +674,12 @@ endpoints:
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
+  #     # Keep move-only behavior unless attach/detach is explicitly enabled.
+  #     # Enable only after ALL API replicas run this build and advertise decision protocol 1
+  #     # (CODE_ENVIRONMENT_DECISION_VERSION=1), then refresh clients.
+  #     conversationMoves:
+  #       enabled: true
+  #       allowAttachDetach: false
   #     allowedEnvironments: ["user", "agent-user", "conversation"]
   #     # Personal BYOM enrollment. Requires allowPrincipalWorkers on a control plane.
   #     # Omitted values default to enabled and five registered environments per user.

@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
 import { ToolAuthWarning } from '../auth';
@@ -143,6 +144,7 @@ jest.mock('~/utils', () => ({
       create_file: 'Create File',
       edit_file: 'Edit File',
       ask_user_question: 'Question',
+      check_background_task: 'Background tasks',
     };
     return friendlyNames[name] ?? name;
   },
@@ -541,7 +543,7 @@ describe('ToolCallGroup image hoisting', () => {
     renderGroup(baseProps);
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.click(button);
     expect(screen.getByTestId('inner-0')).toBeInTheDocument();
@@ -567,7 +569,7 @@ describe('ToolCallGroup image hoisting', () => {
     });
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     expect(screen.getByTestId('approval-0')).toBeInTheDocument();
 
     fireEvent.click(button);
@@ -599,7 +601,7 @@ describe('ToolCallGroup image hoisting', () => {
     });
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.transitionEnd(collapsible);
 
@@ -629,7 +631,7 @@ describe('ToolCallGroup image hoisting', () => {
     });
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.transitionEnd(collapsible);
 
@@ -657,7 +659,7 @@ describe('ToolCallGroup image hoisting', () => {
     const { rerender } = renderGroup(propsFor());
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
     fireEvent.transitionEnd(collapsible);
     expect(screen.getByTestId('retained-0')).toBeInTheDocument();
@@ -698,7 +700,7 @@ describe('ToolCallGroup image hoisting', () => {
     const { rerender } = renderGroup(propsFor());
 
     const button = screen.getByRole('button', { name: /^Ran 2 actions/ });
-    const collapsible = button.nextElementSibling as HTMLElement;
+    const collapsible = screen.getByTestId('tool-call-group-panel');
     fireEvent.click(button);
 
     rerender(
@@ -854,6 +856,68 @@ describe('ToolCallGroup image hoisting', () => {
         name: 'Ran 3 actions, Create File ×2, Edit File · 1 failed',
       }),
     ).toBeInTheDocument();
+  });
+
+  it.each([
+    ['error', '1 failed'],
+    ['cancelled', '1 cancelled'],
+    ['interrupted', '1 failed'],
+  ])('reflects a %s task poll in the collapsed group', (status, suffix) => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'check-1',
+            JSON.stringify({
+              background_task_id: 'bg-1',
+              tool: 'bash_tool',
+              status,
+              ...(status === 'error' ? { error: 'Disk full' } : {}),
+            }),
+            Constants.CHECK_BACKGROUND_TASK,
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByRole('button', { name: `Background tasks, ${suffix}` })).toBeInTheDocument();
+  });
+
+  it.each(['invalid', 'rejected', 'unavailable', 'outcome_unknown', 'result_unavailable'])(
+    'shows a failed group for the %s background-task notice even when the poll step succeeds',
+    (status) => {
+      const part = makePart(
+        'poll-1',
+        JSON.stringify({ status, message: 'Host guidance about the failed check.' }),
+        Constants.CHECK_BACKGROUND_TASK,
+      );
+      Object.assign(part[ContentTypes.TOOL_CALL] ?? {}, { runStepStatus: 'completed' });
+      renderGroup({ ...baseProps, parts: [{ part, idx: 0 }], lastContentIdx: 0 });
+      expect(
+        screen.getByRole('button', { name: 'Background tasks, 1 failed' }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it('marks an incomplete background-task list as a failed check', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'poll-1',
+            JSON.stringify({ tasks: [], partial: true, warning: 'A replica is unreachable.' }),
+            Constants.CHECK_BACKGROUND_TASK,
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+    expect(screen.getByRole('button', { name: 'Background tasks, 1 failed' })).toBeInTheDocument();
   });
 
   it('counts background failures per step when provider call IDs repeat', () => {
@@ -1117,5 +1181,87 @@ describe('ToolCallGroup image hoisting', () => {
       screen.getByRole('button', { name: 'Ran 2 actions, Web Search, Question' }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('stacked-icons')).toBeInTheDocument();
+  });
+});
+
+describe('ToolCallGroup failure fast path', () => {
+  const RevealProbe = ({ onReveal }: { onReveal: () => void }) => {
+    useFailedReveal(true, onReveal);
+    return <div data-testid="probe" />;
+  };
+  const failedParts = [
+    { part: makePart('c1', 'created', 'create_file'), idx: 0 },
+    { part: makePart('c2', 'Error processing tool: disk full', 'create_file'), idx: 1 },
+  ];
+  const props = (onReveal: () => void) =>
+    ({
+      parts: failedParts,
+      isSubmitting: false,
+      isLast: false,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_p: TMessageContentParts, idx: number) => (
+        <RevealProbe key={idx} onReveal={onReveal} />
+      ),
+    }) satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  it('opens the group and asks its rows to open from the pill beside a standalone header', () => {
+    const onReveal = jest.fn();
+    renderGroup(props(onReveal));
+    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_failed_one' }));
+
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    /** Once per row the group rendered, after those rows mounted. */
+    expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
+  });
+
+  it('shows the failure count once, on the pill, when it stands alone', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    expect(header).not.toHaveTextContent('1 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1 failed');
+  });
+
+  it("keeps the count in text inside a phase, where the pill is the phase's", () => {
+    renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
+    expect(screen.getByRole('button', { name: /· 1 failed$/ })).toHaveTextContent('1 failed');
+  });
+
+  it('leaves the pill to the phase header when nested in one', () => {
+    renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
+    expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
+  });
+
+  it('opens for a request from a phase above when it holds a failure', () => {
+    const onReveal = jest.fn();
+    const { rerender } = render(
+      <RecoilRoot>
+        <FailedRevealContext.Provider value={{ tick: 0, claimFocus: null }}>
+          <ToolCallGroup {...props(onReveal)} withinActivityPhase />
+        </FailedRevealContext.Provider>
+      </RecoilRoot>,
+    );
+    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    rerender(
+      <RecoilRoot>
+        <FailedRevealContext.Provider value={{ tick: 1, claimFocus: null }}>
+          <ToolCallGroup {...props(onReveal)} withinActivityPhase />
+        </FailedRevealContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('sets an open header in the primary colour over railed rows', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    expect(header).not.toHaveClass('text-text-primary');
+    fireEvent.click(header);
+    expect(header).toHaveClass('text-text-primary');
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
   });
 });

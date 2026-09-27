@@ -25,6 +25,7 @@ import {
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
+export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
 import {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
@@ -33,6 +34,7 @@ import {
 import {
   CODE_ENVIRONMENT_DECISION_VERSION,
   CODE_ENVIRONMENT_MOVE_VERSION,
+  CODE_ENVIRONMENT_TRANSITION_VERSION,
   CODE_WORKSPACE_RECOVERY_VERSION,
 } from './code/workspace';
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
@@ -1383,6 +1385,9 @@ export const agentsEndpointSchema = baseEndpointSchema
           conversationMoves: z
             .object({
               enabled: z.boolean().optional(),
+              /** Opt in after every API replica supports attach/detach. Omitted or false keeps
+               * the existing move-only policy, including for already-enabled deployments. */
+              allowAttachDetach: z.boolean().optional(),
             })
             .optional(),
           /** Operator-managed execution environments. Attached entries route to a
@@ -1512,6 +1517,43 @@ export const agentsEndpointSchema = baseEndpointSchema
       eventDriven: z
         .object({
           selfUrl: z.string().url().optional(),
+          /** Every replica keeps polling Mongo as a crash-recovery fallback. Wakes
+           * keep local delivery prompt; these caps bound work missed across replicas. */
+          idlePolling: z
+            .object({
+              deliveryMaxIntervalMs: z
+                .number()
+                .int()
+                .min(1_000)
+                .max(300_000)
+                .optional()
+                .default(15_000),
+              queuedTurnMaxIntervalMs: z
+                .number()
+                .int()
+                .min(30_000)
+                .max(300_000)
+                .optional()
+                .default(120_000),
+              maintenanceMaxIntervalMs: z
+                .number()
+                .int()
+                .min(30_000)
+                .max(300_000)
+                .optional()
+                .default(120_000),
+              /** Longest a background or subagent completion re-checks whether its
+               * result and parent turn are ready. The events it waits on expedite it,
+               * so this bounds missed signals rather than normal delivery latency. */
+              completionWaitMaxIntervalMs: z
+                .number()
+                .int()
+                .min(5_000)
+                .max(300_000)
+                .optional()
+                .default(60_000),
+            })
+            .optional(),
         })
         .optional(),
       /** Conversational background-task delivery policy. Automatic completion wakeups are
@@ -1534,6 +1576,15 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Cooperative cancellation for process-local ordinary tools. Off
            * by default so existing deployments opt into the new control. */
           ordinaryToolCancellation: z.boolean().optional().default(false),
+          /** During graceful shutdown, how long an interrupted background tool gets to
+           * settle on its own before its result is recorded as interrupted. */
+          shutdownInterruptGraceMs: z
+            .number()
+            .int()
+            .min(0)
+            .max(60_000)
+            .optional()
+            .default(AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT),
         })
         .optional(),
       skills: z
@@ -2395,6 +2446,9 @@ export type TStartupConfig = {
   /** Owner moves of a sealed code-environment decision supported by the API. Clients must not
    * offer to move a conversation unless this is advertised. */
   codeEnvironmentMoveVersion?: typeof CODE_ENVIRONMENT_MOVE_VERSION;
+  /** Owner attach and detach of a sealed code-environment decision supported by the API. Clients
+   * must not offer either unless this is advertised, independently of the move version. */
+  codeEnvironmentTransitionVersion?: typeof CODE_ENVIRONMENT_TRANSITION_VERSION;
   /** Additive recovery support. Clients require this and the move capability before replacing
    * a missing workspace. Keeping it separate preserves exact-version checks in older clients. */
   codeWorkspaceRecoveryVersion?: typeof CODE_WORKSPACE_RECOVERY_VERSION;

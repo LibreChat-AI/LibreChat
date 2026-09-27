@@ -50,6 +50,7 @@ type TSubmissionForTest = {
   isTemporary: boolean;
   messages: TMessage[];
   isRegenerate?: boolean;
+  compact?: boolean;
   conversation: Partial<TConversation>;
   endpointOption: TEndpointOption;
   initialResponse: TMessage;
@@ -210,6 +211,40 @@ describe('useStepHandler', () => {
       expect(setMessagesCall).toContainEqual(
         expect.objectContaining({ messageId: 'response-msg-1' }),
       );
+    });
+
+    it('keeps an assistant compaction anchor when the response receives its durable ID', () => {
+      const userMessage = createUserMessage();
+      const anchor = createResponseMessage({ messageId: 'anchor-response' });
+      const initialResponse = createResponseMessage({
+        messageId: 'anchor-response_',
+        parentMessageId: anchor.messageId,
+      });
+      const submission = createSubmission({
+        userMessage: { ...anchor, text: '' },
+        messages: [userMessage, anchor],
+        initialResponse,
+        isRegenerate: true,
+        compact: true,
+      });
+      const runStep = createRunStep({ runId: 'summary-response' });
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      act(() => {
+        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP, data: runStep }, submission);
+      });
+
+      const messages = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      expect(messages.map(({ messageId }) => messageId)).toEqual([
+        userMessage.messageId,
+        anchor.messageId,
+        'summary-response',
+      ]);
+      expect(messages[1]).toBe(anchor);
+      expect(messages[2]).toMatchObject({
+        messageId: 'summary-response',
+        parentMessageId: anchor.messageId,
+      });
     });
 
     it('should warn and return early when no responseMessageId', () => {
@@ -3238,6 +3273,47 @@ describe('useStepHandler', () => {
       label: 'Subagent "self" started',
       timestamp: new Date().toISOString(),
       ...overrides,
+    });
+
+    it('signals parent-index discovery on child lifecycle events, not every progress delta', () => {
+      const onSubagentIndexChange = jest.fn();
+      const { result } = renderHook(
+        () => useStepHandler({ ...createHookParams(), onSubagentIndexChange }),
+        { wrapper: subagentStoreWrapper },
+      );
+      const submission = createSubmission();
+
+      act(() => {
+        for (const phase of ['start', 'run_step_delta', 'stop', 'error'] as const) {
+          result.current.stepHandler(
+            { event: StepEvents.ON_SUBAGENT_UPDATE, data: makeUpdate({ phase }) },
+            submission,
+          );
+        }
+      });
+      expect(onSubagentIndexChange.mock.calls).toEqual([['conv-1'], ['conv-1'], ['conv-1']]);
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_SUBAGENT_UPDATE, data: makeUpdate({ phase: 'start' }) },
+          createSubmission({
+            userMessage: createUserMessage({ conversationId: String(Constants.NEW_CONVO) }),
+            initialResponse: createResponseMessage({ conversationId: String(Constants.NEW_CONVO) }),
+          }),
+        );
+      });
+      expect(onSubagentIndexChange).toHaveBeenCalledTimes(3);
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_SUBAGENT_UPDATE, data: makeUpdate({ phase: 'start' }) },
+          createSubmission({
+            userMessage: createUserMessage({ conversationId: String(Constants.NEW_CONVO) }),
+            initialResponse: createResponseMessage({ conversationId: 'saved-parent' }),
+          }),
+        );
+      });
+      expect(onSubagentIndexChange).toHaveBeenLastCalledWith('saved-parent');
     });
 
     it('correlates updates to a tool call via parentToolCallId (deterministic path)', () => {

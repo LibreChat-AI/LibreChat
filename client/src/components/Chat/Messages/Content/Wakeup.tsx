@@ -16,6 +16,7 @@ import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { useShareContext } from '~/Providers/ShareContext';
+import BackgroundTaskCard from './BackgroundTaskCard';
 import { cn, getToolDisplayLabel } from '~/utils';
 import { useMessageContext } from '~/Providers';
 import { StackedToolIcons } from './ToolOutput';
@@ -33,15 +34,12 @@ const threadStatus = (status: WakeupTask['status']) =>
 
 function WakeupTaskCard({
   task,
-  kind,
   conversationId,
 }: {
   task: WakeupTask;
-  kind: WakeupDisplay['kind'];
   conversationId?: string | null;
 }) {
   const localize = useLocalize();
-  const mcpServerNames = useMCPServerNames();
   const { isSharedConvo } = useShareContext();
   const { messageId } = useMessageContext();
   const { byThreadId } = useParentSubagents();
@@ -78,10 +76,7 @@ function WakeupTaskCard({
   }, [child, conversationId, isSharedConvo, messageId, task]);
   const status = threadStatus(task.status);
   const StatusIcon = subagentStatusIcon(status);
-  const title =
-    kind === 'subagent'
-      ? (task.subagentType ?? '')
-      : getToolDisplayLabel(task.toolName ?? '', localize, mcpServerNames);
+  const title = task.subagentType ?? '';
   const hasResult = task.result.trim() !== '';
 
   const openActivity = useCallback(() => {
@@ -150,7 +145,7 @@ const Wakeup = memo(function Wakeup({
     setIsExpanded((previous) => !previous);
   }, [mountBody]);
 
-  const anyFailed = display.tasks.some((task) => task.status === 'error');
+  const anyFailed = display.tasks.some((task) => task.status !== 'completed');
   const headerLabel = useMemo(() => {
     if (display.kind === 'subagent') {
       const status = display.tasks[0]?.status ?? 'completed';
@@ -159,11 +154,13 @@ const Wakeup = memo(function Wakeup({
     if (display.tasks.length > 1) {
       return localize('com_ui_wakeup_tasks_finished', { 0: String(display.tasks.length) });
     }
-    return localize(
-      display.tasks[0]?.status === 'error'
-        ? 'com_ui_wakeup_task_errored'
-        : 'com_ui_wakeup_task_finished',
-    );
+    if (display.tasks[0]?.status === 'cancelled') {
+      return localize('com_ui_wakeup_task_cancelled');
+    }
+    if (display.tasks[0]?.status === 'error') {
+      return localize('com_ui_wakeup_task_errored');
+    }
+    return localize('com_ui_wakeup_task_finished');
   }, [display.kind, display.tasks, localize]);
 
   const nameSummary = useMemo(() => {
@@ -226,17 +223,29 @@ const Wakeup = memo(function Wakeup({
         {shouldRenderBody && (
           <div className="overflow-hidden" ref={expandRef}>
             <div className="pb-1">
-              <div className="mt-1 text-xs text-text-secondary">
-                {localize('com_ui_wakeup_explainer')}
-              </div>
-              {display.tasks.map((task) => (
-                <WakeupTaskCard
-                  key={task.taskId}
-                  task={task}
-                  kind={display.kind}
-                  conversationId={conversationId}
-                />
-              ))}
+              {display.kind === 'subagent' && (
+                <div className="mt-1 text-xs text-text-secondary">
+                  {localize('com_ui_wakeup_explainer')}
+                </div>
+              )}
+              {display.tasks.map((task) =>
+                display.kind === 'background_tool' ? (
+                  <div key={task.taskId} className="my-2">
+                    <BackgroundTaskCard
+                      task={{
+                        taskId: task.taskId,
+                        toolName: task.toolName ?? '',
+                        status: task.status,
+                        result: task.result,
+                      }}
+                      mcpIconMap={mcpIconMap}
+                      mcpServerNames={mcpServerNames}
+                    />
+                  </div>
+                ) : (
+                  <WakeupTaskCard key={task.taskId} task={task} conversationId={conversationId} />
+                ),
+              )}
             </div>
           </div>
         )}

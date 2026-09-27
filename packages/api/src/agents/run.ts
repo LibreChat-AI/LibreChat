@@ -2179,10 +2179,10 @@ export async function createRun({
    * Default agent's latched context-fading tier from the previous run's
    * contextMeta. It seeds the pruner so the provider-only projection of
    * historical tool results keeps the same bytes across runs; graph messages
-   * stay canonical. Ships in `@librechat/agents` after 3.7.13; older SDK
-   * versions ignore it.
+   * stay canonical. Legacy v1 tiers are not passed to the v2 SDK; it derives
+   * them afresh using the current-turn exchange width.
    */
-  fadingTier?: IAgentFadingTier | null;
+  fadingTier?: (IAgentFadingTier & { v: 2 }) | null;
   /**
    * Latched tiers keyed by agent ID from the previous run's contextMeta, so
    * every agent of a multi-agent run restores its own tier. Same SDK

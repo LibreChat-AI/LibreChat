@@ -53,6 +53,7 @@ const {
   isContentFilterError,
   getSafeErrorMetadata,
   getUserFacingProviderError,
+  getAgentErrorMetadata,
   createToolExecuteHandler,
   createOwnedToolEndHandler,
   resolveRecursionLimit,
@@ -84,7 +85,7 @@ const {
   executeAgentRun,
   waitForAgentExecutionWrites,
   resolveToolRoleGrants,
-  resolveConversationCodeEnvironmentDecision,
+  resolveAdmittedCodeEnvironmentDecision,
   resolvePersistableCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
 } = require('@librechat/api');
@@ -147,12 +148,10 @@ function handleExecutionError({ error, res, appConfig }) {
       error.body.error,
     );
   }
-  const statusCode =
-    typeof error?.status === 'number' && error.status >= 400 && error.status < 600
-      ? error.status
-      : 500;
+  const errorMetadata = getAgentErrorMetadata(error);
+  const statusCode = errorMetadata?.status ?? 500;
   const errorType = statusCode >= 400 && statusCode < 500 ? 'invalid_request' : 'server_error';
-  const errorCode = !protectionEnabled && typeof error?.code === 'string' ? error.code : undefined;
+  const errorCode = !protectionEnabled ? errorMetadata?.code : undefined;
   if (errorCode === undefined) {
     sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
   } else {
@@ -717,12 +716,16 @@ const executeResponse = async (envelope, { req, res }) => {
         }
       }
 
-      const codeEnvironmentDecision = resolveConversationCodeEnvironmentDecision({
-        conversationId,
-        requestedMode: request.code_environment_mode,
-        requestedSelections: request.code_workspaces,
-        conversation: req.resolvedConversation,
-      });
+      const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
+        await resolveAdmittedCodeEnvironmentDecision({
+          appConfig,
+          conversation: req.resolvedConversation,
+          conversationId,
+          requestedMode: request.code_environment_mode,
+          requestedSelections: request.code_workspaces,
+          readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(principal.userId, id),
+        });
+      req.resolvedConversation = admittedConversation;
       const parentMessageId = null;
       const mcpRequestBody = createMCPRuntimeRequestBody({
         messageId: responseId,

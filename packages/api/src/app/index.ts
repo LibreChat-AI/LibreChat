@@ -1,4 +1,5 @@
 export * from './service';
+export * from './loader';
 export * from './config';
 export * from './metrics';
 export * from './permissions';

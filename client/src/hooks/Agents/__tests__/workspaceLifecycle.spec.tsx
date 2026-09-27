@@ -12,8 +12,7 @@ jest.mock('librechat-data-provider', () => {
   return { ...actual, dataService: { ...actual.dataService } };
 });
 jest.mock('~/data-provider', () => ({
-  useCodeEnvironmentStatusQueries: jest.requireActual('~/data-provider/CodeEnvironments')
-    .useCodeEnvironmentStatusQueries,
+  ...jest.requireActual('~/data-provider/CodeEnvironments'),
   useGetStartupConfig: () => ({ data: { codeEnvironmentDecisionVersion: 1 } }),
 }));
 jest.mock('../workspacePreferences', () => ({

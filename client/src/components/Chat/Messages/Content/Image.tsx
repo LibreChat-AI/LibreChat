@@ -28,6 +28,7 @@ const Image = ({
   imagePath,
   altText,
   className,
+  alignRight = false,
   args,
   width,
   height,
@@ -35,6 +36,7 @@ const Image = ({
   imagePath: string;
   altText: string;
   className?: string;
+  alignRight?: boolean;
   args?: {
     prompt?: string;
     quality?: 'low' | 'medium' | 'high';
@@ -94,7 +96,7 @@ const Image = ({
   const showSkeleton = hasDimensions && !paintedUrls.has(absoluteImageUrl);
 
   return (
-    <div>
+    <div className={alignRight ? 'ml-auto' : undefined}>
       <button
         ref={triggerRef}
         type="button"

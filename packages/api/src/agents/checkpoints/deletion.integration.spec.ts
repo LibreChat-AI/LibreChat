@@ -242,7 +242,9 @@ test('retains writer obligations, renewed revisions, and lookup failures', async
   await deletion.remember(['child']);
   const getJobs = jest.fn().mockResolvedValue(['pending-host']);
   const reclaim = createCheckpointDeletionReclaimer(getJobs);
-  expect(await reclaim(25)).toBe(0);
+  const activity = { found: false };
+  expect(await reclaim(25, activity)).toBe(0);
+  expect(activity.found).toBe(true);
   getJobs.mockRejectedValueOnce(new Error('job store unavailable'));
   await expect(reclaim(25)).rejects.toThrow('reclamation failed');
   getJobs.mockImplementationOnce(async () => {

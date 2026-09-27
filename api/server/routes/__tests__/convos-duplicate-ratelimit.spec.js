@@ -2,6 +2,7 @@ const express = require('express');
 const request = require('supertest');
 
 const MOCKS = '../__test-utils__/convos-route-mocks';
+jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
 
 jest.mock('@librechat/agents', () => require(MOCKS).agents());
 jest.mock('@librechat/api', () =>
@@ -49,6 +50,9 @@ jest.mock('~/server/services/Endpoints/assistants', () => require(MOCKS).assista
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () =>
   require(MOCKS).subagentThreadStore(),
 );
+jest.mock('~/server/services/Endpoints/agents/backgroundCompletion', () => ({
+  pendingBackgroundToolCompletions: { list: jest.fn() },
+}));
 
 describe('POST /api/convos/duplicate - Rate Limiting', () => {
   let app;

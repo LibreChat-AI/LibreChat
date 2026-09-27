@@ -34,7 +34,9 @@ const PEEK_SENTENCES = 4;
  *  live peek. Bounds work on long reasoning by scanning only the trailing
  *  slice before splitting on sentence boundaries. */
 const lastSentences = (text: string): string => {
-  const tail = text.trim().slice(-1200);
+  /** Stripped here as well as by the disclosures that own the text: the
+   *  live card hands the peek a thought straight from the stream, tags on. */
+  const tail = stripThinkTags(text).slice(-1200);
   if (!tail) {
     return '';
   }
@@ -65,7 +67,7 @@ const PEEK_FADE =
  * out loud" treatment popularized by Grok). Decorative only (aria-hidden); the
  * toggle button above it provides the accessible control.
  */
-const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
+export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
   const ref = useRef<HTMLDivElement>(null);
   const fontSize = useAtomValue(fontSizeAtom);
   const peek = useMemo(() => lastSentences(text), [text]);
@@ -88,6 +90,7 @@ const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
     <div
       aria-hidden="true"
       className="mt-1 overflow-hidden rounded-2xl border border-border-light px-4 py-3"
+      data-testid="streaming-thought-peek"
     >
       <div
         ref={ref}

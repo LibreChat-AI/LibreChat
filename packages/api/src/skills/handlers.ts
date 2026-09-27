@@ -107,6 +107,7 @@ export interface SkillsHandlersDeps {
     skillId: string | Types.ObjectId,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ) => Promise<void>;
 
   /** Storage strategy resolver — returns stream/URL helpers keyed by source. */
@@ -159,7 +160,7 @@ function serializeSkill(
     author: skill.author.toString(),
     authorName: skill.authorName,
     version: skill.version,
-    source: skill.source,
+    source: skill.source ?? 'inline',
     sourceMetadata: serializeSourceMetadata(skill.sourceMetadata),
     fileCount: skill.fileCount,
     alwaysApply: skill.alwaysApply,
@@ -187,7 +188,7 @@ function serializeSkillSummary(
     author: skill.author.toString(),
     authorName: skill.authorName,
     version: skill.version,
-    source: skill.source,
+    source: skill.source ?? 'inline',
     sourceMetadata: serializeSourceMetadata(skill.sourceMetadata),
     fileCount: skill.fileCount,
     alwaysApply: skill.alwaysApply,
@@ -756,6 +757,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
       }
 
       const base: Omit<TSkillFileContentResponse, 'content' | 'isBinary'> = {
+        fileId: file.file_id,
         mimeType: file.mimeType,
         relativePath: file.relativePath,
         filename: file.filename,
@@ -789,7 +791,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
         if (!binaryChecked && totalBytes >= 8192) {
           binaryChecked = true;
           if (isBinaryBuffer(Buffer.concat(chunks))) {
-            updateSkillFileContent(id, decodedPath, { isBinary: true }).catch((e) =>
+            updateSkillFileContent(id, decodedPath, { isBinary: true }, file.file_id).catch((e) =>
               logger.error('[downloadFile] Cache write failed:', e),
             );
             if ('destroy' in stream && typeof stream.destroy === 'function') {
@@ -812,7 +814,7 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
 
       const buffer = Buffer.concat(chunks);
       if (isBinaryBuffer(buffer)) {
-        updateSkillFileContent(id, decodedPath, { isBinary: true }).catch((e) =>
+        updateSkillFileContent(id, decodedPath, { isBinary: true }, file.file_id).catch((e) =>
           logger.error('[downloadFile] Cache write failed:', e),
         );
         return res.status(200).json({ ...base, isBinary: true });
@@ -820,9 +822,12 @@ export function createSkillsHandlers(deps: SkillsHandlersDeps): {
 
       const text = buffer.toString('utf-8');
       if (buffer.length <= MAX_TEXT_CACHE_BYTES) {
-        updateSkillFileContent(id, decodedPath, { content: text, isBinary: false }).catch((e) =>
-          logger.error('[downloadFile] Cache write failed:', e),
-        );
+        updateSkillFileContent(
+          id,
+          decodedPath,
+          { content: text, isBinary: false },
+          file.file_id,
+        ).catch((e) => logger.error('[downloadFile] Cache write failed:', e));
       }
       return res.status(200).json({ ...base, isBinary: false, content: text });
     } catch (error) {

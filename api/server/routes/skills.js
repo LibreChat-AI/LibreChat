@@ -1,10 +1,9 @@
 const path = require('path');
-const crypto = require('crypto');
 const multer = require('multer');
 const express = require('express');
 const {
   createImportHandler,
-  blockFilteredSkillFile,
+  createSkillUploadHandler,
   generateCheckAccess,
   getStorageMetadata,
   resolveRequestTenantId,
@@ -149,110 +148,13 @@ const importHandler = createImportHandler({
 // ---------------------------------------------------------------------------
 // Per-file upload handler (add a single file to an existing skill)
 // ---------------------------------------------------------------------------
-async function uploadFileHandler(req, res) {
-  try {
-    const { file } = req;
-    if (!file) {
-      return res.status(400).json({ error: 'No file provided' });
-    }
-
-    const skillId = req.params.id;
-    const relativePath = req.body.relativePath;
-    if (!relativePath) {
-      return res.status(400).json({ error: 'relativePath is required in form body' });
-    }
-    if (relativePath.toUpperCase() === 'SKILL.MD') {
-      return res.status(400).json({ error: 'SKILL.md is reserved; update the skill body instead' });
-    }
-    // Reject traversal, absolute paths, empty/dot segments — matches model-layer validator
-    // so storage writes don't happen before DB rejects the path.
-    if (
-      !/^[a-zA-Z0-9._\-/]+$/.test(relativePath) ||
-      /^\//.test(relativePath) ||
-      relativePath.split('/').some((s) => s === '' || s === '.' || s === '..')
-    ) {
-      return res.status(400).json({ error: 'Invalid file path' });
-    }
-    if (
-      blockFilteredSkillFile(req.config?.filters, res, {
-        buffer: file.buffer,
-        originalName: file.originalname,
-        relativePath,
-      })
-    ) {
-      return res;
-    }
-
-    const tenantId = resolveRequestTenantId(req);
-
-    // Look up existing file before saving — needed to clean up old blob on replace
-    const existingFile = await getSkillFileByPath(skillId, relativePath);
-
-    const fileId = crypto.randomUUID();
-    const filename = file.originalname;
-    const storageFileName = `${fileId}__${filename}`;
-
-    const isImage = (file.mimetype || '').startsWith('image/');
-    const storage = resolveSkillStorage(req, { isImage });
-    const filepath = await storage.saveBuffer({
-      userId: req.user.id,
-      buffer: file.buffer,
-      fileName: storageFileName,
-      basePath: 'uploads',
-      tenantId,
-    });
-    const storageMetadata = getStorageMetadata({ filepath, source: storage.source });
-
-    let result;
-    try {
-      result = await upsertSkillFile({
-        skillId,
-        relativePath,
-        file_id: fileId,
-        filename,
-        filepath,
-        ...storageMetadata,
-        source: storage.source,
-        mimeType: file.mimetype || 'application/octet-stream',
-        bytes: file.size,
-        isExecutable: false,
-        author: req.user._id,
-        tenantId,
-      });
-    } catch (dbError) {
-      // Clean up the stored blob so it doesn't leak on DB failure
-      try {
-        const { deleteFile } = getStrategyFunctions(storage.source);
-        if (deleteFile) {
-          await deleteFile(req, { filepath, user: req.user.id, tenantId });
-        }
-      } catch (cleanupErr) {
-        logger.error('[uploadFile] Failed to clean up orphaned blob:', cleanupErr);
-      }
-      throw dbError;
-    }
-
-    // Clean up old blob if this was a replace (different filepath means new storage object)
-    if (existingFile && existingFile.filepath !== filepath) {
-      const { deleteFile: delOld } = getStrategyFunctions(existingFile.source);
-      if (delOld) {
-        delOld(req, {
-          filepath: existingFile.filepath,
-          user: existingFile.author ?? req.user.id,
-          tenantId: existingFile.tenantId ?? tenantId,
-        }).catch((e) => logger.error('[uploadFile] Old blob cleanup failed:', e));
-      }
-    }
-
-    return res.status(200).json(result);
-  } catch (error) {
-    if (error.code === 'SKILL_FILE_VALIDATION_FAILED') {
-      return res.status(400).json({ error: error.message });
-    }
-    logger.error('[uploadFile] Error:', error);
-    return res.status(500).json({ error: 'Failed to upload file' });
-  }
-}
+const uploadFileHandler = createSkillUploadHandler({
+  getSkillById,
+  getSkillFileByPath,
+  upsertSkillFile,
+  resolveStorage: resolveSkillStorage,
+  getStrategyFunctions,
+});
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -306,9 +208,9 @@ router.get(
   handlers.listFiles,
 );
 
-// Per-file upload (live — replaces 501 stub)
+// Legacy upload and revision-checked editing. Older servers have no POST wildcard route.
 router.post(
-  '/:id/files',
+  ['/:id/files', '/:id/files/*relativePath'],
   canAccessSkillResource({ requiredPermission: PermissionBits.EDIT }),
   fileUploadIpLimiter,
   fileUploadUserLimiter,

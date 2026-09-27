@@ -473,19 +473,19 @@ const JOB_CREATE_LUA =
   'if replacedProviderDrained then replaced.providerDrained = replacedProviderDrained == "1" end ' +
   'replacementChain[#replacementChain + 1] = replaced replacementSeen[tostring(replacedEpoch)] = true end ' +
   'local recoveredSteerId = ARGV[5] local expectedRecovery = nil ' +
-  'if recoveredSteerId ~= "" and ARGV[10] ~= "2" then return { "", "", "0", "recovery_payload_mismatch" } end ' +
+  'if recoveredSteerId ~= "" and ARGV[10] ~= "2" then return { "", "", "0", "recovery_protocol_mismatch" } end ' +
   'if recoveredSteerId ~= "" then local ok, decoded = pcall(cjson.decode, ARGV[9]) ' +
   'if not ok or type(decoded) ~= "table" or type(decoded.text) ~= "string" ' +
-  'or not isDenseArray(decoded.fileIds) then return { "", "", "0", "recovery_payload_mismatch" } end ' +
+  'or not isDenseArray(decoded.fileIds) then return { "", "", "0", "recovery_invalid_payload" } end ' +
   'local expectedSeen = {} for i = 1, #decoded.fileIds do local fileId = decoded.fileIds[i] ' +
   'if type(fileId) ~= "string" or fileId == "" or expectedSeen[fileId] then ' +
-  'return { "", "", "0", "recovery_payload_mismatch" } end expectedSeen[fileId] = true end ' +
+  'return { "", "", "0", "recovery_invalid_payload" } end expectedSeen[fileId] = true end ' +
   'if decoded.quotes ~= nil then if not isDenseArray(decoded.quotes) then ' +
-  'return { "", "", "0", "recovery_payload_mismatch" } end ' +
+  'return { "", "", "0", "recovery_invalid_payload" } end ' +
   'for i = 1, #decoded.quotes do if type(decoded.quotes[i]) ~= "string" or decoded.quotes[i] == "" then ' +
-  'return { "", "", "0", "recovery_payload_mismatch" } end end end ' +
+  'return { "", "", "0", "recovery_invalid_payload" } end end end ' +
   'expectedRecovery = decoded elseif ARGV[9] ~= "" then ' +
-  'return { "", "", "0", "recovery_payload_mismatch" } end ' +
+  'return { "", "", "0", "recovery_invalid_payload" } end ' +
   'local function recoveryMatches(item, expected) ' +
   'if not expected or type(item.text) ~= "string" or item.text ~= expected.text then return false end ' +
   // Quotes are model-bound like the text: order-significant identity, with a
@@ -518,7 +518,7 @@ const JOB_CREATE_LUA =
   'return { "", "", "0", "recovery_corrupt" } end end ' +
   'if recoveredSteerId ~= "" and parked.generationProtocolVersion ~= 2 then ' +
   'for i = 1, #parked.steers do if parked.steers[i].steerId == recoveredSteerId then ' +
-  'return { "", "", "0", "recovery_payload_mismatch" } end end end ' +
+  'return { "", "", "0", "recovery_protocol_mismatch" } end end end ' +
   'if parked.userId ~= ARGV[6] or (parked.tenantId and parked.tenantId ~= ARGV[7]) then ' +
   'return { "", "", "0", "owner_mismatch" } end ' +
   'parkedUserId = parked.userId parkedTenantId = parked.tenantId ' +
@@ -531,7 +531,7 @@ const JOB_CREATE_LUA =
   'local sources = { claimedRows, redis.call("LRANGE", KEYS[4], 0, -1) } ' +
   'for s = 1, #sources do for i = 1, #sources[s] do local ok, item = pcall(cjson.decode, sources[s][i]) ' +
   'if ok and recoveredSteerId ~= "" and item.steerId == recoveredSteerId and replacedProtocol ~= "2" then ' +
-  'return { "", "", "0", "recovery_payload_mismatch" } end ' +
+  'return { "", "", "0", "recovery_protocol_mismatch" } end ' +
   'if ok and item.steerId and not seen[item.steerId] then seen[item.steerId] = true ' +
   'local projected = { steerId = item.steerId, text = item.text, createdAt = item.createdAt } ' +
   'if item.clientSteerId then projected.clientSteerId = item.clientSteerId end ' +
@@ -545,10 +545,11 @@ const JOB_CREATE_LUA =
   'for i = 1, #merged do local item = merged[i] ' +
   'item.recoveringCreatedAt = nil ' +
   'if recoveredSteerId ~= "" and item.steerId == recoveredSteerId then ' +
-  'if not recoveryOwnerMatches or not recoveryMatches(item, expectedRecovery) then ' +
+  'if not recoveryOwnerMatches then return { "", "", "0", "recovery_owner_mismatch" } end ' +
+  'if not recoveryMatches(item, expectedRecovery) then ' +
   'return { "", "", "0", "recovery_payload_mismatch" } end ' +
   'item.recoveringCreatedAt = createdAt recoveryFound = true end end ' +
-  'if not recoveryFound then return { "", "", "0", "recovery_payload_mismatch" } end ' +
+  'if not recoveryFound then return { "", "", "0", "recovery_source_missing" } end ' +
   'for i = 1, #receiptUpdates do local item = receiptUpdates[i] ' +
   'if replacedProtocol == "2" and item.clientSteerId then local raw = redis.call("HGET", KEYS[8], item.clientSteerId) ' +
   'if raw then local receiptOk, receipt = pcall(cjson.decode, raw) ' +
@@ -2101,13 +2102,26 @@ export class RedisJobStore implements IJobStoreV2 {
       throw new Error('Generation idempotency claim was taken over before job creation');
     }
     if (Array.isArray(previousOwner) && previousOwner[3] === 'owner_mismatch') {
-      throw new Error('Generation job owner mismatch');
+      throw recoveredSteerId != null
+        ? new RecoveredSteerPayloadMismatchError('owner_mismatch')
+        : new Error('Generation job owner mismatch');
     }
     if (Array.isArray(previousOwner) && previousOwner[3] === 'recovery_corrupt') {
       throw new Error('Generation recovery state is corrupt');
     }
-    if (Array.isArray(previousOwner) && previousOwner[3] === 'recovery_payload_mismatch') {
-      throw new RecoveredSteerPayloadMismatchError();
+    if (Array.isArray(previousOwner)) {
+      switch (previousOwner[3]) {
+        case 'recovery_source_missing':
+          throw new RecoveredSteerPayloadMismatchError('source_missing');
+        case 'recovery_protocol_mismatch':
+          throw new RecoveredSteerPayloadMismatchError('protocol_mismatch');
+        case 'recovery_owner_mismatch':
+          throw new RecoveredSteerPayloadMismatchError('owner_mismatch');
+        case 'recovery_invalid_payload':
+          throw new RecoveredSteerPayloadMismatchError('invalid_payload');
+        case 'recovery_payload_mismatch':
+          throw new RecoveredSteerPayloadMismatchError();
+      }
     }
     if (Array.isArray(previousOwner) && previousOwner[3] === 'replacement_receipt_corrupt') {
       throw new Error('Generation replacement receipt is corrupt');

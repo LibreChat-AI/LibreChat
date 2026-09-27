@@ -48,6 +48,7 @@ const {
   requestContextMiddleware,
   registerShutdownTask,
   getRemainingShutdownMs,
+  registerBackgroundTaskShutdown,
   configureServerTimeouts,
   setupGracefulShutdown,
   updateInterfacePermissions,
@@ -231,6 +232,9 @@ const startServer = async () => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
   const appConfig = await getAppConfig({ baseOnly: true });
+  registerBackgroundTaskShutdown({
+    interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+  });
   configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
   warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
@@ -502,6 +506,7 @@ const startServer = async () => {
         address: server.address(),
         completionResultBatchSize:
           appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
       scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';

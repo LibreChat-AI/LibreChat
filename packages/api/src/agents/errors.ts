@@ -4,7 +4,8 @@ import {
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
-import { isOwnedAbortError } from '~/utils/errors';
+import { MCPErrorCodes, isMCPInitializationError } from '~/mcp/errors';
+import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
@@ -58,7 +59,7 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
-    isOwnedAbortError(error, options.signal) ||
+    isMCPInitializationError(error, options.signal) ||
     FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)
   );
@@ -189,4 +190,30 @@ export function isStepLimitError(error: unknown): boolean {
     current = readErrorProperty(current, 'cause');
   }
   return false;
+}
+
+/** Outward metadata shared by UI generation failures and both remote agent APIs. */
+export function getAgentErrorMetadata(
+  error: unknown,
+): { status?: number; code?: string; retryable?: boolean } | undefined {
+  if (error instanceof OboTokenResolutionError) {
+    return {
+      status: error.retryable ? 503 : 403,
+      code: error.retryable
+        ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
+        : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      retryable: error.retryable,
+    };
+  }
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+  const status = candidate.status ?? candidate.statusCode;
+  return {
+    ...(typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600
+      ? { status }
+      : {}),
+    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+  };
 }

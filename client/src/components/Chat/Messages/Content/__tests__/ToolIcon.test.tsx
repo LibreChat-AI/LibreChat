@@ -26,6 +26,13 @@ describe('getToolIconType - ACTN-01: Action delimiter detection', () => {
     expect(getToolIconType('some_plain_tool')).toBe('generic');
   });
 
+  it('gives the native background-task tool its own icon while preserving MCP identity', () => {
+    expect(getToolIconType(Constants.CHECK_BACKGROUND_TASK)).toBe('background_tasks');
+    expect(
+      getToolIconType(`${Constants.CHECK_BACKGROUND_TASK}${Constants.mcp_delimiter}remote`),
+    ).toBe('mcp');
+  });
+
   it('returns correct types for existing tool names', () => {
     expect(getToolIconType('execute_code')).toBe('execute_code');
     expect(getToolIconType(Constants.PROGRAMMATIC_TOOL_CALLING)).toBe('execute_code');

@@ -135,4 +135,13 @@ describe('ChatView composer column', () => {
     expect(composerColumn).not.toHaveClass('overflow-y-auto');
     expect(composerColumn).not.toHaveClass('scrollbar-gutter-stable');
   });
+
+  test('layers composer overlays above positioned tool glyphs in the message column', () => {
+    const { container } = render(<ChatView />);
+
+    const composerColumn = container.querySelector('.scrollbar-gutter-spacer');
+
+    expect(composerColumn).toHaveClass('[view-transition-name:chat-form]');
+    expect(composerColumn).toHaveClass('relative', 'z-10');
+  });
 });

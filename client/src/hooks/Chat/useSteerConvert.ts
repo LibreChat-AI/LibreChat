@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { v4 } from 'uuid';
+import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import type { TPendingSteer } from 'librechat-data-provider';
 import type { QueuedMessage, QueuedMessageOrigin } from '~/store/families';
@@ -11,6 +12,10 @@ import {
   insertQueuedOrigin,
   hydrateFileDeliveryMetadata,
 } from '~/utils';
+import {
+  recoveryDispositionsFamily,
+  canRestoreRecovery,
+} from '~/components/Chat/Steering/recovery';
 import { fetchStreamStatus, getGenerationProtocolVersion } from '~/data-provider';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
@@ -53,6 +58,7 @@ interface SteerConvertOptions {
  * server-side removal.
  */
 export default function useSteerConvert() {
+  const jotaiStore = useStore();
   const fileMap = useFileMapContext();
   const fileMapRef = useRef(fileMap);
   fileMapRef.current = fileMap;
@@ -110,13 +116,19 @@ export default function useSteerConvert() {
            * already created a receipt-bound item before the claim reached an
            * old replica, that source no longer exists. Downgrade the existing
            * item in place to an ordinary local follow-up. */
-          const existing = bindRecoverySource
+          const existing: QueuedMessage[] = bindRecoverySource
             ? prev
             : prev.map((item) => {
                 const matchesClaimedSource =
                   (item.recoverySteerId != null && steerIds.has(item.recoverySteerId)) ||
                   (item.recoveryClientSteerId != null && steerIds.has(item.recoveryClientSteerId));
-                if (!matchesClaimedSource) {
+                if (
+                  !matchesClaimedSource ||
+                  (item.recoverySteerId != null &&
+                    jotaiStore.get(recoveryDispositionsFamily(conversationId))[
+                      item.recoverySteerId
+                    ] != null)
+                ) {
                   return item;
                 }
                 const {
@@ -130,11 +142,14 @@ export default function useSteerConvert() {
           const fresh = steers
             .filter(
               (steer) =>
-                allowedRedeliveries.has(steer.steerId) ||
-                (!settledSteerIds.has(steer.steerId) &&
-                  (steer.clientSteerId == null || !settledSteerIds.has(steer.clientSteerId))),
+                canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(conversationId)), {
+                  recoverySteerId: steer.steerId,
+                }) &&
+                (allowedRedeliveries.has(steer.steerId) ||
+                  (!settledSteerIds.has(steer.steerId) &&
+                    (steer.clientSteerId == null || !settledSteerIds.has(steer.clientSteerId)))),
             )
-            .map((steer) => {
+            .map((steer): { item: QueuedMessage; queuedOrigin?: QueuedMessageOrigin } => {
               const local = localChipFor(steer);
               const source = local ?? steer;
               const queuedOrigin = source.queuedOrigin;
@@ -143,17 +158,20 @@ export default function useSteerConvert() {
                 local?.files,
                 fileMapRef.current,
               );
-              const recoveryFields = bindRecoverySource
-                ? {
-                    // One UUID is stable for this queued attempt and all of
-                    // its POST retries. A later failed generation re-converts
-                    // the durable source and receives a new key, so the old
-                    // started idempotency tombstone cannot make it unsendable.
-                    clientRequestId: v4(),
-                    recoverySteerId: steer.steerId,
-                    ...(steer.clientSteerId && { recoveryClientSteerId: steer.clientSteerId }),
-                  }
-                : {};
+              const held =
+                jotaiStore.get(recoveryDispositionsFamily(conversationId))[steer.steerId] != null;
+              const recoveryFields =
+                bindRecoverySource || held
+                  ? {
+                      // One UUID is stable for this queued attempt and all of
+                      // its POST retries. A later failed generation re-converts
+                      // the durable source and receives a new key, so the old
+                      // started idempotency tombstone cannot make it unsendable.
+                      clientRequestId: v4(),
+                      recoverySteerId: steer.steerId,
+                      ...(steer.clientSteerId && { recoveryClientSteerId: steer.clientSteerId }),
+                    }
+                  : {};
               const item =
                 queuedOrigin != null
                   ? { ...queuedOrigin.item, ...recoveryFields, ...(files && { files }) }
@@ -172,7 +190,15 @@ export default function useSteerConvert() {
                 queuedOrigin: queuedOrigin != null ? { ...queuedOrigin, item } : undefined,
               };
             })
-            .filter(({ item }) => !existing.some((queued) => queued.id === item.id));
+            .filter(
+              ({ item }) =>
+                !existing.some(
+                  (queued) =>
+                    queued.id === item.id ||
+                    (item.recoverySteerId != null &&
+                      queued.recoverySteerId === item.recoverySteerId),
+                ),
+            );
           if (fresh.length === 0) {
             return existing;
           }
@@ -193,7 +219,7 @@ export default function useSteerConvert() {
           return merged;
         });
       },
-    [],
+    [jotaiStore],
   );
 
   return useCallback(

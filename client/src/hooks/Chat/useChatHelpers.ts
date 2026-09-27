@@ -161,6 +161,7 @@ export default function useChatHelpers(index = 0, paramId?: string) {
     conversation,
     latestMessage,
     setSubmission,
+    setConversation,
   });
 
   const askRef = useRef(_ask);

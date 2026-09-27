@@ -120,7 +120,7 @@
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^3.9.3",
+    "@librechat/agents": "^3.9.6",
     "@librechat/data-schemas": "*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opentelemetry/api": "^1.9.0",

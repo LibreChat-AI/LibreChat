@@ -20,6 +20,7 @@ const {
   sendEvent,
   computeUsageCostUSD,
   GenerationJobManager,
+  waitForGenerationSettled,
   writeAttachmentEvent,
   createToolExecuteHandler,
   createOwnedToolEndHandler,
@@ -1286,14 +1287,20 @@ function createPtcProgressEmitter({ res, streamId = null, jobCreatedAt }) {
  *   output?: string;
  *   attachments?: Object[];
  * }) => Promise<boolean>} params.updateToolCallResult
+ * @param {number} [params.jobCreatedAt] - Immutable dispatch generation epoch.
+ * @param {string} [params.streamId] - The stream owning that epoch.
  */
-function createBackgroundCodeResultHandler({ req, updateToolCallResult }) {
+function createBackgroundCodeResultHandler({ req, updateToolCallResult, jobCreatedAt, streamId }) {
   return createCodeHarvestHandler({
     req,
     updateToolCallResult,
     preflightCodeOutputBatch,
     processCodeOutput,
     runPreviewFinalize,
+    generationCreatedAt: jobCreatedAt,
+    generationStreamId: streamId,
+    waitForGenerationSettled: (conversationId, options) =>
+      waitForGenerationSettled(GenerationJobManager, conversationId, options),
   });
 }
 

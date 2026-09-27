@@ -82,6 +82,11 @@ import {
   supportsGenerationProtocolV2,
   GENERATION_PROTOCOL_VERSION,
 } from '~/data-provider';
+import {
+  recoveryDispositionsFamily,
+  canRestoreRecovery,
+  blockRecovery,
+} from '~/components/Chat/Steering/recovery';
 import useEventHandlers, {
   buildCreatedInitialResponse,
   keepLocalCodeApprovalMode,
@@ -91,6 +96,7 @@ import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useFileMapContext } from '~/Providers';
 import useUsageHandler from './useUsageHandler';
+import useLocalize from '~/hooks/useLocalize';
 import store from '~/store';
 
 type ChatHelpers = Pick<
@@ -824,6 +830,7 @@ export default function useResumableSSE(
   runIndex = 0,
 ) {
   const jotaiStore = useStore();
+  const localize = useLocalize();
   const queryClient = useQueryClient();
   const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
 
@@ -948,10 +955,15 @@ export default function useResumableSSE(
           return;
         }
         set(store.queuedMessagesByConvoId(conversationId), (prev) =>
-          insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt),
+          canRestoreRecovery(
+            jotaiStore.get(recoveryDispositionsFamily(conversationId)),
+            origin.item,
+          )
+            ? insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt)
+            : prev,
         );
       },
-    [],
+    [jotaiStore],
   );
 
   /** Removes the pending chip once its steer is injected (the inline content
@@ -3136,6 +3148,8 @@ export default function useResumableSSE(
               }
               const fetched = await queryClient.fetchQuery<TMessage[]>({
                 queryKey: messageQueryKey,
+                // The first stream can finish before CREATED mounts the saved-chat query.
+                queryFn: () => dataService.getMessagesByConvoId(convoId),
               });
               if (!isCurrentSubscription()) {
                 return;
@@ -3304,18 +3318,42 @@ export default function useResumableSSE(
             !createdStreamIdsRef.current.has(currentStreamId) &&
             optimisticStreamIdsRef.current.has(currentStreamId)
           ) {
-            if (isResume) {
-              // A resumed subscribe attaches to an already-adopted stream (e.g. a deduped
-              // start request). A 404 means the job is gone — but the conversation may be
-              // persisted (the original completed and was cleaned up) or may never have
-              // existed (the winner died before persisting). Don't guess: reconcile against
-              // the server so a real conversation stays and a phantom is dropped.
-              invalidateConversationLists(queryClient);
-              queryClient.invalidateQueries({ queryKey: [QueryKeys.pinnedConversations] });
-            } else {
-              // Fresh optimistic stream that never started: prune immediately.
-              removeConvoFromAllQueries(queryClient, currentStreamId);
+            // Both fresh and resumed subscriptions can miss every event of a fast turn.
+            // A missing job proves neither that the conversation was saved nor that it failed.
+            try {
+              const persisted = await dataService.getConversationById(recoveryConvoId);
+              if (!isCurrentSubscription()) return;
+              if (persisted?.conversationId === recoveryConvoId) {
+                queryClient.setQueryData([QueryKeys.conversation, recoveryConvoId], persisted);
+                upsertConvoInAllQueries(queryClient, persisted);
+                if (!isAddedRequest) {
+                  setConversation?.((current) => {
+                    if (
+                      current?.conversationId != null &&
+                      current.conversationId !== Constants.NEW_CONVO &&
+                      current.conversationId !== recoveryConvoId
+                    )
+                      return current;
+                    return keepLocalCodeApprovalMode(
+                      { ...current, ...persisted },
+                      current,
+                      current?.conversationId,
+                    );
+                  });
+                }
+              }
+            } catch (error) {
+              if (!isCurrentSubscription()) return;
+              if (toStartGenerationError(error)?.response?.status === 404) {
+                removeConvoFromAllQueries(queryClient, currentStreamId);
+              }
             }
+            // An inconclusive read must not turn a saved chat into a phantom.
+            invalidateConversationLists(queryClient);
+            queryClient.invalidateQueries({ queryKey: [QueryKeys.pinnedConversations] });
+          }
+          if (persistedMessages) {
+            setMessages(persistedMessages);
           }
           subscriptionRetired = true;
           setIsSubmitting(false);
@@ -3866,6 +3904,8 @@ export default function useResumableSSE(
       }
     },
     [
+      isAddedRequest,
+      setConversation,
       runIndex,
       token,
       setAbortScroll,
@@ -3941,6 +3981,23 @@ export default function useResumableSSE(
       const readinessDeadline = Date.now() + START_GENERATION_READINESS_TIMEOUT_MS;
 
       while (!signal?.aborted) {
+        const recoverySteerId = getRecoverySteerId(currentSubmission);
+        const conversationId = currentSubmission.conversation?.conversationId;
+        if (
+          recoverySteerId != null &&
+          conversationId &&
+          jotaiStore.get(recoveryDispositionsFamily(conversationId))[recoverySteerId] != null
+        ) {
+          restoreQueuedSubmission(currentSubmission);
+          errorHandler({
+            data: getStreamStartFailureData(localize('com_ui_steer_recovery_held')),
+            submission: currentSubmission as EventSubmission,
+          });
+          setShowStopButton(false);
+          setIsSubmitting(false);
+          setSubmission(null);
+          return null;
+        }
         requestAttempts += 1;
         try {
           const data = await postGenerationRequest<unknown>(url, payload, { signal });
@@ -4072,6 +4129,19 @@ export default function useResumableSSE(
       const errorData = startError?.response?.data;
       const responseStatus = startError?.response?.status;
       if (responseStatus != null && responseStatus >= 400 && responseStatus < 500) {
+        const recoverySteerId = getRecoverySteerId(currentSubmission);
+        const conversationId = currentSubmission.conversation?.conversationId;
+        const recoveryRejected =
+          errorData != null &&
+          typeof errorData === 'object' &&
+          'code' in errorData &&
+          (errorData.code === 'RECOVERY_PAYLOAD_MISMATCH' ||
+            errorData.code === 'INVALID_RECOVERY_REQUEST');
+        if (recoveryRejected && recoverySteerId != null && conversationId) {
+          jotaiStore.set(recoveryDispositionsFamily(conversationId), (previous) =>
+            blockRecovery(previous, recoverySteerId),
+          );
+        }
         // The server rejected admission before exposing a generation. Restore
         // the exact queue row/position; ambiguous transport/5xx outcomes must
         // first reconcile durable state instead of risking a duplicate start.
@@ -4125,6 +4195,8 @@ export default function useResumableSSE(
       clearStepMaps,
       convertSteersToQueued,
       errorHandler,
+      jotaiStore,
+      localize,
       restoreQueuedSubmission,
       setIsSubmitting,
       setShowStopButton,

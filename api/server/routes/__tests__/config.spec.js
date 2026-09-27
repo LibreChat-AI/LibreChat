@@ -371,7 +371,7 @@ describe('GET /api/config', () => {
           agents: {
             statefulCodeSessions: {
               allowedEnvironments: ['user'],
-              conversationMoves: { enabled: true },
+              conversationMoves: { enabled: true, allowAttachDetach: true },
             },
           },
         },
@@ -384,6 +384,8 @@ describe('GET /api/config', () => {
       expect(response.body.codeEnvironmentDecisionVersion).toBeUndefined();
       // An already-open V1 client compares this value against its compiled literal 1.
       expect(response.body.codeEnvironmentMoveVersion).toBe(1);
+      /** Attach and detach ride the same policy on their own number. */
+      expect(response.body.codeEnvironmentTransitionVersion).toBe(2);
       expect(response.body.codeWorkspaceRecoveryVersion).toBe(1);
     });
 

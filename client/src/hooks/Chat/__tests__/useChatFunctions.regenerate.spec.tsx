@@ -22,6 +22,7 @@ const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockGetQueryData = jest.fn(() => ({}));
 const mockLoggerWarn = jest.fn();
 const mockGetLatestConversation = jest.fn(() => null as TConversation | null);
+const mockSetConversation = jest.fn();
 const mockResolveCodeWorkspaceSubmission = jest.fn<
   | { codeEnvironmentMode?: CodeEnvironmentMode; codeWorkspaces?: CodeWorkspaceSelection[] }
   | undefined,
@@ -143,6 +144,7 @@ function renderAsk(
       getMessages,
       setMessages,
       setSubmission,
+      setConversation: mockSetConversation,
     }),
   );
 
@@ -208,6 +210,56 @@ describe('useChatFunctions ask', () => {
     const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
     expect(mockResolveCodeWorkspaceSubmission).toHaveBeenCalledWith([selection], 'attached');
     expect(submission.codeWorkspaces).toEqual([selection]);
+  });
+
+  /* The server seals the decision this run establishes. A chat that becomes saved mid-run must hold
+   * it too, or the composer re-derives an agent default the seal refuses and reports "choose a
+   * workspace" with Send disabled until the page reloads. */
+  it('records the decision the run establishes on the conversation it belongs to', () => {
+    const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
+    mockResolveCodeWorkspaceSubmission.mockReturnValue({
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [selection],
+    });
+    const { result } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' });
+    });
+
+    expect(mockSetConversation).toHaveBeenCalledTimes(1);
+    const update = mockSetConversation.mock.calls[0][0];
+    const current = conversation('conversation-1');
+    expect(update(current)).toEqual({
+      ...current,
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [selection],
+    });
+    /** Another chat's conversation is never stamped with this run's decision. */
+    expect(update(conversation('conversation-2'))).toEqual(conversation('conversation-2'));
+    expect(update(null)).toBeNull();
+  });
+
+  it('leaves a conversation that already holds the decision untouched', () => {
+    const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
+    mockResolveCodeWorkspaceSubmission.mockReturnValue({
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [selection],
+    });
+    const sealed = {
+      ...conversation('conversation-1'),
+      codeEnvironmentMode: 'attached' as const,
+      codeWorkspaces: [selection],
+    };
+    mockGetLatestConversation.mockReturnValue(sealed);
+    const { result } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' });
+    });
+
+    const update = mockSetConversation.mock.calls[0][0];
+    expect(update(sealed)).toBe(sealed);
   });
 
   it('refuses every direct send before consuming composer context during handoff', () => {
@@ -382,6 +434,7 @@ describe('useChatFunctions regenerate', () => {
         getMessages: () => messages,
         setMessages,
         setSubmission,
+        setConversation: mockSetConversation,
       }),
     );
 
@@ -476,6 +529,7 @@ describe('useChatFunctions ask attachments', () => {
         getMessages: () => [],
         setMessages,
         setSubmission,
+        setConversation: mockSetConversation,
         files,
         setFiles,
       }),
@@ -514,6 +568,7 @@ describe('useChatFunctions ask attachments', () => {
         getMessages: () => [],
         setMessages,
         setSubmission,
+        setConversation: mockSetConversation,
         files: new Map(),
         setFiles,
       }),
@@ -614,6 +669,7 @@ describe('useChatFunctions ask compaction and the composer', () => {
         getMessages: () => messages,
         setMessages,
         setSubmission,
+        setConversation: mockSetConversation,
         files,
         setFiles,
       }),

@@ -1144,6 +1144,17 @@ export function controlSubagentTask(
   return request.post(endpoints.subagentControl(parentConversationId, threadId), body);
 }
 
+export function getBackgroundTasks(conversationId: string): Promise<t.BackgroundTaskIndex> {
+  return request.get(endpoints.backgroundTasks(conversationId));
+}
+
+export function cancelBackgroundTasks(
+  conversationId: string,
+  body: t.BackgroundTaskCancelRequest,
+): Promise<t.BackgroundTaskCancelResponse> {
+  return request.post(endpoints.backgroundTasksCancel(conversationId), body);
+}
+
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
   return request.get(endpoints.getPrompt(id));
 }
@@ -1225,10 +1236,30 @@ export function getSchedules(): Promise<sch.TSchedulesResponse> {
   return request.get(endpoints.schedules());
 }
 
-export function enqueueAgentQueuedTurn(
+export async function enqueueAgentQueuedTurn(
   payload: qt.TEnqueueAgentQueuedTurnRequest,
 ): Promise<qt.TEnqueueAgentQueuedTurnResponse> {
-  return request.post(endpoints.agentQueuedTurns(), payload);
+  if (payload.codeApprovalMode == null) {
+    return request.post(endpoints.agentQueuedTurns(), payload);
+  }
+  const unsupported = () =>
+    Object.assign(new Error('Queued approval snapshots require protocol v2'), {
+      response: { status: 409, data: { code: 'QUEUED_TURN_PROTOCOL_REQUIRED' } },
+    });
+  try {
+    // The versioned URL is the capability gate. Do not preflight with a list:
+    // retries must reach receipt lookup even when mutable access has changed.
+    return await request.post(endpoints.agentQueuedTurns(2), payload);
+  } catch (error) {
+    const response = (error as { response?: { status?: number; data?: { code?: unknown } } })
+      ?.response;
+    const status = response?.status;
+    // Structured origin responses (notably priority fallback) are authoritative.
+    if ((status === 404 || status === 501) && typeof response?.data?.code !== 'string') {
+      throw unsupported();
+    }
+    throw error;
+  }
 }
 
 export function listAgentQueuedTurns(
@@ -1288,6 +1319,12 @@ export function listSkillFiles(skillId: string): Promise<sk.TListSkillFilesRespo
 }
 
 export function uploadSkillFile(skillId: string, formData: FormData): Promise<sk.TSkillFile> {
+  const relativePath = formData.get('relativePath');
+  // Conditional edits use a new route: older servers must reject the request,
+  // not silently ignore expectedFileId and perform an unconditional replacement.
+  if (formData.has('expectedFileId') && typeof relativePath === 'string') {
+    return request.postMultiPart(endpoints.skillFile(skillId, relativePath), formData);
+  }
   return request.postMultiPart(endpoints.skillFiles(skillId), formData);
 }
 

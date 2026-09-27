@@ -103,9 +103,13 @@ export type JobStatus = 'running' | 'complete' | 'error' | 'aborted' | 'requires
  * Missing markers on pre-rollout records are interpreted as protocol v1. */
 export type GenerationProtocolVersion = 1 | 2;
 
-/**
- * Serializable job data - no object references, suitable for Redis/external storage
- */
+/** Read-only durable evidence, without attaching a runtime or recovering a slow save. */
+export type GenerationSettlementState = Pick<
+  SerializableJobData,
+  'createdAt' | 'status' | 'terminalPersistencePending'
+>;
+
+/** Serializable job data without object references, suitable for external storage. */
 export interface SerializableJobData {
   streamId: string;
   userId: string;

@@ -4,7 +4,12 @@ import { spawn } from 'node:child_process';
 import { mkdir, open, readFile, readdir } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { ChildProcess } from 'node:child_process';
-import { getAccessToken, requestJson, sendMessage } from '../specs/mock/helpers';
+import {
+  getAccessToken,
+  requestJson,
+  sendMessage,
+  sendMessageAndWaitForCompletion,
+} from '../specs/mock/helpers';
 
 interface Pairing {
   environment: { id: string };
@@ -39,7 +44,34 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
 }, testInfo) => {
   const runDir = process.env.BYOM_ACCEPTANCE_DIR!;
   const cli = process.env.BYOM_CODE_CLI!;
+  const workspaceTransitions = process.env.BYOM_WORKSPACE_TRANSITIONS === 'true';
   const workers: Worker[] = [];
+  // Emit only conversation identifiers on failure, never raw browser arguments or worker logs.
+  const conversationEvents: unknown[] = [];
+  page.on('console', async (message) => {
+    if (!/^\[(conversation|ResumableSSE)\]/.test(message.text())) return;
+    const values = await Promise.all(
+      message.args().map((value, index) =>
+        value
+          .evaluate((item, position) => {
+            if (position < 2) return typeof item === 'string' ? item : undefined;
+            if (item == null || typeof item !== 'object') return undefined;
+            const record = item as Record<string, unknown>;
+            return {
+              conversationId: record.conversationId,
+              endpoint: record.endpoint,
+              agent_id: record.agent_id,
+              streamId: record.streamId,
+              isResume: record.isResume,
+              hasResponseMessage: record.hasResponseMessage,
+            };
+          }, index)
+          .catch(() => undefined),
+      ),
+    );
+    conversationEvents.push(values);
+    if (conversationEvents.length > 100) conversationEvents.shift();
+  });
   let selectedWorker: Worker;
   let selectedApprovalMode: 'ask' | 'acceptEdits' | 'fullAccess' = 'ask';
   const password = `Acceptance-${randomUUID()}`;
@@ -161,6 +193,7 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
       timeout: 30_000,
     });
     selectedApprovalMode = 'ask';
+    return agent;
   }
 
   async function turn(operation: string, decision?: 'Approve' | 'Reject') {
@@ -219,6 +252,36 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
     return outputs.join('\n');
   }
 
+  async function chat(text: string) {
+    const admitted = await sendMessageAndWaitForCompletion(page, text);
+    expect(admitted.ok()).toBe(true);
+    const { conversationId } = (await admitted.json()) as { conversationId: string };
+    await expect
+      .poll(
+        async () => {
+          const status = await requestJson<{ active: boolean }>(page, {
+            path: `/api/agents/chat/status/${conversationId}`,
+            token,
+          });
+          return status.active;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(false);
+    await expect(page.getByText(text, { exact: true }).last()).toBeVisible();
+    await expect(page.getByText('Acceptance model ready.', { exact: true }).last()).toBeVisible();
+    await expect(page.getByTestId('stop-generation-button')).toBeHidden();
+    await expect(page).toHaveURL(new RegExp(`/c/${conversationId}$`));
+    return conversationId;
+  }
+
+  async function readDecision(conversationId: string) {
+    return requestJson<{
+      codeEnvironmentMode?: string;
+      codeWorkspaces?: Array<{ environmentId: string; workspaceId: string }>;
+    }>(page, { path: `/api/convos/${conversationId}`, token });
+  }
+
   async function selectApprovalMode(mode: 'Ask before changes' | 'Accept edits' | 'Full access') {
     const selector = page.getByTestId('code-approval-mode');
     await expect(selector).toBeVisible();
@@ -236,7 +299,121 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
 
   try {
     const a = await startWorker('a');
-    await select(a);
+    const coding = await select(a);
+    if (workspaceTransitions) {
+      const ordinary = await requestJson<{ id: string }>(page, {
+        path: '/api/agents',
+        token,
+        method: 'POST',
+        body: {
+          name: 'Acceptance ordinary chat',
+          provider: 'Acceptance',
+          model: 'acceptance',
+          tools: [],
+        },
+      });
+      await page.goto(`/c/new?agent_id=${encodeURIComponent(ordinary.id)}`);
+      await expect(page.getByTestId('model-selector-button')).toContainText(
+        'Acceptance ordinary chat',
+      );
+      await expect(page).toHaveURL(/\/c\/new$/);
+      // Reproduce a first turn that settles before the browser attaches. Do not rely on
+      // machine speed to cover the missing-stream recovery that must preserve saved identity.
+      const streamRoute = '**/api/agents/chat/stream/**';
+      await page.route(streamRoute, async (route) => {
+        const streamId = new URL(route.request().url()).pathname.split('/').pop();
+        await expect
+          .poll(
+            async () => {
+              const status = await requestJson<{ active: boolean }>(page, {
+                path: `/api/agents/chat/status/${streamId}`,
+                token,
+              });
+              return status.active;
+            },
+            { timeout: 30_000 },
+          )
+          .toBe(false);
+        await route.continue();
+      });
+      const conversationId = await chat('Keep this conversation and its history.');
+      await page.unroute(streamRoute);
+      const ordinaryDecision = await readDecision(conversationId);
+      expect(ordinaryDecision.codeEnvironmentMode).toBe('without_attached');
+      expect(ordinaryDecision.codeWorkspaces ?? []).toEqual([]);
+      await page.getByTestId('model-selector-button').click();
+      await page.locator('#model-search').fill(`Native ${a.environmentId}`);
+      await page.getByRole('option', { name: new RegExp(`Native ${a.environmentId}`) }).click();
+      await expect(page).toHaveURL(new RegExp(`/c/${conversationId}$`));
+      await expect(page.getByTestId('code-workspace')).toContainText('No workspace');
+      expect(await chat('Continue without granting workspace access.')).toBe(conversationId);
+      expect(await readDecision(conversationId)).toMatchObject({
+        codeEnvironmentMode: 'without_attached',
+      });
+      await page.reload();
+      await expect(page.getByTestId('model-selector-button')).toContainText(
+        `Native ${a.environmentId}`,
+      );
+      await expect(page.getByTestId('code-workspace')).toContainText('No workspace');
+      await page.getByTestId('code-workspace').click();
+      await page.getByRole('menuitem', { name: /^Attach / }).click();
+      await expect
+        .poll(async () => (await readDecision(conversationId)).codeEnvironmentMode)
+        .toBe('attached');
+      expect((await readDecision(conversationId)).codeWorkspaces).toEqual([
+        expect.objectContaining({ environmentId: a.environmentId }),
+      ]);
+      await expect(
+        page.getByText('Keep this conversation and its history.', { exact: true }),
+      ).toBeVisible();
+      expect(coding.id).toBeTruthy();
+      expect(await turn('command', 'Approve')).toContain('native-command-ok');
+      await stop(a.child);
+      // A stopped process stays online in the registry until its 60-second heartbeat lease
+      // expires. Observe that boundary rather than expecting the UI to contradict a live lease.
+      await expect
+        .poll(
+          async () => {
+            const status = await requestJson<{ status: string }>(page, {
+              path: `/api/code-environments/${a.environmentId}/status`,
+              token,
+            });
+            return status.status;
+          },
+          { timeout: 90_000 },
+        )
+        .toBe('offline');
+      await page.reload();
+      const workspace = page.getByTestId('code-workspace');
+      await expect(workspace).toBeVisible({ timeout: 30_000 });
+      await workspace.click();
+      await page.getByTestId('code-workspace-detach').click();
+      await expect
+        .poll(async () => (await readDecision(conversationId)).codeEnvironmentMode)
+        .toBe('without_attached');
+      expect((await readDecision(conversationId)).codeWorkspaces ?? []).toEqual([]);
+      expect(await chat('Continue chatting after leaving the offline workspace.')).toBe(
+        conversationId,
+      );
+      await page.reload();
+      await expect(
+        page.getByText('Keep this conversation and its history.', { exact: true }),
+      ).toBeVisible();
+      expect((await readDecision(conversationId)).codeEnvironmentMode).toBe('without_attached');
+      await testInfo.attach('workspace-transitions', {
+        body: JSON.stringify({
+          savedChatPreserved: true,
+          noImplicitWorkspaceAccess: true,
+          noWorkspaceSurvivesReload: true,
+          explicitAttach: true,
+          approvedNativeCommand: true,
+          offlineDetach: true,
+          detachedChatSurvivesReload: true,
+        }),
+        contentType: 'application/json',
+      });
+      return;
+    }
     expect(await turn('create', 'Approve')).toContain('Created workspace/proof.txt');
     expect(await readFile(path.join(a.root, 'proof.txt'), 'utf8')).toBe('native-original');
     expect(await turn('read')).toContain('native-original');
@@ -288,6 +465,9 @@ test('native BYOM saves, persists, isolates workers, and fails closed', async ({
       }),
       contentType: 'application/json',
     });
+  } catch (error) {
+    console.log('Native acceptance conversation metadata:', JSON.stringify(conversationEvents));
+    throw error;
   } finally {
     for (const worker of workers) await stop(worker.child);
   }

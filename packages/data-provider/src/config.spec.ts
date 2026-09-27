@@ -673,6 +673,34 @@ describe('agent background completion batch config', () => {
 });
 
 describe('agent event runtime config', () => {
+  it('defaults and bounds durable-worker idle polling intervals', () => {
+    const parsed = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { eventDriven: { idlePolling: {} } } },
+    });
+    expect(parsed.endpoints?.agents?.eventDriven?.idlePolling).toEqual({
+      deliveryMaxIntervalMs: 15_000,
+      queuedTurnMaxIntervalMs: 120_000,
+      maintenanceMaxIntervalMs: 120_000,
+      completionWaitMaxIntervalMs: 60_000,
+    });
+    for (const [key, value] of [
+      ['deliveryMaxIntervalMs', 0],
+      ['queuedTurnMaxIntervalMs', 29_999],
+      ['maintenanceMaxIntervalMs', 300_001],
+      ['maintenanceMaxIntervalMs', 30_000.5],
+      ['completionWaitMaxIntervalMs', 4_999],
+      ['completionWaitMaxIntervalMs', 300_001],
+    ] as const) {
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          endpoints: { agents: { eventDriven: { idlePolling: { [key]: value } } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('accepts the routing choice and ignores removed rollout fields', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -743,6 +771,7 @@ describe('agent background task config', () => {
       completionWakeups: true,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
     });
   });
 
@@ -761,6 +790,7 @@ describe('agent background task config', () => {
       completionWakeups: false,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
     });
   });
 
@@ -779,7 +809,29 @@ describe('agent background task config', () => {
       completionWakeups: true,
       completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: true,
+      shutdownInterruptGraceMs: 5_000,
     });
+  });
+
+  it('accepts a bounded shutdown interrupt grace', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: 0 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs).toBe(0);
+    }
+  });
+
+  it.each([-1, 60_001, 1.5])('rejects an unsafe shutdown interrupt grace: %s', (graceMs) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: graceMs } } },
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts a bounded durable completion result limit', () => {
