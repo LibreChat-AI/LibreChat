@@ -5,6 +5,7 @@ const client = require('openid-client');
 const jwtDecode = require('jsonwebtoken/decode');
 const { hashToken, logger, tenantStorage } = require('@librechat/data-schemas');
 const { Strategy: OpenIDStrategy } = require('openid-client/passport');
+const { Strategy: OAuth2Strategy } = require('passport-oauth2');
 const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider');
 const {
   isEnabled,
@@ -24,7 +25,13 @@ const {
   getOpenIdRoleSyncOptions,
   getOpenIdRolesForOpenIdSync,
   getLibreChatRolesForOpenIdSync,
+  fetchOAuth2UserInfo,
+  resolveOAuth2Subject,
+  buildOAuth2StrategyOptions,
+  buildOAuth2AuthorizationParams,
+  createOAuthStateStore,
   DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
+  getMissingOAuth2LoginConfig,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
@@ -558,13 +565,16 @@ async function applyOpenIdRoleSync({
  * @param {boolean} existingUsersOnly - If true, only existing users will be processed
  * @returns {Promise<Object>} The authenticated user object with tokenset
  */
-async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
+async function processOpenIDAuth(tokenset, existingUsersOnly = false, prefetchedUserinfo = null) {
   const claims = tokenset.claims ? tokenset.claims() : tokenset;
   const userinfo = {
     ...claims,
   };
 
-  if (tokenset.access_token) {
+  if (prefetchedUserinfo) {
+    /** OAuth2-only providers resolve userinfo themselves; `openidConfig` is not available. */
+    Object.assign(userinfo, prefetchedUserinfo);
+  } else if (tokenset.access_token) {
     const providerUserinfo = await getUserInfo(openidConfig, tokenset.access_token, claims.sub);
     Object.assign(userinfo, providerUserinfo);
   }
@@ -863,6 +873,95 @@ function createOpenIDCallback(existingUsersOnly) {
 }
 
 /**
+ * Signals a registered OAuth2-only strategy. `setupOpenId`'s return value is the caller's
+ * success check, but this mode has no `openid-client` Configuration to hand back.
+ */
+const OAUTH2_ONLY_CONFIG = Object.freeze({ oauth2Only: true });
+
+/**
+ * Login strategy for providers that issue no `id_token`, so the OIDC code flow cannot complete.
+ * Uses configured endpoints, then hands off to `processOpenIDAuth` as the OIDC path does.
+ *
+ * `state` is signed and verified by the same cookie-bound store the other OAuth2 providers use.
+ *
+ * @param {Omit<import('@librechat/api').OAuthStateStoreOptions, 'provider'>} [stateOptions]
+ * @returns {typeof OAUTH2_ONLY_CONFIG | null} the sentinel once registered, null if misconfigured
+ */
+function setupOpenIdOAuth2(stateOptions) {
+  const missing = getMissingOAuth2LoginConfig();
+  if (missing.length > 0) {
+    logger.error(
+      `[openidStrategy] OPENID_USE_OAUTH2 is set but ${missing.join(', ')} ${
+        missing.length === 1 ? 'is' : 'are'
+      } missing`,
+    );
+    return null;
+  }
+
+  if (isEnabled(process.env.OPENID_USE_PKCE)) {
+    logger.warn(
+      '[openidStrategy] OPENID_USE_PKCE is ignored in OAuth2-only mode; its state store keeps no code verifier',
+    );
+  }
+  if (isEnabled(process.env.OPENID_REUSE_TOKENS)) {
+    logger.warn(
+      '[openidStrategy] OPENID_REUSE_TOKENS is ignored in OAuth2-only mode; there is no id_token to reuse',
+    );
+  }
+
+  logger.info('[openidStrategy] OAuth2-only authentication configuration', {
+    authorizationURL: process.env.OPENID_AUTHORIZATION_URL,
+    userInfoURL: process.env.OPENID_USERINFO_URL,
+  });
+
+  const oauth2Login = new OAuth2Strategy(
+    {
+      ...buildOAuth2StrategyOptions(),
+      store: createOAuthStateStore({ ...stateOptions, provider: 'openid' }),
+    },
+    async (accessToken, refreshToken, params, _profile, done) => {
+      try {
+        const userinfo = await fetchOAuth2UserInfo(process.env.OPENID_USERINFO_URL, accessToken);
+        if (!userinfo) {
+          return done(null, false, { message: ErrorTypes.AUTH_FAILED });
+        }
+
+        const sub = resolveOAuth2Subject(userinfo);
+        if (!sub) {
+          logger.error('[openidStrategy] userinfo carried no usable identifier');
+          return done(null, false, { message: ErrorTypes.AUTH_FAILED });
+        }
+        const tokenset = {
+          sub,
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          expires_in: params?.expires_in,
+        };
+
+        const user = await processOpenIDAuth(tokenset, false, { ...userinfo, sub });
+        done(null, user);
+      } catch (err) {
+        if (
+          err.message === 'Email domain not allowed' ||
+          err.message === ErrorTypes.AUTH_FAILED ||
+          (err.message && err.message.includes('role to log in'))
+        ) {
+          return done(null, false, { message: err.message });
+        }
+        logger.error('[openidStrategy] OAuth2 login failed', err);
+        done(err);
+      }
+    },
+  );
+
+  /** passport-oauth2's extension point for provider-specific authorization params */
+  oauth2Login.authorizationParams = () => buildOAuth2AuthorizationParams();
+
+  passport.use('openid', oauth2Login);
+  return OAUTH2_ONLY_CONFIG;
+}
+
+/**
  * Sets up the OpenID strategy specifically for admin authentication.
  * @param {Configuration} openidConfig
  */
@@ -896,11 +995,18 @@ const setupOpenIdAdmin = (openidConfig) => {
  *
  * @async
  * @function setupOpenId
+ * @param {Object} [options]
+ * @param {Omit<import('@librechat/api').OAuthStateStoreOptions, 'provider'>} [options.stateOptions] -
+ *   Required in OAuth2-only mode, which verifies `state` itself.
  * @returns {Promise<Configuration | null>} A promise that resolves when the OpenID strategy is set up and returns the openid client config object.
  * @throws {Error} If an error occurs during the setup process.
  */
-async function setupOpenId() {
+async function setupOpenId({ stateOptions } = {}) {
   try {
+    if (isEnabled(process.env.OPENID_USE_OAUTH2)) {
+      return setupOpenIdOAuth2(stateOptions);
+    }
+
     const usePKCE = isEnabled(process.env.OPENID_USE_PKCE);
     const shouldGenerateNonce = isEnabled(process.env.OPENID_GENERATE_NONCE);
 
@@ -974,6 +1080,7 @@ function getOpenIdConfig() {
 
 module.exports = {
   setupOpenId,
+  OAUTH2_ONLY_CONFIG,
   getOpenIdConfig,
   getOpenIdEmail,
   getRoleSource,
