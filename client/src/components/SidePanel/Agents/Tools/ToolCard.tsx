@@ -2,7 +2,7 @@ import { memo, useState } from 'react';
 import { VerifiedIcon } from '@librechat/client';
 import { Check, Globe, Info, Settings, Star, User } from 'lucide-react';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import type { AgentItem } from './items/types';
+import type { AgentItem, ItemStatus } from './items/types';
 import { hasConfigurableSettings } from './items/configurable';
 import { useLocalize, useAuthContext } from '~/hooks';
 import { getIconForItem } from './items/icons';
@@ -15,6 +15,9 @@ interface ToolCardProps {
   onConfigure?: (item: AgentItem) => void;
   isFavorited?: boolean;
   onToggleFavorite?: (item: AgentItem) => void;
+  /** A live state, such as an MCP server's connection, shown in place of the
+   *  kind label, which is redundant wherever every card shares one kind. */
+  status?: ItemStatus;
 }
 
 function useDisplayStrings(item: AgentItem): { name: string; description: string } {
@@ -86,6 +89,7 @@ function ToolCardImpl({
   onConfigure,
   isFavorited = false,
   onToggleFavorite,
+  status,
 }: ToolCardProps) {
   const localize = useLocalize();
   const { name, description } = useDisplayStrings(item);
@@ -148,9 +152,19 @@ function ToolCardImpl({
                 </span>
               )}
             </div>
-            <p className="text-text-secondary truncate text-[11px] tracking-wide uppercase">
-              {kindLabel}
-            </p>
+            {status != null ? (
+              <p className="text-text-secondary flex min-w-0 items-center gap-1.5 text-xs">
+                <span
+                  aria-hidden="true"
+                  className={cn('size-2 shrink-0 rounded-full', status.tone)}
+                />
+                <span className="truncate">{status.label}</span>
+              </p>
+            ) : (
+              <p className="text-text-secondary truncate text-[11px] tracking-wide uppercase">
+                {kindLabel}
+              </p>
+            )}
           </div>
         </div>
         {description ? (

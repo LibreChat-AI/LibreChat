@@ -133,6 +133,7 @@ function EntryGrid({
       selectedIds={selectedIds}
       onToggle={(item) => byKey.get(itemKey(item))?.onSelect()}
       view={view}
+      statusFor={(item) => byKey.get(itemKey(item))?.status}
       favoriteKeys={favoriteKeys}
       onToggleFavorite={toggle}
       emptyKey={view === 'marketplace' || query !== '' ? 'com_ui_composer_no_results' : undefined}

@@ -139,7 +139,10 @@ function rowHeight(row: PaletteRow): number {
   if (row.type === 'header') {
     return row.showAll != null ? HEADER_ACTION_HEIGHT : HEADER_HEIGHT;
   }
-  if (row.type === 'entry' && row.entry.description != null && row.entry.description !== '') {
+  if (
+    row.type === 'entry' &&
+    (row.entry.status != null || (row.entry.description != null && row.entry.description !== ''))
+  ) {
     return ROW_HEIGHT_DESC;
   }
   if (row.type === 'file') {
@@ -1007,6 +1010,7 @@ function Palette({
       const departing = row.type === 'attach' && row.entry.primary !== true && collapsing;
       const { label, icon } = row.entry;
       const description = isEntry ? row.entry.description : undefined;
+      const status = isEntry ? row.entry.status : undefined;
       const checked = isEntry ? row.entry.active : false;
       const favorited = isEntry && row.isFavorite;
       const canFavorite = isEntry && row.entry.favoritable !== false;
@@ -1060,10 +1064,28 @@ function Palette({
               </span>
               <span className="flex min-w-0 flex-1 flex-col justify-center">
                 <span className={cn('truncate', checked && 'font-medium')}>{label}</span>
-                {description != null && description !== '' && (
-                  <span className="text-text-secondary truncate text-xs opacity-80">
-                    {description}
+                {status != null ? (
+                  /* The label is the status; the dot only repeats it in color. */
+                  <span className="text-text-secondary flex min-w-0 items-center gap-1.5 text-xs opacity-80">
+                    <span
+                      aria-hidden="true"
+                      className={cn('size-2 shrink-0 rounded-full', status.tone)}
+                    />
+                    <span className="shrink-0">{status.label}</span>
+                    {description != null && description !== '' && (
+                      <span className="truncate">
+                        <span aria-hidden="true">{'\u00b7 '}</span>
+                        {description}
+                      </span>
+                    )}
                   </span>
+                ) : (
+                  description != null &&
+                  description !== '' && (
+                    <span className="text-text-secondary truncate text-xs opacity-80">
+                      {description}
+                    </span>
+                  )
                 )}
               </span>
             </button>

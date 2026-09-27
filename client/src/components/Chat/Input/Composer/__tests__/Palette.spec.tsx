@@ -361,6 +361,41 @@ describe('Palette', () => {
       expect(servers[6].onSelect).toHaveBeenCalledTimes(1);
     });
 
+    it('shows each server status on its row and on its card', async () => {
+      const servers = [
+        entry({
+          key: 'mcp:up',
+          itemId: 'up',
+          label: 'Up server',
+          section: 'mcp',
+          status: { label: 'Connected', tone: 'bg-status-success' },
+        }),
+        entry({
+          key: 'mcp:auth',
+          itemId: 'auth',
+          label: 'Auth server',
+          section: 'mcp',
+          status: { label: 'Needs Auth', tone: 'bg-status-warning' },
+        }),
+      ];
+      renderPalette({ entries: servers });
+      expect(rows()).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Up serverConnected'),
+          expect.stringContaining('Auth serverNeeds Auth'),
+        ]),
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'com_ui_composer_show_all_label:com_ui_composer_mcp' }),
+      );
+      const dialog = await screen.findByRole('dialog');
+      const cards = Array.from(dialog.querySelectorAll('li')).map((card) => card.textContent);
+      expect(cards).toEqual([
+        expect.stringContaining('Connected'),
+        expect.stringContaining('Needs Auth'),
+      ]);
+    });
+
     it('narrows the dialog to servers the user made', async () => {
       const servers = many('mcp', 7).map((server, i) => ({ ...server, ownedByUser: i < 2 }));
       renderPalette({ entries: servers });
