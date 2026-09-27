@@ -204,8 +204,16 @@ export async function resolveConversationListFilters(
 ): Promise<ConversationListFilterResult> {
   const { conversationList } =
     query.endpoints == null ? {} : await getAppConfig({ baseOnly: true });
-  return parseConversationListFilters(
-    query,
-    conversationList ?? conversationListConfigSchema.parse({}),
-  );
+  return parseConversationListFilters(query, resolveConversationListLimits(conversationList));
+}
+
+/**
+ * The limits a deployment enforces on list filters, with the schema defaults standing in for
+ * an unconfigured one. The startup config publishes the same values, so the sidebar stops a
+ * selection where this parser would refuse it.
+ */
+export function resolveConversationListLimits(
+  conversationList?: TConversationListConfig,
+): TConversationListConfig {
+  return conversationList ?? conversationListConfigSchema.parse({});
 }

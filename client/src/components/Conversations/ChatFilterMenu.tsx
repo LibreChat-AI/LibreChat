@@ -99,16 +99,20 @@ type ToggleProps = {
   icon: ReactNode;
   checked: boolean;
   onSelect: () => void;
+  /** Still announced, so a screen reader hears the option and why it cannot be taken. */
+  disabled?: boolean;
 };
 
 /** A facet that is simply on or off, so it needs no submenu of its own. */
-const Toggle = ({ label, icon, checked, onSelect }: ToggleProps) => (
+const Toggle = ({ label, icon, checked, onSelect, disabled = false }: ToggleProps) => (
   <Ariakit.MenuItem
     role="menuitemcheckbox"
     aria-checked={checked}
     hideOnClick={false}
     onClick={onSelect}
-    className={itemClassName}
+    disabled={disabled}
+    accessibleWhenDisabled={true}
+    className={cn(itemClassName, 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50')}
   >
     <span className="text-text-secondary shrink-0" aria-hidden="true">
       {icon}
@@ -264,6 +268,7 @@ type FilterOption = {
   multiple: boolean;
   icon: ReactNode;
   onSelect: () => void;
+  disabled?: boolean;
 };
 
 type DateFacetProps = {
@@ -296,6 +301,30 @@ const DateFacet = ({ label, icon, value, onSelect }: DateFacetProps) => {
   );
 };
 
+/**
+ * Whether the endpoint selection has reached what the server accepts in one request
+ * (`conversationList.maxEndpointFilters`). Past it the list request would be refused and
+ * the Chats section would show its error, so further endpoints are offered disabled.
+ */
+const useEndpointFilterLimit = (selectedCount: number) => {
+  const { data: startupConfig } = useGetStartupConfig();
+  const limit = startupConfig?.maxEndpointFilters;
+  return { limit, atLimit: limit != null && selectedCount >= limit };
+};
+
+const EndpointLimitNote = ({ limit }: { limit: number }) => {
+  const localize = useLocalize();
+  return (
+    <Ariakit.MenuItem
+      disabled={true}
+      accessibleWhenDisabled={true}
+      className={cn(itemClassName, 'text-text-secondary cursor-default')}
+    >
+      <span className="text-xs">{localize('com_ui_endpoint_filter_limit', { count: limit })}</span>
+    </Ariakit.MenuItem>
+  );
+};
+
 /** The endpoints this deployment actually serves, named the way the rest of the app
  *  names them. A chat matches if it used any of the chosen ones. */
 const EndpointFacet = memo(() => {
@@ -303,6 +332,7 @@ const EndpointFacet = memo(() => {
   const selected = useAtomValue(endpointFilterAtom);
   const toggleEndpoint = useSetAtom(toggleEndpointFilterAtom);
   const { data: endpointsConfig } = useGetEndpointsQuery();
+  const { limit, atLimit } = useEndpointFilterLimit(selected.length);
 
   const endpoints = useMemo(
     () =>
@@ -351,8 +381,10 @@ const EndpointFacet = memo(() => {
             }
             checked={selected.includes(endpoint.value)}
             onSelect={() => toggleEndpoint(endpoint.value)}
+            disabled={atLimit && !selected.includes(endpoint.value)}
           />
         ))}
+        {atLimit && limit != null && <EndpointLimitNote limit={limit} />}
       </Ariakit.MenuGroup>
     </PropertyRow>
   );
@@ -442,6 +474,7 @@ const FilterFacets = ({
    *  one stays off without `BOOKMARKS:USE`, whose route would only answer 403. */
   const { data: bookmarkData } = useGetConversationTags({ enabled: showBookmarks });
   const { data: endpointsConfig } = useGetEndpointsQuery();
+  const { atLimit: endpointsAtLimit } = useEndpointFilterLimit(selectedEndpoints.length);
   /** A deployment with sharing switched off has no shared chats to filter to. */
   const { data: startupConfig } = useGetStartupConfig();
   const showShared = startupConfig?.sharedLinksEnabled === true;
@@ -518,6 +551,7 @@ const FilterFacets = ({
           id: `endpoint:${endpoint}`,
           label: (alternateName[endpoint] as string | undefined) ?? endpoint,
           checked: selectedEndpoints.includes(endpoint),
+          disabled: endpointsAtLimit && !selectedEndpoints.includes(endpoint),
           multiple: true,
           icon: (
             <MinimalIcon
@@ -572,6 +606,7 @@ const FilterFacets = ({
     setCreatedRange,
     endpointsConfig,
     selectedEndpoints,
+    endpointsAtLimit,
     toggleEndpoint,
     hasAttachments,
     setHasAttachments,
@@ -651,6 +686,7 @@ const FilterFacets = ({
                     icon={option.icon}
                     checked={option.checked}
                     onSelect={option.onSelect}
+                    disabled={option.disabled}
                   />
                 ) : (
                   <Choice

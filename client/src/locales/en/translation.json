@@ -1454,6 +1454,7 @@
   "com_ui_empty_category": "-",
   "com_ui_enabled": "Enabled",
   "com_ui_endpoint": "Endpoint",
+  "com_ui_endpoint_filter_limit": "Endpoint limit reached ({{count}})",
   "com_ui_endpoint_menu": "LLM Endpoint Menu",
   "com_ui_enter": "Enter",
   "com_ui_enter_api_key": "Enter API Key",

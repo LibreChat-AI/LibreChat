@@ -1096,3 +1096,29 @@ describe('passkey enrollment cap', () => {
     expect(anonymous.body).not.toHaveProperty('maxPasskeysPerUser');
   });
 });
+
+describe('chat list endpoint filter limit', () => {
+  it('publishes the configured limit only after authentication', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    const appConfig = await AppService({
+      config: { conversationList: { maxEndpointFilters: 3 } },
+    });
+    mockGetAppConfig.mockResolvedValue(appConfig);
+
+    const authenticated = await request(createApp(mockUser)).get('/api/config');
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.body.maxEndpointFilters).toBe(3);
+
+    const anonymous = await request(createApp()).get('/api/config');
+    expect(anonymous.status).toBe(200);
+    expect(anonymous.body).not.toHaveProperty('maxEndpointFilters');
+  });
+
+  it('publishes the schema default for a deployment that sets none', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    mockGetAppConfig.mockResolvedValue(await AppService({ config: {} }));
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+    expect(response.body.maxEndpointFilters).toBe(50);
+  });
+});
