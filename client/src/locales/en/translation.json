@@ -571,6 +571,8 @@
   "com_error_missing_model": "No model selected for {{0}}. Please select a model and try again.",
   "com_error_model_not_found": "The selected model is unavailable from this provider. Select a different model or ask an administrator to verify the provider configuration.",
   "com_error_model_rate_limit": "The provider declined this request for exceeding a rate or spending limit. Wait a moment and try again, or ask an administrator to review the provider's limits.",
+  "com_error_model_stream_closed": "The model provider closed the connection before the response finished. Anything already received was kept. Try again; long reasoning runs are the most likely to be cut off.",
+  "com_error_model_stream_stalled": "The model provider stopped sending the response, and the request timed out waiting for it. Anything already received was kept. Try again, or ask an administrator to check the provider.",
   "com_error_models_not_loaded": "Models configuration could not be loaded. Please refresh the page and try again.",
   "com_error_moderation": "This message was flagged by the moderation system, so it was not sent. Edit the message or start a new conversation.",
   "com_error_no_base_url": "No base URL found. Please provide one and try again.",

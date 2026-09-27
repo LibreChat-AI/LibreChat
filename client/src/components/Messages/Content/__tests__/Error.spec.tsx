@@ -198,6 +198,17 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expectReadable();
   });
 
+  it.each([
+    [ErrorTypes.MODEL_STREAM_CLOSED, 'com_error_model_stream_closed'],
+    [ErrorTypes.MODEL_STREAM_STALLED, 'com_error_model_stream_stalled'],
+  ])('explains a %s model response instead of the bare transport error', (type, key) => {
+    renderError({ type }, providerMessage);
+
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(screen.queryByText(/terminated/i)).not.toBeInTheDocument();
+    expectReadable();
+  });
+
   it('keeps provider text for a LangChain code without localized copy, minus the URL', () => {
     const raw =
       'An error occurred while processing the request: could not parse output\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/OUTPUT_PARSING_FAILURE/\n';

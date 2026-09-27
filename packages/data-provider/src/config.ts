@@ -3914,6 +3914,14 @@ export enum ErrorTypes {
    */
   MODEL_RATE_LIMIT = 'model_rate_limit',
   /**
+   * Provider accepted the request, then closed the connection before the response finished
+   */
+  MODEL_STREAM_CLOSED = 'model_stream_closed',
+  /**
+   * Provider accepted the request, then sent nothing for longer than the model response timeout
+   */
+  MODEL_STREAM_STALLED = 'model_stream_stalled',
+  /**
    * An agent model provider failed and the run could not recover.
    */
   UPSTREAM_MODEL_ERROR = 'upstream_model_error',

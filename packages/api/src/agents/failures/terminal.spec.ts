@@ -1,3 +1,4 @@
+import { errors } from 'undici';
 import { createTerminalRunErrorObserver, getUpstreamModelErrorMetadata } from './terminal';
 
 describe('terminal agent-run error logging', () => {
@@ -215,6 +216,41 @@ describe('terminal agent-run error logging', () => {
       '[Agent API] Upstream model error',
       expect.objectContaining({ errorCode: 'UPSTREAM_MODEL_ERROR' }),
     );
+  });
+
+  it.each([
+    ['stalled', new errors.BodyTimeoutError(), 'model_stream_stalled'],
+    ['closed', new errors.SocketError('other side closed'), 'model_stream_closed'],
+  ])('names a %s model stream instead of the bare transport error', (failure, cause, type) => {
+    const logger = { error: jest.fn() };
+    const observer = createTerminalRunErrorObserver({
+      logger,
+      source: '[Agent API]',
+      protectionEnabled: false,
+    });
+    const transportError = new TypeError('terminated', { cause });
+    observer.modelCallback.handleLLMError(transportError);
+    const terminalError = new Error('graph failed', { cause: transportError });
+
+    expect(observer.getUserFacingError(terminalError, () => 'fallback')).toBe(
+      JSON.stringify({ type }),
+    );
+    observer.log(terminalError);
+    expect(logger.error).toHaveBeenCalledWith(
+      '[Agent API] Upstream model error',
+      expect.objectContaining({ errorType: `stream_${failure}` }),
+    );
+  });
+
+  it('keeps an untracked transport failure off the upstream model path', () => {
+    const observer = createTerminalRunErrorObserver({
+      logger: { error: jest.fn() },
+      source: '[Agent API]',
+      protectionEnabled: false,
+    });
+    const transportError = new TypeError('terminated', { cause: new errors.BodyTimeoutError() });
+
+    expect(observer.getUserFacingError(transportError, () => 'fallback')).toBe('fallback');
   });
 
   it('preserves a more specific localized model classification', () => {

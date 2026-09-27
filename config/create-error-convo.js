@@ -189,6 +189,10 @@ const ERROR_CASES = [
   payloadCase('Stream expired before the client attached', { type: ErrorTypes.STREAM_EXPIRED }),
   payloadCase('Model not served by this provider', { type: ErrorTypes.MODEL_NOT_FOUND }),
   payloadCase('Provider rate or spend limit', { type: ErrorTypes.MODEL_RATE_LIMIT }),
+  payloadCase('Provider closed the stream mid-response', { type: ErrorTypes.MODEL_STREAM_CLOSED }),
+  payloadCase('Provider stream stalled past the response timeout', {
+    type: ErrorTypes.MODEL_STREAM_STALLED,
+  }),
   {
     label: 'Upstream model error with status (server prefix + JSON)',
     text: `The model provider failed and the run could not recover.\n${JSON.stringify({

@@ -1,8 +1,13 @@
 import { ErrorTypes } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
+import {
+  resolveLangChainError,
+  getModelStreamFailure,
+  resolveModelStreamError,
+  getProviderErrorMessage,
+} from '../errors';
 import { getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
-import { getProviderErrorMessage, resolveLangChainError } from '../errors';
 import { traceIdForMessage } from '../../langfuse/trace';
 import { createModelErrorTracker } from './tracker';
 
@@ -41,6 +46,15 @@ export function isAgentRunCancellation(error: unknown, signal?: AbortSignal): bo
   return isOwnedAbortError(error, signal);
 }
 
+/** An HTTP status when the provider answered, else how the response died in transit. */
+function getUpstreamErrorType(error: unknown, status?: number): string {
+  if (status != null) {
+    return String(status);
+  }
+  const streamFailure = getModelStreamFailure(error);
+  return streamFailure == null ? UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE : `stream_${streamFailure}`;
+}
+
 export function getUpstreamModelErrorMetadata(
   error: unknown,
   responseMessageId?: string,
@@ -50,8 +64,7 @@ export function getUpstreamModelErrorMetadata(
     ...safeMetadata,
     errorCode: UPSTREAM_MODEL_ERROR_CODE,
     errorOrigin: UPSTREAM_MODEL_ERROR_ORIGIN,
-    errorType:
-      safeMetadata.status != null ? String(safeMetadata.status) : UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE,
+    errorType: getUpstreamErrorType(error, safeMetadata.status),
     ...(typeof responseMessageId === 'string' && responseMessageId !== ''
       ? { traceId: traceIdForMessage(responseMessageId) }
       : {}),
@@ -90,7 +103,10 @@ export function createTerminalRunErrorObserver({
       }
 
       const classifiedError =
-        safelyResolveLangChainError(error) ?? safelyResolveLangChainError(upstreamModelError);
+        safelyResolveLangChainError(error) ??
+        safelyResolveLangChainError(upstreamModelError) ??
+        resolveModelStreamError(upstreamModelError) ??
+        resolveModelStreamError(error);
       if (classifiedError != null) {
         return classifiedError;
       }

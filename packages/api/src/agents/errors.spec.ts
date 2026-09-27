@@ -1,5 +1,9 @@
+import { Agent, fetch } from 'undici';
+import { createServer } from 'node:http';
 import { ErrorTypes } from 'librechat-data-provider';
+import { ChatOpenAI } from '@librechat/agents/llm/openai';
 import { GraphRecursionError } from '@langchain/langgraph';
+import type { AddressInfo } from 'node:net';
 import {
   GENERIC_PROVIDER_ERROR,
   getLangChainErrorCode,
@@ -11,6 +15,8 @@ import {
   AGENT_ATTACHMENT_LIMIT_EXCEEDED,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isStepLimitError,
+  getModelStreamFailure,
+  resolveModelStreamError,
 } from './errors';
 import { MCPAuthenticationRejectedError, MCPAuthenticationRefreshError } from '~/mcp/errors';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
@@ -304,5 +310,162 @@ describe('getAgentErrorMetadata', () => {
 
   it.each([null, 'bad', 399, 600, 401.5, NaN])('rejects invalid outward status: %s', (status) => {
     expect(getAgentErrorMetadata({ status })).toEqual({});
+  });
+});
+
+type StreamEnding = 'close' | 'stall' | 'abort';
+
+interface DyingStreamClient {
+  baseURL: string;
+  fetch: typeof globalThis.fetch;
+  signal: AbortSignal;
+}
+
+/**
+ * Serves a model-style SSE response that dies after its first event, the way a provider hanging
+ * up, a provider going silent past the body timeout, or the user pressing Stop ends one, and
+ * returns whatever `read` threw while consuming it.
+ */
+async function readDyingStream(
+  ending: StreamEnding,
+  read: (client: DyingStreamClient) => Promise<void>,
+  firstEvent = 'data: {"delta":"Hel"}\n\n',
+): Promise<unknown> {
+  const controller = new AbortController();
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(firstEvent);
+    if (ending === 'close') {
+      setTimeout(() => res.socket?.destroy(), 20);
+    }
+    if (ending === 'abort') {
+      setTimeout(() => controller.abort(), 20);
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const dispatcher = new Agent({ bodyTimeout: 150 });
+  const client: DyingStreamClient = {
+    baseURL: `http://127.0.0.1:${port}/v1`,
+    signal: controller.signal,
+    fetch: ((input: string, init?: object) =>
+      fetch(input, { ...init, dispatcher })) as unknown as typeof globalThis.fetch,
+  };
+  try {
+    await read(client);
+    return undefined;
+  } catch (error) {
+    return error;
+  } finally {
+    await dispatcher.destroy();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+const readRawBody = async ({ baseURL, fetch: read, signal }: DyingStreamClient) => {
+  const response = await read(baseURL, { signal });
+  await response.text();
+};
+
+const CHAT_COMPLETION_EVENT = `data: ${JSON.stringify({
+  id: 'chatcmpl-1',
+  object: 'chat.completion.chunk',
+  created: 0,
+  model: 'test-model',
+  choices: [{ index: 0, delta: { role: 'assistant', content: 'Hel' }, finish_reason: null }],
+})}\n\n`;
+
+const RESPONSES_EVENT = `event: response.output_text.delta\ndata: ${JSON.stringify({
+  type: 'response.output_text.delta',
+  item_id: 'msg_1',
+  output_index: 0,
+  content_index: 0,
+  delta: 'Hel',
+  sequence_number: 1,
+})}\n\n`;
+
+function streamThroughChatOpenAI(useResponsesApi: boolean) {
+  return async ({ baseURL, fetch: read, signal }: DyingStreamClient) => {
+    const model = new ChatOpenAI({
+      apiKey: 'test-key',
+      model: 'test-model',
+      streaming: true,
+      useResponsesApi,
+      configuration: { baseURL, fetch: read },
+    } as never);
+    for await (const _chunk of await model.stream('hi', { signal })) {
+      /* drain */
+    }
+  };
+}
+
+describe('model stream failures', () => {
+  it('classifies a provider closing the connection mid-stream', async () => {
+    const error = await readDyingStream('close', readRawBody);
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect(getModelStreamFailure(error)).toBe('closed');
+    expect(resolveModelStreamError(error)).toBe(
+      JSON.stringify({ type: ErrorTypes.MODEL_STREAM_CLOSED }),
+    );
+  });
+
+  it('classifies a provider that goes silent past the body timeout', async () => {
+    const error = await readDyingStream('stall', readRawBody);
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect(getModelStreamFailure(error)).toBe('stalled');
+    expect(resolveModelStreamError(error)).toBe(
+      JSON.stringify({ type: ErrorTypes.MODEL_STREAM_STALLED }),
+    );
+  });
+
+  it('still classifies the transport failure when an outer layer rethrows it', async () => {
+    const error = await readDyingStream('stall', readRawBody);
+
+    expect(getModelStreamFailure(new Error('graph failed', { cause: error }))).toBe('stalled');
+  });
+
+  it('leaves a cancelled stream to the cancellation path', async () => {
+    const error = await readDyingStream('abort', readRawBody);
+
+    expect(error).toBeDefined();
+    expect(getModelStreamFailure(error)).toBeUndefined();
+  });
+
+  it.each([
+    ['Chat Completions', false, CHAT_COMPLETION_EVENT],
+    ['Responses', true, RESPONSES_EVENT],
+  ])('classifies what the %s client throws for each ending', async (_api, responses, event) => {
+    const read = streamThroughChatOpenAI(responses);
+    const closed = await readDyingStream('close', read, event);
+    const stalled = await readDyingStream('stall', read, event);
+    const aborted = await readDyingStream('abort', read, event);
+
+    expect(getModelStreamFailure(closed)).toBe('closed');
+    expect(getModelStreamFailure(stalled)).toBe('stalled');
+    expect(aborted).toBeDefined();
+    expect(getModelStreamFailure(aborted)).toBeUndefined();
+  });
+
+  it.each([
+    ['a provider rejection', Object.assign(new Error('500 upstream failed'), { status: 500 })],
+    ['prose that happens to say terminated', new Error('terminated')],
+    ['a non-error value', 'terminated'],
+    ['nothing', undefined],
+  ])('does not classify %s', (_label, error) => {
+    expect(getModelStreamFailure(error)).toBeUndefined();
+    expect(resolveModelStreamError(error)).toBeUndefined();
+  });
+
+  it('reads the cause chain without trusting hostile accessors', () => {
+    const hostile = Object.defineProperty(new TypeError('terminated'), 'cause', {
+      get() {
+        throw new Error('accessor exploded');
+      },
+    });
+
+    expect(getModelStreamFailure(hostile)).toBe('closed');
   });
 });
