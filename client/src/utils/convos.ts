@@ -330,7 +330,7 @@ function queryListsArchived(queryKey: readonly unknown[]): boolean {
 /**
  * Whether a row still belongs in a variant at all, by the facets the client can decide:
  * its project, whether it is archived, and the endpoint it ran on. Bookmark and search
- * membership are deliberately excluded — a search cache matches nothing client-side, so
+ * membership are deliberately excluded: a search cache matches nothing client-side, so
  * judging a row that is already in one by that rule would evict every row it holds. The
  * date cutoffs are left out too: `updatedAt` only moves forward and `createdAt` never
  * moves, so a row that matched them keeps matching.
@@ -359,8 +359,8 @@ function conversationBelongsToListQuery(
 /**
  * Whether only the server can say what a variant holds after a write. Three things put it
  * out of the client's reach: an order keyed on something other than last activity, which
- * these writers cannot place a row against; a search, which the server evaluates —
- * a title edit or a new message can make a row start or stop matching one; and the
+ * these writers cannot place a row against; a search, which the server evaluates,
+ * since a title edit or a new message can make a row start or stop matching one; and the
  * attachment and sharing facets, whose truth lives in collections the list row does
  * not carry.
  */
@@ -380,7 +380,7 @@ function queryNeedsServerReconciliation(queryKey: readonly unknown[]): boolean {
  *
  * `skip` is only for a variant the row provably does not belong to, by the facets the
  * client decides: project, archive state, bookmarks, the endpoint it ran on, and the
- * date cutoffs it carries. Anything left to the server — attachments, sharing — is
+ * date cutoffs it carries. Anything left to the server (attachments, sharing) is
  * refetched instead; skipping it silently would leave a mounted list missing a row.
  */
 type ListInsertVerdict = 'insert' | 'skip' | 'refetch';
