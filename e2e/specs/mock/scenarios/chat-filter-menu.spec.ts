@@ -303,22 +303,54 @@ test.describe('chat list properties menu', () => {
     page,
   }) => {
     /* The harness serves one librechat.yaml to every spec, so the published limit is set
-     * on the startup config this page reads; the route spec covers the server side. */
+     * on the startup config this page reads; the route spec covers the server side. The
+     * response is held so the facet is seen before the limit is known. */
+    let releaseConfig = () => {};
+    const configHeld = new Promise<void>((resolve) => {
+      releaseConfig = resolve;
+    });
     await page.route(
       (url) => url.pathname === '/api/config',
       async (route) => {
         const response = await route.fetch();
         const body = await response.json();
+        await configHeld;
         await route.fulfill({ response, json: { ...body, maxEndpointFilters: 1 } });
       },
     );
+    /* A phone's header waits for the config before it offers the sidebar, so the
+     * unknown-limit window is only reachable on a desktop layout. */
+    const sidebarWaitsForConfig = test.info().project.name === 'mobile';
+    if (sidebarWaitsForConfig) {
+      releaseConfig();
+    }
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await showSidebar(page);
 
-    await openFilterSubmenu(page);
-    await page.getByRole('menuitem', { name: /^Endpoint\b/ }).click();
     const endpoints = page.getByRole('menu').last().getByRole('menuitemcheckbox');
-    await expect(endpoints.nth(1)).toBeVisible();
+    const openEndpointFacet = async () => {
+      await openFilterSubmenu(page);
+      await page.getByRole('menuitem', { name: /^Endpoint\b/ }).click();
+      await expect(endpoints.nth(1)).toBeVisible();
+    };
+
+    if (!sidebarWaitsForConfig) {
+      await openEndpointFacet();
+      await expect(endpoints.first()).toHaveAttribute('aria-disabled', 'true');
+      await endpoints.first().click({ force: true });
+      await expect(endpoints.first()).toHaveAttribute('aria-checked', 'false');
+
+      /* The arriving config rebuilds the shell, so the menu is opened afresh once it lands. */
+      await closeMenus(page);
+      const configLoaded = page.waitForResponse((response) =>
+        response.url().endsWith('/api/config'),
+      );
+      releaseConfig();
+      await configLoaded;
+    }
+
+    await openEndpointFacet();
+    await expect(endpoints.first()).not.toHaveAttribute('aria-disabled', 'true');
     await endpoints.first().click();
     await expect(endpoints.first()).toHaveAttribute('aria-checked', 'true');
 

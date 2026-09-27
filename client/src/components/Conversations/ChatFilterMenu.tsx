@@ -304,12 +304,16 @@ const DateFacet = ({ label, icon, value, onSelect }: DateFacetProps) => {
 /**
  * Whether the endpoint selection has reached what the server accepts in one request
  * (`conversationList.maxEndpointFilters`). Past it the list request would be refused and
- * the Chats section would show its error, so further endpoints are offered disabled.
+ * the Chats section would show its error, so further endpoints are offered disabled, as
+ * they are until the post-login config that carries the limit has loaded.
  */
 const useEndpointFilterLimit = (selectedCount: number) => {
   const { data: startupConfig } = useGetStartupConfig();
   const limit = startupConfig?.maxEndpointFilters;
-  return { limit, atLimit: limit != null && selectedCount >= limit };
+  return {
+    limit,
+    atLimit: startupConfig == null || (limit != null && selectedCount >= limit),
+  };
 };
 
 const EndpointLimitNote = ({ limit }: { limit: number }) => {
