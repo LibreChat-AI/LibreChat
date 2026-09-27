@@ -676,7 +676,10 @@ describe('Palette', () => {
       expect(screen.getByTestId('composer-palette-search').getAttribute('aria-controls')).toBe(
         list?.id,
       );
-      expect(list?.querySelector('[role="rowgroup"] [role="row"]')).not.toBeNull();
+      const rendered = list?.querySelectorAll('[role="rowgroup"] [role="row"]') ?? [];
+      expect(rendered.length).toBeGreaterThan(0);
+      expect(rendered[0].getAttribute('aria-rowindex')).toBe('1');
+      expect(Number(list?.getAttribute('aria-rowcount'))).toBeGreaterThanOrEqual(rendered.length);
     });
 
     it('steps over headers on the way down', () => {

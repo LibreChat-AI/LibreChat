@@ -806,6 +806,7 @@ function Palette({
             data-row-key={row.key}
             style={style}
             role="row"
+            aria-rowindex={index + 1}
             className={cn('flex', arrived && 'animate-composer-palette-row')}
           >
             <div
@@ -827,6 +828,7 @@ function Palette({
             data-row-key={row.key}
             style={style}
             role="row"
+            aria-rowindex={index + 1}
             onClick={(event) => handleRowClick(event, index)}
             onMouseEnter={() => {
               setActiveKey(row.key);
@@ -868,6 +870,7 @@ function Palette({
             data-row-key={row.key}
             style={style}
             role="row"
+            aria-rowindex={index + 1}
             onClick={(event) => handleRowClick(event, index)}
             onMouseEnter={() => {
               setActiveKey(row.key);
@@ -949,6 +952,7 @@ function Palette({
           data-row-key={row.key}
           style={style}
           role="row"
+          aria-rowindex={index + 1}
           onClick={(event) => handleRowClick(event, index)}
           onMouseEnter={() => {
             setActiveKey(row.key);
@@ -1287,6 +1291,9 @@ function Palette({
                     role="grid"
                     aria-label={localize('com_ui_composer_palette')}
                     containerRole="rowgroup"
+                    /* Only the rows in view are mounted, so the grid states
+                       the total and each row its position within it. */
+                    containerProps={{ 'aria-rowcount': rows.length }}
                     tabIndex={-1}
                     scrollToIndex={scrollToActive ? activeIndex : undefined}
                     rowRenderer={rowRenderer}
