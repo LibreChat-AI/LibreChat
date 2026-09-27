@@ -358,6 +358,14 @@ describe('WebSearch', () => {
       expect(container.innerHTML).toBe('');
     });
 
+    it('still hides unclassified legacy search errors on a completed step', () => {
+      const { container } = renderWebSearch({
+        output: 'Error processing search results',
+        runStepStatus: 'completed',
+      });
+      expect(container.innerHTML).toBe('');
+    });
+
     it('renders completed state with source count', () => {
       const searchResults = makeSearchResults({
         0: { organic: [makeSource('https://example.com', 'Example')] },

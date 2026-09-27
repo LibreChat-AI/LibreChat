@@ -88,6 +88,8 @@ export default function WebSearch({
   const intent = useToolCallIntent(args);
   const { searchResults } = useSearchContext();
   const error = (typeof output === 'string' && isError(output)) || runStepStatus === 'failed';
+  const legacyError =
+    !error && typeof output === 'string' && output.toLowerCase().includes('error processing');
   const isClosed = runStepStatus != null;
 
   // Server tool calls (srvtoolu_) never receive ON_RUN_STEP_COMPLETED, so progress
@@ -98,16 +100,13 @@ export default function WebSearch({
     [attachments],
   );
   const effectiveProgress = isClosed || (hasResults && !isSubmitting) ? 1 : progress;
-  /**
-   * `error` folds into this branch deliberately: an errored search has always
-   * rendered as nothing (the `cancelled` early-return below), so a step closed
-   * as `failed` lands in the same place rather than inventing a failure UI
-   * this component has never had — or worse, falling through to the streaming
-   * branch and shimmering forever.
-   */
+  /** Older search errors with only the loose "error processing" text were
+   * hidden, not counted as failures. Preserve that legacy behavior rather
+   * than labeling them completed; recognized failures get a real disclosure
+   * below so the group pill can reach their error. */
   const cancelled = isClosed
-    ? runStepStatus === 'cancelled' || error
-    : (!isSubmitting && effectiveProgress < 1) || error === true;
+    ? runStepStatus === 'cancelled' || legacyError
+    : (!isSubmitting && effectiveProgress < 1) || legacyError;
 
   const finalizing = !isClosed && isSubmitting && isLast && effectiveProgress === 1;
   /** A search that is the message's FINAL part stays "finalizing" only while
