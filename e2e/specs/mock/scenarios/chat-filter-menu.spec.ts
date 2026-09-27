@@ -299,6 +299,39 @@ test.describe('chat list properties menu', () => {
     await expect(chatsRow(page, inProject)).toBeVisible({ timeout: 30000 });
   });
 
+  test('a project whose chats fail to load says so and recovers on retry @scenario:project-chats-failure-offers-retry', async ({
+    page,
+  }) => {
+    const projectName = `Menu project ${randomUUID().slice(0, 8)}`;
+    const projectId = await createProject(page, projectName);
+    const inProject = uniqueTitle('project');
+    await seedRows([{ title: inProject, chatProjectId: projectId }]);
+
+    let failProjectChats = true;
+    await page.route(
+      (url) => url.pathname === '/api/convos' && url.searchParams.get('projectId') === projectId,
+      (route) => (failProjectChats ? route.fulfill({ status: 500, body: '{}' }) : route.continue()),
+    );
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await showSidebar(page);
+
+    const projectRow = page.getByRole('button', { name: projectName }).first();
+    if ((await projectRow.getAttribute('aria-expanded')) !== 'true') {
+      await projectRow.click();
+    }
+    const failure = page.getByTestId(`project-chats-error-${projectId}`);
+    await expect(failure).toBeVisible({ timeout: 30000 });
+    await expect(failure).toHaveAttribute('role', 'alert');
+
+    failProjectChats = false;
+    await failure.getByRole('button', { name: 'Retry' }).click();
+    await expect(
+      page.getByTestId(`project-chats-${projectId}`).getByTestId('convo-item').filter({
+        hasText: inProject,
+      }),
+    ).toBeVisible();
+  });
+
   test('the Endpoint facet stops at the limit the deployment publishes @scenario:endpoint-filter-stops-at-limit', async ({
     page,
   }) => {
