@@ -11,7 +11,7 @@ import { blockFilteredSkillFile } from './protection';
 import { resolveSkillFilePathParam } from './path';
 
 /** Metadata required for replacement and cleanup, independent of a database document. */
-interface StoredSkillFile {
+export interface StoredSkillFile {
   file_id: string;
   filepath: string;
   source: string;

@@ -1908,6 +1908,52 @@ describe('SkillFile methods', () => {
     expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).toBeNull();
   });
 
+  it('creates only absent skill files and leaves the winner intact when creation races', async () => {
+    await SkillFile.init();
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const original = {
+      skillId: skill._id,
+      relativePath: 'references/new.md',
+      file_id: 'browser',
+      filename: 'new.md',
+      filepath: '/tmp/browser',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 7,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(original);
+    await expect(
+      methods.upsertSkillFile({ ...original, createOnly: true, file_id: 'late-agent' }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    expect(await methods.getSkillFileByPath(skill._id, original.relativePath)).toMatchObject({
+      file_id: 'browser',
+      filepath: '/tmp/browser',
+    });
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 2, fileCount: 1 });
+
+    const results = await Promise.allSettled(
+      ['first', 'second'].map((id) =>
+        methods.upsertSkillFile({
+          ...original,
+          relativePath: 'references/concurrent.md',
+          filename: 'concurrent.md',
+          filepath: `/tmp/${id}`,
+          file_id: id,
+          createOnly: true,
+        }),
+      ),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'SKILL_FILE_CONFLICT' },
+    });
+    expect(['first', 'second']).toContain(
+      (await methods.getSkillFileByPath(skill._id, 'references/concurrent.md'))?.file_id,
+    );
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 3, fileCount: 2 });
+  });
+
   it('does not let a delayed read cache old bytes on a replaced file', async () => {
     const { skill } = await methods.createSkill(makeSkillInput());
     const input = {

@@ -934,6 +934,138 @@ describe('Skill routes', () => {
       });
     });
 
+    it('rejects an agent replacement captured before a newer browser edit', async () => {
+      const { getSkillToolDeps } = require('~/server/services/Endpoints/agents/skillDeps');
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const relativePath = 'references/shared.md';
+      const url = `/api/skills/${skillId}/files`;
+      const initial = await request(app)
+        .post(url)
+        .field('relativePath', relativePath)
+        .attach('file', Buffer.from('original'), {
+          filename: 'shared.md',
+          contentType: 'text/markdown',
+        });
+      expect(initial.status).toBe(200);
+      const agentRead = await getSkillToolDeps().getSkillFileByPath(skillId, relativePath);
+      const capturedVersion = (await Skill.findById(skillId).lean()).version;
+      expect(agentRead.file_id).toBe(initial.body.file_id);
+
+      const browser = await request(app)
+        .post(`${url}/references/shared.md`)
+        .field('relativePath', relativePath)
+        .field('expectedFileId', agentRead.file_id)
+        .attach('file', Buffer.from('browser winner'), {
+          filename: 'shared.md',
+          contentType: 'text/markdown',
+        });
+      expect(browser.status).toBe(200);
+      expect((await Skill.findById(skillId).lean()).version).toBe(capturedVersion + 1);
+      const winner = await SkillFile.findOne({ skillId, relativePath }).lean();
+
+      const saveBuffer = jest.fn(async ({ fileName }) => `/uploads/${fileName}`);
+      const deleteFile = jest.fn(async () => undefined);
+      getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+      try {
+        await expect(
+          getSkillToolDeps().saveSkillFileContent({
+            req: {
+              user: { id: testUsers.owner._id.toString(), _id: testUsers.owner._id },
+              config: { fileStrategy: 'local' },
+            },
+            skillId,
+            relativePath,
+            content: 'stale agent edit',
+            mimeType: 'text/markdown',
+            expectedFileId: agentRead.file_id,
+          }),
+        ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+        expect(saveBuffer).not.toHaveBeenCalled();
+        expect(deleteFile).not.toHaveBeenCalled();
+        expect(await SkillFile.findOne({ skillId, relativePath }).lean()).toMatchObject({
+          file_id: browser.body.file_id,
+          filepath: winner.filepath,
+        });
+        expect((await Skill.findById(skillId).lean()).version).toBe(capturedVersion + 1);
+      } finally {
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
+    it('rejects and cleans an agent upload when a browser edit lands during storage', async () => {
+      const { getSkillToolDeps } = require('~/server/services/Endpoints/agents/skillDeps');
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const relativePath = 'references/overlap.md';
+      const url = `/api/skills/${skillId}/files`;
+      const initial = await request(app)
+        .post(url)
+        .field('relativePath', relativePath)
+        .attach('file', Buffer.from('initial'), {
+          filename: 'overlap.md',
+          contentType: 'text/markdown',
+        });
+      expect(initial.status).toBe(200);
+      const agentRead = await getSkillToolDeps().getSkillFileByPath(skillId, relativePath);
+      const agentReq = {
+        user: { id: testUsers.owner._id.toString(), _id: testUsers.owner._id },
+        config: { fileStrategy: 'local' },
+      };
+      let browserRevision;
+      const deleteFile = jest.fn(async () => undefined);
+      const saveBuffer = jest.fn(async ({ fileName }) => {
+        if (saveBuffer.mock.calls.length === 1) {
+          const browser = await request(app)
+            .post(`${url}/references/overlap.md`)
+            .field('relativePath', relativePath)
+            .field('expectedFileId', agentRead.file_id)
+            .attach('file', Buffer.from('browser wins'), {
+              filename: 'overlap.md',
+              contentType: 'text/markdown',
+            });
+          expect(browser.status).toBe(200);
+          browserRevision = browser.body.file_id;
+        }
+        return `/uploads/${fileName}`;
+      });
+      getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+      try {
+        await expect(
+          getSkillToolDeps().saveSkillFileContent({
+            req: agentReq,
+            skillId,
+            relativePath,
+            content: 'agent stale edit',
+            mimeType: 'text/markdown',
+            expectedFileId: agentRead.file_id,
+            createOnly: false,
+          }),
+        ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+        expect(saveBuffer).toHaveBeenCalledTimes(2);
+        const agentPath = `/uploads/${saveBuffer.mock.calls[0][0].fileName}`;
+        const browserPath = `/uploads/${saveBuffer.mock.calls[1][0].fileName}`;
+        expect(await SkillFile.findOne({ skillId, relativePath }).lean()).toMatchObject({
+          file_id: browserRevision,
+          filepath: browserPath,
+        });
+        expect(deleteFile).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ filepath: agentPath }),
+        );
+        expect(deleteFile).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ filepath: browserPath }),
+        );
+      } finally {
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
     it('atomically rejects a race after storing bytes and cleans up only the losing upload', async () => {
       const { getStrategyFunctions } = require('~/server/services/Files/strategies');
       const originalStrategy = getStrategyFunctions.getMockImplementation();

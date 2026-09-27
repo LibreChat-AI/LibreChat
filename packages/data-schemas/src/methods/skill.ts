@@ -748,6 +748,8 @@ function getAlwaysApplyFrontmatterValue(
 export type UpsertSkillFileInput = {
   /** When supplied, replace only this stored revision; never recreate a deleted file. */
   expectedFileId?: string;
+  /** Insert only when the path is absent, even if another writer creates it first. */
+  createOnly?: boolean;
   skillId: Types.ObjectId | string;
   relativePath: string;
   file_id: string;
@@ -1870,7 +1872,41 @@ export function createSkillMethods(
       throw error;
     }
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    const category = inferSkillFileCategory(row.relativePath);
+    const fields = {
+      skillId: row.skillId,
+      relativePath: row.relativePath,
+      file_id: row.file_id,
+      filename: row.filename,
+      filepath: row.filepath,
+      storageKey: row.storageKey,
+      storageRegion: row.storageRegion,
+      source: row.source,
+      sourceMetadata: row.sourceMetadata,
+      mimeType: row.mimeType,
+      bytes: row.bytes,
+      category: inferSkillFileCategory(row.relativePath),
+      isExecutable: row.isExecutable ?? false,
+      author: row.author,
+      tenantId: row.tenantId,
+    };
+    if (row.createOnly) {
+      if (row.expectedFileId != null) {
+        throw new Error('A file cannot require both an absent path and an existing revision');
+      }
+      let created: ISkillFileDocument;
+      try {
+        created = await SkillFile.create(fields);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 11000) {
+          throw Object.assign(new Error('Skill file was created by another writer'), {
+            code: 'SKILL_FILE_CONFLICT',
+          });
+        }
+        throw error;
+      }
+      await bumpSkillVersionAndAdjustFileCount(row.skillId, 1);
+      return created.toObject() as unknown as ISkillFile & { _id: Types.ObjectId };
+    }
     const result = (await SkillFile.findOneAndUpdate(
       {
         skillId: row.skillId,
@@ -1878,23 +1914,7 @@ export function createSkillMethods(
         ...(row.expectedFileId != null ? { file_id: row.expectedFileId } : {}),
       },
       {
-        $set: {
-          skillId: row.skillId,
-          relativePath: row.relativePath,
-          file_id: row.file_id,
-          filename: row.filename,
-          filepath: row.filepath,
-          storageKey: row.storageKey,
-          storageRegion: row.storageRegion,
-          source: row.source,
-          sourceMetadata: row.sourceMetadata,
-          mimeType: row.mimeType,
-          bytes: row.bytes,
-          category,
-          isExecutable: row.isExecutable ?? false,
-          author: row.author,
-          tenantId: row.tenantId,
-        },
+        $set: fields,
         $unset: { content: '', isBinary: '', codeEnvRef: '', codeEnvRefs: '' },
       },
       { new: true, upsert: row.expectedFileId == null, includeResultMetadata: true },
