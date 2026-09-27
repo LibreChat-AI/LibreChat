@@ -1,8 +1,8 @@
 import React from 'react';
 import { DndProvider } from 'react-dnd';
 import { BrowserRouter } from 'react-router-dom';
-import { render, act } from '@testing-library/react';
 import { HTML5Backend } from 'react-dnd-html5-backend';
+import { render, act, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { atom, RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import type { SetterOrUpdater } from 'recoil';
@@ -37,12 +37,15 @@ const mockUseTitleGeneration = jest.fn(() => {
  *  keeps referential stability mid-stream, which is what the memoized-children
  *  guarantee below depends on. */
 const mockConversationsResult = {
-  data: { pages: [{ conversations: [] as unknown[], nextCursor: null }] },
+  data: { pages: [{ conversations: [] as unknown[], nextCursor: null }] } as
+    | { pages: Array<{ conversations: unknown[]; nextCursor: string | null }> }
+    | undefined,
   fetchNextPage: jest.fn(),
   refetch: jest.fn(),
   isFetchingNextPage: false,
   isLoading: false,
   isFetching: false,
+  isPreviousData: false,
   isError: false,
 };
 
@@ -100,9 +103,23 @@ jest.mock('~/hooks/Input/useSelectMention', () => ({
 
 jest.mock('~/components/Conversations', () => {
   const { memo } = jest.requireActual('react');
-  const ConversationsStub = memo(function ConversationsStub() {
+  const ConversationsStub = memo(function ConversationsStub({
+    conversations,
+    isSearchLoading,
+  }: {
+    conversations: Array<{ conversationId: string; title: string }>;
+    isSearchLoading: boolean;
+  }) {
     mockConversationsRender();
-    return <div data-testid="conversations-stub" />;
+    return (
+      <div data-testid="conversations-stub">
+        {isSearchLoading ? (
+          <div data-testid="search-spinner" />
+        ) : (
+          conversations.map((convo) => <span key={convo.conversationId}>{convo.title}</span>)
+        )}
+      </div>
+    );
   });
   return { __esModule: true, Conversations: ConversationsStub };
 });
@@ -169,10 +186,22 @@ const settleRenders = async () => {
   }
 };
 
-const renderSection = () =>
+const renderSection = (searchQuery = '') =>
   render(
     <QueryClientProvider client={createQueryClient()}>
-      <RecoilRoot>
+      <RecoilRoot
+        initializeState={({ set }) => {
+          if (searchQuery) {
+            set(store.search, {
+              query: searchQuery,
+              debouncedQuery: searchQuery,
+              enabled: true,
+              isTyping: false,
+              isSearching: false,
+            });
+          }
+        }}
+      >
         <BrowserRouter>
           <DndProvider backend={HTML5Backend}>
             <TickController />
@@ -241,6 +270,75 @@ describe('ConversationsSection streaming re-renders', () => {
     },
     TEST_TIMEOUT,
   );
+});
+
+describe('ConversationsSection search refetch', () => {
+  it('shows loading for an uncached search', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = undefined;
+    mockConversationsResult.isLoading = true;
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isLoading = false;
+    }
+  });
+
+  it('does not show results from the previous search while the next one loads', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Previous match' }],
+          nextCursor: null,
+        },
+      ],
+    };
+    mockConversationsResult.isPreviousData = true;
+
+    try {
+      renderSection('new term');
+      await settleRenders();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+      expect(screen.queryByText('Previous match')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isPreviousData = false;
+    }
+  });
+
+  it('keeps cached results visible when a message triggers a background list refetch', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Matching chat' }],
+          nextCursor: null,
+        },
+      ],
+    };
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByText('Matching chat')).toBeInTheDocument();
+
+      act(() => {
+        mockConversationsResult.isFetching = true;
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByText('Matching chat')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-spinner')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.isFetching = false;
+      mockConversationsResult.data = previousData;
+    }
+  });
 });
 
 describe('ConversationsSection shared scroll surface', () => {

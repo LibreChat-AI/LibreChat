@@ -46,7 +46,6 @@ const ConversationsSection = memo(() => {
     fetchNextPage,
     isFetchingNextPage,
     isLoading,
-    isFetching,
     isPreviousData,
     isError,
     refetch,
@@ -142,19 +141,7 @@ const ConversationsSection = memo(() => {
     void refetch();
   }, [refetch]);
 
-  const [isSearchLoading, setIsSearchLoading] = useState(
-    !!search.query && (search.isTyping || isLoading || isFetching),
-  );
-
-  useEffect(() => {
-    if (search.isTyping) {
-      setIsSearchLoading(true);
-    } else if (!isLoading && !isFetching) {
-      setIsSearchLoading(false);
-    } else if (!!search.query && (isLoading || isFetching)) {
-      setIsSearchLoading(true);
-    }
-  }, [search.query, search.isTyping, isLoading, isFetching]);
+  const isSearchLoading = !!search.query && (search.isTyping || isLoading);
 
   /** Projects, Pinned and Chats share one scroll container so the sidebar scrolls
    *  as a single surface: the chats list is virtualized against this viewport
