@@ -267,12 +267,12 @@ const Conversations: FC<ConversationsProps> = ({
 
   // Fetch active job IDs for showing generation indicators
   const { data: activeJobsData } = useActiveJobs();
-  const activeJobIdsRef = useRef<Set<string>>(new Set());
+  const activeJobIdsRef = useRef<Set<string> | null>(null);
   const activeJobIds = useMemo(() => {
     const ids = activeJobsData?.activeJobIds ?? [];
     const next = new Set(ids);
     const previous = activeJobIdsRef.current;
-    if (next.size === previous.size && ids.every((id) => previous.has(id))) {
+    if (previous && next.size === previous.size && ids.every((id) => previous.has(id))) {
       return previous;
     }
     activeJobIdsRef.current = next;
