@@ -21,6 +21,7 @@ const {
   mergeDeploymentSkillIds,
   createDeploymentSkillMethods,
   createSkillFileSaver,
+  createSkillManagementFileSaver,
   isDeploymentSkillFileSource,
   getDeploymentSkillDownloadStream,
 } = require('@librechat/api');
@@ -76,12 +77,18 @@ function resolveSkillStorage(req, { isImage = false } = {}) {
   return { saveBuffer: strategy.saveBuffer, source };
 }
 
-const saveSkillFileContent = createSkillFileSaver({
+const skillFileSaveDeps = {
   getSkillFileByPath: db.getSkillFileByPath,
   upsertSkillFile: db.upsertSkillFile,
   resolveStorage: resolveSkillStorage,
   getStrategyFunctions,
-});
+};
+const saveSkillFileContent = createSkillFileSaver(skillFileSaveDeps);
+const saveSkillManagementFileContent = createSkillManagementFileSaver(skillFileSaveDeps);
+
+function getSkillManagementFileSaver() {
+  return saveSkillManagementFileContent;
+}
 
 function canCreateSkill({ req }) {
   return checkAccess({
@@ -364,6 +371,7 @@ function getSkillToolDeps() {
 
 module.exports = {
   getSkillToolDeps,
+  getSkillManagementFileSaver,
   canAuthorSkillFiles,
   isAgentSkillAuthoringEnabledForRun,
   getSkillDbMethods,

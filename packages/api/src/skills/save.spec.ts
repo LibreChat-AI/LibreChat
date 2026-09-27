@@ -1,6 +1,6 @@
 import { FileSources } from 'librechat-data-provider';
 import type { SaveBufferParams } from '~/storage/types';
-import { createSkillFileSaver } from './save';
+import { createSkillFileSaver, createSkillManagementFileSaver } from './save';
 
 type SaverDeps = Parameters<typeof createSkillFileSaver>[0];
 
@@ -47,16 +47,72 @@ function harness() {
     expectedFileId: 'initial',
     createOnly: false,
   };
+  const { req: request, skillId, relativePath, content, mimeType } = params;
   return {
     deps,
     params,
+    managementParams: { req: request, skillId, relativePath, content, mimeType },
     saveBuffer,
     deleteFile,
     getSkillFileByPath,
     upsertSkillFile,
     save: createSkillFileSaver(deps),
+    saveManagement: createSkillManagementFileSaver(deps),
   };
 }
+
+describe('management skill file saver', () => {
+  it('creates a missing path with an insert-only write and no second lookup', async () => {
+    const h = harness();
+    h.getSkillFileByPath.mockResolvedValueOnce(null);
+    await expect(h.saveManagement(h.managementParams)).resolves.toEqual({
+      bytes: 9,
+      relativePath: 'references/a.md',
+    });
+    expect(h.getSkillFileByPath).toHaveBeenCalledTimes(1);
+    expect(h.upsertSkillFile).toHaveBeenCalledWith(
+      expect.objectContaining({ createOnly: true, expectedFileId: undefined }),
+    );
+    expect(h.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('matches the current stored revision when replacing a file with complete content', async () => {
+    const h = harness();
+    await expect(h.saveManagement(h.managementParams)).resolves.toEqual({
+      bytes: 9,
+      relativePath: 'references/a.md',
+    });
+    expect(h.getSkillFileByPath).toHaveBeenCalledTimes(1);
+    expect(h.upsertSkillFile).toHaveBeenCalledWith(
+      expect.objectContaining({ createOnly: false, expectedFileId: 'initial' }),
+    );
+    expect(h.deleteFile).toHaveBeenCalledWith(
+      h.params.req,
+      expect.objectContaining({ filepath: '/uploads/initial', user: 'original-owner' }),
+    );
+  });
+
+  it('rejects and removes only its upload if a concurrent browser edit wins', async () => {
+    const h = harness();
+    h.upsertSkillFile.mockRejectedValueOnce(
+      Object.assign(new Error('browser won the write'), { code: 'SKILL_FILE_CONFLICT' }),
+    );
+    h.getSkillFileByPath
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce({ ...existing, file_id: 'browser', filepath: '/uploads/browser' });
+    await expect(h.saveManagement(h.managementParams)).rejects.toMatchObject({
+      code: 'SKILL_FILE_CONFLICT',
+    });
+    expect(h.upsertSkillFile).toHaveBeenCalledWith(
+      expect.objectContaining({ createOnly: false, expectedFileId: 'initial' }),
+    );
+    expect(h.deleteFile).toHaveBeenCalledTimes(1);
+    expect(h.deleteFile).toHaveBeenCalledWith(
+      h.params.req,
+      expect.objectContaining({ filepath: '/uploads/new', user: 'editor' }),
+    );
+  });
+});
 
 describe('agent skill file saver', () => {
   it('rejects an obsolete or absent revision before writing bytes', async () => {

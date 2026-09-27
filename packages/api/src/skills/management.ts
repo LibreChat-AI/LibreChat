@@ -362,14 +362,21 @@ export function createSkillManagementHandlers(
         return sendError(res, 'invalid_request');
       }
       if (!(await admitFileWrite(req, res, deps.fileWriteLimiters ?? []))) return res;
-      const result = await deps.saveFile({
-        req: req as ServerRequest,
-        skillId: req.params.id,
-        relativePath,
-        content: parsed.data.content,
-        mimeType: 'text/plain',
-      });
-      return res.status(200).json({ relativePath: result.relativePath, bytes: result.bytes });
+      try {
+        const result = await deps.saveFile({
+          req: req as ServerRequest,
+          skillId: req.params.id,
+          relativePath,
+          content: parsed.data.content,
+          mimeType: 'text/plain',
+        });
+        return res.status(200).json({ relativePath: result.relativePath, bytes: result.bytes });
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'SKILL_FILE_CONFLICT') {
+          return sendError(res, 'conflict');
+        }
+        throw error;
+      }
     }),
   };
 }
