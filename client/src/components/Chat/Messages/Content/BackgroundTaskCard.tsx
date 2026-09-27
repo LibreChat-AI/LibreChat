@@ -1,7 +1,8 @@
 import type { BackgroundTaskStatus, BackgroundTaskView } from './Parts/background';
 import type { TranslationKeys } from '~/hooks';
-import { ToolIcon, getToolIconType, getMCPServerName, OutputRenderer } from './ToolOutput';
+import { ToolIcon, getToolIconType, OutputRenderer } from './ToolOutput';
 import { formatBackgroundCodeOutput } from './Parts/background';
+import { parseToolName } from '~/utils/toolLabels';
 import { getToolDisplayLabel, cn } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -34,10 +35,15 @@ export default function BackgroundTaskCard({
 }) {
   const localize = useLocalize();
   const isSubagent = task.toolName === 'subagent';
-  const title = isSubagent
-    ? localize('com_ui_background_tasks_subagent')
-    : getToolDisplayLabel(task.toolName, localize, mcpServerNames);
-  const serverName = getMCPServerName(task.toolName, mcpServerNames);
+  const parsedName = parseToolName(task.toolName, mcpServerNames);
+  const serverName = parsedName.mcpServer;
+  let title = getToolDisplayLabel(task.toolName, localize, mcpServerNames);
+  if (isSubagent) {
+    title = localize('com_ui_background_tasks_subagent');
+  } else if (serverName) {
+    title = parsedName.toolName;
+  }
+  const subtitle = task.subagentType || serverName;
   const iconUrl = serverName ? mcpIconMap?.get(serverName) : undefined;
   const iconType = getToolIconType(task.toolName);
   const isCode = iconType === 'bash_tool' || iconType === 'execute_code';
@@ -66,9 +72,7 @@ export default function BackgroundTaskCard({
           <div className="truncate text-sm font-semibold text-text-primary" title={title}>
             {title}
           </div>
-          {task.subagentType && (
-            <div className="truncate text-xs text-text-secondary">{task.subagentType}</div>
-          )}
+          {subtitle && <div className="truncate text-xs text-text-secondary">{subtitle}</div>}
           {delivery && (
             <div
               className={cn(

@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue } from 'jotai';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
 import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { ChatSurfaceHarness } from 'test/harness';
@@ -217,6 +217,34 @@ describe('Wakeup', () => {
     fireEvent.click(header);
     expect(screen.getByTestId('background-task-card')).toHaveTextContent('com_ui_cancelled');
     expect(screen.getByTestId('task-output')).toHaveTextContent('The task was stopped.');
+  });
+
+  it('shows the originating MCP tool and its server separately', () => {
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup
+            display={{
+              kind: 'background_tool',
+              tasks: [
+                {
+                  taskId: 'bg-mcp',
+                  status: 'completed',
+                  result: 'Found 3 documents.',
+                  toolCallId: 'call-mcp',
+                  toolName: 'search_repository_mcp_Docs',
+                },
+              ],
+            }}
+          />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_wakeup_task_finished' }));
+    const card = screen.getByTestId('background-task-card');
+    expect(within(card).getByText('search_repository')).toBeInTheDocument();
+    expect(within(card).getByText('Docs')).toBeInTheDocument();
+    expect(within(card).getByTestId('task-output')).toHaveTextContent('Found 3 documents.');
   });
 
   it('renders the code completion as tool output rather than prose or host-internal JSON', () => {
