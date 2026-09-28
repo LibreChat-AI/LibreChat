@@ -213,7 +213,9 @@ export function resolveFailedTurnContent(
  * text goes, leaving the typed failure as the row's outcome. A non-terminal
  * snapshot (`synthesizeFailure: false`, the disconnect save the run may still
  * complete and overwrite) marks what is there and rewrites nothing else.
- * Content from a turn that was not a compaction is returned unchanged.
+ * Content from a turn that was not a compaction is returned unchanged, and
+ * the parts are never edited in place: the aggregated parts belong to the
+ * still-live run on the disconnect path, so every stamped part is a copy.
  */
 export function markAbortedCompactionContent(
   contentParts: TMessageContentParts[],
@@ -223,40 +225,40 @@ export function markAbortedCompactionContent(
   if (!isCompaction) {
     return contentParts;
   }
+  const marked: TMessageContentParts[] = [];
   let hasOutcome = false;
   let removedUnfinishedRound = false;
-  for (let index = contentParts.length - 1; index >= 0; index -= 1) {
-    const part = contentParts[index];
+  for (const part of contentParts) {
     if (part == null) {
+      marked.push(part);
       continue;
     }
     if (part.type === ContentTypes.ERROR) {
-      part.initiatedBy = 'user';
+      marked.push({ ...part, initiatedBy: 'user' as const });
       hasOutcome = true;
       continue;
     }
     if (part.type !== ContentTypes.SUMMARY) {
+      marked.push(part);
       continue;
     }
     /** The usability predicate's false side narrows the part's type away, so
      *  the reference is taken before it runs. */
     const summary = part;
     if (isUsableSummaryPart(part)) {
-      summary.initiatedBy = 'user';
+      marked.push({ ...summary, initiatedBy: 'user' as const });
       hasOutcome = true;
       continue;
     }
     if (!synthesizeFailure) {
-      summary.initiatedBy = 'user';
+      marked.push({ ...summary, initiatedBy: 'user' as const });
       continue;
     }
     if (isSummaryPartWithText(summary)) {
-      summary.initiatedBy = 'user';
-      summary.failed = true;
+      marked.push({ ...summary, initiatedBy: 'user' as const, failed: true });
       hasOutcome = true;
       continue;
     }
-    contentParts.splice(index, 1);
     removedUnfinishedRound = true;
   }
   /** An earlier round's checkpoint is not this round's outcome: a round the
@@ -264,9 +266,9 @@ export function markAbortedCompactionContent(
    *  or the stopped turn reads as the successful compaction the checkpoint
    *  describes. */
   if ((!hasOutcome || removedUnfinishedRound) && synthesizeFailure) {
-    contentParts.push(...compactionFailureContent());
+    marked.push(...compactionFailureContent());
   }
-  return contentParts;
+  return marked;
 }
 
 /** Whether a job record has reached a status whose path owns the turn's final
@@ -378,7 +380,6 @@ export type ReadableMessageRow = {
   unfinished?: boolean;
 };
 
-/**
 /** How a failed generation's fresh error row proceeds after its existing rows
  * are settled. */
 export type ErrorTurnSettlement =
