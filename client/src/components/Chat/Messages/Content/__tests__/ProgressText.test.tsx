@@ -82,6 +82,16 @@ describe('ProgressText duration', () => {
    * The number would be stale the moment it rendered, and the label beside it
    * is still the in-progress one.
    */
+  it('starts each phase timer on the browser clock, not on a skewed server stamp', () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(20_000);
+    const { rerender } = renderProgressText({ phase: 'running', phaseStartAt: 1_000 });
+    expect(screen.getByTestId('stream-elapsed')).toHaveTextContent('0s');
+    clock.mockReturnValue(24_000);
+    rerender(<ProgressText {...defaults} phase="running" phaseStartAt={2_000} />);
+    expect(screen.getByTestId('stream-elapsed')).toHaveTextContent('0s');
+    clock.mockRestore();
+  });
+
   it('does not render while the step is still running', () => {
     renderProgressText({ phase: 'running', durationMs: 3500 });
     expect(screen.queryByText('· Total elapsed 3.5s')).not.toBeInTheDocument();

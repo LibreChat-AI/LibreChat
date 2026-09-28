@@ -106,6 +106,15 @@ export default function ProgressText({
   /** For locale-aware decimal formatting of the sub-10s duration value. */
   const { i18n } = useTranslation();
   const isRunning = phase === 'running';
+  /** A server-authored phase stamp is an identity, not a browser clock origin.
+   * On reconnect we can only time from local receipt, never infer cross-host skew. */
+  const phaseTimer = useRef<{ stamp?: number; receivedAt: number } | null>(null);
+  if (!isRunning || phaseStartAt == null) {
+    phaseTimer.current = null;
+  } else if (phaseTimer.current?.stamp !== phaseStartAt) {
+    phaseTimer.current = { stamp: phaseStartAt, receivedAt: Date.now() };
+  }
+  const localPhaseStart = phaseTimer.current?.receivedAt;
   const rootRef = useRef<HTMLDivElement>(null);
   /** A header above asked for its failures. This control is the disclosure
    *  every card renders, so answering here reaches a failed bash, code,
@@ -232,7 +241,9 @@ export default function ProgressText({
         {errorSuffix && (
           <span className="shrink-0 font-normal text-status-error">· {errorSuffix}</span>
         )}
-        {isRunning && phaseStartAt != null && <ElapsedTimer start={phaseStartAt} />}
+        {isRunning && phaseStartAt != null && localPhaseStart != null && (
+          <ElapsedTimer start={localPhaseStart} />
+        )}
         {durationParts.map(({ label, duration }) => (
           <span key={label} className="shrink-0 font-normal text-text-secondary">
             <span aria-hidden="true">

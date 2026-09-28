@@ -40,6 +40,8 @@ export enum StepEvents {
   ON_RUN_STEP_DELTA = 'on_run_step_delta',
   /** SDK handoff from generated arguments to host or direct tool execution. */
   ON_TOOL_CALLS_DISPATCHED = 'on_tool_calls_dispatched',
+  /** Compact first-fragment marker, retained for resumable generations. */
+  ON_TOOL_PREPARATION = 'on_tool_preparation',
   ON_RUN_STEP_COMPLETED = 'on_run_step_completed',
   /** Terminal signal for a run step: closed with a status and timestamps. */
   ON_RUN_STEP_CLOSED = 'on_run_step_closed',
@@ -541,6 +543,7 @@ export type SubagentUpdatePhase =
   | 'start'
   | 'run_step'
   | 'run_step_delta'
+  | 'tool_calls_dispatched'
   | 'run_step_completed'
   | 'run_step_closed'
   | 'message_delta'

@@ -1982,6 +1982,172 @@ describe('useStepHandler', () => {
       });
     });
 
+    it('restores the Preparing and Calling phases from compact replay events', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      const currentPart = () => {
+        const response = (mockSetMessages.mock.lastCall?.[0] as TMessage[] | undefined)?.find(
+          (message) => message.messageId === 'response-msg-1',
+        );
+        const part = response?.content?.[0];
+        return part?.type === ContentTypes.TOOL_CALL ? part.tool_call : undefined;
+      };
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_TOOL_PREPARATION,
+            data: { id: 'step-tool-1', toolCallId: 'tool-call-1', index: 0, observed_at: 100 },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP,
+            data: createToolCallRunStep(),
+          },
+          submission,
+        );
+      });
+      expect(currentPart()?.toolPreparationStartedAt).toBe(100);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+            data: {
+              dispatched_at: 500,
+              toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
+            },
+          },
+          submission,
+        );
+      });
+      expect(currentPart()?.toolDispatchedAt).toBe(500);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'step-tool-1',
+                index: 0,
+                completed_at: 540,
+                tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+              },
+            },
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-tool-1',
+              type: StepTypes.TOOL_CALLS,
+              index: 0,
+              status: 'completed',
+              created_at: 90,
+              closed_at: 540,
+            },
+          },
+          submission,
+        );
+      });
+      expect(currentPart()).toMatchObject({
+        toolPreparationDurationMs: 400,
+        toolExecutionDurationMs: 40,
+      });
+    });
+
+    it('isolates duplicate provider IDs across simultaneous run steps', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      for (const [id, index, observedAt, dispatchedAt, completedAt] of [
+        ['step-tool-1', 0, 100, 300, 310],
+        ['step-tool-2', 1, 200, 500, 550],
+      ] as const) {
+        act(() => {
+          result.current.stepHandler(
+            { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep({ id, index }) },
+            submission,
+          );
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_DELTA,
+              data: {
+                id,
+                observed_at: observedAt,
+                delta: {
+                  type: StepTypes.TOOL_CALLS,
+                  tool_calls: [{ id: 'tool-call-1', index: 0, args: '{' }],
+                },
+              },
+            },
+            submission,
+          );
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+              data: {
+                dispatched_at: dispatchedAt,
+                toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: id }],
+              },
+            },
+            submission,
+          );
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_COMPLETED,
+              data: {
+                result: {
+                  id,
+                  index,
+                  completed_at: completedAt,
+                  tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+                },
+              },
+            },
+            submission,
+          );
+        });
+      }
+      for (const [id, index, closedAt] of [
+        ['step-tool-1', 0, 310],
+        ['step-tool-2', 1, 550],
+      ] as const) {
+        act(() => {
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_CLOSED,
+              data: {
+                id,
+                index,
+                type: StepTypes.TOOL_CALLS,
+                status: 'completed',
+                created_at: 100,
+                closed_at: closedAt,
+              },
+            },
+            submission,
+          );
+        });
+      }
+      const parts = (mockSetMessages.mock.lastCall?.[0] as TMessage[] | undefined)?.find(
+        (message) => message.messageId === 'response-msg-1',
+      )?.content;
+      const first = parts?.[0];
+      const second = parts?.[1];
+      expect(first?.type === ContentTypes.TOOL_CALL ? first.tool_call : undefined).toMatchObject({
+        toolPreparationDurationMs: 200,
+        toolExecutionDurationMs: 10,
+      });
+      expect(second?.type === ContentTypes.TOOL_CALL ? second.tool_call : undefined).toMatchObject({
+        toolPreparationDurationMs: 300,
+        toolExecutionDurationMs: 50,
+      });
+    });
+
     it('should update tool call with delta args', () => {
       const responseMessage = createResponseMessage();
       mockGetMessages.mockReturnValue([responseMessage]);

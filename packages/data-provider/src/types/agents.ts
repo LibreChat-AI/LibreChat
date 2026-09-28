@@ -259,6 +259,13 @@ export namespace Agents {
    * because the caller aborted — which is the only signal that distinguishes
    * a stopped step from one still in flight.
    */
+  export type ToolPreparationMarker = {
+    id: string;
+    index?: number;
+    toolCallId?: string;
+    observed_at: number;
+  };
+
   export type ToolCallsDispatchedEvent = {
     dispatched_at: number;
     runId?: string;

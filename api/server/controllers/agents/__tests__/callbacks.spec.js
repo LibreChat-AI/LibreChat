@@ -26,6 +26,7 @@ jest.mock('@librechat/api', () => ({
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
   createToolTimingTracker: jest.requireActual('@librechat/api').createToolTimingTracker,
+  emitToolPreparationEvents: jest.requireActual('@librechat/api').emitToolPreparationEvents,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -1365,6 +1366,19 @@ describe('tool dispatch timing', () => {
     });
     expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
       'run',
+      {
+        event: StepEvents.ON_TOOL_PREPARATION,
+        data: {
+          id: 'step-1',
+          index: 0,
+          toolCallId: 'call-1',
+          observed_at: 1_000,
+        },
+      },
+      expect.anything(),
+    );
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'run',
       { event: StepEvents.ON_TOOL_CALLS_DISPATCHED, data: dispatched },
       expect.anything(),
     );
@@ -1372,6 +1386,64 @@ describe('tool dispatch timing', () => {
       runStepDurationMs: 247_340,
       toolPreparationDurationMs: 247_000,
       toolExecutionDurationMs: 340,
+    });
+  });
+
+  it('keeps preparation across a new handler created after HITL approval', async () => {
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      contentParts,
+      stepMap,
+      aggregateContent,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      toolTimingReplayEvents: [
+        {
+          event: StepEvents.ON_TOOL_PREPARATION,
+          data: {
+            id: 'step-1',
+            index: 0,
+            toolCallId: 'call-1',
+            observed_at: 1_000,
+          },
+        },
+      ],
+    });
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-1', name: 'query', args: '{}' }],
+      },
+    });
+    await handlers[StepEvents.ON_TOOL_CALLS_DISPATCHED].handle(
+      StepEvents.ON_TOOL_CALLS_DISPATCHED,
+      { dispatched_at: 51_000, toolCalls: [{ id: 'call-1', name: 'query', stepId: 'step-1' }] },
+    );
+    await handlers[GraphEvents.ON_RUN_STEP_COMPLETED].handle(GraphEvents.ON_RUN_STEP_COMPLETED, {
+      result: {
+        id: 'step-1',
+        index: 0,
+        completed_at: 51_200,
+        tool_call: { id: 'call-1', name: 'query', args: '{}', output: 'ok' },
+      },
+    });
+    await handlers[GraphEvents.ON_RUN_STEP_CLOSED].handle(GraphEvents.ON_RUN_STEP_CLOSED, {
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      status: 'completed',
+      created_at: 1_000,
+      closed_at: 51_200,
+    });
+    expect(contentParts[0].tool_call).toMatchObject({
+      toolPreparationDurationMs: 50_000,
+      toolExecutionDurationMs: 200,
     });
   });
 });

@@ -61,6 +61,8 @@ type TUseStepHandler = {
   onSubagentIndexChange?: (conversationId: string) => void;
 };
 
+const toolTimingKey = (stepId: string, callId: string) => `${stepId}\u0000${callId}`;
+
 type TStepEvent =
   | { event: StepEvents.ON_RUN_STEP; data: Agents.RunStep }
   | { event: StepEvents.ON_AGENT_UPDATE; data: Agents.AgentUpdate }
@@ -68,6 +70,7 @@ type TStepEvent =
   | { event: StepEvents.ON_REASONING_DELTA; data: Agents.ReasoningDeltaEvent }
   | { event: StepEvents.ON_RUN_STEP_DELTA; data: Agents.RunStepDeltaEvent }
   | { event: StepEvents.ON_TOOL_CALLS_DISPATCHED; data: Agents.ToolCallsDispatchedEvent }
+  | { event: StepEvents.ON_TOOL_PREPARATION; data: Agents.ToolPreparationMarker }
   | { event: StepEvents.ON_RUN_STEP_COMPLETED; data: { result: Agents.ToolEndEvent } }
   | { event: StepEvents.ON_RUN_STEP_CLOSED; data: Agents.RunStepClosedEvent }
   | { event: StepEvents.ON_SUMMARIZE_START; data: Agents.SummarizeStartEvent }
@@ -984,11 +987,13 @@ export default function useStepHandler({
                 id: toolCallId,
                 stepId: runStep.id,
                 toolPreparationStartedAt:
-                  firstFragmentByCall.current.get(toolCallId) ??
+                  firstFragmentByCall.current.get(toolTimingKey(runStep.id, toolCallId)) ??
                   (streamedCallCount <= 1
                     ? firstFragmentByStep.current.get(runStep.id)
                     : undefined),
-                toolDispatchedAt: dispatchedByCall.current.get(toolCallId),
+                toolDispatchedAt: dispatchedByCall.current.get(
+                  toolTimingKey(runStep.id, toolCallId),
+                ),
               },
             };
 
@@ -1219,6 +1224,57 @@ export default function useStepHandler({
             scheduleCoalescedMessagesFlush(responseMessageId);
           }
         }
+      } else if (stepEvent.event === StepEvents.ON_TOOL_PREPARATION) {
+        const { id, index, toolCallId, observed_at: at } = stepEvent.data;
+        if (!id || typeof at !== 'number' || !Number.isFinite(at) || at < 0) return;
+        const runStep = stepMap.current.get(id);
+        const declaredCalls =
+          runStep?.stepDetails.type === StepTypes.TOOL_CALLS
+            ? runStep.stepDetails.tool_calls
+            : undefined;
+        const resolvedId =
+          toolCallId ??
+          (index === 0 && declaredCalls?.length === 1 ? declaredCalls[0]?.id : undefined);
+        if (resolvedId) {
+          const key = toolTimingKey(id, resolvedId);
+          firstFragmentByCall.current.set(
+            key,
+            Math.min(firstFragmentByCall.current.get(key) ?? at, at),
+          );
+        } else if (index === 0) {
+          firstFragmentByStep.current.set(
+            id,
+            Math.min(firstFragmentByStep.current.get(id) ?? at, at),
+          );
+        }
+        if (!runStep?.runId || (runStep.status && runStep.status !== 'in_progress')) return;
+        const responseId =
+          runStep.runId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID
+            ? (submission.initialResponse?.messageId ?? '')
+            : runStep.runId;
+        const response = messageMap.current.get(responseId);
+        const contentIndex = runStep.index + editPrefixOffset;
+        const part = response?.content?.[contentIndex];
+        if (
+          !response ||
+          part?.type !== ContentTypes.TOOL_CALL ||
+          part.tool_call.runStepStatus != null ||
+          (resolvedId && part.tool_call.id !== resolvedId)
+        )
+          return;
+        const content = [...(response.content ?? [])];
+        content[contentIndex] = {
+          ...part,
+          tool_call: {
+            ...part.tool_call,
+            toolPreparationStartedAt: Math.min(part.tool_call.toolPreparationStartedAt ?? at, at),
+          },
+        };
+        const updated = { ...response, content };
+        messageMap.current.set(responseId, updated);
+        setMessages(
+          mergeResponseMessage(messages, updated, responseId, { ensureUserMessage: true }),
+        );
       } else if (stepEvent.event === StepEvents.ON_RUN_STEP_DELTA) {
         const runStepDelta = stepEvent.data;
         const at = runStepDelta.observed_at;
@@ -1227,9 +1283,10 @@ export default function useStepHandler({
             if (chunk.id) {
               const first =
                 chunk.index === 0 ? firstFragmentByStep.current.get(runStepDelta.id) : undefined;
+              const key = toolTimingKey(runStepDelta.id, chunk.id);
               firstFragmentByCall.current.set(
-                chunk.id,
-                Math.min(firstFragmentByCall.current.get(chunk.id) ?? at, first ?? at, at),
+                key,
+                Math.min(firstFragmentByCall.current.get(key) ?? at, first ?? at, at),
               );
               if (first != null) firstFragmentByStep.current.delete(runStepDelta.id);
             } else if (chunk.index === 0 && runStepDelta.delta.tool_calls?.length === 1) {
@@ -1239,9 +1296,10 @@ export default function useStepHandler({
                   ? declared.tool_calls[0]?.id
                   : undefined;
               if (firstCallId) {
+                const key = toolTimingKey(runStepDelta.id, firstCallId);
                 firstFragmentByCall.current.set(
-                  firstCallId,
-                  Math.min(firstFragmentByCall.current.get(firstCallId) ?? at, at),
+                  key,
+                  Math.min(firstFragmentByCall.current.get(key) ?? at, at),
                 );
               } else {
                 firstFragmentByStep.current.set(
@@ -1285,11 +1343,13 @@ export default function useStepHandler({
                 id: toolCallId,
                 stepId: runStepDelta.id,
                 toolPreparationStartedAt:
-                  firstFragmentByCall.current.get(toolCallId) ??
+                  firstFragmentByCall.current.get(toolTimingKey(runStepDelta.id, toolCallId)) ??
                   (toolCallDelta.index === 0
                     ? firstFragmentByStep.current.get(runStepDelta.id)
                     : undefined),
-                toolDispatchedAt: dispatchedByCall.current.get(toolCallId),
+                toolDispatchedAt: dispatchedByCall.current.get(
+                  toolTimingKey(runStepDelta.id, toolCallId),
+                ),
               },
             };
 
@@ -1321,8 +1381,10 @@ export default function useStepHandler({
         if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) return;
         for (const call of toolCalls ?? []) {
           if (!call.id) continue;
-          const dispatchedAt = Math.min(dispatchedByCall.current.get(call.id) ?? at, at);
-          dispatchedByCall.current.set(call.id, dispatchedAt);
+          if (!call.stepId) continue;
+          const key = toolTimingKey(call.stepId, call.id);
+          const dispatchedAt = Math.min(dispatchedByCall.current.get(key) ?? at, at);
+          dispatchedByCall.current.set(key, dispatchedAt);
           const runStep = stepMap.current.get(call.stepId ?? '');
           if (!runStep?.runId) continue;
           const responseId =
@@ -1360,7 +1422,7 @@ export default function useStepHandler({
           typeof result.completed_at === 'number' &&
           Number.isFinite(result.completed_at)
         ) {
-          completedByCall.current.set(completedCallId, result.completed_at);
+          completedByCall.current.set(toolTimingKey(stepId, completedCallId), result.completed_at);
         }
         clearSandboxStarting(completedCallId);
 
@@ -1450,23 +1512,24 @@ export default function useStepHandler({
          *  `undefined`. */
         const durationMs = getRunStepDurationMs(closed);
         const callId = existingToolCall.id ?? '';
+        const key = toolTimingKey(closed.id, callId);
         const singleCallStep =
           runStep.stepDetails.type === StepTypes.TOOL_CALLS &&
           (runStep.stepDetails.tool_calls?.length ?? 0) <= 1;
         const observedAt = Math.min(
-          firstFragmentByCall.current.get(callId) ?? Infinity,
+          firstFragmentByCall.current.get(key) ?? Infinity,
           existingToolCall.toolPreparationStartedAt ?? Infinity,
           singleCallStep ? (firstFragmentByStep.current.get(closed.id) ?? Infinity) : Infinity,
         );
         const timing = getToolTimingDurations({
           observedAt: Number.isFinite(observedAt) ? observedAt : undefined,
-          dispatchedAt: existingToolCall.toolDispatchedAt ?? dispatchedByCall.current.get(callId),
-          completedAt: completedByCall.current.get(callId),
+          dispatchedAt: existingToolCall.toolDispatchedAt ?? dispatchedByCall.current.get(key),
+          completedAt: completedByCall.current.get(key),
         });
-        firstFragmentByCall.current.delete(callId);
+        firstFragmentByCall.current.delete(key);
         firstFragmentByStep.current.delete(closed.id);
-        dispatchedByCall.current.delete(callId);
-        completedByCall.current.delete(callId);
+        dispatchedByCall.current.delete(key);
+        completedByCall.current.delete(key);
         const updatedContent = [...(response.content ?? [])];
         updatedContent[currentIndex] = {
           ...existing,

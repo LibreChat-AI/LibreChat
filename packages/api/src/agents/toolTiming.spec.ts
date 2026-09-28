@@ -1,6 +1,27 @@
-import { createToolTimingTracker } from './toolTiming';
+import { createToolTimingTracker, emitToolPreparationEvents } from './toolTiming';
 
 describe('createToolTimingTracker', () => {
+  it('publishes each first fragment once without forwarding tool arguments', async () => {
+    const tracker = createToolTimingTracker();
+    const publish = jest.fn(async () => undefined);
+    const fragment = {
+      id: 'step-1',
+      observed_at: 100,
+      delta: {
+        type: 'tool_calls' as const,
+        tool_calls: [{ id: 'call-1', index: 0, args: 'secret' }],
+      },
+    };
+    await emitToolPreparationEvents(tracker, fragment, publish);
+    await emitToolPreparationEvents(tracker, { ...fragment, observed_at: 200 }, publish);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith({
+      id: 'step-1',
+      index: 0,
+      toolCallId: 'call-1',
+      observed_at: 100,
+    });
+  });
   it('records each call separately even when results complete out of order', () => {
     const timing = createToolTimingTracker();
     timing.observe({
@@ -19,9 +40,15 @@ describe('createToolTimingTracker', () => {
         tool_calls: [{ id: 'b', index: 1, args: '{' }],
       },
     });
-    timing.dispatched({ dispatched_at: 500, toolCalls: [{ id: 'a' }, { id: 'b' }] });
-    timing.completed('b', 530);
-    timing.completed('a', 700);
+    timing.dispatched({
+      dispatched_at: 500,
+      toolCalls: [
+        { id: 'a', stepId: 'step_a' },
+        { id: 'b', stepId: 'step_b' },
+      ],
+    });
+    timing.completed('step_b', 'b', 530);
+    timing.completed('step_a', 'a', 700);
     expect(timing.take('b', 'step_b')).toEqual({
       toolPreparationDurationMs: 300,
       toolExecutionDurationMs: 30,
@@ -61,8 +88,8 @@ describe('createToolTimingTracker', () => {
         { id: 'sibling', stepId: 'multi_step' },
       ],
     });
-    timing.completed('sole', 405);
-    timing.completed('sibling', 420);
+    timing.completed('sole_step', 'sole', 405);
+    timing.completed('multi_step', 'sibling', 420);
     expect(timing.take('sole', 'sole_step')).toEqual({
       toolPreparationDurationMs: 300,
       toolExecutionDurationMs: 5,
@@ -83,7 +110,7 @@ describe('createToolTimingTracker', () => {
       delta: { type: 'tool_calls', tool_calls: [{ id: 'call', index: 0, args: '"x":1}' }] },
     });
     timing.dispatched({ dispatched_at: 500, toolCalls: [{ id: 'call', stepId: 'step' }] });
-    timing.completed('call', 530);
+    timing.completed('step', 'call', 530);
     expect(timing.take('call', 'step')).toEqual({
       toolPreparationDurationMs: 400,
       toolExecutionDurationMs: 30,
@@ -103,7 +130,7 @@ describe('createToolTimingTracker', () => {
       delta: { type: 'tool_calls', tool_calls: [{ index: 0, args: '{' }] },
     });
     timing.dispatched({ dispatched_at: 500, toolCalls: [{ id: 'call', stepId: 'step' }] });
-    timing.completed('call', 530);
+    timing.completed('step', 'call', 530);
     expect(timing.take('call', 'step')).toEqual({
       toolPreparationDurationMs: 400,
       toolExecutionDurationMs: 30,
@@ -123,7 +150,7 @@ describe('createToolTimingTracker', () => {
       delta: { type: 'tool_calls', tool_calls: [{ id: 'call', args: '"x":1}' }] },
     });
     timing.dispatched({ dispatched_at: 500, toolCalls: [{ id: 'call', stepId: 'step' }] });
-    timing.completed('call', 530);
+    timing.completed('step', 'call', 530);
     expect(timing.take('call', 'step')).toEqual({
       toolPreparationDurationMs: 400,
       toolExecutionDurationMs: 30,
@@ -144,8 +171,69 @@ describe('createToolTimingTracker', () => {
         { id: 'second', stepId: 'step' },
       ],
     });
-    timing.completed('second', 540);
+    timing.completed('step', 'second', 540);
     expect(timing.take('second', 'step')).toEqual({ toolExecutionDurationMs: 40 });
+  });
+
+  it('keeps a first-call ID-less fragment after a faster sibling settles', () => {
+    const timing = createToolTimingTracker();
+    timing.observe({
+      id: 'step',
+      observed_at: 100,
+      delta: {
+        type: 'tool_calls',
+        tool_calls: [{ index: 0, args: '{' }],
+      },
+    });
+    timing.observe({
+      id: 'step',
+      observed_at: 200,
+      delta: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'first', index: 0, args: '"x":1}' }],
+      },
+    });
+    timing.dispatched({
+      dispatched_at: 500,
+      toolCalls: [
+        { id: 'first', stepId: 'step' },
+        { id: 'second', stepId: 'step' },
+      ],
+    });
+    timing.completed('step', 'second', 515);
+    expect(timing.take('second', 'step')).toEqual({ toolExecutionDurationMs: 15 });
+    timing.completed('step', 'first', 560);
+    expect(timing.take('first', 'step')).toEqual({
+      toolPreparationDurationMs: 400,
+      toolExecutionDurationMs: 60,
+    });
+  });
+
+  it('isolates simultaneous duplicate provider call IDs by step', () => {
+    const timing = createToolTimingTracker();
+    for (const [stepId, observedAt, dispatchedAt, completedAt] of [
+      ['step_1', 100, 300, 310],
+      ['step_2', 150, 500, 550],
+    ] as const) {
+      timing.observe({
+        id: stepId,
+        observed_at: observedAt,
+        delta: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'shared', index: 0, args: '{' }],
+        },
+      });
+      timing.dispatched({ dispatched_at: dispatchedAt, toolCalls: [{ id: 'shared', stepId }] });
+      timing.completed(stepId, 'shared', completedAt);
+    }
+    expect(timing.take('shared', 'step_1')).toEqual({
+      toolPreparationDurationMs: 200,
+      toolExecutionDurationMs: 10,
+    });
+    expect(timing.take('shared', 'step_2')).toEqual({
+      toolPreparationDurationMs: 350,
+      toolExecutionDurationMs: 50,
+    });
   });
 
   it('does not manufacture execution duration on abort or an unobserved dispatch', () => {
@@ -159,7 +247,7 @@ describe('createToolTimingTracker', () => {
       },
     });
     expect(timing.take('denied', 'step')).toEqual({});
-    timing.dispatched({ dispatched_at: 500, toolCalls: [{ id: 'cancelled' }] });
+    timing.dispatched({ dispatched_at: 500, toolCalls: [{ id: 'cancelled', stepId: 'step' }] });
     expect(timing.take('cancelled', 'step')).toEqual({});
   });
 });
