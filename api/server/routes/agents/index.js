@@ -779,6 +779,15 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
             });
             anchorDecision = resolveAbortAnchorDecision(jobData, anchorRows.length > 0);
           }
+          if (anchorDecision === 'skip-turn') {
+            /** Throwing here is the contract for "do not publish the normal
+             *  FINAL": the manager emits a reconciliation frame instead of
+             *  one whose response points at a row deliberately never
+             *  persisted. */
+            persistenceErrors.push(
+              new Error('Compaction anchor was never persisted; abort turn withheld'),
+            );
+          }
 
           if (
             jobData?.userMessage?.messageId &&

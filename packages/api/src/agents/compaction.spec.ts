@@ -495,6 +495,34 @@ describe('persistFinalizedCompactionTurn', () => {
     ]);
   });
 
+  it('writes only the envelope when the parts already carry the failure', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const partialRow = {
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
+    };
+
+    await persistFinalizedCompactionTurn(
+      partialRow,
+      { compact: true },
+      {
+        messageId: 'response-1',
+        conversationId: 'conversation-1',
+        saveMessage: async (message) => {
+          saved.push(message);
+          return message;
+        },
+      },
+    );
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toEqual({
+      messageId: 'response-1',
+      conversationId: 'conversation-1',
+      unfinished: false,
+      error: true,
+    });
+  });
+
   it('writes nothing when the row needs no finalization', async () => {
     const saveMessage = jest.fn();
 
@@ -514,7 +542,7 @@ describe('resolveFinalizedCompactionTurn', () => {
   it('leaves a partial row of a turn that was not a compaction alone', () => {
     const row = { content: [{ type: ContentTypes.TEXT, text: 'Partial answer' }] };
 
-    expect(resolveFinalizedCompactionTurn(row, {})).toBeNull();
+    expect(resolveFinalizedCompactionTurn(row, {})).toEqual({ write: false });
   });
 
   /** The disconnect snapshot is marker-only, so a run that fails afterwards
@@ -523,6 +551,7 @@ describe('resolveFinalizedCompactionTurn', () => {
     const row = { content: [{ type: ContentTypes.THINK, think: 'Picking what to summarize' }] };
 
     expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      write: true,
       content: [
         { type: ContentTypes.THINK, think: 'Picking what to summarize' },
         { type: ContentTypes.ERROR, error: compactionFailed, initiatedBy: 'user' },
@@ -543,6 +572,7 @@ describe('resolveFinalizedCompactionTurn', () => {
     };
 
     expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      write: true,
       content: [
         {
           type: ContentTypes.SUMMARY,
@@ -555,7 +585,10 @@ describe('resolveFinalizedCompactionTurn', () => {
     });
   });
 
-  it('leaves a row that already carries a terminal outcome alone', () => {
+  /** The parts already carry the failure, but the snapshot's live-run flags
+   *  are still unsettled: the write settles the envelope without touching
+   *  content. */
+  it('settles only the envelope of a row whose parts already carry the failure', () => {
     const failedSummary = {
       content: [
         {
@@ -571,8 +604,27 @@ describe('resolveFinalizedCompactionTurn', () => {
       content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
     };
 
-    expect(resolveFinalizedCompactionTurn(failedSummary, { compact: true })).toBeNull();
-    expect(resolveFinalizedCompactionTurn(recordedFailure, { compact: true })).toBeNull();
+    expect(resolveFinalizedCompactionTurn(failedSummary, { compact: true })).toEqual({
+      write: true,
+    });
+    expect(resolveFinalizedCompactionTurn(recordedFailure, { compact: true })).toEqual({
+      write: true,
+    });
+  });
+
+  /** A checkpoint the run completed before failing stands exactly as it is. */
+  it('leaves a completed checkpoint untouched', () => {
+    const row = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A finished checkpoint.' }],
+          boundary: completedBoundary,
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({ write: false });
   });
 
   /** A row can hold an earlier round's terminal outcome beside a later
@@ -595,6 +647,7 @@ describe('resolveFinalizedCompactionTurn', () => {
     };
 
     expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      write: true,
       content: [
         {
           type: ContentTypes.SUMMARY,
