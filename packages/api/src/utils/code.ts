@@ -45,7 +45,7 @@ export function getCodeApiRetryAfterMs(error: unknown): number | null {
 
 /** Total time one operation may spend waiting out Code API rate limits.
  *  Keeps recovery bounded inside a live chat turn. */
-export const MAX_CODE_API_RATE_LIMIT_WAIT_MS = CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS;
+export const MAX_CODE_API_RATE_LIMIT_WAIT_MS: number = CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS;
 export const CODE_API_UPLOAD_CONCURRENCY_DEFAULT = 3;
 
 export interface CodeApiUploadRegistry {
