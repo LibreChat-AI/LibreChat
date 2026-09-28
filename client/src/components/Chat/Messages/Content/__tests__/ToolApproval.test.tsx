@@ -197,27 +197,32 @@ describe('ToolApproval', () => {
 
   describe('while the composer review panel presents the pending action', () => {
     const conversationId = 'convo-1';
-    const pendingAction = {
+    const pendingAction: Agents.PendingAction = {
       actionId: 'action-1',
+      streamId: 'stream-1',
       conversationId,
+      createdAt: 1000,
       payload: {
         type: 'tool_approval',
-        action_requests: [{ tool_call_id: 'call-1', name: 'probe', arguments: { a: 1 } }],
-        review_configs: [{ tool_call_id: 'call-1', allowed_decisions: ['approve', 'reject'] }],
+        action_requests: [{ name: 'probe', tool_call_id: 'call-1', arguments: { a: 1 } }],
+        review_configs: [
+          {
+            action_name: 'probe',
+            tool_call_id: 'call-1',
+            allowed_decisions: ['approve', 'reject'],
+          },
+        ],
       },
-    } as unknown as Agents.PendingAction;
+    };
 
     const renderWithComposer = (open: boolean, extra?: React.ReactNode) => {
       const store = createStore();
       store.set(pendingApprovalActionFamily(conversationId), pendingAction);
       store.set(approvalPanelOpenFamily(conversationId), open);
-      const chat = { conversation: { conversationId } } as unknown as React.ContextType<
-        typeof ChatContext
-      >;
       render(
         <RecoilRoot>
           <Provider store={store}>
-            <ChatContext.Provider value={chat}>
+            <ChatContext.Provider value={{ conversation: { conversationId } } as never}>
               <ApprovalProvider pendingAction={pendingAction}>
                 <div data-testid="thread">
                   <ToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />
