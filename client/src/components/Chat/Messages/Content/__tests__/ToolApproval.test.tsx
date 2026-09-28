@@ -1,7 +1,13 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { Provider, createStore } from 'jotai';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
+import {
+  approvalPanelOpenFamily,
+  pendingApprovalActionFamily,
+} from '~/components/Chat/approval/state';
+import { ChatContext } from '~/Providers/ChatContext';
 import ApprovalProvider from '../ApprovalContext';
 import ToolApproval from '../ToolApproval';
 
@@ -20,6 +26,7 @@ jest.mock('~/hooks', () => ({
       com_ui_invalid_json: 'Invalid JSON',
       com_ui_reject_reason_placeholder: 'Reason',
       com_ui_tool_response_placeholder: 'Response',
+      com_ui_approval_review_in_composer: 'Review in composer',
     };
     return map[key] ?? key;
   },
@@ -146,7 +153,7 @@ describe('ToolApproval', () => {
           approval={approval()}
           toolCallId="call-1"
           args={{ a: 1 }}
-          showSubmit={false}
+          surface="composer"
         />
       </>,
     );
@@ -186,5 +193,87 @@ describe('ToolApproval', () => {
 
     expect(screen.getByRole('button', { name: 'Approve' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+  });
+
+  describe('while the composer review panel presents the pending action', () => {
+    const conversationId = 'convo-1';
+    const pendingAction = {
+      actionId: 'action-1',
+      conversationId,
+      payload: {
+        type: 'tool_approval',
+        action_requests: [{ tool_call_id: 'call-1', name: 'probe', arguments: { a: 1 } }],
+        review_configs: [{ tool_call_id: 'call-1', allowed_decisions: ['approve', 'reject'] }],
+      },
+    } as unknown as Agents.PendingAction;
+
+    const renderWithComposer = (open: boolean) => {
+      const store = createStore();
+      store.set(pendingApprovalActionFamily(conversationId), pendingAction);
+      store.set(approvalPanelOpenFamily(conversationId), open);
+      const chat = { conversation: { conversationId } } as unknown as React.ContextType<
+        typeof ChatContext
+      >;
+      render(
+        <RecoilRoot>
+          <Provider store={store}>
+            <ChatContext.Provider value={chat}>
+              <ApprovalProvider pendingAction={pendingAction}>
+                <div data-testid="thread">
+                  <ToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />
+                </div>
+                <div data-testid="composer">
+                  <ToolApproval
+                    approval={approval()}
+                    toolCallId="call-1"
+                    args={{ a: 1 }}
+                    surface="composer"
+                  />
+                </div>
+              </ApprovalProvider>
+            </ChatContext.Provider>
+          </Provider>
+        </RecoilRoot>,
+      );
+      return store;
+    };
+
+    test('the thread card is a record with no decisions or Submit while the panel is open', () => {
+      renderWithComposer(true);
+      const thread = screen.getByTestId('thread');
+
+      expect(thread).toHaveTextContent('Review in composer');
+      expect(thread.querySelectorAll('button')).toHaveLength(0);
+      expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1);
+    });
+
+    test('collapsing the panel hands the decisions and Submit back to the thread card', () => {
+      const store = renderWithComposer(true);
+
+      act(() => store.set(approvalPanelOpenFamily(conversationId), false));
+
+      const thread = screen.getByTestId('thread');
+      expect(thread).not.toHaveTextContent('Review in composer');
+      fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0]);
+      expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+    });
+
+    test('a thread card for a different action keeps its controls', () => {
+      renderWithComposer(true);
+      render(
+        <RecoilRoot>
+          <ApprovalProvider>
+            <ToolApproval
+              approval={{ actionId: 'action-2', allowed_decisions: ['approve'] }}
+              toolCallId="call-9"
+              args={{}}
+            />
+          </ApprovalProvider>
+        </RecoilRoot>,
+      );
+
+      expect(screen.getByRole('button', { name: 'Submit' })).toBeInTheDocument();
+    });
   });
 });
