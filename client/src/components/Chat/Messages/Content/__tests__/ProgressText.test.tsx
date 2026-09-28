@@ -57,6 +57,22 @@ describe('ProgressText duration', () => {
     expect(screen.queryByText(/Total elapsed/)).not.toBeInTheDocument();
   });
 
+  it('shows a few-hundred-millisecond tool call beside minutes of preparation', () => {
+    renderProgressText({
+      durationMs: 247_340,
+      toolPreparationDurationMs: 247_000,
+      toolExecutionDurationMs: 340,
+    });
+    expect(screen.getByText('· Preparation 4m 7s')).toBeInTheDocument();
+    expect(screen.getByText('· Tool call 0.3s')).toBeInTheDocument();
+    expect(screen.queryByText(/Total elapsed/)).not.toBeInTheDocument();
+  });
+
+  it('does not show a measured call too short to format as a nonzero interval', () => {
+    renderProgressText({ toolExecutionDurationMs: 40 });
+    expect(screen.queryByText(/Tool call/)).not.toBeInTheDocument();
+  });
+
   it('formats durations of a minute or more as minutes and seconds', () => {
     renderProgressText({ durationMs: 65_000 });
     expect(screen.getByText('· Total elapsed 1m 5s')).toBeInTheDocument();

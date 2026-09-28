@@ -147,6 +147,11 @@ export default function ProgressText({
    * slot already carries the cancelled icon or the failure suffix.
    */
   const measured = toolPreparationDurationMs != null || toolExecutionDurationMs != null;
+  /** The formatter rounds to tenths below ten seconds. Shorter than 50 ms reads as 0.0s. */
+  const showToolCallTime =
+    toolExecutionDurationMs != null &&
+    Number.isFinite(toolExecutionDurationMs) &&
+    toolExecutionDurationMs >= 50;
   const durationParts =
     phase !== 'completed'
       ? []
@@ -159,7 +164,7 @@ export default function ProgressText({
                 },
               ]
             : []),
-          ...(isReportableRunStepDuration(toolExecutionDurationMs)
+          ...(showToolCallTime
             ? [
                 {
                   label: localize('com_ui_tool_call_time'),
