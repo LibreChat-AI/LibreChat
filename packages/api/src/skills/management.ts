@@ -26,14 +26,14 @@ const fields = {
   category: z.string().optional(),
   alwaysApply: z.boolean().optional(),
 };
-const frontmatterValue: z.ZodType<SkillFrontmatterValue> = z.lazy(() =>
+export const skillFrontmatterValueSchema: z.ZodType<SkillFrontmatterValue> = z.lazy(() =>
   z.union([
     z.string(),
     z.number().finite(),
     z.boolean(),
     z.null(),
-    z.array(frontmatterValue),
-    z.record(frontmatterValue),
+    z.array(skillFrontmatterValueSchema),
+    z.record(skillFrontmatterValueSchema),
   ]),
 );
 export type SkillManagementUpdate = TUpdateSkillPayload & { expectedVersion: number };
@@ -46,13 +46,13 @@ export const skillManagementUpdateSchema: z.ZodType<SkillManagementUpdate> = z
     category: fields.category,
     alwaysApply: fields.alwaysApply,
     body: z.string().optional(),
-    frontmatter: z.record(frontmatterValue).optional(),
+    frontmatter: z.record(skillFrontmatterValueSchema).optional(),
     expectedVersion: z.number().int().positive(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 1, 'At least one update field is required');
 
-const summarySchema = z.object({
+export const skillSummarySchema: z.AnyZodObject = z.object({
   ...fields,
   id: idSchema,
   version: z.number().int().positive(),
@@ -81,22 +81,32 @@ export type SkillManagementResponse = Pick<
   | 'frontmatter'
 > & { id: string };
 
-export const skillManagementResponseSchema: z.ZodType<SkillManagementResponse> =
-  summarySchema.extend({
-    body: z.string(),
-    frontmatter: z.record(frontmatterValue).optional(),
-  });
-const fileSchema = z.object({
+export const skillManagementResponseSchema: z.ZodType<SkillManagementResponse> = z.object({
+  ...fields,
+  id: idSchema,
+  version: z.number().int().positive(),
+  fileCount: z.number().int().nonnegative(),
+  disableModelInvocation: z.boolean().optional(),
+  userInvocable: z.boolean().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  body: z.string(),
+  frontmatter: z.record(skillFrontmatterValueSchema).optional(),
+});
+export const skillFileSchema: z.AnyZodObject = z.object({
   relativePath: z.string(),
   filename: z.string(),
   mimeType: z.string(),
   bytes: z.number().int().nonnegative(),
 });
-const fileContentSchema = fileSchema.extend({
+export const skillFileContentSchema: z.AnyZodObject = skillFileSchema.extend({
   content: z.string().optional(),
   isBinary: z.boolean(),
 });
-const fileUpdateSchema = z.object({ content: z.string().max(1024 * 1024) }).strict();
+export const skillFileUpdateSchema: z.AnyZodObject = z
+  .object({ content: z.string().max(1024 * 1024) })
+  .strict();
 const listSchema = agentManagementListSchema;
 
 type ManagementRequest = Request &
@@ -127,7 +137,7 @@ export interface SkillManagementDeps {
 
 function projectSkill(body: unknown, detail: boolean): object {
   const source = z.object({ _id: idSchema }).passthrough().parse(body);
-  return (detail ? skillManagementResponseSchema : summarySchema).parse({
+  return (detail ? skillManagementResponseSchema : skillSummarySchema).parse({
     ...source,
     id: source._id,
   });
@@ -323,17 +333,17 @@ export function createSkillManagementHandlers(
     listFiles: wrap(PermissionBits.VIEW, (req, res) =>
       runHandler(req, res, deps.handlers.listFiles, (body) => ({
         object: 'list',
-        data: z.object({ files: z.array(fileSchema) }).parse(body).files,
+        data: z.object({ files: z.array(skillFileSchema) }).parse(body).files,
       })),
     ),
     getFile: wrap(PermissionBits.VIEW, async (req, res) => {
       if (Object.keys(req.query).length > 0) return sendError(res, 'invalid_request');
       return runHandler(req, res, deps.handlers.downloadFile, (body) =>
-        fileContentSchema.parse(body),
+        skillFileContentSchema.parse(body),
       );
     }),
     updateFile: wrap(PermissionBits.EDIT, async (req, res) => {
-      const parsed = fileUpdateSchema.safeParse(req.body);
+      const parsed = skillFileUpdateSchema.safeParse(req.body);
       if (!parsed.success) return sendError(res, 'invalid_request', parsed.error);
       const relativePath = resolveSkillFilePathParam(req.params.relativePath);
       if (relativePath == null || validateRelativePath(relativePath).length > 0)
@@ -352,14 +362,21 @@ export function createSkillManagementHandlers(
         return sendError(res, 'invalid_request');
       }
       if (!(await admitFileWrite(req, res, deps.fileWriteLimiters ?? []))) return res;
-      const result = await deps.saveFile({
-        req: req as ServerRequest,
-        skillId: req.params.id,
-        relativePath,
-        content: parsed.data.content,
-        mimeType: 'text/plain',
-      });
-      return res.status(200).json({ relativePath: result.relativePath, bytes: result.bytes });
+      try {
+        const result = await deps.saveFile({
+          req: req as ServerRequest,
+          skillId: req.params.id,
+          relativePath,
+          content: parsed.data.content,
+          mimeType: 'text/plain',
+        });
+        return res.status(200).json({ relativePath: result.relativePath, bytes: result.bytes });
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'SKILL_FILE_CONFLICT') {
+          return sendError(res, 'conflict');
+        }
+        throw error;
+      }
     }),
   };
 }

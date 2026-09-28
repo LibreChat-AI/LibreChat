@@ -16,13 +16,13 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
     <OGDialog open={item !== null} onOpenChange={(next) => !next && onClose()}>
       <OGDialogContent
         className={cn(
-          'w-11/12 gap-0 overflow-hidden rounded-2xl p-0 md:max-h-[85vh]',
+          'w-11/12 gap-0 overflow-hidden rounded-2xl p-0 md:max-h-[85dvh]',
           isAction ? 'max-w-5xl' : 'max-w-[560px]',
         )}
         data-testid="item-dialog"
       >
         {item && (
-          <div className="flex max-h-[85vh] flex-col">
+          <div className="flex max-h-[85dvh] flex-col">
             <ItemDialogHeader item={item} />
             <div
               className={cn(

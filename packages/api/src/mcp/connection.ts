@@ -35,6 +35,7 @@ import { reserveMCPToolsChangedRevision } from './toolsChanged';
 import { runOutsideTracing } from '~/utils/tracing';
 import { mediaTypeEssence } from '~/utils/headers';
 import { isAddressAllowed } from '~/auth/domain';
+import { withMCPRequestSignal } from './signal';
 import { withTimeout } from '~/utils/promise';
 import { isOAuthServer } from './utils';
 import { mcpConfig } from './mcpConfig';
@@ -1032,6 +1033,8 @@ export class MCPConnection extends EventEmitter {
   private lastPingTime: number;
   private lastConnectionCheckAt: number = 0;
   private lastConnectionCheckError?: unknown;
+  private lastConnectionCheckCredentialSetId?: string | null;
+  private transportCredentialSetId: string | null = null;
   private oauthTokens?: MCPOAuthTokens | null;
   private requestHeaders?: Record<string, string> | null;
   private oauthRequired = false;
@@ -1704,6 +1707,7 @@ export class MCPConnection extends EventEmitter {
       this.suspendedToolListSnapshot = undefined;
       if (state === 'connected') {
         this.lastConnectionCheckError = undefined;
+        this.lastConnectionCheckCredentialSetId = undefined;
         const isReconnect = this.hasConnected;
         this.hasConnected = true;
         this.toolListRefreshSuspended = false;
@@ -1991,6 +1995,7 @@ export class MCPConnection extends EventEmitter {
     this.emit('connectionChange', 'connecting');
 
     this.connectPromise = (async () => {
+      let rejectedCredentialSetId = this.oauthTokens?.credential_set_id ?? null;
       try {
         if (this.transport) {
           try {
@@ -2004,6 +2009,7 @@ export class MCPConnection extends EventEmitter {
         }
 
         this.transport = await runOutsideTracing(() => this.constructTransport(this.options));
+        rejectedCredentialSetId = this.getOAuthCredentialSetId();
         /** `dispose()` can land while the transport is still being constructed — it finds nothing
          *  to close and returns, so without this check the attempt would go on to connect and
          *  leave a live connection on a disposed object. Ownership of teardown is ours here. */
@@ -2117,6 +2123,7 @@ export class MCPConnection extends EventEmitter {
 
           // Emit the event
           this.emit('oauthRequired', {
+            rejectedCredentialSetId,
             serverName: this.serverName,
             error,
             serverUrl,
@@ -2239,6 +2246,8 @@ export class MCPConnection extends EventEmitter {
 
   private setupTransportErrorHandlers(transport: Transport): void {
     this.reportedStandaloneSseConflict = false;
+    const transportCredentialSetId = this.oauthTokens?.credential_set_id ?? null;
+    this.transportCredentialSetId = transportCredentialSetId;
 
     transport.onerror = (error) => {
       const rawMessage =
@@ -2331,6 +2340,7 @@ export class MCPConnection extends EventEmitter {
       ) {
         logger.warn(`${this.getLogPrefix()} OAuth authentication error detected`);
         this.lastConnectionCheckError = error;
+        this.lastConnectionCheckCredentialSetId = transportCredentialSetId;
         this.connectionState = 'error';
         this.emit('oauthError', error);
         return;
@@ -2731,11 +2741,13 @@ export class MCPConnection extends EventEmitter {
     signal?: AbortSignal,
   ): Promise<MCPListToolsResult> {
     try {
-      return await this.client.listTools(cursor != null ? { cursor } : undefined, {
-        timeout: timeoutMs,
-        maxTotalTimeout: timeoutMs,
-        signal,
-      });
+      return await withMCPRequestSignal(signal, (requestSignal) =>
+        this.client.listTools(cursor != null ? { cursor } : undefined, {
+          timeout: timeoutMs,
+          maxTotalTimeout: timeoutMs,
+          signal: requestSignal,
+        }),
+      );
     } catch (error) {
       this.emitError(error, 'Failed to fetch tools');
       throw error;
@@ -2768,9 +2780,11 @@ export class MCPConnection extends EventEmitter {
     if (now - this.lastConnectionCheckAt < mcpConfig.CONNECTION_CHECK_TTL) {
       return true;
     }
+    let probeCredentialSetId = this.getOAuthCredentialSetId();
     const previousCheckAt = this.lastConnectionCheckAt;
     this.lastConnectionCheckAt = now;
     this.lastConnectionCheckError = undefined;
+    this.lastConnectionCheckCredentialSetId = undefined;
     /** An aborted probe answered nothing: restore the TTL stamp so the next caller probes for
      *  real, instead of a dead shared connection reading as healthy for the whole TTL window. */
     const probeAborted = (): boolean => signal?.aborted === true;
@@ -2782,7 +2796,9 @@ export class MCPConnection extends EventEmitter {
 
     try {
       // Try ping first as it's the lightest check
-      await this.client.ping({ signal });
+      await withMCPRequestSignal(signal, (requestSignal) =>
+        this.client.ping({ signal: requestSignal }),
+      );
       return this.connectionState === 'connected';
     } catch (error) {
       if (probeAborted()) {
@@ -2799,6 +2815,7 @@ export class MCPConnection extends EventEmitter {
 
       if (!pingUnsupported) {
         this.lastConnectionCheckError = error;
+        this.lastConnectionCheckCredentialSetId = probeCredentialSetId;
         logger.error(`${this.getLogPrefix()} Ping failed`);
         return false;
       }
@@ -2809,18 +2826,25 @@ export class MCPConnection extends EventEmitter {
       );
 
       try {
+        probeCredentialSetId = this.getOAuthCredentialSetId();
         // Get server capabilities to verify connection is truly active
         const capabilities = this.client.getServerCapabilities();
 
         // If we have capabilities, try calling a supported method to verify connection
         if (capabilities?.tools) {
-          await this.client.listTools(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listTools(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else if (capabilities?.resources) {
-          await this.client.listResources(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listResources(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else if (capabilities?.prompts) {
-          await this.client.listPrompts(undefined, { signal });
+          await withMCPRequestSignal(signal, (requestSignal) =>
+            this.client.listPrompts(undefined, { signal: requestSignal }),
+          );
           return this.connectionState === 'connected';
         } else {
           // No capabilities to test, but we're in connected state and initialization succeeded
@@ -2835,10 +2859,18 @@ export class MCPConnection extends EventEmitter {
         }
         // If capability check fails, the connection is likely broken
         this.lastConnectionCheckError = capabilityError;
+        this.lastConnectionCheckCredentialSetId = probeCredentialSetId;
         logger.error(`${this.getLogPrefix()} Connection verification failed`);
         return false;
       }
     }
+  }
+
+  /** Identifies the installed transport credential; pending replacement tokens are not sent yet. */
+  public getOAuthCredentialSetId(): string | null {
+    return this.transport
+      ? this.transportCredentialSetId
+      : (this.oauthTokens?.credential_set_id ?? null);
   }
 
   public setOAuthTokens(tokens: MCPOAuthTokens): void {
@@ -2852,6 +2884,10 @@ export class MCPConnection extends EventEmitter {
 
   public isOAuthAuthenticationError(error: unknown): boolean {
     return isOAuthAuthenticationError(error);
+  }
+
+  public getLastConnectionCheckCredentialSetId(): string | null | undefined {
+    return this.lastConnectionCheckCredentialSetId;
   }
 
   public getLastConnectionCheckError(): unknown {

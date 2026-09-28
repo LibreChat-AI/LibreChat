@@ -24,6 +24,7 @@ test.describe('generation finalization invariant', () => {
     await expect(
       messagesView(page).getByText('The model provider could not complete this request.'),
     ).toBeVisible();
-    await expect(messagesView(page).getByText(providerError)).toHaveCount(0);
+    /** No content policy is configured here, so the provider's own words reach the reader. */
+    await expect(messagesView(page).getByText(providerError)).toBeVisible();
   });
 });

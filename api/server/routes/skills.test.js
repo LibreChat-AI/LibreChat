@@ -553,6 +553,54 @@ describe('Skill routes', () => {
       );
     });
 
+    it('rolls back the skill, files, ACL, and stored blob when a bundled file fails', async () => {
+      const saveBuffer = jest.fn().mockResolvedValue('/uploads/test/queries.sql');
+      const deleteFile = jest.fn().mockResolvedValue(undefined);
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      /** Both the write and the rollback delete resolve a strategy, so the
+       *  override outlives a single call and is restored below. */
+      const defaultStrategies = getStrategyFunctions();
+      getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+
+      const zip = new JSZip();
+      zip.file(
+        'SKILL.md',
+        [
+          '---',
+          'name: partial-import',
+          'description: Imported skill that loses one bundled file.',
+          '---',
+          '# Partial Import',
+        ].join('\n'),
+      );
+      zip.file('queries.sql', 'select 1;');
+      /** A space is outside the stored path charset, so this entry can never
+       *  persist — the import must fail instead of dropping it silently. */
+      zip.file('references/region mapping.md', '# regions');
+      const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+      const res = await request(app).post('/api/skills/import').attach('file', buffer, {
+        filename: 'partial-import.skill',
+        contentType: 'application/zip',
+      });
+      getStrategyFunctions.mockReturnValue(defaultStrategies);
+
+      expect(res.status).toBe(422);
+      expect(res.body).toEqual(
+        expect.objectContaining({
+          error: 'skill_import_incomplete',
+          failedFiles: [{ path: 'references/region mapping.md', reason: 'invalid_path' }],
+        }),
+      );
+      expect(await Skill.countDocuments({ name: 'partial-import' })).toBe(0);
+      expect(await SkillFile.countDocuments()).toBe(0);
+      expect(await AclEntry.countDocuments({ resourceType: ResourceType.SKILL })).toBe(0);
+      expect(deleteFile).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ filepath: '/uploads/test/queries.sql' }),
+      );
+    });
+
     it('blocks filtered Markdown before creating the imported skill', async () => {
       mockFilters = {
         files: {
@@ -743,6 +791,450 @@ describe('Skill routes', () => {
   });
 
   describe('POST /api/skills/:id/files (live)', () => {
+    it('replaces a nested text file and clears the old cached content', async () => {
+      const { Readable } = require('stream');
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const { updateSkillFileContent } = require('~/models');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const stored = new Map();
+      const saveBuffer = jest.fn(async ({ buffer, fileName }) => {
+        const filepath = `/uploads/${fileName}`;
+        stored.set(filepath, Buffer.from(buffer));
+        return filepath;
+      });
+      const getDownloadStream = jest.fn(async (_req, filepath) => {
+        const buffer = stored.get(filepath);
+        if (!buffer) {
+          throw new Error('File not found in test storage');
+        }
+        return Readable.from([buffer]);
+      });
+      getStrategyFunctions.mockReturnValue({ saveBuffer, getDownloadStream });
+
+      try {
+        const created = await createSkillAsOwner();
+        const skillId = created.body._id;
+        const relativePath = 'references/queries.md';
+        const url = `/api/skills/${skillId}/files`;
+        const readUrl = `${url}/${encodeURIComponent(relativePath)}`;
+        const upload = (content) =>
+          request(app)
+            .post(url)
+            .field('relativePath', relativePath)
+            .attach('file', Buffer.from(content), {
+              filename: 'queries.md',
+              contentType: 'text/markdown',
+            });
+
+        const original = await upload('first revision');
+        expect(original.status).toBe(200);
+        await updateSkillFileContent(skillId, relativePath, {
+          content: 'first revision',
+          isBinary: false,
+        });
+        const cached = await request(app).get(readUrl);
+        expect(cached.status).toBe(200);
+        expect(cached.body.content).toBe('first revision');
+
+        const replacement = await upload('saved revision');
+        expect(replacement.status).toBe(200);
+        expect(replacement.body.relativePath).toBe(relativePath);
+        const persisted = await request(app).get(readUrl);
+        expect(persisted.status).toBe(200);
+        expect(persisted.body.content).toBe('saved revision');
+        expect(getDownloadStream).toHaveBeenCalledTimes(1);
+        expect(saveBuffer).toHaveBeenCalledTimes(2);
+      } finally {
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
+    it('rejects an editor revision after a newer write and never recreates a deleted file', async () => {
+      const created = await createSkillAsOwner();
+      const url = `/api/skills/${created.body._id}/files`;
+      const upload = (text, expectedFileId) => {
+        const req = request(app)
+          .post(expectedFileId ? `${url}/references/revision.md` : url)
+          .field('relativePath', 'references/revision.md');
+        if (expectedFileId) req.field('expectedFileId', expectedFileId);
+        return req.attach('file', Buffer.from(text), {
+          filename: 'revision.md',
+          contentType: 'text/markdown',
+        });
+      };
+      const initial = await upload('first');
+      expect(initial.status).toBe(200);
+      const read = await request(app).get(`${url}/references/revision.md`);
+      expect(read.body.fileId).toBe(initial.body.file_id);
+      const replaced = await upload('newer', initial.body.file_id);
+      expect(replaced.status).toBe(200);
+      expect((await upload('stale', initial.body.file_id)).status).toBe(409);
+      const stored = await SkillFile.findOne({ skillId: created.body._id });
+      expect(stored.file_id).toBe(replaced.body.file_id);
+      await request(app).delete(`${url}/references/revision.md`);
+      expect((await upload('resurrect', replaced.body.file_id)).status).toBe(409);
+      expect(await SkillFile.countDocuments({ skillId: created.body._id })).toBe(0);
+    });
+
+    it.each(['github', 'notion'])(
+      'rejects uploads to %s-managed skills before storing bytes',
+      async (source) => {
+        const created = await createSkillAsOwner();
+        await Skill.updateOne({ _id: created.body._id }, { $set: { source } });
+        const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+        const saveBuffer = getStrategyFunctions('local').saveBuffer;
+        saveBuffer.mockClear();
+        const response = await request(app)
+          .post(`/api/skills/${created.body._id}/files`)
+          .field('relativePath', 'references/managed.md')
+          .attach('file', Buffer.from('local draft'), {
+            filename: 'managed.md',
+            contentType: 'text/markdown',
+          });
+        expect(response.status).toBe(403);
+        expect(saveBuffer).not.toHaveBeenCalled();
+        expect(await SkillFile.countDocuments()).toBe(0);
+      },
+    );
+
+    it('treats legacy skills without a stored source as inline for reads and file edits', async () => {
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const id = new mongoose.Types.ObjectId(skillId);
+      await Skill.collection.updateOne({ _id: id }, { $unset: { source: '' } });
+      expect(await Skill.collection.findOne({ _id: id })).not.toHaveProperty('source');
+
+      const detail = await request(app).get(`/api/skills/${skillId}`);
+      expect(detail.status).toBe(200);
+      expect(detail.body.source).toBe('inline');
+      const list = await request(app).get('/api/skills');
+      expect(list.status).toBe(200);
+      expect(list.body.skills.find((entry) => entry._id === skillId).source).toBe('inline');
+
+      const url = `/api/skills/${skillId}/files`;
+      const first = await request(app)
+        .post(url)
+        .field('relativePath', 'references/legacy.md')
+        .attach('file', Buffer.from('first'), {
+          filename: 'legacy.md',
+          contentType: 'text/markdown',
+        });
+      expect(first.status).toBe(200);
+      const edited = await request(app)
+        .post(`${url}/references/legacy.md`)
+        .field('relativePath', 'references/legacy.md')
+        .field('expectedFileId', first.body.file_id)
+        .attach('file', Buffer.from('edited'), {
+          filename: 'legacy.md',
+          contentType: 'text/markdown',
+        });
+      expect(edited.status).toBe(200);
+      expect(await SkillFile.findOne({ skillId }).lean()).toMatchObject({
+        file_id: edited.body.file_id,
+      });
+    });
+
+    it('rejects an agent replacement captured before a newer browser edit', async () => {
+      const { getSkillToolDeps } = require('~/server/services/Endpoints/agents/skillDeps');
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const relativePath = 'references/shared.md';
+      const url = `/api/skills/${skillId}/files`;
+      const initial = await request(app)
+        .post(url)
+        .field('relativePath', relativePath)
+        .attach('file', Buffer.from('original'), {
+          filename: 'shared.md',
+          contentType: 'text/markdown',
+        });
+      expect(initial.status).toBe(200);
+      const agentRead = await getSkillToolDeps().getSkillFileByPath(skillId, relativePath);
+      const capturedVersion = (await Skill.findById(skillId).lean()).version;
+      expect(agentRead.file_id).toBe(initial.body.file_id);
+
+      const browser = await request(app)
+        .post(`${url}/references/shared.md`)
+        .field('relativePath', relativePath)
+        .field('expectedFileId', agentRead.file_id)
+        .attach('file', Buffer.from('browser winner'), {
+          filename: 'shared.md',
+          contentType: 'text/markdown',
+        });
+      expect(browser.status).toBe(200);
+      expect((await Skill.findById(skillId).lean()).version).toBe(capturedVersion + 1);
+      const winner = await SkillFile.findOne({ skillId, relativePath }).lean();
+
+      const saveBuffer = jest.fn(async ({ fileName }) => `/uploads/${fileName}`);
+      const deleteFile = jest.fn(async () => undefined);
+      getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+      try {
+        await expect(
+          getSkillToolDeps().saveSkillFileContent({
+            req: {
+              user: { id: testUsers.owner._id.toString(), _id: testUsers.owner._id },
+              config: { fileStrategy: 'local' },
+            },
+            skillId,
+            relativePath,
+            content: 'stale agent edit',
+            mimeType: 'text/markdown',
+            expectedFileId: agentRead.file_id,
+          }),
+        ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+        expect(saveBuffer).not.toHaveBeenCalled();
+        expect(deleteFile).not.toHaveBeenCalled();
+        expect(await SkillFile.findOne({ skillId, relativePath }).lean()).toMatchObject({
+          file_id: browser.body.file_id,
+          filepath: winner.filepath,
+        });
+        expect((await Skill.findById(skillId).lean()).version).toBe(capturedVersion + 1);
+      } finally {
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
+    it('rejects and cleans an agent upload when a browser edit lands during storage', async () => {
+      const { getSkillToolDeps } = require('~/server/services/Endpoints/agents/skillDeps');
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const relativePath = 'references/overlap.md';
+      const url = `/api/skills/${skillId}/files`;
+      const initial = await request(app)
+        .post(url)
+        .field('relativePath', relativePath)
+        .attach('file', Buffer.from('initial'), {
+          filename: 'overlap.md',
+          contentType: 'text/markdown',
+        });
+      expect(initial.status).toBe(200);
+      const agentRead = await getSkillToolDeps().getSkillFileByPath(skillId, relativePath);
+      const agentReq = {
+        user: { id: testUsers.owner._id.toString(), _id: testUsers.owner._id },
+        config: { fileStrategy: 'local' },
+      };
+      let browserRevision;
+      const deleteFile = jest.fn(async () => undefined);
+      const saveBuffer = jest.fn(async ({ fileName }) => {
+        if (saveBuffer.mock.calls.length === 1) {
+          const browser = await request(app)
+            .post(`${url}/references/overlap.md`)
+            .field('relativePath', relativePath)
+            .field('expectedFileId', agentRead.file_id)
+            .attach('file', Buffer.from('browser wins'), {
+              filename: 'overlap.md',
+              contentType: 'text/markdown',
+            });
+          expect(browser.status).toBe(200);
+          browserRevision = browser.body.file_id;
+        }
+        return `/uploads/${fileName}`;
+      });
+      getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+      try {
+        await expect(
+          getSkillToolDeps().saveSkillFileContent({
+            req: agentReq,
+            skillId,
+            relativePath,
+            content: 'agent stale edit',
+            mimeType: 'text/markdown',
+            expectedFileId: agentRead.file_id,
+            createOnly: false,
+          }),
+        ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+        expect(saveBuffer).toHaveBeenCalledTimes(2);
+        const agentPath = `/uploads/${saveBuffer.mock.calls[0][0].fileName}`;
+        const browserPath = `/uploads/${saveBuffer.mock.calls[1][0].fileName}`;
+        expect(await SkillFile.findOne({ skillId, relativePath }).lean()).toMatchObject({
+          file_id: browserRevision,
+          filepath: browserPath,
+        });
+        expect(deleteFile).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ filepath: agentPath }),
+        );
+        expect(deleteFile).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ filepath: browserPath }),
+        );
+      } finally {
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
+    it('atomically rejects a race after storing bytes and cleans up only the losing upload', async () => {
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const { upsertSkillFile } = require('~/models');
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const input = {
+        skillId,
+        relativePath: 'references/race.md',
+        file_id: 'initial',
+        filename: 'race.md',
+        filepath: '/uploads/initial',
+        source: 'local',
+        mimeType: 'text/markdown',
+        bytes: 4,
+        author: testUsers.owner._id,
+      };
+      await upsertSkillFile(input);
+      const deleteFile = jest.fn(async () => undefined);
+      const saveBuffer = jest.fn(async ({ fileName }) => {
+        // Another writer commits after the handler's preflight but before its atomic update.
+        await upsertSkillFile({ ...input, file_id: 'winner', filepath: '/uploads/winner' });
+        return `/uploads/${fileName}`;
+      });
+      getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+      try {
+        const res = await request(app)
+          .post(`/api/skills/${skillId}/files/references/race.md`)
+          .field('relativePath', input.relativePath)
+          .field('expectedFileId', 'initial')
+          .attach('file', Buffer.from('losing draft'), {
+            filename: 'race.md',
+            contentType: 'text/markdown',
+          });
+        expect(res.status).toBe(409);
+        expect(await SkillFile.findOne({ skillId }).lean()).toMatchObject({
+          file_id: 'winner',
+          filepath: '/uploads/winner',
+        });
+        expect(deleteFile).toHaveBeenCalledTimes(1);
+        expect(deleteFile.mock.calls[0][1].filepath).toBe(
+          `/uploads/${saveBuffer.mock.calls[0][0].fileName}`,
+        );
+      } finally {
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
+    it('does not delete committed file bytes if the parent version bump fails', async () => {
+      const created = await createSkillAsOwner();
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const deleteFile = jest.fn(async () => undefined);
+      getStrategyFunctions.mockReturnValue({
+        saveBuffer: jest.fn(async () => '/uploads/committed'),
+        deleteFile,
+      });
+      const bump = jest
+        .spyOn(Skill, 'findByIdAndUpdate')
+        .mockRejectedValueOnce(new Error('parent update failed'));
+      try {
+        const response = await request(app)
+          .post(`/api/skills/${created.body._id}/files`)
+          .field('relativePath', 'references/committed.md')
+          .attach('file', Buffer.from('committed text'), {
+            filename: 'committed.md',
+            contentType: 'text/markdown',
+          });
+        expect(response.status).toBe(500);
+        expect(await SkillFile.findOne({ skillId: created.body._id }).lean()).toMatchObject({
+          filepath: '/uploads/committed',
+        });
+        expect(deleteFile).not.toHaveBeenCalled();
+      } finally {
+        bump.mockRestore();
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
+    it('cleans up the superseded blob when a replacement commits but the parent bump fails', async () => {
+      const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+      const { upsertSkillFile } = require('~/models');
+      const originalStrategy = getStrategyFunctions.getMockImplementation();
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const oldPath = '/uploads/previous';
+      const newPath = '/uploads/replacement';
+      const stored = new Set([oldPath]);
+      await upsertSkillFile({
+        skillId,
+        relativePath: 'references/committed.md',
+        file_id: 'original',
+        filename: 'committed.md',
+        filepath: oldPath,
+        source: 'local',
+        mimeType: 'text/markdown',
+        bytes: 8,
+        author: testUsers.editor._id,
+      });
+      const deleteFile = jest.fn(async (_req, { filepath }) => {
+        stored.delete(filepath);
+      });
+      const saveBuffer = jest.fn(async () => {
+        stored.add(newPath);
+        return newPath;
+      });
+      getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+      const bump = jest
+        .spyOn(Skill, 'findByIdAndUpdate')
+        .mockRejectedValueOnce(new Error('parent update failed'));
+      try {
+        const response = await request(app)
+          .post(`/api/skills/${skillId}/files/references/committed.md`)
+          .field('relativePath', 'references/committed.md')
+          .field('expectedFileId', 'original')
+          .attach('file', Buffer.from('new text'), {
+            filename: 'committed.md',
+            contentType: 'text/markdown',
+          });
+        expect(response.status).toBe(500);
+        expect(await SkillFile.findOne({ skillId }).lean()).toMatchObject({
+          filepath: newPath,
+          file_id: expect.not.stringMatching('original'),
+        });
+        expect(saveBuffer).toHaveBeenCalledTimes(1);
+        expect(deleteFile).toHaveBeenCalledTimes(1);
+        expect(deleteFile.mock.calls[0][1]).toMatchObject({
+          filepath: oldPath,
+          user: testUsers.editor._id.toString(),
+        });
+        expect(stored.has(oldPath)).toBe(false);
+        expect(stored.has(newPath)).toBe(true);
+      } finally {
+        bump.mockRestore();
+        getStrategyFunctions.mockImplementation(originalStrategy);
+      }
+    });
+
+    it('rejects a file save without EDIT access', async () => {
+      const created = await createSkillAsOwner();
+      setTestUser(testUsers.noAccess);
+      const response = await request(app)
+        .post(`/api/skills/${created.body._id}/files`)
+        .field('relativePath', 'references/denied.md')
+        .attach('file', Buffer.from('denied'), {
+          filename: 'denied.md',
+          contentType: 'text/markdown',
+        });
+      expect(response.status).toBe(403);
+      expect(await SkillFile.countDocuments()).toBe(0);
+    });
+
+    it('requires both a revision and a matching body path on the conditional route', async () => {
+      const created = await createSkillAsOwner();
+      const url = `/api/skills/${created.body._id}/files/references/file.md`;
+      const missing = await request(app)
+        .post(url)
+        .field('relativePath', 'references/file.md')
+        .attach('file', Buffer.from('text'), { filename: 'file.md', contentType: 'text/markdown' });
+      expect(missing.status).toBe(400);
+      const mismatch = await request(app)
+        .post(url)
+        .field('relativePath', 'references/other.md')
+        .field('expectedFileId', 'some-revision')
+        .attach('file', Buffer.from('text'), { filename: 'file.md', contentType: 'text/markdown' });
+      expect(mismatch.status).toBe(400);
+      expect(await SkillFile.countDocuments()).toBe(0);
+    });
+
     it('returns 400 when no file is provided', async () => {
       const created = await createSkillAsOwner();
       const res = await request(app).post(`/api/skills/${created.body._id}/files`);

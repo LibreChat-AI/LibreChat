@@ -57,6 +57,7 @@ import type {
 import type { LCAvailableTools, RequestScopedMCPConnectionStore } from '../mcp/types';
 import type { ContentTraversalLimitError } from '../protection/adapters/nested';
 import type { SkillContentInput } from '../protection/adapters/submissions';
+import type { RepositoryInstructionSource } from '../code/instructions';
 import type { TextContentFragment } from '../protection/types';
 import type { CheckAccessParams } from '../middleware/access';
 import type { MCPToolAlias } from '~/tools/classification';
@@ -861,6 +862,7 @@ export interface InitializeAgentParams {
     primedCodeFiles?: import('@librechat/agents').CodeEnvFile[];
     /** Live workspace binding resolved by the execution-side loader. */
     codeExecutionContext?: CodeExecutionContext;
+    repositoryInstructionSource?: RepositoryInstructionSource;
   } | null>;
   /** Endpoint option (contains model_parameters and endpoint info) */
   endpointOption?: Partial<TEndpointOption>;
@@ -1964,6 +1966,7 @@ export async function initializeAgent(
     tools: structuredTools,
     primedCodeFiles,
     codeExecutionContext: loadedCodeExecutionContext,
+    repositoryInstructionSource,
   } = loadToolsResult ?? {
     tools: [],
     toolContextMap: {},
@@ -1979,6 +1982,7 @@ export async function initializeAgent(
     oauthActionToolNames: undefined,
     primedCodeFiles: undefined,
     codeExecutionContext: undefined,
+    repositoryInstructionSource: undefined,
   };
   const trustedCodeExecutionContext = loadedCodeExecutionContext ?? codeExecutionContext;
   const attachedWorkspaceOperations =
@@ -1989,6 +1993,7 @@ export async function initializeAgent(
     trustedCodeExecutionContext.environmentType === 'attached'
       ? resolveAttachedWorkspaceCommandTimeoutMax(
           trustedCodeExecutionContext.codeEnvironmentConfigSchema,
+          trustedCodeExecutionContext.codeWorkspace?.maxCommandTimeoutMs,
         )
       : undefined;
   if (
@@ -2261,6 +2266,25 @@ export async function initializeAgent(
     }
   }
 
+  const repositoryInstructionBlock = repositoryInstructionSource
+    ? await repositoryInstructionSource.load({
+        ...repositoryInstructionSource,
+        mode: agent.repositoryInstructions,
+        signal: params.signal,
+        timeoutMs: appConfig?.endpoints?.agents?.repositoryInstructions?.timeoutMs,
+        assertContent: (content) =>
+          assertModelBoundContent({
+            filters: appConfig?.filters,
+            agents: [{ instructions: content }],
+          }),
+      })
+    : undefined;
+  if (repositoryInstructionBlock) {
+    agent.instructions = [agent.instructions, repositoryInstructionBlock]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
   if (typeof agent.artifacts === 'string' && agent.artifacts !== '') {
     const artifactsPromptResult = generateArtifactsPrompt({
       endpoint: agent.provider,
@@ -2279,12 +2303,19 @@ export async function initializeAgent(
   let executableSkillIds = params.accessibleSkillIds;
   let activeSkillNames: Set<string> | undefined;
   const { accessibleSkillIds } = params;
-  if (accessibleSkillIds && accessibleSkillIds.length > 0) {
+  /**
+   * Authoring runs go through catalog injection even with nothing accessible:
+   * `injectSkillCatalog` owns the `skill` tool registration, and a model that
+   * can write `skills/{skillName}/SKILL.md` needs the tool bound at init to
+   * invoke what it creates later in the same conversation.
+   */
+  if ((accessibleSkillIds && accessibleSkillIds.length > 0) || skillAuthoringAvailable) {
     const skillResult = await injectSkillCatalog({
       agent,
       toolDefinitions,
       toolRegistry,
-      accessibleSkillIds,
+      accessibleSkillIds: accessibleSkillIds ?? [],
+      skillAuthoringAvailable,
       contextWindowTokens: Number(agentMaxContextTokens) || 200_000,
       listSkillsByAccess: db?.listSkillsByAccess,
       codeEnvAvailable: effectiveCodeEnvAvailable,

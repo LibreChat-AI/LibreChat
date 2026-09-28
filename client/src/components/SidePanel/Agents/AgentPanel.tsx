@@ -91,6 +91,7 @@ export function composeAgentUpdatePayload(
     stateful_code_sessions,
     stateful_code_environment,
     code_environment_id,
+    repositoryInstructions,
     code_workspace_id,
     git_identity,
     recursion_limit,
@@ -162,6 +163,7 @@ export function composeAgentUpdatePayload(
       stateful_code_sessions: normalizedStatefulCodeSessions,
       stateful_code_environment: normalizedStatefulCodeEnvironment,
       code_environment_id: agent_id ? code_environment_id : (code_environment_id ?? undefined),
+      repositoryInstructions,
       code_workspace_id,
       git_identity: normalizedGitIdentity,
       recursion_limit,
@@ -667,6 +669,7 @@ export default function AgentPanel() {
       create.mutate({
         ...basePayload,
         git_identity: basePayload.git_identity ?? undefined,
+        repositoryInstructions: basePayload.repositoryInstructions,
         model,
         tools,
         provider,

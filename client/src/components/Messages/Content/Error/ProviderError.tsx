@@ -1,6 +1,13 @@
 import { ErrorTypes, stripLangChainTroubleshootingUrl } from 'librechat-data-provider';
 import type { ErrorPayload, ErrorRendererProps, UnclassifiedErrorProps } from './parts';
-import { ErrorBody, ErrorDetails, readObject, readString, useErrorEndpoint } from './parts';
+import {
+  ErrorBody,
+  ErrorDetails,
+  ErrorWithDetail,
+  readObject,
+  readString,
+  useErrorEndpoint,
+} from './parts';
 import { extractJson } from '~/utils/json';
 import { useLocalize } from '~/hooks';
 
@@ -115,21 +122,11 @@ export function UnclassifiedError({ json, text, message }: UnclassifiedErrorProp
       : localize('com_error_upstream_model');
   const headline = prose == null && json != null ? localize('com_error_unknown') : providerHeadline;
 
-  if (prose == null) {
-    return headline;
-  }
-
-  if (prose.length <= 240 && !/[\r\n]/.test(prose)) {
-    return (
-      <ErrorBody>
-        <div>{headline}</div>
-        <div className="text-text-secondary">{prose}</div>
-      </ErrorBody>
-    );
-  }
-
-  return withHeadline(headline, {
-    label: localize('com_error_details_provider'),
-    value: prose,
-  });
+  return (
+    <ErrorWithDetail
+      headline={headline}
+      detail={prose}
+      label={localize('com_error_details_provider')}
+    />
+  );
 }

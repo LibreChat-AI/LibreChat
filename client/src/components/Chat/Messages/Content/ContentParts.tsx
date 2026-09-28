@@ -1,4 +1,5 @@
-import { memo, useRef, useMemo, useEffect, useCallback, Fragment } from 'react';
+import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
+import { useStore } from 'jotai';
 import { ContentTypes } from 'librechat-data-provider';
 import type {
   TMessageContentParts,
@@ -7,6 +8,7 @@ import type {
   Agents,
 } from 'librechat-data-provider';
 import type { ReactNode, ReactElement } from 'react';
+import type { ReasoningDisclosures, ToolDisclosures } from './disclosure';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
 import type { ActivityPhaseSegment } from '~/utils/activityLabels';
 import {
@@ -17,6 +19,12 @@ import {
   filterAttachmentsForPart,
   groupSequentialToolCalls,
 } from '~/utils';
+import {
+  ReasoningDisclosureContext,
+  reasoningDisclosure,
+  ToolDisclosureContext,
+  ToolDisclosureKeyContext,
+} from './disclosure';
 import {
   groupActivityPhases,
   lastCursorContentIdx,
@@ -35,6 +43,7 @@ import { EmptyText, AgentUpdate } from './Parts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
+import { blocksLiveFold } from './live';
 import Container from './Container';
 import Part from './Part';
 
@@ -171,20 +180,32 @@ const PartWithContext = memo(function PartWithContext({
    *  own a live part — otherwise a phase from minutes ago keeps its reasoning
    *  shimmering and its peek scrolling while later phases stream. */
   const holdsCursor = isLastPart && isLast;
+  /** Position distinguishes provider-id reuse within a response. Neither the
+   *  final-only stepId nor messageId belongs in the card's disclosure identity. */
+  const toolDisclosureKey =
+    part.type === ContentTypes.TOOL_CALL
+      ? JSON.stringify([
+          getPartAgentId(part) ?? '',
+          getToolCallId(part),
+          getPartKeyIndex(part, idx),
+        ])
+      : undefined;
 
   return (
     <MessageContext.Provider value={contextValue}>
-      <Part
-        part={part}
-        attachments={partAttachments}
-        isSubmitting={isSubmitting}
-        key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
-        isCreatedByUser={isCreatedByUser}
-        isLast={holdsCursor}
-        showCursor={holdsCursor}
-        hideAttachments={hideAttachments}
-        onToolExpand={onToolExpand}
-      />
+      <ToolDisclosureKeyContext.Provider value={toolDisclosureKey}>
+        <Part
+          part={part}
+          attachments={partAttachments}
+          isSubmitting={isSubmitting}
+          key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
+          isCreatedByUser={isCreatedByUser}
+          isLast={holdsCursor}
+          showCursor={holdsCursor}
+          hideAttachments={hideAttachments}
+          onToolExpand={onToolExpand}
+        />
+      </ToolDisclosureKeyContext.Provider>
     </MessageContext.Provider>
   );
 });
@@ -224,6 +245,11 @@ type ContentPartsProps = {
     | ((value: number) => void | React.Dispatch<React.SetStateAction<number>>)
     | null
     | undefined;
+  /** Whether the span a run is still writing folds into one row. The host
+   *  decides: false when the reader asked for tools expanded by default, and
+   *  for a surface that IS the detail view of a run — a subagent's activity
+   *  panel — where one row would hide what the panel was opened to watch. */
+  foldLiveActivity?: boolean;
   /** Internal recursion guard for nested phase segments. */
   nestedActivityPhase?: boolean;
   /** Internal signal that the parent phase card lifted this segment's
@@ -280,6 +306,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
   showThinking,
   isLatestMessage,
   createdAt,
+  foldLiveActivity = true,
   nestedActivityPhase = false,
   withinActivityPhase = false,
   cursorOwnedElsewhere = false,
@@ -331,14 +358,28 @@ const ContentPartsBody = memo(function ContentPartsBody({
       ),
     [attachmentMap, resolvedToolCallStepOwners],
   );
+  const disclosureStore = useStore();
+  const reasoningDisclosures = useContext(ReasoningDisclosureContext);
   const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
   const localToolGroupExpansionRef = useRef(new Map<string, ToolCallGroupExpansionState>());
   const expansionState = toolGroupExpansionState ?? localToolGroupExpansionRef.current;
   const fallbackScopeRef = useRef({ messageId, scope: 0 });
+  /** Keys a phase card has already rendered under, by its computed key and by
+   *  where its span starts. See `stableCardKey`. */
+  const cardKeyAliasesRef = useRef(new Map<string, string>());
+  const cardScopeRef = useRef(0);
   if (fallbackScopeRef.current.messageId !== messageId) {
     if (!effectiveIsSubmitting) {
       fallbackScopeRef.current.scope += 1;
       expansionState.clear();
+    }
+    cardScopeRef.current += 1;
+    /** Positions belong to one response, even when the next sibling is live.
+     * Tool-backed aliases still bridge placeholder hydration and finalization. */
+    for (const alias of cardKeyAliasesRef.current.keys()) {
+      if (alias.startsWith('start:') || alias.startsWith('key:fallback:')) {
+        cardKeyAliasesRef.current.delete(alias);
+      }
     }
     fallbackScopeRef.current.messageId = messageId;
   }
@@ -364,9 +405,13 @@ const ContentPartsBody = memo(function ContentPartsBody({
     [laneGroups, content],
   );
 
+  const foldsLiveTail = foldLiveActivity && isLast && effectiveIsSubmitting;
   const phaseSegments = useMemo(
-    () => (nestedActivityPhase ? undefined : groupActivityPhases(content, messageLaneGroups)),
-    [nestedActivityPhase, content, messageLaneGroups],
+    () =>
+      nestedActivityPhase
+        ? undefined
+        : groupActivityPhases(content, messageLaneGroups, foldsLiveTail),
+    [nestedActivityPhase, content, messageLaneGroups, foldsLiveTail],
   );
   /** Every file a phase's parts produced, in transcript order, deduplicated
    *  across parts that share a tool call. */
@@ -671,16 +716,21 @@ const ContentPartsBody = memo(function ContentPartsBody({
       const occurrence =
         resolvedToolGroupOccurrences.get(getToolGroupAnchorIndex(group.parts)) ?? 1;
       const groupId = occurrence === 1 ? baseGroupId : `${baseGroupId}:occurrence:${occurrence}`;
+      /** Collected even when a parent phase hoists the files: the header still
+       *  reads them for the sites a web search visited. */
       const seenAttachments = new Set<TAttachment>();
-      if (!hideAttachments) {
-        for (const { part } of group.parts) {
-          for (const attachment of attachmentsForPart(part) ?? []) {
-            seenAttachments.add(attachment);
-          }
+      for (const { part } of group.parts) {
+        for (const attachment of attachmentsForPart(part) ?? []) {
+          seenAttachments.add(attachment);
         }
       }
       const groupAttachments = hideAttachments ? undefined : Array.from(seenAttachments);
-      return { ...group, groupId, groupAttachments };
+      return {
+        ...group,
+        groupId,
+        groupAttachments,
+        sourceAttachments: Array.from(seenAttachments),
+      };
     });
   }, [
     sequentialParts,
@@ -780,7 +830,24 @@ const ContentPartsBody = memo(function ContentPartsBody({
       const position = segment.hasContent
         ? segmentKeyIndex(segment)
         : getPartKeyIndex(segment.labelPart, segment.labelIndex);
-      return `fallback:${fallbackScope}:${position}`;
+      return `fallback:${cardScopeRef.current}:${position}`;
+    };
+    /** A live card can exist before its first tool call — a span that is only
+     *  a thought so far has no provider id, so `phaseCardKey` gives it the
+     *  positional fallback, and would hand it a different, tool-anchored key
+     *  the moment a call is appended. That is a remount mid-thought: the row
+     *  blinks and a reader who opened it is shut out. The first key a span
+     *  renders under is therefore kept, and remembered both by where the span
+     *  starts and by the key it would otherwise move to, so the summary that
+     *  later claims the same calls from a different start still lands on it. */
+    const stableCardKey = (segment: Extract<ActivityPhaseSegment, { type: 'phase' }>): string => {
+      const computed = phaseCardKey(segment);
+      const start = absoluteIndexAt(segment.contentIndices[0] ?? segment.startIndex);
+      const aliases = cardKeyAliasesRef.current;
+      const key = aliases.get(`key:${computed}`) ?? aliases.get(`start:${start}`) ?? computed;
+      aliases.set(`key:${computed}`, key);
+      aliases.set(`start:${start}`, key);
+      return key;
     };
     /** Exactly one thing may hold the streaming cursor. A card carries it
      *  below its own header whenever the tail of the run sits inside its
@@ -854,6 +921,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
               );
             }
             const synthesized = segment.synthesized === true;
+            const live = segment.live === true;
             /** Entrance bookkeeping still keys on the marker. */
             const phaseKeyIndex = getPartKeyIndex(segment.labelPart, segment.labelIndex);
             /** The RENDER key is the span, not the header. A synthesized card's
@@ -876,7 +944,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
              *  siblings whose cards start at the same index. Pairing them also
              *  keeps repeated provider ids in one message apart, the way
              *  `getToolGroupId` uses an occurrence counter. */
-            const cardKey = phaseCardKey(segment);
+            const cardKey = stableCardKey(segment);
             const labelText = getActivityLabelText(segment.labelPart);
             const segmentIndices = segment.contentIndices.map(absoluteIndexAt);
             /** While a run streams, the cursor sits INSIDE a synthesized span.
@@ -911,7 +979,18 @@ const ContentPartsBody = memo(function ContentPartsBody({
              *  can raise one long after its parent's label filled. The span
              *  renders exactly as it would without the feature until it
              *  clears, then folds. */
-            if (synthesized && hasPendingApproval) {
+            /** "Open thinking dropdowns by default" is the reader asking to
+             *  see reasoning as it streams. A collapsed live row would unmount
+             *  it, so a reasoning-bearing span stays unfolded for them — the
+             *  same exception `ToolCallGroup` makes to its auto-collapse. */
+            const keepsThinkingOpen =
+              live &&
+              showThinking &&
+              segment.content.some((part) => part?.type === ContentTypes.THINK);
+            const awaitsReader = live
+              ? keepsThinkingOpen || segment.content.some(blocksLiveFold)
+              : hasPendingApproval;
+            if (synthesized && awaitsReader) {
               return renderSegment(
                 segment.content,
                 absoluteIndexAt(segment.startIndex),
@@ -926,6 +1005,26 @@ const ContentPartsBody = memo(function ContentPartsBody({
                 hasContent={segment.hasContent}
                 attachments={phaseAttachments}
                 hasPendingApproval={hasPendingApproval}
+                onExpansionChange={
+                  live &&
+                  reasoningDisclosures != null &&
+                  !segment.content.some((part) => part?.type === ContentTypes.TOOL_CALL)
+                    ? (expanded) => {
+                        segment.content.forEach((part, position) => {
+                          if (part?.type !== ContentTypes.THINK) {
+                            return;
+                          }
+                          const index = getPartKeyIndex(part, segmentIndices[position]);
+                          disclosureStore.set(
+                            reasoningDisclosure(reasoningDisclosures, index),
+                            expanded,
+                          );
+                        });
+                      }
+                    : undefined
+                }
+                liveParts={live ? segment.content : undefined}
+                spanParts={segment.hasContent ? segment.content : undefined}
                 animateEntrance={
                   /** Never for a synthesized card. The entrance mounts a card
                    *  OPEN and folds it shut, and this component remounts
@@ -943,8 +1042,10 @@ const ContentPartsBody = memo(function ContentPartsBody({
                       (previousPhases.labels.get(labelText) ?? 0))
                 }
                 showCursor={
+                  /** A live header shimmers; a cursor row beneath it would be
+                   *  a second liveness signal and a second row. */
                   synthesized
-                    ? ownsCursor
+                    ? ownsCursor && !live
                     : isLast &&
                       effectiveIsSubmitting &&
                       absoluteIndexAt(segment.labelIndex) === globalLastContentIdx
@@ -955,7 +1056,10 @@ const ContentPartsBody = memo(function ContentPartsBody({
                   absoluteIndexAt(segment.startIndex),
                   segmentIndices,
                   `phase-content-${cardKey}`,
-                  true,
+                  /** Opening a live row should show the calls running, so its
+                   *  groups keep their own live expansion rather than the
+                   *  settled-phase default of staying shut. */
+                  !live,
                   ownsCursor,
                   true,
                 )}
@@ -1067,6 +1171,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
               renderPart={renderGroupedPart}
               lastContentIdx={lastContentIdx}
               groupAttachments={group.groupAttachments}
+              sourceAttachments={group.sourceAttachments}
               initialExpansionState={expansionState.get(groupId)}
               showThinking={showThinking}
               onExpansionChange={(state) => handleGroupExpansionChange(groupId, state)}
@@ -1086,7 +1191,37 @@ const ContentPartsBody = memo(function ContentPartsBody({
 });
 
 const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
-  const { attachments } = props;
+  const { attachments, messageId, conversationId } = props;
+  const toolState = useRef<{
+    messageId: string;
+    conversationId: string | null | undefined;
+    disclosures: ToolDisclosures;
+  } | null>(null);
+  const previous = toolState.current;
+  /** The optimistic assistant id ends in `_`. Finalization replaces it with
+   *  the server id, not a new response. Ordinary sibling/conversation switches
+   *  get a fresh map, even if a provider reuses the same tool-call ids. */
+  const finalizing =
+    previous?.messageId.endsWith('_') === true &&
+    !messageId.endsWith('_') &&
+    props.isLatestMessage === true;
+  if (
+    previous == null ||
+    previous.conversationId !== conversationId ||
+    (previous.messageId !== messageId && !finalizing)
+  ) {
+    toolState.current = { messageId, conversationId, disclosures: new Map() };
+  } else {
+    previous.messageId = messageId;
+  }
+  const toolDisclosures = toolState.current!.disclosures;
+  const reasoningState = useRef<{ messageId: string; disclosures: ReasoningDisclosures } | null>(
+    null,
+  );
+  if (reasoningState.current?.messageId !== messageId) {
+    reasoningState.current = { messageId, disclosures: new Map() };
+  }
+  const reasoningDisclosures = reasoningState.current.disclosures;
   /** Published once for the whole message so every markdown block below —
    *  including the ones nested inside phase cards — resolves a bare
    *  `![DTI](5_dti.png)` against the files this turn actually produced.
@@ -1104,7 +1239,11 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
   const media = useMemo(() => ({ attachmentsByName }), [attachmentsByName]);
   return (
     <MediaContext.Provider value={media}>
-      <ContentPartsBody {...props} />
+      <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
+        <ToolDisclosureContext.Provider value={toolDisclosures}>
+          <ContentPartsBody {...props} />
+        </ToolDisclosureContext.Provider>
+      </ReasoningDisclosureContext.Provider>
     </MediaContext.Provider>
   );
 });

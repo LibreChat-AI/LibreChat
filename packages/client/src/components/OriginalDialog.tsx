@@ -122,6 +122,14 @@ const DialogClose: React.ForwardRefExoticComponent<
   DialogPrimitive.DialogCloseProps & React.RefAttributes<HTMLButtonElement>
 > = DialogPrimitive.Close;
 
+/**
+ * The scrim. `surface-overlay` is the theme's own scrim color, so a theme that
+ * redefines it moves every OGDialog with it; the opacity stays at 80% because
+ * that leaves the themes whose overlay is black (dark, and both high-contrast
+ * modes) rendering exactly as before, and puts the light theme's gray scrim at
+ * 4.3:1 against the dialog it frames — past the 3:1 floor for a non-text
+ * boundary, and between the two other dialog families' scrims.
+ */
 export const DialogOverlay: React.ForwardRefExoticComponent<
   Omit<DialogPrimitive.DialogOverlayProps & React.RefAttributes<HTMLDivElement>, 'ref'> &
     React.RefAttributes<HTMLDivElement>
@@ -137,7 +145,7 @@ export const DialogOverlay: React.ForwardRefExoticComponent<
       ref={ref}
       style={{ ...style, zIndex: overlayZIndex }}
       className={cn(
-        'fixed inset-0 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+        'fixed inset-0 bg-surface-overlay/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         className,
       )}
       {...props}

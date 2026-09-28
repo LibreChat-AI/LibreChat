@@ -36,6 +36,7 @@ import { useGetFiles } from '~/data-provider';
 import { hasInFlightUpload } from '~/hooks/Files/useFileHandling';
 import {
   encodeBase64,
+  clearDraft,
   clearAllDrafts,
   getAskAnswerDraftId,
   getDraft,
@@ -509,8 +510,7 @@ describe('useAutoSave — typing as a run finishes', () => {
     expect(mockSetValue).toHaveBeenLastCalledWith('text', 'a whole sentence typed quickly');
   });
 
-  /** A draft of one character is deliberately not persisted, so the record cannot speak for the
-   * composer here. The composer still can, and it is what the user is looking at. */
+  /** A debounced record can still lag the character visible in the composer at run end. */
   it('keeps a single character typed as the run ends', () => {
     const textAreaRef = makeTextAreaRef();
     const { rerender } = renderHook(
@@ -1165,4 +1165,51 @@ describe('useAutoSave — file cache updates', () => {
 
     expect(mockSetValue).toHaveBeenCalledWith('text', 'closed tab text');
   });
+});
+
+describe('useAutoSave — exact text across navigation', () => {
+  const draftStorage = jest.requireActual<typeof import('~/utils/drafts')>('~/utils/drafts');
+
+  beforeEach(() => {
+    mockGetDraft.mockImplementation(draftStorage.getDraft);
+    mockSetDraft.mockImplementation(draftStorage.setDraft);
+    (clearDraft as jest.Mock).mockImplementation(draftStorage.clearDraft);
+  });
+
+  afterEach(() => {
+    mockGetDraft.mockReset();
+    mockSetDraft.mockReset();
+    (clearDraft as jest.Mock).mockReset();
+  });
+
+  it.each(['x', '字', ' ', '\n', 'first line\nsecond line'])(
+    'restores %j after switching through an empty conversation and new chat',
+    (value) => {
+      const textarea = document.createElement('textarea');
+      const textAreaRef = { current: textarea };
+      const files = new Map<string, never>();
+      const setFiles = jest.fn();
+      mockSetValue.mockImplementation((_name: string, text: string) => {
+        textarea.value = text;
+      });
+      const { rerender } = renderHook(
+        ({ conversationId }: { conversationId: string }) =>
+          useAutoSave({ conversationId, textAreaRef, files, setFiles }),
+        { initialProps: { conversationId: 'convo-exact' } },
+      );
+      textarea.value = value;
+      act(() => rerender({ conversationId: 'convo-empty' }));
+      expect(textarea.value).toBe('');
+      expect(draftStorage.getDraft('convo-exact')).toBe(value);
+      act(() => rerender({ conversationId: String(Constants.NEW_CONVO) }));
+      expect(textarea.value).toBe('');
+      act(() => rerender({ conversationId: 'convo-exact' }));
+      expect(textarea.value).toBe(value);
+      textarea.value = '';
+      act(() => rerender({ conversationId: 'convo-empty' }));
+      act(() => rerender({ conversationId: 'convo-exact' }));
+      expect(textarea.value).toBe('');
+      mockSetValue.mockReset();
+    },
+  );
 });

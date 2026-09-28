@@ -25,6 +25,7 @@ import {
   useUnpinDroppedConversation,
 } from './dnd';
 import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
+import { groupConversationsWithRunning, RUNNING_CHATS_GROUP } from './running';
 import { groupConversations, cn } from '~/utils';
 import { useActiveJobs } from '~/data-provider';
 import Convo from './Convo';
@@ -159,10 +160,14 @@ const DateLabel: FC<{ groupName: string; isFirst?: boolean; isAlphabetical?: boo
     const displayName = localize(groupName as TranslationKeys) || groupName;
     return (
       <h2
-        aria-label={localize(
-          isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
-          isAlphabetical ? { letter: displayName } : { date: displayName },
-        )}
+        aria-label={
+          groupName === RUNNING_CHATS_GROUP
+            ? localize('com_a11y_chats_running_section')
+            : localize(
+                isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
+                isAlphabetical ? { letter: displayName } : { date: displayName },
+              )
+        }
         className={cn('pl-1 pt-1 text-text-secondary', isFirst === true ? 'mt-0' : 'mt-2')}
         style={{ fontSize: '0.7rem' }}
       >
@@ -262,31 +267,48 @@ const Conversations: FC<ConversationsProps> = ({
 
   // Fetch active job IDs for showing generation indicators
   const { data: activeJobsData } = useActiveJobs();
-  const activeJobIds = useMemo(
-    () => new Set(activeJobsData?.activeJobIds ?? []),
-    [activeJobsData?.activeJobIds],
-  );
+  const activeJobIdsRef = useRef<Set<string> | null>(null);
+  const activeJobIds = useMemo(() => {
+    const ids = activeJobsData?.activeJobIds ?? [];
+    const next = new Set(ids);
+    const previous = activeJobIdsRef.current;
+    if (previous && next.size === previous.size && ids.every((id) => previous.has(id))) {
+      return previous;
+    }
+    activeJobIdsRef.current = next;
+    return next;
+  }, [activeJobsData?.activeJobIds]);
 
   const filteredConversations = useMemo(
     () => rawConversations.filter(Boolean) as TConversation[],
     [rawConversations],
   );
 
-  /** The pinned section above carries pins, so they stay out of these groups — except in
-   *  the archive, which that section does not cover: an archived pin would otherwise be
-   *  absent from the sidebar entirely rather than merely further down it. */
-  const groupedConversations = useMemo(
+  /** The pinned section carries pins except in the archive or during search, when it is
+   *  hidden. Keep matching pins in the Chats results instead of showing an empty list. */
+  const includePinned = isArchivedView || !!search.query;
+  const datedConversations = useMemo(
     () =>
       groupConversations(filteredConversations, {
         field: sort.field,
         direction: sort.direction,
+        includePinned,
+      }),
+    [filteredConversations, includePinned, sort.direction, sort.field],
+  );
+  /** The archive keeps its server order, while search still promotes active matches. */
+  const groupedConversations = useMemo(
+    () =>
+      groupConversationsWithRunning(datedConversations, activeJobIds, {
+        field: sort.field,
+        direction: sort.direction,
         includePinned: isArchivedView,
       }),
-    [filteredConversations, isArchivedView, sort.direction, sort.field],
+    [datedConversations, activeJobIds, isArchivedView, sort.direction, sort.field],
   );
 
-  /* Pins are stripped from the date groups. An all-pin page leaves the
-     virtual list with no rows, so onRowsRendered never fires and later
+  /* Outside search, pins are stripped from the date groups. An all-pin page leaves
+     the virtual list with no rows, so onRowsRendered never fires and later
      unpinned chats stay unreachable. Ask for another page only when the
      conversations input actually changes; a failed fetchNextPage leaves
      the same array and must not loop. */

@@ -68,6 +68,9 @@ describe('LibreChat Tailwind preset', () => {
     /** `any-pointer`, not `pointer`: the floor has to apply to a 2-in-1's
      *  touchscreen while its trackpad is the primary device and reports `fine`. */
     expect(variants.touch).toBe('@media (any-pointer: coarse)');
+    /** Its inverse gates hidden-until-hover states, so a 2-in-1's finger user —
+     *  whose trackpad makes `(hover: hover)` true — never loses the control. */
+    expect(variants['no-touch']).toBe('@media not all and (any-pointer: coarse)');
     expect(variants['high-contrast']).toBe('html.high-contrast &');
   });
 

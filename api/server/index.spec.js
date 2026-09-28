@@ -201,6 +201,16 @@ describe('Startup readiness wiring', () => {
     );
   });
 
+  it('registers background task draining with the graceful shutdown coordinator', () => {
+    const registrationIndex = source.indexOf('registerBackgroundTaskShutdown({');
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(registrationIndex).toBeGreaterThan(-1);
+    expect(registrationIndex).toBeLessThan(listenIndex);
+    expect(source).toContain(
+      'interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs',
+    );
+  });
   it('configures HTTP timeouts before graceful shutdown handling', () => {
     const listenIndex = source.indexOf('const server = app.listen');
     const timeoutConfigIndex = source.indexOf('configureServerTimeouts(server);');

@@ -1,6 +1,7 @@
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
+import { getTenantIndexMigrationHint } from '~/migrations/tenantIndexes';
 import { createSkillSyncCredentialModel } from './skillSyncCredential';
 import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
@@ -156,6 +157,11 @@ export function createModels(mongoose: typeof import('mongoose')): {
       model.on('index', (error?: Error) => {
         if (error) {
           logger.error(`Index build failed for "${model.modelName}": ${error.message}`);
+          // eslint-disable-next-line no-restricted-syntax -- Collection name metadata only, no raw driver operations.
+          const hint = getTenantIndexMigrationHint(model.collection.collectionName, error);
+          if (hint) {
+            logger.warn(hint);
+          }
         }
       });
     }

@@ -36,7 +36,16 @@ export function getMCPAppToolsPublicationGeneration(config: ParsedServerConfig):
    * a rolling deployment. Address the catalog by the effective runtime config so an old replica's
    * live connection cannot publish into the new replica's slice. DB-sourced configs deliberately
    * remain literal because processMCPEnv derives that rule from dbId. */
-  const runtimeConfig = processMCPEnv({ options: config });
+  /** Keep both header maps: a request override can hide a catalog-only change. */
+  let runtimeConfig = processMCPEnv({ options: config });
+  if ('requestHeaders' in config && config.requestHeaders != null) {
+    const requestConfig = processMCPEnv({
+      options: { ...config, apiKey: undefined, headers: config.requestHeaders },
+    });
+    if ('headers' in requestConfig && 'requestHeaders' in runtimeConfig) {
+      runtimeConfig = { ...runtimeConfig, requestHeaders: requestConfig.headers };
+    }
+  }
   const parsedConfig = MCPOptionsSchema.parse(runtimeConfig) as StableConfigValue;
   return createHash('sha256')
     .update(JSON.stringify(sortConfigValue(parsedConfig)))

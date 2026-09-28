@@ -194,7 +194,7 @@ export const useAutoSave = ({
         return;
       }
       // Save the draft of the current conversation before switching
-      if (textAreaRef.current.value === '' || textAreaRef.current.value.length === 1) {
+      if (textAreaRef.current.value === '') {
         clearDraft(id);
       } else {
         setDraft({ id, value: textAreaRef.current.value });
@@ -354,14 +354,12 @@ export const useAutoSave = ({
           /** Move the pending text draft to the new conversationId, then let the composer correct
            * it. Both describe the same composer and the record is a debounced copy of it, so when
            * they disagree the record is simply older, and restoring it would roll the user's last
-           * keystrokes back mid-sentence. `persistExact` because a one-character message is still
-           * the user's message, and the ordinary threshold would refuse to keep it. An empty
-           * composer defers to the record instead: a steer consumes the text and clears the
-           * composer programmatically, and run end must not undo that. */
+           * keystrokes back mid-sentence. An empty composer defers to the record instead: a steer
+           * consumes the text and clears the composer programmatically, and run end must not undo that. */
           migrateTextDraft(pendingDraftId, conversationId);
           const liveText = textAreaRef?.current?.value ?? '';
           if (liveText !== '' && getDraft(conversationId) !== liveText) {
-            setDraft({ id: conversationId, value: liveText, persistExact: true });
+            setDraft({ id: conversationId, value: liveText });
           }
           filesDraftId = migrateFilesDraft(pendingDraftId, conversationId);
         } else {

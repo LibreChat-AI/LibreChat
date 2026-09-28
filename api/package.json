@@ -1,6 +1,6 @@
 {
   "name": "@librechat/backend",
-  "version": "v0.8.8-rc3",
+  "version": "v0.8.8-rc4",
   "description": "",
   "scripts": {
     "start": "echo 'please run this from the root directory'",
@@ -18,7 +18,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danny-avila/LibreChat.git"
+    "url": "git+https://github.com/LibreChat-AI/LibreChat.git"
   },
   "keywords": [],
   "author": "",
@@ -30,7 +30,7 @@
     "~/*": "./*"
   },
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
   "dependencies": {
@@ -46,7 +46,7 @@
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^3.8.7",
+    "@librechat/agents": "^3.9.7",
     "@librechat/api": "*",
     "@librechat/data-schemas": "*",
     "@microsoft/microsoft-graph-client": "^3.0.7",
@@ -129,6 +129,7 @@
     "re2js": "^2.8.6",
     "sanitize-html": "^2.17.7",
     "sharp": "^0.35.4",
+    "swagger-ui-dist": "^5.32.15",
     "ua-parser-js": "^1.0.36",
     "undici": "^7.29.0",
     "winston": "^3.11.0",
@@ -140,6 +141,8 @@
   "devDependencies": {
     "@babel/preset-env": "^7.29.5",
     "@types/sanitize-html": "^2.16.1",
+    "ajv": "8.18.0",
+    "ajv-formats": "3.0.1",
     "jest": "^30.2.0",
     "mongodb-memory-server": "^11.0.1",
     "nodemon": "^3.1.14",

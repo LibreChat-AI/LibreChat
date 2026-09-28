@@ -304,7 +304,9 @@ jobs:
       - name: Run unit tests
         env:
           SELECTED: ${{ needs.codegraph_select.outputs.clientpkg_files }}
+          JEST_JSON: --json --outputFile=${{ github.workspace }}/jest-results/jest-results-packages-client.json
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/jest-results"
           # A selected path can be stale in exactly two ways at this checkout (Codex P2, #15145 r6):
           # deleted on the branch — dropped, which matches full CI (the file runs nowhere) — or
           # renamed, where the NEW path is a changed test file and is selected independently. If
@@ -318,15 +320,27 @@ jobs:
             KEEP="${KEEP# }"
             if [ -z "$KEEP" ]; then
               echo "no selected test file exists at HEAD (stale selection); running FULL"
-              npm run test:ci
+              npm run test:ci -- $JEST_JSON
             else
               echo "codegraph: $(echo $KEEP | wc -w) selected test files (safe mode)"
-              npm run test:ci -- --passWithNoTests --runTestsByPath $KEEP
+              npm run test:ci -- --passWithNoTests --runTestsByPath $KEEP $JEST_JSON
             fi
           else
-            npm run test:ci
+            npm run test:ci -- $JEST_JSON
           fi
         working-directory: packages/client
+      # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
+      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      - name: Upload Jest results
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: jest-results-packages-client
+          path: jest-results/
+          retention-days: 7
+          if-no-files-found: ignore
+          overwrite: true
 
   test-ubuntu:
     name: 'Tests: Ubuntu (shard ${{ matrix.shard }}/2)'
@@ -378,7 +392,9 @@ jobs:
       - name: Run unit tests (shard ${{ matrix.shard }}/2)
         env:
           SELECTED: ${{ needs.codegraph_select.outputs.client_files }}
+          JEST_JSON: --json --outputFile=${{ github.workspace }}/jest-results/jest-results-client-${{ matrix.shard }}.json
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/jest-results"
           if [ -n "$SELECTED" ]; then
             KEEP=""
             for f in $SELECTED; do
@@ -387,15 +403,27 @@ jobs:
             KEEP="${KEEP# }"
             if [ -z "$KEEP" ]; then
               echo "no selected test file exists at HEAD (stale selection); running FULL"
-              npm run test:ci -- --shard=${{ matrix.shard }}/2
+              npm run test:ci -- --shard=${{ matrix.shard }}/2 $JEST_JSON
             else
               echo "codegraph: $(echo $KEEP | wc -w) selected test files (safe mode)"
-              npm run test:ci -- --shard=${{ matrix.shard }}/2 --passWithNoTests --runTestsByPath $KEEP
+              npm run test:ci -- --shard=${{ matrix.shard }}/2 --passWithNoTests --runTestsByPath $KEEP $JEST_JSON
             fi
           else
-            npm run test:ci -- --shard=${{ matrix.shard }}/2
+            npm run test:ci -- --shard=${{ matrix.shard }}/2 $JEST_JSON
           fi
         working-directory: client
+      # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
+      # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
+      - name: Upload Jest results
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: jest-results-client-${{ matrix.shard }}
+          path: jest-results/
+          retention-days: 7
+          if-no-files-found: ignore
+          overwrite: true
 
   build-verify:
     name: Vite build verification

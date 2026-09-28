@@ -169,10 +169,13 @@ test.describe('server-queued follow-up reveal', () => {
       const queuedTurn = messageTurns(page).nth(4);
       await expect(queuedTurn).toContainText(queueText, { timeout: 5000 });
       await expect(queuedTurn.locator('.user-turn')).toBeVisible();
-      /** The chip stays only as a way to retract the turn until it is admitted. */
-      await expect(row).toContainText('Starting as the next turn');
-      await expect(row.getByRole('button', { name: 'Send now' })).toHaveCount(0);
-      await expect(row.getByRole('button', { name: 'Remove message' })).toBeVisible();
+      /** One visible copy: actions follow the user turn, not a duplicate chip
+       * below the composer. Other queued turns still use their ordinary rows. */
+      await expect(row).toHaveCount(0);
+      const pending = page.getByTestId('pending-turn');
+      await expect(pending).toContainText('Starting as the next turn');
+      await expect(pending.getByRole('button', { name: 'Send now' })).toHaveCount(0);
+      await expect(pending.getByRole('button', { name: 'Remove message' })).toBeVisible();
 
       const nextQueueText = `Queued during handoff ${label}`;
       await messageInput(page).fill(nextQueueText);
@@ -185,6 +188,8 @@ test.describe('server-queued follow-up reveal', () => {
         messageInput(page).press('Enter'),
       ]);
       expect(handoffEnqueue.ok()).toBeTruthy();
+      await expect(queuedRows(page).filter({ hasText: nextQueueText })).toBeVisible();
+      await expect(queuedRows(page).filter({ hasText: queueText })).toHaveCount(0);
       const originalQueue = enqueued.request().postDataJSON();
       expect(handoffEnqueue.request().postDataJSON()).toMatchObject({
         parentMessageId: originalQueue.parentMessageId,

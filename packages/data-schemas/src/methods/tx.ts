@@ -151,6 +151,8 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'gpt-5.6-terra': { prompt: 2, completion: 12 },
     'gpt-5.6-luna': { prompt: 0.2, completion: 1.2 },
     'gpt-6-astra': { prompt: 10, completion: 50 },
+    'gpt-6-sol': { prompt: 2, completion: 10 },
+    'gpt-6-luna': { prompt: 0.1, completion: 0.5 },
     'chat-latest': { prompt: 5, completion: 30 },
     'gpt-5-chat-latest': { prompt: 1.25, completion: 10 },
     'gpt-5.1-chat-latest': { prompt: 1.25, completion: 10 },
@@ -185,6 +187,8 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'claude-opus-4-7': { prompt: 5, completion: 25 },
     'claude-opus-4-8': { prompt: 5, completion: 25 },
     'claude-opus-5': { prompt: 5, completion: 25 },
+    'claude-opus-5-5': { prompt: 4, completion: 20 },
+    'claude-opus-5.5': { prompt: 4, completion: 20 },
     'claude-fable-5': { prompt: 10, completion: 50 },
     'claude-mythos-5': { prompt: 10, completion: 50 },
     'claude-fable-5-1': { prompt: 10, completion: 50 },
@@ -251,6 +255,8 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'grok-4-5': { prompt: 2.0, completion: 6.0 },
     'grok-4.6': { prompt: 2.0, completion: 6.0 },
     'grok-4-6': { prompt: 2.0, completion: 6.0 },
+    'grok-4.7': { prompt: 2.0, completion: 6.0 },
+    'grok-4-7': { prompt: 2.0, completion: 6.0 },
     'grok-code-fast': { prompt: 0.2, completion: 1.5 },
     codestral: { prompt: 0.3, completion: 0.9 },
     devstral: { prompt: 0.4, completion: 2.0 },
@@ -369,6 +375,8 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'claude-opus-4-7': { write: 6.25, read: 0.5 },
   'claude-opus-4-8': { write: 6.25, read: 0.5 },
   'claude-opus-5': { write: 6.25, read: 0.5 },
+  'claude-opus-5-5': { write: 5, read: 0.2 },
+  'claude-opus-5.5': { write: 5, read: 0.2 },
   'claude-fable-5': { write: 12.5, read: 1 },
   'claude-mythos-5': { write: 12.5, read: 1 },
   // Fable/Mythos 5.1 cache reads are 0.025x base input, not the usual 0.1x.
@@ -391,6 +399,8 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'gpt-5.6-terra': { write: 2.5, read: 0.2 },
   'gpt-5.6-luna': { write: 0.25, read: 0.02 },
   'gpt-6-astra': { write: 12.5, read: 1 },
+  'gpt-6-sol': { write: 2.5, read: 0.2 },
+  'gpt-6-luna': { write: 0.125, read: 0.01 },
   'chat-latest': { write: 5, read: 0.5 },
   'gpt-5-chat-latest': { write: 1.25, read: 0.125 },
   'gpt-5.1-chat-latest': { write: 1.25, read: 0.125 },
@@ -404,6 +414,8 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   o3: { write: 2, read: 0.5 },
   'o3-mini': { write: 1.1, read: 0.275 },
   'o4-mini': { write: 1.1, read: 0.275 },
+  'grok-4.7': { write: 2, read: 0.5 },
+  'grok-4-7': { write: 2, read: 0.5 },
   deepseek: { write: 0.28, read: 0.028 },
   'deepseek-chat': { write: 0.28, read: 0.028 },
   'deepseek-reasoner': { write: 0.28, read: 0.028 },
@@ -448,10 +460,15 @@ export const premiumTokenValues: Record<
   'gpt-5.6-terra': { threshold: 272000, prompt: 4, completion: 18 },
   'gpt-5.6-luna': { threshold: 272000, prompt: 0.4, completion: 1.8 },
   'gpt-6-astra': { threshold: 272000, prompt: 20, completion: 75 },
+  'gpt-6-sol': { threshold: 272000, prompt: 4, completion: 15 },
+  'gpt-6-luna': { threshold: 272000, prompt: 0.2, completion: 0.75 },
   'grok-4.5': { threshold: 200000, prompt: 4, completion: 12 },
   'grok-4-5': { threshold: 200000, prompt: 4, completion: 12 },
   'grok-4.6': { threshold: 200000, prompt: 4, completion: 12 },
   'grok-4-6': { threshold: 200000, prompt: 4, completion: 12 },
+  /** xAI bills >=200K at the long-context rate; this table uses exclusive thresholds. */
+  'grok-4.7': { threshold: 199999, prompt: 4, completion: 12 },
+  'grok-4-7': { threshold: 199999, prompt: 4, completion: 12 },
 };
 
 /**
@@ -470,6 +487,10 @@ export const premiumCacheTokenValues: Record<
   'gpt-5.6-terra': { threshold: 272000, write: 5, read: 0.4 },
   'gpt-5.6-luna': { threshold: 272000, write: 0.5, read: 0.04 },
   'gpt-6-astra': { threshold: 272000, write: 25, read: 2 },
+  'gpt-6-sol': { threshold: 272000, write: 5, read: 0.4 },
+  'gpt-6-luna': { threshold: 272000, write: 0.25, read: 0.02 },
+  'grok-4.7': { threshold: 199999, write: 4, read: 1 },
+  'grok-4-7': { threshold: 199999, write: 4, read: 1 },
 };
 
 export function createTxMethods(

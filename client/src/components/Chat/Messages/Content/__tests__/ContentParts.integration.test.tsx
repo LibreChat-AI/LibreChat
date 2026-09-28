@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { ContentTypes, Tools } from 'librechat-data-provider';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import ContentParts from '../ContentParts';
 
@@ -76,6 +76,9 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('../Parts', () => ({
+  StreamingThoughtPeek: ({ text }: { text: string }) => (
+    <div data-testid="streaming-thought-peek">{text}</div>
+  ),
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div
       data-testid="attachment-group"
@@ -88,6 +91,7 @@ jest.mock('../Parts', () => ({
   AgentUpdate: () => <div data-testid="agent-update" />,
   EmptyText: () => <div data-testid="empty-text" />,
   Reasoning: () => <div data-testid="reasoning" />,
+  ReasoningCompact: () => <div data-testid="compact-reasoning" />,
   Summary: () => <div data-testid="summary" />,
   Text: ({ text }: { text?: string }) => <div data-testid="text">{text}</div>,
   MemoryCall: ({ attachments }: { attachments?: TAttachment[] }) => (
@@ -514,6 +518,9 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
       </RecoilRoot>,
     );
 
+    /** A live run is one collapsed row; the reader opens it to reach the group,
+     *  which still auto-expands around its running calls. */
+    fireEvent.click(screen.getByRole('button', { name: /com_assistants_running_var/ }));
     const toggle = screen.getByRole('button', { name: /^Running 2 actions/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
@@ -645,15 +652,29 @@ describe('ContentParts — synthesized activity folds', () => {
     );
   });
 
-  it('leaves the in-flight tool call outside the card', () => {
+  it('keeps the in-flight tool call inside the card while the run streams', () => {
     renderContentParts({
       ...baseProps,
       isSubmitting: true,
       content: [...labeledRun(), makeMcpToolCall('t3', false)],
     });
 
-    /** The call the reader is watching stays a sibling of the card, so it is
-     *  still on screen once the fold settles shut over everything before it. */
+    /** The header speaks for the call the reader is watching, so the block
+     *  stays one row instead of growing a sibling row per call. */
+    expect(screen.getAllByTestId('activity-phase-card')).toHaveLength(1);
+    expect(screen.queryByTestId('tool-call')).toBeNull();
+    expect(screen.getByRole('button', { name: /com_assistants_running_var/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('leaves the in-flight tool call outside a settled card', () => {
+    renderContentParts({
+      ...baseProps,
+      content: [...labeledRun(), makeMcpToolCall('t3', false)],
+    });
+
     const panel = screen.getByTestId('activity-phase-panel');
     expect(panel.contains(screen.getByTestId('tool-call'))).toBe(false);
   });
@@ -791,7 +812,11 @@ describe('ContentParts — synthesized activity folds', () => {
      *  the whole fold back open partway through the run. */
     renderContentParts({ ...baseProps, isSubmitting: true, content: labeledRun() });
 
-    expect(foldHeader()).toHaveAttribute('aria-expanded', 'false');
+    /** A live header is named by the line it shows rather than an `aria-label`. */
+    expect(screen.getByRole('button', { name: new RegExp(TICKER) })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
     expect(screen.queryByRole('button', { name: FIRST })).toBeNull();
   });
 
@@ -919,22 +944,21 @@ describe('ContentParts — synthesized activity folds', () => {
     expect(foldHeader()).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('shows exactly one streaming cursor when a placeholder trails the fold', () => {
-    /** Providers append an empty TEXT slot after visible output. The cursor
-     *  belongs to the card (the run's tail is inside its span), and that
-     *  trailing slot looks like the initial waiting state from inside its own
-     *  segment — so without the ownership signal both render one. The card
-     *  draws its own in-flow dot; the segment's `EmptyText` must stay out. */
+  it('lets the live header stand in for the cursor when a placeholder trails the fold', () => {
+    /** Providers append an empty TEXT slot after visible output. The run's
+     *  tail is inside the card's span, and that trailing slot looks like the
+     *  initial waiting state from inside its own segment. The live header's
+     *  shimmer is the liveness signal: a cursor row under it would be a second
+     *  row, and the segment's `EmptyText` a third. */
     const { container } = renderContentParts({
       ...baseProps,
       isSubmitting: true,
       content: [...labeledRun(), makeTextPart('')],
     });
 
-    const dots = container.querySelectorAll('.result-thinking');
-    expect(dots).toHaveLength(1);
-    expect(dots[0]).toHaveClass('after:!static');
+    expect(container.querySelectorAll('.result-thinking')).toHaveLength(0);
     expect(screen.queryAllByTestId('empty-text')).toHaveLength(0);
+    expect(screen.getByTestId('activity-phase-card').querySelector('.shimmer')).not.toBeNull();
   });
 
   it('leaves an unlabeled run rendering exactly as before', () => {
@@ -1130,6 +1154,531 @@ describe('ContentParts integration: lane groups backed by one agent', () => {
     );
     expect(transcript.indexOf('handover note between the waves')).toBeLessThan(
       transcript.indexOf('second wave primary'),
+    );
+  });
+});
+
+describe('ContentParts — live activity fold', () => {
+  const liveProps = {
+    messageId: 'msg1',
+    isCreatedByUser: false,
+    isLast: true,
+    showThinking: false,
+    isSubmitting: true,
+    isLatestMessage: true,
+  };
+
+  const intentCall = (id: string, intent: string, output = ''): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name: 'lookup', args: `{"intent":"${intent}`, output },
+    }) as unknown as TMessageContentParts;
+
+  const liveHeader = () =>
+    within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('holds an unlabeled running batch at one collapsed row without mounting its cards', () => {
+    renderContentParts({
+      ...liveProps,
+      content: [intentCall('t1', 'Reading the lens file'), intentCall('t2', 'Querying the graph')],
+    });
+
+    expect(liveHeader()).toHaveAttribute('aria-expanded', 'false');
+    expect(liveHeader()).toHaveTextContent('Querying the graph');
+    expect(screen.queryByTestId('tool-call')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Running 2 actions/ })).toBeNull();
+  });
+
+  it('folds from the very first call so the block never changes shape as calls arrive', () => {
+    const { rerender } = renderContentParts({
+      ...liveProps,
+      content: [intentCall('t1', 'Reading the lens file')],
+    });
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts
+          {...liveProps}
+          content={[intentCall('t1', 'Reading the lens file', 'ok'), intentCall('t2', 'Next')]}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+
+  it('paints the first line at once, then at most one newer line per interval', () => {
+    jest.useFakeTimers();
+    const frame = (content: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...liveProps} content={content} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame([intentCall('t1', 'Reading')]));
+    expect(liveHeader()).toHaveTextContent('Reading');
+
+    rerender(frame([intentCall('t1', 'Reading the lens')]));
+    rerender(frame([intentCall('t1', 'Reading the lens file')]));
+    expect(liveHeader()).not.toHaveTextContent('Reading the lens');
+
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(liveHeader()).toHaveTextContent('Reading the lens file');
+  });
+
+  it('lets a filled batch label take the line over from the call it describes', () => {
+    renderContentParts({
+      ...liveProps,
+      content: [
+        intentCall('t1', 'Reading the lens file', 'ok'),
+        {
+          type: ContentTypes.ACTIVITY_LABEL,
+          [ContentTypes.ACTIVITY_LABEL]: 'Confirmed the missing lens',
+          pending: false,
+        } as unknown as TMessageContentParts,
+      ],
+    });
+
+    expect(liveHeader()).toHaveTextContent('Confirmed the missing lens');
+  });
+
+  it('previews reasoning between calls one sentence at a time, in the same single row', () => {
+    jest.useFakeTimers();
+    const frame = (think: string) => (
+      <RecoilRoot>
+        <ContentParts
+          {...liveProps}
+          content={[
+            intentCall('t1', 'Reading the lens file', 'ok'),
+            { type: ContentTypes.THINK, think } as unknown as TMessageContentParts,
+          ]}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame('Both refs share a commit.'));
+    expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
+    expect(screen.queryByTestId('reasoning')).toBeNull();
+
+    /** The next sentence is not shown while it is still being written. */
+    rerender(frame('Both refs share a commit. That leaves the ordering'));
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
+    expect(liveHeader()).not.toHaveTextContent('That leaves the ordering');
+    rerender(frame('Both refs share a commit. That leaves the ordering.'));
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(liveHeader()).toHaveTextContent('That leaves the ordering.');
+    expect(within(liveHeader()).getByTitle('That leaves the ordering.')).toBeInTheDocument();
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+
+  it('leaves a reasoning-bearing span unfolded when thinking opens by default', () => {
+    renderContentParts({
+      ...liveProps,
+      showThinking: true,
+      content: [
+        intentCall('t1', 'Reading the lens file', 'ok'),
+        {
+          type: ContentTypes.THINK,
+          think: 'Weighing the refs.',
+        } as unknown as TMessageContentParts,
+      ],
+    });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+    expect(screen.getByTestId('compact-reasoning')).toBeInTheDocument();
+  });
+
+  it('holds the block at one row from a thought through the calls that follow it', () => {
+    /** A reasoning model thinks, then calls. Rendering the thought as its own
+     *  row gave it a multi-line peek that the first call then snapped shut — a
+     *  jump up and back down on every step. The row count must not move. */
+    const thought = {
+      type: ContentTypes.THINK,
+      think: 'Planning the lookup.',
+    } as unknown as TMessageContentParts;
+    const { rerender } = renderContentParts({ ...liveProps, content: [thought] });
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(liveHeader()).toHaveTextContent('Planning the lookup.');
+    expect(screen.queryByTestId('reasoning')).toBeNull();
+    expect(screen.getByTestId('live-phase-thinking')).toBeInTheDocument();
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts {...liveProps} content={[thought, intentCall('t1', 'Reading the file')]} />
+      </RecoilRoot>,
+    );
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.queryByTestId('reasoning')).toBeNull();
+  });
+
+  it('keeps a row the reader opened on a thought open when the first tool call arrives', () => {
+    /** Reasoning-only, the card has no provider id to key on; gaining one must
+     *  not remount it. */
+    const thought = {
+      type: ContentTypes.THINK,
+      think: 'Planning the lookup.',
+    } as unknown as TMessageContentParts;
+    const { rerender } = renderContentParts({ ...liveProps, content: [thought] });
+    const card = screen.getByTestId('activity-phase-card');
+    fireEvent.click(liveHeader());
+    expect(liveHeader()).toHaveAttribute('aria-expanded', 'true');
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts {...liveProps} content={[thought, intentCall('t1', 'Reading the file')]} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(liveHeader()).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('keeps a reasoning-led card open through the summary and the response finalizing', () => {
+    const thought = {
+      type: ContentTypes.THINK,
+      think: 'Planning the lookup.',
+    } as unknown as TMessageContentParts;
+    const calls = [makeMcpToolCall('t1'), makeMcpToolCall('t2')];
+    const frame = (props: {
+      content: TMessageContentParts[];
+      messageId?: string;
+      isSubmitting?: boolean;
+    }) => (
+      <RecoilRoot>
+        <ContentParts {...liveProps} {...props} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame({ content: [thought] }));
+    rerender(frame({ content: [thought, ...calls] }));
+    fireEvent.click(liveHeader());
+    const card = screen.getByTestId('activity-phase-card');
+
+    const settled = [thought, ...calls, makePhasePart(0, 3, 'Fetched two images')];
+    rerender(frame({ content: settled }));
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+
+    /** The message takes its server id in the same commit the run ends. */
+    rerender(frame({ content: settled, messageId: 'server-id', isSubmitting: false }));
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(screen.getByRole('button', { name: 'Fetched two images' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('keeps a thought on its own open row for a reader who opens thinking by default', () => {
+    renderContentParts({
+      ...liveProps,
+      showThinking: true,
+      content: [
+        { type: ContentTypes.THINK, think: 'Planning.' } as unknown as TMessageContentParts,
+      ],
+    });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+    expect(screen.getByTestId('reasoning')).toBeInTheDocument();
+  });
+
+  it('renders a span that is waiting on a sign-in unfolded', () => {
+    const authCall = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 't1',
+        name: `getTinyImage${MCP_DELIMITER}Everything`,
+        args: '{}',
+        output: '',
+        auth: 'https://example.com/oauth',
+      },
+    } as unknown as TMessageContentParts;
+    renderContentParts({ ...liveProps, content: [authCall] });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
+  it('leaves the run unfolded when the host opts out (tools expanded by default, subagent panel)', () => {
+    renderContentParts({
+      ...liveProps,
+      foldLiveActivity: false,
+      content: [makeMcpToolCall('t1', false), makeMcpToolCall('t2', false)],
+    });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+    expect(screen.getAllByTestId('tool-call')).toHaveLength(2);
+  });
+
+  it('names short commentary streamed after a call instead of holding the stale call', () => {
+    renderContentParts({
+      ...liveProps,
+      content: [
+        intentCall('t1', 'Reading the lens file', 'ok'),
+        { type: ContentTypes.TEXT, text: 'Now checking the callers.', phase: 'commentary' },
+      ] as TMessageContentParts[],
+    });
+
+    expect(liveHeader()).toHaveTextContent('Now checking the callers.');
+  });
+
+  it('reports a call the run closed as failed or cancelled, never as completed', () => {
+    const closed = (runStepStatus: string): TMessageContentParts =>
+      ({
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 't1',
+          name: 'lookup',
+          args: '{}',
+          output: '',
+          runStepStatus,
+        },
+      }) as unknown as TMessageContentParts;
+    const { unmount } = renderContentParts({ ...liveProps, content: [closed('failed')] });
+    expect(liveHeader()).toHaveTextContent('com_ui_failed_subject');
+    unmount();
+
+    renderContentParts({ ...liveProps, content: [closed('cancelled')] });
+    expect(liveHeader()).toHaveTextContent('com_ui_cancelled');
+  });
+
+  it('reports a cancelled background task even though its dispatch step completed', () => {
+    const dispatched = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 't1',
+        name: 'lookup',
+        args: '{}',
+        output: 'dispatched',
+        runStepStatus: 'completed',
+        backgroundTask: { cancelled: true },
+      },
+    } as unknown as TMessageContentParts;
+    renderContentParts({ ...liveProps, content: [dispatched] });
+
+    expect(liveHeader()).toHaveTextContent('com_ui_cancelled');
+  });
+
+  it('renders unfolded while a subagent’s own call waits on a sign-in', () => {
+    const subagent = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 's1',
+        name: 'lookup',
+        args: '{}',
+        output: '',
+        subagent_content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            [ContentTypes.TOOL_CALL]: {
+              id: 'n1',
+              name: `getTinyImage${MCP_DELIMITER}Everything`,
+              args: '{}',
+              output: '',
+              auth: 'https://example.com/oauth',
+            },
+          },
+        ],
+      },
+    } as unknown as TMessageContentParts;
+    renderContentParts({ ...liveProps, content: [subagent] });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+  });
+
+  it('reports a detached task that failed through its status attachment', () => {
+    const handle = JSON.stringify({
+      background_task_id: 'bg1',
+      tool: 'lookup',
+      status: 'running',
+      message: 'Dispatched. Poll with check_background_task.',
+    });
+    const dispatched = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 't1',
+        name: 'lookup',
+        args: '{}',
+        output: handle,
+        runStepStatus: 'completed',
+      },
+    } as unknown as TMessageContentParts;
+    const failed = {
+      type: 'background_task_status',
+      status: 'error',
+      toolCallId: 't1',
+      messageId: 'msg1',
+    } as unknown as TAttachment;
+    renderContentParts({ ...liveProps, content: [dispatched], attachments: [failed] });
+
+    expect(liveHeader()).toHaveTextContent('com_ui_failed_subject');
+  });
+
+  it('keeps a handoff card out of the live row and folds the next agent’s calls after it', () => {
+    const transfer = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'h1',
+        name: 'lc_transfer_to_agent_b',
+        args: '{}',
+        output: '',
+      },
+    } as unknown as TMessageContentParts;
+    renderContentParts({
+      ...liveProps,
+      content: [makeMcpToolCall('t1'), transfer, intentCall('t2', 'Picking up the task')],
+    });
+
+    expect(screen.getByTestId('agent-handoff')).toBeInTheDocument();
+    expect(liveHeader()).toHaveTextContent('Picking up the task');
+  });
+
+  it('announces each finished line once through a polite region', () => {
+    jest.useFakeTimers();
+    const frame = (content: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...liveProps} content={content} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame([intentCall('t1', 'Reading the lens file')]));
+    const status = () => screen.getByTestId('activity-phase-announcer');
+    expect(status()).toBeEmptyDOMElement();
+
+    rerender(
+      frame([intentCall('t1', 'Reading the lens file', 'ok'), intentCall('t2', 'Querying')]),
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(status()).toHaveTextContent('Reading the lens file');
+  });
+
+  /** One fixture per channel a call can report its outcome through. The live
+   *  line reads the same resolver as the group header, so each must surface. */
+  const handleOutput = JSON.stringify({
+    background_task_id: 'bg1',
+    tool: 'lookup',
+    status: 'running',
+    message: 'Dispatched. Poll with check_background_task.',
+  });
+  const statusAttachment = (status: string) =>
+    ({
+      type: 'background_task_status',
+      status,
+      toolCallId: 't1',
+      messageId: 'msg1',
+    }) as unknown as TAttachment;
+  it.each([
+    [
+      'a cancelled status attachment',
+      { name: 'lookup', output: handleOutput, runStepStatus: 'completed' },
+      [statusAttachment('cancelled')],
+      'com_ui_cancelled',
+    ],
+    [
+      'a memory tool failing in prose',
+      { name: 'set_memory', output: 'Invalid key "x". Must be one of: a' },
+      [],
+      'com_ui_failed',
+    ],
+  ])('surfaces %s in the collapsed row', (_name, call, attachments, expected) => {
+    const part = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id: 't1', args: '{}', ...call },
+    } as unknown as TMessageContentParts;
+    renderContentParts({ ...liveProps, content: [part], attachments });
+
+    expect(liveHeader()).toHaveTextContent(expected);
+  });
+
+  it('ends the live span at a legacy call mixed into an agents run', () => {
+    const codeInterpreter = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'ci1',
+        type: 'code_interpreter',
+        code_interpreter: { input: 'print(1)', outputs: [] },
+      },
+    } as unknown as TMessageContentParts;
+    renderContentParts({ ...liveProps, content: [makeMcpToolCall('t1'), codeInterpreter] });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+  });
+
+  it('names the live disclosure by its current line alone, not the announced one', () => {
+    jest.useFakeTimers();
+    const frame = (content: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts {...liveProps} content={content} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame([intentCall('t1', 'Reading the lens file')]));
+    rerender(
+      frame([intentCall('t1', 'Reading the lens file', 'ok'), intentCall('t2', 'Querying')]),
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(screen.getByTestId('activity-phase-announcer')).toHaveTextContent(
+      'Reading the lens file',
+    );
+    /** No multiplier: both calls named their own work, so the line is a
+     *  sentence about the newest one rather than the tool's label. */
+    expect(liveHeader()).toHaveAccessibleName('Querying');
+  });
+
+  it('leaves a span of legacy Assistants calls, which the header cannot name, unfolded', () => {
+    const codeInterpreter = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'ci1',
+        type: 'code_interpreter',
+        code_interpreter: { input: 'print(1)', outputs: [] },
+      },
+    } as unknown as TMessageContentParts;
+    renderContentParts({ ...liveProps, content: [codeInterpreter] });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+  });
+
+  it('stops folding once the answer starts, leaving the settled rendering', () => {
+    renderContentParts({
+      ...liveProps,
+      content: [makeMcpToolCall('t1'), makeMcpToolCall('t2'), makeTextPart('Here is the answer.')],
+    });
+
+    expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('keeps the reader’s toggle when the server summary replaces the live line', () => {
+    const calls = [makeMcpToolCall('t1'), makeMcpToolCall('t2')];
+    const { rerender } = renderContentParts({ ...liveProps, content: calls });
+    fireEvent.click(liveHeader());
+    expect(liveHeader()).toHaveAttribute('aria-expanded', 'true');
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts
+          {...liveProps}
+          content={[...calls, makePhasePart(0, 2, 'Fetched two images')]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Fetched two images' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
     );
   });
 });

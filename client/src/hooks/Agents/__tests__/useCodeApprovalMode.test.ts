@@ -299,6 +299,62 @@ describe('useCodeApprovalMode', () => {
     expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
   });
 
+  test.each(['restricted', 'missing'])(
+    'downgrades saved Full Access for a %s added agent',
+    (kind) => {
+      const primary = {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'open',
+      };
+      const added = { ...primary, id: 'agent_2', code_environment_id: 'restricted' };
+      mockUseAgentToolPermissions.mockImplementation((id?: string) => {
+        if (id === 'agent_1') {
+          return { agent: primary };
+        }
+        return { agent: id === 'agent_2' && kind !== 'missing' ? added : undefined };
+      });
+      mockUseGetAgentsConfig.mockReturnValue({
+        agentsConfig: {
+          statefulCodeSessions: {
+            approvalsEnabled: true,
+            approvalModes: ['ask', 'fullAccess'],
+            environments: [
+              {
+                id: 'open',
+                type: 'attached',
+                configSchema: {
+                  permissions: {
+                    fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                    commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+                  },
+                },
+              },
+              {
+                id: 'restricted',
+                type: 'attached',
+                configSchema: {
+                  permissions: {
+                    commandExecution: { allowed: ['ask'], default: 'ask' },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+      const primaryConversation = { ...conversation, codeApprovalMode: 'fullAccess' as const };
+      const primaryOnly = renderHook(() => useCodeApprovalMode(primaryConversation));
+      expect(primaryOnly.result.current.selected).toBe('fullAccess');
+      const combined = renderHook(() =>
+        useCodeApprovalMode(primaryConversation, { ...conversation, agent_id: 'agent_2' }),
+      );
+      expect(combined.result.current.selected).toBe('ask');
+      expect(combined.result.current.modes).not.toContain('fullAccess');
+    },
+  );
+
   test('includes the active parallel conversation agent', () => {
     const primary = {
       id: 'agent_1',

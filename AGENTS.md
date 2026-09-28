@@ -2,13 +2,24 @@ See CLAUDE.md.
 
 ## Branching and pull requests
 
-Branch off `dev` and target `dev` with every pull request; `gh pr create` defaults to `main`, so
-pass `--base dev` explicitly. `main` is the released branch, kept as a fast-forward of `dev` and
-synced as-is — never open a backport pull request to `main`, because anything merged to `dev`
-reaches it at the next sync. Pull requests opened against `main` are retargeted automatically.
-`Fixes #N` does not close the issue on a `dev` merge — GitHub honors closing keywords only on the
-default branch, so close linked issues by hand. Worktrees share one stash stack, so never use a bare
-`git stash pop`. See the detailed policy in `CLAUDE.md` under "Branching and Pull Requests".
+Normally branch off `dev` and target `dev`; `gh pr create` defaults to `main`, so pass `--base dev`
+explicitly. `main` is the released branch, kept as a fast-forward of `dev` and synced as-is — never
+open a backport pull request to `main`, because anything merged to `dev` reaches it at the next
+sync. Pull requests opened against `main` are retargeted automatically.
+
+**Maintainer-directed canary exception:** Experimental work, or a PR ready to merge after review but
+not yet suitable for the next `main` sync, may instead target `canary`. The maintainer may choose
+this before work starts or while reviewing a stale PR. For new canary work, branch from the current
+`origin/canary` and pass `--base canary` explicitly; do not silently retarget an existing PR or
+promote canary code to `dev`. If a stale PR is redirected to canary, first check its base, diff and
+reviewed head against current canary; coordinate any rebase or new PR with the maintainer. A PR
+explicitly based on `canary` stays there; the main-to-dev retarget workflow does not move it.
+
+Still link related issues in the PR (for example, `Related to #N`) so the work remains
+traceable. `Fixes #N` does not close an issue on a `dev` or `canary` merge — GitHub honors closing
+keywords only on the default branch. Close resolved issues by hand after merging. Worktrees share
+one stash stack, so never use a bare `git stash pop`. See the detailed policy in `CLAUDE.md` under
+"Branching and Pull Requests".
 
 Write the description for a reader who has not followed the branch: what breaks, what triggers it,
 how it behaves after the change, then one or two views of the mechanism — a focused diff, a call

@@ -2583,10 +2583,11 @@ describe('built-in provider request shaping', () => {
   const summarizeWith = async (
     parameters?: Record<string, unknown>,
     model = 'gpt-6-astra',
+    appConfig = makeAppConfig([]),
   ): Promise<Record<string, unknown>> => {
     const agents = await callAndCapture({
       agents: [anthropicAgent()],
-      appConfig: makeAppConfig([]),
+      appConfig,
       summarizationConfig: {
         provider: 'openAI',
         model,
@@ -2621,24 +2622,50 @@ describe('built-in provider request shaping', () => {
   });
 
   it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
-    expect(
-      await summarizeWith({ configuration: { baseURL: 'https://gateway.internal/v1' } }),
-    ).toEqual({ configuration: { baseURL: 'https://gateway.internal/v1' } });
+    const parameters = await summarizeWith({
+      configuration: { baseURL: 'https://gateway.internal/v1' },
+    });
+    expect(parameters.firstPartyEndpoint).toBeUndefined();
+    expect(parameters.configuration).toMatchObject({
+      baseURL: 'https://gateway.internal/v1',
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
   });
 
   it('does not claim a first-party endpoint behind a user baseURL', async () => {
     expect(await summarizeWith({ baseURL: 'https://gateway.internal/v1' })).toEqual({
       baseURL: 'https://gateway.internal/v1',
+      configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
     });
   });
 
-  it('leaves credentials and transport to the client', async () => {
+  it('adds only transport policy while leaving credentials and model selection to the client', async () => {
     const parameters = await summarizeWith();
     expect(parameters.apiKey).toBeUndefined();
     expect(parameters.model).toBeUndefined();
     expect(parameters.modelName).toBeUndefined();
     expect(parameters.streaming).toBeUndefined();
-    expect(parameters.configuration).toBeUndefined();
+    expect(parameters.configuration).toEqual({
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
+  });
+
+  it.each([
+    { bodyTimeout: 900_000, headersTimeout: 300_000 },
+    { bodyTimeout: 1_800_000, headersTimeout: 120_000 },
+    { bodyTimeout: 0, headersTimeout: 0 },
+  ])('forwards the cross-provider timeout policy %j', async (transportTimeouts) => {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.agents = {
+      modelResponseBodyTimeoutMs: transportTimeouts.bodyTimeout,
+      modelResponseHeadersTimeoutMs: transportTimeouts.headersTimeout,
+    };
+    const parameters = await summarizeWith(undefined, 'gpt-4o', appConfig);
+    const expected = getOpenAIConfig('unused', { transportTimeouts });
+    const configuration = parameters.configuration as NonNullable<OpenAIConfiguration>;
+    expect(configuration.fetchOptions?.dispatcher).toBe(
+      expected.configOptions?.fetchOptions?.dispatcher,
+    );
   });
 
   it('leaves a same-endpoint summarizer on the agent client options', async () => {
@@ -2663,7 +2690,9 @@ describe('built-in provider request shaping', () => {
   it('withholds the declaration when a reverse proxy serves the built-in endpoint', async () => {
     process.env.OPENAI_REVERSE_PROXY = 'https://gateway.internal/v1';
     try {
-      expect(await summarizeWith()).toBeUndefined();
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
     } finally {
       delete process.env.OPENAI_REVERSE_PROXY;
     }
@@ -2672,7 +2701,9 @@ describe('built-in provider request shaping', () => {
   it('withholds the declaration when the base URL is user-provided', async () => {
     process.env.OPENAI_REVERSE_PROXY = 'user_provided';
     try {
-      expect(await summarizeWith()).toBeUndefined();
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
     } finally {
       delete process.env.OPENAI_REVERSE_PROXY;
     }

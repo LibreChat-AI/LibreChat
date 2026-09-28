@@ -67,6 +67,8 @@ jest.mock('@librechat/api', () => {
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
     prepareCodeOutputBufferForInspection:
       jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
+    getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
+    appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in
@@ -2050,6 +2052,7 @@ describe('Code Process', () => {
         readWorkspaceFile({
           file_path: 'src/app.ts',
           workspace_id: 'primary',
+          workspace_instance_id: 'a'.repeat(64),
           start_line: 1,
           max_lines: 200,
           codeApiBaseUrl: 'https://attached-code.example.com/v1',
@@ -2057,21 +2060,36 @@ describe('Code Process', () => {
           bridgeWorkerId: 'worker-user-1',
           req: mockReq,
           signal: controller.signal,
+          maxQueueWaitMs: 0,
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
         }),
       ).resolves.toBe(result);
 
-      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(mockReq, 'worker-user-1');
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
-        authHeaders: {
-          Authorization: 'Bearer workspace-token',
-          'X-CodeAPI-Expected-Profile': 'stateful',
-          'X-LibreChat-Code-Worker-ID': 'worker-user-1',
-        },
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: 125_000,
+        deadlineAtMs: 160_000,
         request: {
           protocolVersion: 1,
           operation: 'read_file',
           workspaceId: 'primary',
+          workspaceInstanceId: 'a'.repeat(64),
           path: 'src/app.ts',
           startLine: 1,
           maxLines: 200,
@@ -2105,16 +2123,29 @@ describe('Code Process', () => {
           bridgeWorkerId: 'worker-user-1',
           req: mockReq,
           signal: controller.signal,
+          maxQueueWaitMs: 0,
         }),
       ).resolves.toBe(result);
 
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
-        authHeaders: {
-          Authorization: 'Bearer workspace-token',
-          'X-CodeAPI-Expected-Profile': 'stateful',
-          'X-LibreChat-Code-Worker-ID': 'worker-user-1',
-        },
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
         request: {
           protocolVersion: 1,
           operation: 'search_text',
@@ -2152,16 +2183,29 @@ describe('Code Process', () => {
           bridgeWorkerId: 'worker-user-1',
           req: mockReq,
           signal: controller.signal,
+          maxQueueWaitMs: 0,
         }),
       ).resolves.toBe(result);
 
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
-        authHeaders: {
-          Authorization: 'Bearer workspace-token',
-          'X-CodeAPI-Expected-Profile': 'stateful',
-          'X-LibreChat-Code-Worker-ID': 'worker-user-1',
-        },
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
         request: {
           protocolVersion: 1,
           operation: 'list_files',
@@ -2195,25 +2239,40 @@ describe('Code Process', () => {
           content: 'ready',
           overwrite: false,
           workspace_id: 'primary',
+          workspace_instance_id: 'b'.repeat(64),
           codeApiBaseUrl: 'https://attached-code.example.com/v1',
           executionProfile: 'stateful',
           bridgeWorkerId: 'worker-user-1',
           req: mockReq,
           signal: controller.signal,
+          maxQueueWaitMs: 0,
         }),
       ).resolves.toBe(result);
 
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
-        authHeaders: {
-          Authorization: 'Bearer workspace-token',
-          'X-CodeAPI-Expected-Profile': 'stateful',
-          'X-LibreChat-Code-Worker-ID': 'worker-user-1',
-        },
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
         request: {
           protocolVersion: 1,
           operation: 'write_file',
           workspaceId: 'primary',
+          workspaceInstanceId: 'b'.repeat(64),
           path: 'src/new.ts',
           content: 'ready',
           overwrite: false,
@@ -2247,11 +2306,15 @@ describe('Code Process', () => {
           bridgeWorkerId: 'worker-user-1',
           req: mockReq,
           expected_base_sha256: 'a'.repeat(64),
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
         }),
       ).resolves.toBe(result);
 
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
         expect.objectContaining({
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
           request: {
             protocolVersion: 1,
             operation: 'edit_file',
@@ -2289,11 +2352,15 @@ describe('Code Process', () => {
           codeApiBaseUrl: 'https://attached-code.example.com/v1',
           executionProfile: 'stateful',
           req: mockReq,
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
         }),
       ).resolves.toBe(result);
 
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
         expect.objectContaining({
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
           request: {
             protocolVersion: 1,
             operation: 'preview_edit',
@@ -2859,6 +2926,7 @@ describe('Code Process', () => {
           tool_resources: { execute_code: { file_ids: [dbFile.file_id], files: [] } },
           agentId: 'agent-id',
           signal: controller.signal,
+          maxQueueWaitMs: 0,
         }),
       ).rejects.toMatchObject({ name: 'AbortError' });
       expect(handleFileUpload).toHaveBeenCalledTimes(1);
@@ -3451,6 +3519,24 @@ describe('Code Process', () => {
       });
 
       expect(result.files?.[0]?.name).toBe('photo.webp');
+    });
+
+    it('tells the model an attached workspace cannot open primed files', async () => {
+      setupSessionInfoOk();
+      getFiles.mockResolvedValue([makeFile({ status: 'ready' })]);
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: ['fid-ready'], files: [] } },
+        agentId: 'agent-id',
+        codeFileLocation: 'programmatic',
+      });
+
+      expect(result.toolContext).toContain('not in the attached workspace');
+      expect(result.toolContext).toContain('$LIBRECHAT_CODE_DATA_DIR/data-ready.xlsx');
+      expect(result.toolContext).not.toContain('/mnt/data');
+      expect(result.toolContext).not.toContain('tool environment:');
+      expect(result.files).toHaveLength(1);
     });
 
     it('annotates a pending file with "(preview not yet generated)"', async () => {

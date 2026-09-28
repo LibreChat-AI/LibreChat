@@ -39,6 +39,20 @@ const persistedAgent = {
 };
 
 describe('Agent Management contract', () => {
+  it('preserves repository instruction mode through API updates and response projection', () => {
+    for (const mode of ['prefer', 'defer', 'off'] as const) {
+      expect(agentManagementUpdateSchema.parse({ repositoryInstructions: mode })).toEqual({
+        repositoryInstructions: mode,
+      });
+      expect(
+        projectAgentManagementResponse({ ...persistedAgent, repositoryInstructions: mode })
+          .repositoryInstructions,
+      ).toBe(mode);
+    }
+    expect(
+      agentManagementUpdateSchema.safeParse({ repositoryInstructions: 'allow-all' }).success,
+    ).toBe(false);
+  });
   describe('inputs', () => {
     it('keeps create and update fields aligned with the browser Agent validators', () => {
       expect(

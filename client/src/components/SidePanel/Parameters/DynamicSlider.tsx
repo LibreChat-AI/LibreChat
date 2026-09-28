@@ -228,7 +228,11 @@ function DynamicSlider({
             disabled={readonly}
             value={[
               isEnum
-                ? enumToNumeric[(selectedValue as number) ?? '']
+                ? // A model switch may hide a saved enum value. Keep its stored value
+                  // but retain a valid thumb so keyboard users can choose a supported one.
+                  (enumToNumeric[String(selectedValue ?? '')] ??
+                  enumToNumeric[String(defaultValue)] ??
+                  0)
                 : ((inputValue as number) ?? (defaultValue as number)),
             ]}
             onValueChange={(value) => handleValueChange(value[0])}

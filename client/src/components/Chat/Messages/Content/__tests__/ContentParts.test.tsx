@@ -18,17 +18,12 @@ jest.mock('~/utils', () => ({
 }));
 
 jest.mock('~/Providers', () => {
-  const react = jest.requireActual<typeof import('react')>('react');
   return {
-    MessageContext: {
-      Provider: ({
-        children,
-        value,
-      }: {
-        children: React.ReactElement<{ idx?: number }>;
-        value: { partIndex: number };
-      }) => react.cloneElement(children, { idx: value.partIndex }),
-    },
+    /** Use the real context: cloning the immediate child assumes Part has no
+     * intervening providers and does not exercise context propagation. */
+    MessageContext: jest.requireActual<typeof import('~/Providers/MessageContext')>(
+      '~/Providers/MessageContext',
+    ).MessageContext,
     SearchContext: {
       Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     },
@@ -129,27 +124,33 @@ jest.mock('../Container', () => ({
   ),
 }));
 
-jest.mock('../Part', () => ({
-  __esModule: true,
-  default: ({
-    part,
-    idx,
-    showCursor,
-    isLast,
-  }: {
-    part: TMessageContentParts;
-    idx: number;
-    showCursor?: boolean;
-    isLast?: boolean;
-  }) => (
-    <div
-      data-testid={`real-part-${part.type}`}
-      data-index={idx}
-      data-show-cursor={String(showCursor === true)}
-      data-is-last={String(isLast === true)}
-    />
-  ),
-}));
+jest.mock('../Part', () => {
+  const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
+    '~/Providers/MessageContext',
+  );
+  return {
+    __esModule: true,
+    default: function MockPart({
+      part,
+      showCursor,
+      isLast,
+    }: {
+      part: TMessageContentParts;
+      showCursor?: boolean;
+      isLast?: boolean;
+    }) {
+      const { partIndex } = useMessageContext();
+      return (
+        <div
+          data-testid={`real-part-${part.type}`}
+          data-index={partIndex}
+          data-show-cursor={String(showCursor === true)}
+          data-is-last={String(isLast === true)}
+        />
+      );
+    },
+  };
+});
 
 jest.mock('../ParallelContent', () => ({
   /** Invokes `renderResumeAttribution` per content index like the real

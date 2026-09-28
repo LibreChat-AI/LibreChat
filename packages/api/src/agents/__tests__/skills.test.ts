@@ -14,7 +14,23 @@ jest.mock('@librechat/agents', () => ({
       .Constants,
     SKILL_TOOL: 'skill',
   },
-  SkillToolDefinition: { name: 'skill', description: 'skill tool', parameters: {} },
+  SkillToolDefinition: {
+    name: 'skill',
+    description: `skill tool
+
+CONSTRAINTS:
+- Skill names come from the catalog only. Do not guess names.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        skillName: {
+          type: 'string',
+          description: 'Must match a name from the "Available Skills" section.',
+        },
+      },
+      required: ['skillName'],
+    },
+  },
   ReadFileToolDefinition: {
     name: 'read_file',
     description: 'read file',
@@ -1372,6 +1388,137 @@ describe('injectSkillCatalog', () => {
     /* Skill tool still gets registered because there is at least one
        catalog-visible skill. */
     expect(names).toContain('skill');
+  });
+
+  it('registers the skill tool with an empty catalog when the run can author skills', async () => {
+    /* A model that can write `skills/{skillName}/SKILL.md` needs the `skill`
+       tool bound at init: definitions bind once per run, so a run that only
+       learned about the skill after creating it could never invoke it. */
+    const listSkillsByAccess = jest.fn();
+    const agent = makeAgent();
+    const result = await injectSkillCatalog(
+      baseParams({
+        agent,
+        accessibleSkillIds: [],
+        listSkillsByAccess,
+        skillAuthoringAvailable: true,
+      }),
+    );
+
+    const definedNames = (result.toolDefinitions ?? []).map((d) => d.name);
+    expect(definedNames).toContain('skill');
+    expect(result.toolNames).toContain('skill');
+    expect(result.skillCount).toBe(0);
+    expect(result.activeSkillIds).toEqual([]);
+    expect(agent.additional_instructions).toBeUndefined();
+    expect(listSkillsByAccess).not.toHaveBeenCalled();
+  });
+
+  it('omits the skill tool with an empty catalog when the run cannot author skills', async () => {
+    const result = await injectSkillCatalog(
+      baseParams({ accessibleSkillIds: [], listSkillsByAccess: jest.fn() }),
+    );
+
+    expect((result.toolDefinitions ?? []).map((d) => d.name)).not.toContain('skill');
+    expect(result.toolNames).toEqual([]);
+  });
+
+  it('registers the skill tool for an authoring run whose only skill is model-disabled', async () => {
+    const ownedHidden: PageSkill = {
+      ...makeSkill('owned-hidden-authoring', userObjectId),
+      disableModelInvocation: true,
+    };
+    const listSkillsByAccess = buildPager([[ownedHidden]]);
+    const result = await injectSkillCatalog(
+      baseParams({ listSkillsByAccess, skillAuthoringAvailable: true }),
+    );
+
+    const definedNames = (result.toolDefinitions ?? []).map((d) => d.name);
+    expect(definedNames).toContain('skill');
+    expect(definedNames).toContain('read_file');
+    expect(result.skillCount).toBe(0);
+    expect(result.activeSkillIds.map((id) => id.toString())).toEqual([ownedHidden._id.toString()]);
+  });
+
+  it('advertises authored skills only on authoring runs', async () => {
+    const owned = makeSkill('owned-skill', userObjectId);
+    const authoring = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess: buildPager([[owned]]),
+        skillAuthoringAvailable: true,
+      }),
+    );
+    const catalogOnly = await injectSkillCatalog(
+      baseParams({ listSkillsByAccess: buildPager([[owned]]) }),
+    );
+
+    const authoringDef = (authoring.toolDefinitions ?? []).find((d) => d.name === 'skill');
+    const catalogOnlyDef = (catalogOnly.toolDefinitions ?? []).find((d) => d.name === 'skill');
+    expect(authoringDef?.description).toContain('a skill you created in this conversation');
+    expect(catalogOnlyDef?.description).toContain('Skill names come from the catalog only');
+  });
+
+  it('replaces an already-registered skill definition instead of leaving it stale', async () => {
+    /**
+     * Counting occurrences is not enough: a surviving catalog-only definition
+     * tells an authoring run's model that a name it just created is invalid,
+     * which is the failure this registration exists to prevent. Assert the
+     * definition that survives, and assert the registry the host handler
+     * resolves agrees with the array the model reads.
+     */
+    const owned = makeSkill('owned-skill', userObjectId);
+    type ToolRegistryArg = NonNullable<Parameters<typeof injectSkillCatalog>[0]['toolRegistry']>;
+    type ToolDef = Parameters<ToolRegistryArg['set']>[1];
+    const preSkill: ToolDef = {
+      name: 'skill',
+      description: 'pre-registered catalog-only definition',
+      parameters: { type: 'object', properties: {} },
+    };
+    const preRegistry = new Map<string, ToolDef>() as unknown as ToolRegistryArg;
+    preRegistry.set('skill', preSkill);
+
+    const result = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess: buildPager([[owned]]),
+        skillAuthoringAvailable: true,
+        toolRegistry: preRegistry,
+        toolDefinitions: [preSkill],
+      }),
+    );
+
+    const skillDefs = (result.toolDefinitions ?? []).filter((d) => d.name === 'skill');
+    expect(skillDefs).toHaveLength(1);
+    expect(skillDefs[0].description).not.toBe(preSkill.description);
+    expect(skillDefs[0].description).toContain('a skill you created in this conversation');
+    expect((preRegistry as unknown as Map<string, ToolDef>).get('skill')).toBe(skillDefs[0]);
+  });
+
+  it('keeps the non-authoring variant live when it replaces a stale definition', async () => {
+    /* Same replacement on a run that cannot author: the model must end up with
+       the SDK definition, never a leftover from an earlier registration. */
+    const owned = makeSkill('owned-skill', userObjectId);
+    type ToolRegistryArg = NonNullable<Parameters<typeof injectSkillCatalog>[0]['toolRegistry']>;
+    type ToolDef = Parameters<ToolRegistryArg['set']>[1];
+    const preSkill: ToolDef = {
+      name: 'skill',
+      description: 'stale definition from an earlier registration',
+      parameters: { type: 'object', properties: {} },
+    };
+    const preRegistry = new Map<string, ToolDef>() as unknown as ToolRegistryArg;
+    preRegistry.set('skill', preSkill);
+
+    const result = await injectSkillCatalog(
+      baseParams({
+        listSkillsByAccess: buildPager([[owned]]),
+        toolRegistry: preRegistry,
+        toolDefinitions: [preSkill],
+      }),
+    );
+
+    const skillDefs = (result.toolDefinitions ?? []).filter((d) => d.name === 'skill');
+    expect(skillDefs).toHaveLength(1);
+    expect(skillDefs[0].description).toContain('Skill names come from the catalog only');
+    expect((preRegistry as unknown as Map<string, ToolDef>).get('skill')).toBe(skillDefs[0]);
   });
 });
 

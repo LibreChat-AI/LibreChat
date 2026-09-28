@@ -18,6 +18,8 @@ export * from './upload/routing';
 export * from './upload/diagnostics';
 export * from './upload/fallback';
 export * from './rag';
+export * from './rag/context';
+export * from './rag/search';
 export * from './regexEngine';
 export * from './retention';
 export * from './sse';

@@ -1,6 +1,8 @@
 import { logger } from '@librechat/data-schemas';
 import { AnthropicClientOptions } from '@librechat/agents';
 import {
+  isOpus55Model,
+  OPUS_55_BLOCK_BINDING,
   ThinkingDisplay,
   AnthropicEffort,
   anthropicSettings,
@@ -94,7 +96,11 @@ function configureReasoning(
     return updatedOptions;
   }
 
-  if (extendedOptions.thinking && modelName && supportsAdaptiveThinking(modelName)) {
+  if (
+    (extendedOptions.thinking || isOpus55Model(modelName)) &&
+    modelName &&
+    supportsAdaptiveThinking(modelName)
+  ) {
     /**
      * For Opus 4.7+, Anthropic omits thinking content from responses by
      * default. Resolver returns `'summarized'` for those models (so the
@@ -104,9 +110,11 @@ function configureReasoning(
      * https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default
      */
     const display = resolveThinkingDisplay(modelName, extendedOptions.thinkingDisplay);
-    const adaptive = display
-      ? { type: 'adaptive' as const, display }
-      : { type: 'adaptive' as const };
+    const adaptive = {
+      type: 'adaptive' as const,
+      ...(display ? { display } : {}),
+      ...(isOpus55Model(modelName) ? { block_binding: { ...OPUS_55_BLOCK_BINDING } } : {}),
+    };
     /**
      * TODO: Remove the cast once `@librechat/agents` updates its
      * `ChatAnthropicMessages['thinking']` type to include the `display` field

@@ -1,6 +1,56 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { EndpointTokenConfig } from '~/types';
-import { getModelMaxTokens, getModelMaxOutputTokens } from './tokens';
+import { getModelMaxTokens, getModelMaxOutputTokens, findMatchingPattern } from './tokens';
+
+describe('Bedrock OpenAI context windows', () => {
+  const models = [
+    'gpt-6-sol',
+    'gpt-6-luna',
+    'gpt-6-astra',
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+  ];
+
+  it.each(models)('resolves %s across Bedrock inference profiles', (model) => {
+    for (const prefix of ['', 'us.', 'global.']) {
+      expect(getModelMaxTokens(`${prefix}openai.${model}`, EModelEndpoint.bedrock)).toBe(950000);
+    }
+  });
+
+  it('matches versioned profiles without changing the native OpenAI context window', () => {
+    expect(getModelMaxTokens('us.openai.gpt-6-sol-2026-09-22', EModelEndpoint.bedrock)).toBe(
+      950000,
+    );
+    expect(getModelMaxTokens('gpt-6-sol', EModelEndpoint.openAI)).toBe(1050000);
+  });
+
+  it('keeps GPT-OSS limits and unknown-model fallback unchanged', () => {
+    for (const model of ['openai.gpt-oss-20b-1:0', 'us.openai.gpt-oss-120b-1:0']) {
+      expect(getModelMaxTokens(model, EModelEndpoint.bedrock)).toBe(128000);
+    }
+    expect(getModelMaxTokens('us.openai.unknown-model', EModelEndpoint.bedrock)).toBeUndefined();
+  });
+
+  it('preserves explicit endpoint overrides while falling back for unlisted profiles', () => {
+    const override: EndpointTokenConfig = {
+      'openai.gpt-6-sol': { context: 64000, prompt: 1, completion: 1 },
+    };
+    expect(getModelMaxTokens('us.openai.gpt-6-sol', EModelEndpoint.bedrock, override)).toBe(64000);
+    expect(getModelMaxTokens('global.openai.gpt-6-luna', EModelEndpoint.bedrock, override)).toBe(
+      950000,
+    );
+  });
+
+  it('prefers the GPT-5.6 key over shorter keys proposed for Bedrock Mantle', () => {
+    const keys = {
+      'openai.gpt-5': 272000,
+      'openai.gpt-5.5': 272000,
+      'openai.gpt-5.6': 950000,
+    };
+    expect(findMatchingPattern('us.openai.gpt-5.6-sol', keys)).toBe('openai.gpt-5.6');
+  });
+});
 
 describe('getModelMaxTokens partial-override fallback', () => {
   const partialOverride: EndpointTokenConfig = {
@@ -210,5 +260,48 @@ describe('vendor-prefixed model ids', () => {
   it('leaves dot-separated bedrock ids alone', () => {
     expect(getModelMaxTokens('moonshot.kimi-k2-thinking', EModelEndpoint.bedrock)).toBe(262144);
     expect(getModelMaxTokens('us.anthropic.claude-3-5-sonnet-20241022-v2:0')).toBe(200000);
+  });
+});
+
+describe('Grok 4.7 context window', () => {
+  it.each(['grok-4.7', 'x-ai/grok-4.7', 'xai/grok-4.7', 'grok-4-7'])(
+    'resolves %s through the custom endpoint without falling back to Grok 4',
+    (model) => {
+      expect(getModelMaxTokens(model, EModelEndpoint.custom)).toBe(500000);
+    },
+  );
+
+  it('preserves explicit operator context overrides', () => {
+    const config: EndpointTokenConfig = {
+      'grok-4.7': { prompt: 2, completion: 6, context: 32000, output: 4096 },
+    };
+    expect(getModelMaxTokens('grok-4.7', EModelEndpoint.custom, config)).toBe(32000);
+  });
+
+  it('keeps older Grok context windows unchanged', () => {
+    expect(getModelMaxTokens('grok-4', EModelEndpoint.custom)).toBe(256000);
+    expect(getModelMaxTokens('grok-4-fast', EModelEndpoint.custom)).toBe(2000000);
+    expect(getModelMaxTokens('grok-4.6', EModelEndpoint.custom)).toBe(500000);
+  });
+});
+
+describe('Opus 5.5 token limits', () => {
+  it.each([
+    'claude-opus-5-5',
+    'claude-opus-5.5',
+    'anthropic/claude-opus-5-5',
+    'global.anthropic.claude-opus-5-5',
+  ])('resolves %s to the existing modern Claude profile', (model) => {
+    expect(getModelMaxTokens(model)).toBe(1000000);
+    expect(getModelMaxOutputTokens(model)).toBe(128000);
+  });
+});
+
+describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
+  it('resolves exact, snapshot, and provider-prefixed IDs', () => {
+    for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
+      expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
+      expect(getModelMaxOutputTokens(name, EModelEndpoint.openAI)).toBe(128000);
+    }
   });
 });

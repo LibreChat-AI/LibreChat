@@ -46,7 +46,7 @@ import type {
   FileContentInput,
 } from '~/protection';
 import type { InitializeAgentParams as CoreInitializeAgentParams } from '../initialize';
-import type { OpenAIStreamHandlerConfig, EventHandler } from './handlers';
+import type { OpenAIStreamWriterConfig, EventHandler } from './handlers';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { MCPRuntimeRequestBody } from '~/mcp/request';
 import type { ToolExecuteOptions } from '../handlers';
@@ -63,6 +63,7 @@ import {
   createOpenAIContentAggregator,
   createOpenAIStreamTracker,
   createOpenAIHandlers,
+  completeOpenAIToolCalls,
   sendFinalChunk,
   createChunk,
   writeSSE,
@@ -569,9 +570,12 @@ export function buildNonStreamingResponse(
   reasoning: string,
   toolCalls: Map<number, ToolCall>,
   usage: CompletionUsage,
+  /** True when the map contains only accepted client-owned calls, not legacy run-step history. */
+  acceptedToolCallsOnly = false,
 ): ChatCompletionResponse {
   const toolCallsArray = Array.from(toolCalls.values());
-  const finishReason = toolCallsArray.length > 0 && !text ? 'tool_calls' : 'stop';
+  const finishReason =
+    toolCallsArray.length > 0 && (acceptedToolCallsOnly || !text) ? 'tool_calls' : 'stop';
 
   return {
     id: context.requestId,
@@ -823,29 +827,31 @@ export async function createAgentChatCompletion(
     }
 
     // Create handler config (only used for streaming)
-    const handlerConfig: OpenAIStreamHandlerConfig | null =
+    const handlerConfig: OpenAIStreamWriterConfig | null =
       isStreaming && tracker
         ? {
-            res,
+            writer: res,
             context,
             tracker,
           }
         : null;
 
     // Create event handlers
-    const eventHandlers =
-      isStreaming && handlerConfig
-        ? createOpenAIHandlers(
-            handlerConfig,
-            deps.toolExecuteOptions == null
-              ? undefined
-              : {
-                  ...deps.toolExecuteOptions,
-                  runSignal: abortController.signal,
-                  foregroundRunId: requestId,
-                },
-          )
-        : {};
+    const eventHandlers = createOpenAIHandlers(
+      handlerConfig
+        ? { ...handlerConfig, signal: abortController.signal }
+        : {
+            aggregator: aggregator!,
+            signal: abortController.signal,
+          },
+      deps.toolExecuteOptions == null
+        ? undefined
+        : {
+            ...deps.toolExecuteOptions,
+            runSignal: abortController.signal,
+            foregroundRunId: requestId,
+          },
+    );
 
     // Convert messages to internal format
     const messages = convertMessages(request.messages);
@@ -877,41 +883,50 @@ export async function createAgentChatCompletion(
       });
 
       if (run) {
-        await run.processStream(
-          { messages },
+        const target = tracker ?? aggregator!;
+        await completeOpenAIToolCalls(
           {
-            runName: 'AgentRun',
-            configurable: {
-              thread_id: conversationId,
-              user_id: userId,
-              user: safeUser,
-              requestBody: mcpRequestBody,
-              /** Same per-agent channel the in-repo controllers thread via
-               *  `loadTools`: without it, the executor's PTC path cannot
-               *  strip host-injected `intent` params from the schemas the
-               *  sandbox bridge advertises on this route. */
-              ...(initializedAgent.intentToolNames?.length
-                ? { intentToolNames: initializedAgent.intentToolNames }
-                : {}),
-            },
-            recursionLimit: resolveRecursionLimit(
-              agentsConfig as Partial<TAgentsEndpoint> | undefined,
-              initializedAgent,
-            ),
-            signal: abortController.signal,
-            streamMode: 'values',
-            version: 'v2',
+            finish: () => target.finishToolCalls?.(),
+            abort: () => target.abortToolCalls?.(),
           },
-          {},
+          () =>
+            run.processStream(
+              { messages },
+              {
+                runName: 'AgentRun',
+                configurable: {
+                  thread_id: conversationId,
+                  user_id: userId,
+                  user: safeUser,
+                  requestBody: mcpRequestBody,
+                  /** Same per-agent channel the in-repo controllers thread via
+                   *  `loadTools`: without it, the executor's PTC path cannot
+                   *  strip host-injected `intent` params from the schemas the
+                   *  sandbox bridge advertises on this route. */
+                  ...(initializedAgent.intentToolNames?.length
+                    ? { intentToolNames: initializedAgent.intentToolNames }
+                    : {}),
+                },
+                recursionLimit: resolveRecursionLimit(
+                  agentsConfig as Partial<TAgentsEndpoint> | undefined,
+                  initializedAgent,
+                ),
+                signal: abortController.signal,
+                streamMode: 'values',
+                version: 'v2',
+              },
+              {},
+            ),
         );
       }
     }
 
     // Finalize response
     if (isStreaming && handlerConfig) {
-      sendFinalChunk(handlerConfig);
+      sendFinalChunk(handlerConfig, 'stop', undefined, true);
       res.end();
     } else if (aggregator) {
+      aggregator.finishToolCalls?.();
       // Build and send non-streaming response
       const usage: CompletionUsage = {
         prompt_tokens: aggregator.usage.promptTokens,
@@ -927,6 +942,7 @@ export async function createAgentChatCompletion(
         aggregator.getReasoning(),
         aggregator.toolCalls,
         usage,
+        true,
       );
       res.json(response);
     }

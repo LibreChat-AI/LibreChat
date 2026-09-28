@@ -199,6 +199,29 @@ describe('initializeCustom – OpenAI-compatible header forwarding', () => {
     jest.clearAllMocks();
   });
 
+  it('forwards Agent model transport timeout policy', async () => {
+    const params = createParams({
+      apiKey: 'sk-system-key',
+      baseURL: 'https://gateway.example.com/v1',
+    });
+    (params.req.config as { endpoints: Record<string, unknown> }).endpoints = {
+      agents: {
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 120_000,
+      },
+    };
+
+    await initializeCustom(params);
+
+    const clientOptions = mockGetOpenAIConfig.mock.calls[0][1] as {
+      transportTimeouts?: { bodyTimeout: number; headersTimeout: number };
+    };
+    expect(clientOptions.transportTimeouts).toEqual({
+      bodyTimeout: 1_800_000,
+      headersTimeout: 120_000,
+    });
+  });
+
   it('preserves configured headers for admin-trusted base URLs', async () => {
     const headers = {
       Authorization: 'Bearer static-gateway-token',

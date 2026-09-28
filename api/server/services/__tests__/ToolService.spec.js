@@ -990,6 +990,7 @@ describe('ToolService - Action Capability Gating', () => {
         ...expectedParams,
         codeApiBaseUrl: 'https://api.librechat.ai',
         executionProfile: 'default',
+        codeFileLocation: 'sandbox',
       });
     });
 
@@ -1023,7 +1024,43 @@ describe('ToolService - Action Capability Gating', () => {
         codeApiBaseUrl: 'https://stateful-code.example.com',
         executionProfile: 'stateful',
         bridgeWorkerId: 'worker-abc',
+        codeFileLocation: 'sandbox',
       });
+    });
+
+    it('primes code files for an attached workspace as unavailable to workspace tools', async () => {
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.execute_code];
+      const req = createMockReq(capabilities);
+      req.body = {
+        codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
+      };
+      const tool_resources = { execute_code: { file_ids: ['attached-file'] } };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'attached-agent', tools: [Tools.execute_code] },
+        tool_resources,
+        definitionsOnly: true,
+        codeExecutionContext: {
+          baseUrl: 'http://attached-code.test/v1',
+          codeSessionKey: 'execute_code:stateful:attached',
+          executionProfile: 'stateful',
+          statefulSessions: true,
+          environmentType: 'attached',
+          environmentId: 'personal-machine',
+          bridgeWorkerId: 'worker-abc',
+        },
+      });
+
+      expect(mockPrimeCodeFiles).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool_resources,
+          bridgeWorkerId: 'worker-abc',
+          codeFileLocation: 'programmatic',
+        }),
+      );
     });
 
     it('propagates a typed CodeAPI resource recovery failure before model invocation', async () => {
@@ -1730,6 +1767,9 @@ describe('ToolService - Action Capability Gating', () => {
         expect(emittedStreamId).toBe(streamId);
         expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
       }
+      for (const [reinitInput] of reinitMCPServer.mock.calls) {
+        expect(reinitInput).toEqual(expect.objectContaining({ streamId, jobCreatedAt }));
+      }
     });
 
     it('should not expose cached MCP tool definitions when the registry lookup fails', async () => {
@@ -2270,6 +2310,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
         signal,
         upstreamTokenProvider: scheduledProvider,
+        streamId: 'scheduled-stream',
+        jobCreatedAt: 42,
       });
 
       expect(reinitMCPServer).toHaveBeenCalledWith(
@@ -2277,6 +2319,8 @@ describe('ToolService - Action Capability Gating', () => {
           serverName,
           forceNew: true,
           upstreamTokenProvider: scheduledProvider,
+          streamId: 'scheduled-stream',
+          jobCreatedAt: 42,
         }),
       );
     });
@@ -2898,7 +2942,7 @@ describe('ToolService - Action Capability Gating', () => {
         environmentType: 'attached',
         environmentId: 'personal-machine',
         bridgeWorkerId: 'worker-abc',
-        codeEnvironmentConfigSchema: { limits: { maxCommandTimeoutMs: 120000 } },
+        codeEnvironmentConfigSchema: { limits: { maxCommandTimeoutMs: 120000, maxQueueWaitMs: 0 } },
       });
       const toolRegistry = new Map([
         [AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }],
@@ -2925,6 +2969,7 @@ describe('ToolService - Action Capability Gating', () => {
         workspaceId: 'project-a',
         gitIdentity: { name: 'LibreChat Agent', email: 'agent@example.com' },
         maxTimeoutMs: 120000,
+        maxQueueWaitMs: 0,
       });
       expect(mockResolveCodeExecutionWorkspaceContext).toHaveBeenCalledWith(
         expect.objectContaining({ requestedSelections: req.body.codeWorkspaces }),
@@ -3307,8 +3352,8 @@ describe('ToolService - Action Capability Gating', () => {
               (tool) => tool.name === Constants.BASH_PROGRAMMATIC_TOOL_CALLING,
             ),
           ).toBe(supported);
-          expect(mockGetAppConfig).not.toHaveBeenCalled();
-          expect(fetchSpy).not.toHaveBeenCalled();
+          expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
+          expect(fetchSpy).toHaveBeenCalledTimes(1);
         } finally {
           fetchSpy.mockRestore();
           delete process.env.TEST_PTC_DEPLOYMENT_TOKEN;

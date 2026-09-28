@@ -222,6 +222,38 @@ describe('composeAgentUpdatePayload', () => {
     expect(payload.skill_authoring_enabled).toBe(true);
   });
 
+  it.each([
+    [EModelEndpoint.anthropic, 'claude-opus-5-5'],
+    [EModelEndpoint.bedrock, 'global.anthropic.claude-opus-5-5'],
+  ])(
+    'preserves model-hidden %s settings when saving without opening the model panel',
+    (provider, model) => {
+      const form = createForm();
+      form.provider = provider;
+      form.model = model;
+      const stored = {
+        maxContextTokens: null,
+        max_context_tokens: null,
+        max_output_tokens: null,
+        top_p: null,
+        frequency_penalty: null,
+        presence_penalty: null,
+        thinking: false,
+        thinkingBudget: 4096,
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+      };
+      form.model_parameters = stored;
+      const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
+        endpointsConfig: {},
+        startupConfig: {},
+      });
+      expect(payload.model_parameters).toEqual(form.model_parameters);
+      expect(JSON.parse(JSON.stringify(payload)).model_parameters).toEqual(form.model_parameters);
+    },
+  );
+
   it('prunes dropped model parameters during submission', () => {
     const form = createForm();
     form.provider = EModelEndpoint.openAI;

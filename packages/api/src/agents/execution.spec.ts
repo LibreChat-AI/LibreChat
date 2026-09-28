@@ -145,6 +145,33 @@ describe('resolveCodeExecutionContext', () => {
     expect(context.executionRouteKey).toMatch(/^stateful:[a-f0-9]{32}$/);
   });
 
+  it('derives a stable opaque worktree identity from authenticated conversation scope', () => {
+    const resolve = (conversationId: string, userId = 'user-1') =>
+      resolveCodeExecutionContext({
+        statefulSessions: true,
+        environmentId: 'my-vm',
+        environments: [
+          {
+            id: 'my-vm',
+            name: 'My VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example/v1',
+            workerId: 'worker',
+            owner: 'deployment',
+          },
+        ],
+        userId,
+        conversationId,
+      }).conversationWorkspaceInstanceId;
+
+    const first = resolve('conversation-1');
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(resolve('conversation-1')).toBe(first);
+    expect(resolve('conversation-2')).not.toBe(first);
+    expect(resolve('conversation-1', 'user-2')).not.toBe(first);
+    expect(first).not.toContain('conversation-1');
+  });
+
   it('routes a deployment worker declared in pairing metadata', () => {
     const context = resolveCodeExecutionContext({
       statefulSessions: true,
@@ -403,6 +430,24 @@ describe('stateful code approval target binding', () => {
         environment: { fingerprint: 'b'.repeat(64), actions: ['typecheck'] },
       },
     });
+    expect(() =>
+      assertCodeExecutionApprovalBinding(expected, [{ id: 'a', codeExecutionContext: updated }]),
+    ).toThrow('changed while this action awaited approval');
+  });
+
+  it('requires new approval when the conversation worktree changes', () => {
+    const original = context();
+    original.codeWorkspace!.workspaceInstanceId = 'a'.repeat(64);
+    const expected = captureCodeExecutionApprovalBinding([
+      { id: 'a', codeExecutionContext: original },
+    ]);
+    const updated = context({
+      codeWorkspace: {
+        ...original.codeWorkspace!,
+        workspaceInstanceId: 'b'.repeat(64),
+      },
+    });
+
     expect(() =>
       assertCodeExecutionApprovalBinding(expected, [{ id: 'a', codeExecutionContext: updated }]),
     ).toThrow('changed while this action awaited approval');

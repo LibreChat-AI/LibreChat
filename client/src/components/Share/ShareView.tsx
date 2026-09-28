@@ -20,6 +20,10 @@ import {
   TooltipAnchor,
   useToastContext,
 } from '@librechat/client';
+import {
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
 import SharedSubagentActivityDialog from '~/components/Chat/Subagents/SharedSubagentActivityDialog';
 import { cn, DEFAULT_APP_TITLE, getResponseStatus, selectActiveBranchTail } from '~/utils';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
@@ -240,18 +244,22 @@ function SharedView() {
     );
 
   return (
-    <ShareContext.Provider
-      value={{ isSharedConvo: true, shareId, hasConfiguredSender: data?.hasConfiguredSender }}
+    <CodeHighlightThrottleContext.Provider
+      value={normalizeCodeHighlightThrottleMs(config?.interface?.codeHighlightThrottleMs)}
     >
-      <AppChatSurface>
-        <div className="relative flex h-screen w-full overflow-hidden dark:bg-surface-secondary">
-          <main className="relative flex w-full grow overflow-hidden dark:bg-surface-secondary">
-            {artifactsContainer}
-          </main>
-        </div>
-        <SharedSubagentActivityDialog shareId={shareId} />
-      </AppChatSurface>
-    </ShareContext.Provider>
+      <ShareContext.Provider
+        value={{ isSharedConvo: true, shareId, hasConfiguredSender: data?.hasConfiguredSender }}
+      >
+        <AppChatSurface>
+          <div className="relative flex h-screen w-full overflow-hidden dark:bg-surface-secondary">
+            <main className="relative flex w-full grow overflow-hidden dark:bg-surface-secondary">
+              {artifactsContainer}
+            </main>
+          </div>
+          <SharedSubagentActivityDialog shareId={shareId} />
+        </AppChatSurface>
+      </ShareContext.Provider>
+    </CodeHighlightThrottleContext.Provider>
   );
 }
 

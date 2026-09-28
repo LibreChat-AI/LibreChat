@@ -9,7 +9,7 @@ services:
     depends_on:
       - mongodb
       - rag_api
-    image: registry.librechat.ai/danny-avila/librechat-dev:latest
+    image: registry.librechat.ai/librechat-ai/librechat-dev:latest
     restart: always
     user: "${UID}:${GID}"
     extra_hosts:
@@ -84,7 +84,7 @@ services:
       - pgdata2:/var/lib/postgresql/data
   rag_api:
     container_name: rag_api
-    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev-lite:latest
     environment:
       - DB_HOST=vectordb
       - RAG_PORT=${RAG_PORT:-8000}

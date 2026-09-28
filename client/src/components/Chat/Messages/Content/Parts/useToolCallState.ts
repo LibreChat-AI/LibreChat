@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
+import { useToolDisclosure } from '../disclosure';
 import store from '~/store';
 
 interface ToolCallState {
@@ -57,12 +59,14 @@ export default function useToolCallState({
   const hasOutput = output.length > 0;
   const hasContent = hasInput || hasOutput;
 
-  const [showCode, setShowCode] = useState(() => autoExpand && hasContent);
+  const [expansionOverride, setExpansionOverride] = useAtom(useToolDisclosure());
+  const [defaultExpanded, setDefaultExpanded] = useState(() => autoExpand && hasContent);
+  const showCode = expansionOverride ?? defaultExpanded;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
 
   useEffect(() => {
     if (autoExpand && hasContent) {
-      setShowCode(true);
+      setDefaultExpanded(true);
     }
   }, [autoExpand, hasContent]);
 
@@ -76,14 +80,12 @@ export default function useToolCallState({
    */
   const rawProgress = useProgress(isClosed ? 1 : initialProgress);
   const toggleCode = useCallback(() => {
-    setShowCode((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
-  }, [onExpand]);
+    const next = !showCode;
+    setExpansionOverride(next);
+    if (next) {
+      onExpand?.();
+    }
+  }, [onExpand, setExpansionOverride, showCode]);
 
   /**
    * One resolution; everything the card shows is a read of this value. The

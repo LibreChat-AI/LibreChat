@@ -7,6 +7,7 @@ import {
   FileSources,
   getCodeEnvRefs,
   canToolResourceConsume,
+  hasToolResourceProvisioning,
 } from 'librechat-data-provider';
 import type {
   AgentToolResources,
@@ -441,12 +442,10 @@ const computeProvisionState = async ({
   /** What the record itself shows about where it was sent. A message attachment is never
    *  in the agent's resources, so a reference or an embedding is the only evidence that
    *  the chooser picked that destination, and it is proof: nothing else creates one. */
-  const carriesEvidenceFor = (file: TFile, resourceType: EToolResources): boolean => {
-    if (resourceType === EToolResources.execute_code) {
-      return getCodeEnvRefs(file.metadata).length > 0;
-    }
-    return file.embedded === true || (file.metadata?.embeddedEntities?.length ?? 0) > 0;
-  };
+  /* The predicate the turn's delivery decision reads too, so a file this queue has yet to
+   * provision is never one the prompt withheld its text for. */
+  const carriesEvidenceFor = (file: TFile, resourceType: EToolResources): boolean =>
+    hasToolResourceProvisioning(file, resourceType);
 
   const allowsResource = (file: TFile, resourceType: EToolResources): boolean => {
     if (!cameFromChooser(file)) {

@@ -17,7 +17,9 @@ import {
   resolveErrorTurn,
   startedAsNewConversation,
 } from '~/hooks/SSE/useEventHandlers';
+import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import { stripStreamedIndexStamps, getPartKeyIndex } from '~/utils';
+import buildDefaultConvo from '~/utils/buildDefaultConvo';
 
 describe('buildCreatedInitialResponse', () => {
   const userMessage = {
@@ -613,5 +615,68 @@ describe('resolveErrorTurn', () => {
       { type: ContentTypes.ERROR, error: serverText },
     ]);
     expect(fromChat.errorResponse.parentMessageId).toBe('user-1');
+  });
+});
+
+describe('first-send workspace error recovery', () => {
+  const selection = { environmentId: 'machine', workspaceId: 'repo' };
+  const submission = {
+    conversation: { conversationId: 'new', endpoint: 'agents', agent_id: 'agent' },
+    userMessage: { conversationId: 'generated-id', messageId: 'user' },
+    initialResponse: { conversationId: 'generated-id', messageId: 'response' },
+    codeWorkspaces: [selection],
+  } as EventSubmission;
+
+  it('preserves a legacy implicit choice in the recovery preset and reconciles its real id', () => {
+    const preset = buildRecoveryPreset(
+      submission.conversation,
+      undefined,
+      'generated-id',
+      submission,
+    );
+    expect(preset.codeEnvironmentMode).toBe('attached');
+    expect(preset.codeWorkspaces).toEqual([selection]);
+    const rebuilt = buildDefaultConvo({
+      conversation: {
+        conversationId: 'generated-id',
+        codeEnvironmentMode: preset.codeEnvironmentMode,
+        codeWorkspaces: preset.codeWorkspaces,
+      } as TConversation,
+      lastConversationSetup: preset as TConversation,
+      endpoint: 'agents' as never,
+      models: [],
+    });
+    expect(rebuilt.codeEnvironmentMode).toBe('attached');
+    expect(rebuilt.codeWorkspaces).toEqual([selection]);
+    expect(getFailedCodeDecisionRequest(submission)).toEqual({
+      conversationId: 'generated-id',
+      attempted: { codeEnvironmentMode: 'attached', codeWorkspaces: [selection] },
+    });
+  });
+
+  it('uses a structured error conversation id when the snapshot and messages are still new', () => {
+    const first = {
+      ...submission,
+      userMessage: { ...submission.userMessage, conversationId: 'new' },
+      initialResponse: { ...submission.initialResponse, conversationId: 'new' },
+    } as EventSubmission;
+    expect(getFailedCodeDecisionRequest(first, 'server-id')?.conversationId).toBe('server-id');
+    expect(getFailedCodeDecisionRequest(first, '_local-error')).toBeUndefined();
+    expect(getFailedCodeDecisionRequest(first)).toBeUndefined();
+  });
+
+  it('preserves an explicit without-attached first send while the authoritative read runs', () => {
+    const unattached = {
+      ...submission,
+      codeEnvironmentMode: 'without_attached',
+      codeWorkspaces: undefined,
+    } as EventSubmission;
+    expect(
+      buildRecoveryPreset(unattached.conversation, undefined, 'generated-id', unattached)
+        .codeEnvironmentMode,
+    ).toBe('without_attached');
+    expect(getFailedCodeDecisionRequest(unattached)?.attempted.codeEnvironmentMode).toBe(
+      'without_attached',
+    );
   });
 });

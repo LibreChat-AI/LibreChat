@@ -2118,6 +2118,220 @@ describe('useResumeOnLoad', () => {
     expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
   });
 
+  /**
+   * A manual compaction submits no user turn: the server projects the LEAF it
+   * summarizes up to into the job's user-message slot, identity only
+   * (`projectCompactionAnchor`). Resuming one must adopt that leaf, not
+   * synthesize an empty root-parented USER row over it — the row it names is
+   * usually the assistant answer, and rewriting it detaches every turn above it.
+   */
+  it('resumes a compaction against the anchor it summarizes up to', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const anchor = {
+      messageId: 'branch-one-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch one answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const newerSibling = {
+      messageId: 'branch-two-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch two answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const observedSiblingIndexes: number[] = [];
+    const observedSubmissions: Array<TSubmission | null> = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          responseMessageId: `${anchor.messageId}_`,
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          userMessage: {
+            messageId: anchor.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, anchor, newerSibling],
+      siblingIndexParentId: rootUser.messageId,
+      onSiblingIndex: (siblingIndex) => observedSiblingIndexes.push(siblingIndex),
+      onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const submission = observedSubmissions[observedSubmissions.length - 1];
+    /** The slot keeps the anchor's own identity. */
+    expect(submission?.userMessage).toEqual(
+      expect.objectContaining({
+        messageId: anchor.messageId,
+        parentMessageId: rootUser.messageId,
+        text: anchor.text,
+        isCreatedByUser: false,
+      }),
+    );
+    /** ...is marked as the anchored run it is, so no handler writes it as a row, */
+    expect(submission?.compact).toBe(true);
+    /** ...stays in the history the run replays, */
+    expect((submission?.messages ?? []).map((message) => message.messageId)).toEqual([
+      rootUser.messageId,
+      anchor.messageId,
+      newerSibling.messageId,
+    ]);
+    /** ...and the summary hangs off it. */
+    expect(submission?.initialResponse?.parentMessageId).toBe(anchor.messageId);
+    /** The compaction runs on the branch it was started from, not the newest. */
+    expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
+  });
+
+  /**
+   * Compact runs on whatever leaf the branch ends with and `canCompact` does not
+   * restrict that leaf's author, so the anchor is a USER message whenever the
+   * branch ends in one (the `compaction-on-user-turn` scenarios cover the
+   * rendered form). Recognizing the anchor by "not user-created" saw only the
+   * assistant-leaf kind: this one was rebuilt as an ordinary turn, and the sync
+   * path then merged the identity-only projection over the stored row, blanking
+   * the prompt the user is still looking at.
+   */
+  it('resumes a compaction anchored on a user leaf', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const answer = {
+      messageId: 'answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'The long answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const userLeaf = buildUserMessage(CONVERSATION_ID, 'user-leaf');
+    userLeaf.parentMessageId = answer.messageId;
+    userLeaf.text = 'Compact this before I continue';
+    const observedSubmissions: Array<TSubmission | null> = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          responseMessageId: `${userLeaf.messageId}_`,
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          /** `projectCompactionAnchor`: identity only, whoever wrote the leaf. */
+          userMessage: {
+            messageId: userLeaf.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, answer, userLeaf],
+      onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const submission = observedSubmissions[observedSubmissions.length - 1];
+    /** Marked, so no handler writes the anchor as a row... */
+    expect(submission?.compact).toBe(true);
+    /** ...and the leaf keeps the prompt the user actually sent. */
+    expect(submission?.userMessage).toEqual(
+      expect.objectContaining({
+        messageId: userLeaf.messageId,
+        parentMessageId: answer.messageId,
+        text: 'Compact this before I continue',
+        isCreatedByUser: true,
+      }),
+    );
+    expect(submission?.initialResponse?.parentMessageId).toBe(userLeaf.messageId);
+    expect((submission?.messages ?? []).map((message) => message.messageId)).toEqual([
+      rootUser.messageId,
+      answer.messageId,
+      userLeaf.messageId,
+    ]);
+  });
+
+  it('restores a compacting branch from the anchor when no response id is published yet', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const anchor = {
+      messageId: 'branch-one-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch one answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const newerSibling = {
+      messageId: 'branch-two-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch two answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const observedSiblingIndexes: number[] = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          /** The anchor carries no parent, so it has to name the branch itself. */
+          userMessage: {
+            messageId: anchor.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, anchor, newerSibling],
+      siblingIndexParentId: rootUser.messageId,
+      onSiblingIndex: (siblingIndex) => observedSiblingIndexes.push(siblingIndex),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
+  });
+
   it('restores the regenerate branch without claiming its older response', async () => {
     const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
     const olderResponse = {

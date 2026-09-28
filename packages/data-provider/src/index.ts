@@ -44,6 +44,7 @@ export * from './types/graph';
 export * from './types/insights';
 export * from './types/traces';
 export * from './types/subagents';
+export * from './types/background';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';
@@ -75,6 +76,7 @@ export { default as createPayload } from './createPayload';
 export * from './feedback';
 export * from './parameterSettings';
 export * from './agentToolOptions';
+export * from './backgroundResults';
 /* code-execution sandbox */
 export * from './codeEnvRef';
 export * from './code/worker';

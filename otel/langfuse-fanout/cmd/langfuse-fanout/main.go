@@ -1284,9 +1284,20 @@ func isAzureUploadURL(value string) bool {
 
 func allowedUploadContentType(value string) bool {
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(value, ";")[0]))
-	return mediaType == "application/octet-stream" ||
-		mediaType == "application/pdf" ||
-		strings.HasPrefix(mediaType, "image/") ||
+	switch mediaType {
+	case "text/plain", "text/html", "text/css", "text/csv", "text/markdown",
+		"text/x-python", "text/x-typescript", "application/javascript", "application/x-yaml",
+		"application/pdf", "application/msword", "application/rtf",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.ms-excel",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"application/json", "application/x-ndjson", "application/xml",
+		"application/vnd.apache.parquet", "application/zip", "application/gzip",
+		"application/x-tar", "application/x-7z-compressed", "application/octet-stream":
+		return true
+	}
+	return strings.HasPrefix(mediaType, "image/") ||
 		strings.HasPrefix(mediaType, "audio/") ||
 		strings.HasPrefix(mediaType, "video/")
 }

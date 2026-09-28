@@ -178,7 +178,10 @@ export default function FileAuthoringCall({
     runStepStatus,
   });
 
-  const highlighted = useLazyHighlight(!parsedDiff && preview ? preview : undefined, previewLang);
+  const highlighted = useLazyHighlight(
+    showCode && !parsedDiff && preview ? preview : undefined,
+    previewLang,
+  );
   const { ref: previewPaneRef, onScroll: onPreviewPaneScroll } = useFollowScroll<HTMLPreElement>(
     highlighted ?? preview,
     phase === 'running',

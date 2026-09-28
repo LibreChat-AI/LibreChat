@@ -389,6 +389,7 @@ export const defaultAgentFormValues = {
   stateful_code_environment: 'user' as const,
   code_environment_id: undefined as string | null | undefined,
   code_workspace_id: undefined as string | undefined,
+  repositoryInstructions: undefined as 'prefer' | 'defer' | 'off' | undefined,
   category: 'general',
   support_contact: {
     name: '',
@@ -876,7 +877,7 @@ export type TExample = z.infer<typeof tExampleSchema>;
 
 /** Compact context-fading tier persisted beside a message's calibration ratio. */
 const agentFadingTierSchema = z.object({
-  v: z.literal(1),
+  v: z.union([z.literal(1), z.literal(2)]),
   budgetTokens: z.number().positive(),
   masked: z.boolean(),
 });

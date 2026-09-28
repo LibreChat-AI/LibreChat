@@ -90,7 +90,7 @@ describe('getOpenAIConfig - Backward Compatibility', () => {
             'HTTP-Referer': 'https://librechat.ai',
             'X-Title': 'LibreChat',
             'X-OpenRouter-Title': 'LibreChat',
-            'X-OpenRouter-Categories': 'general-chat,personal-agent',
+            'X-OpenRouter-Categories': 'general-chat,personal-agent,programming-app',
             'x-librechat-thread-id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
             'x-test-key': '{{TESTING_USER_VAR}}',
           },

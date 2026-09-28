@@ -1,9 +1,9 @@
 import crypto from 'crypto';
+import { Readable, pipeline } from 'stream';
 import { logger } from '@librechat/data-schemas';
 import { getSignedUrl } from '@aws-sdk/cloudfront-signer';
 import { CloudFrontClient, CreateInvalidationCommand } from '@aws-sdk/client-cloudfront';
 import type { TFile } from 'librechat-data-provider';
-import type { Readable } from 'stream';
 import type {
   SaveBufferParams,
   GetURLParams,
@@ -15,7 +15,9 @@ import type {
 } from '~/storage/types';
 import type { ServerRequest } from '~/types';
 import {
+  parseS3Key,
   getS3Key,
+  extractKeyFromS3Url,
   saveBufferToS3,
   saveURLToS3WithMetadata,
   uploadFileToS3,
@@ -23,6 +25,12 @@ import {
   getS3FileStream,
   resolveStoredS3Key,
 } from '~/storage/s3/crud';
+import {
+  getRemoteFileFetchMaxBytes,
+  getRemoteFileFetchTimeoutMs,
+  assertRemoteFileContentLength,
+  createRemoteFileByteLimitTransform,
+} from '~/storage/url';
 import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
 import { sanitizeContentDispositionFilename } from '~/storage/validation';
 import { getCloudFrontConfig } from '~/cdn/cloudfront';
@@ -267,13 +275,65 @@ export async function deleteFileFromCloudFront(req: ServerRequest, file: TFile):
   }
 }
 
-/** Get file stream from S3 storage. */
+/** Get a file stream from its owning regional origin. */
 export async function getCloudFrontFileStream(
   req: ServerRequest,
   filePath: string,
   options?: { signal?: AbortSignal },
 ): Promise<Readable> {
-  return getS3FileStream(req, filePath, options);
+  const key = extractKeyFromS3Url(filePath);
+  const storageRegion = parseS3Key(key)?.storageRegion;
+  const localStorageRegion = getCloudFrontConfig()?.storageRegion ?? s3Config.AWS_REGION;
+
+  if (!storageRegion || storageRegion === localStorageRegion) {
+    return getS3FileStream(req, key, options);
+  }
+
+  const maxBytes = getRemoteFileFetchMaxBytes();
+  const unsignedUrl = buildCloudFrontUrl(key);
+  const config = getCloudFrontConfig();
+  const url = config?.privateKey && config.keyPairId ? signUrl(unsignedUrl) : unsignedUrl;
+  const controller = new AbortController();
+  const signal = options?.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  const timeout = setTimeout(() => controller.abort(), getRemoteFileFetchTimeoutMs());
+  let response: Response;
+  try {
+    response = await fetch(url, { signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    const error = new Error(
+      `[getCloudFrontFileStream] CloudFront returned ${response.status} ${response.statusText}`,
+    ) as Error & { status: number };
+    error.status = response.status;
+    throw error;
+  }
+  if (!response.body) {
+    throw new Error('[getCloudFrontFileStream] CloudFront response body is empty');
+  }
+
+  try {
+    assertRemoteFileContentLength(response.headers, maxBytes);
+  } catch (error) {
+    await response.body.cancel().catch(() => undefined);
+    throw error;
+  }
+  const stream = createRemoteFileByteLimitTransform(maxBytes);
+  pipeline(
+    Readable.fromWeb(response.body as unknown as Parameters<typeof Readable.fromWeb>[0], {
+      signal,
+    }),
+    stream,
+    () => {
+      /** Pipeline forwards failures to the returned stream and closes both ends. */
+    },
+  );
+  return stream;
 }
 
 /** Get a signed CloudFront URL for an authorized file download. */

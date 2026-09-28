@@ -1,10 +1,10 @@
 {
   "name": "@librechat/client",
-  "version": "0.4.78",
+  "version": "0.4.79",
   "description": "React components for LibreChat",
   "repository": {
     "type": "git",
-    "url": "https://github.com/danny-avila/LibreChat"
+    "url": "https://github.com/LibreChat-AI/LibreChat"
   },
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",

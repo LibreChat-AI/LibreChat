@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { List } from 'react-virtualized';
 import * as Ariakit from '@ariakit/react';
+import { AutoSizer, List } from 'react-virtualized';
 import type { ListRowProps } from 'react-virtualized';
 import type { Endpoint } from '~/common';
 import { EndpointModelItem } from './EndpointModelItem';
@@ -17,9 +17,10 @@ interface VirtualizedModelListProps {
   isFavorite: (modelId: string) => boolean;
   onToggleFavorite: (modelId: string) => void;
   endpointIndex?: number;
-  /** Count of options rendered ahead of this list in the same listbox (marketplace entry,
-   *  model specs), so `aria-posinset` is relative to the whole listbox and not just this list. */
+  /** Count of options rendered ahead of this list in the same listbox. */
   precedingOptionCount: number;
+  /** Total selectable options in the surrounding listbox, when known. */
+  listboxSetSize?: number;
 }
 
 /**
@@ -44,6 +45,7 @@ export default function VirtualizedModelList({
   onToggleFavorite,
   endpointIndex,
   precedingOptionCount,
+  listboxSetSize,
 }: VirtualizedModelListProps) {
   const listRef = useRef<List>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -71,26 +73,42 @@ export default function VirtualizedModelList({
     };
     const handleBoundaryNavigation = (event: KeyboardEvent) => {
       const delta = deltaFor(event.key);
-      if (delta === 0) {
+      if (delta === 0 || !containerRef.current) {
         return;
       }
       const activeId = combobox.getState().activeId;
       const activeRow = activeId ? document.getElementById(activeId) : null;
       const wrapper = activeRow?.closest<HTMLElement>('[data-row-index]');
-      if (!wrapper || !containerRef.current?.contains(wrapper)) {
-        return;
+      let next: number | null = null;
+
+      if (wrapper && containerRef.current.contains(wrapper)) {
+        const currentIndex = Number(wrapper.dataset.rowIndex);
+        const candidate = currentIndex + delta;
+        /** Let Ariakit own both the in-window case and the ends of the list. */
+        if (candidate < 0 || candidate >= rowCount || rowAt(candidate)) {
+          return;
+        }
+        next = candidate;
+      } else {
+        const activePosition = Number(activeRow?.getAttribute('aria-posinset'));
+        const entersFromBefore = delta === 1 && activePosition === precedingOptionCount;
+        const entersFromAfter =
+          delta === -1 && activePosition === precedingOptionCount + rowCount + 1;
+        if (entersFromBefore) {
+          next = 0;
+        } else if (entersFromAfter) {
+          next = rowCount - 1;
+        } else {
+          return;
+        }
       }
-      const next = Number(wrapper.dataset.rowIndex) + delta;
-      /** Let Ariakit own both the in-window case and the ends of the list. */
-      if (next < 0 || next >= rowCount || rowAt(next)) {
-        return;
-      }
+
       event.preventDefault();
       event.stopPropagation();
-      listRef.current?.scrollToRow(next);
+      listRef.current?.scrollToRow(next!);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const id = rowAt(next)?.id;
+          const id = rowAt(next!)?.id;
           if (id) {
             combobox.move(id);
           }
@@ -99,7 +117,7 @@ export default function VirtualizedModelList({
     };
     document.addEventListener('keydown', handleBoundaryNavigation, true);
     return () => document.removeEventListener('keydown', handleBoundaryNavigation, true);
-  }, [combobox, rowCount, rowAt]);
+  }, [combobox, precedingOptionCount, rowCount, rowAt]);
 
   const height = useMemo(
     () => Math.min(MAX_LIST_HEIGHT, Math.max(ROW_HEIGHT, rowCount * ROW_HEIGHT)),
@@ -118,15 +136,16 @@ export default function VirtualizedModelList({
             isFavorite={isFavorite(modelId)}
             onToggleFavorite={onToggleFavorite}
             posInSet={precedingOptionCount + index + 1}
-            setSize={precedingOptionCount + rowCount}
+            setSize={listboxSetSize ?? precedingOptionCount + rowCount}
           />
         </div>
       );
     },
     [
-      endpoint,
       globalByName,
+      endpoint,
       isFavorite,
+      listboxSetSize,
       modelIds,
       onToggleFavorite,
       precedingOptionCount,
@@ -135,29 +154,36 @@ export default function VirtualizedModelList({
   );
 
   return (
-    <div ref={containerRef} data-endpoint-models={`${endpoint.value}${indexSuffix}`}>
-      <List
-        ref={listRef}
-        width={360}
-        height={height}
-        rowCount={rowCount}
-        rowHeight={ROW_HEIGHT}
-        overscanRowCount={OVERSCAN}
-        rowRenderer={rowRenderer}
-        className="outline-none!"
-        style={{ width: '100%' }}
-        /**
-         * `List` spreads its props onto the underlying `Grid`, whose defaults are
-         * `role="grid"`, `containerRole="row"` and `tabIndex={0}`. Left alone, that puts a
-         * focusable grid between Ariakit's listbox and its options: tabbing out of the
-         * search field lands on the wrapper instead of a row, where the combobox no longer
-         * owns the keystroke, and the grid/row semantics fight the surrounding listbox.
-         * Neutralise both so focus and ARIA stay with the combobox items.
-         */
-        role="presentation"
-        containerRole="presentation"
-        tabIndex={-1}
-      />
+    <div
+      ref={containerRef}
+      data-endpoint-models={`${endpoint.value}${indexSuffix}`}
+      className="w-full"
+    >
+      <AutoSizer disableHeight>
+        {({ width }) => (
+          <List
+            ref={listRef}
+            width={width}
+            height={height}
+            rowCount={rowCount}
+            rowHeight={ROW_HEIGHT}
+            overscanRowCount={OVERSCAN}
+            rowRenderer={rowRenderer}
+            className="outline-none!"
+            /**
+             * `List` spreads its props onto the underlying `Grid`, whose defaults are
+             * `role="grid"`, `containerRole="row"` and `tabIndex={0}`. Left alone, that puts a
+             * focusable grid between Ariakit's listbox and its options: tabbing out of the
+             * search field lands on the wrapper instead of a row, where the combobox no longer
+             * owns the keystroke, and the grid/row semantics fight the surrounding listbox.
+             * Neutralise both so focus and ARIA stay with the combobox items.
+             */
+            role="presentation"
+            containerRole="presentation"
+            tabIndex={-1}
+          />
+        )}
+      </AutoSizer>
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
+  MCPApiKeyReentryRequiredError,
+  getMCPErrorResponse,
   isMCPTransportAuthenticationError,
   MCPTransportAuthenticationError,
   isMCPInitializationError,
@@ -50,5 +52,31 @@ describe('direct bearer transport rejection classification', () => {
     new StreamableHTTPError(500, 'downstream HTTP 401'),
   ])('does not infer transport rejection from tool codes or messages: %s', (error) => {
     expect(isMCPTransportAuthenticationError(error)).toBe(false);
+  });
+});
+
+describe('MCP HTTP error response mapping', () => {
+  it('maps API key rebinding errors without exposing credential material', () => {
+    expect(getMCPErrorResponse(new MCPApiKeyReentryRequiredError(['url']))).toEqual({
+      statusCode: 400,
+      body: {
+        error: 'MCP_API_KEY_REENTRY_REQUIRED',
+        message: 'Re-enter apiKey.key when changing API key credential binding fields: url',
+      },
+    });
+  });
+
+  it('preserves legacy domain error behavior', () => {
+    expect(getMCPErrorResponse(new Error('MCP_DOMAIN_NOT_ALLOWED: blocked.example.com'))).toEqual({
+      statusCode: 403,
+      body: {
+        error: 'MCP_DOMAIN_NOT_ALLOWED',
+        message: 'blocked.example.com',
+      },
+    });
+  });
+
+  it('ignores unrelated errors', () => {
+    expect(getMCPErrorResponse(new Error('unrelated'))).toBeNull();
   });
 });

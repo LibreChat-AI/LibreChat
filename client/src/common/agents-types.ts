@@ -53,6 +53,7 @@ export type AgentForm = {
   /** Operator-configured managed or attached execution environment. */
   code_environment_id?: string | null;
   code_workspace_id?: string;
+  repositoryInstructions?: 'prefer' | 'defer' | 'off';
   /** Git authorship applied to sandboxed commands for this agent. */
   git_identity?: Agent['git_identity'];
   provider?: AgentProvider | OptionWithIcon;

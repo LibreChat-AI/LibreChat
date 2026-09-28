@@ -12,7 +12,6 @@ import {
   createToolSearch,
   ToolSearchToolDefinition,
   BashProgrammaticToolCallingDefinition,
-  createBashProgrammaticToolCallingTool,
 } from '@librechat/agents';
 import type {
   LCToolRegistry,
@@ -21,10 +20,11 @@ import type {
   GenericTool,
   LCTool,
 } from '@librechat/agents';
-import type { AgentToolOptions } from 'librechat-data-provider';
+import type { AgentGitIdentity, AgentToolOptions } from 'librechat-data-provider';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { CodeCapabilityConfigLoader } from '~/code/capabilities';
 import { supportsProgrammaticCodeExecution } from '~/code/capabilities';
+import { createContextProgrammaticBashTool } from '~/code/command';
 import { sanitizeGeminiSchema } from '~/mcp/zod';
 
 export type { LCTool, LCToolRegistry, AllowedCaller, JsonSchemaType };
@@ -268,13 +268,14 @@ export interface BuildToolClassificationParams {
   agentId?: string;
   /** Per-tool configuration from the agent */
   agentToolOptions?: AgentToolOptions;
+  gitIdentity?: AgentGitIdentity | null;
   /** Whether the deferred_tools capability is enabled (from agent config) */
   deferredToolsEnabled?: boolean;
   /** Whether the programmatic_tools capability is enabled (from agent config) */
   programmaticToolsEnabled?: boolean;
   /** Whether code execution is enabled and requested by this agent */
   codeExecutionEnabled?: boolean;
-  /** When true, skip creating tool instances (for event-driven mode) */
+  /** When true, return definitions without executable tools (event-driven mode). */
   definitionsOnly?: boolean;
   /** Agent provider — Gemini/Vertex rejects union types, so injected tool schemas get sanitized */
   provider?: Providers | string;
@@ -389,7 +390,8 @@ export async function buildToolClassification(
     programmaticToolsEnabled &&
     codeExecutionEnabled &&
     agentHasProgrammaticTools(toolRegistry) &&
-    codeExecutionContext?.environmentType !== 'attached' &&
+    (codeExecutionContext?.environmentType !== 'attached' ||
+      codeExecutionContext.codeWorkspace != null) &&
     (await supportsProgrammaticCodeExecution(codeExecutionContext, codeEnvironments, getAppConfig));
   const hasDeferredTools = deferredToolsEnabled && agentHasDeferredTools(toolRegistry);
 
@@ -459,43 +461,19 @@ export async function buildToolClassification(
     return { toolRegistry, toolDefinitions, additionalTools, hasDeferredTools, mcpToolAliases };
   }
 
-  /** In definitions-only mode, add PTC definition without creating the tool instance */
-  if (definitionsOnly) {
-    toolDefinitions.push({
-      name: BashProgrammaticToolCallingDefinition.name,
-      description: BashProgrammaticToolCallingDefinition.description,
-      parameters: BashProgrammaticToolCallingDefinition.schema as unknown as LCTool['parameters'],
-    });
-    toolRegistry.set(BashProgrammaticToolCallingDefinition.name, {
-      name: BashProgrammaticToolCallingDefinition.name,
-      allowed_callers: ['direct'],
-    });
-    logger.debug(
-      `[buildToolClassification] PTC definition added for agent ${agentId} (definitions only)`,
-    );
-    return { toolRegistry, toolDefinitions, additionalTools, hasDeferredTools, mcpToolAliases };
-  }
-
   try {
-    const profileParams = codeExecutionContext
-      ? {
-          baseUrl: codeExecutionContext.baseUrl,
-          executionProfile: codeExecutionContext.executionProfile,
-          runtimeSessionHint: codeExecutionContext.runtimeSessionHint,
-        }
-      : {};
-    const ptcTool = createBashProgrammaticToolCallingTool({
+    const ptcTool = createContextProgrammaticBashTool(
       authHeaders,
-      ...profileParams,
-    } as Parameters<typeof createBashProgrammaticToolCallingTool>[0] &
-      typeof profileParams & { authHeaders?: BuildToolClassificationParams['authHeaders'] });
-    additionalTools.push(ptcTool);
+      codeExecutionContext,
+      params.gitIdentity,
+    );
+    if (!definitionsOnly) additionalTools.push(ptcTool);
 
     /** Add PTC definition for event-driven mode */
     toolDefinitions.push({
       name: BashProgrammaticToolCallingDefinition.name,
-      description: BashProgrammaticToolCallingDefinition.description,
-      parameters: BashProgrammaticToolCallingDefinition.schema as unknown as LCTool['parameters'],
+      description: ptcTool.description,
+      parameters: ptcTool.schema as LCTool['parameters'],
     });
     toolRegistry.set(BashProgrammaticToolCallingDefinition.name, {
       name: BashProgrammaticToolCallingDefinition.name,

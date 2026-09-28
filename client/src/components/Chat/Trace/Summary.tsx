@@ -10,15 +10,22 @@ type SummaryItem = { key: string; label: TranslationKeys; value: string; alert?:
 
 function TraceSummaryBar({
   summary,
+  unrecordedCalls,
   showCost,
   currency,
 }: {
   summary: TraceSummary;
+  /** Tool calls the trace names no record for, by response, as the chat's messages count them. */
+  unrecordedCalls?: ReadonlyMap<string, number>;
   showCost: boolean;
   currency?: { code: string; rate: number };
 }) {
   const localize = useLocalize();
   const format = useTraceFormat();
+  let toolCalls = summary.toolCalls;
+  for (const count of unrecordedCalls?.values() ?? []) {
+    toolCalls += count;
+  }
   const items: SummaryItem[] = [
     {
       key: 'duration',
@@ -31,7 +38,16 @@ function TraceSummaryBar({
       label: 'com_ui_trace_summary_generations',
       value: String(summary.generations),
     },
-    { key: 'tools', label: 'com_ui_trace_summary_tools', value: String(summary.toolCalls) },
+    { key: 'tools', label: 'com_ui_trace_summary_tools', value: String(toolCalls) },
+    ...(summary.labels > 0
+      ? [
+          {
+            key: 'labels',
+            label: 'com_ui_trace_summary_labels' as const,
+            value: String(summary.labels),
+          },
+        ]
+      : []),
     {
       key: 'tokens',
       label: 'com_ui_trace_summary_tokens',

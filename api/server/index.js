@@ -48,6 +48,7 @@ const {
   requestContextMiddleware,
   registerShutdownTask,
   getRemainingShutdownMs,
+  registerBackgroundTaskShutdown,
   configureServerTimeouts,
   setupGracefulShutdown,
   updateInterfacePermissions,
@@ -241,6 +242,9 @@ const startServer = async () => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
   const appConfig = await getAppConfig({ baseOnly: true });
+  registerBackgroundTaskShutdown({
+    interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+  });
   configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
   warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
@@ -458,6 +462,8 @@ const startServer = async () => {
 
   app.use('/metrics', metricsRouter);
 
+  app.use('/api', routes.openapi);
+
   /** 404 for unmatched API routes */
   app.use('/api', apiNotFound);
 
@@ -506,7 +512,12 @@ const startServer = async () => {
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
-      await initializeAgentTriggerService({ address: server.address() });
+      await initializeAgentTriggerService({
+        address: server.address(),
+        completionResultBatchSize:
+          appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+      });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
       scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
       if (!scheduleEngineArmed) {

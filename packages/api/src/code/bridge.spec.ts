@@ -5,6 +5,42 @@ import {
 } from './bridge';
 
 describe('getCodeBridgeWorkerStatus', () => {
+  test.each([
+    [['bash'], ['bash']],
+    [['bash', 'python'], ['bash']],
+    [['python'], undefined],
+    [['bash', 123], undefined],
+  ])(
+    'preserves recognized programmatic capability from %j',
+    async (programmaticLanguages, expected) => {
+      const status = await getCodeBridgeWorkerStatus({
+        baseURL: 'https://code.example.com/v1',
+        token: 'token',
+        workerId: 'personal-vm',
+        fetchImpl: jest.fn().mockResolvedValue(
+          Response.json({
+            protocolVersion: 1,
+            workerId: 'personal-vm',
+            online: true,
+            ready: true,
+            leaseExpiresInMs: 45_000,
+            capabilities: {
+              statefulWorkspace: false,
+              runtimes: [],
+              sandboxProfile: 'native-srt',
+              workspaceTools: {
+                protocolVersion: 1,
+                operations: ['execute_command'],
+                workspaces: [{ id: 'project-a' }],
+                programmaticLanguages,
+              },
+            },
+          }),
+        ),
+      });
+      expect(status.programmaticLanguages).toEqual(expected);
+    },
+  );
   test('accepts the maximum declared environment metadata population', async () => {
     const workspaces = Array.from({ length: 32 }, (_, index) => ({
       id: `root-${index}`,
@@ -48,6 +84,7 @@ describe('getCodeBridgeWorkerStatus', () => {
           online: true,
           ready: true,
           leaseExpiresInMs: 45_000,
+          maxCommandTimeoutMs: 120_000,
           capabilities: {
             statefulWorkspace: true,
             sandboxProfile: 'native-srt',
@@ -56,7 +93,11 @@ describe('getCodeBridgeWorkerStatus', () => {
               protocolVersion: 1,
               operations: ['read_file', 'execute_command'],
               workspaces: [
-                { id: 'project-a', name: 'Project A' },
+                {
+                  id: 'project-a',
+                  name: 'Project A',
+                  workspaceInstances: ['git_worktree'],
+                },
                 { id: 'docs', operations: ['read_file'] },
               ],
             },
@@ -78,11 +119,16 @@ describe('getCodeBridgeWorkerStatus', () => {
       status: 'ready',
       statefulWorkspace: true,
       leaseExpiresInMs: 45_000,
+      maxCommandTimeoutMs: 120_000,
       sandboxProfile: 'native-srt',
       runtimes: ['bash'],
       operations: ['read_file', 'execute_command'],
       workspaces: [
-        { id: 'project-a', name: 'Project A' },
+        {
+          id: 'project-a',
+          name: 'Project A',
+          workspaceInstances: ['git_worktree'],
+        },
         { id: 'docs', operations: ['read_file'] },
       ],
     });
@@ -136,6 +182,8 @@ describe('getCodeBridgeWorkerStatus', () => {
     { online: true, ready: false },
     { online: false, ready: false, leaseExpiresInMs: 5_000 },
     { online: true, ready: true, leaseExpiresInMs: 60_001 },
+    { online: true, ready: true, maxCommandTimeoutMs: 0 },
+    { online: true, ready: true, maxCommandTimeoutMs: 300_001 },
     {
       online: true,
       ready: true,
@@ -153,6 +201,21 @@ describe('getCodeBridgeWorkerStatus', () => {
           protocolVersion: 1,
           operations: ['read_file'],
           workspaces: [{ id: '../escape' }],
+        },
+      },
+    },
+    {
+      online: true,
+      ready: true,
+      leaseExpiresInMs: 5_000,
+      capabilities: {
+        statefulWorkspace: true,
+        sandboxProfile: 'native-srt',
+        runtimes: ['bash'],
+        workspaceTools: {
+          protocolVersion: 1,
+          operations: ['read_file'],
+          workspaces: [{ id: 'project-a', workspaceInstances: ['container'] }],
         },
       },
     },
@@ -254,6 +317,97 @@ describe('getCodeBridgeWorkerStatus', () => {
     );
     await expect(first).resolves.toEqual({ status: 'offline' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('bypasses cached status without falling back on failure or changing normal polling', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const offline = () =>
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: false,
+          ready: false,
+        }),
+      );
+    const fetchImpl = jest
+      .fn()
+      .mockImplementationOnce(async () => offline())
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementation(async () => offline());
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, maxConcurrent: 1 });
+    const params = {
+      baseURL: 'https://code.example.com/v1',
+      token: 'administrator-token',
+      workerId: 'personal-vm',
+    };
+    await expect(poll(params)).resolves.toEqual({ status: 'offline' });
+    await expect(poll({ ...params, bypassCache: true })).rejects.toEqual(
+      expect.objectContaining({ reason: 'failed' }),
+    );
+    await expect(poll({ ...params, bypassCache: true })).resolves.toEqual({ status: 'offline' });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    await expect(poll(params)).resolves.toEqual({ status: 'offline' });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  test('never joins an older in-flight poll and shares its upstream concurrency limit', async () => {
+    const responses: Array<(response: Response) => void> = [];
+    const fetchImpl = jest.fn(() => new Promise<Response>((resolve) => responses.push(resolve)));
+    const poll = createCodeBridgeStatusPoller({ fetchImpl, maxConcurrent: 2 });
+    const params = {
+      baseURL: 'https://code.example.com/v1',
+      token: 'administrator-token',
+      workerId: 'personal-vm',
+    };
+    const previous = poll(params);
+    const current = poll({ ...params, bypassCache: true });
+    expect(current).not.toBe(previous);
+    expect(poll(params)).toBe(previous);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await expect(poll({ ...params, bypassCache: true })).rejects.toEqual(
+      expect.objectContaining({ reason: 'busy' }),
+    );
+    await expect(poll({ ...params, workerId: 'second-vm' })).rejects.toEqual(
+      expect.objectContaining({ reason: 'busy' }),
+    );
+    responses[1](
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: true,
+          ready: true,
+          leaseExpiresInMs: 50_000,
+          capabilities: { sandboxProfile: 'native-srt', runtimes: ['bash'] },
+        }),
+      ),
+    );
+    await expect(current).resolves.toEqual(expect.objectContaining({ status: 'ready' }));
+    responses[0](
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: false,
+          ready: false,
+        }),
+      ),
+    );
+    await expect(previous).resolves.toEqual({ status: 'offline' });
+    const next = poll({ ...params, bypassCache: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    responses[2](
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: false,
+          ready: false,
+        }),
+      ),
+    );
+    await next;
   });
 
   test('does not coalesce status requests across credential rotations', async () => {

@@ -33,6 +33,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 import { Providers } from '@librechat/agents';
+import { createHash } from 'node:crypto';
+import { createRepositoryInstructionLoader } from '../../code/instructions';
 import {
   Tools,
   Constants,
@@ -286,6 +288,81 @@ describe('initializeAgent — execution context', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each(['prefer', 'defer', 'off'] as const)(
+    'uses saved repository instruction mode %s in definitions-only initialization',
+    async (mode) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.instructions = 'Agent conventions';
+      agent.repositoryInstructions = mode;
+      const content = 'Repository conventions';
+      const authHeaders = jest.fn(async () => ({}));
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            operation: 'read_file',
+            workspaceId: 'primary',
+            path: 'AGENTS.md',
+            content,
+            startLine: 1,
+            endLine: 1,
+            truncated: false,
+          }),
+        ),
+      );
+      loadTools.mockResolvedValue({
+        toolDefinitions: [],
+        repositoryInstructionSource: {
+          load: createRepositoryInstructionLoader(),
+          enabled: true,
+          principalId: `test-${mode}`,
+          context: {
+            environmentType: 'attached',
+            baseUrl: 'https://code.example/v1',
+            codeWorkspace: {
+              workspaceId: 'primary',
+              operations: ['read_file'],
+              instructions: [
+                {
+                  path: 'AGENTS.md',
+                  bytes: Buffer.byteLength(content),
+                  sha256: createHash('sha256').update(content).digest('hex'),
+                  truncated: false,
+                },
+              ],
+            },
+          },
+          authHeaders,
+        },
+      });
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+      if (mode === 'off') {
+        expect(result.instructions).toBe('Agent conventions');
+        expect(authHeaders).not.toHaveBeenCalled();
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } else {
+        expect(result.instructions).toContain('Repository conventions');
+        expect(result.instructions).toMatch(/^Agent conventions\n\nRepository-provided/);
+        expect(result.instructions).toContain(
+          mode === 'defer' ? 'unless they conflict' : 'prefer these instructions',
+        );
+      }
+      expect(result.additional_instructions ?? '').not.toContain('Repository conventions');
+      fetchSpy.mockRestore();
+    },
+  );
 
   it('carries request-resolved Azure identity to the run without changing persisted agent fields', async () => {
     const { agent, req, res, loadTools, db } = createMocks({
@@ -1665,6 +1742,35 @@ describe('initializeAgent — maxContextTokens', () => {
     jest.clearAllMocks();
   });
 
+  it.each(['us.openai.gpt-6-sol', 'global.openai.gpt-6-astra', 'us.openai.gpt-5.6-terra'])(
+    'budgets %s using the Bedrock context window',
+    async (model) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: Providers.BEDROCK,
+        model,
+        maxOutputTokens: 4096,
+        useRealTokenLookup: true,
+      });
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.BEDROCK]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(mockGetModelMaxTokens).toHaveBeenCalledWith(model, EModelEndpoint.bedrock, undefined);
+      expect(result.maxContextTokens).toBe(Math.round((950000 - 4096) * 0.95));
+      expect(result.maxContextTokens).toBeGreaterThan(38079);
+    },
+  );
+
   it('uses user-configured maxContextTokens when provided via model_parameters', async () => {
     const userValue = 50000;
     const { agent, req, res, loadTools, db } = createMocks({
@@ -2445,10 +2551,12 @@ describe('initializeAgent — skill `allowed-tools` union (Phase 6)', () => {
 
     /* Two attempts (initial + retry), both undefined. Registry-backed tools
        fall away, but read/create/edit_file are registered by the initializer
-       so skill authoring still works. */
+       so skill authoring still works — and `skill` comes with them, so a
+       skill authored in this run can still be invoked despite the empty
+       catalog. */
     expect(loadTools).toHaveBeenCalledTimes(2);
     const definedNames = result.toolDefinitions?.map((d) => d.name) ?? [];
-    expect(definedNames).toEqual(['read_file', 'create_file', 'edit_file']);
+    expect(definedNames).toEqual(['read_file', 'create_file', 'edit_file', 'skill']);
   });
 
   it('propagates the error when loadTools fails AND there are no skill-added extras to drop', async () => {
@@ -2537,7 +2645,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
        but never appears in the tool definitions the LLM sees. */
     expect(names).not.toContain('execute_code');
     const readFile = result.toolDefinitions?.find((d) => d.name === 'read_file');
-    expect(readFile?.description).toContain('code-execution sandbox');
+    expect(readFile?.description).toContain('code-sandbox');
     expect(readFile?.description).not.toContain('{skillName}');
     expect(readFile?.description).not.toContain('SKILL.md');
     const createFile = result.toolDefinitions?.find((d) => d.name === 'create_file');
@@ -4516,6 +4624,23 @@ describe('initializeAgent tool-routed text fallback', () => {
       metadata: { destinationChosen: false },
     }) as IMongoFile;
 
+  /** A tool serves a file only once it holds it, so these carry the evidence provisioning
+   *  writes: vectors for file search, a sandbox pointer for code execution. */
+  const embeddedCsv = () => ({ ...routedCsv(), embedded: true }) as IMongoFile;
+  const sandboxCsv = () =>
+    ({
+      ...routedCsv(),
+      metadata: {
+        destinationChosen: false,
+        codeEnvRef: {
+          kind: 'user',
+          id: 'user_1',
+          storage_session_id: 'session_1',
+          file_id: 'sandbox_file_1',
+        },
+      },
+    }) as IMongoFile;
+
   async function initializeWith({
     tools,
     csv,
@@ -4624,11 +4749,22 @@ describe('initializeAgent tool-routed text fallback', () => {
     },
   );
 
-  it('keeps fallback out of the prompt when file search loads successfully', async () => {
-    const csv = routedCsv();
+  it('keeps fallback out of the prompt when file search loads and holds the file', async () => {
+    const csv = embeddedCsv();
     const { result } = await initializeWith({ tools: [EToolResources.file_search], csv });
     expect(result.fileConsumers).toEqual({ executeCode: false, fileSearch: true });
     expect(result.requestAttachments).toEqual([csv]);
+  });
+
+  it('delivers fallback text when file search runs but never received the file', async () => {
+    /* The plain-chat File Search toggle: the upload names no destination, so nothing files it
+     * under a tool resource and the vector store stays empty. Withholding the text for the
+     * toggle alone left the attachment readable by neither the model nor the tool. */
+    const csv = routedCsv();
+    const { result } = await initializeWith({ tools: [EToolResources.file_search], csv });
+    expect(result.fileConsumers).toEqual({ executeCode: false, fileSearch: true });
+    expect(result.requestAttachments).toEqual([{ ...csv, llmDeliveryPath: 'text' }]);
+    expect(csv.llmDeliveryPath).toBe('none');
   });
 
   it('falls back after file search soft-fails and admits the returned text copy', async () => {
@@ -4751,8 +4887,8 @@ describe('initializeAgent tool-routed text fallback', () => {
     );
   });
 
-  it('leaves the file to Run Code when the agent can run code', async () => {
-    const csv = routedCsv();
+  it('leaves the file to Run Code when the sandbox already holds it', async () => {
+    const csv = sandboxCsv();
 
     const { result, filterFilesByEndpointRuntimeConfig } = await initializeWith({
       tools: [EToolResources.execute_code],

@@ -42,6 +42,7 @@ const {
   isOAuthServer,
   isAbortError,
   isDirectOpenIDBearerRecoveryEnabled,
+  buildMCPDomainValidationConfig,
   OpenIDReauthRequiredError,
   MCPAuthenticationRefreshError,
   MCPAuthenticationRejectedError,
@@ -508,9 +509,13 @@ async function resolveAllMcpConfigs(userId, user) {
 
 /**
  * Best-effort early gate; the authoritative check is
- * `assertResolvedRuntimeConfigAllowed` in `@librechat/api`, whose resolution
- * this must mirror. Graph placeholders resolve later (async), so a URL still
- * carrying one defers to the authoritative check instead of rejecting here.
+ * `assertResolvedRuntimeConfigAllowed` in `@librechat/api`, whose *URL*
+ * resolution this must mirror. It mirrors only that much: credential-bearing
+ * fields are dropped here (`buildMCPDomainValidationConfig`) because this gate
+ * runs before the connection path resolves them, so requiring them would reject
+ * a server the authoritative check goes on to allow. Graph placeholders resolve
+ * later (async), so a URL still carrying one defers to the authoritative check
+ * instead of rejecting here.
  */
 async function isEarlyDomainAllowed({
   serverConfig,
@@ -525,7 +530,10 @@ async function isEarlyDomainAllowed({
     user,
     body: requestBody,
     dbSourced: isUserSourced(serverConfig),
-    options: serverConfig,
+    /** The decision reads the URL alone, and resolving a credential-bearing field it
+     *  never reads would fail the gate on a stale request-time OpenID snapshot —
+     *  before the connection path can refresh that bearer. */
+    options: buildMCPDomainValidationConfig(serverConfig),
     customUserVars: getServerCustomUserVars(userMCPAuthMap, serverName),
   });
   if (
@@ -834,6 +842,8 @@ async function reconnectServer({
     upstreamTokenProviderResolver,
     recoveryPolicy,
     oboIdentityContext,
+    streamId,
+    jobCreatedAt,
     forceNew: true,
     returnOnOAuth: false,
     connectionTimeout: Time.THIRTY_SECONDS,
@@ -1377,6 +1387,16 @@ function createToolInstance({
           error,
         );
       }
+
+      // The schedule service checks the typed cause and verified job identity before
+      // recording a durable tool failure; other tool errors are a cheap no-op.
+      await require('~/server/services/Schedules').recordMCPToolAuthFailure({
+        error,
+        streamId,
+        jobCreatedAt,
+        userId,
+        serverName,
+      });
 
       /** Carries the actionable re-auth message; the substring heuristic below would misreport it as an OAuth configuration problem */
       if (

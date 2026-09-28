@@ -839,6 +839,124 @@ describe('BaseClient', () => {
       );
     });
 
+    describe('seeding the conversation for a deferred user message', () => {
+      const seedContext = 'api/app/clients/BaseClient.js - sendMessage #seedConversation';
+      const flush = () => new Promise((resolve) => setImmediate(resolve));
+      const savedUserMessage = () =>
+        saveMessage.mock.calls.some(([, message]) => message.isCreatedByUser === true);
+
+      beforeEach(() => {
+        saveMessage.mockReset();
+        saveConvo.mockReset().mockImplementation(async (_ctx, fields) => ({ ...fields }));
+        getConvo.mockReset().mockResolvedValue(null);
+        /** A fresh options object: the suite-level one is shared by reference across clients. */
+        TestClient.options = {
+          ...TestClient.options,
+          req: { user: { id: 'seed-user' }, body: {} },
+        };
+        TestClient.shouldDeferUserMessagePersistence = jest.fn(() => true);
+        TestClient.shouldSeedDeferredConversation = jest.fn(() => true);
+      });
+
+      afterEach(() => {
+        saveMessage.mockReset();
+        saveConvo.mockReset();
+        getConvo.mockReset();
+      });
+
+      test('creates a new conversation row while the message itself waits for admission', async () => {
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          expect(savedUserMessage()).toBe(false);
+          expect(saveConvo).toHaveBeenCalledTimes(1);
+          const [, fields, seedOptions] = saveConvo.mock.calls[0];
+          expect(fields).toEqual(expect.objectContaining({ conversationId: expect.any(String) }));
+          expect(seedOptions).toEqual(expect.objectContaining({ context: seedContext }));
+          /** An empty append set spares `saveConvo` the read of a message list the seed lacks. */
+          expect(seedOptions).toEqual(expect.objectContaining({ appendMessageIds: [] }));
+          return { completion: 'Safe response', metadata: undefined };
+        });
+
+        await TestClient.sendMessage('Message with an attachment');
+
+        expect(savedUserMessage()).toBe(true);
+        /** The message save reuses the seeded row instead of looking the conversation up again. */
+        expect(getConvo).toHaveBeenCalledTimes(1);
+      });
+
+      test('leaves an existing conversation to the deferred message write', async () => {
+        getConvo.mockResolvedValue({ conversationId: 'existing-convo', endpoint: 'openAI' });
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          expect(saveConvo).not.toHaveBeenCalled();
+          return { completion: 'Safe response', metadata: undefined };
+        });
+
+        await TestClient.sendMessage('Message with an attachment');
+
+        expect(savedUserMessage()).toBe(true);
+        expect(saveConvo.mock.calls.every(([, , opts]) => opts.context !== seedContext)).toBe(true);
+      });
+
+      test('holds the deferred message write until an in-flight seed lands', async () => {
+        const seedWrite = deferred();
+        saveConvo.mockImplementationOnce(() => seedWrite.promise);
+        const completionStarted = deferred();
+        const completionResult = deferred();
+        const abortController = new AbortController();
+        TestClient.sendCompletion.mockImplementation(() => {
+          completionStarted.resolve();
+          return completionResult.promise;
+        });
+
+        const sendPromise = TestClient.sendMessage('Message with an attachment', {
+          abortController,
+        });
+        await completionStarted.promise;
+        await flush();
+        expect(saveConvo).toHaveBeenCalledTimes(1);
+
+        abortController.abort();
+        await flush();
+        expect(savedUserMessage()).toBe(false);
+
+        seedWrite.resolve({ conversationId: 'seeded-convo' });
+        await flush();
+        expect(savedUserMessage()).toBe(true);
+
+        completionResult.resolve({ completion: 'Partial response', metadata: undefined });
+        await sendPromise;
+      });
+
+      test('keeps the deferral cancellable after seeding when the model boundary rejects content', async () => {
+        const policyError = new ContentFilterError({ source: 'message', field: 'text' });
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          throw policyError;
+        });
+
+        await expect(TestClient.sendMessage('Message with an attachment')).rejects.toBe(
+          policyError,
+        );
+
+        expect(savedUserMessage()).toBe(false);
+        expect(saveConvo).toHaveBeenCalledTimes(1);
+      });
+
+      test('does not seed when the client holds back every write', async () => {
+        TestClient.shouldSeedDeferredConversation = jest.fn(() => false);
+        TestClient.sendCompletion.mockImplementation(async () => {
+          await flush();
+          expect(saveConvo).not.toHaveBeenCalled();
+          return { completion: 'Safe response', metadata: undefined };
+        });
+
+        await TestClient.sendMessage('Message with an attachment');
+
+        expect(savedUserMessage()).toBe(true);
+      });
+    });
+
     test('preserves eager user-message persistence for non-policy provider failures', async () => {
       saveMessage.mockClear();
       saveConvo.mockClear();
@@ -2661,14 +2779,30 @@ describe('BaseClient', () => {
         metadata: { destinationChosen: false },
       };
 
+      /** A tool serves a file only once it holds it, so a record left to the sandbox needs the
+       *  reference provisioning writes for that tool to count as its reader. */
+      const sandboxCsv = {
+        ...routedCsv,
+        metadata: {
+          destinationChosen: false,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'session-1',
+            file_id: 'sandbox-csv-file',
+          },
+        },
+      };
+
       const replayCsv = async (
         fileConsumers,
         endpointConfig = {
           defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
           textFallbackWithoutTools: true,
         },
+        file = routedCsv,
       ) => {
-        getFiles.mockResolvedValueOnce([routedCsv]);
+        getFiles.mockResolvedValueOnce([file]);
         TestClient.options.req.config = {
           fileConfig: { endpoints: { [EModelEndpoint.openAI]: endpointConfig } },
         };
@@ -2743,12 +2877,29 @@ describe('BaseClient', () => {
         ]);
       });
 
-      test('keeps the file off the prompt when this turn can read it with code', async () => {
-        const message = await replayCsv({ executeCode: true, fileSearch: false });
+      test('keeps the file off the prompt when the sandbox running it holds the file', async () => {
+        const message = await replayCsv(
+          { executeCode: true, fileSearch: false },
+          undefined,
+          sandboxCsv,
+        );
 
         expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([]);
         expect(TestClient.addFileContextToMessage).not.toHaveBeenCalled();
         expect(message.fileContext).toBeUndefined();
+      });
+
+      test('replays the stored text when file search never received the file', async () => {
+        /* An earlier turn's upload that named no destination was filed under no tool, so the
+         * vector store holds nothing to search. Withholding the text for the enabled tool left
+         * the file unreadable on every later turn as well as the one it arrived on. */
+        const message = await replayCsv({ executeCode: false, fileSearch: true });
+        const replayed = { ...routedCsv, llmDeliveryPath: 'text' };
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([replayed]);
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [replayed]);
+        expect(message.fileContext).toBe('region,total');
+        expect(routedCsv.llmDeliveryPath).toBe('none');
       });
     });
 
@@ -3520,7 +3671,7 @@ describe('BaseClient', () => {
       });
     });
 
-    test('keeps a tool-routed file off the prompt when this turn can read it with code', () => {
+    test('keeps a tool-routed file off the prompt when the sandbox running it holds the file', () => {
       routeCsvToTools();
       TestClient.options.agent = {
         provider: EModelEndpoint.openAI,
@@ -3536,11 +3687,75 @@ describe('BaseClient', () => {
         type: 'text/csv',
         text: 'region,total',
         llmDeliveryPath: 'none',
+        metadata: {
+          destinationChosen: false,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'session-1',
+            file_id: 'sandbox-code-csv',
+          },
+        },
+      };
+
+      expect(TestClient.getAttachmentDeliveryPath(file)).toBe('none');
+      expect(TestClient.getTextContextAttachments([file])).toEqual([]);
+    });
+
+    test('delivers the text when File Search has yet to receive the file', () => {
+      /* An upload that named no destination is filed under no tool, so an enabled search tool
+       * alone cannot serve it and withholding the text left it readable by nothing. */
+      routeCsvToTools();
+      TestClient.options.agent = {
+        provider: EModelEndpoint.openAI,
+        fileConsumers: { executeCode: false, fileSearch: true },
+      };
+      TestClient.options.agent.deliveryRouting = resolveTurnDeliveryRouting({
+        agent: TestClient.options.agent,
+        config: TestClient.options.req?.config,
+      });
+      const file = {
+        file_id: 'unprovisioned-csv',
+        filename: 'sales.csv',
+        type: 'text/csv',
+        text: 'region,total',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+      };
+
+      expect(TestClient.getAttachmentDeliveryPath(file)).toBe('text');
+      /* The filter selects records by the route this turn resolves, so it returns the record as
+       * stored; marking the copy admission reads is `resolveTurnAttachments`. */
+      expect(TestClient.getTextContextAttachments([file])).toEqual([file]);
+      expect(TestClient.resolveTurnAttachments([file])).toEqual([
+        { ...file, llmDeliveryPath: 'text' },
+      ]);
+    });
+
+    test('leaves a file Run Code can read with Run Code before the sandbox holds it', () => {
+      /* Run Code uploads the file on its first call, so the text stays off the prompt, where it
+       * would otherwise count toward the history limits until that call. */
+      routeCsvToTools();
+      TestClient.options.agent = {
+        provider: EModelEndpoint.openAI,
+        fileConsumers: { executeCode: true, fileSearch: true },
+      };
+      TestClient.options.agent.deliveryRouting = resolveTurnDeliveryRouting({
+        agent: TestClient.options.agent,
+        config: TestClient.options.req?.config,
+      });
+      const file = {
+        file_id: 'unprovisioned-csv',
+        filename: 'sales.csv',
+        type: 'text/csv',
+        text: 'region,total',
+        llmDeliveryPath: 'none',
         metadata: { destinationChosen: false },
       };
 
       expect(TestClient.getAttachmentDeliveryPath(file)).toBe('none');
       expect(TestClient.getTextContextAttachments([file])).toEqual([]);
+      expect(TestClient.resolveTurnAttachments([file])).toEqual([file]);
     });
 
     test('does not fall back on an endpoint that has not enabled it', () => {
@@ -3858,6 +4073,29 @@ describe('BaseClient', () => {
 
       expect(TestClient.addImageURLs).toHaveBeenCalled();
       expect(message.image_urls).toEqual(['encoded-image']);
+    });
+
+    test('keeps a code output out of the prompt once its expired sandbox reference is cleared', async () => {
+      /* Priming clears a dead sandbox reference on the turn's copy of the record so the file
+       * is re-provisioned. The output still belongs to the sandbox that wrote it. */
+      const message = {};
+      const file = {
+        user: 'user1',
+        file_id: 'code-output-chart',
+        filename: 'chart.png',
+        filepath: '/uploads/chart.png',
+        type: 'image/png',
+        bytes: 100,
+        source: 'local',
+        context: 'execute_code',
+        metadata: {},
+      };
+
+      const result = await TestClient.processAttachments(message, [file]);
+
+      expect(result).toEqual([file]);
+      expect(TestClient.addImageURLs).not.toHaveBeenCalled();
+      expect(message.image_urls).toBeUndefined();
     });
 
     test('keeps excluding embedded legacy files that have no delivery path', async () => {

@@ -379,15 +379,18 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(reserve).not.toHaveBeenCalled();
   });
 
-  it('hands the caller signal to the SDK so an in-flight page is cancellable', async () => {
+  it('detaches a completed SDK page request from its caller signal', async () => {
     const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('a')] });
     const conn = createConnectionWithListTools(listTools);
-    const signal = AbortSignal.timeout(5000);
+    const controller = new AbortController();
 
-    await conn.fetchToolsSnapshot(Date.now() + 5000, signal);
+    await conn.fetchToolsSnapshot(Date.now() + 5000, controller.signal);
 
     const options = listTools.mock.calls[0][1]!;
-    expect(options.signal).toBe(signal);
+    expect(options.signal === controller.signal).toBe(false);
+    expect(options.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(options.signal?.aborted).toBe(false);
   });
 
   it('makes no request and no reservation when the signal is already aborted', async () => {

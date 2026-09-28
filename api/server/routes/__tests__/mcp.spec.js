@@ -3,7 +3,12 @@ const express = require('express');
 const request = require('supertest');
 const mongoose = require('mongoose');
 const cookieParser = require('cookie-parser');
-const { getBasePath, PENDING_STALE_MS } = require('@librechat/api');
+const {
+  getBasePath,
+  PENDING_STALE_MS,
+  MCPApiKeyReentryRequiredError,
+  MCPOAuthSecretReentryRequiredError,
+} = require('@librechat/api');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
 function generateTestCsrfToken(flowId) {
@@ -87,16 +92,6 @@ jest.mock('@librechat/api', () => {
     }),
     MCPServersRegistry: {
       getInstance: () => mockRegistryInstance,
-    },
-    // Error handling utilities (from @librechat/api mcp/errors)
-    isMCPDomainNotAllowedError: (error) => error?.code === 'MCP_DOMAIN_NOT_ALLOWED',
-    isMCPInspectionFailedError: (error) => error?.code === 'MCP_INSPECTION_FAILED',
-    isMCPOAuthSecretReentryRequiredError: (error) =>
-      error?.code === 'MCP_OAUTH_SECRET_REENTRY_REQUIRED',
-    MCPErrorCodes: {
-      DOMAIN_NOT_ALLOWED: 'MCP_DOMAIN_NOT_ALLOWED',
-      INSPECTION_FAILED: 'MCP_INSPECTION_FAILED',
-      OAUTH_SECRET_REENTRY_REQUIRED: 'MCP_OAUTH_SECRET_REENTRY_REQUIRED',
     },
   };
 });
@@ -1354,6 +1349,7 @@ describe('MCP Routes', () => {
         deleteFlow: jest.fn().mockResolvedValue(true),
       };
       const mockFlowState = {
+        oauthPersistenceWaitTimeout: 60000,
         state: 'test-user-id:test-server',
         serverName: 'test-server',
         userId: 'test-user-id',
@@ -1428,6 +1424,8 @@ describe('MCP Routes', () => {
       );
       expect(MCPTokenStorage.storeTokens).toHaveBeenCalledWith(
         expect.objectContaining({
+          flowManager: mockFlowManager,
+          persistenceWaitTimeoutMs: 60000,
           userId: 'test-user-id',
           serverName: 'test-server',
           tokens: mockTokens,
@@ -4443,15 +4441,7 @@ describe('MCP Routes', () => {
     });
 
     it('should require secret re-entry when OAuth credential bindings change', async () => {
-      const error = Object.assign(
-        new Error(
-          'Re-enter oauth.client_secret when changing OAuth credential binding fields: oauth.token_url',
-        ),
-        {
-          code: 'MCP_OAUTH_SECRET_REENTRY_REQUIRED',
-          statusCode: 400,
-        },
-      );
+      const error = new MCPOAuthSecretReentryRequiredError(['oauth.token_url']);
       mockRegistryInstance.inspectServerUpdate.mockRejectedValue(error);
 
       const response = await request(app)
@@ -4473,6 +4463,30 @@ describe('MCP Routes', () => {
         error: 'MCP_OAUTH_SECRET_REENTRY_REQUIRED',
         message:
           'Re-enter oauth.client_secret when changing OAuth credential binding fields: oauth.token_url',
+      });
+    });
+
+    it('should require API key re-entry when its credential binding changes', async () => {
+      const error = new MCPApiKeyReentryRequiredError(['url']);
+      mockRegistryInstance.inspectServerUpdate.mockRejectedValue(error);
+
+      const response = await request(app)
+        .patch('/api/mcp/servers/test-server')
+        .send({
+          config: {
+            type: 'sse',
+            url: 'https://attacker.example.com/sse',
+            apiKey: {
+              source: 'admin',
+              authorization_type: 'bearer',
+            },
+          },
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({
+        error: 'MCP_API_KEY_REENTRY_REQUIRED',
+        message: 'Re-enter apiKey.key when changing API key credential binding fields: url',
       });
     });
 

@@ -2,7 +2,7 @@
 # https://www.librechat.ai/docs/configuration/librechat_yaml
 
 # Configuration version (required)
-version: 1.3.16
+version: 1.3.17
 
 # Cache settings: Set to true to enable caching
 cache: true
@@ -143,6 +143,8 @@ cache: true
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
+  # codeHighlightThrottleMs: 300
   # Enable/disable file search as a chatarea selection (default: true)
   # Note: This setting does not disable the Agents File Search Capability.
   # To disable the Agents Capability, see the Agents Endpoint configuration instead.
@@ -259,6 +261,12 @@ interface:
   #   # carries system prompts, agent instructions and tool definitions, which a
   #   # user chatting with a shared agent cannot otherwise see.
   #   showInputOutput: false
+  #   # Name the tools of each tool round from the round's own record. This adds
+  #   # requests to Langfuse per listed page, and Langfuse returns each round's full
+  #   # input and output to serve them, though only the tool names are kept and sent
+  #   # on; arguments and results stay behind showInputOutput. When off, a round is
+  #   # named only where the conversation's messages can be matched to the trace.
+  #   showToolNames: false
   #   # Observations read per request (1-10000); older records load on demand.
   #   maxRecords: 1000
   #   # Characters kept from each input, output and metadata value (1-1000000).
@@ -514,6 +522,20 @@ actions:
 #     url: http://localhost:3001/sse
 #     # proxy: "${MCP_PROXY_URL}"  # optional outbound proxy (http/https/socks/socks5)
 #     timeout: 60000  # 1 minute timeout for this server, this is the default timeout for MCP servers.
+#   coordinated-oauth:
+#     type: streamable-http
+#     url: https://mcp.example.com/mcp
+#     requiresOAuth: true
+#     # Stage rollout with coordination disabled (the default). Once EVERY replica is upgraded,
+#     # pause MCP traffic and drain active refreshes/callbacks on EVERY replica before changing
+#     # this flag. Apply the same value everywhere while paused, then resume. For rollback, drain,
+#     # disable everywhere, replace the replicas, then resume. Do not toggle during live traffic.
+#     # All coordinated replicas must use the same Redis cache.
+#     oauthRefreshCoordination: false
+#     # Peer refresh wait; capped at 30000 ms by the refresh execution budget.
+#     oauthRefreshWaitTimeout: 15000
+#     # Callback/adoption persistence wait; raise for longer publication budgets (max 840000 ms).
+#     oauthPersistenceWaitTimeout: 15000
 #   private-openid:
 #     type: streamable-http
 #     url: https://mcp.example.com/mcp
@@ -522,6 +544,11 @@ actions:
 #       # connection once after a 401/403. A rejected tools/call is never replayed automatically.
 #       # Enabled oauth or obo configuration takes precedence over this passthrough mode.
 #       Authorization: "Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}"
+#     # Sent only during a chat turn, merged over `headers` (these win on a duplicate name).
+#     # Tool discovery has no conversation to resolve them against, so it omits them entirely:
+#     # a `{{LIBRECHAT_BODY_*}}` placeholder here no longer hides the server's tool list.
+#     requestHeaders:
+#       X-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
 #   puppeteer:
 #     type: stdio
 #     command: npx
@@ -560,8 +587,15 @@ endpoints:
   #   # (optional) Assistant Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
   #   capabilities: ["code_interpreter", "retrieval", "actions", "tools", "image_vision"]
   # agents:
+  #   # Maximum provider response-body inactivity for Agent model calls. Defaults to 15 minutes;
+  #   # each received chunk resets the timer. Set to 0 to disable the idle timeout.
+  #   modelResponseBodyTimeoutMs: 900000
+  #   # Maximum wait for provider response headers. Defaults to 5 minutes; 0 disables.
+  #   modelResponseHeadersTimeoutMs: 300000
   #   # (optional) Default recursion depth for agents, defaults to 25
   #   recursionLimit: 50
+  #   # Maximum provider error characters retained without content protection (0 hides detail).
+  #   maxProviderErrorChars: 2000
   #   # (optional) Max recursion depth for agents, defaults to 25
   #   maxRecursionLimit: 100
   #   # (optional) Abort a run once a single streamed tool call's arguments exceed this many bytes.
@@ -640,6 +674,12 @@ endpoints:
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
+  #     # Keep move-only behavior unless attach/detach is explicitly enabled.
+  #     # Enable only after ALL API replicas run this build and advertise decision protocol 1
+  #     # (CODE_ENVIRONMENT_DECISION_VERSION=1), then refresh clients.
+  #     conversationMoves:
+  #       enabled: true
+  #       allowAttachDetach: false
   #     allowedEnvironments: ["user", "agent-user", "conversation"]
   #     # Personal BYOM enrollment. Requires allowPrincipalWorkers on a control plane.
   #     # Omitted values default to enabled and five registered environments per user.
@@ -680,6 +720,17 @@ endpoints:
   #             # Maximum Bash execution budget the model may request per call.
   #             # Omit to preserve the historical 30-second limit. Hard cap: 300000.
   #             maxCommandTimeoutMs: 120000
+  #             # Optional total HTTP budget per workspace tool call, including
+  #             # admission, retries, worst-case execution, settlement, and delivery.
+  #             # Do NOT enable until every LibreChat API replica recognizes this
+  #             # strict config field, Code API honors X-LibreChat-Workspace-Queue-Wait-Ms,
+  #             # and a non-mutating timed canary verifies the live CDN, load balancer,
+  #             # ingress, and caller can all outlast this value. The Nginx example
+  #             # (120s) cannot establish the live limit. Omission keeps 30s admission.
+  #             # With 125s total, a read can queue <=90s, a default command <=85s,
+  #             # a 90s command <=25s. Commands >115s cannot fit; the 120s command
+  #             # ceiling above requires a larger VERIFIED total budget to be usable.
+  #             # maxRequestTimeoutMs: 125000
   #           permissions:
   #             fileWrite:
   #               allowed: [allow, ask, deny]
@@ -734,6 +785,10 @@ endpoints:
   #         issuer: 'https://identity.example.com/'
   #         audience: 'https://librechat.example.com/agents'
   #         # jwksUri: 'https://identity.example.com/.well-known/jwks.json'
+  #         # Cognito M2M access tokens use client_id instead of aud. For that
+  #         # profile, omit audience and require the access-token type and scope:
+  #         # tokenUse: access
+  #         # requiredScopes: ['agents-api/manage']
   #       clients:
   #         - clientId: 'machine-client-id'
   #           # subject: 'provider-specific-service-principal-subject'
@@ -840,6 +895,19 @@ endpoints:
   #     #     deploymentName: claude-3-5-haiku@20241022  # Override for this model
 
   custom:
+    # xAI: Grok 4.7 uses the existing OpenAI-compatible chat and agent paths.
+    # https://docs.x.ai/developers/grok-4-7
+    # Set XAI_API_KEY in your environment. No separate SpaceXAI provider is needed.
+    - name: 'xai'
+      apiKey: '${XAI_API_KEY}'
+      baseURL: 'https://api.x.ai/v1'
+      models:
+        default: ['grok-4.7']
+        fetch: true
+      titleConvo: true
+      titleModel: 'grok-4.7'
+      modelDisplayLabel: 'xAI'
+
     # Anthropic-compatible Example (native `/v1/messages` API)
     # Set `provider: anthropic` to use the native Anthropic client instead of the
     # default OpenAI-compatible one — for Anthropic itself or Anthropic-compatible
@@ -1090,6 +1158,10 @@ endpoints:
 #     tokens: 2000 # Also preserve up to this many recent tokens
 
 # fileConfig:
+#   skills:
+#     # Bound parallel storage deletes after a failed archive import (default: 8).
+#     # Set to 1 for serial cleanup on storage backends that require it.
+#     importCleanupConcurrency: 8
 #   # Store best-effort text for inferred tool-routed message attachments. On each turn,
 #   # deliver it only if no available tool can read the type. Off by default; also configurable
 #   # under endpoints.default or a provider/custom endpoint name. Explicit destinations stand.
@@ -1335,7 +1407,11 @@ endpoints:
 #   messages:
 #     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
 #     pii:
-#       action: audit # `block` (default) or `audit`
+#       action: audit # `block` (default), `audit`, or `redact` (reserved for transformation-aware ingress; current routes still block)
+#       # `redact` requires the later encrypted owner-view and canonical-message integration.
+#       # maxCharacters: 65536 # bounded total inspected text per transformation session
+#       # maxMatches: 256 # bounded matches per transformation session
+#       # Custom patterns may set category: email, phone, name, credential, or custom.
 #       fields: [name, text, summary, quote, answer, decision_response, decision_reason, content_part, attachment_reference, assembled_context]
 #       starterPatterns: [sk_prefix, bearer_header, api_key_header]
 #       customPatterns:
@@ -1398,3 +1474,7 @@ endpoints:
 #       - id: anthropic_api_key
 #         label: Anthropic API key
 #         regex: "sk-ant-[A-Za-z0-9_-]{20,}"
+
+# ACL writes retry only conflicts on an individual document.
+# permissions:
+#   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.

@@ -32,6 +32,7 @@ type ModelFavoriteProps = FavoriteItemBaseProps & {
   type: 'model';
   item: FavoriteModel;
   onSelectEndpoint?: (endpoint?: EModelEndpoint | string | null, kwargs?: Kwargs) => void;
+  endpointsConfig?: TEndpointsConfig;
 };
 
 type SpecFavoriteProps = FavoriteItemBaseProps & {
@@ -105,7 +106,13 @@ export default function FavoriteItem(props: FavoriteItemProps) {
     }
     return (
       <div className="mr-2 h-5 w-5">
-        <MinimalIcon endpoint={props.item.endpoint} size={20} isCreatedByUser={false} />
+        <MinimalIcon
+          endpoint={props.item.endpoint}
+          endpointsConfig={props.endpointsConfig}
+          model={props.item.model}
+          size={20}
+          isCreatedByUser={false}
+        />
       </div>
     );
   };

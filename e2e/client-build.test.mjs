@@ -14,7 +14,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 // without requiring a database or identity provider. It does not simulate an active model run.
 test(
   'an old tab retains its bundle identity and draft across a worker update',
-  { timeout: 30000 },
+  /** Allow setup plus both activations; individual browser waits remain bounded. */
+  { timeout: 60000 },
   async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), 'librechat-builds-'));
     const appHtml = await readFile(path.join(root, 'client/index.html'), 'utf8');
@@ -55,7 +56,10 @@ test(
          window.__lcRumPush('before-bootstrap');
          installRumBootstrap(window);
          window.fixtureVersion = ${JSON.stringify(version)};
-         navigator.serviceWorker.register('/sw.js');`,
+         navigator.serviceWorker.register('/sw.js').then(
+           registration => { window.fixtureRegistration = registration; },
+           error => { window.fixtureWorkerError = String(error); },
+         );`,
         );
         await build({
           root: fixture,
@@ -71,14 +75,25 @@ test(
         );
       }
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-      browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL });
+      browser = await chromium.launch({
+        headless: true,
+        channel: process.env.PLAYWRIGHT_CHANNEL,
+        timeout: 10000,
+      });
       const page = await browser.newPage();
       page.setDefaultTimeout(10000);
       const url = `http://127.0.0.1:${server.address().port}`;
       await page.goto(`${url}/c/example`);
       await page.waitForFunction(() => window.fixtureVersion === 'A');
-      await page.evaluate(() => navigator.serviceWorker.ready);
-      await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+      /** `ready` has no timeout and a controller can still be activating. Finish
+       *  A's handshake before clearing its events or requesting another worker. */
+      await page.waitForFunction(
+        () =>
+          window.fixtureWorkerError ||
+          (window.fixtureRegistration?.active?.state === 'activated' &&
+            navigator.serviceWorker.controller?.state === 'activated'),
+      );
+      assert.equal(await page.evaluate(() => window.fixtureWorkerError), undefined);
       await page.getByLabel('Draft').fill('Keep my unsent text');
       const firstId = await page.evaluate(() => window.__lcRumQueue[0].attributes.clientBuildId);
       assert.match(firstId, /^index\..+\.js$/);
@@ -93,15 +108,30 @@ test(
 
       await page.evaluate(() => {
         window.__lcRumQueue.length = 0;
+        window.fixturePreviousController = navigator.serviceWorker.controller;
       });
       serving = 'B';
-      await page.evaluate(async () => {
-        const registration = await navigator.serviceWorker.getRegistration();
-        await registration.update();
+      /** `evaluate` does not bound an awaited update promise. Observe its result
+       *  through the timed wait, and require B's activation, not a late A ping. */
+      await page.evaluate(() => {
+        window.fixtureRegistration.update().then(
+          () => {
+            window.fixtureUpdateFinished = true;
+          },
+          (error) => {
+            window.fixtureWorkerError = String(error);
+          },
+        );
       });
-      await page.waitForFunction(() =>
-        window.__lcRumQueue.some((event) => event.type === 'sw-ping'),
+      await page.waitForFunction(
+        () =>
+          window.fixtureWorkerError ||
+          (window.fixtureUpdateFinished &&
+            navigator.serviceWorker.controller !== window.fixturePreviousController &&
+            navigator.serviceWorker.controller?.state === 'activated' &&
+            window.__lcRumQueue.some((event) => event.type === 'sw-ping')),
       );
+      assert.equal(await page.evaluate(() => window.fixtureWorkerError), undefined);
       // Outlive the worker's unresponsive-client deadline to catch an unwanted navigation.
       await page.waitForTimeout(2000);
       assert.equal(await page.getByLabel('Draft').inputValue(), 'Keep my unsent text');

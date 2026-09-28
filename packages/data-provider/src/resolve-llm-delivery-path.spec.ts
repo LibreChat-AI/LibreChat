@@ -9,6 +9,7 @@ import type { TEndpoint } from './config';
 import {
   hasTurnFileConsumer,
   isNativelyReadableText,
+  hasToolResourceProvisioning,
   canToolResourceConsume,
   resolveUploadDestination,
   getCustomEndpointProvider,
@@ -19,6 +20,7 @@ import {
   SYSTEM_LLM_DELIVERY_DEFAULTS,
 } from './resolve-llm-delivery-path';
 import { mergeFileConfig, supportedMimeTypes, getEndpointFileConfig } from './file-config';
+import { EToolResources } from './types/tools';
 
 function resolveTurnLLMDeliveryPath({
   file,
@@ -771,6 +773,15 @@ describe('provider document capability', () => {
   });
 });
 
+const codeRef = {
+  kind: 'user' as const,
+  id: 'user_1',
+  storage_session_id: 'session_1',
+  file_id: 'sandbox_file_1',
+};
+/** File search reads an email export and the code interpreter's list does not offer it. */
+const eml = 'message/rfc822';
+
 describe('hasTurnFileConsumer', () => {
   it('finds a reader only among the tools this turn runs', () => {
     expect(hasTurnFileConsumer('text/csv', { executeCode: false, fileSearch: false })).toBe(false);
@@ -780,6 +791,81 @@ describe('hasTurnFileConsumer', () => {
 
   it('does not count a tool that cannot read the type', () => {
     expect(hasTurnFileConsumer('video/mp4', { executeCode: false, fileSearch: true })).toBe(false);
+  });
+
+  it('counts File Search only where the record shows the vector store holds the file', () => {
+    const consumers = { executeCode: false, fileSearch: true };
+    expect(hasTurnFileConsumer('text/csv', consumers, { embedded: true })).toBe(true);
+    expect(hasTurnFileConsumer('text/csv', consumers, { embedded: false })).toBe(false);
+    expect(hasTurnFileConsumer('text/csv', consumers, {})).toBe(false);
+  });
+
+  it('counts an enabled Run Code as a reader before the sandbox holds a copy', () => {
+    /* Its first call uploads the file, so no reference is needed in advance. The tool still
+     * has to be able to read the type. */
+    const consumers = { executeCode: true, fileSearch: false };
+    expect(hasTurnFileConsumer('text/csv', consumers, {})).toBe(true);
+    expect(hasTurnFileConsumer('text/csv', consumers, { metadata: {} })).toBe(true);
+    expect(hasTurnFileConsumer(eml, consumers, {})).toBe(false);
+  });
+
+  it('pairs the evidence with the tool that can read the type', () => {
+    /* Only the sandbox holds this file, so the tool that can read an email export is the one
+     * without a copy of it, while csv is served by the tool that has one. */
+    const held = { metadata: { codeEnvRef: codeRef } };
+    const both = { executeCode: true, fileSearch: true };
+    expect(hasTurnFileConsumer(eml, both, held)).toBe(false);
+    expect(hasTurnFileConsumer('text/csv', both, held)).toBe(true);
+  });
+});
+
+describe('hasToolResourceProvisioning', () => {
+  it('reads vectors for file search and a sandbox pointer for code', () => {
+    expect(hasToolResourceProvisioning({ embedded: true }, EToolResources.file_search)).toBe(true);
+    expect(
+      hasToolResourceProvisioning(
+        { metadata: { embeddedEntities: ['agent_1'] } },
+        EToolResources.file_search,
+      ),
+    ).toBe(true);
+    expect(
+      hasToolResourceProvisioning(
+        { metadata: { codeEnvRef: codeRef } },
+        EToolResources.execute_code,
+      ),
+    ).toBe(true);
+    expect(
+      hasToolResourceProvisioning(
+        { metadata: { codeEnvRefs: { default: codeRef } } },
+        EToolResources.execute_code,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not read one tool's store as the other's", () => {
+    expect(hasToolResourceProvisioning({ embedded: true }, EToolResources.execute_code)).toBe(
+      false,
+    );
+    expect(
+      hasToolResourceProvisioning(
+        { metadata: { codeEnvRef: codeRef } },
+        EToolResources.file_search,
+      ),
+    ).toBe(false);
+  });
+
+  it('treats a record with neither as unprovisioned', () => {
+    expect(hasToolResourceProvisioning({}, EToolResources.file_search)).toBe(false);
+    expect(hasToolResourceProvisioning({ embedded: false }, EToolResources.file_search)).toBe(
+      false,
+    );
+    expect(
+      hasToolResourceProvisioning(
+        { metadata: { embeddedEntities: [] } },
+        EToolResources.file_search,
+      ),
+    ).toBe(false);
+    expect(hasToolResourceProvisioning({ metadata: {} }, EToolResources.execute_code)).toBe(false);
   });
 });
 
@@ -838,7 +924,50 @@ describe('resolveTurnLLMDeliveryPath', () => {
     ).toBe('none');
   });
 
-  it('leaves the file to Run Code when the turn can read it with code', () => {
+  it('leaves the file to Run Code when the sandbox it runs on holds the file', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...routedCsv, metadata: { ...routedCsv.metadata, codeEnvRef: codeRef } },
+        consumers: { executeCode: true, fileSearch: false },
+        endpointConfig,
+      }),
+    ).toBe('none');
+  });
+
+  it('leaves the file to File Search once the vector store holds it', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...routedCsv, embedded: true },
+        consumers: { executeCode: false, fileSearch: true },
+        endpointConfig,
+      }),
+    ).toBe('none');
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...routedCsv, metadata: { ...routedCsv.metadata, embeddedEntities: ['agent_1'] } },
+        consumers: { executeCode: false, fileSearch: true },
+        endpointConfig,
+      }),
+    ).toBe('none');
+  });
+
+  it('delivers text when File Search is on but never received the file', () => {
+    /* The plain-chat File Search toggle: the upload names no destination, so nothing files it
+     * under a tool resource and it is never embedded. Withholding the text on the strength of
+     * the toggle alone left the attachment readable by nothing at all. */
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: routedCsv,
+        consumers: { executeCode: false, fileSearch: true },
+        endpointConfig,
+      }),
+    ).toBe('text');
+  });
+
+  it('leaves a file Run Code can read with Run Code before the sandbox holds it', () => {
+    /* Delivered text counts toward the turn's attachment limits. A turn those limits refuse
+     * never runs code, so the file would never become held and every later turn would carry
+     * the same text and be refused the same way. Run Code uploads the file on its first call. */
     expect(
       resolveTurnLLMDeliveryPath({
         file: routedCsv,
@@ -848,14 +977,19 @@ describe('resolveTurnLLMDeliveryPath', () => {
     ).toBe('none');
   });
 
-  it('leaves the file to File Search when the turn can read it by retrieval', () => {
+  it('delivers text where the tool holding the file cannot read this type', () => {
+    /* The vectors belong to file search, which this turn does not run, and code execution both
+     * lacks a copy and cannot read an email export, so nothing here serves the file. */
     expect(
       resolveTurnLLMDeliveryPath({
-        file: routedCsv,
-        consumers: { executeCode: false, fileSearch: true },
-        endpointConfig,
+        file: { ...routedCsv, type: eml, embedded: true },
+        consumers: { executeCode: true, fileSearch: false },
+        endpointConfig: {
+          ...endpointConfig,
+          defaultLLMDeliveryPath: { overrides: { [eml]: 'none' } },
+        },
       }),
-    ).toBe('none');
+    ).toBe('text');
   });
 
   it('does not judge a turn whose tools are unknown', () => {
@@ -934,6 +1068,7 @@ describe('resolveTurnLLMDeliveryPath', () => {
     const converted = {
       ...routedCsv,
       type: 'image/png',
+      embedded: true,
       metadata: { destinationChosen: false, routingMimeType: 'text/csv' },
     };
 

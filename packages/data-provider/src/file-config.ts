@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
+import type { ResponsesApiRouting } from './types';
 import { EModelEndpoint, isAgentsEndpoint, isDocumentSupportedProvider } from './schemas';
 import { normalizeEndpointName } from './utils';
+
+/** Parallel storage deletions during rollback of a failed skill archive import. */
+export const DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY = 8;
 
 export const supportsFiles = {
   [EModelEndpoint.openAI]: true,
@@ -230,6 +234,42 @@ export const resolveUseResponsesApi = (
   agentValue?: boolean | null,
   conversationValue?: boolean | null,
 ): boolean | undefined => agentValue ?? conversationValue ?? undefined;
+
+/** Models whose native OpenAI and Azure execution defaults to Responses. Keep
+ * this shared with client upload routing so documents follow the API that the
+ * backend will actually invoke. Explicit false remains an opt-out. */
+export const prefersResponsesApiByModel = (model?: string | null): boolean =>
+  typeof model === 'string' && /^gpt-6-(?:astra|sol|luna)(?:-|$)/i.test(model);
+
+/** The server has transport and administrator settings the browser cannot see.
+ * Missing policy never enables model-based uploads (including during upgrades). */
+export const resolveEffectiveUseResponsesApi = ({
+  value,
+  endpoint,
+  model,
+  routing,
+  webSearch,
+}: {
+  value?: boolean | null;
+  endpoint?: string | null;
+  model?: string | null;
+  routing?: ResponsesApiRouting;
+  webSearch?: boolean | null;
+}): boolean | undefined => {
+  if (endpoint !== EModelEndpoint.openAI && endpoint !== EModelEndpoint.azureOpenAI) {
+    return value ?? undefined;
+  }
+  let policy = model ? routing?.[model] : undefined;
+  if (!policy && model && prefersResponsesApiByModel(model)) {
+    const family = /^gpt-6-(?:astra|sol|luna)(?=-|$)/i.exec(model)?.[0].toLowerCase();
+    policy = family ? routing?.[`${family}-*`] : undefined;
+  }
+  policy ??= routing?.['*'];
+  if (!policy) return value ?? undefined;
+  if (webSearch && policy.withWebSearch) policy = policy.withWebSearch;
+  if (value == null) return policy.default;
+  return value ? policy.on : policy.off;
+};
 
 export const isBedrockDocumentType = (mimeType?: string): boolean =>
   mimeType != null && mimeType in bedrockDocumentFormats;
@@ -536,6 +576,7 @@ export const fileConfig = {
   },
   skills: {
     fileSizeLimit: defaultSkillImportSizeLimit,
+    importCleanupConcurrency: DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY,
   },
   serverFileSizeLimit: defaultSizeLimit,
   avatarSizeLimit: mbToBytes(2),
@@ -563,7 +604,20 @@ export const fileConfig = {
   },
 };
 
-const supportedMimeTypesSchema = z.array(z.string()).optional();
+const supportedMimeTypesSchema = z
+  .array(
+    z.string().superRefine((pattern, context) => {
+      try {
+        compileMimeRegex(pattern);
+      } catch {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid MIME type regex: not supported by the configured regex engine',
+        });
+      }
+    }),
+  )
+  .optional();
 
 export const DefaultLLMDeliveryPath = z.enum(['provider', 'text', 'none']);
 export type TDefaultLLMDeliveryPath = z.infer<typeof DefaultLLMDeliveryPath>;
@@ -588,6 +642,7 @@ export const endpointFileConfigSchema = z.object({
 
 const skillFileConfigSchema = z.object({
   fileSizeLimit: z.number().min(0).optional(),
+  importCleanupConcurrency: z.number().int().positive().optional(),
 });
 
 export const fileConfigSchema = z.object({
@@ -1212,6 +1267,13 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
 
   if (dynamic.fileContextCharLimit !== undefined) {
     mergedConfig.fileContextCharLimit = dynamic.fileContextCharLimit;
+  }
+
+  if (dynamic.skills?.importCleanupConcurrency !== undefined) {
+    mergedConfig.skills = {
+      ...mergedConfig.skills,
+      importCleanupConcurrency: dynamic.skills.importCleanupConcurrency,
+    };
   }
 
   if (dynamic.skills?.fileSizeLimit !== undefined) {

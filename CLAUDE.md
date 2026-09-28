@@ -14,7 +14,7 @@ LibreChat is a monorepo with the following key workspaces:
 | `/packages/client` | TypeScript | Frontend | `packages/data-provider` | Shared frontend utilities |
 
 The source code for `@librechat/agents` (major backend dependency, same team) lives at
-<https://github.com/danny-avila/agents>.
+<https://github.com/LibreChat-AI/agents>.
 
 ---
 
@@ -59,21 +59,36 @@ The source code for `@librechat/agents` (major backend dependency, same team) li
 
 ## Branching and Pull Requests
 
-- **Branch off `dev`, and target `dev` with every pull request.** All work lands on `dev` first.
+- **Normally branch off `dev` and target `dev`.** This is the default for work ready to follow the
+  regular release path. A maintainer-directed canary exception is described below.
 - **`main` is the released branch.** It is kept as a fast-forward of `dev` and synced as-is, so it
   is always an ancestor of `dev` — equal to it right after a sync, behind it otherwise. It never
   carries a commit that `dev` does not have.
 - **Never open a backport pull request to `main`.** Anything merged to `dev` reaches `main` at the
   next sync; a second pull request for the same change is redundant.
 - **The repository's default branch is `main`**, so `gh pr create` and the GitHub UI target it
-  unless told otherwise — always pass `--base dev` explicitly.
+  unless told otherwise — pass `--base dev` for normal work or `--base canary` for an explicitly
+  maintainer-directed canary PR.
 - Pull requests opened against `main` are retargeted to `dev` automatically by
   `.github/workflows/pr-retarget-dev.yml`. The `target: main` label exempts one, as do release-bound
-  upstream branches (`dev`, `release/*`, `hotfix/*`). Backport branches are deliberately not exempt —
-  a backport merged straight to `main` is what breaks the fast-forward invariant.
-- **`Fixes #N` does not close the issue.** GitHub honors closing keywords only when a pull request
-  merges into the default branch (`main`). Merging to `dev` does not close anything, and the later
-  fast-forward of `main` is not a merge event either — close linked issues by hand.
+  upstream branches (`dev`, `release/*`, `hotfix/*`). PRs deliberately based on `canary` are not
+  retargeted, including manual sweeps; the script skips them explicitly. Backport branches are
+  deliberately not exempt — a backport merged straight to `main` breaks the fast-forward invariant.
+- **Canary is an explicit, maintainer-selected integration target, not a path that automatically
+  flows to `dev` or `main`.** Experimental changes and PRs that are ready to merge following review
+  but must not enter the next `main` sync can go to `canary`. The maintainer may decide this when
+  assigning the work or while reviewing an older/stale PR. For a new canary PR, branch from the
+  current `origin/canary` and set `--base canary`. Never infer that a canary-targeted PR should move
+  to `dev` just because `dev` is the default; do not copy canary features into `dev` without an
+  explicit maintainer decision. If a stale PR is reassigned to canary, check the PR's base, diff and
+  exact reviewed head against current canary before changing its base or proposing a new canary
+  branch/PR; if a rebase changes the head, verify and review that new head before merging.
+- **Link related issues in the PR even when they will not auto-close.** Reference each relevant
+  issue in the description (for example, `Related to #N`) so reviewers can find the context and
+  track the work. GitHub honors `Fixes #N` and other closing keywords only when a pull request
+  merges into the default branch (`main`). Merging to `dev` or `canary` does not close an issue,
+  and the later fast-forward of `main` is not a merge event either — close resolved issues by hand
+  after merging.
 - **Git worktrees share one stash stack.** `refs/stash` lives in the common `.git` directory, so a
   bare `git stash pop` in one worktree can take work stashed in another. Prefer a throwaway WIP
   commit; if you must stash, `git stash push -m <tag>` and `apply` that specific entry.

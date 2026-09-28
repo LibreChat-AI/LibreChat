@@ -181,7 +181,8 @@ export const agentManagementResponseSchema: z.ZodType<AgentManagementResponse> =
   })
   .strict();
 
-export const agentManagementListResponseSchema: z.ZodType<AgentManagementListResponse> = z
+/** The list envelope as a plain object, so the OpenAPI contract can reuse it and override only `data`. */
+export const agentManagementListEnvelopeSchema: z.ZodType<AgentManagementListResponse> = z
   .object({
     object: z.literal('list'),
     data: z.array(agentManagementResponseSchema),
@@ -190,8 +191,10 @@ export const agentManagementListResponseSchema: z.ZodType<AgentManagementListRes
     has_more: z.boolean(),
     after: agentManagementCursorSchema.nullable(),
   })
-  .strict()
-  .superRefine(({ has_more, after }, context) => {
+  .strict();
+
+export const agentManagementListResponseSchema: z.ZodType<AgentManagementListResponse> =
+  agentManagementListEnvelopeSchema.superRefine(({ has_more, after }, context) => {
     if (has_more !== (after != null)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -280,6 +283,7 @@ export function projectAgentManagementResponse(
     stateful_code_environment: source.stateful_code_environment,
     code_environment_id: source.code_environment_id,
     code_workspace_id: source.code_workspace_id,
+    repositoryInstructions: source.repositoryInstructions,
     git_identity: source.git_identity,
     artifacts: source.artifacts,
     recursion_limit: source.recursion_limit,

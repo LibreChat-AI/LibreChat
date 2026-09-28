@@ -3154,3 +3154,95 @@ describe('vendor-prefixed pricing keys', () => {
 
 // Cross-package sync validation tests (tokens.ts ↔ tx.ts) moved to
 // packages/api tests since they require maxTokensMap from @librechat/api.
+
+describe('Grok 4.7 pricing', () => {
+  it.each(['grok-4.7', 'x-ai/grok-4.7', 'xai/grok-4.7', 'grok-4-7'])(
+    'bills %s at standard and inclusive long-context rates',
+    (model) => {
+      const key = model.split('/').pop()!;
+      for (const inputTokenCount of [199999, 200000, 200001, 500000]) {
+        const rates = inputTokenCount < 200000 ? tokenValues[key] : premiumTokenValues[key];
+        const cache =
+          inputTokenCount < 200000 ? cacheTokenValues[key] : premiumCacheTokenValues[key];
+        expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(rates.prompt);
+        expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+          rates.completion,
+        );
+        expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(cache.read);
+        expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+          cache.write,
+        );
+      }
+    },
+  );
+
+  it('preserves explicit operator billing overrides', () => {
+    const model = 'grok-4.7';
+    const endpointTokenConfig = { [model]: { prompt: 3, completion: 7, read: 0.75, write: 3 } };
+    expect(
+      getMultiplier({ model, tokenType: 'prompt', inputTokenCount: 200000, endpointTokenConfig }),
+    ).toBe(endpointTokenConfig[model].prompt);
+    expect(
+      getCacheMultiplier({
+        model,
+        cacheType: 'read',
+        inputTokenCount: 200000,
+        endpointTokenConfig,
+      }),
+    ).toBe(endpointTokenConfig[model].read);
+  });
+});
+
+describe('Opus 5.5 pricing', () => {
+  it.each([
+    'claude-opus-5-5',
+    'claude-opus-5.5',
+    'anthropic/claude-opus-5-5',
+    'global.anthropic.claude-opus-5-5',
+  ])('prices %s independently of Opus 5, without a long-context surcharge', (model) => {
+    const key = model.includes('5.5') ? 'claude-opus-5.5' : 'claude-opus-5-5';
+    for (const inputTokenCount of [1000, 200000, 1000000]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+        tokenValues[key].prompt,
+      );
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+        tokenValues[key].completion,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+        cacheTokenValues[key].write,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+        cacheTokenValues[key].read,
+      );
+    }
+    expect(tokenValues[key].prompt).toBeLessThan(tokenValues['claude-opus-5'].prompt);
+    expect(cacheTokenValues[key].read).toBeLessThan(cacheTokenValues['claude-opus-5'].read);
+  });
+});
+
+describe.each([
+  ['gpt-6-sol', 2, 0.2, 2.5, 10],
+  ['gpt-6-luna', 0.1, 0.01, 0.125, 0.5],
+] as const)('%s published pricing', (model, input, read, write, output) => {
+  it.each([272000, 272001])(
+    'applies full-request rates at %i total input tokens',
+    (inputTokenCount) => {
+      const premium = inputTokenCount > 272000;
+      for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
+        expect(getValueKey(name)).toBe(model);
+        expect(getMultiplier({ model: name, tokenType: 'prompt', inputTokenCount })).toBeCloseTo(
+          input * (premium ? 2 : 1),
+        );
+        expect(
+          getMultiplier({ model: name, tokenType: 'completion', inputTokenCount }),
+        ).toBeCloseTo(output * (premium ? 1.5 : 1));
+        expect(getCacheMultiplier({ model: name, cacheType: 'read', inputTokenCount })).toBeCloseTo(
+          read * (premium ? 2 : 1),
+        );
+        expect(
+          getCacheMultiplier({ model: name, cacheType: 'write', inputTokenCount }),
+        ).toBeCloseTo(write * (premium ? 2 : 1));
+      }
+    },
+  );
+});

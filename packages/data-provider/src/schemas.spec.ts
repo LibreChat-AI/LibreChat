@@ -683,6 +683,34 @@ describe('subagentThreadLineageSchema', () => {
   });
 });
 
+describe('tMessageSchema context fading', () => {
+  const message = {
+    messageId: 'message-1',
+    conversationId: 'conversation-1',
+    parentMessageId: null,
+    text: 'Assistant-role text',
+    isCreatedByUser: false,
+  };
+
+  it.each([1, 2])('round-trips stored version %i tiers', (v) => {
+    const fading = { v, budgetTokens: 10_000, masked: true };
+    const contextMeta = {
+      calibrationRatio: 1,
+      fading,
+      fadingTiers: [{ agentId: 'agent-a', ...fading }],
+    };
+    expect(tMessageSchema.parse({ ...message, contextMeta }).contextMeta).toEqual(contextMeta);
+  });
+
+  it('rejects unknown tier versions', () => {
+    const contextMeta = {
+      calibrationRatio: 1,
+      fading: { v: 3, budgetTokens: 10_000, masked: true },
+    };
+    expect(() => tMessageSchema.parse({ ...message, contextMeta })).toThrow();
+  });
+});
+
 describe('tMessageSchema user-submitted provenance', () => {
   const message = {
     messageId: 'message-1',

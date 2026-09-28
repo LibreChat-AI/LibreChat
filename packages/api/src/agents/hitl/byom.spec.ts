@@ -164,16 +164,19 @@ describe('markNativeCodeToolApprovalRequests', () => {
 });
 
 describe('createAttachedCodeEnvironmentPolicyHook', () => {
-  test('asks before a shell action in an attached environment', async () => {
-    const hook = createAttachedCodeEnvironmentPolicyHook(new Set(['attached-agent']));
+  test.each(['bash_tool', 'run_tools_with_bash'])(
+    'asks before a shell action in an attached environment: %s',
+    async (toolName) => {
+      const hook = createAttachedCodeEnvironmentPolicyHook(new Set(['attached-agent']));
 
-    await expect(
-      hook({ toolName: 'bash_tool', executingAgentId: 'attached-agent' } as never, signal),
-    ).resolves.toEqual({
-      decision: 'ask',
-      reason: 'bash_tool can modify your attached code environment',
-    });
-  });
+      await expect(
+        hook({ toolName, executingAgentId: 'attached-agent' } as never, signal),
+      ).resolves.toEqual({
+        decision: 'ask',
+        reason: `${toolName} can modify your attached code environment`,
+      });
+    },
+  );
 
   test('allows the baseline policy to auto-approve read-only coding actions', async () => {
     const hook = createAttachedCodeEnvironmentPolicyHook(new Set(['attached-agent']));

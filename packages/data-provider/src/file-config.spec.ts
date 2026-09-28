@@ -3,6 +3,7 @@ import type { FileConfig } from './types/files';
 import {
   fileConfig as baseFileConfig,
   fileConfigSchema,
+  resolveEffectiveUseResponsesApi,
   isAnthropicTextDocumentType,
   getConfiguredMimeAccept,
   getDocumentFileExtension,
@@ -966,6 +967,20 @@ describe('getEndpointFileConfig', () => {
       });
 
       expect(merged.skills?.fileSizeLimit).toBe(15 * 1024 * 1024);
+    });
+
+    it('defaults skill rollback concurrency and preserves configured overrides', () => {
+      expect(mergeFileConfig(undefined).skills?.importCleanupConcurrency).toBe(8);
+      const parsed = fileConfigSchema.parse({ skills: { importCleanupConcurrency: 3 } });
+      const merged = mergeFileConfig(parsed);
+      expect(merged.skills?.importCleanupConcurrency).toBe(3);
+      expect(merged.skills?.fileSizeLimit).toBe(50 * 1024 * 1024);
+    });
+
+    it.each([0, -1, 1.5])('rejects invalid rollback concurrency %s', (concurrency) => {
+      expect(
+        fileConfigSchema.safeParse({ skills: { importCleanupConcurrency: concurrency } }).success,
+      ).toBe(false);
     });
 
     it('should default skills fileSizeLimit to 50 MB', () => {
@@ -2106,4 +2121,78 @@ describe('getDocumentFileExtension', () => {
   ])('resolves %s', (mimeType, expected) => {
     expect(getDocumentFileExtension(mimeType)).toBe(expected);
   });
+});
+
+describe('server-effective Responses routing', () => {
+  const enabled = { default: true, on: true, off: false };
+  const disabled = { default: false, on: false, off: false };
+  it('does not assume model defaults before policy arrives or against an older server', () => {
+    expect(
+      resolveEffectiveUseResponsesApi({ endpoint: EModelEndpoint.azureOpenAI, model: 'gpt-6-sol' }),
+    ).toBeUndefined();
+  });
+  it('uses native snapshot policy but does not invent an Azure deployment', () => {
+    const routing = { 'gpt-6-sol': enabled, 'gpt-6-sol-*': enabled, '*': disabled };
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-6-sol-2026-09-22',
+        routing,
+      }),
+    ).toBe(true);
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model: 'gpt-6-sol-2026-09-22',
+        routing: { 'gpt-6-sol': enabled, '*': disabled },
+      }),
+    ).toBe(false);
+  });
+  it('leaves custom provider selections alone rather than inferring native support', () => {
+    expect(
+      resolveEffectiveUseResponsesApi({
+        endpoint: EModelEndpoint.custom,
+        model: 'gpt-6-sol',
+        routing: { 'gpt-6-sol': enabled },
+      }),
+    ).toBeUndefined();
+  });
+});
+
+it('inherits environment-based Azure snapshot policy only when the server advertises a family wildcard', () => {
+  const routing = { 'gpt-6-sol-*': { default: true, on: true, off: false } };
+  expect(
+    resolveEffectiveUseResponsesApi({
+      endpoint: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-sol-2026-09-22',
+      routing,
+    }),
+  ).toBe(true);
+});
+it('selects web-search routing without changing stored route selection', () => {
+  const routing = {
+    'gpt-6-sol': {
+      default: false,
+      on: true,
+      off: false,
+      withWebSearch: { default: true, on: true, off: true },
+    },
+  };
+  expect(
+    resolveEffectiveUseResponsesApi({
+      endpoint: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-sol',
+      value: false,
+      webSearch: true,
+      routing,
+    }),
+  ).toBe(true);
+  expect(
+    resolveEffectiveUseResponsesApi({
+      endpoint: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-sol',
+      value: false,
+      routing,
+    }),
+  ).toBe(false);
 });

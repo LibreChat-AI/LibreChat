@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
-import { useRecoilValue } from 'recoil';
+import { useAtomValue } from 'jotai';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
@@ -52,7 +52,7 @@ export default function BashCall({
   const localize = useLocalize();
   const command = useMemo(() => parseJsonField(args, commandField), [args, commandField]);
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
-  const sandboxStarting = useRecoilValue(sandboxStartingByToolCallId(toolCallId ?? ''));
+  const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
 
   const outputHasError = useMemo(() => ERROR_PATTERNS.test(output), [output]);
   /** A backgrounded call's persisted output stays the dispatch handle until
@@ -90,7 +90,7 @@ export default function BashCall({
     extraCancelled: cancelledInBackground,
   });
 
-  const highlighted = useLazyHighlight(command || undefined, 'bash');
+  const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
   const { ref: commandPaneRef, onScroll: onCommandPaneScroll } = useFollowScroll<HTMLDivElement>(
     highlighted ?? command,
     phase === 'running',

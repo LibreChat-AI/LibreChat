@@ -103,7 +103,7 @@ export default function ReadFileCall({
     runStepStatus,
   });
 
-  const highlighted = useLazyHighlight(hasOutput ? output : undefined, lang);
+  const highlighted = useLazyHighlight(showCode && hasOutput ? output : undefined, lang);
 
   return (
     <>

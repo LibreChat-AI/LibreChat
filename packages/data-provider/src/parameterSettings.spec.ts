@@ -64,6 +64,21 @@ describe('applyModelAwareDefaults', () => {
     expect(hasSetting(result, 'temperature')).toBe(true);
   });
 
+  it('hides unsupported thinking and sampling controls for Opus 5.5', () => {
+    const result = applyModelAwareDefaults(
+      anthropicParams,
+      EModelEndpoint.anthropic,
+      'claude-opus-5-5',
+    );
+
+    expect(hasSetting(result, 'thinking')).toBe(false);
+    expect(hasSetting(result, 'thinkingBudget')).toBe(false);
+    expect(hasSetting(result, 'temperature')).toBe(false);
+    expect(hasSetting(result, 'topP')).toBe(false);
+    expect(hasSetting(result, 'topK')).toBe(false);
+    expect(hasSetting(result, 'effort')).toBe(true);
+  });
+
   it('returns settings unchanged when no model is provided', () => {
     expect(applyModelAwareDefaults(googleParams, EModelEndpoint.google, '')).toBe(googleParams);
   });

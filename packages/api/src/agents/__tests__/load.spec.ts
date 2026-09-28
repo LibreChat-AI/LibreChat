@@ -16,13 +16,14 @@ import { loadAgent } from '../load';
 
 let Agent: mongoose.Model<unknown>;
 let createAgent: ReturnType<typeof createMethods>['createAgent'];
-let getAgent: ReturnType<typeof createMethods>['getAgent'];
+let getAgentWithVersionCount: ReturnType<typeof createMethods>['getAgentWithVersionCount'];
 
 const mockGetMCPServerTools = jest.fn();
 const mockGetAccessibleMCPServers = jest.fn();
 
 const deps: LoadAgentDeps = {
-  getAgent: (searchParameter) => getAgent(searchParameter) as Promise<LibreChatAgent | null>,
+  getAgent: (searchParameter) =>
+    getAgentWithVersionCount(searchParameter) as Promise<LibreChatAgent | null>,
   getMCPServerTools: mockGetMCPServerTools,
   getAccessibleMCPServers: mockGetAccessibleMCPServers,
 };
@@ -37,7 +38,7 @@ describe('loadAgent', () => {
     await mongoose.connect(mongoUri);
     const methods = createMethods(mongoose);
     createAgent = methods.createAgent;
-    getAgent = methods.getAgent;
+    getAgentWithVersionCount = methods.getAgentWithVersionCount;
   }, 20000);
 
   afterAll(async () => {

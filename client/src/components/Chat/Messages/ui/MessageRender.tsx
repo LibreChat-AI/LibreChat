@@ -172,7 +172,7 @@ const MessageRender = memo(function MessageRender({
       hasParallelContent={hasParallelContent}
       fullWidth={maximizeChatSpace}
       isEditing={edit}
-      plain={wakeupDisplay != null && !edit}
+      systemLabel={wakeupDisplay != null && !edit ? localize('com_ui_system_event') : undefined}
       footer={
         <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
           {/* The reading holds the column start: it takes over the slot the streaming

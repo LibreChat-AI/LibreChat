@@ -1,6 +1,8 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, useSetRecoilState, type MutableSnapshot } from 'recoil';
+import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
 import useSteerConvert from '../useSteerConvert';
 import store from '~/store';
 
@@ -48,6 +50,7 @@ function setup(initialize?: (snapshot: MutableSnapshot) => void) {
 
 describe('useSteerConvert', () => {
   beforeEach(() => {
+    getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), {});
     mockFileMap = {};
   });
 
@@ -171,6 +174,40 @@ describe('useSteerConvert', () => {
       quotes: ['original quote'],
     });
     expect(result.current.applied).toContain('server-replacement-id');
+  });
+
+  it.each(['cancelled', 'dismissed'] as const)(
+    'does not resurrect a %s recovery after remount or redelivery',
+    (disposition) => {
+      getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), { source: disposition });
+      const { result } = setup();
+      act(() =>
+        result.current.convert(CONVO_ID, [{ steerId: 'source', text: 'old words' }], {
+          generationProtocolVersion: 2,
+          allowPreviouslyConvertedIds: ['source'],
+        }),
+      );
+      expect(result.current.queue).toEqual([]);
+    },
+  );
+
+  it('does not make a held recovery sendable when a legacy claim arrives', () => {
+    getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), { source: 'blocked' });
+    const item = {
+      id: 'leftover',
+      text: 'original words',
+      recoverySteerId: 'source',
+      clientRequestId: 'attempt',
+      createdAt: 1,
+    };
+    const { result } = setup(({ set }) => set(store.queuedMessagesByConvoId(CONVO_ID), [item]));
+    act(() =>
+      result.current.convert(CONVO_ID, [{ steerId: 'source', text: 'original words' }], {
+        generationProtocolVersion: 1,
+      }),
+    );
+    expect(result.current.queue).toContainEqual(item);
+    expect(result.current.queue.every((row) => row.recoverySteerId === 'source')).toBe(true);
   });
 
   it('recovers a v1 leftover as an ordinary local follow-up without receipt binding', () => {

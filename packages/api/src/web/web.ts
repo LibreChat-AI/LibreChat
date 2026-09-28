@@ -32,6 +32,7 @@ const USER_PROVIDED_OPT_IN_URL_KEYS = new Set<TWebSearchKeys>([
 const SEARCH_PROVIDER_VALUES = new Set<string>(Object.values(SearchProviders));
 const SCRAPER_PROVIDER_VALUES = new Set<string>(Object.values(ScraperProviders));
 const RERANKER_VALUES = new Set<string>(Object.values(RerankerTypes));
+const DEFAULT_JINA_API_URL = 'https://api.jina.ai/v1/rerank';
 
 function isUserProvidedEnabled(field: string): boolean {
   return process.env[field] === AuthType.USER_PROVIDED;
@@ -480,6 +481,12 @@ export async function loadWebSearchAuth({
           throwError,
         });
 
+        const jinaApiKeyIndex = allKeys.indexOf('jinaApiKey');
+        const jinaApiKeyField = allAuthFields[jinaApiKeyIndex];
+        const jinaApiKeyValue = jinaApiKeyField ? authValues[jinaApiKeyField] : undefined;
+        const isJinaApiKeyUserProvided =
+          jinaApiKeyValue != null && process.env[jinaApiKeyField] !== jinaApiKeyValue;
+
         let allFieldsAuthenticated = true;
         for (let j = 0; j < allAuthFields.length; j++) {
           const field = allAuthFields[j];
@@ -519,6 +526,10 @@ export async function loadWebSearchAuth({
             }
             continue;
           }
+
+          if (originalKey === 'jinaApiUrl' && isFieldUserProvided && !isJinaApiKeyUserProvided) {
+            continue;
+          }
           if (originalKey) {
             authResult[originalKey] = value;
             contributed = true;
@@ -527,6 +538,10 @@ export async function loadWebSearchAuth({
           if (!isUserProvided && isFieldUserProvided && contributed) {
             isUserProvided = true;
           }
+        }
+
+        if (jinaApiKeyValue && authResult.jinaApiUrl == null) {
+          authResult.jinaApiUrl = DEFAULT_JINA_API_URL;
         }
 
         if (!allFieldsAuthenticated) {

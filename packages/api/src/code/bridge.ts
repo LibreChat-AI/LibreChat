@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import {
+  CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS,
   CODE_WORKSPACE_ID_PATTERN,
   CODE_WORKSPACE_MAX_COUNT,
   CODE_WORKSPACE_OPERATIONS,
   isCodeWorkspaceEnvironment,
+  isRepositoryInstructionDescriptor,
 } from 'librechat-data-provider';
 import type { CodeWorkspaceDescriptor, CodeWorkspaceOperation } from 'librechat-data-provider';
 
@@ -36,6 +38,8 @@ export type CodeBridgeWorkerStatus = {
   runtimes?: string[];
   operations?: CodeWorkspaceOperation[];
   workspaces?: CodeWorkspaceDescriptor[];
+  programmaticLanguages?: ['bash'];
+  maxCommandTimeoutMs?: number;
 };
 
 export type CodeBridgeFetch = (
@@ -87,6 +91,8 @@ export function createCodeBridgeStatusPoller({
   baseURL: string;
   token: string;
   workerId: string;
+  /** Force a new upstream request, bypassing cached results and older in-flight polls. */
+  bypassCache?: boolean;
 }) => Promise<CodeBridgeWorkerStatus> {
   const requests = new Map<
     string,
@@ -94,6 +100,14 @@ export function createCodeBridgeStatusPoller({
   >();
   let active = 0;
   return (params) => {
+    if (params.bypassCache) {
+      if (active >= maxConcurrent) return Promise.reject(new CodeBridgeStatusError('busy'));
+      active += 1;
+      // Mutation validation needs its own observation, but still shares the polling capacity.
+      return getCodeBridgeWorkerStatus({ ...params, fetchImpl }).finally(() => {
+        active -= 1;
+      });
+    }
     const credentialId = createHash('sha256').update(params.token).digest('base64url');
     const normalizedBaseURL = params.baseURL.trim().replace(/\/+$/, '');
     const key = `${normalizedBaseURL}\u0000${params.workerId}\u0000${credentialId}`;
@@ -166,6 +180,7 @@ function validWorkspaceCapabilities(value: unknown): value is {
   protocolVersion: 1;
   operations: CodeWorkspaceOperation[];
   workspaces: CodeWorkspaceDescriptor[];
+  programmaticLanguages?: unknown;
 } {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const capabilities = value as Record<string, unknown>;
@@ -185,12 +200,26 @@ function validWorkspaceCapabilities(value: unknown): value is {
     const workspace = value as Record<string, unknown>;
     if (
       Object.keys(workspace).some(
-        (key) => key !== 'id' && key !== 'name' && key !== 'operations' && key !== 'environment',
+        (key) =>
+          key !== 'id' &&
+          key !== 'name' &&
+          key !== 'operations' &&
+          key !== 'workspaceInstances' &&
+          key !== 'environment' &&
+          key !== 'instructions',
       ) ||
       typeof workspace.id !== 'string' ||
       !CODE_WORKSPACE_ID_PATTERN.test(workspace.id) ||
       ids.has(workspace.id) ||
+      (workspace.instructions !== undefined &&
+        (!Array.isArray(workspace.instructions) ||
+          workspace.instructions.length > 1 ||
+          !workspace.instructions.every(isRepositoryInstructionDescriptor))) ||
       (workspace.environment !== undefined && !isCodeWorkspaceEnvironment(workspace.environment)) ||
+      (workspace.workspaceInstances !== undefined &&
+        (!Array.isArray(workspace.workspaceInstances) ||
+          workspace.workspaceInstances.length !== 1 ||
+          workspace.workspaceInstances[0] !== 'git_worktree')) ||
       (workspace.name !== undefined &&
         (typeof workspace.name !== 'string' ||
           workspace.name.trim().length === 0 ||
@@ -280,6 +309,7 @@ export async function getCodeBridgeWorkerStatus({
       online?: unknown;
       ready?: unknown;
       leaseExpiresInMs?: unknown;
+      maxCommandTimeoutMs?: unknown;
       capabilities?: {
         statefulWorkspace?: unknown;
         sandboxProfile?: unknown;
@@ -294,6 +324,12 @@ export async function getCodeBridgeWorkerStatus({
         Number.isSafeInteger(status.leaseExpiresInMs) &&
         status.leaseExpiresInMs > 0 &&
         status.leaseExpiresInMs <= 60_000);
+    const validCommandTimeout =
+      status.maxCommandTimeoutMs == null ||
+      (typeof status.maxCommandTimeoutMs === 'number' &&
+        Number.isSafeInteger(status.maxCommandTimeoutMs) &&
+        status.maxCommandTimeoutMs >= 1 &&
+        status.maxCommandTimeoutMs <= CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS);
     const validCapabilities =
       capabilities == null || validStatusString(capabilities.sandboxProfile);
     const validRuntimes = capabilities == null || validStatusStringArray(capabilities.runtimes);
@@ -310,6 +346,7 @@ export async function getCodeBridgeWorkerStatus({
       (status.online && (status.leaseExpiresInMs == null || capabilities == null)) ||
       (!status.online && (status.leaseExpiresInMs != null || capabilities != null)) ||
       !validLease ||
+      !validCommandTimeout ||
       !validCapabilities ||
       !validRuntimes ||
       !validWorkspaceTools ||
@@ -322,7 +359,10 @@ export async function getCodeBridgeWorkerStatus({
     if (status.online) {
       workerStatus = status.ready ? 'ready' : 'starting';
     }
-    let workspaceStatus: Pick<CodeBridgeWorkerStatus, 'operations' | 'workspaces'> = {};
+    let workspaceStatus: Pick<
+      CodeBridgeWorkerStatus,
+      'operations' | 'workspaces' | 'programmaticLanguages'
+    > = {};
     if (validWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = {
         operations: [...capabilities.workspaceTools.operations],
@@ -331,6 +371,15 @@ export async function getCodeBridgeWorkerStatus({
           ...(workspace.operations ? { operations: [...workspace.operations] } : {}),
         })),
       };
+      if (
+        Array.isArray(capabilities.workspaceTools.programmaticLanguages) &&
+        capabilities.workspaceTools.programmaticLanguages.every(
+          (language) => typeof language === 'string',
+        ) &&
+        capabilities.workspaceTools.programmaticLanguages.includes('bash')
+      ) {
+        workspaceStatus.programmaticLanguages = ['bash'];
+      }
     } else if (validLegacyWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = { operations: [...capabilities.workspaceTools.operations] };
     }
@@ -342,6 +391,9 @@ export async function getCodeBridgeWorkerStatus({
       ...(typeof status.leaseExpiresInMs !== 'number'
         ? {}
         : { leaseExpiresInMs: status.leaseExpiresInMs }),
+      ...(typeof status.maxCommandTimeoutMs !== 'number'
+        ? {}
+        : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),
       ...(typeof capabilities?.sandboxProfile !== 'string'
         ? {}
         : { sandboxProfile: capabilities.sandboxProfile }),

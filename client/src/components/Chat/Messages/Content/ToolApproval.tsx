@@ -33,6 +33,18 @@ const DECISION_LABEL: Record<DecisionType, TranslationKeys> = {
   respond: 'com_ui_respond',
 };
 
+/**
+ * Chrome shared by the three decision fields. `TextareaAutosize` renders a bare
+ * `textarea`, which preflight leaves at `color: inherit`, so a field that names
+ * no colour token draws the typed text in whatever colour it inherits — on the
+ * dark theme that was near-black over the `surface-primary` fill, about 1.1:1.
+ * The value and the placeholder each name their token, and the boundary is
+ * `border-xheavy` so the field reads as a control at WCAG 1.4.11's 3:1
+ * (`border-light` measures ~1.4:1 against this fill).
+ */
+const fieldClasses =
+  'w-full resize-none rounded-md border border-border-xheavy bg-surface-primary p-2 text-text-primary placeholder:text-text-secondary';
+
 /** Pretty-print tool args as JSON for the `edit` textarea seed. */
 function seedArgs(args: string | Record<string, unknown> | undefined): string {
   if (args == null) {
@@ -234,10 +246,7 @@ export default function ToolApproval({
             onChange={(e) => updateDecisionDraft({ editText: e.target.value })}
             minRows={3}
             maxRows={16}
-            className={cn(
-              'w-full resize-none rounded-md border bg-surface-primary p-2 font-mono text-xs',
-              editIsValid ? 'border-border-light' : 'border-red-500',
-            )}
+            className={cn(fieldClasses, 'font-mono text-xs', !editIsValid && 'border-red-500')}
             aria-label={localize('com_ui_edit')}
           />
           {!editIsValid && (
@@ -254,7 +263,7 @@ export default function ToolApproval({
           minRows={2}
           maxRows={12}
           placeholder={localize('com_ui_tool_response_placeholder')}
-          className="w-full resize-none rounded-md border border-border-light bg-surface-primary p-2 text-sm"
+          className={cn(fieldClasses, 'text-sm')}
           aria-label={localize('com_ui_respond')}
         />
       )}
@@ -267,7 +276,7 @@ export default function ToolApproval({
           minRows={1}
           maxRows={6}
           placeholder={localize('com_ui_reject_reason_placeholder')}
-          className="w-full resize-none rounded-md border border-border-light bg-surface-primary p-2 text-sm"
+          className={cn(fieldClasses, 'text-sm')}
           aria-label={localize('com_ui_reject')}
         />
       )}

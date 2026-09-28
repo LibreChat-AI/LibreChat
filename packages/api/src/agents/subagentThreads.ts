@@ -140,6 +140,8 @@ interface PreparedThread {
     content: string;
     taskId: string;
     parentRunId: string;
+    /** Original running task closed by a retry under a new terminal message id. */
+    previousTaskId?: string;
   };
 }
 
@@ -262,7 +264,14 @@ export interface SubagentThreadTaskStoreOptions extends InMemorySubagentTaskStor
     taskId: string;
     tenantId?: string;
   }) => Promise<boolean>;
-  onTaskPrepared?: (registration: SubagentTaskWakeupRegistration) => Promise<void> | void;
+  onTaskPrepared?: (
+    registration: SubagentTaskWakeupRegistration,
+  ) => Promise<boolean | void> | boolean | void;
+  /** Called once a child's terminal message is durable, with the parent conversation its
+   * completion wake-up resumes. The child generation settles before that write, so the
+   * wake-up is ready only from here. Task ids include the original abandoned
+   * attempt when a retry persisted its result under a new id. */
+  onTaskSettled?: (userId: string, parentConversationId: string, taskIds: string[]) => void;
 }
 
 export interface SubagentTaskWakeupRegistration {
@@ -616,6 +625,9 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
   private readonly releaseOwnerAdmission?: (userId: string, token: string) => Promise<void>;
   private readonly cancelUnroutedTask?: SubagentThreadTaskStoreOptions['cancelUnroutedTask'];
   private readonly onTaskPrepared?: SubagentThreadTaskStoreOptions['onTaskPrepared'];
+  private readonly onTaskSettled?: SubagentThreadTaskStoreOptions['onTaskSettled'];
+  /** Tasks whose completion wake-up was registered; only they announce settlement. */
+  private readonly wakeupTaskIds = new Set<string>();
   private taskControlTransport?: SubagentTaskControlTransport;
   private activityStream = new SubagentActivityStream(new InMemoryEventTransport());
 
@@ -658,6 +670,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     this.releaseOwnerAdmission = options.releaseOwnerAdmission;
     this.cancelUnroutedTask = options.cancelUnroutedTask;
     this.onTaskPrepared = options.onTaskPrepared;
+    this.onTaskSettled = options.onTaskSettled;
   }
 
   /** Receives payload-free authoritative transitions from the SDK task store. */
@@ -1320,6 +1333,13 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 parentRunId: prepared.replay?.parentRunId ?? request.parentRunId,
                 createdAt: prepared.taskCreatedAt,
               });
+              if (prepared.replay != null) {
+                this.notifyTaskSettled(
+                  scope,
+                  prepared.replay.taskId,
+                  prepared.replay.previousTaskId,
+                );
+              }
               if (runtime.signal.aborted) {
                 throw runtime.signal.reason ?? new Error('Subagent task was cancelled.');
               }
@@ -1425,6 +1445,9 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
               }
               throw new Error(publicFailureDetail(error));
             } finally {
+              if (prepared != null) {
+                this.wakeupTaskIds.delete(prepared.replay?.taskId ?? runtime.taskId);
+              }
               if (prepared != null && prepared.replay == null) {
                 this.completeActivity(
                   lease,
@@ -2902,6 +2925,10 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
             replay: {
               status: terminal.subagentTask.status as 'completed' | 'error' | 'cancelled',
               taskId: canonicalTaskId,
+              ...(terminal.parentMessageId?.endsWith(':user') === true &&
+                terminal.parentMessageId !== `${canonicalTaskId}:user` && {
+                  previousTaskId: terminal.parentMessageId.slice(0, -':user'.length),
+                }),
               parentRunId: terminal.subagentTask.parentRunId ?? request.parentRunId,
               content:
                 terminal.text ??
@@ -2956,6 +2983,9 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
             status: 'error',
             content: abandonedMessage,
             taskId,
+            ...(abandoned.messageId.endsWith(':user') && {
+              previousTaskId: abandoned.messageId.slice(0, -':user'.length),
+            }),
             parentRunId: request.parentRunId,
           },
         };
@@ -3192,7 +3222,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     ) {
       return;
     }
-    await this.onTaskPrepared({
+    const admitted = await this.onTaskPrepared({
       userId: scope.userId,
       parentConversationId: scope.parentConversationId,
       parentMessageId: task.parentRunId,
@@ -3203,6 +3233,9 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       subagentType: request.subagentType,
       createdAt: task.createdAt,
     });
+    if (admitted !== false) {
+      this.wakeupTaskIds.add(task.taskId);
+    }
   }
 
   private async persistCancellation(
@@ -3374,6 +3407,26 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
         throw error;
       }
       logger.error(`[subagentThreads] Failed to refresh ${outcome} child thread`, error);
+    }
+    this.notifyTaskSettled(scope, taskId);
+  }
+
+  private notifyTaskSettled(
+    scope: SubagentThreadScope,
+    taskId: string,
+    previousTaskId?: string,
+  ): void {
+    if (!this.wakeupTaskIds.delete(taskId)) {
+      return;
+    }
+    try {
+      this.onTaskSettled?.(
+        scope.userId,
+        scope.parentConversationId,
+        previousTaskId == null ? [taskId] : [taskId, previousTaskId],
+      );
+    } catch (error) {
+      logger.warn('[subagentThreads] Settled-task listener failed', error);
     }
   }
 

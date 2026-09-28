@@ -1,5 +1,5 @@
 # Dockerfile.multi
-# v0.8.8-rc3
+# v0.8.8-rc4
 
 # Set configurable max-old-space-size with default
 ARG NODE_MAX_OLD_SPACE_SIZE=6144
@@ -17,6 +17,8 @@ RUN apk upgrade --no-cache
 RUN apk add --no-cache jemalloc
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+# Disable dependency installation analytics before any npm lifecycle scripts run.
+ENV SCARF_ANALYTICS=false
 
 WORKDIR /app
 RUN apk --no-cache add curl

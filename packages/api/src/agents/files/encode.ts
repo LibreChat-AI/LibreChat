@@ -16,6 +16,7 @@ import type { BaseMessage } from '@librechat/agents/langchain';
 import type { ServerRequest, StrategyFunctions } from '~/types';
 import type { TokenCountFn } from '~/utils/text';
 import {
+  isToolOwnedAttachment,
   isModelBoundAttachmentFile,
   assertAgentAttachmentLimits,
   AgentAttachmentPolicyError,
@@ -160,13 +161,7 @@ export function createRunFileMessageEncoder(
       }
       /* Provisioning may add tool references to native files. Only legacy records use
        * those references to decide whether their bytes belong in the prompt. */
-      if (
-        deliveryPath !== 'provider' &&
-        (file.embedded === true ||
-          file.metadata?.codeEnvRef != null ||
-          file.metadata?.codeEnvRefs != null ||
-          file.metadata?.fileIdentifier != null)
-      ) {
+      if (deliveryPath !== 'provider' && isToolOwnedAttachment(file)) {
         continue;
       }
       if (file.type.startsWith('image/')) {

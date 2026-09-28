@@ -3,7 +3,7 @@ const { createContentAggregator, GraphNodeKeys } = require('@librechat/agents');
 const {
   resolveSender,
   resolveRunConversation,
-  resolveConversationCodeEnvironmentDecision,
+  resolveAdmittedCodeEnvironmentDecision,
   createConcurrencyLimiter,
   loadSkillStates,
   initializeAgent,
@@ -94,7 +94,9 @@ const { processAddedConvo } = require('./addedConvo');
 const subagentThreadTaskStore = require('./subagentThreadStore');
 const {
   preregisterBackgroundToolCompletion,
+  pendingBackgroundToolCompletions,
   createBackgroundToolResultPersistence,
+  claimBackgroundToolResult,
   createDeadBackgroundToolClaimRecovery,
 } = require('./backgroundCompletion');
 const { logViolation } = require('~/cache');
@@ -215,6 +217,8 @@ const initializeClientWithProvider = async ({
   const ordinaryToolCancellationEnabled =
     appConfig?.endpoints?.[EModelEndpoint.agents]?.backgroundTasks?.ordinaryToolCancellation ===
     true;
+  const backgroundCompletionResultMaxChars =
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.backgroundTasks?.completionResultMaxChars;
   /** The normal controller resolves this once for timestamp anchoring. Reuse
    * that trusted document for child-thread execution policy; resume and direct
    * callers fall back to the same owner-scoped lookup. */
@@ -440,6 +444,7 @@ const initializeClientWithProvider = async ({
     runSignal: signal,
     foregroundRunId,
     ordinaryToolCancellation: ordinaryToolCancellationEnabled,
+    backgroundCompletionResultMaxChars,
     loadTools: async (
       toolNames,
       agentId,
@@ -507,15 +512,19 @@ const initializeClientWithProvider = async ({
     },
     persistBackgroundCodeResult: createBackgroundCodeResultHandler({
       req,
+      streamId,
+      jobCreatedAt,
       updateToolCallResult: db.updateToolCallResult,
     }),
     backgroundToolCompletion: {
       ...(completionWakeupsEnabled ? { preregister: preregisterBackgroundToolCompletion } : {}),
+      /** Deliveries admitted before wake-ups were disabled still drain and still count. */
+      pending: pendingBackgroundToolCompletions,
       persist: createBackgroundToolResultPersistence({
         req,
         updateToolCallResult: db.updateToolCallResult,
       }),
-      claim: db.claimBackgroundToolResults,
+      claim: (input) => claimBackgroundToolResult(db, input),
       recoverDeadClaim: createDeadBackgroundToolClaimRecovery(
         db.releaseBackgroundToolResultClaims,
         (conversationId) => GenerationJobManager.getJob(conversationId),
@@ -598,12 +607,16 @@ const initializeClientWithProvider = async ({
   ]);
   /** Preserve the owner-scoped fallback for loaders that share this request. */
   req.resolvedConversation = requestConversation;
-  const codeEnvironmentDecision = resolveConversationCodeEnvironmentDecision({
-    conversationId,
-    requestedMode: runtimeRequestBody?.codeEnvironmentMode,
-    requestedSelections: runtimeRequestBody?.codeWorkspaces,
-    conversation: requestConversation,
-  });
+  const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
+    await resolveAdmittedCodeEnvironmentDecision({
+      appConfig,
+      conversation: requestConversation,
+      conversationId,
+      requestedMode: runtimeRequestBody?.codeEnvironmentMode,
+      requestedSelections: runtimeRequestBody?.codeWorkspaces,
+      readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(req.user.id, id),
+    });
+  req.resolvedConversation = admittedConversation;
   /** Trusted, normalized pair used by every persistence path, including init failures. */
   req._codeEnvironmentDecision = codeEnvironmentDecision;
   runtimeRequestBody = {
@@ -1121,7 +1134,7 @@ const initializeClientWithProvider = async ({
       ? await resolveCodeExecutionWorkspaceContext({
           context: baseCodeExecutionContext,
           requestedSelections: runtimeRequestBody?.codeWorkspaces,
-          persistedSelections: requestConversation?.codeWorkspaces,
+          persistedSelections: admittedConversation?.codeWorkspaces,
           environments: configuredCodeEnvironments,
           getAppConfig,
         })

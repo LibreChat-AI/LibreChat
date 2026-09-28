@@ -190,6 +190,16 @@ const ERROR_CASES = [
   payloadCase('Model not served by this provider', { type: ErrorTypes.MODEL_NOT_FOUND }),
   payloadCase('Provider rate or spend limit', { type: ErrorTypes.MODEL_RATE_LIMIT }),
   {
+    label: 'Provider closed the stream mid-response',
+    text: `The model provider closed the connection before the response finished. Try again.\n${JSON.stringify({ type: ErrorTypes.MODEL_STREAM_CLOSED })}`,
+    covers: ErrorTypes.MODEL_STREAM_CLOSED,
+  },
+  {
+    label: 'Provider stream stalled past the response timeout',
+    text: `The model provider stopped sending the response, and the request timed out. Try again.\n${JSON.stringify({ type: ErrorTypes.MODEL_STREAM_STALLED })}`,
+    covers: ErrorTypes.MODEL_STREAM_STALLED,
+  },
+  {
     label: 'Upstream model error with status (server prefix + JSON)',
     text: `The model provider failed and the run could not recover.\n${JSON.stringify({
       type: ErrorTypes.UPSTREAM_MODEL_ERROR,

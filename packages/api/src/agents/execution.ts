@@ -38,9 +38,15 @@ export interface CodeExecutionContext {
   bridgeWorkerId?: string;
   codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
   codeEnvironmentSettings?: CodeEnvironmentUserSettings;
+  /** Server-derived conversation identity, activated only after worker capability negotiation. */
+  conversationWorkspaceInstanceId?: string;
   /** Live, server-validated directory selection. Never derive session reuse from this field. */
   codeWorkspace?: CodeWorkspaceSelection & {
     operations: CodeWorkspaceOperation[];
+    workspaceInstanceId?: string;
+    /** Live Code API execution ceiling. Omitted by older deployments. */
+    maxCommandTimeoutMs?: number;
+    instructions?: CodeWorkspaceDescriptor['instructions'];
     environment?: CodeWorkspaceDescriptor['environment'];
   };
 }
@@ -112,6 +118,7 @@ export function captureCodeExecutionApprovalBinding(
             : {
                 environmentId: context.codeWorkspace.environmentId,
                 workspaceId: context.codeWorkspace.workspaceId,
+                workspaceInstanceId: context.codeWorkspace.workspaceInstanceId ?? null,
                 operations: [...new Set(context.codeWorkspace.operations)].sort(),
                 ...(context.codeWorkspace.environment
                   ? { definitionFingerprint: context.codeWorkspace.environment.fingerprint }
@@ -346,6 +353,13 @@ export function resolveCodeExecutionContext(params: {
     conversationId: params.conversationId,
   });
   const executionRouteKey = createCodeExecutionRouteKey('stateful', configuredEnvironment);
+  const conversationWorkspaceInstanceId =
+    configuredEnvironment?.type === 'attached' && params.conversationId
+      ? createHash('sha256')
+          .update('librechat-conversation-workspace-v1\0')
+          .update(JSON.stringify([params.userId, params.conversationId, configuredEnvironment.id]))
+          .digest('hex')
+      : undefined;
   return {
     baseUrl: getCodeExecutionBaseUrl('stateful', configuredEnvironment),
     codeSessionKey: `${Constants.EXECUTE_CODE}:${executionRouteKey}:${runtimeSessionHint}`,
@@ -358,6 +372,7 @@ export function resolveCodeExecutionContext(params: {
     bridgeWorkerId: configuredEnvironment?.workerId ?? configuredEnvironment?.pairing?.workerId,
     codeEnvironmentConfigSchema: configuredEnvironment?.configSchema,
     codeEnvironmentSettings: configuredEnvironment?.settings,
+    ...(conversationWorkspaceInstanceId ? { conversationWorkspaceInstanceId } : {}),
   };
 }
 

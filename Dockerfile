@@ -1,4 +1,4 @@
-# v0.8.8-rc3
+# v0.8.8-rc4
 
 # Base node image
 FROM node:24.16.0-alpine AS node
@@ -9,6 +9,8 @@ RUN apk add --no-cache python3 py3-pip uv
 
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+# Disable dependency installation analytics before any npm lifecycle scripts run.
+ENV SCARF_ANALYTICS=false
 
 # Add `uv` for extended MCP support
 COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-alpine /usr/local/bin/uv /usr/local/bin/uvx /bin/
@@ -56,8 +58,8 @@ COPY --chown=node:node . .
 
 RUN \
     # React client build with configurable memory
-    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend; \
-    npm prune --production; \
+    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend && \
+    npm prune --production && \
     npm cache clean --force
 
 # Optional build metadata surfaced in Settings -> About for support triage.

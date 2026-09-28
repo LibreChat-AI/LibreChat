@@ -8,6 +8,7 @@ import {
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
+  normalizeAgentSelectorLimit,
   SKILL_SYNC_MAX_INTERVAL_MINUTES,
   summarizationTriggerSchema,
   summarizationConfigSchema,
@@ -1882,12 +1883,14 @@ describe('interface.traceViewer', () => {
       parse({
         enabled: true,
         showInputOutput: true,
+        showToolNames: true,
         maxRecords: 500,
         maxContentLength: 2000,
         requestsPerMinute: 10,
         requestTimeoutMs: 30_000,
       }),
     ).toBe(true);
+    expect(parse({ showToolNames: 'yes' })).toBe(false);
     expect(parse({ requestTimeoutMs: 999 })).toBe(false);
     expect(parse({ requestTimeoutMs: 300_001 })).toBe(false);
     expect(parse({ maxRecords: 0 })).toBe(false);
@@ -1901,11 +1904,19 @@ describe('interface.traceViewer', () => {
     expect(interfaceSchema.parse({}).traceViewer).toBeUndefined();
   });
 
+  it('names tool rounds from the tracing backend only when asked to', () => {
+    expect(resolveTraceViewerConfig({ enabled: true }).showToolNames).toBe(false);
+    expect(resolveTraceViewerConfig({ enabled: true, showToolNames: true }).showToolNames).toBe(
+      true,
+    );
+  });
+
   it('re-validates overrides that bypassed the schema', () => {
     expect(
       resolveTraceViewerConfig({
         enabled: 'true',
         showInputOutput: 1,
+        showToolNames: 'true',
         maxRecords: 50_000,
         maxContentLength: -5,
         requestsPerMinute: Number.NaN,
@@ -1914,10 +1925,32 @@ describe('interface.traceViewer', () => {
     ).toEqual({
       enabled: false,
       showInputOutput: false,
+      showToolNames: false,
       maxRecords: 10_000,
       maxContentLength: traceViewerDefaults.maxContentLength,
       requestsPerMinute: traceViewerDefaults.requestsPerMinute,
       requestTimeoutMs: traceViewerDefaults.requestTimeoutMs,
     });
+  });
+});
+
+describe('interfaceSchema agentSelectorLimit', () => {
+  it('defaults the unsearched agents selector list to ten entries', () => {
+    const result = interfaceSchema.parse({});
+    expect(result.agentSelectorLimit).toBe(10);
+  });
+
+  it('honors a deployment override and rejects out-of-bounds values', () => {
+    expect(interfaceSchema.parse({ agentSelectorLimit: 25 }).agentSelectorLimit).toBe(25);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 0 }).success).toBe(false);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 101 }).success).toBe(false);
+  });
+
+  it('normalizes runtime values that bypassed the schema back into bounds', () => {
+    expect(normalizeAgentSelectorLimit(25)).toBe(25);
+    expect(normalizeAgentSelectorLimit(undefined)).toBe(10);
+    expect(normalizeAgentSelectorLimit(0)).toBe(10);
+    expect(normalizeAgentSelectorLimit(101)).toBe(10);
+    expect(normalizeAgentSelectorLimit('10')).toBe(10);
   });
 });

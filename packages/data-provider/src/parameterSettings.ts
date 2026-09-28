@@ -1,3 +1,4 @@
+import type { ResponsesApiRouting } from './types';
 import {
   Verbosity,
   ImageDetail,
@@ -17,7 +18,8 @@ import {
   anthropicSettings,
 } from './types';
 import { SettingDefinition, SettingsConfiguration } from './generate';
-import { supportsPromptCache } from './bedrock';
+import { resolveEffectiveUseResponsesApi } from './file-config';
+import { isOpus55Model, supportsPromptCache } from './bedrock';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -1315,9 +1317,54 @@ export function applyModelAwareDefaults(
   settings: SettingsConfiguration,
   endpoint: string,
   model?: string,
+  responsesApiRouting?: ResponsesApiRouting,
 ): SettingsConfiguration {
   if (!model) {
     return settings;
+  }
+  if (/^grok-4[.-]7(?:$|[-:])/.test(model.split('/').pop() ?? '')) {
+    return settings.map((setting) =>
+      setting.key === 'reasoning_effort'
+        ? {
+            ...setting,
+            options: [
+              ReasoningEffort.unset,
+              ReasoningEffort.low,
+              ReasoningEffort.medium,
+              ReasoningEffort.high,
+              ReasoningEffort.xhigh,
+            ],
+          }
+        : setting,
+    );
+  }
+  if (/^gpt-6-(?:sol|luna)(?:$|-)/i.test(model)) {
+    return settings.map((setting) => {
+      if (setting.key === 'reasoning_effort') {
+        return {
+          ...setting,
+          options: setting.options?.filter((effort) => effort !== ReasoningEffort.minimal),
+        };
+      }
+      /** Match the native backend's unset default without writing into stored
+       * settings. Explicit false still overrides this rendered default. */
+      if (setting.key === 'useResponsesApi') {
+        const route = (value?: boolean) =>
+          resolveEffectiveUseResponsesApi({ endpoint, model, routing: responsesApiRouting, value });
+        return {
+          ...setting,
+          default: route() ?? false,
+          enumMappings: { true: route(true) ?? true, false: route(false) ?? false },
+        };
+      }
+      return setting;
+    });
+  }
+  if (isOpus55Model(model)) {
+    return settings.filter(
+      (setting) =>
+        !['thinking', 'thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+    );
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google

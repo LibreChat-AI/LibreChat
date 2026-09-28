@@ -48,6 +48,7 @@ const {
   assertCodeExecutionApprovalBinding,
   collectReachableAgents,
   restoreScheduledTokenContext,
+  recoverTurnMessageReference,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const { decryptMetadata } = require('~/server/services/ActionService');
@@ -77,6 +78,7 @@ const {
   reserveAgentEventActorDetachedAction,
   markAgentEventActorDetachedActionRunning,
   settleAgentEventActorDetachedAction,
+  appendConvoMessageReference,
 } = require('~/models');
 const {
   acquireEventChildGenerationLease,
@@ -267,6 +269,28 @@ async function resolveAccumulatedAttachments({ client, conversationId, responseM
   return mergeAttachments(existing, resolved);
 }
 
+/**
+ * A resumed turn persists its response with a bare `saveMessage`, which writes the row and
+ * never tells the conversation about it. The title write used to rebuild that array in
+ * passing; it no longer does, so each resumed save carries its own reference. Nothing else
+ * in a resumed turn could have appended it, so there is no prior write to consult.
+ */
+const recoverResumedResponseReference = (
+  { userId, conversationId, client, savedResponseMessage },
+  context,
+) =>
+  recoverTurnMessageReference(
+    { appendConvoMessageReference },
+    {
+      userId,
+      conversationId,
+      messageId: savedResponseMessage?._id == null ? undefined : String(savedResponseMessage._id),
+      alreadyRecorded: false,
+      managesConversation: !client?.skipSaveConvo,
+      context,
+    },
+  );
+
 /** Resolve the segment's content for an unfinished save (mirrors finalize's source). */
 async function resolveSegmentContent(client, streamId, expectedCreatedAt) {
   const liveContent = Array.isArray(client?.contentParts) ? client.contentParts : [];
@@ -333,6 +357,10 @@ async function persistRePauseProgress({ req, client, job, streamId, conversation
   if (!savedResponseMessage) {
     throw new Error('Re-pause response progress could not be persisted');
   }
+  await recoverResumedResponseReference(
+    { userId, conversationId, client, savedResponseMessage },
+    'api/server/controllers/agents/resume.js - recovered re-paused response reference',
+  );
 }
 
 /** Untenanted jobs (pre-multi-tenancy) remain accessible if the userId check passes. */
@@ -529,6 +557,10 @@ async function finalizeResumedTurn({
     if (!savedResponseMessage) {
       throw new Error('Resumed response could not be persisted before terminal publication');
     }
+    await recoverResumedResponseReference(
+      { userId, conversationId, client, savedResponseMessage },
+      'api/server/controllers/agents/resume.js - recovered resumed response reference',
+    );
     if (appliedEventActor != null) {
       const recorded = await recordAgentEventActorReconciliation({
         user: userId,

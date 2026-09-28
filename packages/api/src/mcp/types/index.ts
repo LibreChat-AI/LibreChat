@@ -297,7 +297,7 @@ export interface UserConnectionContext {
    * invalidated its cached token flow. A caller leasing a generation captured earlier re-captures
    * it here, ahead of the read, so a rotation that follows the read still fences the build.
    */
-  onOAuthCredentialsInvalidated?: () => Promise<void>;
+  onOAuthCredentialsInvalidated?: () => Promise<string | void>;
 }
 
 export interface RequestScopedMCPConnectionStore {
@@ -363,6 +363,8 @@ export interface ToolDiscoveryOptions {
   deadlineMs?: number;
   onOAuthCredentialsChanged?: (scope: { userId: string; serverName: string }) => Promise<void>;
   onOAuthCredentialsChanging?: UserConnectionContext['onOAuthCredentialsChanging'];
+  /** Updates the discovery flight when it adopts credentials published by a peer. */
+  onOAuthCredentialsAdopted?: (generation: string) => Promise<void>;
   onDiscoveryDetached?: UserConnectionContext['onDiscoveryDetached'];
   /** Pre-resolved config-source servers for tenant-scoped lookup */
   configServers?: Record<string, ParsedServerConfig>;

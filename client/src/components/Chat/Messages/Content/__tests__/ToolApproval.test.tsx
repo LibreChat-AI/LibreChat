@@ -84,6 +84,41 @@ describe('ToolApproval', () => {
     expect(submit).toBeEnabled();
   });
 
+  test('every decision field names its own text, placeholder and border tokens', () => {
+    renderCards(
+      <ToolApproval
+        approval={approval(['approve', 'reject', 'edit', 'respond'])}
+        toolCallId="call-1"
+        args={{ a: 1 }}
+      />,
+    );
+
+    for (const decision of ['Reject', 'Respond', 'Edit'] as const) {
+      const toggle = screen.getByRole('button', { name: decision });
+      fireEvent.click(toggle);
+      const field = screen.getByRole('textbox', { name: decision });
+      // A bare `textarea` inherits its colour, so the tokens have to be named here.
+      expect(field).toHaveClass('text-text-primary');
+      expect(field).toHaveClass('border-border-xheavy');
+      if (decision !== 'Edit') {
+        expect(field).toHaveClass('placeholder:text-text-secondary');
+      }
+      fireEvent.click(toggle);
+    }
+  });
+
+  test('invalid edit JSON replaces the field border rather than doubling it', () => {
+    renderCards(<ToolApproval approval={approval(['edit'])} toolCallId="call-1" args={{ a: 1 }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const field = screen.getByRole('textbox', { name: 'Edit' });
+    fireEvent.change(field, { target: { value: '{' } });
+
+    expect(field).toHaveClass('border-red-500');
+    expect(field).not.toHaveClass('border-border-xheavy');
+    expect(screen.getByText('Invalid JSON')).toBeInTheDocument();
+  });
+
   test('multiple paused calls share one Submit that requires every decision', () => {
     renderCards(
       <>

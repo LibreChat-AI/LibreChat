@@ -299,6 +299,39 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
   );
 }
 
+/** Past a sentence's worth of text, or across lines, a detail is a body to open rather than read. */
+const INLINE_DETAIL_LENGTH = 240;
+
+/**
+ * A headline plus the failure's own words, the way every provider-produced error reads: what is
+ * known first, the reported text second. A single sentence stays in place, where a reader gets it
+ * without acting; a body of text collapses under `label`.
+ */
+export function ErrorWithDetail({
+  headline,
+  detail,
+  label,
+}: {
+  headline: string;
+  detail?: string;
+  label: string;
+}) {
+  if (detail == null) {
+    return <>{headline}</>;
+  }
+
+  return (
+    <ErrorBody>
+      <div>{headline}</div>
+      {detail.length <= INLINE_DETAIL_LENGTH && !/[\r\n]/.test(detail) ? (
+        <div className="text-text-secondary">{detail}</div>
+      ) : (
+        <ErrorDetails label={label}>{detail}</ErrorDetails>
+      )}
+    </ErrorBody>
+  );
+}
+
 export function ErrorActions({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-wrap items-center gap-2">{children}</div>;
 }

@@ -71,9 +71,28 @@ function IdentityForm({
       <output data-testid="identity">{JSON.stringify(methods.watch('git_identity'))}</output>
       <output data-testid="workspace-default">{methods.watch('code_workspace_id')}</output>
       <output data-testid="machine-default">{methods.watch('code_environment_id')}</output>
+      <output data-testid="repository-mode">{methods.watch('repositoryInstructions')}</output>
     </FormProvider>
   );
 }
+
+test('repository instruction mode defaults to prefer and retains an explicit off choice', async () => {
+  HTMLElement.prototype.scrollIntoView = jest.fn();
+  render(<IdentityForm />);
+  expect(
+    screen.getByRole('combobox', { name: 'com_ui_repository_instructions' }),
+  ).toHaveTextContent('com_ui_repository_instructions_prefer');
+  fireEvent.click(screen.getByRole('combobox', { name: 'com_ui_repository_instructions' }));
+  fireEvent.click(
+    await screen.findByRole('option', { name: 'com_ui_repository_instructions_off' }),
+  );
+  expect(screen.getByTestId('repository-mode')).toHaveTextContent('off');
+  fireEvent.click(screen.getByText('Toggle Dialog'));
+  fireEvent.click(screen.getByText('Toggle Dialog'));
+  expect(
+    screen.getByRole('combobox', { name: 'com_ui_repository_instructions' }),
+  ).toHaveTextContent('com_ui_repository_instructions_off');
+});
 
 test('saves a workspace default bound to the selected machine and permits clearing it', async () => {
   HTMLElement.prototype.scrollIntoView = jest.fn();
@@ -180,6 +199,10 @@ test.each(['Disable code', 'Use managed', 'Disable sessions', 'Toggle Dialog'])(
 
 test.each([
   { name: 'Coding Agent', email: 'agent@example.com' },
+  {
+    name: 'Lia',
+    email: '328778573+lia-by-librechat[bot]@users.noreply.github.com',
+  },
   { name: '', email: '' },
 ])('retains a valid identity or explicit clear through panel navigation: %j', async (identity) => {
   render(<IdentityForm />);
@@ -189,6 +212,7 @@ test.each([
   fireEvent.change(screen.getByLabelText('com_ui_agent_git_email'), {
     target: { value: identity.email },
   });
+  expect(screen.getByLabelText('com_ui_agent_git_email')).toHaveAttribute('type', 'text');
   fireEvent.click(screen.getByText('Toggle Dialog'));
   expect(screen.getByTestId('identity')).toHaveTextContent(JSON.stringify(identity));
   fireEvent.click(screen.getByText('Toggle Dialog'));

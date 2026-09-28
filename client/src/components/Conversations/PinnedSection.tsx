@@ -279,6 +279,7 @@ const FavoriteRow = ({
         item={{ model: favorite.model, endpoint: favorite.endpoint }}
         type="model"
         onSelectEndpoint={onSelectEndpoint}
+        endpointsConfig={endpointsConfig}
         onRemoveFocus={onRemoveFocus}
         keyShortcuts={keyShortcuts}
       />

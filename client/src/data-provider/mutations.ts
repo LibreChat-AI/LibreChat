@@ -227,7 +227,14 @@ export const usePinConversationMutation = (
     [MutationKeys.convoPin],
     (payload: t.TPinConversationRequest) => dataService.pinConversation(payload),
     {
-      onSuccess: (data, vars, context) => {
+      onSuccess: async (data, vars, context) => {
+        /** A project drop can start a list refresh before its following unpin.
+         * Cancel that older snapshot before publishing the authoritative pin result. */
+        await Promise.all([
+          queryClient.cancelQueries([QueryKeys.allConversations]),
+          queryClient.cancelQueries([QueryKeys.archivedConversations]),
+          queryClient.cancelQueries([QueryKeys.pinnedConversations]),
+        ]);
         /** `isShared` is derived per list request and is absent from this response, so
          * read it off the cached pin before the update drops that row: the reinsert
          * below has no existing chats row to carry the badge over from. */
@@ -694,9 +701,7 @@ export const useDeleteConversationMutation = (
         await queryClient.cancelQueries([QueryKeys.pinnedConversations]);
         // could store old state if needed for rollback
       },
-      onError: () => {
-        // TODO: CHECK THIS, no-op; restore if needed
-      },
+      onError: options?.onError,
       onSuccess: (data, vars, context) => {
         const deletedConversation = vars.conversationId
           ? queryClient.getQueryData<t.TConversation>([QueryKeys.conversation, vars.conversationId])

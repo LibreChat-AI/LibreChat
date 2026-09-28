@@ -7,6 +7,7 @@ import {
   MOBILE_PANE_SHIFT,
   MOBILE_SCRIM_ID,
   SIDEBAR_TRANSITION,
+  DRAWER_UNPAINTED,
 } from '~/components/UnifiedSidebar/constants';
 
 /** Horizontal travel before the gesture claims the touch (also the tap filter). */
@@ -241,6 +242,13 @@ const releaseInlineStyles = (drawer: HTMLElement, pane: HTMLElement, paneOpen: b
   const settled = settledTransitions();
   drawer.style.transform = '';
   drawer.style.willChange = '';
+  /** Re-asserted rather than cleared, for the same reason as the width below:
+   *  a closed drawer is not painted (see DRAWER_UNPAINTED), React has already
+   *  written that value by the time this runs — the travel window closes at
+   *  TRANSITION_MS and this runs a buffer later — and clearing the property
+   *  would drop it while React believes its unchanged prop is still applied.
+   *  The drawer would be painted again, closed, which is the whole artifact. */
+  drawer.style.visibility = paneOpen ? '' : DRAWER_UNPAINTED;
   /** The close pins a measured width, and clearing would drop the declarative
    * value with it: React will not re-assert a style prop whose value it has
    * not changed. */
@@ -426,6 +434,9 @@ export default function useDrawerSwipe({
         return;
       }
       drawer.style.willChange = 'transform';
+      /** Same reason as the drag above, and the closing direction needs it too:
+       *  the deferred flip that commits `expanded` lands after these frames. */
+      drawer.style.visibility = 'visible';
       if (next) {
         pane.style.willChange = 'transform';
       }
@@ -571,6 +582,9 @@ export default function useDrawerSwipe({
             gesture.pane.style.transition = 'none';
             gesture.drawer.style.willChange = 'transform';
             gesture.pane.style.willChange = 'transform';
+            /** The drag paints the drawer before any state flip: it follows the
+             *  finger out of a closed state, which is not painted. */
+            gesture.drawer.style.visibility = 'visible';
             /** Dropping the transition lands a width still easing toward the
              *  strip target on that target in this frame, so the touchstart
              *  snapshot is now stale — and the paired transforms below read it

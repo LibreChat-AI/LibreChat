@@ -867,6 +867,7 @@ export type AgentModelParameters = {
   frequency_penalty: AgentParameterValue;
   presence_penalty: AgentParameterValue;
   useResponsesApi?: boolean;
+  web_search?: boolean;
 };
 
 export interface AgentBaseResource {
@@ -959,6 +960,11 @@ export type AgentGitIdentity = {
   email: string;
 };
 
+// GitHub App bot noreply addresses contain `[bot]`, which Zod's email validator rejects.
+const githubAppBotEmail =
+  /^\d+\+[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
+const standardGitEmail = z.string().email();
+
 export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
   .object({
     name: z
@@ -970,9 +976,12 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
     email: z
       .string()
       .trim()
-      .email()
       .max(254)
-      .refine((value) => !/[\0\r\n]/.test(value)),
+      .refine(
+        (value) =>
+          !/[\0\r\n]/.test(value) &&
+          (standardGitEmail.safeParse(value).success || githubAppBotEmail.test(value)),
+      ),
   })
   .optional();
 
@@ -1010,6 +1019,7 @@ export type Agent = {
   code_environment_id?: string | null;
   /** Default attached workspace for new chats; empty means no agent default. */
   code_workspace_id?: string;
+  repositoryInstructions?: 'prefer' | 'defer' | 'off';
   /** Non-secret Git authorship injected into this agent's sandboxed commands. */
   git_identity?: AgentGitIdentity | null;
   artifacts?: ArtifactModes;
@@ -1074,6 +1084,7 @@ export type AgentCreateParams = {
   | 'stateful_code_environment'
   | 'code_environment_id'
   | 'code_workspace_id'
+  | 'repositoryInstructions'
   | 'artifacts'
   | 'recursion_limit'
   | 'category'
@@ -1109,6 +1120,7 @@ export type AgentUpdateParams = {
   | 'code_environment_id'
   | 'git_identity'
   | 'code_workspace_id'
+  | 'repositoryInstructions'
   | 'artifacts'
   | 'recursion_limit'
   | 'category'
