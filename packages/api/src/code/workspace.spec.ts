@@ -338,6 +338,106 @@ describe('workspace admission feedback', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('retries a Code API rate limit, which rejects before the operation starts', async () => {
+    const rateLimited = () =>
+      new Response(
+        JSON.stringify({
+          error: 'rate_limited',
+          message: 'Too many CodeAPI execution requests. Please retry in 1 second.',
+          retry_after_seconds: 1,
+        }),
+        { status: 429, headers: { 'Retry-After': '0' } },
+      );
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(rateLimited())
+      .mockResolvedValueOnce(rateLimited())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            operation: 'edit_file',
+            workspaceId: 'primary',
+            path: 'src/app.ts',
+            replacements: 1,
+            bytesWritten: 24,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      );
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request: {
+          protocolVersion: 1,
+          operation: 'edit_file',
+          workspaceId: 'primary',
+          path: 'src/app.ts',
+          edits: [{ oldText: 'const old = true;', newText: 'const ready = true;' }],
+        },
+      }),
+    ).resolves.toMatchObject({ operation: 'edit_file', replacements: 1 });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const bodies = fetchImpl.mock.calls.map((call) => call[1]?.body);
+    expect(new Set(bodies).size).toBe(1);
+  });
+
+  test('reports a rate limit as not started once the retry horizon is spent', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'rate_limited', retry_after_seconds: 1 }), {
+        status: 429,
+        headers: { 'Retry-After': '1' },
+      }),
+    );
+
+    const failure = executeWorkspaceTool({
+      baseURL: 'https://code.example/v1',
+      authHeaders: {},
+      fetchImpl,
+      maxQueueWaitMs: 0,
+      request: {
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        command: 'echo test',
+      },
+    });
+
+    await expect(failure).rejects.toThrow('The operation was not started');
+    await expect(failure).rejects.toMatchObject({ upstreamStatus: 429 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('never retries a 429 that does not carry the typed rate-limit body', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      new Response('<html>Too Many Requests</html>', {
+        status: 429,
+        headers: { 'Retry-After': '0' },
+      }),
+    );
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request: {
+          protocolVersion: 1,
+          operation: 'edit_file',
+          workspaceId: 'primary',
+          path: 'src/app.ts',
+          edits: [{ oldText: 'const old = true;', newText: 'const ready = true;' }],
+        },
+      }),
+    ).rejects.toMatchObject({ upstreamStatus: 429 });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test('never retries an ambiguous capacity-looking failure', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(
       new Response('<html>Gateway unavailable</html>', {
@@ -369,6 +469,10 @@ describe('workspace admission feedback', () => {
     [503, '<html>Gateway unavailable</html>', false],
     [503, '{"code":"WORKSPACE_QUEUE_TIMEOUT"}', true],
     [503, 'null', false],
+    [503, '{"error":"rate_limited"}', false],
+    [429, '{"code":"WORKSPACE_QUEUE_TIMEOUT"}', false],
+    [429, '{"error":"rate_limited"}', true],
+    [429, '<html>Too Many Requests</html>', false],
   ] as const)(
     'does not infer non-execution from an ambiguous response',
     (status, body, truncated) => {

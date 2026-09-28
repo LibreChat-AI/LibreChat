@@ -274,12 +274,17 @@ export class WorkspaceToolHttpError extends Error {
     public readonly upstreamBodyTruncated = false,
   ) {
     let message = `Workspace tool request ${reason}`;
-    if (
-      reason === 'rejected' &&
-      isWorkspaceAdmissionTimeout(upstreamStatus, upstreamBody, upstreamBodyTruncated)
-    ) {
+    const admissionRejection =
+      reason === 'rejected'
+        ? getWorkspaceAdmissionRejection(upstreamStatus, upstreamBody, upstreamBodyTruncated)
+        : undefined;
+    if (admissionRejection === 'queue_timeout') {
       message =
         'Workspace capacity was unavailable before the queue deadline. The operation was not started. Wait for active work to finish or select an independent workspace on a machine with available capacity.';
+    }
+    if (admissionRejection === 'rate_limited') {
+      message =
+        'The Code API request rate limit was reached. The operation was not started. Wait a few seconds before retrying, or make fewer concurrent workspace calls.';
     }
     if (reason === 'insufficient_time') {
       message =
@@ -295,15 +300,38 @@ export class WorkspaceToolHttpError extends Error {
   }
 }
 
-function isWorkspaceAdmissionTimeout(status?: number, body?: string, truncated = false): boolean {
-  if (status !== 503 || !body || truncated || body.length > MAX_ERROR_BODY_BYTES) {
-    return false;
+type WorkspaceAdmissionRejection = 'queue_timeout' | 'rate_limited';
+
+/**
+ * Rejections the Code API issues before an operation is assigned, so retrying cannot repeat a
+ * mutation: a queue deadline that expired before admission, or its rate limiter, which runs as
+ * middleware ahead of the workspace router. Anything else, including an unparsable body under
+ * either status, keeps an unknown outcome and is never retried.
+ */
+function getWorkspaceAdmissionRejection(
+  status?: number,
+  body?: string,
+  truncated = false,
+): WorkspaceAdmissionRejection | undefined {
+  if (
+    (status !== 503 && status !== 429) ||
+    !body ||
+    truncated ||
+    body.length > MAX_ERROR_BODY_BYTES
+  ) {
+    return undefined;
   }
   try {
-    const parsed: { code?: string } | null = JSON.parse(body);
-    return parsed?.code === 'WORKSPACE_QUEUE_TIMEOUT';
+    const parsed: { code?: string; error?: string } | null = JSON.parse(body);
+    if (status === 503 && parsed?.code === 'WORKSPACE_QUEUE_TIMEOUT') {
+      return 'queue_timeout';
+    }
+    if (status === 429 && parsed?.error === 'rate_limited') {
+      return 'rate_limited';
+    }
+    return undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -904,7 +932,7 @@ export async function executeWorkspaceTool({
         signal?.throwIfAborted();
         const rejection = new WorkspaceToolHttpError('rejected', response.status, body, truncated);
         if (
-          !isWorkspaceAdmissionTimeout(response.status, body, truncated) ||
+          getWorkspaceAdmissionRejection(response.status, body, truncated) == null ||
           Date.now() >= queueDeadlineAt
         ) {
           throw rejection;
