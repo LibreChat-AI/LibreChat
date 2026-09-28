@@ -343,16 +343,34 @@ export type DisconnectSnapshotMode =
    *  reopen the settled turn. */
   | 'skip';
 
+/** The row flags a promoted terminal snapshot settles with, keyed by the
+ *  reconciled claim's status: an aborted run keeps the abort row's shape, a
+ *  completed run a finished row, and everything else the error envelope. */
+export function resolveReconciledSnapshotEnvelope(status: unknown): {
+  unfinished: boolean;
+  error: boolean;
+} {
+  if (status === 'aborted') {
+    return { unfinished: true, error: false };
+  }
+  if (status === 'complete') {
+    return { unfinished: false, error: false };
+  }
+  return { unfinished: false, error: true };
+}
+
 /**
  * How the last-subscriber disconnect may persist this turn's snapshot. A
  * compaction whose settling path (completion, error, abort) durably owns the
  * final row must not have it reopened as an unfinished snapshot; a compaction
  * whose terminal write settled for a reconciliation frame has no row at all,
- * so its snapshot is promoted to the terminal row; ordinary turns keep
+ * so its snapshot is promoted to the terminal row, anchored on the persisted
+ * leaf the injected reader confirms (the promotion must not recreate the
+ * orphan an absent-anchor abort deliberately withheld); ordinary turns keep
  * writing their fallback row exactly as before, because their terminal row
  * write may still fail.
  */
-export function resolveDisconnectSnapshotMode(
+export async function resolveDisconnectSnapshotMode(
   isCompaction: boolean,
   jobRecord:
     | {
@@ -363,15 +381,19 @@ export function resolveDisconnectSnapshotMode(
       }
     | null
     | undefined,
-  jobCreatedAt?: number,
-): DisconnectSnapshotMode {
+  jobCreatedAt: number | undefined,
+  { anchorExists = async () => true }: { anchorExists?: () => Promise<boolean> } = {},
+): Promise<DisconnectSnapshotMode> {
   if (!isCompaction) {
     return 'live';
   }
   if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
     return 'skip';
   }
-  return hasDurableReconcileFrame(jobRecord?.finalEvent) ? 'terminal' : 'live';
+  if (!hasDurableReconcileFrame(jobRecord?.finalEvent)) {
+    return 'live';
+  }
+  return (await anchorExists()) ? 'terminal' : 'skip';
 }
 
 /** How the abort route persists a stopped turn's prerequisite rows. */

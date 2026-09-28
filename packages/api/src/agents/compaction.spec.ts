@@ -20,6 +20,7 @@ import {
   persistFinalizedCompactionTurn,
   isSettledJobRecord,
   resolveDisconnectSnapshotMode,
+  resolveReconciledSnapshotEnvelope,
   planAbortedTurnPersistence,
   resolveAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
@@ -1410,39 +1411,79 @@ describe('isSettledJobRecord', () => {
 describe('resolveDisconnectSnapshotMode', () => {
   it.each(['complete', 'error', 'aborted'])(
     'withholds the snapshot of a %s compaction job',
-    (status) => {
-      expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status }, 1000)).toBe('skip');
+    async (status) => {
+      await expect(
+        resolveDisconnectSnapshotMode(true, { createdAt: 1000, status }, 1000),
+      ).resolves.toBe('skip');
     },
   );
 
-  it('writes the snapshot for a live, missing, or other-epoch record', () => {
-    expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000)).toBe(
-      'live',
-    );
-    expect(resolveDisconnectSnapshotMode(true, null, 1000)).toBe('live');
-    expect(resolveDisconnectSnapshotMode(true, { createdAt: 2000, status: 'error' }, 1000)).toBe(
-      'live',
-    );
+  it('writes the snapshot for a live, missing, or other-epoch record', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000),
+    ).resolves.toBe('live');
+    await expect(resolveDisconnectSnapshotMode(true, null, 1000)).resolves.toBe('live');
+    await expect(
+      resolveDisconnectSnapshotMode(true, { createdAt: 2000, status: 'error' }, 1000),
+    ).resolves.toBe('live');
   });
 
   /** An ordinary turn's snapshot is the fallback row its terminal write may
    *  still need, so it is written whatever the record says. */
-  it('writes the snapshot of a settled ordinary turn', () => {
-    expect(
+  it('writes the snapshot of a settled ordinary turn', async () => {
+    await expect(
       resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'complete' }, 1000),
-    ).toBe('live');
+    ).resolves.toBe('live');
+  });
+
+  const reconciled = () => ({
+    createdAt: 1000,
+    status: 'error',
+    finalEvent: JSON.stringify({ final: true, reconcile: true }),
   });
 
   /** The terminal write failed and settled for a reconciliation frame: the
    *  snapshot is promoted to the turn's terminal row, because no other row
    *  will ever be persisted for it. */
-  it('promotes a reconciled compaction snapshot to the terminal row', () => {
-    const reconciled = {
-      createdAt: 1000,
-      status: 'error',
-      finalEvent: JSON.stringify({ final: true, reconcile: true }),
-    };
+  it('promotes a reconciled compaction snapshot to the terminal row', async () => {
+    await expect(resolveDisconnectSnapshotMode(true, reconciled(), 1000)).resolves.toBe('terminal');
+  });
 
-    expect(resolveDisconnectSnapshotMode(true, reconciled, 1000)).toBe('terminal');
+  /** The promotion must not recreate the orphan an absent-anchor abort
+   *  deliberately withheld: without a persisted anchor there is nothing to
+   *  hang the terminal row on. */
+  it('withholds a reconciled snapshot whose anchor was never persisted', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, reconciled(), 1000, {
+        anchorExists: async () => false,
+      }),
+    ).resolves.toBe('skip');
+  });
+});
+
+describe('resolveReconciledSnapshotEnvelope', () => {
+  it('keeps the abort row shape for an aborted claim', () => {
+    expect(resolveReconciledSnapshotEnvelope('aborted')).toEqual({
+      unfinished: true,
+      error: false,
+    });
+  });
+
+  it('settles a completed claim as a finished row', () => {
+    expect(resolveReconciledSnapshotEnvelope('complete')).toEqual({
+      unfinished: false,
+      error: false,
+    });
+  });
+
+  it('settles everything else with the error envelope', () => {
+    expect(resolveReconciledSnapshotEnvelope('error')).toEqual({
+      unfinished: false,
+      error: true,
+    });
+    expect(resolveReconciledSnapshotEnvelope(undefined)).toEqual({
+      unfinished: false,
+      error: true,
+    });
   });
 });
