@@ -53,6 +53,7 @@ jest.mock('@librechat/api', () => ({
       (...args) =>
         mockIngress(...args),
   ),
+  isPreDenialTextSubmission: (req) => req.method === 'POST' && typeof req.body?.text === 'string',
   isPrivateTextChatSubmission: (req) =>
     req.method === 'POST' &&
     req.originalUrl === '/agents/chat' &&
@@ -162,6 +163,35 @@ describe('start-generation idempotency before message limiters', () => {
     expect(userLimited.status).toBe(429);
     expect(mockIngress).toHaveBeenCalledTimes(3);
     expect(mockConfigMiddleware).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['/agents/chat/queued-turns', '/agents/chat/queued-turns/v2', '/agents/chat/steer'])(
+    'loads policy once ahead of a banned text submission to %s without transforming it',
+    async (path) => {
+      mockCheckBan.mockImplementationOnce((req, res) => {
+        expect(req.config?.filters?.messages?.pii?.action).toBe('redact');
+        expect(req.body.text).toBe('alice@example.com');
+        res.status(403).json({ banned: true });
+      });
+      const response = await request(app)
+        .post(path)
+        .set('X-Test-Private', 'yes')
+        .send({ text: 'alice@example.com' });
+      expect(response.status).toBe(403);
+      expect(mockConfigMiddleware).toHaveBeenCalledTimes(1);
+      expect(mockIngress).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not reload pre-denial config on an admitted queued submission', async () => {
+    mockIpLimiter.mockImplementationOnce((_req, _res, next) => next());
+    mockUserLimiter.mockImplementationOnce((_req, _res, next) => next());
+    const response = await request(app)
+      .post('/agents/chat/queued-turns')
+      .set('X-Test-Private', 'yes')
+      .send({ text: 'clean queued turn' });
+    expect(response.status).toBe(202);
+    expect(mockConfigMiddleware).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a confirmed retry behind the shared IP limiter', async () => {

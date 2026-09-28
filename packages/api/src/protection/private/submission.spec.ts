@@ -5,8 +5,10 @@ import {
   createPrivateTextIngress,
   savePrivateTextMessage,
   stampPrivateTextMessage,
+  stampPreliminaryPrivateTextMessage,
   requirePrivateTextPersistence,
   saveAbortedUserMessage,
+  isPreDenialTextSubmission,
   isPrivateTextChatSubmission,
   privateTextBinding,
 } from './submission';
@@ -80,6 +82,12 @@ describe('private text submission boundary', () => {
       ).toBe(false);
     }
     expect(
+      isPreDenialTextSubmission({
+        method: 'POST',
+        body: { text: original },
+      } as Request),
+    ).toBe(true);
+    expect(
       isPrivateTextChatSubmission({
         method: 'GET',
         originalUrl: '/api/agents/chat',
@@ -93,7 +101,8 @@ describe('private text submission boundary', () => {
       async (_ctx, message) => message as IMessage,
     );
     const hasPersistedPrivateText = jest.fn(async () => true);
-    const store = { saveMessage, hasPersistedPrivateText };
+    const getPrivateMessageTexts = jest.fn(async (): Promise<never[]> => []);
+    const store = { saveMessage, hasPersistedPrivateText, getPrivateMessageTexts };
     const { message } = submit();
     expect(
       await saveAbortedUserMessage(
@@ -124,6 +133,7 @@ describe('private text submission boundary', () => {
         { userId: 'owner' },
         {
           ...message,
+          text: 'ordinary turn without private values',
           privacyRevision: undefined,
         },
         { context: 'ordinary Stop' },
@@ -131,6 +141,55 @@ describe('private text submission boundary', () => {
       ),
     ).toBe(true);
     expect(saveMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks old revisionless protected jobs against storage instead of overwriting them', async () => {
+    const { message } = submit();
+    const saveMessage = jest.fn(async () => message as IMessage);
+    const getPrivateMessageTexts = jest.fn(async () => [
+      {
+        messageId: message.messageId!,
+        text: message.text!,
+        privacyRevision: message.privacyRevision!,
+        privateText: 'v1:encrypted',
+      },
+    ]);
+    const store = {
+      saveMessage,
+      hasPersistedPrivateText: jest.fn(async () => true),
+      getPrivateMessageTexts,
+    };
+    const finalEvent = { requestMessage: { messageId: message.messageId, privacyRevision: '' } };
+    const older = { ...message, privacyRevision: undefined };
+    expect(
+      await saveAbortedUserMessage(
+        store,
+        { userId: 'owner' },
+        older,
+        undefined,
+        'tenant-a',
+        finalEvent,
+      ),
+    ).toBe(true);
+    expect(saveMessage).not.toHaveBeenCalled();
+    expect(finalEvent.requestMessage.privacyRevision).toBe(message.privacyRevision);
+    getPrivateMessageTexts.mockResolvedValueOnce([]);
+    await expect(
+      saveAbortedUserMessage(store, { userId: 'owner' }, older, undefined, 'tenant-a'),
+    ).rejects.toThrow('private value');
+    expect(saveMessage).not.toHaveBeenCalled();
+  });
+
+  it('stamps a protected preliminary job message before the created event', () => {
+    const { req, message } = submit();
+    const preliminary = stampPreliminaryPrivateTextMessage(req, {
+      messageId: message.messageId,
+      conversationId: message.conversationId,
+      text: message.text,
+    });
+    expect(preliminary?.privacyRevision).toBe(message.privacyRevision);
+    expect(JSON.stringify(preliminary)).not.toContain(original);
+    expect(stampPreliminaryPrivateTextMessage(req, null)).toBeNull();
   });
 
   it('replaces request text before consumers and exposes no original in metadata or serialization', () => {

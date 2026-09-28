@@ -53,6 +53,7 @@ const {
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
   savePrivateTextMessage,
+  stampPreliminaryPrivateTextMessage,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -1593,10 +1594,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     const responseModel = getAgentResponseModel(req, endpointOption);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
-      : getPreliminaryUserMessage(
-          { ...req.body, messageId: preallocatedUserMessageId },
-          conversationId,
-          req._agentEventTriggerProjection,
+      : stampPreliminaryPrivateTextMessage(
+          req,
+          getPreliminaryUserMessage(
+            { ...req.body, messageId: preallocatedUserMessageId },
+            conversationId,
+            req._agentEventTriggerProjection,
+          ),
         );
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
       startupTelemetry,
@@ -2307,6 +2311,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 conversationId: userMsg.conversationId,
                 text: userMsg.text,
                 quotes: userMsg.quotes,
+                privacyRevision: userMsg.privacyRevision,
                 // Persist the turn's uploaded files here (authoritative job metadata) so a
                 // HITL resume sources them from the job, not the user DB row — which the
                 // approval prompt can race (the row save may still be in flight when a fast

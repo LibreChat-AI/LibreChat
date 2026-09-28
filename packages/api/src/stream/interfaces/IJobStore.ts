@@ -153,6 +153,7 @@ export interface SerializableJobData {
     parentMessageId?: string;
     conversationId?: string;
     text?: string;
+    privacyRevision?: string;
     /** Quoted excerpts referenced on this turn, carried so resumable/aborted
      *  reconstructions of the user message keep their `MessageQuotes`. */
     quotes?: string[];

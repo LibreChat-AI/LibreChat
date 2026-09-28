@@ -36,13 +36,19 @@ function View({
   conversationId = 'conversation',
   messages = [canonical],
   displayIndex = 0,
+  isSubmitting = false,
 }: {
   conversationId?: string;
   messages?: TMessage[];
   displayIndex?: number;
+  isSubmitting?: boolean;
 }) {
   return (
-    <OwnerTextProvider messages={messages} conversationId={conversationId} isSubmitting={false}>
+    <OwnerTextProvider
+      messages={messages}
+      conversationId={conversationId}
+      isSubmitting={isSubmitting}
+    >
       <PrivateText message={messages[displayIndex]} />
       <pre data-testid="canonical">{JSON.stringify(messages)}</pre>
     </OwnerTextProvider>
@@ -104,6 +110,34 @@ it('shows loading then safe unavailable text when decryption or authorization fa
   expect(screen.getByRole('status')).toHaveTextContent('com_ui_private_text_unavailable');
 });
 
+it('retries a provisional empty owner read once on turn completion, without repeatedly polling', async () => {
+  load.mockResolvedValueOnce({ messages: [] });
+  load.mockResolvedValueOnce({ messages: [original] });
+  const view = render(<View isSubmitting />);
+  await waitFor(() =>
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_private_text_unavailable'),
+  );
+  expect(load).toHaveBeenCalledTimes(1);
+  view.rerender(<View isSubmitting />);
+  expect(load).toHaveBeenCalledTimes(1);
+  view.rerender(<View isSubmitting={false} />);
+  expect(await screen.findByText(original.text)).toBeInTheDocument();
+  expect(load).toHaveBeenCalledTimes(2);
+  view.rerender(<View isSubmitting={false} />);
+  expect(load).toHaveBeenCalledTimes(2);
+});
+
+it('does not automatically retry an old missing owner row on unrelated submission transitions', async () => {
+  load.mockResolvedValue({ messages: [] });
+  const view = render(<View />);
+  await waitFor(() =>
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_private_text_unavailable'),
+  );
+  view.rerender(<View isSubmitting />);
+  view.rerender(<View isSubmitting={false} />);
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
 it('offers a safe retry after a transient owner-text request failure', async () => {
   load.mockRejectedValueOnce(new Error('temporary outage'));
   load.mockResolvedValueOnce({ messages: [original] });
@@ -118,6 +152,17 @@ it('offers a safe retry after a transient owner-text request failure', async () 
   expect(await screen.findByText(original.text)).toBeInTheDocument();
   expect(load).toHaveBeenCalledTimes(2);
   expect(screen.queryByRole('button', { name: 'com_ui_private_text_retry' })).toBeNull();
+});
+
+it('does not cache a failed decryption as if it contained a usable original', async () => {
+  load.mockResolvedValueOnce({ messages: [{ ...original, text: undefined }] });
+  load.mockResolvedValueOnce({ messages: [original] });
+  render(<View />);
+  const retry = await screen.findByRole('button', { name: 'com_ui_private_text_retry' });
+  expect(screen.getByText(canonical.text)).toBeInTheDocument();
+  await act(async () => retry.click());
+  expect(await screen.findByText(original.text)).toBeInTheDocument();
+  expect(load).toHaveBeenCalledTimes(2);
 });
 
 it('rejects stale revisions instead of restoring a previous original', async () => {

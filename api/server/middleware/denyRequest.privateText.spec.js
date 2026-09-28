@@ -31,6 +31,20 @@ it('encrypts denied PII for an existing conversation and sends only the filtered
     method: 'POST',
     path: '/',
     originalUrl: '/api/agents/chat',
+    config: {
+      filters: {
+        messages: {
+          pii: {
+            action: 'redact',
+            fields: ['text'],
+            starterPatterns: [],
+            customPatterns: [
+              { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            ],
+          },
+        },
+      },
+    },
     user: { id: 'owner', tenantId: 'tenant-a' },
     body: {
       text: `Email ${original}`,
@@ -43,18 +57,7 @@ it('encrypts denied PII for an existing conversation and sends only the filtered
   const res = {};
   const next = jest.fn();
   createPrivateTextIngress({
-    getFilters: () => ({
-      messages: {
-        pii: {
-          action: 'redact',
-          fields: ['text'],
-          starterPatterns: [],
-          customPatterns: [
-            { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
-          ],
-        },
-      },
-    }),
+    getFilters: () => req.config.filters,
     getLegacyPii: () => undefined,
     getKey: () => 'ab'.repeat(32),
   })(req, res, next);
@@ -120,6 +123,52 @@ it('fails closed before event or storage when denial hits untransformed private 
   expect(mockSendEvent).not.toHaveBeenCalled();
   expect(mockSaveMessage).not.toHaveBeenCalled();
   expect(mockSendError).not.toHaveBeenCalled();
+});
+
+it.each(['redact', 'block'])(
+  'rejects a queued-turn denial before events or storage with %s policy',
+  async (action) => {
+    const req = {
+      method: 'POST',
+      originalUrl: '/api/agents/chat/queued-turns',
+      user: { id: 'owner', tenantId: 'tenant-a' },
+      config: {
+        filters: {
+          messages: {
+            pii: {
+              action,
+              fields: ['text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+              ],
+            },
+          },
+        },
+      },
+      body: { text: `Email ${original}`, conversationId: uuidv4(), parentMessageId: uuidv4() },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    await denyRequest(req, res, { type: 'ban' });
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain(original);
+    expect(mockSendEvent).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  },
+);
+
+it('fails closed on a denied Agent submission when its policy was not loaded', async () => {
+  const req = {
+    method: 'POST',
+    originalUrl: '/api/agents/chat/queued-turns',
+    user: { id: 'owner' },
+    body: { text: original, conversationId: uuidv4(), parentMessageId: uuidv4() },
+  };
+  const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+  await denyRequest(req, res, { type: 'ban' });
+  expect(res.status).toHaveBeenCalledWith(400);
+  expect(mockSendEvent).not.toHaveBeenCalled();
+  expect(mockSaveMessage).not.toHaveBeenCalled();
 });
 
 it('retains the existing denial behavior when no PII transformer ran', async () => {

@@ -25,6 +25,7 @@ interface Capture {
 }
 
 const captures = new WeakMap<object, Capture>();
+const PRIVATE_PLACEHOLDER = /\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]/;
 
 const CONTROL_ROUTES = new Set([
   'abort',
@@ -35,6 +36,11 @@ const CONTROL_ROUTES = new Set([
   'active',
   'resume',
 ]);
+
+/** Every submitted text path can be denied before its route-specific filter runs. */
+export function isPreDenialTextSubmission(req: Request): boolean {
+  return req.method === 'POST' && typeof req.body?.text === 'string';
+}
 
 /** Only actual interactive chat POSTs have an owner-view text sidecar in this slice. */
 export function isPrivateTextChatSubmission(req: Request): boolean {
@@ -76,8 +82,19 @@ export function rejectUnprotectedDeniedMessage(req: PrivateTextRequest, res: Res
   const legacyPii = req.config?.messageFilter?.pii;
   const text = req.body?.text;
   if (
+    typeof text === 'string' &&
+    req.config == null &&
+    req.originalUrl?.split('?', 1)[0]?.startsWith('/api/agents/chat')
+  ) {
+    res.status(400).json({
+      error: 'content_filter_block',
+      message: 'Private details could not be protected. Nothing was sent to the model.',
+    });
+    return true;
+  }
+  if (
     typeof text !== 'string' ||
-    (filters?.messages?.pii?.action !== 'redact' && legacyPii == null) ||
+    (filters?.messages?.pii == null && legacyPii == null) ||
     captures.get(req)?.text === text
   ) {
     return false;
@@ -240,6 +257,21 @@ export function stampPrivateTextMessage<T extends PrivateTextMessage>(
   return message;
 }
 
+/** The preliminary job record precedes the created event and may be read by Stop. */
+export function stampPreliminaryPrivateTextMessage<T extends PrivateTextMessage>(
+  req: object | undefined,
+  message: T | null,
+): (T & { privacyRevision?: string }) | null {
+  if (message == null) {
+    return null;
+  }
+  const capture = req == null ? undefined : captures.get(req);
+  if (capture != null && capture.text === message.text) {
+    return { ...message, privacyRevision: capture.revision };
+  }
+  return message;
+}
+
 /** Encrypts against final server-resolved message identity, then commits both views in one write. */
 export async function savePrivateTextMessage(
   save: MessageMethods['saveMessage'],
@@ -310,20 +342,74 @@ export async function requirePrivateTextPersistence(
 }
 
 /**
- * A Stop request has a different Express request from the original turn and cannot
- * retrieve the original plaintext. A protected turn already passed the pre-model
- * persistence barrier: verify that exact owner row instead of resaving its text
- * and unsetting its sidecar. If that prerequisite disappeared, fail closed.
+ * Stop has a different request and cannot retrieve the original plaintext. Verify
+ * protected rows instead of rewriting their canonical text. Older job records may
+ * omit the revision, so their prerequisite is an insert-only write.
  */
 export async function saveAbortedUserMessage(
-  store: Pick<MessageMethods, 'saveMessage' | 'hasPersistedPrivateText'>,
+  store: Pick<MessageMethods, 'saveMessage' | 'hasPersistedPrivateText' | 'getPrivateMessageTexts'>,
   ctx: Parameters<MessageMethods['saveMessage']>[0],
   message: Parameters<MessageMethods['saveMessage']>[1],
   metadata: Parameters<MessageMethods['saveMessage']>[2],
   tenantId?: string,
+  finalEvent?: { requestMessage?: { privacyRevision?: string } | null },
 ): Promise<boolean> {
-  if (typeof message.privacyRevision !== 'string' || message.privacyRevision.length === 0) {
-    return (await store.saveMessage(ctx, message, metadata)) != null;
+  const revision = message.privacyRevision;
+  if (typeof revision !== 'string' || revision.length === 0) {
+    if (!message.messageId || !message.conversationId) {
+      throw unavailable();
+    }
+    if (typeof message.text !== 'string' || !PRIVATE_PLACEHOLDER.test(message.text)) {
+      const saved = await store.saveMessage(ctx, message, { ...metadata, insertOnly: true });
+      if (
+        saved == null ||
+        saved.messageId !== message.messageId ||
+        saved.conversationId !== message.conversationId ||
+        saved.text !== message.text
+      ) {
+        throw unavailable();
+      }
+      if (typeof saved.privacyRevision === 'string' && saved.privacyRevision.length > 0) {
+        if (typeof saved.text !== 'string') {
+          throw unavailable();
+        }
+        const exists = await store.hasPersistedPrivateText({
+          userId: ctx.userId,
+          tenantId,
+          conversationId: message.conversationId,
+          messageId: message.messageId,
+          text: saved.text,
+          privacyRevision: saved.privacyRevision,
+        });
+        if (!exists) {
+          throw unavailable();
+        }
+        if (finalEvent?.requestMessage != null) {
+          finalEvent.requestMessage.privacyRevision = saved.privacyRevision;
+        }
+      }
+      return true;
+    }
+    const rows = await store.getPrivateMessageTexts({
+      userId: ctx.userId,
+      tenantId,
+      conversationId: message.conversationId,
+      messageIds: [message.messageId],
+    });
+    const row = rows.find(
+      (candidate) =>
+        candidate.messageId === message.messageId &&
+        candidate.text === message.text &&
+        candidate.privacyRevision &&
+        candidate.privateText,
+    );
+    if (row == null) {
+      throw unavailable();
+    }
+    if (finalEvent?.requestMessage != null) {
+      finalEvent.requestMessage.privacyRevision = row.privacyRevision;
+    }
+    return true;
   }
   if (!message.messageId || !message.conversationId || typeof message.text !== 'string') {
     throw unavailable();
@@ -334,7 +420,7 @@ export async function saveAbortedUserMessage(
     conversationId: message.conversationId,
     messageId: message.messageId,
     text: message.text,
-    privacyRevision: message.privacyRevision,
+    privacyRevision: revision,
   });
   if (!persisted) {
     throw unavailable();

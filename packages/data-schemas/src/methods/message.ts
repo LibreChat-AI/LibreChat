@@ -698,7 +698,7 @@ export interface MessageMethods {
       newMessageId?: string;
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string; privateText?: PrivateTextWrite },
+    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
   ): Promise<IMessage | null | undefined>;
   /**
    * Reads the references a trace viewer needs for one of the user's
@@ -964,7 +964,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       /** `null` unsets a previously stored value; omission leaves it in place. */
       contextMeta?: IMessage['contextMeta'] | null;
     },
-    metadata?: { context?: string; privateText?: PrivateTextWrite },
+    metadata?: { context?: string; privateText?: PrivateTextWrite; insertOnly?: boolean },
   ) {
     if (!userId) {
       throw new Error('User not authenticated');
@@ -1075,6 +1075,27 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         params.isCreatedByUser === false && params.isUserSubmitted === undefined;
       const hasProvenance =
         userSubmittedPaths.length > 0 || userSubmittedMessageFieldPaths.length > 0;
+      if (metadata?.insertOnly === true) {
+        if (metadata.privateText != null) {
+          throw new Error('A private message cannot use the ordinary insert-only writer.');
+        }
+        const now = new Date();
+        const existingOrInserted = await Message.findOneAndUpdate(
+          { messageId: params.messageId, user: userId },
+          {
+            $setOnInsert: {
+              ...update,
+              ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
+              ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
+              ...retentionOnInsert,
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          { upsert: true, new: true, timestamps: false },
+        );
+        return existingOrInserted?.toObject();
+      }
       const message = hasProvenance
         ? await findOneAndMergeMessageProvenance(
             Message,

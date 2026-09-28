@@ -22,6 +22,11 @@ interface Original {
   revision: string;
   text?: string;
 }
+interface MissingOriginal {
+  canonicalText: string;
+  revision: string;
+  retryOnCompletion: boolean;
+}
 interface OwnerTextState {
   scope: string;
   messages: ReadonlyMap<string, Original>;
@@ -45,7 +50,12 @@ export function OwnerTextProvider(props: OwnerTextProviderProps) {
   return <ActiveOwnerTextProvider {...props} />;
 }
 
-function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTextProviderProps) {
+function ActiveOwnerTextProvider({
+  messages,
+  conversationId,
+  isSubmitting,
+  children,
+}: OwnerTextProviderProps) {
   const { user } = useAuthContext();
   const selection = useMemo(
     () =>
@@ -60,34 +70,47 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
   const scope = JSON.stringify([user?.id, user?.tenantId, conversationId, selection]);
   const [state, setState] = useState<OwnerTextState>(empty);
   const [retryAttempt, setRetryAttempt] = useState(0);
-  const cached = useRef<{ scope: string; messages: Map<string, Original> }>({
-    scope: '',
-    messages: new Map(),
-  });
+  const cached = useRef<{
+    scope: string;
+    messages: Map<string, Original>;
+    missing: Map<string, MissingOriginal>;
+    retryAttempt: number;
+  }>({ scope: '', messages: new Map(), missing: new Map(), retryAttempt: 0 });
   useEffect(() => {
     let cancelled = false;
     const selected = JSON.parse(selection) as Array<[string, string, string]>;
     if (!user?.id || !conversationId || selected.length === 0) {
-      cached.current = { scope: '', messages: new Map() };
+      cached.current = { scope: '', messages: new Map(), missing: new Map(), retryAttempt };
       setState(empty);
       return;
     }
     const ownerScope = JSON.stringify([user.id, user.tenantId, conversationId]);
     if (cached.current.scope !== ownerScope) {
-      cached.current = { scope: ownerScope, messages: new Map() };
+      cached.current = { scope: ownerScope, messages: new Map(), missing: new Map(), retryAttempt };
     }
+    const forceRetry = cached.current.retryAttempt !== retryAttempt;
+    cached.current.retryAttempt = retryAttempt;
     const originals = new Map<string, Original>();
+    const missing = new Map<string, MissingOriginal>();
     const pending: Array<[string, string, string]> = [];
     for (const [id, revision, text] of selected) {
       const prior = cached.current.messages.get(id);
-      if (prior?.revision === revision && prior.canonicalText === text) {
+      if (prior?.revision === revision && prior.canonicalText === text && prior.text != null) {
         originals.set(id, prior);
-      } else {
-        pending.push([id, revision, text]);
+        continue;
       }
+      const missed = cached.current.missing.get(id);
+      if (missed?.revision === revision && missed.canonicalText === text) {
+        if (!forceRetry && (isSubmitting || !missed.retryOnCompletion)) {
+          missing.set(id, missed);
+          continue;
+        }
+      }
+      pending.push([id, revision, text]);
     }
-    // Do not retain originals from removed or edited messages.
+    // Do not retain originals or failed reads from removed or edited messages.
     cached.current.messages = originals;
+    cached.current.missing = missing;
     const retry = () => setRetryAttempt((attempt) => attempt + 1);
     setState({ scope, messages: new Map(originals), loading: pending.length > 0, retry });
     if (pending.length === 0) {
@@ -113,7 +136,11 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
               }
               for (const message of result.messages) {
                 const match = expected.get(message.messageId);
-                if (match?.revision === message.revision && match.text === message.canonicalText) {
+                if (
+                  match?.revision === message.revision &&
+                  match.text === message.canonicalText &&
+                  typeof message.text === 'string'
+                ) {
                   const original = {
                     revision: message.revision,
                     text: message.text,
@@ -123,9 +150,23 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
                   cached.current.messages.set(message.messageId, original);
                 }
               }
+              for (const [id, revision, text] of batch) {
+                if (!originals.has(id)) {
+                  missing.set(id, {
+                    revision,
+                    canonicalText: text,
+                    retryOnCompletion: isSubmitting,
+                  });
+                }
+              }
               setState({ scope, messages: new Map(originals), loading: true, retry });
             } catch {
-              // A failed batch does not discard successfully decrypted siblings.
+              if (cancelled) {
+                return;
+              }
+              for (const [id, revision, text] of batch) {
+                missing.set(id, { revision, canonicalText: text, retryOnCompletion: isSubmitting });
+              }
             }
           }
         },
@@ -139,7 +180,7 @@ function ActiveOwnerTextProvider({ messages, conversationId, children }: OwnerTe
     return () => {
       cancelled = true;
     };
-  }, [scope, selection, conversationId, user?.id, user?.tenantId, retryAttempt]);
+  }, [scope, selection, conversationId, user?.id, user?.tenantId, isSubmitting, retryAttempt]);
   const visible = state.scope === scope ? state : empty;
   return <OwnerTextContext.Provider value={visible}>{children}</OwnerTextContext.Provider>;
 }

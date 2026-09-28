@@ -121,6 +121,53 @@ it('stores both views atomically and excludes ciphertext from ordinary and clien
   });
 });
 
+it('inserts a missing Stop prerequisite once without overwriting a stored or concurrent protected row', async () => {
+  await tenant('tenant-a', async () => {
+    const conversationId = uuid();
+    const messageId = uuid();
+    const context = { userId: 'owner', expiredAt: new Date(Date.now() + 60_000) };
+    const user = {
+      messageId,
+      conversationId,
+      isCreatedByUser: true,
+      text: '[EMAIL_1_turn]',
+    };
+    const inserted = await methods.saveMessage(context, user, { insertOnly: true });
+    expect(inserted?.text).toBe(user.text);
+    expect(inserted?.expiredAt).toEqual(context.expiredAt);
+    await methods.saveMessage(context, user, {
+      privateText: { envelope: 'v1:owner', revision: 'turn' },
+    });
+    const retry = await methods.saveMessage(context, user, { insertOnly: true });
+    expect(retry?.privacyRevision).toBe('turn');
+    expect(retry).not.toHaveProperty('privateText');
+    const stored = await mongoose.models.Message.findOne({ messageId })
+      .select('+privateText')
+      .lean();
+    expect(stored).toMatchObject({
+      text: user.text,
+      privateText: 'v1:owner',
+      privacyRevision: 'turn',
+    });
+
+    const concurrentId = uuid();
+    await Promise.all([
+      methods.saveMessage(context, { ...user, messageId: concurrentId }, { insertOnly: true }),
+      methods.saveMessage(
+        context,
+        { ...user, messageId: concurrentId },
+        {
+          privateText: { envelope: 'v1:concurrent', revision: 'turn' },
+        },
+      ),
+    ]);
+    const concurrent = await mongoose.models.Message.findOne({ messageId: concurrentId })
+      .select('+privateText')
+      .lean();
+    expect(concurrent).toMatchObject({ privateText: 'v1:concurrent', privacyRevision: 'turn' });
+  });
+});
+
 it('does not accept sidecar writes from message parameters or generic edits', async () => {
   await tenant('tenant-a', async () => {
     const messageId = uuid();
