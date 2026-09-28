@@ -483,3 +483,17 @@ describe('pptx CDN bootstrap — pins each slide to its blocks left edge', () =>
     });
   });
 });
+
+describe('pptx CDN bootstrap — reserves the scrollbar gutter', () => {
+  test('the root element reserves scrollbar space so its appearance never changes the content width', async () => {
+    const html = await _internal.pptxToHtmlViaCdn(
+      Buffer.from('fixture'),
+      '<ol class="lc-pptx-list"><li>fallback</li></ol>',
+    );
+    const { window } = new JSDOM(html);
+    const gutter = window
+      .getComputedStyle(window.document.documentElement)
+      .getPropertyValue('scrollbar-gutter');
+    expect(gutter).toBe('stable');
+  });
+});

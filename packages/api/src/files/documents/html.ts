@@ -1124,6 +1124,12 @@ function buildPptxCdnDocument(base64: string, slideListFallbackBody: string): st
 <style>
 :root { color-scheme: light dark; --bg: #ffffff; --fg: #1f2937; --muted: #6b7280; }
 @media (prefers-color-scheme: dark) { :root { --bg: #1a1a2e; --fg: #e5e7eb; --muted: #9ca3af; } }
+/* Reserves the vertical scrollbar's width up front so its appearance
+ * never changes the document's content width. Without this, a deck
+ * whose height sits within a few px of the iframe height flips the
+ * scrollbar on and off every refit as the resulting width change
+ * alternately fits and overflows the content. */
+html { scrollbar-gutter: stable; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 #lc-render { padding: 16px; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 /* Each rendered slide is wrapped post-hoc by the bootstrap script in
