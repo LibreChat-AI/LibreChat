@@ -1374,6 +1374,25 @@ describe('isSettledJobRecord', () => {
     ).toBe(false);
   });
 
+  /** A failed terminal write clears the marker while publishing a
+   *  reconciliation frame: no row was persisted, so the streamed snapshot
+   *  stays the turn's only fallback. */
+  it('treats a record whose durable final event is a reconciliation frame as unsettled', () => {
+    const reconciled = {
+      createdAt: 1000,
+      status: 'aborted',
+      finalEvent: JSON.stringify({ final: true, reconcile: true }),
+    };
+    const settled = {
+      createdAt: 1000,
+      status: 'aborted',
+      finalEvent: JSON.stringify({ final: true }),
+    };
+
+    expect(isSettledJobRecord(reconciled)).toBe(false);
+    expect(isSettledJobRecord(settled)).toBe(true);
+  });
+
   it('leaves live and missing records unsettled', () => {
     expect(isSettledJobRecord({ createdAt: 1000, status: 'running' })).toBe(false);
     expect(isSettledJobRecord({ createdAt: 1000, status: 'requires_action' })).toBe(false);

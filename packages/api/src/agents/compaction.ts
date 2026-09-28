@@ -277,16 +277,33 @@ export function markAbortedCompactionContent(
   return marked;
 }
 
+/** Whether a job record's durable final event is a reconciliation frame: the
+ *  conservative substitute published when the terminal row write failed, so
+ *  no message row backs the terminal claim. */
+function hasDurableReconcileFrame(finalEvent: unknown): boolean {
+  if (typeof finalEvent !== 'string' || finalEvent.length === 0) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(finalEvent) as { reconcile?: unknown } | null;
+    return parsed?.reconcile === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether a job record has reached a status whose path owns the turn's final
  *  row (completion, error, or abort): the disconnect snapshot must not be
  *  written over it, or the settled row reopens as an unfinished response.
- *  Only a same-epoch record is trusted. */
+ *  Only a same-epoch record is trusted, and only one whose terminal write
+ *  actually landed. */
 export function isSettledJobRecord(
   jobRecord:
     | {
         createdAt?: number;
         status?: string;
         terminalPersistencePending?: boolean;
+        finalEvent?: string;
       }
     | null
     | undefined,
@@ -299,6 +316,12 @@ export function isSettledJobRecord(
     /** The terminal claim precedes its row write: the status alone does not
      *  prove the row is durable, and the snapshot is still the fallback if
      *  that write fails. */
+    return false;
+  }
+  if (hasDurableReconcileFrame(jobRecord.finalEvent)) {
+    /** The terminal write failed and a reconciliation frame was published in
+     *  its place: nothing was persisted for the turn, so the streamed
+     *  snapshot remains its only row. */
     return false;
   }
   return (
