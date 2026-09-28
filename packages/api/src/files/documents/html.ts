@@ -1148,6 +1148,15 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); fon
   left: 0;
   transform-origin: top left;
 }
+/* pptx-preview's own init() sets a fixed inline width (and an opaque
+ * background) on the wrapper box it creates around the slides.
+ * Override so it hugs the stacked .lc-slide-wrap blocks' actual width
+ * instead of clipping them, and drops its own background so it
+ * doesn't paint a second boxed panel behind the per-slide cards. */
+.pptx-preview-wrapper {
+  width: auto !important;
+  background: transparent !important;
+}
 #lc-fallback { padding: 16px; font-size: 14px; line-height: 1.5; color: var(--fg); }
 #lc-fallback-notice { font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin: 0 0 16px; }
 .lc-pptx-loading { display: flex; align-items: center; justify-content: center; height: 60vh; color: var(--muted); font-size: 14px; }
@@ -1244,7 +1253,12 @@ ${PPTX_SLIDE_LIST_CSS}
      * doesnt see the unscaled 960px-wide flash. We reveal once
      * wrap+scale has settled. */
     container.style.visibility = 'hidden';
-    var previewer = pptxPreview.init(container, { width: SLIDE_W, height: SLIDE_H });
+    /* No height option: passing one bounds the librarys own render
+     * box to that pixel height, which nests a scrollable region inside
+     * the panel instead of letting the panel itself scroll to the last
+     * slide. Width alone is enough — wrapSlides() below fits each
+     * slide to the panel on its own. */
+    var previewer = pptxPreview.init(container, { width: SLIDE_W });
 
     function availableWidth() {
       /* clientWidth includes the 16px padding on each side via
@@ -1279,12 +1293,17 @@ ${PPTX_SLIDE_LIST_CSS}
      * move slides out from under the librarys references and break
      * its internal state. */
     function wrapSlides() {
-      var children = Array.prototype.slice.call(container.children);
-      for (var i = 0; i < children.length; i++) {
-        var slide = children[i];
-        if (!slide.classList || slide.classList.contains('lc-slide-wrap') || slide.classList.contains('lc-pptx-loading')) {
-          continue;
-        }
+      /* pptx-preview nests every rendered slide inside its own
+       * .pptx-preview-wrapper box rather than appending them directly
+       * to the render container — walking the containers immediate
+       * children only ever finds that one box, wrapping the whole deck
+       * as a single unit instead of one block per slide. Querying the
+       * slides directly finds each one wherever the library nested it,
+       * and each wrap is inserted next to its own slide via
+       * slide.parentNode. */
+      var slides = Array.prototype.slice.call(container.querySelectorAll('.pptx-preview-slide-wrapper'));
+      for (var i = 0; i < slides.length; i++) {
+        var slide = slides[i];
         /* Cache the slides actual rendered size BEFORE applying any
          * transform — measurements after a CSS scale no longer reflect
          * native pixels and would feed back into wrong sizing on
@@ -1302,7 +1321,7 @@ ${PPTX_SLIDE_LIST_CSS}
         wrap.style.height = (nativeH * scale) + 'px';
         slide.style.transformOrigin = 'top left';
         slide.style.transform = 'scale(' + scale + ')';
-        container.insertBefore(wrap, slide);
+        slide.parentNode.insertBefore(wrap, slide);
         wrap.appendChild(slide);
       }
     }
