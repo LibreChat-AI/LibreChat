@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, useEffect } from 'react';
+import { memo, useRef, useMemo, useState, useEffect } from 'react';
 import { Eye, Search } from 'lucide-react';
 import { apiBaseUrl } from 'librechat-data-provider';
 import { IconButton, Spinner } from '@librechat/client';
@@ -24,6 +24,12 @@ export const FILE_VIEWS: Array<{ value: FileView; labelKey: TranslationKeys }> =
 ];
 
 const isImage = (file: TFile) => file.type?.startsWith('image/') === true;
+
+/** Images, audio and video are media; everything else is a document. */
+const isDocument = (file: TFile) =>
+  !isImage(file) &&
+  file.type?.startsWith('audio/') !== true &&
+  file.type?.startsWith('video/') !== true;
 
 /** What a card's preview button opens, if anything: images in the message
  *  image viewer, PDFs in the message file preview. */
@@ -78,7 +84,7 @@ function Thumbnail({ file }: { file: TFile }) {
 interface FileCardProps {
   file: TFile;
   onAttach: (file: TFile) => void;
-  onPreview: (file: TFile) => void;
+  onPreview: (file: TFile, trigger: HTMLButtonElement) => void;
 }
 
 /** Laid out like the skill and MCP cards: the card is the attach action, and
@@ -87,7 +93,10 @@ interface FileCardProps {
 const FileCard = memo(function FileCard({ file, onAttach, onPreview }: FileCardProps) {
   const localize = useLocalize();
   const name = file.filename ?? '';
-  const details = [getDisplayType(file.type ?? undefined, name), formatBytes(file.bytes ?? 0)];
+  const details = [
+    getDisplayType(localize, file.type ?? undefined, name),
+    formatBytes(file.bytes ?? 0),
+  ];
   const canPreview = previewOf(file) != null;
 
   return (
@@ -112,7 +121,7 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview }: FileCardP
             size="xs"
             shape="square"
             label={localize('com_ui_composer_preview_file', { 0: name })}
-            onClick={() => onPreview(file)}
+            onClick={(event) => onPreview(file, event.currentTarget)}
           >
             <Eye className="text-text-secondary h-4 w-4" aria-hidden="true" />
           </IconButton>
@@ -161,6 +170,12 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
   const localize = useLocalize();
   const { data: files = [], isLoading, isError } = useGetFiles<TFile[]>();
   const [previewing, setPreviewing] = useState<TFile | null>(null);
+  /** The Preview button that opened the viewer, where focus returns on close. */
+  const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const openPreview = (file: TFile, trigger: HTMLButtonElement) => {
+    previewTriggerRef.current = trigger;
+    setPreviewing(file);
+  };
 
   const visible = useMemo(
     () =>
@@ -172,7 +187,7 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
           return isImage(file);
         }
         if (view === 'documents') {
-          return !isImage(file);
+          return isDocument(file);
         }
         return true;
       }),
@@ -202,9 +217,12 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
         setImageUrl(objectUrl);
         return;
       }
-      setImageUrl(
-        previewing.filepath ? toAbsoluteFilePath(previewing.filepath, apiBaseUrl()) : undefined,
-      );
+      if (!previewing.filepath) {
+        /* Nothing to show: stay on the grid rather than open an empty viewer. */
+        setPreviewing(null);
+        return;
+      }
+      setImageUrl(toAbsoluteFilePath(previewing.filepath, apiBaseUrl()));
     });
     return () => {
       cancelled = true;
@@ -232,15 +250,17 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
         >
           {visible.map((file) => (
             <li key={file.file_id}>
-              <FileCard file={file} onAttach={onAttach} onPreview={setPreviewing} />
+              <FileCard file={file} onAttach={onAttach} onPreview={openPreview} />
             </li>
           ))}
         </ul>
       )}
       <DialogImage
-        isOpen={previewKind === 'image'}
+        isOpen={previewKind === 'image' && imageUrl != null}
         onOpenChange={closePreview}
         src={imageUrl}
+        triggerRef={previewTriggerRef}
+        showDetails={false}
         downloadImage={() => {
           if (imageUrl != null) {
             triggerDownload(imageUrl, previewing?.filename ?? 'image');

@@ -300,6 +300,9 @@ test.describe('composer palette show all', () => {
       .getByRole('dialog')
       .filter({ has: page.getByRole('button', { name: 'Download', exact: true }) });
     await expect(imageDialog).toBeVisible();
+    await expect(imageDialog.locator('img')).toHaveAttribute('src', /^(blob:|https?:|\/)/);
+    /* An uploaded file has no generation prompt, size or quality to show. */
+    await expect(imageDialog.getByRole('button', { name: /image details/i })).toHaveCount(0);
 
     const closeButton = imageDialog.getByRole('button', { name: 'Close', exact: true });
     await expect(closeButton).toBeVisible();
@@ -308,6 +311,7 @@ test.describe('composer palette show all', () => {
 
     await expect(imageDialog).toBeHidden();
     await expect(dialog).toBeVisible();
+    await expect(previewButton).toBeFocused();
   });
 
   test.describe('on a phone', () => {

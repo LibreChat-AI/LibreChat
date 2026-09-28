@@ -1,6 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { TFile } from 'librechat-data-provider';
 import FileGrid from '../Files';
 
@@ -77,6 +77,19 @@ describe('FileGrid', () => {
     expect(within(screen.getByRole('list')).getAllByRole('listitem')).toHaveLength(1);
   });
 
+  it('keeps audio and video out of the documents view', () => {
+    mockFiles = [
+      ...(mockFiles ?? []),
+      file({ file_id: 'mp3', filename: 'memo.mp3', type: 'audio/mpeg' }),
+      file({ file_id: 'mp4', filename: 'clip.mp4', type: 'video/mp4' }),
+    ];
+    renderGrid({ view: 'documents' });
+    const list = within(screen.getByRole('list'));
+    expect(list.getAllByRole('listitem')).toHaveLength(2);
+    expect(list.queryByText('memo.mp3')).not.toBeInTheDocument();
+    expect(list.queryByText('clip.mp4')).not.toBeInTheDocument();
+  });
+
   it('matches a search against the file name', () => {
     renderGrid({ query: 'repo' });
     const cards = within(screen.getByRole('list')).getAllByRole('listitem');
@@ -102,6 +115,18 @@ describe('FileGrid', () => {
     mockQueryState = { isLoading: false, isError: true };
     renderGrid();
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_error_connection');
+  });
+
+  it('stays on the grid when an image has nothing to preview', async () => {
+    mockFiles = [file({ file_id: 'bare', filename: 'bare.png', type: 'image/png', filepath: '' })];
+    renderGrid();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_composer_preview_file:bare.png' }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'com_ui_composer_preview_file:bare.png' }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('attaches a file when its card is chosen, not when it is previewed', () => {

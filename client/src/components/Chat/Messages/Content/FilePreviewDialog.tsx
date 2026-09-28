@@ -55,25 +55,31 @@ export function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-export function getDisplayType(fileType?: string, fileName?: string): string {
+/** A file's kind for display: acronyms and extensions as they are, words
+ *  through the locale. */
+export function getDisplayType(
+  localize: ReturnType<typeof useLocalize>,
+  fileType?: string,
+  fileName?: string,
+): string {
   if (fileType) {
     if (fileType.includes('pdf')) {
       return 'PDF';
     }
     if (fileType.includes('word') || fileType.includes('document')) {
-      return 'Document';
+      return localize('com_ui_file_type_document');
     }
     if (fileType.includes('spreadsheet') || fileType.includes('excel')) {
-      return 'Spreadsheet';
+      return localize('com_ui_file_type_spreadsheet');
     }
     if (fileType.includes('presentation') || fileType.includes('powerpoint')) {
-      return 'Presentation';
+      return localize('com_ui_file_type_presentation');
     }
     if (fileType.includes('image')) {
-      return 'Image';
+      return localize('com_ui_file_type_image');
     }
     if (fileType.startsWith('text/')) {
-      return fileType.split('/')[1]?.toUpperCase() || 'Text';
+      return fileType.split('/')[1]?.toUpperCase() || localize('com_ui_file_type_text');
     }
     if (fileType.includes('json')) {
       return 'JSON';
@@ -83,7 +89,7 @@ export function getDisplayType(fileType?: string, fileName?: string): string {
     }
   }
   const ext = fileName ? getFileExtension(fileName) : '';
-  return ext ? ext.toUpperCase() : 'File';
+  return ext ? ext.toUpperCase() : localize('com_ui_file');
 }
 
 export default function FilePreviewDialog({
@@ -231,7 +237,10 @@ export default function FilePreviewDialog({
     setTimeout(() => setIsCopied(false), 3000);
   }, [displayedText]);
 
-  const displayType = useMemo(() => getDisplayType(fileType, fileName), [fileType, fileName]);
+  const displayType = useMemo(
+    () => getDisplayType(localize, fileType, fileName),
+    [localize, fileType, fileName],
+  );
   const sortedPages = useMemo(
     () => (pages && pageRelevance ? sortPagesByRelevance(pages, pageRelevance) : pages),
     [pages, pageRelevance],

@@ -24,6 +24,7 @@ export default function DialogImage({
   downloadImage,
   args,
   triggerRef,
+  showDetails = true,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -36,6 +37,8 @@ export default function DialogImage({
     [key: string]: unknown;
   };
   triggerRef?: React.RefObject<HTMLButtonElement>;
+  /** Off for an uploaded file, which has no generation details to show. */
+  showDetails?: boolean;
 }) {
   const localize = useLocalize();
   const [isPromptOpen, setIsPromptOpen] = useState(false);
@@ -320,22 +323,24 @@ export default function DialogImage({
                 </Button>
               }
             />
-            <TooltipAnchor
-              description={imageDetailsLabel}
-              render={
-                <Button
-                  onClick={() => setIsPromptOpen(!isPromptOpen)}
-                  variant="ghost"
-                  className="h-10 w-10 p-0 text-white hover:bg-white/10"
-                  aria-label={imageDetailsLabel}
-                >
-                  <MorphIcon
-                    icon={isPromptOpen ? PanelLeftOpen : PanelLeftClose}
-                    className="size-5"
-                  />
-                </Button>
-              }
-            />
+            {showDetails && (
+              <TooltipAnchor
+                description={imageDetailsLabel}
+                render={
+                  <Button
+                    onClick={() => setIsPromptOpen(!isPromptOpen)}
+                    variant="ghost"
+                    className="h-10 w-10 p-0 text-white hover:bg-white/10"
+                    aria-label={imageDetailsLabel}
+                  >
+                    <MorphIcon
+                      icon={isPromptOpen ? PanelLeftOpen : PanelLeftClose}
+                      className="size-5"
+                    />
+                  </Button>
+                }
+              />
+            )}
           </div>
 
           {/* Image container - centered */}
