@@ -249,7 +249,7 @@ export type ConfigOverrideIssue = {
   segments: string[];
   /**
    * A stable, machine-readable reason: a zod issue code (`invalid_type`, `custom`, ...),
-   * `missing_merge_key`, `indexed_merge_key_write`, or `invalid_document`. Schema messages are not carried because
+   * `missing_merge_key`, `duplicate_merge_key`, `indexed_merge_key_write`, or `invalid_document`. Schema messages are not carried because
    * they can echo the submitted values.
    */
   code: string;
@@ -271,7 +271,7 @@ function toIssue(segments: string[], code: string): ConfigOverrideIssue {
 
 /**
  * The override item an issue path segment names: by the merge key for merged-by-key arrays
- * (the merged index differs from the override's), by index, or by `id` for refinements that
+ * (the merged index differs from the override's; the last item with a key is the one merged), by index, or by `id` for refinements that
  * address an item by its identifier.
  */
 function findItemIndex(
@@ -281,10 +281,17 @@ function findItemIndex(
   mergedItem: unknown,
 ): number {
   if (keyField) {
-    return node.findIndex(
-      (item) =>
-        isPlainObject(item) && isPlainObject(mergedItem) && item[keyField] === mergedItem[keyField],
-    );
+    for (let index = node.length - 1; index >= 0; index--) {
+      const item = node[index];
+      if (
+        isPlainObject(item) &&
+        isPlainObject(mergedItem) &&
+        item[keyField] === mergedItem[keyField]
+      ) {
+        return index;
+      }
+    }
+    return -1;
   }
   if (/^\d+$/.test(key)) {
     return Number(key);
@@ -357,10 +364,11 @@ function isReplacedArrayNode(overrides: AnyObject, segments: string[]): boolean 
 }
 
 /**
- * Items of a merged-by-key array must be objects with their key: the merge drops any other
- * item, or keeps it as is when nothing lies beneath the array.
+ * Items of a merged-by-key array must be objects with their own key: the merge drops any
+ * other item (or keeps it as is when nothing lies beneath the array). A repeated key is
+ * reported on the earlier items: the last one is what the merge keeps.
  */
-function getKeylessItemIssues(overrides: AnyObject): ConfigOverrideIssue[] {
+function getMergeKeyIssues(overrides: AnyObject): ConfigOverrideIssue[] {
   return Object.entries(ARRAY_MERGE_KEYS).flatMap(([arrayPath, keyField]) => {
     const segments = arrayPath.split('.');
     let node: unknown = overrides;
@@ -370,11 +378,16 @@ function getKeylessItemIssues(overrides: AnyObject): ConfigOverrideIssue[] {
     if (!Array.isArray(node)) {
       return [];
     }
-    return node.flatMap((item, index) =>
-      !isPlainObject(item) || typeof item[keyField] !== 'string' || item[keyField] === ''
-        ? [toIssue([...segments, String(index)], 'missing_merge_key')]
-        : [],
-    );
+    const lastIndex = new Map<unknown, number>();
+    node.forEach((item, index) => isPlainObject(item) && lastIndex.set(item[keyField], index));
+    return node.flatMap((item, index) => {
+      if (!isPlainObject(item) || typeof item[keyField] !== 'string' || item[keyField] === '') {
+        return [toIssue([...segments, String(index)], 'missing_merge_key')];
+      }
+      return lastIndex.get(item[keyField]) === index
+        ? []
+        : [toIssue([...segments, String(index)], 'duplicate_merge_key')];
+    });
   });
 }
 
@@ -419,7 +432,7 @@ export function getConfigOverrideIssues(
     return [toIssue([], 'invalid_document')];
   }
   const merged = deepMerge(base as AnyObject, overrides);
-  const issues = getKeylessItemIssues(overrides);
+  const issues = getMergeKeyIssues(overrides);
   const seen = new Set(issues.map((issue) => issue.path));
   const shape = configSchema.shape;
   for (const section of Object.keys(overrides)) {

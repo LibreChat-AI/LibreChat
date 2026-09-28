@@ -940,6 +940,30 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     ]);
   });
 
+  it('reports an earlier merged array item that repeats a merge key', () => {
+    const custom = [
+      { name: 'x', models: { default: ['m'] } },
+      { name: 'x', baseURL: 5 },
+    ];
+    expect(getConfigOverrideIssues({ endpoints: { custom } })).toEqual([
+      {
+        path: 'endpoints.custom.0',
+        segments: ['endpoints', 'custom', '0'],
+        code: 'duplicate_merge_key',
+      },
+      {
+        path: 'endpoints.custom.1.baseURL',
+        segments: ['endpoints', 'custom', '1', 'baseURL'],
+        code: 'invalid_type',
+      },
+    ]);
+
+    const merged = mergeConfigOverrides({} as AppConfig, [
+      fakeConfig({ endpoints: { custom } }, 10),
+    ]) as unknown as { endpoints: { custom: unknown[] } };
+    expect(merged.endpoints.custom).toEqual([{ name: 'x' }]);
+  });
+
   it('drops a merged array item that is not an object', () => {
     const merged = mergeConfigOverrides({} as AppConfig, [
       fakeConfig({ endpoints: { custom: [null, 'bad', { name: 'kept', baseURL: 'x' }] } }, 10),
