@@ -4,7 +4,7 @@ import {
   CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS,
 } from 'librechat-data-provider';
 import type { CodeBridgeFetch } from './bridge';
-import { MAX_CODE_API_RATE_LIMIT_WAIT_MS } from '~/utils/code';
+import { CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS } from './limits';
 
 const WORKSPACE_TOOL_TIMEOUT_MS = 30_000;
 const MAX_PATH_LENGTH = 4096;
@@ -843,7 +843,7 @@ export async function executeWorkspaceTool({
   signal,
   fetchImpl = fetch,
   maxQueueWaitMs = WORKSPACE_QUEUE_MAX_WAIT_MS,
-  codeApiMaxRetryWaitMs = MAX_CODE_API_RATE_LIMIT_WAIT_MS,
+  codeApiMaxRetryWaitMs = CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS,
   maxRequestTimeoutMs,
   deadlineAtMs,
 }: {
