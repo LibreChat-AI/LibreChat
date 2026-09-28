@@ -1185,6 +1185,40 @@ describe('getConfigFieldIssues', () => {
     ).toEqual(['registration.oauthStateTtlMs']);
   });
 
+  it('applies a record refinement to a single written key', () => {
+    const base = {
+      endpoints: {
+        azureOpenAI: {
+          groups: [
+            {
+              group: 'g',
+              apiKey: 'k',
+              instanceName: 'i',
+              version: '2024-02-01',
+              models: { 'gpt-4o': { deploymentName: 'gpt-4o' } },
+            },
+          ],
+        },
+      },
+    } as Partial<TCustomConfig>;
+    expect(
+      getConfigFieldIssues(
+        { 'endpoints.azureOpenAI.groups': base.endpoints?.azureOpenAI?.groups },
+        base,
+      ),
+    ).toEqual([]);
+    expect(
+      getConfigFieldIssues(
+        {
+          'endpoints.azureOpenAI.groups': [
+            { ...base.endpoints?.azureOpenAI?.groups?.[0], addParams: { web_search: 'yes' } },
+          ],
+        },
+        base,
+      ).map((issue) => issue.path),
+    ).toEqual(['endpoints.azureOpenAI.groups.0.addParams.web_search']);
+  });
+
   it('rejects a path past a field that holds a value', () => {
     expect(
       getConfigFieldIssues({ 'interface.contextCost.foo': true }).map((issue) => issue.path),
