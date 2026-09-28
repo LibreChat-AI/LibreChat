@@ -67,12 +67,8 @@ jest.mock('recoil', () => ({
     if (typeof key === 'string' && key.startsWith('isSubmitting')) {
       return mockState.isSubmitting;
     }
-    return undefined;
+    return mockState.saveDrafts;
   },
-}));
-
-jest.mock('~/Providers/ChatSettingsContext', () => ({
-  useChatSettings: () => ({ saveDrafts: mockState.saveDrafts }),
 }));
 
 jest.mock('~/hooks/useNewConvo', () => ({
@@ -212,6 +208,7 @@ jest.mock('~/store', () => ({
     conversationIdByIndex: (index: number) => `conversationIdByIndex-${index}`,
     filesByIndex: (index: number) => `files-by-index-${index}`,
     isSubmittingFamily: (index: number) => `isSubmitting-${index}`,
+    saveDrafts: 'saveDrafts',
   },
 }));
 

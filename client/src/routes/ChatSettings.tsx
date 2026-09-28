@@ -11,8 +11,6 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
     store.duringRunDefaultAction,
   );
   const steerInterruptsByDefault = useRecoilValue(store.steerInterruptsByDefault);
-  const saveDrafts = useRecoilValue(store.saveDrafts);
-  const isTemporary = useRecoilValue(store.isTemporary);
   const resetVisibleArtifacts = useResetRecoilState(store.visibleArtifacts);
 
   const settings = useMemo<ChatSettings>(
@@ -20,16 +18,12 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       duringRunDefaultAction,
       setDuringRunDefaultAction,
       steerInterruptsByDefault,
-      saveDrafts,
-      isTemporary,
       resetVisibleArtifacts,
     }),
     [
       duringRunDefaultAction,
       setDuringRunDefaultAction,
       steerInterruptsByDefault,
-      saveDrafts,
-      isTemporary,
       resetVisibleArtifacts,
     ],
   );

@@ -26,15 +26,11 @@ describe('ChatSettingsProvider', () => {
     const { result } = renderSettings(({ set }) => {
       set(store.duringRunDefaultAction, 'queue');
       set(store.steerInterruptsByDefault, true);
-      set(store.saveDrafts, false);
-      set(store.isTemporary, true);
     });
 
     expect(result.current.settings).toMatchObject({
       duringRunDefaultAction: 'queue',
       steerInterruptsByDefault: true,
-      saveDrafts: false,
-      isTemporary: true,
     });
   });
 

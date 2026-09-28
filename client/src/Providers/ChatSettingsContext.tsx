@@ -5,7 +5,9 @@ export type DuringRunAction = 'steer' | 'queue';
 
 /**
  * App-global preferences the chat reads but does not own. The host supplies them, so the chat
- * hooks never reach into the app's state store for shell settings.
+ * hooks never reach into the app's state store for shell settings. A preference belongs here only
+ * once every chat reader of it takes it from here: a reader left on the store would act on a
+ * different value than a host that supplies its own.
  */
 export type ChatSettings = {
   /** Default composer action while a run is in flight. */
@@ -13,10 +15,6 @@ export type ChatSettings = {
   setDuringRunDefaultAction: (action: DuringRunAction) => void;
   /** Whether a steer interrupts the running step instead of waiting for the next one. */
   steerInterruptsByDefault: boolean;
-  /** Whether composer drafts persist across conversations. */
-  saveDrafts: boolean;
-  /** Whether new turns are sent as a temporary (unsaved) chat. */
-  isTemporary: boolean;
   /** Closes the artifacts panel, called when the active conversation changes. */
   resetVisibleArtifacts: () => void;
 };
@@ -26,8 +24,6 @@ export const defaultChatSettings: ChatSettings = {
   duringRunDefaultAction: 'steer',
   setDuringRunDefaultAction: () => undefined,
   steerInterruptsByDefault: false,
-  saveDrafts: true,
-  isTemporary: false,
   resetVisibleArtifacts: () => undefined,
 };
 
