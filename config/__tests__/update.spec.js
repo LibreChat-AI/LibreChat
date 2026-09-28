@@ -6,7 +6,14 @@ const configDir = path.resolve(__dirname, '..');
 const updaterSource = fs.readFileSync(path.join(configDir, 'update.js'), 'utf8');
 const helpersSource = fs.readFileSync(path.join(configDir, 'helpers.js'), 'utf8');
 
-function runUpdater(args, { answers = [], failCommand } = {}) {
+function runUpdater(
+  args,
+  {
+    answers = [],
+    failCommand,
+    pullHelp = 'Options:\n      --ignore-buildable   Ignore images that can be built.\n',
+  } = {},
+) {
   const commands = [];
   const messages = [];
   const responses = [...answers];
@@ -31,7 +38,7 @@ function runUpdater(args, { answers = [], failCommand } = {}) {
         if (command === failCommand) {
           throw new Error(`Command failed: ${command}`);
         }
-        return Buffer.from('');
+        return command.endsWith('docker compose pull --help') ? pullHelp : Buffer.from('');
       },
     },
   };
@@ -76,8 +83,10 @@ describe('Docker updater', () => {
     const { commands, messages, completion } = runUpdater(args, { answers: ['y', 'y'] });
     await completion;
 
+    const sudo = args.includes('--sudo') ? 'sudo ' : '';
+    expect(commands.slice(0, 2)).toEqual(['docker info', `${sudo}docker compose pull --help`]);
     const composeCommands = commands.filter((command) => command.startsWith(`${compose} `));
-    expect(composeCommands).toEqual([
+    expect(composeCommands.filter((command) => !command.endsWith(' --help'))).toEqual([
       `${compose} pull --ignore-buildable`,
       `${compose} down`,
       `${compose} build --no-cache`,
@@ -91,14 +100,47 @@ describe('Docker updater', () => {
     const { commands, completion } = runUpdater(['-d']);
     await completion;
 
-    expect(commands.slice(0, 4)).toEqual([
+    expect(commands.slice(0, 5)).toEqual([
       'docker info',
+      'docker compose pull --help',
       'git fetch origin',
       'git checkout main',
       'git pull origin main',
     ]);
     expect(commands).toContain('docker compose pull --ignore-buildable');
-    expect(commands.indexOf('docker compose pull --ignore-buildable')).toBeGreaterThan(3);
+    expect(commands.indexOf('docker compose pull --ignore-buildable')).toBeGreaterThan(4);
+  });
+
+  it.each([
+    ['default', ['-d'], 'docker compose pull --help'],
+    ['sudo', ['-d', '--sudo'], 'sudo docker compose pull --help'],
+    ['single compose', ['-s'], 'docker compose pull --help'],
+    ['wizard', [], 'docker compose pull --help'],
+  ])(
+    'rejects unsupported Compose before changing Git or Docker state: %s',
+    async (_name, args, help) => {
+      const { commands, messages, completion } = runUpdater(args, {
+        answers: ['y', 'y'],
+        pullHelp: 'Options:\n      --ignore-pull-failures   Ignore pull failures.\n',
+      });
+
+      await expect(completion).rejects.toThrow('Exit 1');
+      expect(commands).toEqual(['docker info', help]);
+      expect(messages.join('\n')).toContain('Docker Compose v2.15.0 or later');
+      expect(messages.join('\n')).toContain('--ignore-buildable');
+      expect(messages.join('\n')).not.toContain('now up to date!');
+    },
+  );
+
+  it('stops with a diagnostic when Compose help cannot be read', async () => {
+    const { commands, messages, completion } = runUpdater(['-d'], {
+      failCommand: 'docker compose pull --help',
+    });
+
+    await expect(completion).rejects.toThrow('Exit 1');
+    expect(commands).toEqual(['docker info', 'docker compose pull --help']);
+    expect(messages.join('\n')).toContain('Could not check Docker Compose pull options');
+    expect(messages.join('\n')).not.toContain('now up to date!');
   });
 
   it('does not stop the stack, build, or report success after a pull failure', async () => {

@@ -68,6 +68,26 @@ async function validateDockerRunning() {
   await validateDockerRunning();
   const { docker, singleCompose, useSudo, skipGit, bun } = config;
   const sudo = useSudo ? 'sudo ' : '';
+  if (docker) {
+    let pullHelp;
+    try {
+      pullHelp = execSync(`${sudo}docker compose pull --help`, {
+        encoding: 'utf8',
+        stdio: ['inherit', 'pipe', 'inherit'],
+      });
+    } catch (_error) {
+      console.red(
+        'Error: Could not check Docker Compose pull options. Check that Docker Compose is installed and accessible, then retry. No containers or images have been changed.',
+      );
+      return silentExit(1);
+    }
+    if (!pullHelp.includes('--ignore-buildable')) {
+      console.red(
+        'Error: Docker updates require Docker Compose v2.15.0 or later with pull --ignore-buildable support. Upgrade Docker Compose, then retry. No containers or images have been changed.',
+      );
+      return silentExit(1);
+    }
+  }
   if (!skipGit) {
     // Fetch latest repo
     console.purple('Fetching the latest repo...');
