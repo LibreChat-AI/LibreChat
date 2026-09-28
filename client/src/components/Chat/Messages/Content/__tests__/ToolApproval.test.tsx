@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, createStore } from 'jotai';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
 import {
   approvalPanelOpenFamily,
@@ -207,7 +207,7 @@ describe('ToolApproval', () => {
       },
     } as unknown as Agents.PendingAction;
 
-    const renderWithComposer = (open: boolean) => {
+    const renderWithComposer = (open: boolean, extra?: React.ReactNode) => {
       const store = createStore();
       store.set(pendingApprovalActionFamily(conversationId), pendingAction);
       store.set(approvalPanelOpenFamily(conversationId), open);
@@ -230,6 +230,7 @@ describe('ToolApproval', () => {
                     surface="composer"
                   />
                 </div>
+                {extra}
               </ApprovalProvider>
             </ChatContext.Provider>
           </Provider>
@@ -260,20 +261,21 @@ describe('ToolApproval', () => {
     });
 
     test('a thread card for a different action keeps its controls', () => {
-      renderWithComposer(true);
-      render(
-        <RecoilRoot>
-          <ApprovalProvider>
-            <ToolApproval
-              approval={{ actionId: 'action-2', allowed_decisions: ['approve'] }}
-              toolCallId="call-9"
-              args={{}}
-            />
-          </ApprovalProvider>
-        </RecoilRoot>,
+      renderWithComposer(
+        true,
+        <div data-testid="other-action">
+          <ToolApproval
+            approval={{ actionId: 'action-2', allowed_decisions: ['approve'] }}
+            toolCallId="call-9"
+            args={{}}
+          />
+        </div>,
       );
 
-      expect(screen.getByRole('button', { name: 'Submit' })).toBeInTheDocument();
+      const other = screen.getByTestId('other-action');
+      expect(other).not.toHaveTextContent('Review in composer');
+      expect(within(other).getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+      expect(screen.getByTestId('thread')).toHaveTextContent('Review in composer');
     });
   });
 });
