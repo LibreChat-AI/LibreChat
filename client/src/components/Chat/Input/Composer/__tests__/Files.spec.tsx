@@ -17,10 +17,11 @@ const file = (over: Partial<TFile> & Pick<TFile, 'file_id' | 'filename'>): TFile
 let mockFiles: TFile[] | undefined = [];
 let mockQueryState = { isLoading: false, isError: false };
 const mockRefetch = jest.fn();
+const mockFetchPreview = jest.fn();
 
 jest.mock('~/data-provider', () => ({
   useGetFiles: () => ({ data: mockFiles, refetch: mockRefetch, ...mockQueryState }),
-  useFilePreviewBlob: () => ({ refetch: jest.fn().mockResolvedValue({ data: undefined }) }),
+  useFilePreviewBlob: () => ({ refetch: mockFetchPreview }),
   useFilePreview: () => ({ refetch: jest.fn() }),
   useFileDownload: () => ({ refetch: jest.fn() }),
   useSharedFileDownload: () => ({ refetch: jest.fn() }),
@@ -44,6 +45,7 @@ const renderGrid = (props: Partial<React.ComponentProps<typeof FileGrid>> = {}) 
 
 describe('FileGrid', () => {
   beforeEach(() => {
+    mockFetchPreview.mockReset().mockResolvedValue({ data: undefined });
     mockQueryState = { isLoading: false, isError: false };
     mockFiles = [
       file({ file_id: 'img', filename: 'photo.png', type: 'image/png' }),
@@ -124,6 +126,7 @@ describe('FileGrid', () => {
     mockFiles = [file({ file_id: 'bare', filename: 'bare.png', type: 'image/png', filepath: '' })];
     renderGrid();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_composer_preview_file:bare.png' }));
+    await waitFor(() => expect(mockFetchPreview).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(
         screen.getByRole('button', { name: 'com_ui_composer_preview_file:bare.png' }),
