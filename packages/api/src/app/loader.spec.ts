@@ -105,6 +105,24 @@ describe('createCustomConfigLoader interface.theme', () => {
     expect(warnings(warn)).toContain('interface.theme.modes.light.colors.rgb-surface-primary:');
   });
 
+  it('drops a bundled theme name that does not exist', async () => {
+    const config = await load('unknown-name');
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(config?.interface).not.toHaveProperty('theme');
+    expect(config?.interface?.modelSelect).toBe(true);
+    expect(warnings(warn)).toContain(
+      'interface.theme: Unknown bundled theme "clickhous", expected one of: librechat, clickhouse',
+    );
+  });
+
+  it('keeps a bundled theme name', async () => {
+    const config = await load('bundled');
+
+    expect(config?.interface?.theme).toBe('clickhouse');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('keeps a theme whose only problem is an appearance token this version ignores', async () => {
     const config = await load('unknown-appearance');
 

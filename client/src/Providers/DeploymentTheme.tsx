@@ -8,8 +8,8 @@ import {
   createContext,
   useLayoutEffect,
 } from 'react';
-import { QueryKeys } from 'librechat-data-provider';
 import { notifyManager, useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, isBundledThemeName } from 'librechat-data-provider';
 import {
   ThemeProvider,
   clickHouseTheme,
@@ -17,15 +17,15 @@ import {
   fromLegacyTheme,
   validateThemeDefinition,
 } from '@librechat/client';
+import type { TInterfaceConfig, BundledThemeName } from 'librechat-data-provider';
 import type { IThemeRGB, ThemeDefinition } from '@librechat/client';
-import type { TInterfaceConfig } from 'librechat-data-provider';
 import type { ComponentProps } from 'react';
 import { getThemeFromEnv } from '~/utils/getThemeFromEnv';
 import { useGetStartupConfig } from '~/data-provider';
 
 type DeploymentThemeValue = TInterfaceConfig['theme'];
 
-const bundledThemes: Readonly<Record<string, ThemeDefinition>> = {
+const bundledThemes: Readonly<Record<BundledThemeName, ThemeDefinition>> = {
   librechat: libreChatTheme,
   clickhouse: clickHouseTheme,
 };
@@ -41,7 +41,7 @@ export function resolveDeploymentTheme(theme: DeploymentThemeValue): ThemeDefini
   }
 
   if (typeof theme === 'string') {
-    const definition = Object.hasOwn(bundledThemes, theme) ? bundledThemes[theme] : undefined;
+    const definition = isBundledThemeName(theme) ? bundledThemes[theme] : undefined;
     if (!definition) {
       console.warn(`[DeploymentTheme] Ignoring unknown interface.theme "${theme}"`);
     }

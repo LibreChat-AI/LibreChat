@@ -1,5 +1,7 @@
 import {
+  bundledThemeNames,
   collectThemeIssues,
+  isBundledThemeName,
   isPlainThemeRecord,
   deploymentThemeSchema,
   collectThemeWarningIssues,
@@ -24,7 +26,17 @@ function collectErrors(theme: unknown): ThemeIssue[] {
   if (typeof theme !== 'string' && !isPlainThemeRecord(theme)) {
     return [{ path: [], message: 'Expected a bundled theme name or an inline theme definition' }];
   }
-  const issues = typeof theme === 'string' ? [] : collectThemeIssues(theme);
+  if (typeof theme === 'string') {
+    return isBundledThemeName(theme)
+      ? []
+      : [
+          {
+            path: [],
+            message: `Unknown bundled theme "${theme}", expected one of: ${bundledThemeNames.join(', ')}`,
+          },
+        ];
+  }
+  const issues = collectThemeIssues(theme);
   if (issues.length > 0) {
     return issues;
   }

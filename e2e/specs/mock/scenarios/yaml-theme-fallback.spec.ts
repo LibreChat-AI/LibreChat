@@ -83,6 +83,17 @@ test.describe('interface.theme in librechat.yaml', () => {
     );
   });
 
+  test('a misspelled bundled theme name falls back with a warning @scenario:yaml-theme-unknown-name-falls-back', () => {
+    const { outcome, log } = loadFixture('unknown-name');
+
+    expect(outcome.exited).toBeUndefined();
+    expect(outcome.interface).toEqual({ modelSelect: true });
+    expect(log).toContain(
+      'interface.theme: Unknown bundled theme "clickhous", expected one of: librechat, clickhouse',
+    );
+    expect(loadFixture('bundled').outcome.interface?.theme).toBe('clickhouse');
+  });
+
   test('a valid inline theme loads exactly as written @scenario:yaml-theme-valid-unchanged', () => {
     const { outcome, log } = loadFixture('valid');
 
