@@ -946,10 +946,11 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
           ? await findConfigByPrincipal(principalType, principalId, { includeInactive: true })
           : null;
       const encryptedFields = encryptConfigSecretFields(fields);
-      const fieldIssues = getConfigFieldIssues(
-        encryptedFields,
-        await getBaseYamlConfig(user.tenantId),
-      );
+      const [stored, baseYaml] = await Promise.all([
+        existing ?? findConfigByPrincipal(principalType, principalId, { includeInactive: true }),
+        getBaseYamlConfig(user.tenantId),
+      ]);
+      const fieldIssues = getConfigFieldIssues(encryptedFields, baseYaml, stored?.overrides);
       if (fieldIssues.length > 0) {
         return invalidOverrideResponse(res, fieldIssues);
       }

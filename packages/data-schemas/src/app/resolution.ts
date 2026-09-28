@@ -432,19 +432,29 @@ function setPath(target: unknown, segments: string[], value: unknown): unknown {
   return next;
 }
 
+function isRelatedPath(a: string[], b: string[]): boolean {
+  const length = Math.min(a.length, b.length);
+  return a.slice(0, length).every((segment, index) => segment === b[index]);
+}
+
 /**
- * Checks dot-path field writes over the base, building the override the way a Mongo
- * `$set` on each `overrides.<path>` would.
+ * Checks dot-path field writes on top of the principal's stored overrides, building the
+ * result the way a Mongo `$set` on each `overrides.<path>` would. Only issues on or around
+ * the written paths are reported, so an older stored field does not block an unrelated write.
  */
 export function getConfigFieldIssues(
   fields: Record<string, unknown>,
   base: Partial<TCustomConfig> = {},
+  stored?: unknown,
 ): ConfigOverrideIssue[] {
+  const written = Object.keys(fields).map((fieldPath) => fieldPath.split('.'));
   const candidate = Object.entries(fields).reduce<unknown>(
     (current, [fieldPath, value]) => setPath(current, fieldPath.split('.'), value),
-    {},
+    isPlainObject(stored) ? stored : {},
   );
-  return getConfigOverrideIssues(candidate, base);
+  return getConfigOverrideIssues(candidate, base).filter((issue) =>
+    written.some((segments) => isRelatedPath(issue.segments, segments)),
+  );
 }
 
 function omitPath(target: unknown, segments: string[]): unknown {

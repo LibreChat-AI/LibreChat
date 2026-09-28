@@ -1219,6 +1219,37 @@ describe('getConfigFieldIssues', () => {
     ).toEqual(['endpoints.azureOpenAI.groups.0.addParams.web_search']);
   });
 
+  it('judges a write together with the fields the principal already overrides', () => {
+    const stored = {
+      cloudfront: {
+        domain: 'https://cdn.example.com',
+        imageSigning: 'cookies',
+        cookieDomain: '.example.com',
+      },
+    };
+    expect(getConfigFieldIssues({ 'cloudfront.requireSignedAccess': true }, {}, stored)).toEqual(
+      [],
+    );
+    expect(
+      getConfigFieldIssues(
+        { 'cloudfront.requireSignedAccess': true },
+        {},
+        {
+          cloudfront: { ...stored.cloudfront, imageSigning: 'none' },
+        },
+      ).map((issue) => issue.path),
+    ).toEqual(['cloudfront.requireSignedAccess']);
+    expect(
+      getConfigFieldIssues(
+        { 'interface.customWelcome': 'hi' },
+        {},
+        {
+          interface: { contextCost: 'yes' },
+        },
+      ),
+    ).toEqual([]);
+  });
+
   it('rejects a path past a field that holds a value', () => {
     expect(
       getConfigFieldIssues({ 'interface.contextCost.foo': true }).map((issue) => issue.path),

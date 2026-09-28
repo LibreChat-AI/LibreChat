@@ -1455,7 +1455,8 @@ describe('createAdminConfigHandlers', () => {
       expect(res.statusCode).toBe(200);
       const [, , , , priorityArg] = deps.patchConfigFields.mock.calls[0];
       expect(priorityArg).toBe(999);
-      expect(deps.findConfigByPrincipal).not.toHaveBeenCalled();
+      /** Read once to validate the write on top of the stored fields, not for its priority. */
+      expect(deps.findConfigByPrincipal).toHaveBeenCalledTimes(1);
     });
 
     it('preserves priority 0 when broad caller supplies it', async () => {
