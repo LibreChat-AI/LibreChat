@@ -2563,7 +2563,7 @@
   "com_ui_steer_edit_queued": "Your composer already has a draft, so that steering message was queued for after the response instead",
   "com_ui_steer_failed": "Steering failed",
   "com_ui_steer_first_turn_stop": "Stop & send (first response)",
-  "com_ui_steer_first_turn_stop_info": "Steering isn't available before this conversation starts. Stops this response and sends your message as a new turn.",
+  "com_ui_steer_first_turn_stop_info": "Steering isn't available yet. Stops this response and sends your message as a new turn.",
   "com_ui_steer_in_flight": "Steering",
   "com_ui_steer_in_flight_preempt": "Steer sooner requested",
   "com_ui_steer_interrupting_info": "Earlier steering requested. The agent may pause a text reply at a safe point or restart an attempt that has produced only reasoning. Running tools finish first. If it cannot pause, your message waits for the next tool step or an end-of-response opportunity.",
