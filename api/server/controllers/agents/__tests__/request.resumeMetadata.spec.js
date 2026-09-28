@@ -269,6 +269,7 @@ jest.mock('@librechat/api', () => ({
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   markAbortedCompactionContent: (...args) =>
     jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
+  isSettledJobRecord: (...args) => jest.requireActual('@librechat/api').isSettledJobRecord(...args),
   resolveDisconnectSnapshotMode: (...args) =>
     jest.requireActual('@librechat/api').resolveDisconnectSnapshotMode(...args),
   settleExistingRowsBeforeErrorTurn: (...args) =>

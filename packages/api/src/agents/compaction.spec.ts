@@ -1432,4 +1432,17 @@ describe('resolveDisconnectSnapshotMode', () => {
       resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'complete' }, 1000),
     ).toBe('live');
   });
+
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is promoted to the turn's terminal row, because no other row
+   *  will ever be persisted for it. */
+  it('promotes a reconciled compaction snapshot to the terminal row', () => {
+    const reconciled = {
+      createdAt: 1000,
+      status: 'error',
+      finalEvent: JSON.stringify({ final: true, reconcile: true }),
+    };
+
+    expect(resolveDisconnectSnapshotMode(true, reconciled, 1000)).toBe('terminal');
+  });
 });

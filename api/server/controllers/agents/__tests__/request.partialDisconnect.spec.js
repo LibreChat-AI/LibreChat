@@ -57,6 +57,7 @@ jest.mock('@librechat/api', () => ({
   resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
   markAbortedCompactionContent: (...args) =>
     jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
+  isSettledJobRecord: (...args) => jest.requireActual('@librechat/api').isSettledJobRecord(...args),
   resolveDisconnectSnapshotMode: (...args) =>
     jest.requireActual('@librechat/api').resolveDisconnectSnapshotMode(...args),
   settleExistingRowsBeforeErrorTurn: (...args) =>
@@ -375,5 +376,30 @@ describe('ResumableAgentController tenant context', () => {
     expect(mockSaveMessage).toHaveBeenCalledTimes(1);
     const [, savedMessage] = mockSaveMessage.mock.calls[0];
     expect(savedMessage).toMatchObject({ unfinished: true, error: false });
+  });
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is the turn's only row, so it persists with the terminal
+   *  outcome (the typed failure for content with no summary) and envelope. */
+  it('promotes a reconciled compaction snapshot to the terminal row', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'think', think: 'Picking what to summarize' }],
+      },
+    );
+
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({ unfinished: false, error: true });
+    expect(savedMessage.content).toEqual([
+      { type: 'think', think: 'Picking what to summarize' },
+      expect.objectContaining({ type: 'error', initiatedBy: 'user' }),
+    ]);
   });
 });

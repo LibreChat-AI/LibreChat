@@ -331,31 +331,47 @@ export function isSettledJobRecord(
   );
 }
 
-/** How the last-subscriber disconnect may persist this turn's snapshot. */
+/** How a disconnect may persist this turn's snapshot. */
 export type DisconnectSnapshotMode =
-  /** The run is still live: the snapshot is written as the fallback row. */
+  /** The run is still live: the snapshot keeps the live shape. */
   | 'live'
-  /** A settling path owns the final row: the snapshot is withheld so it
-   *  cannot reopen the settled turn as an unfinished response. */
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is the turn's only row, so it persists with the terminal
+   *  outcome and envelope. */
+  | 'terminal'
+  /** A settled terminal row exists: the snapshot is withheld so it cannot
+   *  reopen the settled turn. */
   | 'skip';
 
 /**
- * How the last-subscriber disconnect may persist this turn's snapshot, read
- * from the same-epoch job record the caller already loaded. A compaction
- * whose settling path owns the final row withholds the snapshot; the guard
- * reads the record that path writes, so the remaining window is the path's
- * own commit span. Ordinary turns keep writing their fallback row, settled
- * or not.
+ * How the last-subscriber disconnect may persist this turn's snapshot. A
+ * compaction whose settling path (completion, error, abort) durably owns the
+ * final row must not have it reopened as an unfinished snapshot; a compaction
+ * whose terminal write settled for a reconciliation frame has no row at all,
+ * so its snapshot is promoted to the terminal row; ordinary turns keep
+ * writing their fallback row exactly as before, because their terminal row
+ * write may still fail.
  */
 export function resolveDisconnectSnapshotMode(
   isCompaction: boolean,
-  jobRecord: { createdAt?: number; status?: string } | null | undefined,
+  jobRecord:
+    | {
+        createdAt?: number;
+        status?: string;
+        terminalPersistencePending?: boolean;
+        finalEvent?: string;
+      }
+    | null
+    | undefined,
   jobCreatedAt?: number,
 ): DisconnectSnapshotMode {
   if (!isCompaction) {
     return 'live';
   }
-  return isSettledJobRecord(jobRecord, jobCreatedAt) ? 'skip' : 'live';
+  if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
+    return 'skip';
+  }
+  return hasDurableReconcileFrame(jobRecord?.finalEvent) ? 'terminal' : 'live';
 }
 
 /** How the abort route persists a stopped turn's prerequisite rows. */

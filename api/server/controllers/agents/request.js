@@ -1923,25 +1923,33 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
 
-      /** The run is still live here: mark what streamed, but leave the outcome
-       *  to whichever path settles the turn (the terminal abort synthesizes
-       *  the typed failure a stopped compaction with no summary needs). */
-      const persistableContent = markAbortedCompactionContent(
-        filterPersistableAbortContent(aggregatedContent),
-        isCompaction,
-        { synthesizeFailure: false },
-      );
-      if (persistableContent.length === 0) {
-        logger.debug('[ResumableAgentController] No persistable content to save partial response');
-        return;
-      }
-
       const [resumeState, jobRecord] = await Promise.all([
         GenerationJobManager.getResumeState(streamId, jobCreatedAt),
         GenerationJobManager.getJobStore().getJob(streamId),
       ]);
       if (!resumeState?.userMessage) {
         logger.debug('[ResumableAgentController] No user message to save partial response for');
+        return;
+      }
+
+      /** How this snapshot may persist is decided in @librechat/api: live
+       *  runs keep the marker-only shape, a failed terminal write (settled
+       *  for a reconciliation frame) promotes the snapshot to the turn's
+       *  terminal row, and a durably settled compaction withholds it. */
+      const snapshotMode = resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt);
+      if (snapshotMode === 'skip') {
+        logger.debug(
+          '[ResumableAgentController] Skipping compaction partial save for a settled job',
+        );
+        return;
+      }
+      const persistableContent = markAbortedCompactionContent(
+        filterPersistableAbortContent(aggregatedContent),
+        isCompaction,
+        { synthesizeFailure: snapshotMode === 'terminal' },
+      );
+      if (persistableContent.length === 0) {
+        logger.debug('[ResumableAgentController] No persistable content to save partial response');
         return;
       }
 
@@ -1954,12 +1962,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
-      if (resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt) === 'skip') {
-        logger.debug(
-          '[ResumableAgentController] Skipping compaction partial save for a settled job',
-        );
-        return;
-      }
 
       try {
         const partialMessage = {
@@ -1968,8 +1970,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           parentMessageId: resumeState.userMessage.messageId,
           sender: client?.sender ?? 'AI',
           content: persistableContent,
-          unfinished: true,
-          error: false,
+          /** A snapshot promoted to the terminal row settles with the
+           *  terminal envelope; a live-run snapshot keeps the live shape. */
+          unfinished: snapshotMode !== 'terminal',
+          error: snapshotMode === 'terminal',
           isCreatedByUser: false,
           user: userId,
           endpoint: endpointOption.endpoint,
