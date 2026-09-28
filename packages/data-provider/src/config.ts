@@ -3592,6 +3592,10 @@ export const imageGenTools = new Set([
   'gemini_image_gen',
 ]);
 
+export const videoGenTools = new Set([
+  'sora',
+]);
+
 /**
  * Enum for collections using infinite queries
  */

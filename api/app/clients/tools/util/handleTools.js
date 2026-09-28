@@ -54,6 +54,7 @@ const {
   TavilySearchResults,
   createGeminiImageTool,
   createOpenAIImageTools,
+  Sora,
 } = require('../');
 const {
   createMCPTool,
@@ -278,6 +279,7 @@ const loadTools = async ({
 
   if (functions === true) {
     toolConstructors.dalle = DALLE3;
+    toolConstructors.sora = Sora;
   }
 
   /** @type {ImageGenOptions} */
@@ -293,6 +295,7 @@ const loadTools = async ({
   const toolOptions = {
     flux: imageGenOptions,
     dalle: imageGenOptions,
+    sora: imageGenOptions,
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,
   };
