@@ -404,9 +404,10 @@ test.describe('compaction rerun controls', () => {
       await expect(row).toBeVisible();
       await row.hover();
 
-      await expect(row.getByText('Could not compact the context', { exact: false })).toBeVisible();
       /* Replaying the user turn behind it would answer that message again rather
-         than redo the compaction, so the marker withholds the controls here too. */
+         than redo the compaction, so the marker withholds the controls here too.
+         The stored outcome text is the reload scenario's to check: the live row
+         renders the turn it streamed, which stopped before its first delta. */
       await expect(page.locator(`[id="edit-${compactionId}"]`)).toHaveCount(0);
       await expect(page.getByTestId('regenerate-generation-button')).toHaveCount(0);
       await expect(page.getByTestId('continue-generation-button')).toHaveCount(0);
