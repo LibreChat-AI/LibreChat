@@ -2515,6 +2515,21 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.patchConfigFields).not.toHaveBeenCalled();
     });
 
+    it('rejects a patch that addresses a custom endpoint by index', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'endpoints.custom.0.models', value: { default: ['m'] } }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body?.error).toContain('endpoints.custom');
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
+    });
+
     it('accepts a secret field cleared with a non-string value', async () => {
       const { handlers, deps } = createHandlers();
       const req = mockReq({

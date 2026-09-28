@@ -26,8 +26,9 @@ describe('getConfigOverrideIssues', () => {
     expect(getConfigOverrideIssues(5, 'registration.oauthStateTtlMs')).toEqual([
       expect.objectContaining({ path: 'registration.oauthStateTtlMs' }),
     ]);
-    expect(getConfigOverrideIssues('bad', 'endpoints.custom.0.models')).toEqual([
-      expect.objectContaining({ path: 'endpoints.custom.0.models' }),
+    expect(getConfigOverrideIssues('bad', 'modelSpecs.list.0.name')).toEqual([]);
+    expect(getConfigOverrideIssues(5, 'modelSpecs.list.0.name')).toEqual([
+      expect.objectContaining({ path: 'modelSpecs.list.0.name' }),
     ]);
   });
 
@@ -73,7 +74,11 @@ describe('getConfigOverrideIssues', () => {
         message: 'name: Required',
       },
     ]);
-    expect(getConfigOverrideIssues({ baseURL: 'https://a' }, 'endpoints.custom.0')).toEqual([]);
+    expect(getConfigOverrideIssues({ name: 'groq' }, 'endpoints.custom')).toHaveLength(1);
+    expect(
+      getConfigOverrideIssues(['m'], 'endpoints.custom.0.models').map((issue) => issue.path),
+    ).toEqual(['endpoints.custom.0.models']);
+    expect(getConfigOverrideIssues({ name: 'groq' }, 'endpoints.custom.0')).toHaveLength(1);
   });
 
   it('keeps a record key that contains a dot as one segment', () => {

@@ -190,6 +190,23 @@ function resolveSchemas(schema: ZodTypeAny, segments: string[]): ZodTypeAny[] {
 }
 
 /**
+ * An item of a merged-by-key array is found by its key, not its index, so a path into one
+ * item would store a keyless item that the merge then drops.
+ */
+function getIndexedItemIssue(segments: string[]): ConfigOverrideIssue | undefined {
+  for (let end = 1; end < segments.length; end++) {
+    const arrayPath = segments.slice(0, end).join('.');
+    if (Object.prototype.hasOwnProperty.call(PARTIAL_ARRAY_KEYS, arrayPath)) {
+      return toIssue(
+        segments,
+        `Write the whole ${arrayPath} array; its items are merged by ${PARTIAL_ARRAY_KEYS[arrayPath]}`,
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
  * Checks a principal config override against `configSchema` before it is stored or merged.
  *
  * `fieldPath` addresses where `value` is written (empty for a whole overrides document).
@@ -198,6 +215,10 @@ function resolveSchemas(schema: ZodTypeAny, segments: string[]): ZodTypeAny[] {
  */
 export function getConfigOverrideIssues(value: unknown, fieldPath = ''): ConfigOverrideIssue[] {
   const segments = fieldPath ? fieldPath.split('.') : [];
+  const indexedItemIssue = getIndexedItemIssue(segments);
+  if (indexedItemIssue) {
+    return [indexedItemIssue];
+  }
   const schemas = resolveSchemas(configSchema, segments);
   if (schemas.length === 0) {
     return [];
