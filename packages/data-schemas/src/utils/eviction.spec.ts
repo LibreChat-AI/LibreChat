@@ -74,13 +74,16 @@ describe('evictAuthUserDocs', () => {
     expectOtherUserCached(store);
   });
 
-  it('treats a malformed reverse index as unreadable', async () => {
+  it.each([
+    ['a string', 'doc-a'],
+    ['a list with a non-string entry', ['doc-a', 42]],
+  ])('treats a reverse index holding %s as unreadable', async (_label, indexed) => {
     const store = makeStore();
-    store.values.set(INDEX_KEY, 'doc-a');
+    store.values.set(INDEX_KEY, indexed);
 
     await expect(evictAuthUserDocs(store, { userId: 'user-1' })).resolves.toBe(false);
 
-    expect(store.values.get(INDEX_KEY)).toBe('doc-a');
+    expect(store.values.get(INDEX_KEY)).toEqual(indexed);
     expect(store.values.has('doc-a')).toBe(true);
   });
 

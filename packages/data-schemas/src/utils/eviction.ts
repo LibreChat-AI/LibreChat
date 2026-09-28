@@ -7,6 +7,10 @@ export interface AuthUserDocEvictionStore {
   delete: (key: string) => Promise<unknown>;
 }
 
+function isKeyList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((key) => typeof key === 'string');
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -29,13 +33,11 @@ export async function evictAuthUserDocs(
   if (indexKey) {
     try {
       const indexed = await store.get(indexKey);
-      if (indexed != null && !Array.isArray(indexed)) {
+      if (indexed != null && !isKeyList(indexed)) {
         throw new Error('Reverse index is not a list of cache keys');
       }
       for (const key of indexed ?? []) {
-        if (typeof key === 'string') {
-          keys.add(key);
-        }
+        keys.add(key);
       }
     } catch (error) {
       indexRead = false;
