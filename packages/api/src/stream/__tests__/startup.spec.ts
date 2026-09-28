@@ -645,7 +645,12 @@ describe('GenerationJobManager startup telemetry', () => {
     const job = await manager.createJob(streamId, 'owner', streamId, {
       initialMetadata: {
         responseMessageId: 'response-1',
-        userMessage: { messageId: 'user-1', conversationId: streamId, text, privacyRevision: revision },
+        userMessage: {
+          messageId: 'user-1',
+          conversationId: streamId,
+          text,
+          privacyRevision: revision,
+        },
       },
     });
     const created: ServerSentEvent = {
