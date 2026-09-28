@@ -9,9 +9,13 @@ import type { Page, Route } from '@playwright/test';
  * store being writable at all.
  */
 
-/** A non-default destination: reaching it proves the deep link outlived the whole challenge. */
-const DEEP_LINK = '/c/deep-link-proof?model=test';
-const DEEP_LINK_PATTERN = /\/c\/deep-link-proof\?model=test$/;
+/** A non-default destination: reaching it proves the deep link outlived the whole challenge.
+ *  The marker rides the query so no conversation has to exist for the landing to hold. */
+const DEEP_LINK = '/c/new?model=test&deep-link=proof';
+const DEEP_LINK_PATTERN = /\/c\/new\?model=test&deep-link=proof$/;
+/** The second sign-in's own destination: distinct from the first's on purpose. */
+const SECOND_LINK = '/c/new?from=second-signin';
+const SECOND_LINK_PATTERN = /\/c\/new\?from=second-signin$/;
 const DEFAULT_PATTERN = /\/c\/new$/;
 const CHALLENGE_PATTERN = /\/login\/2fa\?tempToken=temp-token$/;
 
@@ -44,16 +48,76 @@ async function mockChallengeAuth(page: Page) {
   let sessionLive = false;
 
   /** Registered first, so every specific mock below takes precedence. The shell's
-   *  authenticated queries are answered empty: letting them 401 against the real backend
-   *  (the bearer is a stand-in for the cookie the real verify controller sets) would spin
-   *  the auth-recovery interceptor, whose login bounce carries the current URL as
-   *  redirect_to — re-declaring a destination mid-test and re-persisting it at the login
-   *  screen. Only /api/config stays real: the login screen renders from it. */
+   *  authenticated queries are answered with their empty shapes: letting them 401 against
+   *  the real backend (the bearer is a stand-in for the cookie the real verify controller
+   *  sets) would spin the auth-recovery interceptor, whose login bounce carries the current
+   *  URL as redirect_to — re-declaring a destination mid-test and re-persisting it at the
+   *  login screen. Only /api/config stays real: the login screen renders from it. */
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
+    if (route.request().method() !== 'GET') {
+      await json(route, {});
+      return;
+    }
     if (/\/api\/config(\?|$)/.test(url)) {
       const response = await route.fetch();
       await route.fulfill({ response });
+      return;
+    }
+    if (url.includes('/api/endpoints')) {
+      await json(route, []);
+      return;
+    }
+    if (url.includes('/api/agents/chat/active')) {
+      await json(route, []);
+      return;
+    }
+    if (url.includes('/api/presets')) {
+      await json(route, []);
+      return;
+    }
+    if (/\/api\/tags(\?|$)/.test(url)) {
+      await json(route, []);
+      return;
+    }
+    if (url.includes('/api/models')) {
+      await json(route, {});
+      return;
+    }
+    if (url.includes('/api/convos?')) {
+      await json(route, { conversations: [], pageInfo: { hasMore: false, page: 1, size: 0 } });
+      return;
+    }
+    if (url.includes('/api/convos?pinned')) {
+      await json(route, { conversations: [], pageInfo: { hasMore: false, page: 1, size: 0 } });
+      return;
+    }
+    if (url.includes('/api/projects')) {
+      await json(route, { projects: [], hasMore: false });
+      return;
+    }
+    if (url.includes('/api/user/settings/')) {
+      await json(route, []);
+      return;
+    }
+    if (url.includes('/api/search/enable')) {
+      await json(route, false);
+      return;
+    }
+    if (url.includes('/api/balance')) {
+      await json(route, {});
+      return;
+    }
+    if (url.includes('/api/banner')) {
+      await json(route, { banner: '' });
+      return;
+    }
+    if (url.includes('/api/files/speech')) {
+      await json(route, { enabled: false });
+      return;
+    }
+    if (url.includes('/api/files')) {
+      await json(route, []);
       return;
     }
     await json(route, {});
@@ -162,10 +226,12 @@ test.describe('ordinary 2FA challenge · deep links', () => {
     await page.getByRole('menuitem', { name: 'Log out' }).click();
     await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible({ timeout: 15000 });
 
-    /** The second sign-in arrives without a destination of its own. */
+    /** The second sign-in declares a destination of its own: it must land there,
+     *  not on the first sign-in's, and leave nothing behind for a third. */
+    await page.goto(`/login?redirect_to=${encodeURIComponent(SECOND_LINK)}`);
     await signInThroughChallenge(page);
+    await expect(page).toHaveURL(SECOND_LINK_PATTERN, { timeout: 15000 });
     await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 15000 });
-    await expect(page).toHaveURL(DEFAULT_PATTERN);
     expect(await page.evaluate(() => sessionStorage.getItem('post_login_redirect_to'))).toBeNull();
   });
 });
