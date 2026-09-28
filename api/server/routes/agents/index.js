@@ -5,6 +5,7 @@ const {
   GenerationJobManager,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
+  shouldPersistAbortAnchor,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -764,10 +765,7 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
-          /** A compaction's `userMessage` is the already-persisted leaf
-           *  projected for identity only; upserting it would erase a user
-           *  leaf's text or turn an assistant leaf into an empty user row. */
-          const shouldPersistAnchor = jobData?.compact !== true;
+          const shouldPersistAnchor = shouldPersistAbortAnchor(jobData);
 
           if (
             jobData?.userMessage?.messageId &&

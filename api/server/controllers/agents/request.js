@@ -52,6 +52,7 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
+  resolveFinalizedCompactionTurn,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -432,6 +433,11 @@ async function saveErrorTurn(
       '_id',
     );
     if (existing.length > 0) {
+      await finalizeFailedCompactionTurn(req, {
+        userId,
+        conversationId,
+        messageId: errorMessageId,
+      });
       return;
     }
     if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
@@ -440,6 +446,11 @@ async function saveErrorTurn(
         '_id',
       );
       if (partial.length > 0) {
+        await finalizeFailedCompactionTurn(req, {
+          userId,
+          conversationId,
+          messageId: liveResponseMessageId,
+        });
         return;
       }
     }
@@ -549,6 +560,34 @@ async function saveErrorTurn(
     logger.error('[AgentController] Failed to persist error turn', err);
     throw err;
   }
+}
+
+/**
+ * The disconnect save is marker-only while the run is still live; a failed
+ * turn is what settles it, so a compaction's partial row is finalized here
+ * with the terminal outcome instead of keeping the snapshot's live-run
+ * marking. The decision lives in @librechat/api; this is the wiring.
+ */
+async function finalizeFailedCompactionTurn(req, { userId, conversationId, messageId }) {
+  const [partialRow] = await getMessages({ user: userId, messageId, conversationId });
+  const finalized = resolveFinalizedCompactionTurn(partialRow, req.body);
+  if (finalized == null) {
+    return;
+  }
+  await saveMessage(
+    {
+      userId,
+      isTemporary:
+        req?._agentEventBindingRetention?.isTemporary ??
+        req?.resolvedConversation?.isTemporary ??
+        req?.body?.isTemporary,
+      expiredAt:
+        req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
+      interfaceConfig: req?.config?.interfaceConfig,
+    },
+    { messageId, conversationId, ...finalized },
+    { context: 'api/server/controllers/agents/request.js - finalize failed compaction turn' },
+  );
 }
 
 function classifyScheduledFailure(error, aborted = false) {
