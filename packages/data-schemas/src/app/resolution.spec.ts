@@ -956,6 +956,26 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     expect(merged).not.toHaveProperty('0');
   });
 
+  it('drops a replaced-array item that fails a refinement, keeping its valid siblings', () => {
+    const merged = mergeConfigOverrides({} as AppConfig, [
+      fakeConfig(
+        {
+          messageFilter: {
+            pii: {
+              customPatterns: [
+                { id: 'bad', label: 'Bad', regex: '(unclosed' },
+                { id: 'ok', label: 'Ok', regex: 'x+' },
+              ],
+            },
+          },
+        },
+        10,
+      ),
+    ]) as unknown as { messageFilter: { pii: { customPatterns: Array<{ id: string }> } } };
+
+    expect(merged.messageFilter.pii.customPatterns.map((pattern) => pattern.id)).toEqual(['ok']);
+  });
+
   it('lets a lower-priority valid override survive a higher-priority invalid one', () => {
     const merged = mergeConfigOverrides(base, [
       fakeConfig({ interface: { contextCost: false } }, 10),

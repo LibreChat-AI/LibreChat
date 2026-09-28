@@ -43,6 +43,54 @@ describe('getConfigOverrideIssues', () => {
     expect(getConfigOverrideIssues('x', 'interface.schedules')).toHaveLength(1);
   });
 
+  it('judges an object by the union options that define its keys', () => {
+    expect(
+      getConfigOverrideIssues({ memory: { agent: { id: 5 } } }).map((issue) => issue.path),
+    ).toEqual(['memory.agent.id']);
+    expect(getConfigOverrideIssues({ memory: { agent: { id: 'agent_1' } } })).toEqual([]);
+    expect(
+      getConfigOverrideIssues({ memory: { agent: { provider: 'openAI', model: 'gpt' } } }),
+    ).toEqual([]);
+  });
+
+  it('applies refinements that judge the values an override supplies', () => {
+    expect(
+      getConfigOverrideIssues({
+        messageFilter: {
+          pii: { customPatterns: [{ id: 'p1', label: 'Bad', regex: '(unclosed' }] },
+        },
+      }).map((issue) => issue.path),
+    ).toEqual(['messageFilter.pii.customPatterns.0']);
+    expect(
+      getConfigOverrideIssues({
+        messageFilter: { pii: { customPatterns: [{ id: 'p1', label: 'Ok', regex: '\\d+' }] } },
+      }),
+    ).toEqual([]);
+    expect(
+      getConfigOverrideIssues(
+        { web_search: 'yes', temperature: 1 },
+        'endpoints.azureOpenAI.groups.0.addParams',
+      ).map((issue) => issue.path),
+    ).toEqual(['endpoints.azureOpenAI.groups.0.addParams.web_search']);
+  });
+
+  it('leaves refinements relating fields to the merged result', () => {
+    expect(
+      getConfigOverrideIssues({
+        cloudfront: { domain: 'https://cdn.example.com', requireSignedAccess: true },
+      }),
+    ).toEqual([]);
+    expect(getConfigOverrideIssues({ cloudfront: { invalidateOnDelete: true } })).toEqual([]);
+  });
+
+  it('rejects a field path that continues past a field holding a value', () => {
+    expect(
+      getConfigOverrideIssues(true, 'interface.contextCost.foo').map((issue) => issue.path),
+    ).toEqual(['interface.contextCost.foo']);
+    expect(getConfigOverrideIssues(1, 'registration.oauthStateTtlMs.foo')).toHaveLength(1);
+    expect(getConfigOverrideIssues(1, 'registration.unknownField.foo')).toEqual([]);
+  });
+
   it('validates merged-by-name array items partially and replaced arrays in full', () => {
     expect(
       getConfigOverrideIssues({ endpoints: { custom: [{ name: 'groq', baseURL: 'https://a' }] } }),
