@@ -934,6 +934,19 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     expect(merged.endpoints.custom).toEqual([{ name: 'kept', baseURL: 'x' }]);
   });
 
+  it('strips an invalid field under a record key that contains a dot', () => {
+    const merged = mergeConfigOverrides(
+      { mcpConfig: { 'team.prod': { url: 'https://mcp', timeout: 1000 } } } as unknown as AppConfig,
+      [fakeConfig({ mcpServers: { 'team.prod': { timeout: 'x', initTimeout: 500 } } }, 10)],
+    ) as unknown as { mcpConfig: Record<string, Record<string, unknown>> };
+
+    expect(merged.mcpConfig['team.prod']).toEqual({
+      url: 'https://mcp',
+      timeout: 1000,
+      initTimeout: 500,
+    });
+  });
+
   it('lets a lower-priority valid override survive a higher-priority invalid one', () => {
     const merged = mergeConfigOverrides(base, [
       fakeConfig({ interface: { contextCost: false } }, 10),

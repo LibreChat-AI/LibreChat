@@ -280,11 +280,11 @@ function stripInvalidOverrides(config: IConfig): AnyObject {
   }
   let stripped: unknown = overrides;
   for (let index = issues.length - 1; index >= 0; index--) {
-    const { path, message } = issues[index];
+    const { path, segments, message } = issues[index];
     logger.warn(
       `[mergeConfigOverrides] Ignoring invalid override "${path}" for ${config.principalType}/${config.principalId}: ${message}`,
     );
-    stripped = omitPath(stripped, path.split('.'));
+    stripped = omitPath(stripped, segments);
   }
   return stripped as AnyObject;
 }

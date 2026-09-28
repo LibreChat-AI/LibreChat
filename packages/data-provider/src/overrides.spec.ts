@@ -62,10 +62,27 @@ describe('getConfigOverrideIssues', () => {
         endpoints: { custom: [{ baseURL: 'https://a' }, { name: '', models: 5 }] },
       }),
     ).toEqual([
-      { path: 'endpoints.custom.0', message: 'name: Required' },
-      { path: 'endpoints.custom.1', message: 'name: Required' },
+      {
+        path: 'endpoints.custom.0',
+        segments: ['endpoints', 'custom', '0'],
+        message: 'name: Required',
+      },
+      {
+        path: 'endpoints.custom.1',
+        segments: ['endpoints', 'custom', '1'],
+        message: 'name: Required',
+      },
     ]);
     expect(getConfigOverrideIssues({ baseURL: 'https://a' }, 'endpoints.custom.0')).toEqual([]);
+  });
+
+  it('keeps a record key that contains a dot as one segment', () => {
+    expect(getConfigOverrideIssues({ mcpServers: { 'team.prod': { timeout: 'x' } } })).toEqual([
+      expect.objectContaining({
+        path: 'mcpServers.team.prod.timeout',
+        segments: ['mcpServers', 'team.prod', 'timeout'],
+      }),
+    ]);
   });
 
   it('accepts fields the schema does not define and stored secret shapes', () => {

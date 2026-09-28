@@ -5,6 +5,8 @@ import { configSchema } from './config';
 export type ConfigOverrideIssue = {
   /** Dot-path of the rejected override field, in YAML (`TCustomConfig`) keys. */
   path: string;
+  /** The same location as keys, unambiguous when a record key itself contains a dot. */
+  segments: string[];
   message: string;
 };
 
@@ -21,8 +23,8 @@ function isPlainObject(value: unknown): value is PlainObject {
   return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function joinPath(path: string, key: string): string {
-  return path ? `${path}.${key}` : key;
+function toIssue(segments: string[], message: string): ConfigOverrideIssue {
+  return { path: segments.join('.'), segments, message };
 }
 
 /** Strips wrappers that do not change which fields an object accepts. */
@@ -57,7 +59,7 @@ function unwrap(schema: ZodTypeAny): ZodTypeAny {
   return current;
 }
 
-function checkLeaf(schema: ZodTypeAny, value: unknown, path: string): ConfigOverrideIssue[] {
+function checkLeaf(schema: ZodTypeAny, value: unknown, segments: string[]): ConfigOverrideIssue[] {
   const result = schema.safeParse(value);
   if (result.success) {
     return [];
@@ -65,7 +67,7 @@ function checkLeaf(schema: ZodTypeAny, value: unknown, path: string): ConfigOver
   const [issue] = result.error.issues;
   const detail =
     issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message;
-  return [{ path, message: detail }];
+  return [toIssue(segments, detail)];
 }
 
 /**
@@ -77,7 +79,7 @@ function checkLeaf(schema: ZodTypeAny, value: unknown, path: string): ConfigOver
 function checkPartial(
   schema: ZodTypeAny,
   value: unknown,
-  path: string,
+  segments: string[],
   depth: number,
 ): ConfigOverrideIssue[] {
   const inner = unwrap(schema);
@@ -86,21 +88,22 @@ function checkPartial(
     return [];
   }
 
+  const path = segments.join('.');
   const keyField = Object.prototype.hasOwnProperty.call(PARTIAL_ARRAY_KEYS, path)
     ? PARTIAL_ARRAY_KEYS[path]
     : undefined;
   if (def.typeName === ZodFirstPartyTypeKind.ZodArray && Array.isArray(value) && keyField) {
     return value.flatMap((item, index) => {
-      const itemPath = joinPath(path, String(index));
+      const itemSegments = [...segments, String(index)];
       if (isPlainObject(item) && (typeof item[keyField] !== 'string' || item[keyField] === '')) {
-        return [{ path: itemPath, message: `${keyField}: Required` }];
+        return [toIssue(itemSegments, `${keyField}: Required`)];
       }
-      return checkPartial(def.type, item, itemPath, depth + 1);
+      return checkPartial(def.type, item, itemSegments, depth + 1);
     });
   }
 
   if (!isPlainObject(value)) {
-    return checkLeaf(schema, value, path);
+    return checkLeaf(schema, value, segments);
   }
 
   switch (def.typeName) {
@@ -111,24 +114,24 @@ function checkPartial(
           ? shape[key]
           : undefined;
         return fieldSchema
-          ? checkPartial(fieldSchema, fieldValue, joinPath(path, key), depth + 1)
+          ? checkPartial(fieldSchema, fieldValue, [...segments, key], depth + 1)
           : [];
       });
     }
     case ZodFirstPartyTypeKind.ZodRecord:
       return Object.entries(value).flatMap(([key, fieldValue]) =>
-        checkPartial(def.valueType, fieldValue, joinPath(path, key), depth + 1),
+        checkPartial(def.valueType, fieldValue, [...segments, key], depth + 1),
       );
     case ZodFirstPartyTypeKind.ZodIntersection:
       return [
-        ...checkPartial(def.left, value, path, depth + 1),
-        ...checkPartial(def.right, value, path, depth + 1),
+        ...checkPartial(def.left, value, segments, depth + 1),
+        ...checkPartial(def.right, value, segments, depth + 1),
       ];
     case ZodFirstPartyTypeKind.ZodUnion:
     case ZodFirstPartyTypeKind.ZodDiscriminatedUnion:
-      return checkOptions(def.options as ZodTypeAny[], value, path, depth);
+      return checkOptions(def.options as ZodTypeAny[], value, segments, depth);
     default:
-      return checkLeaf(schema, value, path);
+      return checkLeaf(schema, value, segments);
   }
 }
 
@@ -136,18 +139,19 @@ function checkPartial(
 function checkOptions(
   options: ZodTypeAny[],
   value: unknown,
-  path: string,
+  segments: string[],
   depth: number,
 ): ConfigOverrideIssue[] {
   let closest: ConfigOverrideIssue[] | undefined;
   let closestRank = Infinity;
   for (const option of options) {
-    const issues = checkPartial(option, value, path, depth + 1);
+    const issues = checkPartial(option, value, segments, depth + 1);
     if (issues.length === 0) {
       return issues;
     }
     /** Ties go to an option whose shape matched, i.e. one that reported a nested field. */
-    const rank = issues.length * 2 + (issues.every((issue) => issue.path === path) ? 1 : 0);
+    const matched = issues.some((issue) => issue.segments.length > segments.length);
+    const rank = issues.length * 2 + (matched ? 0 : 1);
     if (rank < closestRank) {
       closest = issues;
       closestRank = rank;
@@ -198,5 +202,5 @@ export function getConfigOverrideIssues(value: unknown, fieldPath = ''): ConfigO
   if (schemas.length === 0) {
     return [];
   }
-  return checkOptions(schemas, value, fieldPath, 0);
+  return checkOptions(schemas, value, segments, 0);
 }
