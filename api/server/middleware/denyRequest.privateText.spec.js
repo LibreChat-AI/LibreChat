@@ -68,6 +68,9 @@ it('encrypts denied PII for an existing conversation and sends only the filtered
   const event = mockSendEvent.mock.calls[0][1];
   const [ctx, saved, metadata] = mockSaveMessage.mock.calls[0];
   expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+  expect(mockSaveMessage.mock.invocationCallOrder[0]).toBeLessThan(
+    mockSendEvent.mock.invocationCallOrder[0],
+  );
   expect(ctx.userId).toBe('owner');
   expect(saved.text).toMatch(/^Email \[EMAIL_1_[a-f0-9]{32}\]$/);
   expect(saved.privacyRevision).toBe(event.message.privacyRevision);
@@ -79,6 +82,53 @@ it('encrypts denied PII for an existing conversation and sends only the filtered
     req,
     res,
     expect.objectContaining({ shouldSaveMessage: true }),
+  );
+});
+
+it('does not advertise an original on a denied first turn that is never persisted', async () => {
+  const req = {
+    method: 'POST',
+    path: '/',
+    originalUrl: '/api/agents/chat',
+    config: {
+      filters: {
+        messages: {
+          pii: {
+            action: 'redact',
+            fields: ['text'],
+            starterPatterns: [],
+            customPatterns: [
+              { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            ],
+          },
+        },
+      },
+    },
+    user: { id: 'owner', tenantId: 'tenant-a' },
+    body: { text: `Email ${original}`, clientRequestId: uuidv4() },
+  };
+  const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+  const next = jest.fn();
+  createPrivateTextIngress({
+    getFilters: () => req.config.filters,
+    getLegacyPii: () => undefined,
+    getKey: () => 'ab'.repeat(32),
+  })(req, res, next);
+  expect(next).toHaveBeenCalledTimes(1);
+  await denyRequest(req, res, { type: 'ban' });
+
+  expect(mockSaveMessage).not.toHaveBeenCalled();
+  expect(mockSendEvent).toHaveBeenCalledTimes(1);
+  expect(mockSendEvent.mock.calls[0][1].message).toMatchObject({
+    text: expect.stringMatching(/^Email \[EMAIL_1_[a-f0-9]{32}\]$/),
+    isCreatedByUser: true,
+  });
+  expect(mockSendEvent.mock.calls[0][1].message).not.toHaveProperty('privacyRevision');
+  expect(JSON.stringify(mockSendEvent.mock.calls)).not.toContain(original);
+  expect(mockSendError).toHaveBeenCalledWith(
+    req,
+    res,
+    expect.objectContaining({ shouldSaveMessage: false }),
   );
 });
 

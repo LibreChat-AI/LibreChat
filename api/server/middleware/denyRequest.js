@@ -37,18 +37,22 @@ const denyRequest = async (req, res, errorMessage) => {
 
   const { messageId, conversationId: _convoId, parentMessageId, text } = req.body;
   const conversationId = _convoId ?? crypto.randomUUID();
+  const shouldSaveMessage = Boolean(
+    _convoId && parentMessageId && parentMessageId !== Constants.NO_PARENT,
+  );
 
-  const userMessage = stampPrivateTextMessage(req, {
-    sender: 'User',
-    messageId: messageId ?? crypto.randomUUID(),
-    parentMessageId,
-    conversationId,
-    isCreatedByUser: true,
-    text,
-  });
-  sendEvent(res, { message: userMessage, created: true });
-
-  const shouldSaveMessage = _convoId && parentMessageId && parentMessageId !== Constants.NO_PARENT;
+  const userMessage = stampPrivateTextMessage(
+    req,
+    {
+      sender: 'User',
+      messageId: messageId ?? crypto.randomUUID(),
+      parentMessageId,
+      conversationId,
+      isCreatedByUser: true,
+      text,
+    },
+    shouldSaveMessage,
+  );
 
   if (shouldSaveMessage) {
     await savePrivateTextMessage(
@@ -65,6 +69,7 @@ const denyRequest = async (req, res, errorMessage) => {
     );
   }
 
+  sendEvent(res, { message: userMessage, created: true });
   return await sendError(req, res, {
     sender: getResponseSender(req.body),
     messageId: crypto.randomUUID(),

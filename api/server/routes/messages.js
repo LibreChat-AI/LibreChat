@@ -28,6 +28,7 @@ const {
   isContentFilterError,
   withoutTraceRefs,
   createPrivateTextView,
+  stripPrivateMessageFields,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const { findAllArtifacts, replaceArtifactContent } = require('~/server/services/Artifacts/update');
@@ -199,9 +200,8 @@ router.get('/', async (req, res) => {
       for (const message of cleanedMessages) {
         const convo = result.convoMap[message.conversationId];
         const dbMessage = dbMessageMap[message.messageId];
-        /** Search hydrates every schema field; server-private state never leaves. */
-        const publicHit = { ...message };
-        delete publicHit.contextMeta;
+        /** Search may hydrate server-private fields; only a public projection leaves. */
+        const publicHit = stripPrivateMessageFields(message);
 
         activeMessages.push({
           ...publicHit,
@@ -243,9 +243,7 @@ router.get('/', async (req, res) => {
  * @returns {TMessage}
  */
 function toClientMessage(message) {
-  const clientMessage = { ...message };
-  delete clientMessage.contextMeta;
-  return clientMessage;
+  return stripPrivateMessageFields(message);
 }
 
 router.post('/branch', configMiddleware, async (req, res) => {

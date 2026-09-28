@@ -77,6 +77,42 @@ it('renders originals without mutating canonical model/export input, and reloads
   expect(load).toHaveBeenCalledTimes(2);
 });
 
+it('loads the acknowledged first-turn owner text before navigating away from /new', async () => {
+  const firstTurn = {
+    ...canonical,
+    conversationId: '11111111-1111-4111-8111-111111111111',
+  };
+  load.mockResolvedValue({ messages: [{ ...original, canonicalText: firstTurn.text }] });
+  const view = render(<View conversationId="new" messages={[firstTurn]} isSubmitting />);
+  expect(await screen.findByText(original.text)).toBeInTheDocument();
+  expect(load).toHaveBeenCalledWith(firstTurn.conversationId, ['message']);
+  expect(load).not.toHaveBeenCalledWith('new', expect.anything());
+
+  view.rerender(
+    <View conversationId={firstTurn.conversationId} messages={[firstTurn]} isSubmitting />,
+  );
+  expect(screen.getByText(original.text)).toBeInTheDocument();
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+it('never mixes protected rows from stale conversations into a first-turn owner read', async () => {
+  const old = {
+    ...canonical,
+    messageId: 'old-message',
+    conversationId: '11111111-1111-4111-8111-111111111111',
+  };
+  const fresh = {
+    ...canonical,
+    messageId: 'fresh-message',
+    conversationId: '22222222-2222-4222-8222-222222222222',
+  };
+  load.mockResolvedValue({ messages: [{ ...original, messageId: 'fresh-message' }] });
+  render(<View conversationId="new" messages={[old, fresh]} displayIndex={1} isSubmitting />);
+  expect(await screen.findByText(original.text)).toBeInTheDocument();
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(load).toHaveBeenCalledWith(fresh.conversationId, ['fresh-message']);
+});
+
 it('does not fetch originals for an ordinary transcript', () => {
   const plain = { ...canonical, privacyRevision: undefined };
   render(

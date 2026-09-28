@@ -44,10 +44,19 @@ interface OwnerTextProviderProps {
 }
 
 export function OwnerTextProvider(props: OwnerTextProviderProps) {
-  if (!props.messages?.some((message) => message.isCreatedByUser && message.privacyRevision)) {
+  const protectedMessage = props.messages?.findLast(
+    (message) => message.isCreatedByUser && message.privacyRevision && message.conversationId,
+  );
+  if (protectedMessage == null) {
     return <>{props.children}</>;
   }
-  return <ActiveOwnerTextProvider {...props} />;
+  const conversationId =
+    props.conversationId === 'new' &&
+    typeof protectedMessage.conversationId === 'string' &&
+    protectedMessage.conversationId !== 'new'
+      ? protectedMessage.conversationId
+      : props.conversationId;
+  return <ActiveOwnerTextProvider {...props} conversationId={conversationId} />;
 }
 
 function ActiveOwnerTextProvider({
@@ -61,11 +70,16 @@ function ActiveOwnerTextProvider({
     () =>
       JSON.stringify(
         (messages ?? [])
-          .filter((message) => message.isCreatedByUser && message.privacyRevision)
+          .filter(
+            (message) =>
+              message.isCreatedByUser &&
+              message.privacyRevision &&
+              message.conversationId === conversationId,
+          )
           .map((message) => [message.messageId, message.privacyRevision, message.text])
           .sort(),
       ),
-    [messages],
+    [messages, conversationId],
   );
   const scope = JSON.stringify([user?.id, user?.tenantId, conversationId, selection]);
   const [state, setState] = useState<OwnerTextState>(empty);

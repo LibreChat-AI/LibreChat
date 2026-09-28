@@ -245,16 +245,28 @@ export function createPrivateTextIngress(options: {
   };
 }
 
-/** Only safe metadata joins the user-message projection sent to events and ordinary readers. */
+/** Only a user turn that will persist its sidecar advertises an owner-readable revision. */
 export function stampPrivateTextMessage<T extends PrivateTextMessage>(
   req: object | undefined,
   message: T,
+  willPersist = true,
 ): T & { privacyRevision?: string } {
   const capture = req == null ? undefined : captures.get(req);
-  if (capture != null && message.isCreatedByUser === true && message.text === capture.text) {
+  if (
+    willPersist &&
+    capture != null &&
+    message.isCreatedByUser === true &&
+    message.text === capture.text
+  ) {
     message.privacyRevision = capture.revision;
   }
   return message;
+}
+
+/** Only the request that ran ingress may skip its exact, already-inspected submitted text. */
+export function getPreinspectedPrivateText(req: Request): string | undefined {
+  const capture = captures.get(req);
+  return capture != null && req.body?.text === capture.text ? capture.text : undefined;
 }
 
 /** The preliminary job record precedes the created event and may be read by Stop. */

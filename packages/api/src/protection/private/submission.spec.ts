@@ -10,8 +10,10 @@ import {
   saveAbortedUserMessage,
   isPreDenialTextSubmission,
   isPrivateTextChatSubmission,
+  getPreinspectedPrivateText,
   privateTextBinding,
 } from './submission';
+import { createMessageFilterPii } from '../../middleware/messageFilterPii';
 import { createPrivateTextCipher } from './crypto';
 import { createPrivateTextView } from './view';
 
@@ -198,6 +200,61 @@ describe('private text submission boundary', () => {
     expect(req.body.text).toMatch(/^Email \[EMAIL_1_[a-f0-9]{32}\]$/);
     expect(message).toHaveProperty('privacyRevision');
     expect(JSON.stringify({ req, message })).not.toContain('alice@example.com');
+  });
+
+  it('skips only the verified, preinspected text in the second PII pass', async () => {
+    const patterns: FiltersConfig = {
+      messages: {
+        pii: {
+          action: 'redact',
+          fields: ['text'],
+          starterPatterns: [],
+          customPatterns: [
+            { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            { id: 'revision', label: 'Credential', regex: '[a-f0-9]{32}', category: 'credential' },
+          ],
+        },
+      },
+    };
+    const req = {
+      path: '/',
+      user: { id: 'owner', tenantId: 'tenant-a' },
+      body: {
+        text: original,
+        clientRequestId: 'hex-rule-1',
+        input: undefined as string | undefined,
+      },
+    } as unknown as Request;
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const ingressNext = jest.fn();
+    createPrivateTextIngress({
+      getFilters: () => patterns,
+      getLegacyPii: () => undefined,
+      getKey: () => key,
+    })(req, res as unknown as Response, ingressNext);
+    expect(ingressNext).toHaveBeenCalledTimes(1);
+    expect(req.body.text).toMatch(/\[EMAIL_1_[a-f0-9]{32}\]/);
+    expect(getPreinspectedPrivateText(req)).toBe(req.body.text);
+
+    const secondPass = createMessageFilterPii({
+      getConfig: () => undefined,
+      getFilters: () => patterns,
+      getPreinspectedText: getPreinspectedPrivateText,
+    });
+    const next = jest.fn();
+    await secondPass(req, res as unknown as Response, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+
+    req.body.input = original;
+    await secondPass(req, res as unknown as Response, next);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(next).toHaveBeenCalledTimes(1);
+    req.body.input = undefined;
+    req.body.text = original;
+    expect(getPreinspectedPrivateText(req)).toBeUndefined();
+    await secondPass(req, res as unknown as Response, next);
+    expect(res.status).toHaveBeenCalledTimes(2);
   });
 
   it('uses stable retry revisions and distinct namespaces for different turns or originals', () => {

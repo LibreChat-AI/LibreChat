@@ -4,6 +4,14 @@ import type { RequestHandler, Request } from 'express';
 import { createPrivateTextCipher } from './crypto';
 import { privateTextBinding } from './submission';
 
+/** Defense in depth for search hits and mutation responses that bypass normal Mongo projections. */
+export function stripPrivateMessageFields<
+  T extends { privateText?: unknown; contextMeta?: unknown },
+>(message: T): Omit<T, 'privateText' | 'contextMeta'> {
+  const { privateText: _privateText, contextMeta: _contextMeta, ...publicMessage } = message;
+  return publicMessage;
+}
+
 const inputSchema = z
   .object({
     messageIds: z.array(z.string().min(1).max(256)).min(1).max(50),
