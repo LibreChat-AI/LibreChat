@@ -13,6 +13,7 @@ import {
 import { cacheConfig } from '~/cache/cacheConfig';
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     warn: jest.fn(),
   },

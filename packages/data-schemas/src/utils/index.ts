@@ -8,5 +8,6 @@ export * from './objectId';
 export * from './yaml';
 export * from './stripUIResourceMarkers';
 export * from './fading';
+export * from './eviction';
 export { buildIndexWithRetry, createIndexesWithRetry, isIndexBuildInProgress } from './retry';
 export type { IndexBuildOptions } from './retry';

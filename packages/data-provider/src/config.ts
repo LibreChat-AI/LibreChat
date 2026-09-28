@@ -4144,6 +4144,9 @@ export enum CacheKeys {
 
 export const AUTH_USER_DOC_BY_ID_PREFIX = 'auth-user-doc-byid';
 
+/** Lifetime of a cached auth user document, and so the longest a stale one can be served. */
+export const AUTH_USER_DOC_CACHE_TTL_MS = 5000;
+
 /**
  * Enum for violation types, used to identify, log, and cache violations.
  */

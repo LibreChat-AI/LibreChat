@@ -1,14 +1,16 @@
 import mongoose, { FilterQuery } from 'mongoose';
 import {
-  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_CACHE_TTL_MS,
   CacheKeys,
   type RefillIntervalUnit,
   type StatefulCodeEnvironment,
 } from 'librechat-data-provider';
 import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
 import type { CacheStore } from '~/types';
+import { evictAuthUserDocs } from '~/utils/eviction';
 import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
+import logger from '~/config/winston';
 
 /** Default JWT session expiry: 15 minutes in milliseconds */
 export const DEFAULT_SESSION_EXPIRY: number = 1000 * 60 * 15;
@@ -19,7 +21,11 @@ const MAX_SUBAGENT_ADMISSION_FENCES = 32;
 
 interface UserMethodDeps {
   getCache?: (key: string) => CacheStore | undefined;
+  /** Resolves after the given milliseconds; tests pass one that need not wait out the cache TTL. */
+  delay?: (ms: number) => Promise<void>;
 }
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isAuthUserDocCacheEnabled(): boolean {
   return process.env.AUTH_USER_CACHE_MODE === 'on';
@@ -329,8 +335,25 @@ export function createUserMethods(
         runValidators: true,
       },
     ).lean<IUser>();
-    await invalidateAuthUserDocCache(userId);
+    const evicted = await invalidateAuthUserDocCache(userId);
+    if (updated && !evicted && updateData.credentialsChangedAt != null) {
+      await waitOutStaleAuthUserDocs(userId);
+    }
     return updated;
+  }
+
+  /**
+   * A cached document without the new credentialsChangedAt keeps pre-change access tokens
+   * verifying until it expires. When eviction could not remove it, the credential change is
+   * reported only after the cache TTL, so no document written before the eviction attempt
+   * can still be served once the caller confirms the change.
+   */
+  async function waitOutStaleAuthUserDocs(userId: string): Promise<void> {
+    logger.warn(
+      '[updateUser] Credential change committed but cached auth documents were not evicted; waiting for them to expire',
+      { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS },
+    );
+    await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS);
   }
 
   /** Atomically updates a SAML user only when the incoming identity can claim the document. */
@@ -358,26 +381,17 @@ export function createUserMethods(
     return updated;
   }
 
-  async function invalidateAuthUserDocCache(userId: string): Promise<void> {
+  /** Resolves false only when a cached document for the user may still be served. */
+  async function invalidateAuthUserDocCache(userId: string): Promise<boolean> {
     if (!isAuthUserDocCacheEnabled()) {
-      return;
+      return true;
     }
     const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
-    if (!cache?.get || !cache?.delete) {
-      return;
+    const remove = cache?.delete?.bind(cache);
+    if (!cache?.get || !remove) {
+      return true;
     }
-    try {
-      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
-      const cachedKeys = await cache.get(indexKey);
-      if (Array.isArray(cachedKeys)) {
-        await Promise.all(
-          cachedKeys.map((key) => (typeof key === 'string' ? cache.delete?.(key) : undefined)),
-        );
-      }
-      await cache.delete(indexKey);
-    } catch {
-      // Cache invalidation must not make a user update fail.
-    }
+    return evictAuthUserDocs({ get: (key) => cache.get(key), delete: remove }, { userId });
   }
 
   /**

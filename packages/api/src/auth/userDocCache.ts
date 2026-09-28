@@ -1,11 +1,15 @@
 import { createHash } from 'crypto';
-import { logger } from '@librechat/data-schemas';
-import { AUTH_USER_DOC_BY_ID_PREFIX, CacheKeys } from 'librechat-data-provider';
+import { logger, evictAuthUserDocs } from '@librechat/data-schemas';
+import {
+  CacheKeys,
+  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_CACHE_TTL_MS,
+} from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import { cacheConfig } from '~/cache/cacheConfig';
 
 const AUTH_USER_DOC_CACHE_VERSION = 2;
-export const AUTH_USER_DOC_CACHE_TTL_MS = 5000;
+export { AUTH_USER_DOC_CACHE_TTL_MS };
 
 export type AuthUserDocCacheMode = 'off' | 'on';
 
@@ -198,25 +202,5 @@ export async function invalidateCachedAuthUserDoc(
   if (!store) {
     return;
   }
-  try {
-    const keys = new Set<string>();
-    if (input.cacheKey) {
-      keys.add(input.cacheKey);
-    }
-    if (input.userId) {
-      const indexKey = buildAuthUserDocReverseIndexKey(input.userId);
-      const indexed = await store.get<string[]>(indexKey);
-      if (Array.isArray(indexed)) {
-        for (const key of indexed) {
-          keys.add(key);
-        }
-      }
-      await store.delete(indexKey);
-    }
-    await Promise.all([...keys].map((key) => store.delete(key)));
-  } catch (error) {
-    logger.warn('[authUserDocCache] Cache invalidation failed', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+  await evictAuthUserDocs(store, input);
 }

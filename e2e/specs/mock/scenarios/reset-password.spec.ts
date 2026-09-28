@@ -4,7 +4,11 @@ import os from 'os';
 import { Keyv } from 'keyv';
 import KeyvRedis from '@keyv/redis';
 import { expect, test } from '@playwright/test';
-import { AUTH_USER_DOC_BY_ID_PREFIX, CacheKeys } from 'librechat-data-provider';
+import {
+  CacheKeys,
+  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_CACHE_TTL_MS,
+} from 'librechat-data-provider';
 import { spawn } from 'node:child_process';
 import { randomInt, randomUUID } from 'node:crypto';
 import { withMongo, seedPasskey, deleteUserByEmail } from '../db';
@@ -40,7 +44,13 @@ function runResetCli(
   email: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  /** Milliseconds between confirming the new password and the CLI reporting success. */
+  reportDelayMs?: number;
+}> {
   const child = spawn(process.execPath, [path.join(REPO_ROOT, 'config/reset-password.js')], {
     cwd,
     env: {
@@ -59,14 +69,20 @@ function runResetCli(
     ['Confirm new password: ', NEW_PASSWORD],
   ];
   let stdout = '';
+  let confirmedAt: number | undefined;
+  let reportedAt: number | undefined;
   child.stdout?.on('data', (chunk: Buffer) => {
     stdout += chunk.toString();
     answers.forEach((answer, index) => {
       if (answer !== null && stdout.includes(answer[0])) {
         child.stdin?.write(`${answer[1]}\n`);
         answers[index] = null;
+        confirmedAt = Date.now();
       }
     });
+    if (reportedAt === undefined && stdout.includes('Password successfully reset!')) {
+      reportedAt = Date.now();
+    }
   });
   let stderr = '';
   child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
@@ -82,7 +98,11 @@ function runResetCli(
     child.on('close', (code) => {
       clearTimeout(timer);
       child.stdin?.end();
-      resolve({ code, stdout, stderr });
+      const reportDelayMs =
+        confirmedAt !== undefined && reportedAt !== undefined
+          ? reportedAt - confirmedAt
+          : undefined;
+      resolve({ code, stdout, stderr, reportDelayMs });
     });
   });
 }
@@ -230,4 +250,85 @@ test.describe('CLI password reset', () => {
       }
     });
   }
+
+  test('reports the reset only after unevictable cached credentials expire @scenario:cli-reset-outlasts-failed-cache-eviction', async ({
+    playwright,
+    baseURL,
+  }) => {
+    test.setTimeout(90_000);
+    const request = await playwright.request.newContext({
+      baseURL,
+      extraHTTPHeaders: {
+        'X-Forwarded-For': `127.${randomInt(1, 255)}.${randomInt(1, 255)}.${randomInt(1, 255)}`,
+      },
+    });
+    const email = `cli-evict-${randomUUID().slice(0, 8)}@example.com`;
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-reset-'));
+    const redisUri = process.env.REDIS_URI ?? 'redis://127.0.0.1:6379';
+    const prefix = `cli-evict-${randomUUID()}`;
+    const adapter = new KeyvRedis(redisUri, { throwOnErrors: true, connectionTimeout: 5000 });
+    const cache = new Keyv(adapter, { namespace: CacheKeys.AUTH_USER_DOC });
+    adapter.namespace = prefix;
+    adapter.keyPrefixSeparator = '::';
+    const keys: string[] = [];
+    try {
+      const register = await request.post('/api/auth/register', {
+        data: { email, name: 'CLI Evict', password: PASSWORD, confirm_password: PASSWORD },
+      });
+      expect(register.ok()).toBeTruthy();
+      const login = await request.post('/api/auth/login', { data: { email, password: PASSWORD } });
+      expect(login.ok()).toBeTruthy();
+      const { token, user } = (await login.json()) as { token: string; user: { _id: string } };
+      await seedPasskey(email, randomUUID(), 'Eviction regression');
+
+      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id}`;
+      const controlKey = 'auth-user-doc:another-user';
+      keys.push(indexKey, controlKey);
+      await cache.set(controlKey, { credentialsChangedAt: null }, 120_000);
+      /** A hash where the index string belongs makes the CLI's GET fail with WRONGTYPE. */
+      const client = await adapter.getClient();
+      await client.hSet(`${prefix}::${CacheKeys.AUTH_USER_DOC}:${indexKey}`, 'unreadable', '1');
+      await client.pExpire(`${prefix}::${CacheKeys.AUTH_USER_DOC}:${indexKey}`, 120_000);
+
+      const env = { ...process.env };
+      Object.assign(env, {
+        USE_REDIS: 'true',
+        USE_REDIS_CLUSTER: 'false',
+        REDIS_URI: redisUri,
+        REDIS_KEY_PREFIX: prefix,
+        REDIS_KEY_PREFIX_VAR: '',
+        AUTH_USER_CACHE_MODE: 'on',
+        FORCED_IN_MEMORY_CACHE_NAMESPACES: '',
+      });
+
+      const cli = await runResetCli(email, cwd, env);
+      expect(cli.code, cli.stderr.slice(-400)).toBe(0);
+      expect(cli.stdout).toContain('Password successfully reset!');
+      expect(cli.reportDelayMs).toBeGreaterThanOrEqual(AUTH_USER_DOC_CACHE_TTL_MS);
+      expect(await cache.get(controlKey)).toEqual({ credentialsChangedAt: null });
+      await withMongo(async (db) => {
+        const resetUser = await db.collection('users').findOne({ email });
+        expect(resetUser?.credentialsChangedAt).toBeTruthy();
+        expect(await db.collection('passkeys').countDocuments({ user: resetUser!._id })).toBe(0);
+        expect(await db.collection('sessions').countDocuments({ user: resetUser!._id })).toBe(0);
+      });
+      const rejected = await request.get('/api/user', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(rejected.status()).toBe(401);
+      const newLogin = await request.post('/api/auth/login', {
+        data: { email, password: NEW_PASSWORD },
+      });
+      expect(newLogin.ok()).toBeTruthy();
+    } finally {
+      try {
+        await Promise.all(keys.map((key) => cache.delete(key)));
+      } finally {
+        await cache.disconnect();
+        await request.dispose();
+        fs.rmSync(cwd, { recursive: true, force: true });
+        await deleteUserByEmail(email);
+      }
+    }
+  });
 });

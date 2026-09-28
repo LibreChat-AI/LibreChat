@@ -85,9 +85,17 @@ async function clearRedisNamespace(namespace: string): Promise<void> {
  * @param namespace - The cache namespace.
  * @param ttl - Time to live for cache entries.
  * @param fallbackStore - Optional fallback store if Redis is not used.
+ * @param options.throwOnErrors - Rejects failed Redis operations instead of resolving them as a
+ *   miss or a no-op delete, for callers that must know an eviction did not happen. The first
+ *   caller's value wins for a shared namespace and TTL.
  * @returns Cache instance.
  */
-export const standardCache = (namespace: string, ttl?: number, fallbackStore?: object): Keyv => {
+export const standardCache = (
+  namespace: string,
+  ttl?: number,
+  fallbackStore?: object,
+  options: { throwOnErrors?: boolean } = {},
+): Keyv => {
   if (keyvRedisClient && !cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES?.includes(namespace)) {
     const byTtl = redisCacheMap.get(namespace);
     const existing = byTtl?.get(ttl);
@@ -95,8 +103,9 @@ export const standardCache = (namespace: string, ttl?: number, fallbackStore?: o
       return existing;
     }
     try {
-      const keyvRedis = new KeyvRedis(keyvRedisClient);
-      const cache = new Keyv(keyvRedis, { namespace, ttl });
+      const { throwOnErrors = false } = options;
+      const keyvRedis = new KeyvRedis(keyvRedisClient, { throwOnErrors });
+      const cache = new Keyv(keyvRedis, { namespace, ttl, throwOnErrors });
       keyvRedis.namespace = cacheConfig.REDIS_KEY_PREFIX;
       keyvRedis.keyPrefixSeparator = cacheConfig.GLOBAL_PREFIX_SEPARATOR;
 
