@@ -889,6 +889,17 @@ describe('mergeConfigOverrides', () => {
   });
 });
 
+describe('mergeConfigOverrides: filtered MCP servers', () => {
+  it('does not let a filtered process-backed server complete a later partial', () => {
+    const merged = mergeConfigOverrides({} as AppConfig, [
+      fakeConfig({ mcpServers: { injected: { type: 'stdio', command: 'node', args: ['x'] } } }, 10),
+      fakeConfig({ mcpServers: { injected: { title: 'Injected' } } }, 20, undefined, 'other'),
+    ]) as unknown as { mcpConfig?: Record<string, unknown> };
+
+    expect(merged.mcpConfig?.injected).toBeUndefined();
+  });
+});
+
 describe('mergeConfigOverrides: invalid stored overrides', () => {
   const base = {
     interfaceConfig: { contextCost: true, customWelcome: 'base' },
@@ -1384,5 +1395,29 @@ describe('getConfigFieldIssues', () => {
         (issue) => issue.path,
       ),
     ).toEqual(['endpoints.custom']);
+  });
+
+  it('rejects an indexed write into a stored merged-by-name array', () => {
+    const base = {
+      endpoints: {
+        custom: [{ name: 'a', apiKey: 'k', baseURL: 'https://a', models: { default: ['m'] } }],
+      },
+    } as unknown as Partial<TCustomConfig>;
+    const stored = { overrides: { endpoints: { custom: [{ name: 'a', baseURL: 'https://o' }] } } };
+
+    expect(getConfigFieldIssues({ 'endpoints.custom.0.name': 'b' }, base, stored)).toEqual([
+      {
+        path: 'endpoints.custom',
+        segments: ['endpoints', 'custom'],
+        code: 'indexed_merge_key_write',
+      },
+    ]);
+    expect(
+      getConfigFieldIssues(
+        { 'endpoints.custom': [{ name: 'a', baseURL: 'https://p' }] },
+        base,
+        stored,
+      ),
+    ).toEqual([]);
   });
 });

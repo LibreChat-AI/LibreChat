@@ -249,7 +249,7 @@ export type ConfigOverrideIssue = {
   segments: string[];
   /**
    * A stable, machine-readable reason: a zod issue code (`invalid_type`, `custom`, ...),
-   * `missing_merge_key`, or `invalid_document`. Schema messages are not carried because
+   * `missing_merge_key`, `indexed_merge_key_write`, or `invalid_document`. Schema messages are not carried because
    * they can echo the submitted values.
    */
   code: string;
@@ -495,6 +495,22 @@ export function getConfigFieldIssues(
     (current, [fieldPath, value]) => setPath(current, fieldPath.split('.'), value),
     storedOverrides,
   );
+  /**
+   * An item of a merged-by-key array is identified by its key, not its position: an indexed
+   * write can rename the stored item, which the runtime merge then treats as a new one.
+   */
+  const indexed = Object.keys(ARRAY_MERGE_KEYS).flatMap((arrayPath) => {
+    const arraySegments = arrayPath.split('.');
+    return written.some(
+      (segments) =>
+        segments.length > arraySegments.length && isRelatedPath(segments, arraySegments),
+    )
+      ? [toIssue(arraySegments, 'indexed_merge_key_write')]
+      : [];
+  });
+  if (indexed.length > 0) {
+    return indexed;
+  }
   const existing = new Set(
     getConfigOverrideIssues(storedOverrides, effectiveBase).map((issue) => issue.path),
   );
@@ -663,6 +679,8 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
             value,
             (merged as unknown as AnyObject)[mappedKey],
           );
+          /** A server the filter removed must not complete a later layer's partial of it. */
+          applied[key] = remapped[mappedKey];
         } else if (
           key === 'interface' &&
           value != null &&
