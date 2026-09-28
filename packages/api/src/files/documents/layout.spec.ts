@@ -147,6 +147,8 @@ async function renderPptxLayout(
                   slide.className = 'pptx-preview-slide-wrapper';
                   slide.style.width = `${initOptions.width}px`;
                   slide.style.height = `${initOptions.width * slideAspectRatio}px`;
+                  slide.style.position = 'relative';
+                  slide.style.margin = '0px auto 10px';
                   if (!emptyWrappers) {
                     slide.textContent = `Slide ${index + 1}`;
                   }
@@ -452,5 +454,32 @@ describe('pptx CDN bootstrap — spacing between stacked slide blocks', () => {
     expect(wraps).toHaveLength(3);
     expect(window.getComputedStyle(wraps[1]).marginTop).toBe('16px');
     expect(window.getComputedStyle(wraps[2]).marginTop).toBe('16px');
+  });
+});
+
+describe('pptx CDN bootstrap — pins each slide to its blocks left edge', () => {
+  it.each([1480, 1200])(
+    'clears the librarys auto-centering margin on a %ipx panel',
+    async (renderSlotWidth) => {
+      const { document } = await renderPptxLayout(2, renderSlotWidth);
+      const wraps = Array.from(document.querySelectorAll('.lc-slide-wrap')) as HTMLElement[];
+      expect(wraps).toHaveLength(2);
+      wraps.forEach((wrap) => {
+        const slide = wrap.querySelector('.pptx-preview-slide-wrapper') as HTMLElement;
+        expect(slide.style.marginLeft).toBe('0px');
+      });
+    },
+  );
+
+  test('stays pinned after a live resize from 768 to 1480', async () => {
+    const { document, window, setRenderSlotWidth } = await renderPptxLayout(2, 768);
+    setRenderSlotWidth(1480);
+    window.dispatchEvent(new window.Event('resize'));
+    const wraps = Array.from(document.querySelectorAll('.lc-slide-wrap')) as HTMLElement[];
+    expect(wraps).toHaveLength(2);
+    wraps.forEach((wrap) => {
+      const slide = wrap.querySelector('.pptx-preview-slide-wrapper') as HTMLElement;
+      expect(slide.style.marginLeft).toBe('0px');
+    });
   });
 });

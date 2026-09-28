@@ -1325,6 +1325,13 @@ ${PPTX_SLIDE_LIST_CSS}
         wrap.className = 'lc-slide-wrap';
         wrap.style.width = (nativeW * scale) + 'px';
         wrap.style.height = (nativeH * scale) + 'px';
+        /* pptx-preview sets an inline auto-centering margin on every
+         * slide. That inline rule beats our stylesheet, so above 960px
+         * content width the auto margins push the slide right before the
+         * scale is applied, shifting it out of this block and clipping
+         * it against the wraps overflow. Clear it so the slide pins to
+         * the blocks own left edge. */
+        slide.style.margin = '0';
         slide.style.transformOrigin = 'top left';
         slide.style.transform = 'scale(' + scale + ')';
         slide.parentNode.insertBefore(wrap, slide);
