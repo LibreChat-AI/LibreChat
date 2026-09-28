@@ -45,6 +45,8 @@ export interface PasswordResetControllerDeps {
   ) => Promise<{ message: string } | Error>;
   deleteAllUserSessions: (query: { userId: string }) => Promise<{ deletedCount?: number }>;
   deletePasskeysByUser: (userId: string) => Promise<{ deletedCount?: number }>;
+  /** Resolves once no cached auth document from before the reset can be served. */
+  awaitAuthUserDocEviction: (userId: string) => Promise<void>;
 }
 
 export type PasswordResetOutcome =
@@ -81,6 +83,8 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
           passkeys.reason,
         );
       }
+      /** After the revocations, so nothing can mint a post-stamp token while it waits. */
+      await deps.awaitAuthUserDocEviction(userId);
 
       return res.status(200).json(result);
     } catch (error) {

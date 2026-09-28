@@ -88,6 +88,8 @@ const resetPassword = async () => {
     const { deletedCount } = await Passkey.deleteMany({ user: user._id });
     /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
     await Session.deleteMany({ user: user._id });
+    /** Confirmed only once no cached pre-reset document can still authorize an old token. */
+    await methods.awaitAuthUserDocEviction(user._id.toString());
 
     console.log('Password successfully reset!');
     if (deletedCount > 0) {

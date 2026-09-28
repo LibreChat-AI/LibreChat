@@ -61,6 +61,7 @@ export function createUserMethods(
     expectedState?: FilterQuery<IUser>,
     options?: { preserveExpiresAt?: boolean },
   ) => Promise<IUser | null>;
+  awaitAuthUserDocEviction: (userId: string) => Promise<void>;
   claimSamlIdentity: (
     userId: string,
     samlId: string,
@@ -335,22 +336,23 @@ export function createUserMethods(
         runValidators: true,
       },
     ).lean<IUser>();
-    const evicted = await invalidateAuthUserDocCache(userId);
-    if (updated && !evicted && updateData.credentialsChangedAt != null) {
-      await waitOutStaleAuthUserDocs(userId);
-    }
+    await invalidateAuthUserDocCache(userId);
     return updated;
   }
 
   /**
-   * A cached document without the new credentialsChangedAt keeps pre-change access tokens
-   * verifying until it expires. When eviction could not remove it, the credential change is
-   * reported only after the cache TTL, so no document written before the eviction attempt
-   * can still be served once the caller confirms the change.
+   * The barrier a credential change passes before it is confirmed. A cached document without
+   * the new credentialsChangedAt keeps pre-change access tokens verifying until it expires, so
+   * eviction is retried and, when it still cannot remove every document, this resolves only
+   * after the cache TTL. Callers revoke sessions and passkeys first: during the wait those
+   * could otherwise mint access tokens issued after the stamp.
    */
-  async function waitOutStaleAuthUserDocs(userId: string): Promise<void> {
+  async function awaitAuthUserDocEviction(userId: string): Promise<void> {
+    if (await invalidateAuthUserDocCache(userId)) {
+      return;
+    }
     logger.warn(
-      '[updateUser] Credential change committed but cached auth documents were not evicted; waiting for them to expire',
+      '[awaitAuthUserDocEviction] Cached auth documents were not evicted after a credential change; waiting for them to expire',
       { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS },
     );
     await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS);
@@ -877,6 +879,7 @@ export function createUserMethods(
     countUsers,
     createUser,
     updateUser,
+    awaitAuthUserDocEviction,
     claimSamlIdentity,
     acceptTerms,
     searchUsers,

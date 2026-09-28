@@ -35,7 +35,7 @@ afterEach(() => {
 });
 
 describe('credential change with a failing auth cache', () => {
-  it('rejects an old OpenID access token once the change is reported, even when the reverse index cannot be read', async () => {
+  it('rejects an old OpenID access token once the credential barrier passes, even when the reverse index cannot be read', async () => {
     process.env.AUTH_USER_CACHE_MODE = 'on';
     const store = new Keyv();
     /** The index read fails the way a throwing Redis store rejects a WRONGTYPE reply. */
@@ -69,11 +69,12 @@ describe('credential change with a failing auth cache', () => {
       isTokenIssuedBeforeCredentialChange(oldToken, await getCachedAuthUserDoc(store, cacheKey)),
     ).toBe(false);
 
-    const startedAt = Date.now();
     const updated = await methods.updateUser(userId, {
       password: 'new-password-hash',
       credentialsChangedAt: new Date(),
     });
+    const startedAt = Date.now();
+    await methods.awaitAuthUserDocEviction(userId);
 
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(AUTH_USER_DOC_CACHE_TTL_MS);
     expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);

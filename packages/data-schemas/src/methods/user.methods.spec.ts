@@ -519,43 +519,57 @@ describe('User Methods - Database Tests', () => {
       test.each<[string, { indexRead?: boolean; deleteKey?: string }]>([
         ['the reverse index read fails', { indexRead: true }],
         ['an indexed document delete fails', { deleteKey: 'auth-cache-key-a' }],
-      ])(
-        'waits out the cache TTL before confirming a credential change when %s',
-        async (_label, failing) => {
-          const userId = await createCachedUser();
-          const cache = makeFailingCache(failing);
-          const delay = jest.fn().mockResolvedValue(undefined);
-          const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+      ])('waits out the cache TTL at the credential barrier when %s', async (_label, failing) => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache(failing);
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
 
-          const updated = await methodsWithCache.updateUser(userId, {
-            password: 'new-password-hash',
-            credentialsChangedAt: new Date(),
-          });
+        const updated = await methodsWithCache.updateUser(userId, {
+          password: 'new-password-hash',
+          credentialsChangedAt: new Date(),
+        });
+        expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
+        expect(delay).not.toHaveBeenCalled();
 
-          expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
-          expect(delay).toHaveBeenCalledTimes(1);
-          expect(delay).toHaveBeenCalledWith(AUTH_USER_DOC_CACHE_TTL_MS);
-          expect(cache.delete).toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
-          if (!failing.indexRead) {
-            expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
-          }
-        },
-      );
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
 
-      test('confirms a credential change at once when only the index delete fails', async () => {
+        expect(delay).toHaveBeenCalledTimes(1);
+        expect(delay).toHaveBeenCalledWith(AUTH_USER_DOC_CACHE_TTL_MS);
+        expect(cache.delete).toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
+        if (!failing.indexRead) {
+          expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
+        }
+      });
+
+      test('passes the barrier at once when only the index delete fails', async () => {
         const userId = await createCachedUser();
         const cache = makeFailingCache({ deleteKey: `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}` });
         const delay = jest.fn().mockResolvedValue(undefined);
         const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
 
-        await methodsWithCache.updateUser(userId, { credentialsChangedAt: new Date() });
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
 
         expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
         expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
         expect(delay).not.toHaveBeenCalled();
       });
 
-      test('keeps other updates best effort', async () => {
+      test('passes the barrier at once when a retried eviction succeeds', async () => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache({ indexRead: true });
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+        await methodsWithCache.updateUser(userId, { credentialsChangedAt: new Date() });
+        cache.get.mockResolvedValue(cachedKeys);
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+        expect(delay).not.toHaveBeenCalled();
+      });
+
+      test('keeps updates themselves best effort', async () => {
         const userId = await createCachedUser();
         const delay = jest.fn().mockResolvedValue(undefined);
         const methodsWithCache = createUserMethods(mongoose, {
@@ -566,23 +580,6 @@ describe('User Methods - Database Tests', () => {
         const updated = await methodsWithCache.updateUser(userId, { name: 'Renamed' });
 
         expect(updated?.name).toBe('Renamed');
-        expect(delay).not.toHaveBeenCalled();
-      });
-
-      test('does not wait when the credential change matched no user', async () => {
-        enableAuthUserDocCache();
-        const delay = jest.fn().mockResolvedValue(undefined);
-        const methodsWithCache = createUserMethods(mongoose, {
-          getCache: () => makeFailingCache({ indexRead: true }),
-          delay,
-        });
-
-        const updated = await methodsWithCache.updateUser(
-          new mongoose.Types.ObjectId().toString(),
-          { credentialsChangedAt: new Date() },
-        );
-
-        expect(updated).toBeNull();
         expect(delay).not.toHaveBeenCalled();
       });
     });

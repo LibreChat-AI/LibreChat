@@ -24,6 +24,7 @@ const {
 const {
   deleteAllUserSessions,
   deletePasskeysByUser,
+  awaitAuthUserDocEviction,
   getUserById,
   findSession,
   updateUser,
@@ -326,6 +327,7 @@ const resetPasswordController = createResetPasswordController({
   resetPassword,
   deleteAllUserSessions,
   deletePasskeysByUser,
+  awaitAuthUserDocEviction,
 });
 
 const refreshController = async (req, res) => {
