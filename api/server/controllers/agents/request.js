@@ -428,33 +428,46 @@ async function saveErrorTurn(
     }
 
     const userId = req.user.id;
+    /** Whether the failed run's own partial row exists under its distinct
+     *  live response id, finalizing it when it does (a no-op for turns that
+     *  were not compactions). Full documents are requested only where the
+     *  compaction finalization needs the content; ordinary failures keep the
+     *  id-only projection. */
+    const settleLiveSnapshot = async () => {
+      if (liveResponseMessageId == null || liveResponseMessageId === errorMessageId) {
+        return false;
+      }
+      const partial = await getMessages(
+        { user: userId, messageId: liveResponseMessageId, conversationId },
+        req.body?.compact === true ? undefined : '_id',
+      );
+      if (partial.length === 0) {
+        return false;
+      }
+      await finalizeFailedCompactionTurn(req, {
+        userId,
+        conversationId,
+        messageId: liveResponseMessageId,
+        partialRow: partial[0],
+      });
+      return true;
+    };
     const existing = await getMessages(
       { user: userId, messageId: errorMessageId, conversationId },
       '_id',
     );
     if (existing.length > 0) {
-      /** No compaction finalization here: this id can normalize back to the
-       *  anchor itself when the anchor ends in `_`, and the anchor is never
-       *  the failed run's row. The run's own snapshot, if any, is checked
-       *  under its distinct live response id below. */
+      /** This id can normalize back to the compaction anchor itself when the
+       *  anchor ends in `_`: the failed run's row is the distinct live
+       *  response id, so a compaction settles there and never writes the
+       *  error row over whatever matched here. */
+      if (req.body?.compact === true) {
+        await settleLiveSnapshot();
+      }
       return;
     }
-    if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
-      /** Full documents only where the compaction finalization needs the
-       *  content; ordinary failures keep the id-only projection. */
-      const partial = await getMessages(
-        { user: userId, messageId: liveResponseMessageId, conversationId },
-        req.body?.compact === true ? undefined : '_id',
-      );
-      if (partial.length > 0) {
-        await finalizeFailedCompactionTurn(req, {
-          userId,
-          conversationId,
-          messageId: liveResponseMessageId,
-          partialRow: partial[0],
-        });
-        return;
-      }
+    if (await settleLiveSnapshot()) {
+      return;
     }
 
     const reqCtx = {
