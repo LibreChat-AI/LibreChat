@@ -448,12 +448,10 @@ export default function ToolCallGroup({
   }
   const failedNote =
     activitySummary.failedCount > 0
-      ? localize(
-          activitySummary.failedCount === 1
-            ? 'com_ui_one_action_failed'
-            : 'com_ui_n_actions_failed',
-          { 0: String(activitySummary.failedCount) },
-        )
+      ? localize('com_ui_n_of_n_actions_failed', {
+          0: String(activitySummary.failedCount),
+          1: String(count),
+        })
       : '';
   if (failedNote !== '') {
     groupDetailParts.push(failedNote);
@@ -579,7 +577,11 @@ export default function ToolCallGroup({
           />
         </Button>
         {!withinActivityPhase && (
-          <FailedRevealPill count={activitySummary.failedCount} onReveal={handleRevealFailed} />
+          <FailedRevealPill
+            count={activitySummary.failedCount}
+            total={count}
+            onReveal={handleRevealFailed}
+          />
         )}
       </div>
       <div

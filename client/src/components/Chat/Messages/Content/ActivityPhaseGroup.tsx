@@ -1,6 +1,7 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { Button } from '@librechat/client';
+import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
@@ -28,11 +29,13 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { sandboxStartingByToolCallId } from '~/store';
+import useClockFormat from '~/hooks/useClockFormat';
+import { cn, getMessageTimestamp } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
+import useTimeTick from '~/hooks/useTimeTick';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
 import SearchVerticals from './verticals';
-import { cn } from '~/utils';
 
 /** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
  *  the same curve — two properties animating on two different easings is what
@@ -319,6 +322,7 @@ function LivePhaseHeader({
    *  fail while a later one runs, and the line alone would never say so. The
    *  hidden group header carries the same counts in the same words. */
   const { failed, cancelled } = activity.outcome;
+  const total = activity.total;
   let combo = '';
   if (painted.comboCount > 1) {
     combo = painted.isBackgroundTaskCheck
@@ -327,9 +331,7 @@ function LivePhaseHeader({
   }
   const failedNote =
     failed > 0
-      ? localize(failed === 1 ? 'com_ui_one_action_failed' : 'com_ui_n_actions_failed', {
-          0: String(failed),
-        })
+      ? localize('com_ui_n_of_n_actions_failed', { 0: String(failed), 1: String(total) })
       : '';
   const cancelledNote =
     cancelled > 0
@@ -435,6 +437,30 @@ function LivePhaseHeader({
  * readable, and one click away, without unfolding. Its own component so only
  * a collapsed card with a failure pays for the line's lookups.
  */
+function FailedPeekTime({ failedAt }: { failedAt: number | Date }) {
+  useTimeTick();
+  const { i18n } = useTranslation();
+  const hour12 = useClockFormat();
+  const date = new Date(failedAt);
+  if (!Number.isFinite(date.getTime()) || date.getTime() > Date.now()) {
+    return null;
+  }
+  const timestamp = getMessageTimestamp(date.toISOString(), i18n.language, hour12);
+  if (timestamp == null) {
+    return null;
+  }
+  return (
+    <time
+      dateTime={timestamp.iso}
+      title={timestamp.absolute}
+      className="min-w-0 shrink truncate text-xs text-text-secondary"
+      data-testid="activity-phase-failed-time"
+    >
+      {timestamp.relative}
+    </time>
+  );
+}
+
 function FailedPeek({
   parts,
   attachmentsById,
@@ -476,6 +502,7 @@ function FailedPeek({
           <span className="min-w-0 shrink truncate font-normal">{first.detail}</span>
         )}
       </span>
+      {first.failedAt != null && <FailedPeekTime failedAt={first.failedAt} />}
       {count > 1 && (
         <span className="shrink-0 text-xs font-normal">
           {localize('com_ui_plus_n_more', { 0: String(count - 1) })}
@@ -529,8 +556,9 @@ export default function ActivityPhaseGroup({
   /** The span's failed calls, for the peek under a collapsed header and the
    *  pill beside it. Read from the same parts the header's glyph and live
    *  line read, so the three can never disagree about the count. */
-  const failedCount = useMemo(
-    () => (outcomeParts == null ? 0 : summarizeSpan(outcomeParts, attachmentsById).failed),
+  const { failed: failedCount, total: toolCount } = useMemo(
+    () =>
+      outcomeParts == null ? { failed: 0, total: 0 } : summarizeSpan(outcomeParts, attachmentsById),
     [outcomeParts, attachmentsById],
   );
 
@@ -830,7 +858,7 @@ export default function ActivityPhaseGroup({
               aria-hidden="true"
             />
           </Button>
-          <FailedRevealPill count={failedCount} onReveal={handleRevealFailed} />
+          <FailedRevealPill count={failedCount} total={toolCount} onReveal={handleRevealFailed} />
         </div>
       </div>
       {peek}

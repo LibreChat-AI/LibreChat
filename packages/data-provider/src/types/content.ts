@@ -160,6 +160,8 @@ export type PartMetadata = {
    * at render time.
    */
   runStepDurationMs?: number;
+  /** Host-reported close time in epoch milliseconds, when valid. Absent on older content. */
+  runStepClosedAt?: number;
   /**
    * Stamped by the background harvester when a detached task's final output
    * replaces the dispatch handle in `tool_call.output`. The handle JSON and

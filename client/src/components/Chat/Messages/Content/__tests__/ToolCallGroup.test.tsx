@@ -30,6 +30,9 @@ jest.mock('~/hooks', () => ({
     if (key === 'com_ui_background_tasks_n_checks') {
       return `${values?.[0]} checks`;
     }
+    if (key === 'com_ui_n_of_n_actions_failed') {
+      return `${values?.[0]}/${values?.[1]} failed`;
+    }
     if (key === 'com_ui_n_actions_failed') {
       return `${values?.[0]} failed`;
     }
@@ -883,7 +886,7 @@ describe('ToolCallGroup image hoisting', () => {
 
     expect(
       screen.getByRole('button', {
-        name: 'Ran 3 actions, Create File ×2, Edit File · 1 failed',
+        name: 'Ran 3 actions, Create File ×2, Edit File · 1/3 failed',
       }),
     ).toBeInTheDocument();
   });
@@ -955,9 +958,9 @@ describe('ToolCallGroup image hoisting', () => {
   });
 
   it.each([
-    ['error', '1 failed'],
+    ['error', '1/1 failed'],
     ['cancelled', '1 cancelled'],
-    ['interrupted', '1 failed'],
+    ['interrupted', '1/1 failed'],
   ])('reflects a %s task poll in the collapsed group', (status, suffix) => {
     renderGroup({
       ...baseProps,
@@ -995,7 +998,7 @@ describe('ToolCallGroup image hoisting', () => {
       Object.assign(part[ContentTypes.TOOL_CALL] ?? {}, { runStepStatus: 'completed' });
       renderGroup({ ...baseProps, parts: [{ part, idx: 0 }], lastContentIdx: 0 });
       expect(
-        screen.getByRole('button', { name: 'Checked background tasks, 1 failed' }),
+        screen.getByRole('button', { name: 'Checked background tasks, 1/1 failed' }),
       ).toBeInTheDocument();
     },
   );
@@ -1016,7 +1019,7 @@ describe('ToolCallGroup image hoisting', () => {
       lastContentIdx: 0,
     });
     expect(
-      screen.getByRole('button', { name: 'Checked background tasks, 1 failed' }),
+      screen.getByRole('button', { name: 'Checked background tasks, 1/1 failed' }),
     ).toBeInTheDocument();
   });
 
@@ -1058,14 +1061,14 @@ describe('ToolCallGroup image hoisting', () => {
       })),
     };
     const { rerender } = renderGroup(props);
-    expect(screen.getByRole('button', { name: /· 1 failed$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toBeInTheDocument();
 
     rerender(
       <RecoilRoot>
         <ToolCallGroup {...props} groupAttachments={[...groupAttachments].reverse()} />
       </RecoilRoot>,
     );
-    expect(screen.getByRole('button', { name: /· 1 failed$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toBeInTheDocument();
   });
 
   it('honors a terminal failed run step whose output reads as benign', () => {
@@ -1094,7 +1097,7 @@ describe('ToolCallGroup image hoisting', () => {
      *  settled (past tense while still submitting) and count it as a
      *  failure even though the empty output never parses as an error. */
     expect(
-      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1 failed' }),
+      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1/2 failed' }),
     ).toBeInTheDocument();
   });
 
@@ -1308,10 +1311,10 @@ describe('ToolCallGroup failure fast path', () => {
   it('opens the group and asks its rows to open from the pill beside a standalone header', () => {
     const onReveal = jest.fn();
     renderGroup(props(onReveal));
-    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).toHaveAttribute('aria-expanded', 'false');
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_failed_one' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' }));
 
     expect(header).toHaveAttribute('aria-expanded', 'true');
     /** Once per row the group rendered, after those rows mounted. */
@@ -1320,14 +1323,14 @@ describe('ToolCallGroup failure fast path', () => {
 
   it('shows the failure count once, on the pill, when it stands alone', () => {
     renderGroup(props(jest.fn()));
-    const header = screen.getByRole('button', { name: /· 1 failed$/ });
-    expect(header).not.toHaveTextContent('1 failed');
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1 failed');
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    expect(header).not.toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
   });
 
   it("keeps the count in text inside a phase, where the pill is the phase's", () => {
     renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
-    expect(screen.getByRole('button', { name: /· 1 failed$/ })).toHaveTextContent('1 failed');
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toHaveTextContent('1/2 failed');
   });
 
   it('leaves the pill to the phase header when nested in one', () => {
@@ -1344,7 +1347,7 @@ describe('ToolCallGroup failure fast path', () => {
         </FailedRevealContext.Provider>
       </RecoilRoot>,
     );
-    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).toHaveAttribute('aria-expanded', 'false');
     rerender(
       <RecoilRoot>
@@ -1358,7 +1361,7 @@ describe('ToolCallGroup failure fast path', () => {
 
   it('sets an open header in the primary colour over railed rows', () => {
     renderGroup(props(jest.fn()));
-    const header = screen.getByRole('button', { name: /· 1 failed$/ });
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
