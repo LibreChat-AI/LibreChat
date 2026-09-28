@@ -2930,6 +2930,7 @@ describe('ToolService - Action Capability Gating', () => {
         AgentCapabilities.stateful_code_sessions,
       ];
       const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].codeApiMaxRetryWaitMs = 0;
       req.body = {
         codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
       };
@@ -2970,6 +2971,7 @@ describe('ToolService - Action Capability Gating', () => {
         gitIdentity: { name: 'LibreChat Agent', email: 'agent@example.com' },
         maxTimeoutMs: 120000,
         maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: 0,
       });
       expect(mockResolveCodeExecutionWorkspaceContext).toHaveBeenCalledWith(
         expect.objectContaining({ requestedSelections: req.body.codeWorkspaces }),

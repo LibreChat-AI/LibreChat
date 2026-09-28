@@ -1094,6 +1094,7 @@ async function readWorkspaceFile({
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
@@ -1147,6 +1148,7 @@ async function searchWorkspace({
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
@@ -1200,6 +1202,7 @@ async function listWorkspaceFiles({
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
@@ -1239,6 +1242,7 @@ async function writeWorkspaceFile({
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
@@ -1278,6 +1282,7 @@ async function editWorkspaceFile({
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
@@ -1316,6 +1321,7 @@ async function previewWorkspaceEdit({
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
     maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */

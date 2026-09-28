@@ -2315,6 +2315,7 @@ async function loadToolsForExecution({
               maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(
                 codeExecutionContext.codeEnvironmentConfigSchema,
               ),
+              codeApiMaxRetryWaitMs: req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
               maxRequestTimeoutMs: resolveAttachedWorkspaceRequestTimeoutMs(
                 codeExecutionContext.codeEnvironmentConfigSchema,
               ),

@@ -4,6 +4,7 @@ import {
   CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS,
 } from 'librechat-data-provider';
 import type { CodeBridgeFetch } from './bridge';
+import { MAX_CODE_API_RATE_LIMIT_WAIT_MS } from '~/utils/code';
 
 const WORKSPACE_TOOL_TIMEOUT_MS = 30_000;
 const MAX_PATH_LENGTH = 4096;
@@ -354,9 +355,22 @@ function waitForWorkspaceAdmission(delayMs: number, signal?: AbortSignal): Promi
   });
 }
 
-function workspaceAdmissionRetryDelay(value: string | null): number {
-  if (value == null || !/^\d+$/.test(value)) return WORKSPACE_QUEUE_RETRY_DELAY_MS;
-  return Math.max(100, Math.min(Number(value) * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+function workspaceAdmissionRetryDelay(value: string | null, rateLimitBody?: string): number {
+  if (value != null && /^\d+$/.test(value)) {
+    return Math.max(100, Math.min(Number(value) * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+  }
+  if (rateLimitBody) {
+    try {
+      const parsed: { retry_after_seconds?: number } | null = JSON.parse(rateLimitBody);
+      const seconds = parsed?.retry_after_seconds;
+      if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0) {
+        return Math.max(100, Math.min(seconds * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+      }
+    } catch {
+      // Fall back when the delay hint is unusable.
+    }
+  }
+  return WORKSPACE_QUEUE_RETRY_DELAY_MS;
 }
 
 /** Keep a received HTTP status even if reading its diagnostic body fails or stalls. */
@@ -829,6 +843,7 @@ export async function executeWorkspaceTool({
   signal,
   fetchImpl = fetch,
   maxQueueWaitMs = WORKSPACE_QUEUE_MAX_WAIT_MS,
+  codeApiMaxRetryWaitMs = MAX_CODE_API_RATE_LIMIT_WAIT_MS,
   maxRequestTimeoutMs,
   deadlineAtMs,
 }: {
@@ -838,6 +853,8 @@ export async function executeWorkspaceTool({
   signal?: AbortSignal;
   fetchImpl?: CodeBridgeFetch;
   maxQueueWaitMs?: number;
+  /** Maximum time waiting for Code API rate-limit admission, independent of queue retries. */
+  codeApiMaxRetryWaitMs?: number;
   /** End-to-end HTTP budget for this call. Omission keeps legacy per-attempt timeouts. */
   maxRequestTimeoutMs?: number;
   /** Optional earlier caller deadline; a signal alone has no remaining-time value. */
@@ -848,6 +865,8 @@ export async function executeWorkspaceTool({
     !Number.isSafeInteger(maxQueueWaitMs) ||
     maxQueueWaitMs < 0 ||
     maxQueueWaitMs > WORKSPACE_QUEUE_MAX_WAIT_MS ||
+    !Number.isSafeInteger(codeApiMaxRetryWaitMs) ||
+    codeApiMaxRetryWaitMs < 0 ||
     (maxRequestTimeoutMs !== undefined &&
       (!Number.isSafeInteger(maxRequestTimeoutMs) ||
         maxRequestTimeoutMs < 1 ||
@@ -867,6 +886,7 @@ export async function executeWorkspaceTool({
   const retryDeadlineAt = Math.min(queueDeadlineAt, callerDeadlineAt - completionReserveMs);
   const body = JSON.stringify(request);
   let lastAdmissionRejection: WorkspaceToolHttpError | undefined;
+  let rateLimitWaitedMs = 0;
   while (true) {
     try {
       signal?.throwIfAborted();
@@ -931,20 +951,28 @@ export async function executeWorkspaceTool({
         const { body, truncated } = await readErrorBody(response, requestSignal);
         signal?.throwIfAborted();
         const rejection = new WorkspaceToolHttpError('rejected', response.status, body, truncated);
+        const admission = getWorkspaceAdmissionRejection(response.status, body, truncated);
+        if (admission == null || Date.now() >= queueDeadlineAt) throw rejection;
+        const retryAfterMs = workspaceAdmissionRetryDelay(
+          response.headers.get('Retry-After'),
+          admission === 'rate_limited' ? body : undefined,
+        );
         if (
-          getWorkspaceAdmissionRejection(response.status, body, truncated) == null ||
-          Date.now() >= queueDeadlineAt
+          admission === 'rate_limited' &&
+          retryAfterMs > codeApiMaxRetryWaitMs - rateLimitWaitedMs
         ) {
           throw rejection;
         }
-        const delayMs = Math.min(
-          workspaceAdmissionRetryDelay(response.headers.get('Retry-After')),
-          retryDeadlineAt - Date.now(),
-        );
+        const delayMs = Math.min(retryAfterMs, retryDeadlineAt - Date.now());
         lastAdmissionRejection = rejection;
         if (delayMs <= 0) throw rejection;
+        const waitStartedAt = Date.now();
         await waitForWorkspaceAdmission(delayMs, signal);
-        /** A clamped delay can land exactly on either deadline. Never open
+        if (admission === 'rate_limited') {
+          rateLimitWaitedMs += Date.now() - waitStartedAt;
+          if (rateLimitWaitedMs > codeApiMaxRetryWaitMs) throw rejection;
+        }
+        /** A clamped delay can land exactly on the queue or HTTP deadline. Never open
          * another admission window without the full execution reserve. */
         if (Date.now() >= retryDeadlineAt) {
           throw rejection;
