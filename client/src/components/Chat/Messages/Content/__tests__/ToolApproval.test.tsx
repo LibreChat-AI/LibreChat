@@ -261,8 +261,11 @@ describe('ToolApproval', () => {
 
       const thread = screen.getByTestId('thread');
       expect(thread).not.toHaveTextContent('Review in composer');
-      fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0]);
-      expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+      fireEvent.click(within(thread).getByRole('button', { name: 'Approve' }));
+      expect(within(thread).getByRole('button', { name: 'Submit' })).toBeEnabled();
+      expect(
+        within(screen.getByTestId('composer')).queryByRole('button', { name: 'Submit' }),
+      ).not.toBeInTheDocument();
     });
 
     test('a thread card for a different action keeps its controls', () => {
