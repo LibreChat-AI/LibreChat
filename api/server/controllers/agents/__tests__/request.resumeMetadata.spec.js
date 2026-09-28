@@ -253,6 +253,7 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getSteerRecoveryFailure: jest.requireActual(
     '../../../../../packages/api/src/stream/SteerRecovery',
   ).getSteerRecoveryFailure,
