@@ -1148,6 +1148,12 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); fon
   left: 0;
   transform-origin: top left;
 }
+/* Slide blocks now stack inside the library's own wrapper box instead of
+ * as direct children of #lc-render, so #lc-render's flex gap no longer
+ * separates them — restore the 16px rhythm here instead. */
+.lc-slide-wrap + .lc-slide-wrap {
+  margin-top: 16px;
+}
 /* pptx-preview's own init() sets a fixed inline width (and an opaque
  * background) on the wrapper box it creates around the slides.
  * Override so it hugs the stacked .lc-slide-wrap blocks' actual width
@@ -1323,6 +1329,15 @@ ${PPTX_SLIDE_LIST_CSS}
         slide.style.transform = 'scale(' + scale + ')';
         slide.parentNode.insertBefore(wrap, slide);
         wrap.appendChild(slide);
+      }
+      /* The CSS rule above already wins in a real browser (a plain inline
+       * style loses to a stylesheet !important), but clear it here too so
+       * the librarys own box never keeps a fixed pixel width wider than
+       * the stacked slide blocks it now contains. */
+      var libraryBoxes = container.querySelectorAll('.pptx-preview-wrapper');
+      for (var j = 0; j < libraryBoxes.length; j++) {
+        libraryBoxes[j].style.width = 'auto';
+        libraryBoxes[j].style.background = 'transparent';
       }
     }
 
