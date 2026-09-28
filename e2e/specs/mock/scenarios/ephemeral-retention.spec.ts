@@ -159,11 +159,14 @@ test.afterEach(async () => {
 });
 
 test.describe('ephemeral retention', () => {
+  let workerToken: string | undefined;
   let token: string;
   let userId: string;
 
+  /** One login per worker: a login per test across three projects exhausts the login limiter. */
   test.beforeEach(async ({ request }) => {
-    token = await loginAdmin(request);
+    workerToken ??= await loginAdmin(request);
+    token = workerToken;
     userId = await resolveUserId();
   });
 
