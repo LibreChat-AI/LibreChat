@@ -63,6 +63,8 @@ interface ToolCallGroupProps {
    *  blocks the run, and hiding that card behind a second collapsed
    *  disclosure would bury the action the run is waiting on. */
   withinActivityPhase?: boolean;
+  /** The phase header owns the failure pill even while its live groups stay expandable. */
+  parentPhaseOwnsFailurePill?: boolean;
 }
 
 export type ToolCallGroupExpansionState = {
@@ -83,6 +85,7 @@ export default function ToolCallGroup({
   onExpansionChange,
   labelPart,
   withinActivityPhase = false,
+  parentPhaseOwnsFailurePill = false,
 }: ToolCallGroupProps) {
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
@@ -477,7 +480,8 @@ export default function ToolCallGroup({
    *  the header, which is also the way to the failed rows; the text keeps it
    *  only for the accessible name. Inside a phase the pill is the phase's,
    *  so the group's detail says it in text. */
-  const showsFailurePill = !withinActivityPhase && activitySummary.failedCount > 0;
+  const showsFailurePill =
+    !withinActivityPhase && !parentPhaseOwnsFailurePill && activitySummary.failedCount > 0;
   const visibleGroupDetail = showsFailurePill
     ? groupDetailParts.filter((part) => part && part !== failedNote).join(' · ')
     : groupDetail;
@@ -576,7 +580,7 @@ export default function ToolCallGroup({
             aria-hidden="true"
           />
         </Button>
-        {!withinActivityPhase && (
+        {!withinActivityPhase && !parentPhaseOwnsFailurePill && (
           <FailedRevealPill
             count={activitySummary.failedCount}
             total={count}

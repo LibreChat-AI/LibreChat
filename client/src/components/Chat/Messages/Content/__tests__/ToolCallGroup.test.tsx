@@ -1327,6 +1327,21 @@ describe('ToolCallGroup failure fast path', () => {
     expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toHaveTextContent('1/2 failed');
   });
 
+  it('leaves the pill to a live phase without collapsing its running group', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [...failedParts, { part: makePart('c3', '', 'create_file'), idx: 2 }],
+      lastContentIdx: 2,
+      isSubmitting: true,
+      parentPhaseOwnsFailurePill: true,
+    });
+
+    const group = screen.getByRole('button', { name: /1\/3 failed$/ });
+    expect(group).toHaveAttribute('aria-expanded', 'true');
+    expect(group).toHaveTextContent('1/3 failed');
+    expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
+  });
+
   it('leaves the pill to the phase header when nested in one', () => {
     renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
     expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
