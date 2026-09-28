@@ -2980,7 +2980,14 @@ describe('ToolService - Action Capability Gating', () => {
         environmentType: 'attached',
         environmentId: 'personal-machine',
         bridgeWorkerId: 'worker-abc',
-        codeEnvironmentConfigSchema: { limits: { maxCommandTimeoutMs: 120000, maxQueueWaitMs: 0 } },
+        codeEnvironmentConfigSchema: {
+          limits: {
+            maxCommandTimeoutMs: 80_000,
+            maxQueueWaitMs: 0,
+            maxRequestTimeoutMs: 90_000,
+            minCommandAdmissionMs: 15_000,
+          },
+        },
       });
       const toolRegistry = new Map([
         [AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }],
@@ -3006,9 +3013,11 @@ describe('ToolService - Action Capability Gating', () => {
         baseUrl: 'http://attached-code.test/v1',
         workspaceId: 'project-a',
         gitIdentity: { name: 'LibreChat Agent', email: 'agent@example.com' },
-        maxTimeoutMs: 120000,
+        maxTimeoutMs: 65_000,
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: 0,
+        maxRequestTimeoutMs: 90_000,
+        minCommandAdmissionMs: 15_000,
       });
       expect(mockResolveCodeExecutionWorkspaceContext).toHaveBeenCalledWith(
         expect.objectContaining({ requestedSelections: req.body.codeWorkspaces }),

@@ -106,12 +106,20 @@ export function resolveAttachedWorkspaceCommandTimeoutMax(
   return fitCommandTimeoutMaxToBudget(
     Math.min(requested, upstream),
     resolveAttachedWorkspaceRequestTimeoutMs(configSchema),
+    configSchema?.limits?.minCommandAdmissionMs,
   );
 }
 
-function fitCommandTimeoutMaxToBudget(maxTimeoutMs: number, maxRequestTimeoutMs?: number): number {
+function fitCommandTimeoutMaxToBudget(
+  maxTimeoutMs: number,
+  maxRequestTimeoutMs?: number,
+  minCommandAdmissionMs?: number,
+): number {
   if (maxRequestTimeoutMs == null) return maxTimeoutMs;
-  return Math.min(maxTimeoutMs, fitWorkspaceCommandTimeoutToBudget(maxRequestTimeoutMs));
+  return Math.min(
+    maxTimeoutMs,
+    fitWorkspaceCommandTimeoutToBudget(maxRequestTimeoutMs, minCommandAdmissionMs),
+  );
 }
 
 /**
@@ -313,6 +321,7 @@ export function createAttachedWorkspaceBashTool({
   maxQueueWaitMs,
   codeApiMaxRetryWaitMs,
   maxRequestTimeoutMs,
+  minCommandAdmissionMs,
   fetchImpl,
 }: {
   baseUrl: string;
@@ -328,11 +337,14 @@ export function createAttachedWorkspaceBashTool({
   codeApiMaxRetryWaitMs?: number;
   /** Verified total HTTP budget; omission keeps the legacy per-attempt timeout. */
   maxRequestTimeoutMs?: number;
+  /** Minimum time for command admission inside an opted-in HTTP budget. */
+  minCommandAdmissionMs?: number;
   fetchImpl?: CodeBridgeFetch;
 }): DynamicStructuredTool {
   const effectiveMaxTimeoutMs = fitCommandTimeoutMaxToBudget(
     normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
     maxRequestTimeoutMs,
+    minCommandAdmissionMs,
   );
   const schema = structuredClone(
     buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment),

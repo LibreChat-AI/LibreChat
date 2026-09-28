@@ -407,6 +407,24 @@ describe('createAttachedWorkspaceBashTool', () => {
       }),
     ).toBe(60_000);
     expect(
+      resolveAttachedWorkspaceCommandTimeoutMax({
+        limits: {
+          maxCommandTimeoutMs: 80_000,
+          maxRequestTimeoutMs: 90_000,
+          minCommandAdmissionMs: 15_000,
+        },
+      }),
+    ).toBe(65_000);
+    expect(
+      resolveAttachedWorkspaceCommandTimeoutMax({
+        limits: {
+          maxCommandTimeoutMs: 80_000,
+          maxRequestTimeoutMs: 90_000,
+          minCommandAdmissionMs: 1,
+        },
+      }),
+    ).toBe(79_999);
+    expect(
       resolveAttachedWorkspaceCommandTimeoutMax(
         { limits: { maxCommandTimeoutMs: 120_000, maxRequestTimeoutMs: 125_000 } },
         90_000,
@@ -438,6 +456,43 @@ describe('createAttachedWorkspaceBashTool', () => {
     const [, init] = (fetchImpl as jest.Mock).mock.calls[0];
     expect(JSON.parse(String(init?.body))).toMatchObject({ timeoutMs: 70_000 });
     expect(init?.headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('10000');
+    jest.restoreAllMocks();
+  });
+
+  test('reserves the configured admission allowance for an omitted background timeout', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const configSchema = {
+      limits: {
+        maxCommandTimeoutMs: 80_000,
+        maxRequestTimeoutMs: 90_000,
+        minCommandAdmissionMs: 15_000,
+      },
+    };
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      maxTimeoutMs: resolveAttachedWorkspaceCommandTimeoutMax(configSchema),
+      maxRequestTimeoutMs: resolveAttachedWorkspaceRequestTimeoutMs(configSchema),
+      minCommandAdmissionMs: configSchema.limits.minCommandAdmissionMs,
+      fetchImpl,
+    });
+
+    expect(bashTool.schema).toMatchObject({
+      properties: { timeoutMs: expect.objectContaining({ maximum: 65_000 }) },
+    });
+    await bashTool.invoke(
+      { command: 'npm test' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+    const [, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toMatchObject({ timeoutMs: 65_000 });
+    expect(init?.headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('15000');
+    await expect(
+      bashTool.func({ command: 'npm test', timeoutMs: 80_000 }, undefined, {}),
+    ).rejects.toThrow('deployment limit of 65000 milliseconds');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     jest.restoreAllMocks();
   });
 

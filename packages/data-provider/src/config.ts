@@ -1207,6 +1207,8 @@ export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS = 5 * 60_000;
 export const CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS = 5 * 60_000;
 /** Code API's per-request admission ceiling, independent of the retry horizon. */
 export const CODE_ENVIRONMENT_ADMISSION_MAX_MS = 5 * 60_000;
+/** Minimum command admission time reserved inside an opted-in HTTP budget. */
+export const CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS = 10_000;
 /** Maximum opt-in HTTP budget: five minutes of admission and execution plus ten seconds for settlement and delivery. */
 export const CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS =
   CODE_ENVIRONMENT_ADMISSION_MAX_MS + CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS + 10_000;
@@ -1255,6 +1257,14 @@ export const codeEnvironmentUserConfigSchema = z
           .int()
           .min(1)
           .max(CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS)
+          .optional(),
+        /** Minimum admission time left for a Bash command inside maxRequestTimeoutMs.
+         * Omission reserves ten seconds; ignored without a total HTTP budget. */
+        minCommandAdmissionMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_ADMISSION_MAX_MS)
           .optional(),
       })
       .strict()

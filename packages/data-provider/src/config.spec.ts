@@ -7,6 +7,7 @@ import {
   bedrockModels,
   configSchema,
   codeEnvironmentUserConfigSchema,
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
   resolveEndpointType,
   webSearchSchema,
@@ -583,6 +584,30 @@ describe('attached code environment user config schema', () => {
     expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
   });
 
+  it.each([1, 15_000, CODE_ENVIRONMENT_ADMISSION_MAX_MS])(
+    'accepts a bounded %i ms command admission allowance',
+    (minCommandAdmissionMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs } })).toEqual({
+        limits: { minCommandAdmissionMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, CODE_ENVIRONMENT_ADMISSION_MAX_MS + 1, NaN, Infinity])(
+    'rejects an invalid command admission allowance of %s',
+    (minCommandAdmissionMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { minCommandAdmissionMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('preserves omission of the command admission allowance alongside a request budget', () => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs: 90_000 } }),
+    ).toEqual({ limits: { maxRequestTimeoutMs: 90_000 } });
+  });
+
   it('accepts typed permission controls exposed by the administrator', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -602,7 +627,11 @@ describe('attached code environment user config schema', () => {
                     fileWrite: { allowed: ['allow', 'ask', 'deny'], default: 'ask' },
                     commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
                   },
-                  limits: { maxCommandTimeoutMs: 120000, maxRequestTimeoutMs: 125_000 },
+                  limits: {
+                    maxCommandTimeoutMs: 120000,
+                    maxRequestTimeoutMs: 125_000,
+                    minCommandAdmissionMs: 15_000,
+                  },
                 },
               },
             ],
@@ -621,7 +650,9 @@ describe('attached code environment user config schema', () => {
           statefulCodeSessions: {
             environments: [
               {
-                configSchema: { limits: { maxRequestTimeoutMs: 125_000 } },
+                configSchema: {
+                  limits: { maxRequestTimeoutMs: 125_000, minCommandAdmissionMs: 15_000 },
+                },
               },
             ],
           },

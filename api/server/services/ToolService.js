@@ -2321,6 +2321,8 @@ async function loadToolsForExecution({
               maxRequestTimeoutMs: resolveAttachedWorkspaceRequestTimeoutMs(
                 codeExecutionContext.codeEnvironmentConfigSchema,
               ),
+              minCommandAdmissionMs:
+                codeExecutionContext.codeEnvironmentConfigSchema?.limits?.minCommandAdmissionMs,
             })
           : createBashExecutionTool({
               authHeaders,
