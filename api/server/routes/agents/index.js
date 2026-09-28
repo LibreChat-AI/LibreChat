@@ -6,7 +6,7 @@ const {
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   announceStoppedReply,
-  shouldPersistAbortAnchor,
+  resolveAbortAnchorDecision,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -57,6 +57,7 @@ const {
 } = require('~/server/controllers/agents/protocol');
 const {
   getFiles,
+  getMessages,
   saveMessage,
   saveConvo,
   getPersistedPrivateTextId,
@@ -790,12 +791,26 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
-          const shouldPersistAnchor = shouldPersistAbortAnchor(jobData);
+          /** A compaction anchors on the persisted branch leaf, so its
+           *  existence decides the prerequisite write: present, the projected
+           *  anchor is never upserted over it; absent (Stop won the race
+           *  before the branch loaded), there is nothing to parent the aborted
+           *  response onto and nothing is written. */
+          let anchorDecision = resolveAbortAnchorDecision(jobData, true);
+          if (jobData?.compact === true && jobData?.userMessage?.messageId && req?.user?.id) {
+            const anchorRows = await getMessages({
+              user: req.user.id,
+              messageId: jobData.userMessage.messageId,
+              conversationId: jobData.conversationId,
+            });
+            anchorDecision = resolveAbortAnchorDecision(jobData, anchorRows.length > 0);
+          }
 
           if (
             jobData?.userMessage?.messageId &&
             jobData?.responseMessageId &&
-            shouldPersistAbortedTurn
+            shouldPersistAbortedTurn &&
+            anchorDecision !== 'skip-turn'
           ) {
             const messageContext = {
               userId: req?.user?.id,
@@ -857,7 +872,7 @@ router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
              * operation gets a chance to succeed. A compaction skips the
              * prerequisite: its anchor is the persisted leaf itself. */
             let persistedRequestId;
-            if (shouldPersistAnchor) {
+            if (anchorDecision === 'persist') {
               try {
                 const persistedRequest = await saveAbortedUserMessage(
                   { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
