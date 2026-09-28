@@ -802,7 +802,10 @@ describe('scheduled OBO tool failure settlement', () => {
       await expect(
         recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
       ).resolves.toBe(false);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not persist'), persistenceError);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not persist'),
+        persistenceError,
+      );
       warn.mockRestore();
     },
   );

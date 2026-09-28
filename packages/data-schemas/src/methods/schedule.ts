@@ -1502,7 +1502,9 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       status: { $in: ['started', 'requires_action'] },
     };
     const canOverride =
-      params.status === 'success' || params.status === 'error' || params.status === 'skipped_balance';
+      params.status === 'success' ||
+      params.status === 'error' ||
+      params.status === 'skipped_balance';
     const incomingFailure =
       canOverride && params.mcp?.some((item) => item.detail === 'unattended_auth_required');
     const authError =
@@ -1541,7 +1543,11 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
           ...runFilter,
           ...(canOverride ? { 'mcp.detail': { $ne: 'unattended_auth_required' } } : {}),
         },
-        terminalUpdate(incomingFailure ? 'error' : params.status, incomingFailure ? authError : params.error, true),
+        terminalUpdate(
+          incomingFailure ? 'error' : params.status,
+          incomingFailure ? authError : params.error,
+          true,
+        ),
         { new: false },
       )
       .lean<IScheduleRun>();

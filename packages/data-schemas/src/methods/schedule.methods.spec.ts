@@ -3089,7 +3089,12 @@ describe('scheduled MCP receipt settlement', () => {
     async (status) => {
       const schedule = await methods.createSchedule(scheduleData());
       const scheduledFor = new Date('2026-09-09T15:00:00Z');
-      const input = { scheduleId: schedule.id, scheduledFor, conversationId: 'c1', server: 'Graph' };
+      const input = {
+        scheduleId: schedule.id,
+        scheduledFor,
+        conversationId: 'c1',
+        server: 'Graph',
+      };
       await methods.insertScheduleRun(
         runData(schedule, {
           scheduledFor,
@@ -3219,7 +3224,9 @@ describe('scheduled MCP receipt settlement', () => {
       conversationId: 'c1',
       server: 'Graph',
     });
-    const firstWrite = jest.spyOn(Schedule, 'updateOne').mockRejectedValueOnce(new Error('DB unavailable'));
+    const firstWrite = jest
+      .spyOn(Schedule, 'updateOne')
+      .mockRejectedValueOnce(new Error('DB unavailable'));
     await expect(
       methods.recordRunOutcome({
         scheduleId: schedule.id,
