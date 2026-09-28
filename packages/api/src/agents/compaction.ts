@@ -295,16 +295,23 @@ export function resolveFinalizedCompactionTurn(
   const content = Array.isArray(partialRow?.content)
     ? (partialRow.content as TMessageContentParts[])
     : [];
+  /** Every part is inspected: a row can hold an earlier round's terminal
+   *  outcome beside a later unfinished summary, and that summary still needs
+   *  its failure marked. */
+  let sawSummaryOrError = false;
+  let unfinishedSummary = false;
   for (const part of content) {
-    if (part?.type === ContentTypes.ERROR) {
-      return null;
+    if (part?.type === ContentTypes.SUMMARY) {
+      sawSummaryOrError = true;
+      if (part.failed !== true && !isUsableSummaryPart(part)) {
+        unfinishedSummary = true;
+      }
+    } else if (part?.type === ContentTypes.ERROR) {
+      sawSummaryOrError = true;
     }
-    if (
-      part?.type === ContentTypes.SUMMARY &&
-      (part.failed === true || isUsableSummaryPart(part))
-    ) {
-      return null;
-    }
+  }
+  if (sawSummaryOrError && !unfinishedSummary) {
+    return null;
   }
   return { content: markAbortedCompactionContent(content, true) };
 }

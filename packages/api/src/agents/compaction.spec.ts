@@ -513,6 +513,44 @@ describe('resolveFinalizedCompactionTurn', () => {
     expect(resolveFinalizedCompactionTurn(failedSummary, { compact: true })).toBeNull();
     expect(resolveFinalizedCompactionTurn(recordedFailure, { compact: true })).toBeNull();
   });
+
+  /** A row can hold an earlier round's terminal outcome beside a later
+   *  unfinished summary: only the inspection of every part catches it, and
+   *  the failure lands on the summary that never finished. */
+  it('finalizes a later unfinished summary beside an earlier terminal outcome', () => {
+    const row = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'An earlier checkpoint.' }],
+          boundary: completedBoundary,
+        },
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A later partial round.' }],
+          summarizing: true,
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'An earlier checkpoint.' }],
+          boundary: completedBoundary,
+          initiatedBy: 'user',
+        },
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A later partial round.' }],
+          summarizing: true,
+          initiatedBy: 'user',
+          failed: true,
+        },
+      ],
+    });
+  });
 });
 
 describe('findCheckpointSummaryPart', () => {
