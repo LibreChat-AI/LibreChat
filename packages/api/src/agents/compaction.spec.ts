@@ -1036,6 +1036,17 @@ describe('planAbortedTurnPersistence', () => {
       withholdFinal: false,
     });
   });
+
+  /** An abort with no persistable content and no created event publishes an
+   *  early-abort FINAL of its own; withholding it would replace that frame
+   *  with a reconciliation one even though no row was ever at stake. */
+  it('does not withhold the final when no row needed writing', () => {
+    expect(planAbortedTurnPersistence('skip-turn', false)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: false,
+      withholdFinal: false,
+    });
+  });
 });
 
 describe('settleExistingRowsBeforeErrorTurn', () => {
