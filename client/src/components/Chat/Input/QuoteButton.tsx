@@ -253,7 +253,18 @@ const visibleAnchor = (range: Range, anchor: Anchor, clippers: HTMLElement[]): A
   };
 
   const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT);
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+  if (range.startContainer.nodeType === Node.TEXT_NODE) {
+    walker.currentNode = range.startContainer;
+  }
+  for (
+    let node =
+      range.startContainer.nodeType === Node.TEXT_NODE ? walker.currentNode : walker.nextNode();
+    node;
+    node = walker.nextNode()
+  ) {
+    if (range.comparePoint(node, 0) > 0) {
+      break;
+    }
     if (!node.textContent || !range.intersectsNode(node) || !node.parentElement) {
       continue;
     }
