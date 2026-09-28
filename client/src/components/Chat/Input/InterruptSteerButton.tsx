@@ -66,7 +66,9 @@ const InterruptSteerButton = React.memo((props: InterruptSteerButtonProps) => {
       />
       <Ariakit.Tooltip className="z-50 rounded-lg bg-surface-tertiary px-2 py-1 text-xs text-text-primary shadow-lg">
         {localize(
-          props.isNewConversation ? 'com_ui_steer_first_turn_stop_info' : 'com_ui_interrupt_steer_desc',
+          props.isNewConversation
+            ? 'com_ui_steer_first_turn_stop_info'
+            : 'com_ui_interrupt_steer_desc',
         )}
       </Ariakit.Tooltip>
     </Ariakit.TooltipProvider>
