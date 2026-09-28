@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import { TriangleAlert } from 'lucide-react';
+import type { TranslationKeys } from '~/hooks';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -116,6 +117,12 @@ export function FailedRevealPill({
   if (count === 0) {
     return null;
   }
+  let showFailedKey: TranslationKeys = 'com_ui_show_failed_n_of_n';
+  if (count === 1 && total === 1) {
+    showFailedKey = 'com_ui_show_failed_one_of_one';
+  } else if (count === 1) {
+    showFailedKey = 'com_ui_show_failed_one_of_n';
+  }
   return (
     <button
       type="button"
@@ -125,14 +132,7 @@ export function FailedRevealPill({
         className,
       )}
       onClick={onReveal}
-      aria-label={localize(
-        count === 1
-          ? total === 1
-            ? 'com_ui_show_failed_one_of_one'
-            : 'com_ui_show_failed_one_of_n'
-          : 'com_ui_show_failed_n_of_n',
-        { 0: String(count), 1: String(total) },
-      )}
+      aria-label={localize(showFailedKey, { 0: String(count), 1: String(total) })}
       data-testid="failed-reveal-pill"
     >
       <TriangleAlert size={12} aria-hidden="true" />
