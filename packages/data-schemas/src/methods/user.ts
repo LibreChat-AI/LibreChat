@@ -392,9 +392,12 @@ export function createUserMethods(
       return true;
     }
     const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
-    const remove = cache?.delete?.bind(cache);
-    if (!cache?.get || !remove) {
+    if (!cache?.get) {
       return true;
+    }
+    const remove = cache.delete?.bind(cache);
+    if (!remove) {
+      return false;
     }
     return evictAuthUserDocs({ get: (key) => cache.get(key), delete: remove }, { userId });
   }

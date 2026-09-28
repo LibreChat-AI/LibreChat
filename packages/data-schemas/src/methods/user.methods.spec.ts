@@ -569,6 +569,19 @@ describe('User Methods - Database Tests', () => {
         expect(delay).not.toHaveBeenCalled();
       });
 
+      test('waits at the barrier when the cache can read but not delete', async () => {
+        const userId = await createCachedUser();
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, {
+          getCache: () => ({ get: jest.fn(), set: jest.fn() }),
+          delay,
+        });
+
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(delay).toHaveBeenCalledTimes(1);
+      });
+
       test('keeps updates themselves best effort', async () => {
         const userId = await createCachedUser();
         const delay = jest.fn().mockResolvedValue(undefined);
