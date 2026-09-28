@@ -22,4 +22,27 @@ describe('SplitText', () => {
       expect(Array.from(textSpans)[i].textContent).toBe(emojis[i]);
     }
   });
+
+  it('resolves direction from the text, not the document, for every word box', () => {
+    document.documentElement.dir = 'rtl';
+    try {
+      const { container } = render(<SplitText text="Welcome to reeva::chat" />);
+      const paragraph = container.querySelector('p');
+      expect(paragraph).toHaveAttribute('dir', 'auto');
+      const wordBoxes = container.querySelectorAll('p > span');
+      /** three words plus nothing else at that level */
+      expect(wordBoxes).toHaveLength(3);
+      for (const box of Array.from(wordBoxes)) {
+        expect(box).toHaveAttribute('dir', 'auto');
+      }
+      /** Grapheme order inside a word is the source order; the direction
+       *  attribute, not reordering, decides how the boxes lay out. */
+      const firstWord = Array.from(wordBoxes[0].querySelectorAll('span.inline-block'))
+        .map((span) => span.textContent)
+        .join('');
+      expect(firstWord).toBe('Welcome');
+    } finally {
+      document.documentElement.dir = '';
+    }
+  });
 });
