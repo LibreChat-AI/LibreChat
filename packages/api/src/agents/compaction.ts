@@ -278,10 +278,23 @@ export function markAbortedCompactionContent(
  *  written over it, or the settled row reopens as an unfinished response.
  *  Only a same-epoch record is trusted. */
 export function isSettledJobRecord(
-  jobRecord: { createdAt?: number; status?: string } | null | undefined,
+  jobRecord:
+    | {
+        createdAt?: number;
+        status?: string;
+        terminalPersistencePending?: boolean;
+      }
+    | null
+    | undefined,
   jobCreatedAt?: number,
 ): boolean {
   if (jobRecord == null || (jobCreatedAt != null && jobRecord.createdAt !== jobCreatedAt)) {
+    return false;
+  }
+  if (jobRecord.terminalPersistencePending === true) {
+    /** The terminal claim precedes its row write: the status alone does not
+     *  prove the row is durable, and the snapshot is still the fallback if
+     *  that write fails. */
     return false;
   }
   return (
@@ -531,13 +544,14 @@ export async function settleExistingRowsBeforeErrorTurn(
     if (await settleLiveRow()) {
       return { covered: true };
     }
-    /** The match is the anchor itself and no live row was ever saved: the
-     *  failed run still records its error row, under its own response id. */
-    return {
-      covered: false,
-      ...(liveResponseMessageId != null &&
-        liveResponseMessageId !== errorMessageId && { errorRowMessageId: liveResponseMessageId }),
-    };
+    /** The match is the anchor itself: the error row goes to the failed
+     *  run's own response id when one exists, and is withheld entirely when
+     *  none does (a failure before the id was allocated), because writing it
+     *  under the error id would overwrite the anchor. */
+    if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
+      return { covered: false, errorRowMessageId: liveResponseMessageId };
+    }
+    return { covered: true };
   }
   return { covered: await settleLiveRow() };
 }

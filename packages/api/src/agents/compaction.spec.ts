@@ -1316,6 +1316,22 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
     expect(saved).toHaveLength(0);
   });
 
+  /** A failure before the response id was allocated leaves nowhere safe to
+   *  write the error row: writing it under the error id would overwrite the
+   *  anchor, so it is withheld instead. */
+  it('withholds the error row when the collision has no live id to redirect to', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'anchor-shaped-match' }],
+    });
+    const { liveResponseMessageId: _omitted, ...dWithoutLiveId } = d;
+
+    await expect(
+      settleExistingRowsBeforeErrorTurn({ compact: true }, dWithoutLiveId),
+    ).resolves.toEqual({ covered: true });
+
+    expect(saved).toHaveLength(0);
+  });
+
   it('blocks the error row for an ordinary turn with an existing row, writing nothing', async () => {
     const { saved, deps: d } = deps({
       'error-target': [{ messageId: 'error-target', _id: 'existing' }],
@@ -1343,6 +1359,15 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
 describe('isSettledJobRecord', () => {
   it.each(['complete', 'error', 'aborted'])('treats a %s record as settled', (status) => {
     expect(isSettledJobRecord({ createdAt: 1000, status })).toBe(true);
+  });
+
+  /** The terminal claim precedes its row write, so the status alone does not
+   *  prove the row is durable: the snapshot stays the fallback until the
+   *  pending marker clears. */
+  it('treats a record with terminal persistence still pending as unsettled', () => {
+    expect(
+      isSettledJobRecord({ createdAt: 1000, status: 'error', terminalPersistencePending: true }),
+    ).toBe(false);
   });
 
   it('leaves live and missing records unsettled', () => {
