@@ -1316,35 +1316,57 @@ describe('tool dispatch timing', () => {
     const { getDefaultHandlers } = require('../callbacks');
     const { contentParts, stepMap, aggregateContent } = createContentAggregator();
     const handlers = getDefaultHandlers({
-      res: { write: jest.fn() }, contentParts, stepMap, aggregateContent,
-      toolEndCallback: jest.fn(), collectedUsage: [], streamId: 'run',
+      res: { write: jest.fn() },
+      contentParts,
+      stepMap,
+      aggregateContent,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'run',
     });
     const step = {
-      id: 'step-1', index: 0, type: 'tool_calls',
-      stepDetails: { type: 'tool_calls', tool_calls: [{ id: 'call-1', name: 'query', args: '{}' }] },
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-1', name: 'query', args: '{}' }],
+      },
     };
     await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, step);
     await handlers[GraphEvents.ON_RUN_STEP_DELTA].handle(GraphEvents.ON_RUN_STEP_DELTA, {
-      id: 'step-1', observed_at: 1_000,
+      id: 'step-1',
+      observed_at: 1_000,
       delta: { type: 'tool_calls', tool_calls: [{ id: 'call-1', index: 0, args: '{' }] },
     });
-    const dispatched = { dispatched_at: 248_000, toolCalls: [
-      { id: 'call-1', name: 'query', stepId: 'step-1' },
-    ] };
+    const dispatched = {
+      dispatched_at: 248_000,
+      toolCalls: [{ id: 'call-1', name: 'query', stepId: 'step-1' }],
+    };
     await handlers[StepEvents.ON_TOOL_CALLS_DISPATCHED].handle(
-      StepEvents.ON_TOOL_CALLS_DISPATCHED, dispatched,
+      StepEvents.ON_TOOL_CALLS_DISPATCHED,
+      dispatched,
     );
     await handlers[GraphEvents.ON_RUN_STEP_COMPLETED].handle(GraphEvents.ON_RUN_STEP_COMPLETED, {
-      result: { id: 'step-1', completed_at: 248_340, index: 0,
+      result: {
+        id: 'step-1',
+        completed_at: 248_340,
+        index: 0,
         tool_call: { id: 'call-1', name: 'query', args: '{}', output: 'ok' },
       },
     });
     await handlers[GraphEvents.ON_RUN_STEP_CLOSED].handle(GraphEvents.ON_RUN_STEP_CLOSED, {
-      id: 'step-1', index: 0, type: 'tool_calls', status: 'completed',
-      created_at: 1_000, closed_at: 248_340,
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      status: 'completed',
+      created_at: 1_000,
+      closed_at: 248_340,
     });
     expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
-      'run', { event: StepEvents.ON_TOOL_CALLS_DISPATCHED, data: dispatched }, expect.anything(),
+      'run',
+      { event: StepEvents.ON_TOOL_CALLS_DISPATCHED, data: dispatched },
+      expect.anything(),
     );
     expect(contentParts[0].tool_call).toMatchObject({
       runStepDurationMs: 247_340,

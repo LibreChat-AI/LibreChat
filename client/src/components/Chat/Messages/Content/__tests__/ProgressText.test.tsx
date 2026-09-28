@@ -47,7 +47,11 @@ describe('ProgressText duration', () => {
   });
 
   it('shows separate preparation and tool intervals without using the total as execution time', () => {
-    renderProgressText({ durationMs: 248_000, toolPreparationDurationMs: 242_000, toolExecutionDurationMs: 5_700 });
+    renderProgressText({
+      durationMs: 248_000,
+      toolPreparationDurationMs: 242_000,
+      toolExecutionDurationMs: 5_700,
+    });
     expect(screen.getByText('· Preparation 4m 2s')).toBeInTheDocument();
     expect(screen.getByText('· Tool call 5.7s')).toBeInTheDocument();
     expect(screen.queryByText(/Total elapsed/)).not.toBeInTheDocument();

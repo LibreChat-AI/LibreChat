@@ -321,6 +321,17 @@ export default function ToolCall({
    *  the `tool_intents` capability); persists as the settled label —
    *  completion is a UI state, not a tense change. */
   const intent = useToolCallIntent(_args);
+  const subject = intent ?? displayFunctionName;
+  let inProgressText =
+    intent ??
+    (displayFunctionName
+      ? localize('com_assistants_running_var', { 0: displayFunctionName })
+      : localize('com_assistants_running_action'));
+  if (toolDispatchedAt != null) {
+    inProgressText = localize('com_ui_tool_calling', { 0: subject });
+  } else if (toolPreparationStartedAt != null) {
+    inProgressText = localize('com_ui_tool_preparing', { 0: subject });
+  }
 
   const getFinishedText = () => {
     if (phase === 'cancelled') {
@@ -382,16 +393,7 @@ export default function ToolCall({
         <ProgressText
           phase={phase}
           onClick={handleToggleInfo}
-          inProgressText={
-            toolDispatchedAt != null
-              ? localize('com_ui_tool_calling', { 0: intent ?? displayFunctionName })
-              : toolPreparationStartedAt != null
-                ? localize('com_ui_tool_preparing', { 0: intent ?? displayFunctionName })
-                : (intent ??
-                  (displayFunctionName
-                    ? localize('com_assistants_running_var', { 0: displayFunctionName })
-                    : localize('com_assistants_running_action')))
-          }
+          inProgressText={inProgressText}
           authText={
             phase === 'running' && authDomain.length > 0
               ? localize('com_ui_requires_auth')

@@ -143,12 +143,19 @@ describe('ToolCall', () => {
   describe('tool preparation feedback', () => {
     it('announces preparation and then execution without calling the tool during argument streaming', () => {
       const props = {
-        ...mockProps, output: null, initialProgress: 0.1, isSubmitting: true,
+        ...mockProps,
+        output: null,
+        initialProgress: 0.1,
+        isSubmitting: true,
         toolPreparationStartedAt: 1_000,
       };
       const { rerender } = renderWithRecoil(<ToolCall {...props} />);
       expect(screen.getByText('Preparing testFunction')).toBeInTheDocument();
-      rerender(<RecoilRoot><ToolCall {...props} toolDispatchedAt={4_000} /></RecoilRoot>);
+      rerender(
+        <RecoilRoot>
+          <ToolCall {...props} toolDispatchedAt={4_000} />
+        </RecoilRoot>,
+      );
       expect(screen.getByText('Calling testFunction')).toBeInTheDocument();
     });
   });

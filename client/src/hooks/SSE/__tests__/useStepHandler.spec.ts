@@ -1823,36 +1823,74 @@ describe('useStepHandler', () => {
       const submission = createSubmission();
       const latest = () => {
         const messages = mockSetMessages.mock.lastCall?.[0] as TMessage[] | undefined;
-        const part = messages?.find((message) => message.messageId === 'response-msg-1')?.content?.[0];
+        const part = messages?.find((message) => message.messageId === 'response-msg-1')
+          ?.content?.[0];
         return part?.type === ContentTypes.TOOL_CALL ? part.tool_call : undefined;
       };
       act(() => {
-        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() }, submission);
-        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP_DELTA, data: {
-          id: 'step-tool-1', observed_at: 1_000,
-          delta: { type: StepTypes.TOOL_CALLS, tool_calls: [{ id: 'tool-call-1', index: 0, args: '{' }] },
-        } }, submission);
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_DELTA,
+            data: {
+              id: 'step-tool-1',
+              observed_at: 1_000,
+              delta: {
+                type: StepTypes.TOOL_CALLS,
+                tool_calls: [{ id: 'tool-call-1', index: 0, args: '{' }],
+              },
+            },
+          },
+          submission,
+        );
       });
       expect(latest()?.toolPreparationStartedAt).toBe(1_000);
       expect(latest()?.toolDispatchedAt).toBeUndefined();
       act(() => {
-        result.current.stepHandler({ event: StepEvents.ON_TOOL_CALLS_DISPATCHED, data: {
-          dispatched_at: 248_000,
-          toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
-        } }, submission);
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+            data: {
+              dispatched_at: 248_000,
+              toolCalls: [{ id: 'tool-call-1', name: 'test_tool', stepId: 'step-tool-1' }],
+            },
+          },
+          submission,
+        );
       });
       expect(latest()?.toolDispatchedAt).toBe(248_000);
       act(() => {
-        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP_COMPLETED, data: {
-          result: {
-            id: 'step-tool-1', index: 0, completed_at: 248_340,
-            tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_COMPLETED,
+            data: {
+              result: {
+                id: 'step-tool-1',
+                index: 0,
+                completed_at: 248_340,
+                tool_call: { id: 'tool-call-1', name: 'test_tool', args: '{}', output: 'done' },
+              },
+            },
           },
-        } }, submission);
-        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP_CLOSED, data: {
-          id: 'step-tool-1', index: 0, type: StepTypes.TOOL_CALLS,
-          status: 'completed', created_at: 1_000, closed_at: 248_340,
-        } }, submission);
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-tool-1',
+              index: 0,
+              type: StepTypes.TOOL_CALLS,
+              status: 'completed',
+              created_at: 1_000,
+              closed_at: 248_340,
+            },
+          },
+          submission,
+        );
       });
       expect(latest()).toMatchObject({
         runStepStatus: 'completed',
