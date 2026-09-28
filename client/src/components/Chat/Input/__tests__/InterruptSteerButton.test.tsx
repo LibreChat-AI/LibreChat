@@ -64,4 +64,5 @@ test('English copy distinguishes requested steering, running tools, and reasonin
   expect(en.com_ui_steer_interrupting_info).toMatch(/restart an attempt.*only reasoning/);
   expect(en.com_ui_steer_interrupting_info).toMatch(/Running tools finish first/);
   expect(en.com_ui_steer_first_turn_stop_info).toMatch(/new turn/);
+  expect(en.com_nav_info_during_run_action).toContain(en.com_ui_steer_interrupts_default);
 });
