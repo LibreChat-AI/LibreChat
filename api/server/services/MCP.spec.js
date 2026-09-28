@@ -2825,6 +2825,8 @@ describe('User parameter passing tests', () => {
         serverName: 'server1',
         provider: 'anthropic',
         userMCPAuthMap: {},
+        streamId: 'scheduled-stream',
+        jobCreatedAt: 42,
       });
 
       // Verify all calls to reinitMCPServer had the user
@@ -2832,6 +2834,8 @@ describe('User parameter passing tests', () => {
       reinitCalls.forEach((call) => {
         expect(call.user).toBe(mockUser);
         expect(call.user.id).toBe('user-001');
+        expect(call.streamId).toBe('scheduled-stream');
+        expect(call.jobCreatedAt).toBe(42);
       });
     });
 
@@ -2859,12 +2863,16 @@ describe('User parameter passing tests', () => {
         provider: 'google',
         userMCPAuthMap: {},
         availableTools: undefined, // Force reinit
+        streamId: 'resumed-stream',
+        jobCreatedAt: 43,
       });
 
       // Verify the call to reinitMCPServer had the user
       expect(reinitCalls.length).toBe(1);
       expect(reinitCalls[0].user).toBe(mockUser);
       expect(reinitCalls[0].user.id).toBe('user-002');
+      expect(reinitCalls[0].streamId).toBe('resumed-stream');
+      expect(reinitCalls[0].jobCreatedAt).toBe(43);
     });
   });
 

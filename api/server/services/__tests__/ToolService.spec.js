@@ -1767,6 +1767,9 @@ describe('ToolService - Action Capability Gating', () => {
         expect(emittedStreamId).toBe(streamId);
         expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
       }
+      for (const [reinitInput] of reinitMCPServer.mock.calls) {
+        expect(reinitInput).toEqual(expect.objectContaining({ streamId, jobCreatedAt }));
+      }
     });
 
     it('should not expose cached MCP tool definitions when the registry lookup fails', async () => {
@@ -2307,6 +2310,8 @@ describe('ToolService - Action Capability Gating', () => {
         definitionsOnly: true,
         signal,
         upstreamTokenProvider: scheduledProvider,
+        streamId: 'scheduled-stream',
+        jobCreatedAt: 42,
       });
 
       expect(reinitMCPServer).toHaveBeenCalledWith(
@@ -2314,6 +2319,8 @@ describe('ToolService - Action Capability Gating', () => {
           serverName,
           forceNew: true,
           upstreamTokenProvider: scheduledProvider,
+          streamId: 'scheduled-stream',
+          jobCreatedAt: 42,
         }),
       );
     });

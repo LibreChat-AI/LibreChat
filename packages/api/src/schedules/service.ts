@@ -282,11 +282,10 @@ export interface SchedulesService {
    *  the topology cannot be shown safe (process-local job store with no single-process
    *  assertion) — see isTopologySafeToArm. */
   initializeScheduleEngine: () => Promise<ReturnType<typeof startScheduleEngine> | undefined>;
-  /** Starts erasure-ONLY maintenance for an entrypoint that never arms the engine (the
+  /** Starts bounded maintenance for an entrypoint that never arms the engine (the
    *  clustered worker). Idempotent per process and a no-op once the full engine is armed.
-   *  Arms nothing else — no claims, firing, cadence advancement, or absence-based
-   *  reconciliation — and refuses to infer owner death from a process-local missing job
-   *  (isTopologySafeToArm gates that). See startScheduleErasureSweep. */
+   *  Replays terminal permanent-MCP bookkeeping but never claims, fires, advances, or
+   *  infers owner death from a process-local missing job. See startScheduleErasureSweep. */
   initializeScheduleErasureSweep: () => void;
 }
 
@@ -306,7 +305,12 @@ export async function recordScheduledMCPToolAuthFailure(
   ) {
     return false;
   }
-  return getRecorder()(input);
+  try {
+    return await getRecorder()(input);
+  } catch (error) {
+    logger.warn('[schedules] could not persist MCP authorization failure receipt:', error);
+    return false;
+  }
 }
 
 /** Test-only overrides for the service's bounded waits (drains, barriers). */
@@ -780,12 +784,10 @@ export function createSchedulesService(
   }
 
   /**
-   * The clustered entrypoint's ONLY schedule maintenance. Exposes the same erasure sweep
-   * the standard entrypoint falls back to, so a soft-deleted row whose delete/terminal
-   * erase-on-settle attempts missed still drains instead of retaining the owner's prompt
-   * forever. It shares startErasureFallback's idempotent startup guard, the sweep's own
-   * shutdown registration, and the topology-fenced owner-death policy — and arms nothing
-   * else, so running it in every clustered replica changes nothing about v1 scheduling.
+   * The clustered entrypoint's ONLY schedule maintenance. The fallback erases soft-deleted
+   * rows and converges terminal evidence, including permanent MCP bookkeeping interrupted
+   * between the run-row transition and card projection. It shares startErasureFallback's
+   * idempotent startup guard and topology-fenced owner-death policy, and never fires work.
    */
   function initializeScheduleErasureSweep(): void {
     startErasureFallback();
@@ -954,7 +956,9 @@ export function createSchedulesService(
       }
       mcp = observed;
     }
-    const missingAuth = mcp.length > 0 && (status === 'success' || status === 'error');
+    const missingAuth =
+      mcp.length > 0 &&
+      (status === 'success' || status === 'error' || status === 'skipped_balance');
     const effectiveStatus = missingAuth ? 'error' : status;
     const effectiveError = missingAuth ? 'MCP unattended authorization unavailable' : error;
     if (terminal && streamId && jobCreatedAt != null) {

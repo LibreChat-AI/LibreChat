@@ -842,6 +842,8 @@ async function reconnectServer({
     upstreamTokenProviderResolver,
     recoveryPolicy,
     oboIdentityContext,
+    streamId,
+    jobCreatedAt,
     forceNew: true,
     returnOnOAuth: false,
     connectionTimeout: Time.THIRTY_SECONDS,

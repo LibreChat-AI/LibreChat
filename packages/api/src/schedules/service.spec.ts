@@ -779,6 +779,34 @@ describe('scheduled OBO tool failure settlement', () => {
     expect(getRecorder).not.toHaveBeenCalled();
   });
 
+  it.each(['job lookup', 'run write'] as const)(
+    'keeps receipt persistence best-effort when the %s fails',
+    async (failurePoint) => {
+      const { service, methods, store } = setup();
+      const persistenceError = new Error('Storage temporarily unavailable');
+      if (failurePoint === 'job lookup') {
+        store.getJob.mockRejectedValueOnce(persistenceError);
+      } else {
+        methods.recordMCPToolAuthFailure.mockRejectedValueOnce(persistenceError);
+      }
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const missing = new OboTokenResolutionError('missing_upstream_provider', 'No credentials');
+      const input = {
+        error: missing,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Graph',
+      };
+
+      await expect(
+        recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+      ).resolves.toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not persist'), persistenceError);
+      warn.mockRestore();
+    },
+  );
+
   it('records a typed tool failure only for the matching scheduled generation and owner', async () => {
     const { service, methods, store } = setup();
     const source = new OboTokenResolutionError('missing_upstream_provider', 'No credentials');
@@ -839,6 +867,28 @@ describe('scheduled OBO tool failure settlement', () => {
         status: 'error',
         mcp: [failure],
         error: 'MCP unattended authorization unavailable',
+      }),
+    );
+    expect(
+      jest.requireMock('../stream/GenerationJobManager').GenerationJobManager.updateMetadata,
+    ).toHaveBeenCalledWith('c1', expect.objectContaining({ scheduleOutcome: 'error' }), 42);
+  });
+
+  it('retains an error rather than a balance skip for a known missing OBO provider', async () => {
+    const { service, methods } = setup();
+    await service.recordScheduleOutcome({
+      scheduleId: 's1',
+      scheduledFor: occurrence,
+      status: 'skipped_balance',
+      conversationId: 'c1',
+      streamId: 'c1',
+      jobCreatedAt: 42,
+    });
+    expect(methods.recordRunOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'error',
+        error: 'MCP unattended authorization unavailable',
+        mcp: [failure],
       }),
     );
     expect(

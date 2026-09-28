@@ -1496,39 +1496,71 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     // TERMINAL: flip the run row (match-guarded), then apply bookkeeping. `bookkept` is
     // set false at the flip and true only after bookkeeping lands, so a crash between is
     // re-applied by the reconciler (getUnbookkeptRuns) while countedFor keeps counters idempotent.
-    const settled = await ScheduleRun()
+    const runFilter = {
+      scheduleId: params.scheduleId,
+      scheduledFor: params.scheduledFor,
+      status: { $in: ['started', 'requires_action'] },
+    };
+    const canOverride =
+      params.status === 'success' || params.status === 'error' || params.status === 'skipped_balance';
+    const incomingFailure =
+      canOverride && params.mcp?.some((item) => item.detail === 'unattended_auth_required');
+    const authError =
+      params.status === 'error' && params.error
+        ? params.error
+        : 'MCP unattended authorization unavailable';
+    const terminalUpdate = (
+      status: RecordRunOutcomeParams['status'],
+      error: string | undefined,
+      includeInputMcp: boolean,
+    ) => ({
+      $set: {
+        status,
+        bookkept: false,
+        settledAt: firedAt,
+        ...(params.conversationId && !params.clearConversationId
+          ? { conversationId: params.conversationId }
+          : {}),
+        ...(error ? { error } : {}),
+        ...(includeInputMcp && params.mcp ? { mcp: params.mcp } : {}),
+        ...(params.durationMs != null ? { durationMs: params.durationMs } : {}),
+      },
+      // Only terminal settlement releases the global capacity slot, not an abort request.
+      $unset: {
+        capacitySlot: 1,
+        admissionOnly: 1,
+        ...(params.clearConversationId ? { conversationId: 1 } : {}),
+      },
+    });
+    // The absence check is part of the row update, not a stale read. A concurrent
+    // receipt either wins first (the fallback below records an error) or loses to
+    // terminalization (and can no longer stamp this run).
+    let settled = await ScheduleRun()
       .findOneAndUpdate(
         {
-          scheduleId: params.scheduleId,
-          scheduledFor: params.scheduledFor,
-          status: { $in: ['started', 'requires_action'] },
+          ...runFilter,
+          ...(canOverride ? { 'mcp.detail': { $ne: 'unattended_auth_required' } } : {}),
         },
-        {
-          $set: {
-            status: params.status,
-            bookkept: false,
-            settledAt: firedAt,
-            ...(params.conversationId && !params.clearConversationId
-              ? { conversationId: params.conversationId }
-              : {}),
-            ...(params.error ? { error: params.error } : {}),
-            ...(params.mcp ? { mcp: params.mcp } : {}),
-            ...(params.durationMs != null ? { durationMs: params.durationMs } : {}),
-          },
-          // SETTLEMENT: a terminal outcome is the generation owner confirming the run
-          // actually stopped, so this is the ONLY place the global capacity slot is
-          // released. An abort request alone does not free it (see requestRunAbort).
-          $unset: {
-            capacitySlot: 1,
-            admissionOnly: 1,
-            ...(params.clearConversationId ? { conversationId: 1 } : {}),
-          },
-        },
+        terminalUpdate(incomingFailure ? 'error' : params.status, incomingFailure ? authError : params.error, true),
         { new: false },
       )
       .lean<IScheduleRun>();
-    // No-match guard: never touch schedule bookkeeping without a matching run
-    // (protects against a spoofed scheduleId on a normal chat).
+    let effectiveParams = incomingFailure
+      ? { ...params, status: 'error' as const, error: authError }
+      : params;
+    if (settled == null && canOverride) {
+      settled = await ScheduleRun()
+        .findOneAndUpdate(
+          { ...runFilter, 'mcp.detail': 'unattended_auth_required' },
+          terminalUpdate('error', authError, false),
+          { new: false },
+        )
+        .lean<IScheduleRun>();
+      if (settled != null) {
+        effectiveParams = { ...params, status: 'error', error: authError, mcp: settled.mcp };
+      }
+    }
+    // No-match guard: never touch schedule bookkeeping without a matching run.
     if (settled == null) {
       return;
     }
@@ -1536,7 +1568,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     // passed in by each caller. Callers only say "this occurrence reached status X" and
     // structurally cannot forget a token — which is exactly how the reconcile and
     // balance-skip paths previously shipped unfenced.
-    if (params.status === 'skipped_balance') {
+    if (effectiveParams.status === 'skipped_balance') {
       await applyBalanceSkipBookkeeping({
         scheduleId: params.scheduleId,
         scheduledFor: params.scheduledFor,
@@ -1547,7 +1579,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       });
     } else {
       await applyTerminalBookkeeping({
-        ...params,
+        ...effectiveParams,
         firedAt: settled.firedAt ?? firedAt,
         expectConfigRevision: settled.configRevision,
       });
@@ -1630,13 +1662,13 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     details: { conversationId: string; droppedFileIds?: string[]; mcp?: IScheduleRun['mcp'] },
   ): Promise<void> {
     await ScheduleRun().updateOne(
-      { scheduleId, scheduledFor },
+      { scheduleId, scheduledFor, conversationId: details.conversationId },
       {
         $set: {
           conversationId: details.conversationId,
-          ...(details.mcp ? { mcp: details.mcp } : {}),
           ...(details.droppedFileIds?.length ? { droppedFileIds: details.droppedFileIds } : {}),
         },
+        ...(details.mcp?.length ? { $addToSet: { mcp: { $each: details.mcp } } } : {}),
       },
     );
   }

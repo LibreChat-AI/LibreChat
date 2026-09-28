@@ -1192,6 +1192,8 @@ async function loadToolDefinitionsWrapper({
     const result = await reinitMCPServer({
       signal,
       user: req.user,
+      streamId,
+      jobCreatedAt,
       oauthStart,
       flowManager,
       serverName,
@@ -1223,6 +1225,8 @@ async function loadToolDefinitionsWrapper({
     const result = await reinitMCPServer({
       signal,
       user: req.user,
+      streamId,
+      jobCreatedAt,
       forceNew: true,
       oauthStart,
       flowManager,
@@ -1375,6 +1379,8 @@ async function loadToolDefinitionsWrapper({
         const result = await reinitMCPServer({
           signal,
           user: req.user,
+          streamId,
+          jobCreatedAt,
           serverName,
           configServers,
           userMCPAuthMap,
