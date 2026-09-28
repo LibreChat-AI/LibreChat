@@ -483,8 +483,15 @@ describe('Agent Abort Endpoint', () => {
           ],
           text: '',
         };
+        let beforePublishError;
         mockGenerationJobManager.abortJob.mockImplementation(async (_streamId, options) => {
-          await options.beforePublish(abortResult);
+          try {
+            await options.beforePublish(abortResult);
+          } catch (error) {
+            /** The manager catches this failure and publishes a
+             *  reconciliation frame instead of the normal FINAL. */
+            beforePublishError = error;
+          }
           return abortResult;
         });
 
@@ -495,6 +502,8 @@ describe('Agent Abort Endpoint', () => {
 
         expect(response.status).toBe(200);
         expect(mockSaveMessage).not.toHaveBeenCalled();
+        expect(beforePublishError).toBeInstanceOf(Error);
+        expect(beforePublishError.message).toContain('anchor was never persisted');
       });
     });
 

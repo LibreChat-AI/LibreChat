@@ -308,7 +308,7 @@ export async function persistFinalizedCompactionTurn(
   },
 ): Promise<boolean> {
   const finalized = resolveFinalizedCompactionTurn(partialRow, requestBody);
-  if (finalized == null) {
+  if (!finalized.write) {
     return false;
   }
   await saveMessage({
@@ -316,26 +316,37 @@ export async function persistFinalizedCompactionTurn(
     conversationId,
     unfinished: false,
     error: true,
-    ...finalized,
+    ...(finalized.content != null && { content: finalized.content }),
   });
   return true;
 }
 
+/** What a failed compaction does with its already-persisted partial row. */
+export type FinalizedCompactionTurn =
+  /** Not the failed run's row, or one holding nothing but a completed
+   *  checkpoint worth keeping exactly as it stands. */
+  | { write: false }
+  /** The parts already carry the failure (an error part, a failed summary);
+   *  only the snapshot's live-run flags remain to settle. */
+  | { write: true; content?: undefined }
+  /** The parts need the terminal marking applied. */
+  | { write: true; content: TMessageContentParts[] };
+
 /**
- * The content a failed compaction finalizes its already-persisted partial row
- * with. The disconnect save is marker-only because the run is still live when
- * it fires, so when the run then fails that snapshot is the row that stays,
- * and it must carry the terminal outcome a compaction that failed without a
- * snapshot records: a partial summary is marked failed beside its text, and a
- * snapshot with no summary or error part gets the typed failure. Null when
- * the row is not a compaction's or already carries a terminal outcome.
+ * The disconnect save is marker-only because the run is still live when it
+ * fires, so when the run then fails that snapshot is the row that stays: a
+ * partial summary is marked failed beside its text, a snapshot with no
+ * summary or error part gets the typed failure, and a snapshot whose parts
+ * already carry the failure still settles its live-run flags. Only a
+ * completed checkpoint (the run produced its summary before failing) is left
+ * untouched, and rows of turns that were not compactions are never written.
  */
 export function resolveFinalizedCompactionTurn(
   partialRow: { content?: unknown } | null | undefined,
   requestBody: { compact?: boolean } | null | undefined,
-): { content: TMessageContentParts[] } | null {
+): FinalizedCompactionTurn {
   if (requestBody?.compact !== true) {
-    return null;
+    return { write: false };
   }
   const content = Array.isArray(partialRow?.content)
     ? (partialRow.content as TMessageContentParts[])
@@ -343,22 +354,32 @@ export function resolveFinalizedCompactionTurn(
   /** Every part is inspected: a row can hold an earlier round's terminal
    *  outcome beside a later unfinished summary, and that summary still needs
    *  its failure marked. */
-  let sawSummaryOrError = false;
+  let sawFailure = false;
+  let sawCheckpoint = false;
   let unfinishedSummary = false;
   for (const part of content) {
     if (part?.type === ContentTypes.SUMMARY) {
-      sawSummaryOrError = true;
-      if (part.failed !== true && !isUsableSummaryPart(part)) {
+      if (part.failed === true) {
+        sawFailure = true;
+      } else if (isUsableSummaryPart(part)) {
+        sawCheckpoint = true;
+      } else {
         unfinishedSummary = true;
       }
     } else if (part?.type === ContentTypes.ERROR) {
-      sawSummaryOrError = true;
+      sawFailure = true;
     }
   }
-  if (sawSummaryOrError && !unfinishedSummary) {
-    return null;
+  if (unfinishedSummary) {
+    return { write: true, content: markAbortedCompactionContent(content, true) };
   }
-  return { content: markAbortedCompactionContent(content, true) };
+  if (sawFailure) {
+    return { write: true };
+  }
+  if (sawCheckpoint) {
+    return { write: false };
+  }
+  return { write: true, content: markAbortedCompactionContent(content, true) };
 }
 
 /**
