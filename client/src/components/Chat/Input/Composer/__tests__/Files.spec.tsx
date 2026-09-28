@@ -16,9 +16,10 @@ const file = (over: Partial<TFile> & Pick<TFile, 'file_id' | 'filename'>): TFile
 
 let mockFiles: TFile[] | undefined = [];
 let mockQueryState = { isLoading: false, isError: false };
+const mockRefetch = jest.fn();
 
 jest.mock('~/data-provider', () => ({
-  useGetFiles: () => ({ data: mockFiles, ...mockQueryState }),
+  useGetFiles: () => ({ data: mockFiles, refetch: mockRefetch, ...mockQueryState }),
   useFilePreviewBlob: () => ({ refetch: jest.fn().mockResolvedValue({ data: undefined }) }),
   useFilePreview: () => ({ refetch: jest.fn() }),
   useFileDownload: () => ({ refetch: jest.fn() }),
@@ -115,6 +116,8 @@ describe('FileGrid', () => {
     mockQueryState = { isLoading: false, isError: true };
     renderGrid();
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_error_connection');
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    expect(mockRefetch).toHaveBeenCalledTimes(1);
   });
 
   it('stays on the grid when an image has nothing to preview', async () => {

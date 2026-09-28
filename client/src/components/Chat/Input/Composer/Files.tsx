@@ -1,7 +1,7 @@
 import { memo, useRef, useMemo, useState, useEffect } from 'react';
 import { Eye, Search } from 'lucide-react';
 import { apiBaseUrl } from 'librechat-data-provider';
-import { IconButton, Spinner } from '@librechat/client';
+import { Button, IconButton, Spinner } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import FilePreviewDialog, {
@@ -133,7 +133,15 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview }: FileCardP
 
 /** What the grid shows in place of cards: still loading, the list failed to
  *  load, or nothing matches the search and view. */
-function EmptyState({ loading, failed }: { loading: boolean; failed: boolean }) {
+function EmptyState({
+  loading,
+  failed,
+  onRetry,
+}: {
+  loading: boolean;
+  failed: boolean;
+  onRetry: () => void;
+}) {
   const localize = useLocalize();
   if (loading) {
     return (
@@ -145,8 +153,15 @@ function EmptyState({ loading, failed }: { loading: boolean; failed: boolean }) 
   }
   if (failed) {
     return (
-      <div role="alert" className="text-text-secondary py-16 text-center text-sm">
-        {localize('com_ui_error_connection')}
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+        <p role="alert" className="text-text-secondary text-sm">
+          {localize('com_ui_error_connection')}
+        </p>
+        {/* The files query does not refetch on mount, focus or reconnect, so
+            reopening the dialog would not recover without this. */}
+        <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+          {localize('com_ui_retry')}
+        </Button>
       </div>
     );
   }
@@ -168,7 +183,7 @@ interface FileGridProps {
  *  anything the message viewers can show. */
 export default function FileGrid({ query, view, onAttach }: FileGridProps) {
   const localize = useLocalize();
-  const { data: files = [], isLoading, isError } = useGetFiles<TFile[]>();
+  const { data: files = [], isLoading, isError, refetch } = useGetFiles<TFile[]>();
   const [previewing, setPreviewing] = useState<TFile | null>(null);
   /** The Preview button that opened the viewer, where focus returns on close. */
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -247,7 +262,11 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
   return (
     <>
       {visible.length === 0 ? (
-        <EmptyState loading={isLoading} failed={isError && files.length === 0} />
+        <EmptyState
+          loading={isLoading}
+          failed={isError && files.length === 0}
+          onRetry={() => void refetch()}
+        />
       ) : (
         <ul
           className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3"
