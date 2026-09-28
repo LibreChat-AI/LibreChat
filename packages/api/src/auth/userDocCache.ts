@@ -168,6 +168,10 @@ export async function getCachedAuthUserDoc(
   }
 }
 
+/**
+ * The reverse index is written first and outlives every document it names, so eviction can
+ * always find a cached document: when the index write fails, the document is not cached.
+ */
 export async function setCachedAuthUserDoc(
   store: AuthUserDocCacheStore,
   cacheKey: string,
@@ -175,6 +179,10 @@ export async function setCachedAuthUserDoc(
 ): Promise<void> {
   try {
     const sanitized = sanitizeUserForCache(user);
+    const userId = getUserId(sanitized);
+    if (userId) {
+      await rememberUserCacheKey(store, userId, cacheKey, AUTH_USER_DOC_CACHE_TTL_MS * 2);
+    }
     await store.set(
       cacheKey,
       {
@@ -184,10 +192,6 @@ export async function setCachedAuthUserDoc(
       } satisfies CachedAuthUserDoc,
       AUTH_USER_DOC_CACHE_TTL_MS,
     );
-    const userId = getUserId(sanitized);
-    if (userId) {
-      await rememberUserCacheKey(store, userId, cacheKey, AUTH_USER_DOC_CACHE_TTL_MS);
-    }
   } catch (error) {
     logger.warn('[authUserDocCache] Cache write failed', {
       error: error instanceof Error ? error.message : String(error),
