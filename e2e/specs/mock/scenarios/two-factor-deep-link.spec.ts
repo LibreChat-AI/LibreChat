@@ -219,7 +219,11 @@ test.describe('ordinary 2FA challenge · deep links', () => {
     await mockChallengeAuth(page);
     await page.addInitScript(() => {
       Object.defineProperty(window, 'sessionStorage', {
-        configurable: false,
+        /** Configurable because the CI-mode build's storage polyfill replaces a broken
+         *  sessionStorage with its own in-memory shim rather than crashing on a frozen
+         *  property. The shim is per-document, so the challenge's document swap still
+         *  empties it and the landing contract is identical either way. */
+        configurable: true,
         get() {
           throw new DOMException('Storage is blocked in this context', 'SecurityError');
         },
