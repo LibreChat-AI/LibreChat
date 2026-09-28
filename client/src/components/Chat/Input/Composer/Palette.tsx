@@ -226,9 +226,6 @@ function Palette({
   const context = useBadgeRowContext();
   const mcpManager = context?.mcpServerManager;
   const configDialogOpen = mcpManager?.getConfigDialogProps()?.isOpen === true;
-  useMCPRefresh({
-    enabled: (open || configDialogOpen) && (mcpManager?.availableMCPServers.length ?? 0) > 0,
-  });
   useEffect(() => {
     if (open) {
       onOpened?.();
@@ -247,6 +244,13 @@ function Palette({
   const openingCatalogRef = useRef(false);
   /** Where focus lands when a "Show all" dialog closes. */
   const catalogReturnRef = useRef<HTMLElement | null>(null);
+  /* The MCP catalog shows the same live statuses as the palette rows, so it
+     keeps the refresh running after the palette hands over to it. */
+  useMCPRefresh({
+    enabled:
+      (open || configDialogOpen || catalog === 'mcp') &&
+      (mcpManager?.availableMCPServers.length ?? 0) > 0,
+  });
   /* Closing runs in two beats, so the rows below never slide up through a hole
      where the folded destinations used to be: they fade where they stand, and
      only once they are gone does the list close over them. */

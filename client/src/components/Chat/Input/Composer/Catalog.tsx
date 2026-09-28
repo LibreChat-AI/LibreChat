@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useRef, useMemo, useState, useEffect } from 'react';
 import {
   Input,
   Label,
@@ -187,10 +187,32 @@ export default function Catalog({
   );
   const query = search.trim().toLowerCase();
 
+  /* Focus goes back to the message field only after a mouse or keyboard close:
+     after a tap it would summon the on-screen keyboard the user just left, the
+     same rule the palette applies to its own close. */
+  const focusTargetRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (section == null) {
+      return;
+    }
+    const aim = (touch: boolean) => {
+      focusTargetRef.current = touch ? null : returnFocusRef.current;
+    };
+    aim(window.matchMedia('(pointer: coarse)').matches);
+    const onPointer = (event: PointerEvent) => aim(event.pointerType !== 'mouse');
+    const onKey = () => aim(false);
+    window.addEventListener('pointerdown', onPointer, true);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointer, true);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [section, returnFocusRef]);
+
   return (
     <OGDialog
       open={section != null}
-      triggerRef={returnFocusRef}
+      triggerRef={focusTargetRef}
       onOpenChange={(open) => {
         if (!open) {
           onClose();

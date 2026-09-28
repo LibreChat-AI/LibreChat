@@ -285,6 +285,7 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
         src={imageUrl}
         triggerRef={previewTriggerRef}
         showDetails={false}
+        title={previewing?.filename ?? undefined}
         downloadImage={() => {
           if (imageUrl != null) {
             triggerDownload(imageUrl, previewing?.filename ?? 'image');

@@ -216,6 +216,11 @@ test.describe('composer palette show all', () => {
       await filter.getByRole('radio', { name: 'Made by you', exact: true }).click();
       await expect(card).toBeVisible();
 
+      /* An empty result is announced from the search field, not only drawn. */
+      await search.fill(`${prefix}-nothing-matches`);
+      await expect(dialog.getByRole('status').filter({ hasText: 'No matches' })).toBeVisible();
+      await search.fill(target.name);
+
       await card.click();
       await expect(card).toHaveAttribute('aria-pressed', 'true');
       /* Individual skill selections stage as a "Staged context" chip in the
@@ -315,6 +320,9 @@ test.describe('composer palette show all', () => {
       .getByRole('dialog')
       .filter({ has: page.getByRole('button', { name: 'Download', exact: true }) });
     await expect(imageDialog).toBeVisible();
+    /* Named by the file, so a screen reader says which image is open. */
+    await expect(page.getByRole('dialog', { name: imageName, exact: true })).toBeVisible();
+    await expect(imageDialog.getByRole('img', { name: imageName, exact: true })).toBeVisible();
     await expect(imageDialog.locator('img')).toHaveAttribute('src', /^(blob:|https?:|\/)/);
     /* An uploaded file has no generation prompt, size or quality to show. */
     await expect(imageDialog.getByRole('button', { name: /image details/i })).toHaveCount(0);
@@ -349,6 +357,31 @@ test.describe('composer palette show all', () => {
     await expect(pdfDialog).toBeHidden();
     await expect(reopened).toBeVisible();
     await expect(pdfPreview).toBeFocused();
+  });
+
+  test.describe('on a touch screen', () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+
+    test('closing Show all by tap leaves the keyboard down @scenario:show-all-tap-close-keeps-keyboard-down', async ({
+      page,
+    }) => {
+      test.setTimeout(60000);
+      await gotoMockChat(page);
+      await useMockEndpoint(page);
+
+      await paletteButton(page).tap();
+      await expect(palette(page)).toBeVisible();
+      const showAll = palette(page).getByRole('button', { name: /^Show all /, exact: false });
+      await expect(showAll.first()).toBeVisible({ timeout: 20000 });
+      await showAll.first().tap();
+      const dialog = page.getByRole('dialog').filter({ has: page.getByRole('radiogroup') });
+      await expect(dialog).toBeVisible();
+
+      await dialog.getByRole('button', { name: 'Close', exact: true }).tap();
+      await expect(dialog).toBeHidden();
+      /* Focusing the message field would raise the on-screen keyboard. */
+      await expect(messageInput(page)).not.toBeFocused();
+    });
   });
 
   test.describe('on a phone', () => {

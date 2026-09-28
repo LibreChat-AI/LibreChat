@@ -70,7 +70,7 @@ export default function MarketplaceCatalog({
 
   if (items.length === 0 && !showSkeletons) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
+      <div role="status" className="flex flex-col items-center justify-center py-16 text-center">
         <Search className="text-text-tertiary size-8 opacity-40" aria-hidden="true" />
         <p className="text-text-secondary mt-3 text-sm">
           {localize(emptyKey ?? EMPTY_COPY_KEYS[view])}

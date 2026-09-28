@@ -25,6 +25,7 @@ export default function DialogImage({
   args,
   triggerRef,
   showDetails = true,
+  title,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -39,6 +40,8 @@ export default function DialogImage({
   triggerRef?: React.RefObject<HTMLButtonElement>;
   /** Off for an uploaded file, which has no generation details to show. */
   showDetails?: boolean;
+  /** Names the dialog and the image for assistive tech, e.g. the file name. */
+  title?: string;
 }) {
   const localize = useLocalize();
   const [isPromptOpen, setIsPromptOpen] = useState(false);
@@ -273,6 +276,9 @@ export default function DialogImage({
           onPointerDownOutside={(e) => e.preventDefault()}
           onClick={handleBackgroundClick}
         >
+          {title != null && (
+            <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
+          )}
           {/* Close button - top left */}
           <div className="absolute top-4 left-4 z-20">
             <TooltipAnchor
@@ -369,7 +375,7 @@ export default function DialogImage({
                 <img
                   ref={imageRef}
                   src={src}
-                  alt="Image"
+                  alt={title ?? 'Image'}
                   decoding="async"
                   className="block max-h-[85vh] object-contain"
                   style={{
