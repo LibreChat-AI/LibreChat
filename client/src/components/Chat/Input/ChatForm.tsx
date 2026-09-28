@@ -8,6 +8,17 @@ import type { SetterOrUpdater } from 'recoil';
 import type { ExtendedFile, FileSetter, ConvoGenerator } from '~/common';
 import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import {
+  cn,
+  getModelSpec,
+  hasIncompleteFiles,
+  removeFocusRings,
+  getComposerDraftId,
+  getPendingDraftId,
+  clearAllDrafts,
+  getFilesDraftCached,
+  isPastedTextFileMarked,
+} from '~/utils';
+import {
   useTextarea,
   useAutoSave,
   useLocalize,
@@ -18,15 +29,6 @@ import {
   useFocusChatEffect,
   useCodeWorkspace,
 } from '~/hooks';
-import {
-  cn,
-  getModelSpec,
-  hasIncompleteFiles,
-  removeFocusRings,
-  getComposerDraftId,
-  getFilesDraftCached,
-  isPastedTextFileMarked,
-} from '~/utils';
 import {
   useChatContext,
   useChatFormContext,
@@ -625,12 +627,18 @@ const ChatForm = memo(function ChatForm({
         {
           answerMode,
           steering,
-          submitMessage,
+          submitMessage: (message) => {
+            const result = submitMessage(message);
+            if (result !== false) {
+              clearAllDrafts(getPendingDraftId(index));
+            }
+            return result;
+          },
           reset: () => methods.reset(),
         },
         data,
       ),
-    [answerMode, steering, submitMessage, methods],
+    [answerMode, steering, submitMessage, methods, index],
   );
 
   return (
