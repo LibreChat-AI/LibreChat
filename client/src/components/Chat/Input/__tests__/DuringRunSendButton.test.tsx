@@ -40,12 +40,14 @@ const steeringStub = ({
   pausedOnApproval = false,
   canSteer = true,
   canControlGeneration = true,
-}: StubOptions) =>
+  steerInterruptsByDefault = false,
+}: StubOptions & { steerInterruptsByDefault?: boolean }) =>
   ({
     effectiveAction: canSteer ? 'steer' : 'queue',
     canSteer,
     canControlGeneration,
     pausedOnApproval,
+    steerInterruptsByDefault,
     interruptSteer: mockInterruptSteer,
     steerFromComposer: mockSteerFromComposer,
     queueFromComposer: mockQueueFromComposer,
@@ -83,12 +85,14 @@ function openMenu(options: MenuOptions = {}) {
   render(
     <RecoilRoot
       initializeState={({ set }) => {
-        set(store.steerInterruptsByDefault, enterInterrupts);
         set(store.shortcutsEnabled, shortcutsEnabled);
         set(store.customShortcuts, customShortcuts);
       }}
     >
-      <Harness steering={steeringStub(stub)} enterToSend={enterToSend} />
+      <Harness
+        steering={steeringStub({ ...stub, steerInterruptsByDefault: enterInterrupts })}
+        enterToSend={enterToSend}
+      />
     </RecoilRoot>,
   );
   expect(screen.getByText('com_ui_interrupt_steer')).toBeInTheDocument();

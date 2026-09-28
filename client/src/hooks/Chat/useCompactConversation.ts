@@ -3,7 +3,7 @@ import { atom, useAtom } from 'jotai';
 import { Constants, isCompactedLeaf, isAssistantsEndpoint } from 'librechat-data-provider';
 import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useChatContext } from '~/Providers/ChatContext';
-import { useChat } from './facade';
+import { useChatActions } from './facade';
 
 /** Conversation whose compaction this client submitted and is still streaming. */
 export const compactingConversationAtom = atom<string | null>(null);
@@ -23,7 +23,7 @@ export const supportsCompaction = (endpoint?: string | null): boolean =>
  */
 export default function useCompactConversation() {
   const { index, conversation } = useChatContext();
-  const { sendMessage, status } = useChat();
+  const { sendMessage, status } = useChatActions();
   const isSubmitting = status === 'submitted' || status === 'streaming';
   const latestMessage = useLatestMessage(index);
   const [compactingConversation, setCompactingConversation] = useAtom(compactingConversationAtom);

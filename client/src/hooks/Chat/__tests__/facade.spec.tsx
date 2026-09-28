@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import { ChatContext } from '~/Providers/ChatContext';
-import { useChat } from '../facade';
+import { useChat, useChatActions } from '../facade';
 
 const userMessage: TMessage = {
   messageId: 'user-1',
@@ -651,5 +651,78 @@ describe('useChat', () => {
 
     expect(contract.setMessages).toHaveBeenNthCalledWith(1, [userMessage]);
     expect(contract.setMessages).toHaveBeenNthCalledWith(2, [userMessage, answered]);
+  });
+});
+
+describe('useChatActions', () => {
+  const renderActions = (messages: TMessage[]) => {
+    const key = [QueryKeys.messages, 'convo-1'];
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(key, messages);
+    const contract = createContract({
+      getMessages: jest.fn(() => queryClient.getQueryData<TMessage[]>(key)),
+      latestMessageId: 'response-1',
+      isSubmitting: true,
+    });
+    let renders = 0;
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+      </QueryClientProvider>
+    );
+    const view = renderHook(
+      () => {
+        renders += 1;
+        return useChatActions();
+      },
+      { wrapper },
+    );
+    const write = async (next: TMessage[]) => {
+      await act(async () => {
+        queryClient.setQueryData(key, next);
+        await flushCacheNotify();
+      });
+    };
+    return { ...view, contract, write, renders: () => renders };
+  };
+
+  it('moves from submitted to streaming when the response gets content', async () => {
+    const { result, write } = renderActions([userMessage, response()]);
+    expect(result.current.status).toBe('submitted');
+
+    await write([userMessage, response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] })]);
+
+    expect(result.current.status).toBe('streaming');
+  });
+
+  it('does not re-render for stream frames that keep the status', async () => {
+    const { result, write, renders } = renderActions([
+      userMessage,
+      response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] }),
+    ]);
+    const first = result.current;
+    const before = renders();
+
+    await write([userMessage, response({ content: [{ type: ContentTypes.TEXT, text: 'Hello' }] })]);
+    await write([
+      userMessage,
+      response({ content: [{ type: ContentTypes.TEXT, text: 'Hello!' }] }),
+    ]);
+
+    expect(renders()).toBe(before);
+    expect(result.current).toBe(first);
+  });
+
+  it('forwards its actions to the contract', () => {
+    const { result, contract } = renderActions([userMessage, response()]);
+
+    expect(result.current.sendMessage).toBe(contract.ask);
+    expect(result.current.stop).toBe(contract.stopGenerating);
+    result.current.regenerate();
+    expect(contract.regenerate).toHaveBeenCalledWith({
+      messageId: 'response-1',
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+    });
   });
 });

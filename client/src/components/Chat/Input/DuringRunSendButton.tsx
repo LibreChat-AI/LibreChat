@@ -1,5 +1,4 @@
 import React, { forwardRef, useMemo } from 'react';
-import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
 import { Zap, Clock, OctagonPause, ZapOff } from 'lucide-react';
 import { composerSubmitClasses, SendActions, SendIcon } from '@librechat/client';
@@ -10,7 +9,6 @@ import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 /** The rows, the popover and the chord chips are shared with every other chat
  *  surface that can submit more than one way — see `SendActions`. */
@@ -40,9 +38,9 @@ type DuringRunSendButtonProps = {
 const DuringRunSendButton = React.memo(
   forwardRef((props: DuringRunSendButtonProps, ref: React.ForwardedRef<HTMLButtonElement>) => {
     const localize = useLocalize();
-    const steerInterruptsByDefault = useRecoilValue(store.steerInterruptsByDefault);
     const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
     const { steering, enterToSend } = props;
+    const { steerInterruptsByDefault } = steering;
     const data = useWatch({ control: props.control });
     const content = data?.text?.trim();
     const primary = steering.effectiveAction;
