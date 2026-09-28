@@ -476,12 +476,11 @@ export async function persistFinalizedCompactionTurn(
 /** What a failed compaction does with its already-persisted partial row. */
 export type FinalizedCompactionTurn =
   /** Not the failed run's row, or one holding nothing but a completed
-   *  checkpoint worth keeping exactly as it stands. */
+   *  checkpoint on a row that was already settled. */
   | { write: false }
-  /** The parts already carry the failure (an error part, a failed summary);
-   *  only the snapshot's live-run flags remain to settle. */
-  | { write: true; content?: undefined }
-  /** The parts need the terminal marking applied. */
+  /** The terminal marking is applied to the parts (a legacy or snapshot row
+   *  may carry failure parts that never got the identity marker) and the row
+   *  settles with the terminal envelope. */
   | { write: true; content: TMessageContentParts[] };
 
 /**
@@ -489,11 +488,13 @@ export type FinalizedCompactionTurn =
  * fires, so when the run then fails that snapshot is the row that stays: a
  * partial summary is marked failed beside its text, a snapshot with no
  * summary or error part gets the typed failure, and a snapshot whose parts
- * already carry the failure still settles its live-run flags. A completed
- * checkpoint is preserved as content, but a snapshot still flagged
- * `unfinished` settles its envelope even then, or the restored conversation
- * keeps treating the terminal job as live; a row that was already settled is
- * left alone. Rows of turns that were not compactions are never written.
+ * already carry the failure has the terminal marking reapplied (idempotent
+ * for marked parts, stamping legacy parts that predate the marker) beside
+ * its settled envelope. A completed checkpoint is preserved as content, but a
+ * snapshot still flagged `unfinished` settles its envelope even then, or the
+ * restored conversation keeps treating the terminal job as live; a row that
+ * was already settled is left alone. Rows of turns that were not compactions
+ * are never written.
  */
 export function resolveFinalizedCompactionTurn(
   partialRow: { content?: unknown; unfinished?: boolean } | null | undefined,
@@ -524,14 +525,13 @@ export function resolveFinalizedCompactionTurn(
       sawFailure = true;
     }
   }
-  if (unfinishedSummary) {
+  if (unfinishedSummary || sawFailure) {
     return { write: true, content: markAbortedCompactionContent(content, true) };
   }
-  if (sawFailure) {
-    return { write: true };
-  }
   if (sawCheckpoint) {
-    return partialRow?.unfinished === true ? { write: true } : { write: false };
+    return partialRow?.unfinished === true
+      ? { write: true, content: markAbortedCompactionContent(content, true) }
+      : { write: false };
   }
   return { write: true, content: markAbortedCompactionContent(content, true) };
 }

@@ -547,7 +547,7 @@ describe('persistFinalizedCompactionTurn', () => {
     ]);
   });
 
-  it('writes only the envelope when the parts already carry the failure', async () => {
+  it('writes the envelope with the marking reapplied when the parts already carry the failure', async () => {
     const saved: Record<string, unknown>[] = [];
     const partialRow = {
       content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
@@ -572,6 +572,7 @@ describe('persistFinalizedCompactionTurn', () => {
       conversationId: 'conversation-1',
       unfinished: false,
       error: true,
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
     });
   });
 
@@ -664,9 +665,9 @@ describe('resolveFinalizedCompactionTurn', () => {
   });
 
   /** The parts already carry the failure, but the snapshot's live-run flags
-   *  are still unsettled: the write settles the envelope without touching
-   *  content. */
-  it('settles only the envelope of a row whose parts already carry the failure', () => {
+   *  are still unsettled: the write settles the envelope with the marking
+   *  reapplied (idempotent on marked parts). */
+  it('settles a row whose parts already carry the failure', () => {
     const failedSummary = {
       content: [
         {
@@ -684,9 +685,26 @@ describe('resolveFinalizedCompactionTurn', () => {
 
     expect(resolveFinalizedCompactionTurn(failedSummary, { compact: true })).toEqual({
       write: true,
+      content: failedSummary.content,
     });
     expect(resolveFinalizedCompactionTurn(recordedFailure, { compact: true })).toEqual({
       write: true,
+      content: recordedFailure.content,
+    });
+  });
+
+  /** Legacy and imported rows can carry failure parts that predate the
+   *  identity marker: the settle write stamps them, or the restored turn
+   *  keeps the wrong rerun target. */
+  it('stamps legacy failure parts that never carried the marker', () => {
+    const legacyRow = {
+      unfinished: true,
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed' }],
+    };
+
+    expect(resolveFinalizedCompactionTurn(legacyRow, { compact: true })).toEqual({
+      write: true,
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
     });
   });
 
@@ -705,7 +723,17 @@ describe('resolveFinalizedCompactionTurn', () => {
       ],
     };
 
-    expect(resolveFinalizedCompactionTurn(snapshot, { compact: true })).toEqual({ write: true });
+    expect(resolveFinalizedCompactionTurn(snapshot, { compact: true })).toEqual({
+      write: true,
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A finished checkpoint.' }],
+          boundary: completedBoundary,
+          initiatedBy: 'user',
+        },
+      ],
+    });
   });
 
   it('leaves an already-settled checkpoint row untouched', () => {
