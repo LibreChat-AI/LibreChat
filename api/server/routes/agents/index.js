@@ -773,7 +773,7 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
           const abortPersistencePlan = planAbortedTurnPersistence(
             await resolveAbortedTurnAnchorDecision(jobData, {
               messageExists: (messageId, conversationId) =>
-                getMessages({ user: req?.user?.id, messageId, conversationId }).then(
+                getMessages({ user: req?.user?.id, messageId, conversationId }, '_id').then(
                   (rows) => rows.length > 0,
                 ),
             }),
