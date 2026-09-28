@@ -79,7 +79,7 @@ const CLIPPING_OVERFLOWS = new Set(['auto', 'scroll', 'hidden']);
  */
 const findClippingAncestors = (element: HTMLElement): HTMLElement[] => {
   const clippers: HTMLElement[] = [];
-  let current = element.parentElement;
+  let current: HTMLElement | null = element;
   while (current && current !== document.body) {
     const { overflowX, overflowY } = getComputedStyle(current);
     if (CLIPPING_OVERFLOWS.has(overflowX) || CLIPPING_OVERFLOWS.has(overflowY)) {
@@ -199,6 +199,78 @@ const clipAnchor = (anchor: Anchor, clippers: HTMLElement[]): Anchor | null => {
   return top < bottom && left < right ? { top, bottom, left, right } : null;
 };
 
+/** Selected text can cross from a clipped code block into unclipped prose. Clip
+ * each consecutive text fragment to its own ancestors before merging the visible bounds. */
+const visibleAnchor = (range: Range, anchor: Anchor, clippers: HTMLElement[]): Anchor | null => {
+  if (
+    range.startContainer === range.endContainer &&
+    range.startContainer.nodeType === Node.TEXT_NODE
+  ) {
+    return clipAnchor(anchor, clippers);
+  }
+
+  const ancestors = new Map<HTMLElement, HTMLElement[]>();
+  const clippersFor = (element: HTMLElement): HTMLElement[] => {
+    const cached = ancestors.get(element);
+    if (cached) {
+      return cached;
+    }
+    const parent = element.parentElement;
+    const outer = parent && parent !== document.body ? clippersFor(parent) : [];
+    const { overflowX, overflowY } = getComputedStyle(element);
+    const found =
+      CLIPPING_OVERFLOWS.has(overflowX) || CLIPPING_OVERFLOWS.has(overflowY)
+        ? [element, ...outer]
+        : outer;
+    ancestors.set(element, found);
+    return found;
+  };
+
+  let first: Text | null = null;
+  let last: Text | null = null;
+  let groupClippers: HTMLElement[] = [];
+  let visible: Anchor | null = null;
+  const measureGroup = () => {
+    if (!first || !last) {
+      return;
+    }
+    const fragment = document.createRange();
+    fragment.setStart(first, first === range.startContainer ? range.startOffset : 0);
+    fragment.setEnd(last, last === range.endContainer ? range.endOffset : last.length);
+    const bounds = anchorFromRect(fragment.getBoundingClientRect());
+    const clipped = bounds && clipAnchor(bounds, groupClippers);
+    if (!clipped) {
+      return;
+    }
+    visible = visible
+      ? {
+          top: Math.min(visible.top, clipped.top),
+          bottom: Math.max(visible.bottom, clipped.bottom),
+          left: Math.min(visible.left, clipped.left),
+          right: Math.max(visible.right, clipped.right),
+        }
+      : clipped;
+  };
+
+  const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.textContent || !range.intersectsNode(node) || !node.parentElement) {
+      continue;
+    }
+    const next = node as Text;
+    const nextClippers = clippersFor(node.parentElement as HTMLElement);
+    if (first && groupClippers !== nextClippers) {
+      measureGroup();
+      first = null;
+    }
+    first ??= next;
+    last = next;
+    groupClippers = nextClippers;
+  }
+  measureGroup();
+  return visible;
+};
+
 /** Place the popup on the preferred side, falling back to the other side and
  *  finally clamping into the viewport. */
 const resolveTop = (anchor: Anchor, height: number, preferBelow: boolean): number => {
@@ -314,7 +386,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
        *  tracked during the settle window, so a selection scrolled out of the
        *  chat in those 300ms would otherwise be published off-screen and
        *  clamped into view, stranding the popup over unrelated UI. */
-      const anchor = reading && clipAnchor(reading.anchor, reading.clippers);
+      const anchor = reading && visibleAnchor(reading.range, reading.anchor, reading.clippers);
       if (!reading || !anchor) {
         hide();
         return;
@@ -398,7 +470,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
         return;
       }
       const bounds = anchorFromRect(range.getBoundingClientRect());
-      const anchor = bounds && clipAnchor(bounds, clippersRef.current);
+      const anchor = bounds && visibleAnchor(range, bounds, clippersRef.current);
       if (!anchor) {
         hide();
         return;
