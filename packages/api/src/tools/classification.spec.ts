@@ -243,6 +243,83 @@ describe('classification.ts', () => {
     });
   });
 
+  describe('endpoint programmatic server policy', () => {
+    const toolName = 'search_mcp_Connector__Company';
+    const createTool = (rawServerName?: string): GenericTool =>
+      ({
+        name: toolName,
+        mcp: true,
+        mcpRawServerName: rawServerName,
+        mcpServerToolName: 'Connector__Company_search',
+      }) as unknown as GenericTool;
+
+    it.each([
+      { rawServerName: 'Connector: Company', servers: ['Connector: Company'], allowed: true },
+      { rawServerName: 'Connector__Company', servers: ['Connector: Company'], allowed: false },
+      { rawServerName: undefined, servers: ['Connector__Company'], allowed: false },
+      { rawServerName: 'Connector: Company', servers: [], allowed: false },
+    ])(
+      'uses resolved raw identity for $rawServerName and $servers',
+      async ({ rawServerName, servers, allowed }) => {
+        const agentToolOptions: AgentToolOptions = {
+          [toolName]: { allowed_callers: ['code_execution'], defer_loading: true },
+        };
+        const result = await buildToolClassification({
+          userId: 'user-123',
+          loadedTools: [createTool(rawServerName)],
+          agentToolOptions,
+          programmaticToolServers: servers,
+          programmaticToolsEnabled: true,
+          codeExecutionEnabled: true,
+          definitionsOnly: true,
+        });
+
+        expect(result.toolRegistry?.get(toolName)?.allowed_callers).toEqual(
+          allowed ? ['direct', 'code_execution'] : ['direct'],
+        );
+        expect(result.toolRegistry?.get(toolName)?.defer_loading).toBe(true);
+        expect(result.toolRegistry?.has('run_tools_with_bash')).toBe(allowed);
+        expect(agentToolOptions[toolName]?.allowed_callers).toEqual(['code_execution']);
+      },
+    );
+
+    it('enables allowlisted tools without per-tool options', async () => {
+      const result = await buildToolClassification({
+        userId: 'user-123',
+        loadedTools: [createTool('Connector: Company')],
+        programmaticToolServers: ['Connector: Company'],
+        programmaticToolsEnabled: true,
+        codeExecutionEnabled: true,
+        definitionsOnly: true,
+      });
+      expect(result.toolRegistry?.get(toolName)?.allowed_callers).toEqual([
+        'direct',
+        'code_execution',
+      ]);
+      expect(result.toolRegistry?.has('run_tools_with_bash')).toBe(true);
+    });
+
+    it('preserves aliased options without mutating endpoint agent options', async () => {
+      const legacyName = 'Connector__Company_search_mcp_Connector__Company';
+      const agentToolOptions: AgentToolOptions = {
+        [legacyName]: { allowed_callers: ['code_execution'], defer_loading: true },
+      };
+      Object.freeze(agentToolOptions[legacyName]);
+      Object.freeze(agentToolOptions);
+      const result = await buildToolClassification({
+        userId: 'user-123',
+        loadedTools: [createTool('Connector: Company')],
+        agentToolOptions,
+        programmaticToolServers: [],
+      });
+      expect(result.toolRegistry?.get(toolName)).toMatchObject({
+        allowed_callers: ['direct'],
+        defer_loading: true,
+      });
+      expect(Object.keys(agentToolOptions)).toEqual([legacyName]);
+    });
+  });
+
   describe('buildToolClassification with deferredToolsEnabled', () => {
     const createMCPTool = (name: string, description?: string) =>
       ({

@@ -463,6 +463,46 @@ describe('definitions.ts', () => {
       });
     });
 
+    describe('endpoint programmatic server policy', () => {
+      it.each([
+        { resolvedServer: 'Connector: Company', allowed: true },
+        { resolvedServer: 'Connector__Company', allowed: false },
+      ])(
+        'classifies expanded tools by resolved server $resolvedServer',
+        async ({ resolvedServer, allowed }) => {
+          const toolNames = ['search_mcp_Connector__Company', 'list_mcp_Connector__Company'];
+          const serverTools = Object.fromEntries(
+            toolNames.map((name) => [name, { function: { name, description: name } }]),
+          );
+          const getOrFetchMCPServerTools = jest.fn(async (_userId: string, name: string) =>
+            name === resolvedServer ? serverTools : null,
+          );
+          const result = await loadToolDefinitions(
+            {
+              userId: 'user-123',
+              agentId: 'agent-123',
+              tools: ['sys__all__sys_mcp_Connector__Company', 'web_search'],
+              mcpServerNames: ['Connector__Company'],
+              rawServerNames: ['Connector: Company'],
+              programmaticToolServers: ['Connector: Company'],
+              programmaticToolsEnabled: true,
+              codeExecutionEnabled: true,
+              toolOptions: { [toolNames[0]]: { allowed_callers: ['code_execution'] } },
+            },
+            { getOrFetchMCPServerTools, isBuiltInTool: (name) => name === 'web_search' },
+          );
+          for (const name of toolNames) {
+            expect(result.toolRegistry.get(name)).toMatchObject({
+              serverName: resolvedServer,
+              allowed_callers: allowed ? ['direct', 'code_execution'] : ['direct'],
+            });
+          }
+          expect(result.toolRegistry.get('web_search')?.allowed_callers).toEqual(['direct']);
+          expect(result.toolRegistry.has('run_tools_with_bash')).toBe(allowed);
+        },
+      );
+    });
+
     describe('MCP tool definitions with server name variants', () => {
       it('treats a server pin with no selected tools as intentionally empty', async () => {
         const result = await loadToolDefinitions(

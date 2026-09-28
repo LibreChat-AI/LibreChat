@@ -573,6 +573,34 @@ actions:
 
 # Definition of custom endpoints
 endpoints:
+  # Programmatic Tool Calling (PTC) for ordinary OpenAI, Anthropic, Bedrock,
+  # and compatible custom endpoint chats. No saved Agent or user toggle is needed.
+  # Native calls return each tool result to the model; PTC lets sandboxed code
+  # call, filter, and combine eligible MCP tools before returning a compact result.
+  # Both calling modes remain available for allowlisted tools.
+  #
+  # Requires a configured Code API with PTC support and its Tool Call Server.
+  # Calls use the existing broker, per-user MCP authorization, tool approvals,
+  # and request-scoped credentials. This setting grants no sandbox network access.
+  # The shared endpoints.agents.capabilities must still permit "execute_code"
+  # and "tools" (both enabled by default), and the user's role must allow Code
+  # Interpreter and MCP use. "programmatic_tools" need not be enabled for Agents.
+  #
+  # all:
+  #   programmaticTools:
+  #     enabled: true
+  #     mcpServers: [internal-search, github]
+  #
+  # Use this same block under openAI, anthropic, bedrock, or a custom endpoint
+  # entry to override the global policy. The entire block replaces the global
+  # policy, including its allowlist; enabled: false disables PTC for that endpoint.
+  # List exact configured MCP server names. Each server is equipped automatically,
+  # subject to the user's existing access; only its tools are eligible for PTC.
+  # Empty/omitted mcpServers grants no programmatic tools; wildcards are rejected.
+  # Other selected MCP servers keep native calls only. Omit programmaticTools to
+  # preserve existing behavior. Saved Agents retain their own PTC configuration.
+  # Parallel endpoint chats equip these defaults independently; a primary chat's
+  # programmatic servers are not automatically shared with the added endpoint.
   # assistants:
   #   disableBuilder: false # Disable Assistants Builder Interface by setting to `true`
   #   pollIntervalMs: 3000  # Polling interval for checking assistant updates

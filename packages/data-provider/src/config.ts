@@ -675,7 +675,25 @@ export const defaultAssistantsVersion = {
   [EModelEndpoint.azureAssistants]: 1,
 };
 
+const programmaticToolsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Explicit MCP server names whose tools may be called programmatically. */
+  mcpServers: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .refine((name) => name !== '*', { message: 'An explicit MCP server name is required.' }),
+    )
+    .default([]),
+});
+
+export type TProgrammaticToolsConfig = z.infer<typeof programmaticToolsConfigSchema>;
+
 export const baseEndpointSchema = z.object({
+  /** Enables programmatic tool calling for tools from explicitly permitted MCP servers. */
+  programmaticTools: programmaticToolsConfigSchema.optional(),
   /**
    * Milliseconds between visible streamed chunks. Agents SDK-backed
    * providers (openAI, custom, anthropic, google, bedrock, agents) smooth

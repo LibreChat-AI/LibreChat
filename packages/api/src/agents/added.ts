@@ -16,6 +16,7 @@ import {
   filterChatSelectableMCPServers,
   validateMCPServerConfig,
 } from '~/mcp/utils';
+import { getInheritedEndpointTools, resolveEndpointProgrammaticTools } from '~/agents/programmatic';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
@@ -129,6 +130,8 @@ export async function loadAddedAgent(
   }
 
   const appConfig = req.config as AppConfig | undefined;
+  const programmaticTools = resolveEndpointProgrammaticTools(appConfig, endpoint);
+  const programmaticServers = programmaticTools?.enabled ? programmaticTools.mcpServers : [];
   const ephemeralAgent = rest.ephemeralAgent as
     | {
         mcp?: string[];
@@ -173,7 +176,17 @@ export async function loadAddedAgent(
       provider: endpoint,
       model_parameters: {},
       model,
-      tools: [...primaryAgent.tools],
+      tools: [
+        ...new Set([
+          ...getInheritedEndpointTools(appConfig, primaryAgent),
+          ...(programmaticServers.length > 0 ||
+          ephemeralAgent?.execute_code === true ||
+          modelSpec?.executeCode === true
+            ? [Tools.execute_code]
+            : []),
+          ...programmaticServers.map((server) => `${mcp_all}${mcp_delimiter}${server}`),
+        ]),
+      ],
     };
     applyModelSpecSkills(result, modelSpec);
     applyModelSpecSubagents(result, modelSpec);
@@ -216,9 +229,16 @@ export async function loadAddedAgent(
       mcpServers.add(mcpServer);
     }
   }
+  for (const server of programmaticServers) {
+    mcpServers.add(server);
+  }
 
   const tools: string[] = [];
-  if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
+  if (
+    ephemeralAgent?.execute_code === true ||
+    modelSpec?.executeCode === true ||
+    programmaticServers.length > 0
+  ) {
     tools.push(Tools.execute_code);
   }
   if (ephemeralAgent?.file_search === true || modelSpec?.fileSearch === true) {

@@ -22,6 +22,7 @@ import {
   validateMCPServerConfig,
 } from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { resolveEndpointProgrammaticTools } from '~/agents/programmatic';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
@@ -78,6 +79,8 @@ export async function loadEphemeralAgent(
     modelSpec = modelSpecs?.list?.find((s) => s.name === spec) ?? null;
   }
   const ephemeralAgent: TEphemeralAgent | undefined = req.body?.ephemeralAgent;
+  const programmaticTools = resolveEndpointProgrammaticTools(req.config, endpoint);
+  const programmaticServers = programmaticTools?.enabled ? programmaticTools.mcpServers : [];
   const userId = req.user?.id ?? '';
   /** The picker's own selection is narrowed to what the picker may offer; a
    *  spec's servers are the operator's choice and are added after, so pinning a
@@ -94,15 +97,22 @@ export async function loadEphemeralAgent(
       mcpServers.add(mcpServer);
     }
   }
+  for (const server of programmaticServers) {
+    mcpServers.add(server);
+  }
   /** Publish the servers this request will actually use back onto the body. The
    *  instruction path reads `req.body.ephemeralAgent.mcp` directly and prefers
    *  it over the agent's tools, so it would otherwise both inject a hidden
    *  server's `serverInstructions` and omit a spec-pinned server's. */
-  if (ephemeralAgent != null && Array.isArray(ephemeralAgent.mcp)) {
-    ephemeralAgent.mcp = [...mcpServers];
+  if (req.body && ephemeralAgent != null && Array.isArray(ephemeralAgent.mcp)) {
+    req.body = { ...req.body, ephemeralAgent: { ...ephemeralAgent, mcp: [...mcpServers] } };
   }
   const tools: string[] = [];
-  if (ephemeralAgent?.execute_code === true || modelSpec?.executeCode === true) {
+  if (
+    ephemeralAgent?.execute_code === true ||
+    modelSpec?.executeCode === true ||
+    programmaticServers.length > 0
+  ) {
     tools.push(Tools.execute_code);
   }
   if (ephemeralAgent?.file_search === true || modelSpec?.fileSearch === true) {

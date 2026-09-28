@@ -13,6 +13,7 @@ const {
   PermissionTypes,
   AgentCapabilities,
   defaultAgentCapabilities,
+  encodeEphemeralAgentId,
 } = require('librechat-data-provider');
 
 const mockGetEndpointsConfig = jest.fn();
@@ -89,6 +90,9 @@ jest.mock('~/server/services/Config', () => ({
   getCachedTools: (...args) => mockGetCachedTools(...args),
 }));
 
+const mockBuildToolClassification = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').buildToolClassification(...args),
+);
 const mockLoadToolDefinitions = jest.fn();
 const mockGetUserMCPAuthMap = jest.fn();
 jest.mock('@librechat/api', () => ({
@@ -106,6 +110,7 @@ jest.mock('@librechat/api', () => ({
       ? upstreamTokenProvider
       : (upstreamTokenProvider ?? createSessionProvider()),
   loadToolDefinitions: (...args) => mockLoadToolDefinitions(...args),
+  buildToolClassification: (...args) => mockBuildToolClassification(...args),
   getUserMCPAuthMap: (...args) => mockGetUserMCPAuthMap(...args),
   createAuthIdentityContext: ({ user, tenantId }) => ({
     appUserId: user?._id?.toString?.() ?? user?.id,
@@ -711,6 +716,205 @@ describe('ToolService - Action Capability Gating', () => {
 
       expect(result.size).toBe(0);
     });
+  });
+
+  describe('endpoint programmatic tools policy', () => {
+    const capabilities = [AgentCapabilities.tools, AgentCapabilities.execute_code];
+    const endpoints = [EModelEndpoint.openAI, EModelEndpoint.anthropic, EModelEndpoint.bedrock];
+    const buildEndpointRequest = (endpoint, policy, sharedCapabilities = capabilities) => ({
+      ...createMockReq(sharedCapabilities),
+      config: {
+        endpoints: {
+          agents: { capabilities: sharedCapabilities },
+          [endpoint]: { programmaticTools: policy },
+        },
+      },
+    });
+    const buildAgent = (endpoint) => ({
+      id: encodeEphemeralAgentId({ endpoint, model: 'test-model' }),
+      provider: endpoint,
+      tools: [Tools.execute_code, 'calculator'],
+    });
+
+    it.each(endpoints)(
+      'enables PTC independently of saved-agent capabilities for %s',
+      async (endpoint) => {
+        const req = buildEndpointRequest(endpoint, { enabled: true, mcpServers: ['warehouse'] });
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+        const resolved = await resolveAgentCapabilities(req, req.config, buildAgent(endpoint).id);
+
+        expect(resolved.has(AgentCapabilities.programmatic_tools)).toBe(true);
+        expect(resolved.has(AgentCapabilities.execute_code)).toBe(true);
+        expect(req.config.endpoints.agents.capabilities).toEqual(capabilities);
+      },
+    );
+
+    it.each(endpoints)('disables inherited PTC explicitly for %s', async (endpoint) => {
+      const inherited = [...capabilities, AgentCapabilities.programmatic_tools];
+      const req = buildEndpointRequest(endpoint, { enabled: false }, inherited);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(inherited));
+
+      const resolved = await resolveAgentCapabilities(req, req.config, buildAgent(endpoint).id);
+
+      expect(resolved.has(AgentCapabilities.programmatic_tools)).toBe(false);
+    });
+
+    it.each([true, false])(
+      'preserves saved-agent PTC=%s despite endpoint policy',
+      async (enabled) => {
+        const configured = enabled
+          ? [...capabilities, AgentCapabilities.programmatic_tools]
+          : capabilities;
+        const req = buildEndpointRequest(EModelEndpoint.openAI, { enabled: !enabled }, configured);
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(configured));
+
+        const resolved = await resolveAgentCapabilities(req, req.config, 'agent_saved');
+
+        expect(resolved.has(AgentCapabilities.programmatic_tools)).toBe(enabled);
+      },
+    );
+
+    it.each([true, false])(
+      'preserves existing PTC=%s when the endpoint has no policy',
+      async (enabled) => {
+        const configured = enabled
+          ? [...capabilities, AgentCapabilities.programmatic_tools]
+          : capabilities;
+        const req = buildEndpointRequest(EModelEndpoint.bedrock, undefined, configured);
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(configured));
+
+        const resolved = await resolveAgentCapabilities(
+          req,
+          req.config,
+          buildAgent(EModelEndpoint.bedrock).id,
+        );
+
+        expect(resolved.has(AgentCapabilities.programmatic_tools)).toBe(enabled);
+      },
+    );
+
+    describe.each([true, false])('tool loading (definitionsOnly=%s)', (definitionsOnly) => {
+      it.each(endpoints)('passes the %s server allowlist into classification', async (endpoint) => {
+        const req = buildEndpointRequest(endpoint, { enabled: true, mcpServers: ['warehouse'] });
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+        await loadAgentTools({ req, res: {}, agent: buildAgent(endpoint), definitionsOnly });
+
+        const loader = definitionsOnly ? mockLoadToolDefinitions : mockBuildToolClassification;
+        expect(loader).toHaveBeenCalledWith(
+          expect.objectContaining({
+            programmaticToolsEnabled: true,
+            programmaticToolServers: ['warehouse'],
+            codeExecutionEnabled: true,
+          }),
+          ...(definitionsOnly ? [expect.any(Object)] : []),
+        );
+      });
+
+      it('passes an empty server allowlist for explicitly disabled PTC', async () => {
+        const endpoint = EModelEndpoint.bedrock;
+        const req = buildEndpointRequest(endpoint, { enabled: false, mcpServers: ['warehouse'] });
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+        await loadAgentTools({ req, res: {}, agent: buildAgent(endpoint), definitionsOnly });
+
+        const loader = definitionsOnly ? mockLoadToolDefinitions : mockBuildToolClassification;
+        expect(loader.mock.calls[0][0]).toMatchObject({
+          programmaticToolsEnabled: false,
+          programmaticToolServers: [],
+        });
+      });
+
+      it.each([undefined, { enabled: true, mcpServers: ['warehouse'] }])(
+        'preserves saved-agent server policy independently of endpoint policy %j',
+        async (policy) => {
+          const configured = [...capabilities, AgentCapabilities.programmatic_tools];
+          const req = buildEndpointRequest(EModelEndpoint.bedrock, policy, configured);
+          mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(configured));
+
+          await loadAgentTools({
+            req,
+            res: {},
+            agent: { ...buildAgent(EModelEndpoint.bedrock), id: 'agent_saved' },
+            definitionsOnly,
+          });
+
+          const loader = definitionsOnly ? mockLoadToolDefinitions : mockBuildToolClassification;
+          expect(loader.mock.calls[0][0].programmaticToolsEnabled).toBe(true);
+          expect(loader.mock.calls[0][0].programmaticToolServers).toBeUndefined();
+        },
+      );
+
+      it('keeps RUN_CODE role permission as a ceiling for endpoint PTC', async () => {
+        const endpoint = EModelEndpoint.bedrock;
+        const req = buildEndpointRequest(endpoint, { enabled: true, mcpServers: ['warehouse'] });
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+        mockGetRoleByName.mockResolvedValue(
+          buildRole({
+            [PermissionTypes.RUN_CODE]: { [Permissions.USE]: false },
+          }),
+        );
+
+        await loadAgentTools({ req, res: {}, agent: buildAgent(endpoint), definitionsOnly });
+
+        const loader = definitionsOnly ? mockLoadToolDefinitions : mockBuildToolClassification;
+        expect(loader.mock.calls[0][0].codeExecutionEnabled).toBe(false);
+      });
+    });
+
+    it.each([
+      ['endpoint disabled', { enabled: false }, capabilities, true],
+      ['tools capability disabled', { enabled: true }, [AgentCapabilities.execute_code], true],
+      ['code capability disabled', { enabled: true }, [AgentCapabilities.tools], true],
+      ['role denied', { enabled: true }, capabilities, false],
+    ])(
+      'does not load endpoint PTC for execution when %s',
+      async (_reason, policy, configured, roleAllowed) => {
+        const endpoint = EModelEndpoint.bedrock;
+        const req = buildEndpointRequest(endpoint, policy, configured);
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(configured));
+        mockGetRoleByName.mockResolvedValue(
+          buildRole({
+            [PermissionTypes.RUN_CODE]: { [Permissions.USE]: roleAllowed },
+          }),
+        );
+
+        const result = await loadToolsForExecution({
+          req,
+          res: {},
+          agent: buildAgent(endpoint),
+          toolNames: [Constants.PROGRAMMATIC_TOOL_CALLING],
+          toolRegistry: new Map(),
+          actionsEnabled: false,
+        });
+
+        expect(result.loadedTools.map((tool) => tool.name)).not.toContain(
+          Constants.PROGRAMMATIC_TOOL_CALLING,
+        );
+      },
+    );
+
+    it.each(endpoints)(
+      'honors %s endpoint policy when loading PTC for execution',
+      async (endpoint) => {
+        const req = buildEndpointRequest(endpoint, { enabled: true, mcpServers: ['warehouse'] });
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+        const result = await loadToolsForExecution({
+          req,
+          res: {},
+          agent: buildAgent(endpoint),
+          toolNames: [Constants.PROGRAMMATIC_TOOL_CALLING],
+          toolRegistry: new Map(),
+          actionsEnabled: false,
+        });
+
+        expect(result.loadedTools.map((tool) => tool.name)).toContain(
+          Constants.PROGRAMMATIC_TOOL_CALLING,
+        );
+      },
+    );
   });
 
   describe('isActionTool — cross-delimiter collision guard', () => {
@@ -1587,84 +1791,103 @@ describe('ToolService - Action Capability Gating', () => {
       expect(result.actionsEnabled).toBe(false);
     });
 
-    it('emits separate MCP OAuth login steps and completion events for multiple pending servers', async () => {
-      const req = createMockReq([AgentCapabilities.tools]);
-      const res = { writableEnded: false };
-      const servers = ['ELI', 'Vespa'];
-      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
-      mockResolveConfigServers.mockResolvedValue(
-        Object.fromEntries(
-          servers.map((serverName) => [
-            serverName,
-            {
-              type: 'streamable-http',
-              url: `https://mcp.example.com/${serverName}`,
-              requiresOAuth: true,
+    it.each([
+      ['agent_123', undefined],
+      [encodeEphemeralAgentId({ endpoint: EModelEndpoint.bedrock, model: 'test-model' }), ['ELI']],
+    ])(
+      'preserves policy during OAuth reload for %s and emits separate login steps',
+      async (agentId, expectedServers) => {
+        const req = {
+          ...createMockReq([AgentCapabilities.tools]),
+          config: {
+            endpoints: {
+              agents: { capabilities: [AgentCapabilities.tools] },
+              bedrock: { programmaticTools: { enabled: true, mcpServers: ['ELI'] } },
             },
-          ]),
-        ),
-      );
+          },
+        };
+        const res = { writableEnded: false };
+        const servers = ['ELI', 'Vespa'];
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
+        mockResolveConfigServers.mockResolvedValue(
+          Object.fromEntries(
+            servers.map((serverName) => [
+              serverName,
+              {
+                type: 'streamable-http',
+                url: `https://mcp.example.com/${serverName}`,
+                requiresOAuth: true,
+              },
+            ]),
+          ),
+        );
 
-      mockLoadToolDefinitions
-        .mockImplementationOnce(async (_args, deps) => {
-          await deps.getOrFetchMCPServerTools(req.user.id, servers[0]);
-          await deps.getOrFetchMCPServerTools(req.user.id, servers[1]);
-          return {
+        mockLoadToolDefinitions
+          .mockImplementationOnce(async (_args, deps) => {
+            await deps.getOrFetchMCPServerTools(req.user.id, servers[0]);
+            await deps.getOrFetchMCPServerTools(req.user.id, servers[1]);
+            return {
+              toolDefinitions: [],
+              toolRegistry: new Map(),
+              hasDeferredTools: false,
+            };
+          })
+          .mockResolvedValue({
             toolDefinitions: [],
             toolRegistry: new Map(),
             hasDeferredTools: false,
-          };
-        })
-        .mockResolvedValue({
-          toolDefinitions: [],
-          toolRegistry: new Map(),
-          hasDeferredTools: false,
+          });
+
+        reinitMCPServer.mockImplementation(
+          async ({ serverName, returnOnOAuth, oauthStart, oauthEnd }) => {
+            if (returnOnOAuth === false) {
+              await oauthStart(`https://auth.example.com/${serverName}`);
+              await oauthEnd();
+              return { availableTools: { [`tool_${serverName}`]: {} } };
+            }
+
+            await oauthStart(`https://auth.example.com/${serverName}`);
+            return { availableTools: null };
+          },
+        );
+
+        await loadAgentTools({
+          req,
+          res,
+          agent: {
+            id: agentId,
+            tools: servers.map((server) => `search${Constants.mcp_delimiter}${server}`),
+          },
+          definitionsOnly: true,
         });
 
-      reinitMCPServer.mockImplementation(
-        async ({ serverName, returnOnOAuth, oauthStart, oauthEnd }) => {
-          if (returnOnOAuth === false) {
-            await oauthStart(`https://auth.example.com/${serverName}`);
-            await oauthEnd();
-            return { availableTools: { [`tool_${serverName}`]: {} } };
-          }
+        expect(mockLoadToolDefinitions).toHaveBeenCalledTimes(2);
+        for (const [options] of mockLoadToolDefinitions.mock.calls) {
+          expect(options.programmaticToolServers).toEqual(expectedServers);
+        }
 
-          await oauthStart(`https://auth.example.com/${serverName}`);
-          return { availableTools: null };
-        },
-      );
+        const runStepEvents = mockSendEvent.mock.calls
+          .map(([, event]) => event)
+          .filter((event) => event.data?.stepDetails?.type === 'tool_calls');
+        const deltaEvents = mockSendEvent.mock.calls
+          .map(([, event]) => event)
+          .filter((event) => event.data?.delta?.type === 'tool_calls');
+        const authDeltaEvents = deltaEvents.filter((event) => event.data.delta.auth);
+        const completionEvents = mockSendEvent.mock.calls
+          .map(([, event]) => event)
+          .filter((event) => event.data?.result?.tool_call?.name?.startsWith('oauth'));
 
-      await loadAgentTools({
-        req,
-        res,
-        agent: {
-          id: 'agent_123',
-          tools: servers.map((server) => `search${Constants.mcp_delimiter}${server}`),
-        },
-        definitionsOnly: true,
-      });
-
-      const runStepEvents = mockSendEvent.mock.calls
-        .map(([, event]) => event)
-        .filter((event) => event.data?.stepDetails?.type === 'tool_calls');
-      const deltaEvents = mockSendEvent.mock.calls
-        .map(([, event]) => event)
-        .filter((event) => event.data?.delta?.type === 'tool_calls');
-      const authDeltaEvents = deltaEvents.filter((event) => event.data.delta.auth);
-      const completionEvents = mockSendEvent.mock.calls
-        .map(([, event]) => event)
-        .filter((event) => event.data?.result?.tool_call?.name?.startsWith('oauth'));
-
-      expect(runStepEvents.map((event) => event.data.index)).toEqual([0, 1]);
-      expect(authDeltaEvents.map((event) => event.data.id)).toEqual([
-        'step_oauth_login_ELI',
-        'step_oauth_login_Vespa',
-      ]);
-      expect(completionEvents.map((event) => event.data.result.id)).toEqual([
-        'step_oauth_login_ELI',
-        'step_oauth_login_Vespa',
-      ]);
-    });
+        expect(runStepEvents.map((event) => event.data.index)).toEqual([0, 1]);
+        expect(authDeltaEvents.map((event) => event.data.id)).toEqual([
+          'step_oauth_login_ELI',
+          'step_oauth_login_Vespa',
+        ]);
+        expect(completionEvents.map((event) => event.data.result.id)).toEqual([
+          'step_oauth_login_ELI',
+          'step_oauth_login_Vespa',
+        ]);
+      },
+    );
 
     it('does not count an empty post-OAuth catalog as tools available or reload definitions', async () => {
       const req = createMockReq([AgentCapabilities.tools]);

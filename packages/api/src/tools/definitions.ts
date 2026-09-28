@@ -49,6 +49,8 @@ export interface LoadToolDefinitionsParams {
   deferredToolsEnabled?: boolean;
   /** Whether programmatic tool calling is enabled */
   programmaticToolsEnabled?: boolean;
+  /** Trusted endpoint allowlist of raw MCP server names; undefined preserves saved-agent options. */
+  programmaticToolServers?: readonly string[];
   /** Whether code execution is enabled and requested by this agent */
   codeExecutionEnabled?: boolean;
   codeExecutionContext?: CodeExecutionContext;
@@ -131,6 +133,7 @@ export async function loadToolDefinitions(
     toolOptions = {},
     deferredToolsEnabled = false,
     programmaticToolsEnabled = false,
+    programmaticToolServers,
     codeExecutionEnabled = false,
     codeExecutionContext,
     codeEnvironments,
@@ -370,6 +373,7 @@ export async function loadToolDefinitions(
     loadedTools,
     deferredToolsEnabled,
     programmaticToolsEnabled,
+    programmaticToolServers,
     codeExecutionEnabled,
     codeExecutionContext,
     codeEnvironments,

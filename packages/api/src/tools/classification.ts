@@ -258,6 +258,27 @@ function buildToolRegistry(
   return registry;
 }
 
+/** Endpoint policy is keyed by resolved raw identities, never model-facing name suffixes. */
+function projectProgrammaticToolOptions(
+  tools: MCPToolInstance[],
+  agentToolOptions: AgentToolOptions,
+  programmaticToolServers: readonly string[],
+): AgentToolOptions {
+  const allowedServers = new Set(programmaticToolServers);
+  return Object.fromEntries(
+    tools.map((tool) => [
+      tool.name,
+      {
+        ...agentToolOptions[tool.name],
+        allowed_callers:
+          tool.mcpRawServerName != null && allowedServers.has(tool.mcpRawServerName)
+            ? ['direct', 'code_execution']
+            : ['direct'],
+      },
+    ]),
+  );
+}
+
 /** Parameters for building tool classification and creating PTC/tool search tools */
 export interface BuildToolClassificationParams {
   /** All loaded tools (will be filtered for MCP tools) */
@@ -273,6 +294,8 @@ export interface BuildToolClassificationParams {
   deferredToolsEnabled?: boolean;
   /** Whether the programmatic_tools capability is enabled (from agent config) */
   programmaticToolsEnabled?: boolean;
+  /** Trusted endpoint allowlist of raw MCP server names; undefined preserves saved-agent options. */
+  programmaticToolServers?: readonly string[];
   /** Whether code execution is enabled and requested by this agent */
   codeExecutionEnabled?: boolean;
   /** When true, return definitions without executable tools (event-driven mode). */
@@ -353,6 +376,7 @@ export async function buildToolClassification(
     definitionsOnly = false,
     deferredToolsEnabled = true,
     programmaticToolsEnabled = false,
+    programmaticToolServers,
     codeExecutionEnabled = false,
     authHeaders,
     codeExecutionContext,
@@ -375,8 +399,17 @@ export async function buildToolClassification(
 
   const mcpToolDefs = mcpTools.map(extractMCPToolDefinition);
   const mcpToolAliases = collectMCPToolAliases(mcpToolDefs);
-  aliasMCPToolOptions(mcpToolAliases, agentToolOptions);
-  const toolRegistry: LCToolRegistry = buildToolRegistry(mcpToolDefs, agentToolOptions);
+  let effectiveToolOptions =
+    programmaticToolServers === undefined ? agentToolOptions : { ...agentToolOptions };
+  aliasMCPToolOptions(mcpToolAliases, effectiveToolOptions);
+  if (programmaticToolServers !== undefined) {
+    effectiveToolOptions = projectProgrammaticToolOptions(
+      mcpTools,
+      effectiveToolOptions ?? {},
+      programmaticToolServers,
+    );
+  }
+  const toolRegistry: LCToolRegistry = buildToolRegistry(mcpToolDefs, effectiveToolOptions);
 
   /** Clean up temporary mcpJsonSchema property from tools now that registry is populated */
   cleanupMCPToolSchemas(mcpTools);
