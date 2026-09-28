@@ -222,7 +222,12 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
         setPreviewing(null);
         return;
       }
-      setImageUrl(toAbsoluteFilePath(previewing.filepath, apiBaseUrl()));
+      /* A stored link can be expired: open only once it actually loads. */
+      const fallback = toAbsoluteFilePath(previewing.filepath, apiBaseUrl());
+      const probe = new Image();
+      probe.onload = () => !cancelled && setImageUrl(fallback);
+      probe.onerror = () => !cancelled && setPreviewing(null);
+      probe.src = fallback;
     });
     return () => {
       cancelled = true;
@@ -277,6 +282,7 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
         fileSource={previewing?.source}
         fileSize={previewing?.bytes}
         deliveryPath={previewing?.llmDeliveryPath}
+        triggerRef={previewTriggerRef}
       />
     </>
   );

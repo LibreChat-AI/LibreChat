@@ -19,6 +19,16 @@ const SKILL_DESCRIPTION =
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAHUlEQVQ4jWNwaDjwnxLMMGrA/9EwODAaBg3DIgwACY9/HwbtciYAAAAASUVORK5CYII=';
 
+/** A one-page PDF small enough to inline; the preview only needs it to parse. */
+const MINIMAL_PDF = [
+  '%PDF-1.4',
+  '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj',
+  '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj',
+  '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj',
+  'trailer<</Root 1 0 R>>',
+  '%%EOF',
+].join('\n');
+
 const paletteButton = (page: Page) => page.getByRole('button', { name: PALETTE_NAME, exact: true });
 const palette = (page: Page) => page.getByRole('dialog', { name: PALETTE_NAME, exact: true });
 const messageInput = (page: Page) => page.getByRole('textbox', { name: MESSAGE_INPUT_NAME });
@@ -49,6 +59,11 @@ async function openShowAll(page: Page, sectionLabel: string, dialogName: string)
   await expect(dialog).toBeVisible();
   await expect(palette(page)).toBeHidden();
   return dialog;
+}
+
+async function closeShowAll(page: Page, dialog: Locator) {
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
 }
 
 type SkillSummary = { _id: string; name: string; description: string };
@@ -303,6 +318,7 @@ test.describe('composer palette show all', () => {
     await expect(imageDialog.locator('img')).toHaveAttribute('src', /^(blob:|https?:|\/)/);
     /* An uploaded file has no generation prompt, size or quality to show. */
     await expect(imageDialog.getByRole('button', { name: /image details/i })).toHaveCount(0);
+    await expect(page.getByText('Image details', { exact: true })).toHaveCount(0);
 
     const closeButton = imageDialog.getByRole('button', { name: 'Close', exact: true });
     await expect(closeButton).toBeVisible();
@@ -312,6 +328,27 @@ test.describe('composer palette show all', () => {
     await expect(imageDialog).toBeHidden();
     await expect(dialog).toBeVisible();
     await expect(previewButton).toBeFocused();
+
+    /* A PDF opens the message file preview instead; closing it by keyboard
+     * returns focus to its own Preview button too. */
+    await closeShowAll(page, dialog);
+    const pdfName = `${uniqueName('palette-preview')}.pdf`;
+    await uploadFile(page, {
+      name: pdfName,
+      mimeType: 'application/pdf',
+      buffer: Buffer.from(MINIMAL_PDF, 'utf8'),
+    });
+    await openPalette(page);
+    const reopened = await openShowAll(page, 'Your files', 'Your files');
+    const pdfPreview = reopened.getByRole('button', { name: `Preview ${pdfName}`, exact: true });
+    await pdfPreview.focus();
+    await page.keyboard.press('Enter');
+    const pdfDialog = page.getByRole('dialog', { name: pdfName, exact: true });
+    await expect(pdfDialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(pdfDialog).toBeHidden();
+    await expect(reopened).toBeVisible();
+    await expect(pdfPreview).toBeFocused();
   });
 
   test.describe('on a phone', () => {

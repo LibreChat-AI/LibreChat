@@ -42,6 +42,8 @@ interface FilePreviewDialogProps {
   fileSource?: string;
   fileSize?: number;
   deliveryPath?: TFile['llmDeliveryPath'];
+  /** Where focus returns on close when the dialog is opened without a trigger. */
+  triggerRef?: React.RefObject<HTMLElement | null>;
 }
 
 /** Formats bytes with unit suffix (differs from ~/utils/formatBytes which returns a raw number). */
@@ -104,6 +106,7 @@ export default function FilePreviewDialog({
   fileSource,
   fileSize,
   deliveryPath,
+  triggerRef,
 }: FilePreviewDialogProps) {
   const localize = useLocalize();
   const user = useRecoilValue(store.user);
@@ -258,7 +261,7 @@ export default function FilePreviewDialog({
   }
 
   return (
-    <OGDialog open={open} onOpenChange={onOpenChange}>
+    <OGDialog open={open} onOpenChange={onOpenChange} triggerRef={triggerRef}>
       <OGDialogContent
         className="flex w-full max-w-4xl flex-col !overflow-hidden p-0"
         showCloseButton={true}
