@@ -239,6 +239,7 @@ describe('AgentClient retained answers', () => {
     expect(text.indexOf(ANSWER_LINE)).toBeLessThan(text.indexOf(LATEST_TEXT));
     expect(text.endsWith(LATEST_TEXT)).toBe(true);
     expect(client.options.agent.additional_instructions ?? '').not.toContain(ANSWER_LINE);
+    expect(text).toContain('Deployed.');
     expect(cut[1].text).toBe(LATEST_TEXT);
     expect(cut[1].content).toBeUndefined();
     expect(counts[prompt.length - 1]).toBe(tokenCountMap.u3);
