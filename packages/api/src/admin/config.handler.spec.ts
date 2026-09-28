@@ -2457,6 +2457,35 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.upsertConfig).not.toHaveBeenCalled();
     });
 
+    it('validates a whole-document write on the base its retained tombstones leave', async () => {
+      const base = {
+        config: {
+          cloudfront: { domain: 'https://cdn.example.com', imageSigning: 'cookies' },
+        },
+      };
+      const body = { overrides: { cloudfront: { requireSignedAccess: true } } };
+      const params = { principalType: 'role', principalId: 'admin' };
+
+      const kept = createHandlers({ getAppConfig: jest.fn().mockResolvedValue(base) });
+      const keptRes = mockRes();
+      await kept.handlers.upsertConfigOverrides(mockReq({ params, body }), keptRes);
+      expect(keptRes.statusCode).toBe(201);
+
+      const tombstoned = createHandlers({
+        getAppConfig: jest.fn().mockResolvedValue(base),
+        findConfigByPrincipal: jest
+          .fn()
+          .mockResolvedValue({ overrides: {}, tombstones: ['cloudfront.imageSigning'] }),
+      });
+      const tombstonedRes = mockRes();
+      await tombstoned.handlers.upsertConfigOverrides(mockReq({ params, body }), tombstonedRes);
+      expect(tombstonedRes.statusCode).toBe(400);
+      expect(tombstonedRes.body?.issues).toEqual([
+        expect.objectContaining({ path: 'cloudfront.requireSignedAccess' }),
+      ]);
+      expect(tombstoned.deps.upsertConfig).not.toHaveBeenCalled();
+    });
+
     it('accepts a partial section whose provided fields are valid', async () => {
       const { handlers, deps } = createHandlers();
       const req = mockReq({

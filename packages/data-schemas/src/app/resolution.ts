@@ -457,6 +457,20 @@ function isRelatedPath(a: string[], b: string[]): boolean {
 }
 
 /**
+ * The base a principal's override lands on: `base` without the paths the principal
+ * tombstones, except those in `cleared` (tombstones the pending write removes).
+ */
+export function applyConfigTombstones(
+  base: Partial<TCustomConfig>,
+  tombstones: unknown[] | undefined,
+  cleared: Set<string> = new Set(),
+): Partial<TCustomConfig> {
+  return (tombstones ?? [])
+    .filter((path): path is string => typeof path === 'string' && !cleared.has(path))
+    .reduce((current, path) => deletePath(current, path), base as AnyObject);
+}
+
+/**
  * Checks dot-path field writes on top of the principal's stored config, building the
  * result the way `patchConfigFields` stores it: a Mongo `$set` on each `overrides.<path>`,
  * clearing the tombstones those paths clear. The principal's remaining tombstones are
@@ -471,9 +485,7 @@ export function getConfigFieldIssues(
 ): ConfigOverrideIssue[] {
   const written = Object.keys(fields).map((fieldPath) => fieldPath.split('.'));
   const cleared = new Set(Object.keys(fields).flatMap(getTombstonePathsToClear));
-  const effectiveBase = (stored?.tombstones ?? [])
-    .filter((path): path is string => typeof path === 'string' && !cleared.has(path))
-    .reduce((current, path) => deletePath(current, path), base as AnyObject);
+  const effectiveBase = applyConfigTombstones(base, stored?.tombstones, cleared);
   const storedOverrides = isPlainObject(stored?.overrides) ? stored.overrides : {};
   const candidate = Object.entries(fields).reduce<unknown>(
     (current, [fieldPath, value]) => setPath(current, fieldPath.split('.'), value),

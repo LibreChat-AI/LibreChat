@@ -1,7 +1,12 @@
 import { INTERFACE_PERMISSION_FIELDS, PermissionTypes } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig, IConfig } from '~/types';
-import { getConfigFieldIssues, getConfigOverrideIssues, mergeConfigOverrides } from './resolution';
+import {
+  mergeConfigOverrides,
+  getConfigFieldIssues,
+  applyConfigTombstones,
+  getConfigOverrideIssues,
+} from './resolution';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 
 function fakeConfig(
@@ -1225,6 +1230,25 @@ describe('getConfigOverrideIssues: items addressed by id', () => {
         message: 'Only attached code environments may configure pairing',
       }),
     );
+  });
+});
+
+describe('applyConfigTombstones', () => {
+  it('removes tombstoned base paths except the ones a write clears', () => {
+    const base = {
+      cloudfront: { domain: 'https://cdn.example.com', imageSigning: 'cookies' },
+    } as Partial<TCustomConfig>;
+    const tombstones = ['cloudfront.imageSigning'];
+    expect(applyConfigTombstones(base, tombstones)).toEqual({
+      cloudfront: { domain: 'https://cdn.example.com' },
+    });
+    expect(applyConfigTombstones(base, tombstones, new Set(tombstones))).toEqual(base);
+    expect(
+      getConfigOverrideIssues(
+        { cloudfront: { requireSignedAccess: true } },
+        applyConfigTombstones(base, tombstones),
+      ).map((issue) => issue.path),
+    ).toEqual(['cloudfront.requireSignedAccess']);
   });
 });
 

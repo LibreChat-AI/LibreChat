@@ -1,6 +1,7 @@
 import {
   logger,
   getConfigFieldIssues,
+  applyConfigTombstones,
   getConfigOverrideIssues,
   BASE_CONFIG_PRINCIPAL_ID,
 } from '@librechat/data-schemas';
@@ -743,13 +744,6 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       }
 
       const encryptedOverrides = encryptConfigSecrets(filteredOverrides);
-      const overrideIssues = getConfigOverrideIssues(
-        encryptedOverrides,
-        await getBaseYamlConfig(user.tenantId),
-      );
-      if (overrideIssues.length > 0) {
-        return invalidOverrideResponse(res, overrideIssues);
-      }
       const needsExistingSecrets = getConfigSecretSections().some((section) =>
         isConfigSecretPreservablePatch(
           section,
@@ -759,10 +753,22 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       const needsProtectedBaseSections =
         principalId === BASE_CONFIG_PRINCIPAL_ID &&
         (overrideSections.length > 0 || priority != null);
-      const existingConfig =
-        needsExistingSecrets || needsProtectedBaseSections
-          ? await findConfigByPrincipal(principalType, principalId, { includeInactive: true })
-          : null;
+      const needsExisting = needsExistingSecrets || needsProtectedBaseSections;
+      const [stored, baseYaml] = await Promise.all([
+        overrideSections.length > 0 || needsExisting
+          ? findConfigByPrincipal(principalType, principalId, { includeInactive: true })
+          : null,
+        overrideSections.length > 0 ? getBaseYamlConfig(user.tenantId) : {},
+      ]);
+      /** A full replace keeps the principal's tombstones, so they shape the base it lands on. */
+      const overrideIssues = getConfigOverrideIssues(
+        encryptedOverrides,
+        applyConfigTombstones(baseYaml, stored?.tombstones),
+      );
+      if (overrideIssues.length > 0) {
+        return invalidOverrideResponse(res, overrideIssues);
+      }
+      const existingConfig = needsExisting ? stored : null;
       const preservedOverrides = preserveConfigSecrets(
         encryptedOverrides,
         existingConfig?.overrides,
