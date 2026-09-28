@@ -29,11 +29,12 @@ export async function evictAuthUserDocs(
   if (indexKey) {
     try {
       const indexed = await store.get(indexKey);
-      if (Array.isArray(indexed)) {
-        for (const key of indexed) {
-          if (typeof key === 'string') {
-            keys.add(key);
-          }
+      if (indexed != null && !Array.isArray(indexed)) {
+        throw new Error('Reverse index is not a list of cache keys');
+      }
+      for (const key of indexed ?? []) {
+        if (typeof key === 'string') {
+          keys.add(key);
         }
       }
     } catch (error) {

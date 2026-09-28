@@ -74,6 +74,16 @@ describe('evictAuthUserDocs', () => {
     expectOtherUserCached(store);
   });
 
+  it('treats a malformed reverse index as unreadable', async () => {
+    const store = makeStore();
+    store.values.set(INDEX_KEY, 'doc-a');
+
+    await expect(evictAuthUserDocs(store, { userId: 'user-1' })).resolves.toBe(false);
+
+    expect(store.values.get(INDEX_KEY)).toBe('doc-a');
+    expect(store.values.has('doc-a')).toBe(true);
+  });
+
   it('reports a failed document delete, deletes the others and keeps the index for a retry', async () => {
     const store = makeStore({ delete: ['doc-a'] });
 
