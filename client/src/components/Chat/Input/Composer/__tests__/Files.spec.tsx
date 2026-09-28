@@ -14,10 +14,11 @@ const file = (over: Partial<TFile> & Pick<TFile, 'file_id' | 'filename'>): TFile
     ...over,
   }) as TFile;
 
-let mockFiles: TFile[] = [];
+let mockFiles: TFile[] | undefined = [];
+let mockQueryState = { isLoading: false, isError: false };
 
 jest.mock('~/data-provider', () => ({
-  useGetFiles: () => ({ data: mockFiles }),
+  useGetFiles: () => ({ data: mockFiles, ...mockQueryState }),
   useFilePreviewBlob: () => ({ refetch: jest.fn().mockResolvedValue({ data: undefined }) }),
   useFilePreview: () => ({ refetch: jest.fn() }),
   useFileDownload: () => ({ refetch: jest.fn() }),
@@ -42,6 +43,7 @@ const renderGrid = (props: Partial<React.ComponentProps<typeof FileGrid>> = {}) 
 
 describe('FileGrid', () => {
   beforeEach(() => {
+    mockQueryState = { isLoading: false, isError: false };
     mockFiles = [
       file({ file_id: 'img', filename: 'photo.png', type: 'image/png' }),
       file({ file_id: 'pdf', filename: 'report.pdf', type: 'application/pdf' }),
@@ -85,6 +87,21 @@ describe('FileGrid', () => {
   it('says so when nothing matches', () => {
     renderGrid({ query: 'nothing-here' });
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_composer_no_results');
+  });
+
+  it('shows loading rather than no matches while the files are fetched', () => {
+    mockFiles = undefined;
+    mockQueryState = { isLoading: true, isError: false };
+    renderGrid();
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
+    expect(screen.queryByText('com_ui_composer_no_results')).not.toBeInTheDocument();
+  });
+
+  it('reports a failed fetch rather than an empty list', () => {
+    mockFiles = undefined;
+    mockQueryState = { isLoading: false, isError: true };
+    renderGrid();
+    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_error_connection');
   });
 
   it('attaches a file when its card is chosen, not when it is previewed', () => {

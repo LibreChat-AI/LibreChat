@@ -1,7 +1,7 @@
 import { memo, useMemo, useState, useEffect } from 'react';
 import { Eye, Search } from 'lucide-react';
-import { IconButton } from '@librechat/client';
 import { apiBaseUrl } from 'librechat-data-provider';
+import { IconButton, Spinner } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import FilePreviewDialog, {
@@ -122,6 +122,33 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview }: FileCardP
   );
 });
 
+/** What the grid shows in place of cards: still loading, the list failed to
+ *  load, or nothing matches the search and view. */
+function EmptyState({ loading, failed }: { loading: boolean; failed: boolean }) {
+  const localize = useLocalize();
+  if (loading) {
+    return (
+      <div role="status" className="text-text-secondary flex items-center justify-center py-16">
+        <Spinner size={24} />
+        <span className="sr-only">{localize('com_ui_loading')}</span>
+      </div>
+    );
+  }
+  if (failed) {
+    return (
+      <div role="alert" className="text-text-secondary py-16 text-center text-sm">
+        {localize('com_ui_error_connection')}
+      </div>
+    );
+  }
+  return (
+    <div role="status" className="flex flex-col items-center justify-center py-16 text-center">
+      <Search className="text-text-tertiary size-8 opacity-40" aria-hidden="true" />
+      <p className="text-text-secondary mt-3 text-sm">{localize('com_ui_composer_no_results')}</p>
+    </div>
+  );
+}
+
 interface FileGridProps {
   query: string;
   view: FileView;
@@ -132,7 +159,7 @@ interface FileGridProps {
  *  anything the message viewers can show. */
 export default function FileGrid({ query, view, onAttach }: FileGridProps) {
   const localize = useLocalize();
-  const { data: files = [] } = useGetFiles<TFile[]>();
+  const { data: files = [], isLoading, isError } = useGetFiles<TFile[]>();
   const [previewing, setPreviewing] = useState<TFile | null>(null);
 
   const visible = useMemo(
@@ -197,12 +224,7 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
   return (
     <>
       {visible.length === 0 ? (
-        <div role="status" className="flex flex-col items-center justify-center py-16 text-center">
-          <Search className="text-text-tertiary size-8 opacity-40" aria-hidden="true" />
-          <p className="text-text-secondary mt-3 text-sm">
-            {localize('com_ui_composer_no_results')}
-          </p>
-        </div>
+        <EmptyState loading={isLoading} failed={isError && files.length === 0} />
       ) : (
         <ul
           className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3"
