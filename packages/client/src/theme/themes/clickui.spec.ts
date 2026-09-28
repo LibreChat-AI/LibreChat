@@ -287,8 +287,13 @@ const formatRgba = ([r, g, b, a]: Rgba) =>
  * Click UI writes derived colors as rounded percentages, so a channel can land between two 8-bit
  * values (`98.627%` is 251.5). A theme value within one step of the exact channel is a match.
  */
-const sameRgb = (theme: string, source: Rgba) =>
-  theme.split(' ').every((value, index) => Math.abs(Number(value) - source[index]) < 1);
+const sameRgb = (theme: string, source: Rgba) => {
+  const channels = theme.split(' ').map(Number);
+  return (
+    channels.length === 3 &&
+    channels.every((value, index) => Number.isFinite(value) && Math.abs(value - source[index]) < 1)
+  );
+};
 
 /** Every color function in a shadow list, rewritten to one form so both sides compare. */
 const normalizeShadow = (value: string) =>
