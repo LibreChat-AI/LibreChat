@@ -3,6 +3,7 @@ import type {
   GraphEdge,
   MemoryScope,
   SkillsScope,
+  AgentBillingMode,
   AgentToolOptions,
   AgentToolResources,
   AgentSubagentsConfig,
@@ -67,5 +68,6 @@ export interface IAgent extends Omit<Document, 'model'> {
   subagents?: AgentSubagentsConfig;
   /** Memory partition: 'agent' isolates memories per (user, agent); default shared pool */
   memory_scope?: MemoryScope;
+  billing_mode?: AgentBillingMode;
   tenantId?: string;
 }

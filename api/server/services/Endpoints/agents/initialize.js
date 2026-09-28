@@ -506,6 +506,7 @@ const initializeClientWithProvider = async ({
         userMCPAuthMap: ctx.userMCPAuthMap,
         upstreamTokenProvider,
         upstreamTokenProviderResolver,
+        rootAgentBillingMode: (await primaryAgentPromise)?.billing_mode,
         tool_resources: ctx.tool_resources,
         actionsEnabled: ctx.actionsEnabled,
         accessibleMcpServerNames: ctx.accessibleMcpServerNames,

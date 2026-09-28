@@ -2,7 +2,7 @@ const { z } = require('zod');
 const { load } = require('js-yaml');
 const fs = require('fs').promises;
 const { nanoid } = require('nanoid');
-const { logger } = require('@librechat/data-schemas');
+const { logger, SystemCapabilities } = require('@librechat/data-schemas');
 const {
   refreshS3Url,
   splitMCPToolKey,
@@ -93,6 +93,14 @@ const {
   userCanUseMCPServers,
 } = require('~/server/services/MCP');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
+
+/**
+ * Billing mode changes are privileged because they change who is charged
+ * for an agent's model usage.
+ */
+const canManageAgentBilling = async (req) =>
+  hasCapability(req.user, SystemCapabilities.MANAGE_AGENTS);
+
 const { attachOwnerContacts } = require('~/server/services/Agents/ownerContact');
 const { instructionsPromptAccess } = require('~/server/services/Agents/instructionsPrompt');
 const { getMCPServersRegistry } = require('~/config');
@@ -731,6 +739,13 @@ const createAgentHandler = async (req, res) => {
     const validatedData = agentCreateSchema.parse(req.body);
     const { tools = [], ...agentData } = removeNullishValues(validatedData);
 
+    if (agentData.billing_mode !== undefined && !(await canManageAgentBilling(req))) {
+      return res.status(403).json({
+        error: 'Only users with MANAGE_AGENTS can configure agent billing mode.',
+        status: 'error',
+      });
+    }
+
     if (
       (!isCodeInterpreterCapabilityEnabled(req) || !tools.includes(Tools.execute_code)) &&
       agentData.tool_options != null
@@ -1067,6 +1082,15 @@ const updateAgentHandler = async (req, res) => {
     if (!validateAgentCodeEnvironmentAllowlist(req, res, validatedData.code_environment_ids)) {
       return;
     }
+
+    if (validatedData.billing_mode !== undefined && !(await canManageAgentBilling(req))) {
+      return res.status(403).json({
+        error: 'Only users with MANAGE_AGENTS can configure agent billing mode.',
+        status: 'error',
+      });
+    }
+
+
     // Preserve explicit null for avatar to allow resetting the avatar
     const {
       avatar: avatarField,
@@ -1462,6 +1486,7 @@ const duplicateAgentHandler = async (req, res) => {
       tool_resources: _tool_resources = {},
       versions: _versions,
       __v: _v,
+      billing_mode: _billingMode,
       ...cloneData
     } = agent;
     cloneData.name = `${agent.name} (${new Date().toLocaleString('en-US', {

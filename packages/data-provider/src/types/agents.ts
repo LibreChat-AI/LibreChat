@@ -6,7 +6,15 @@ import type {
   AgentToolOptions,
   ToolApprovalGrantBinding,
 } from './tools';
-import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
+import type {
+  TAttachment,
+  TPlugin,
+  AgentProvider,
+  MemoryScope,
+  SkillsScope,
+  AgentBillingMode,
+} from 'src/schemas';
+
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
@@ -1151,6 +1159,8 @@ export type Agent = {
   subagents?: AgentSubagentsConfig;
   /** Memory partition: `agent` isolates memories per (user, agent); default shared pool */
   memory_scope?: MemoryScope;
+  /** Usage billing owner; defaults to charging the invoking user. */
+  billing_mode?: AgentBillingMode;
 };
 
 export type TAgentsMap = Record<string, Agent | undefined>;
@@ -1192,6 +1202,7 @@ export type AgentCreateParams = {
   | 'skills_scope'
   | 'subagents'
   | 'memory_scope'
+  | 'billing_mode'
 >;
 
 export type AgentUpdateParams = {
@@ -1232,6 +1243,7 @@ export type AgentUpdateParams = {
   | 'skills_scope'
   | 'subagents'
   | 'memory_scope'
+  | 'billing_mode'
 >;
 
 /**
