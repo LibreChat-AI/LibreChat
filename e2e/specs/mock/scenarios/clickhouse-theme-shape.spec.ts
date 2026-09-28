@@ -130,6 +130,25 @@ test.describe('ClickHouse theme shape', () => {
     expect(await probeStyle(page, 'ring-2 ring-ring-primary', 'box-shadow')).toContain(ring);
   });
 
+  test('code text, the second motion step and the hairline shadow follow Click UI @scenario:clickhouse-code-text-and-motion-follow-click-ui', async ({
+    page,
+  }) => {
+    await storeClickHouse(page);
+
+    await openMentionMenu(page);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+    const mode = await resolvedMode(page);
+
+    /** `codeblock.lightMode.color.text` and `codeblock.darkMode.color.text`. */
+    const code = mode === 'light' ? 'rgb(40, 40, 40)' : 'rgb(255, 255, 255)';
+    expect(await probeStyle(page, 'hljs', 'color', 'code')).toBe(code);
+    /** `transition.duration.smooth`, and `shadow.5` for the lightest shadow step. */
+    expect(await probeStyle(page, 'duration-theme-normal', 'transition-duration')).toBe('0.15s');
+    expect(await probeStyle(page, 'shadow-2xs', 'box-shadow')).toContain(
+      'rgba(0, 0, 0, 0.03) 0px 2px 2px 0px',
+    );
+  });
+
   test('monospace text under the ClickHouse theme leads with Inconsolata @scenario:clickhouse-mono-font-leads-with-inconsolata', async ({
     page,
   }) => {

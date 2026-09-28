@@ -3,12 +3,14 @@ import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from '../types';
 /**
  * ClickHouse reference theme, built from Click UI's design tokens
  * (github.com/ClickHouse/click-ui, `src/theme/tokens/variables.light.ts` and
- * `variables.dark.ts` at 7dad15bb978d03ba63575e1d4abc02b8927ee1cd).
+ * `variables.dark.ts` at tag v0.12.0, e2b3d213798f4223122581a75ebc8dd91e47fd9f). The tokens it
+ * cites are pinned in `clickui.json`, and `clickui.spec.ts` fails on drift in either one.
  *
  * This is the deliberately different theme that proves the engine repaints the
  * app from data alone: no component reads it by name, and LibreChat's defaults
  * are untouched. Each comment names the Click UI token a value comes from; paths
- * without a prefix are under `global.color`, `palette.*` is Click UI's ramp.
+ * without a prefix are under `global.color` (or `click.global.color` for `text.warning` and
+ * `text.danger`), `palette.*` is Click UI's ramp, and component paths are under `click`.
  *
  * Both maps are complete, so nothing falls back to the LibreChat palette. Where
  * a verbatim Click UI value missed a contrast floor in `clickhouse.spec.ts` or
@@ -76,8 +78,8 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-surface-destructive-hover': '145 0 0', // #910000 (palette.danger.700)
   'rgb-surface-chat': '255 255 255', // #ffffff (background.default)
-  'rgb-surface-code': '246 247 250', // #f6f7fa (background.muted)
-  'rgb-surface-code-body': '246 247 250', // #f6f7fa (background.muted)
+  'rgb-surface-code': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
+  'rgb-surface-code-body': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-text-inverted': '255 255 255', // #ffffff (palette.neutral.0)
@@ -121,7 +123,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-brand-purple': '136 0 204', // #8800cc (palette.violet.600)
 
   // Code syntax
-  'rgb-syntax-text': '22 21 23', // #161517 (text.default)
+  'rgb-syntax-text': '40 40 40', // #282828 (codeblock.lightMode.color.text.default)
   'rgb-syntax-comment': '105 110 121', // #696e79 (text.muted)
   'rgb-syntax-meta': '83 87 95', // #53575f (palette.slate.700)
   'rgb-syntax-builtin': '138 105 0', // #8a6900 (palette.sunrise.700)
@@ -190,14 +192,17 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-tertiary': '40 40 40', // #282828 (background.muted)
   'rgb-surface-tertiary-alt': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-dialog': '31 31 28', // #1f1f1c (background.default)
-  'rgb-surface-overlay': '0 0 0', // #000000 (palette.utility black)
+  /** Not a Click UI value. Its dark scrim, dialog.color.opaqueBackground lch(40.731 0 none), is a
+   *  #606060 gray that lifts the page instead of dimming it, and leaves the dialog surface under the
+   *  3:1 boundary the scrim gives it; black keeps the dark theme's scrim. */
+  'rgb-surface-overlay': '0 0 0', // #000000
   'rgb-surface-submit': '250 255 105', // #faff69 (accent.default)
   'rgb-surface-submit-hover': '253 255 163', // #fdffa3 (palette.brand.200)
   'rgb-surface-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-surface-destructive-hover': '255 152 152', // #ff9898 (palette.danger.200)
   'rgb-surface-chat': '31 31 28', // #1f1f1c (background.default)
-  'rgb-surface-code': '40 40 40', // #282828 (codeblock.darkMode.background.default)
-  'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.background.default)
+  'rgb-surface-code': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
+  'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
   'rgb-text-inverted': '31 31 28', // #1f1f1c (button.basic.color.primary.text.default)
@@ -241,7 +246,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-brand-purple': '204 102 255', // #cc66ff (palette.violet.300)
 
   // Code syntax
-  'rgb-syntax-text': '255 255 255', // #ffffff (codeblock.darkMode.text.default)
+  'rgb-syntax-text': '255 255 255', // #ffffff (codeblock.darkMode.color.text.default)
   'rgb-syntax-comment': '179 182 189', // #b3b6bd (text.muted)
   'rgb-syntax-meta': '154 158 167', // #9a9ea7 (palette.slate.400)
   'rgb-syntax-builtin': '255 195 0', // #ffc300 (chart.default.sunrise)
@@ -300,10 +305,12 @@ const clickHouseShape = {
     '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif',
   monoFontFamily:
     '"Inconsolata", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+  shadow2xs: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   shadowXs: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   controlHeight: '2rem', // genericMenu.panel.size.height
-  motionFast: '100ms', // transition.default
+  motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
+  motionNormal: '150ms', // transition.duration.smooth
 };
 
 const elevation = (alpha: number): string =>
