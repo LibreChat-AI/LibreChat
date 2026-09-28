@@ -249,7 +249,7 @@ export type ConfigOverrideIssue = {
   segments: string[];
   /**
    * A stable, machine-readable reason: a zod issue code (`invalid_type`, `custom`, ...),
-   * `missing_merge_key`, `duplicate_merge_key`, `indexed_merge_key_write`, or `invalid_document`. Schema messages are not carried because
+   * `missing_merge_key`, `duplicate_merge_key`, `indexed_merge_key_write`, `union_dropped_key`, or `invalid_document`. Schema messages are not carried because
    * they can echo the submitted values.
    */
   code: string;
@@ -416,6 +416,92 @@ function expandUnionIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
   });
 }
 
+/** The parts of a zod schema the stripped-key walk reads, without depending on zod. */
+type SchemaNode = {
+  _def: {
+    typeName?: string;
+    innerType?: SchemaNode;
+    schema?: SchemaNode;
+    type?: SchemaNode;
+    valueType?: SchemaNode;
+    options?: SchemaNode[] | Map<unknown, SchemaNode>;
+  };
+  shape?: Record<string, SchemaNode>;
+  safeParse: (value: unknown) => { success: boolean };
+};
+
+/** The schema beneath optional, nullable, default and refinement wrappers. */
+function unwrapSchema(schema: SchemaNode): SchemaNode {
+  let node = schema;
+  for (let depth = 0; depth < MAX_MERGE_DEPTH; depth++) {
+    const inner = node._def.innerType ?? node._def.schema;
+    if (!inner) {
+      break;
+    }
+    node = inner;
+  }
+  return node;
+}
+
+/**
+ * Keys a union dropped: an object parses with the first union option that accepts it, and
+ * that option strips keys it does not define, so a key another option defines (and would
+ * type-check) is kept raw in the stored override but never validated. Keys no option defines
+ * are unknown keys and stay accepted.
+ */
+function findUnionDroppedKeys(
+  schema: SchemaNode,
+  value: unknown,
+  path: IssuePath,
+  depth = 0,
+): IssuePath[] {
+  if (depth >= MAX_MERGE_DEPTH) {
+    return [];
+  }
+  const node = unwrapSchema(schema);
+  const { typeName } = node._def;
+  if (typeName === 'ZodObject' && node.shape && isPlainObject(value)) {
+    const shape = node.shape;
+    return Object.keys(value)
+      .filter((key) => hasOwn(shape, key))
+      .flatMap((key) => findUnionDroppedKeys(shape[key], value[key], [...path, key], depth + 1));
+  }
+  if (typeName === 'ZodArray' && node._def.type && Array.isArray(value)) {
+    const item = node._def.type;
+    return value.flatMap((entry, index) =>
+      findUnionDroppedKeys(item, entry, [...path, index], depth + 1),
+    );
+  }
+  if (typeName === 'ZodRecord' && node._def.valueType && isPlainObject(value)) {
+    const entrySchema = node._def.valueType;
+    return Object.entries(value).flatMap(([key, entry]) =>
+      findUnionDroppedKeys(entrySchema, entry, [...path, key], depth + 1),
+    );
+  }
+  if (
+    (typeName !== 'ZodUnion' && typeName !== 'ZodDiscriminatedUnion') ||
+    !node._def.options ||
+    !isPlainObject(value)
+  ) {
+    return [];
+  }
+  const options = [...node._def.options.values()];
+  const accepted = options.find((option) => option.safeParse(value).success);
+  if (!accepted) {
+    return [];
+  }
+  const acceptedShape = unwrapSchema(accepted).shape;
+  const defined = new Set(
+    options.flatMap((option) => Object.keys(unwrapSchema(option).shape ?? {})),
+  );
+  const dropped = acceptedShape
+    ? Object.keys(value)
+        .filter((key) => !hasOwn(acceptedShape, key) && defined.has(key))
+        .map((key) => [...path, key])
+    : [];
+  return [...dropped, ...findUnionDroppedKeys(accepted, value, path, depth + 1)];
+}
+
 /**
  * Checks config overrides the way they apply: merged over `base` (YAML-shaped), each
  * section they touch parsed with its `configSchema` schema, and every failure attributed
@@ -439,11 +525,14 @@ export function getConfigOverrideIssues(
     if (!hasOwn(shape, section)) {
       continue;
     }
+    const schema = shape[section as keyof typeof shape] as unknown as SchemaNode;
     const result = shape[section as keyof typeof shape].safeParse(merged[section]);
-    if (result.success) {
-      continue;
-    }
-    for (const issue of expandUnionIssues(result.error.issues)) {
+    const dropped = findUnionDroppedKeys(schema, merged[section], []).map((path) => ({
+      code: 'union_dropped_key',
+      path,
+    }));
+    const schemaIssues = result.success ? [] : expandUnionIssues(result.error.issues);
+    for (const issue of [...dropped, ...schemaIssues]) {
       if (issue.code === 'unrecognized_keys') {
         continue;
       }

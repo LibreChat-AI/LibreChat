@@ -964,6 +964,17 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     expect(merged.endpoints.custom).toEqual([{ name: 'x' }]);
   });
 
+  it('drops a key the accepted union option does not define, keeping the rest', () => {
+    const merged = mergeConfigOverrides({} as AppConfig, [
+      fakeConfig(
+        { memory: { agent: { enabled: true, id: 5, provider: 'openAI', model: 'gpt-4o' } } },
+        10,
+      ),
+    ]) as unknown as { memory: { agent: Record<string, unknown> } };
+
+    expect(merged.memory.agent).toEqual({ enabled: true, provider: 'openAI', model: 'gpt-4o' });
+  });
+
   it('drops a merged array item that is not an object', () => {
     const merged = mergeConfigOverrides({} as AppConfig, [
       fakeConfig({ endpoints: { custom: [null, 'bad', { name: 'kept', baseURL: 'x' }] } }, 10),
@@ -1201,6 +1212,25 @@ describe('getConfigOverrideIssues', () => {
     expect(getConfigOverrideIssues({ endpoints: { azureOpenAI: { assistants: true } } })).toEqual(
       [],
     );
+  });
+
+  it('reports a key another union option defines when the accepted option drops it', () => {
+    const agent = { enabled: true, id: 5, provider: 'openAI', model: 'gpt-4o' };
+    expect(getConfigOverrideIssues({ memory: { agent } })).toEqual([
+      { path: 'memory.agent.id', segments: ['memory', 'agent', 'id'], code: 'union_dropped_key' },
+    ]);
+    expect(
+      getConfigOverrideIssues({ memory: { agent: { provider: 'openAI', model: 'gpt-4o' } } }),
+    ).toEqual([]);
+    expect(
+      getConfigOverrideIssues({ memory: { agent: { id: 'a', provider: 'openAI', unknown: 1 } } }),
+    ).toEqual([
+      {
+        path: 'memory.agent.provider',
+        segments: ['memory', 'agent', 'provider'],
+        code: 'union_dropped_key',
+      },
+    ]);
   });
 
   it('requires the merge key on custom endpoint items and maps merged items back by it', () => {
