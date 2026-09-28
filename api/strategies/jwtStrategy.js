@@ -1,7 +1,11 @@
-const { AGENT_TRIGGER_SCOPE, isTokenIssuedBeforeCredentialChange } = require('@librechat/api');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
 const { SystemRoles } = require('librechat-data-provider');
 const { Strategy: JwtStrategy, ExtractJwt } = require('passport-jwt');
+const {
+  AGENT_TRIGGER_SCOPE,
+  isTokenRetired,
+  continueAfterBearerRetirement,
+} = require('@librechat/api');
 const { getUserById, updateUser } = require('~/models');
 
 const AGENT_TRIGGER_ADMISSION_PATHS = ['/api/agents/chat/agents', '/api/agents/chat/steer/deliver'];
@@ -48,21 +52,25 @@ const jwtLogin = () =>
           return;
         }
         if (user) {
-          if (isTokenIssuedBeforeCredentialChange(payload, user)) {
-            logger.warn(
-              '[jwtLogin] JwtStrategy => token predates the last credential change: ' + payload?.id,
-            );
-            done(null, false);
-            return;
-          }
-          user.id = user._id.toString();
-          /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
-          user.idOnTheSource ??= null;
-          if (!user.role) {
-            user.role = SystemRoles.USER;
-            await runAsSystem(() => updateUser(user.id, { role: user.role }));
-          }
-          done(null, user);
+          return await continueAfterBearerRetirement(
+            user,
+            { issuedAt: payload?.iat, issuedAtMs: payload?.issuedAtMs },
+            'jwt',
+            payload?.id,
+            done,
+            (message) => logger.warn(message),
+            async () => {
+              user.id = user._id.toString();
+              /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
+              user.idOnTheSource ??= null;
+              if (!user.role) {
+                user.role = SystemRoles.USER;
+                await runAsSystem(() => updateUser(user.id, { role: user.role }));
+              }
+              done(null, user);
+            },
+            isTokenRetired,
+          );
         } else {
           logger.warn('[jwtLogin] JwtStrategy => no user found: ' + payload?.id);
           done(null, false);

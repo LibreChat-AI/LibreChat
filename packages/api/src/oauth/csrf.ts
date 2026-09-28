@@ -118,7 +118,7 @@ export function setOpenIDMarkerCookies(
     ? crypto.createHash('sha256').update(refreshToken).digest('base64url')
     : undefined;
   const signedUserId = jwt.sign(
-    refreshTokenHash ? { id: userId, refreshTokenHash } : { id: userId },
+    { id: userId, issuedAtMs: Date.now(), ...(refreshTokenHash ? { refreshTokenHash } : {}) },
     secret,
     { expiresIn: refreshExpirySeconds },
   );

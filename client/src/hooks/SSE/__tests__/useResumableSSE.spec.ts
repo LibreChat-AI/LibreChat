@@ -75,6 +75,7 @@ jest.mock('sse.js', () => {
   return { SSE };
 });
 
+const mockRedirectIfTwoFactorSetupPayload = jest.fn((_payload: unknown) => false);
 const mockSetQueryData = jest.fn();
 const mockGetQueryData = jest.fn();
 const mockFetchQuery = jest.fn();
@@ -302,6 +303,8 @@ jest.mock('librechat-data-provider', () => {
       }),
       refreshToken: jest.fn(),
       dispatchTokenUpdatedEvent: jest.fn(),
+      redirectIfTwoFactorSetupPayload: (payload: unknown) =>
+        mockRedirectIfTwoFactorSetupPayload(payload),
     },
   };
 });
@@ -439,6 +442,8 @@ describe('useResumableSSE', () => {
       conversationId: CONV_ID,
       endpoint: 'agents',
     });
+    mockRedirectIfTwoFactorSetupPayload.mockReset();
+    mockRedirectIfTwoFactorSetupPayload.mockReturnValue(false);
     (request.post as jest.Mock).mockReset();
     (request.post as jest.Mock).mockResolvedValue({
       streamId: 'stream-123',
@@ -4731,6 +4736,97 @@ describe('useResumableSSE', () => {
       expect.objectContaining({ outcome: 'completed' }),
     );
     expect(mockConvertLocalSteersToQueued).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  /**
+   * The stream runs on a raw XHR, so the interceptor that turns an enrollment 403 into the setup
+   * redirect never sees it. Without the explicit branch the condition looks like a transport
+   * failure and burns the whole reconnect ladder on a request the server is bound to refuse.
+   */
+  const enrollmentBody = JSON.stringify({
+    code: 'two_factor_enrollment_required',
+    twoFASetupRequired: true,
+    tempToken: 'setup-token',
+  });
+
+  it('leaves for setup on an enrollment 403 instead of reconnecting', async () => {
+    jest.useFakeTimers();
+    mockRedirectIfTwoFactorSetupPayload.mockReturnValue(true);
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const sse = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+
+    await act(async () => {
+      sse._emit('error', { responseCode: 403, data: enrollmentBody });
+    });
+    await advanceRetryTimer(60000);
+
+    expect(mockRedirectIfTwoFactorSetupPayload).toHaveBeenCalledWith(enrollmentBody);
+    expect(mockSSEInstances.length).toBe(sseCount);
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('keeps reconnecting on a 403 that is not an enrollment response', async () => {
+    jest.useFakeTimers();
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const sse = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+
+    await act(async () => {
+      sse._emit('error', { responseCode: 403, data: JSON.stringify({ message: 'Forbidden' }) });
+    });
+    await advanceRetryTimer(60000);
+
+    /** Only enrollment may short-circuit; every other 403 keeps the existing recovery. */
+    expect(mockSSEInstances.length).toBeGreaterThan(sseCount);
+    unmount();
+  });
+
+  /**
+   * An access token that expired first turns enforcement into a 401, so the refresh is where the
+   * setup credential arrives. It answers successfully and without a token, which reads as a failed
+   * refresh unless the payload is inspected.
+   */
+  it('leaves for setup when the 401 refresh answers with enrollment', async () => {
+    jest.useFakeTimers();
+    const enrollmentPayload = {
+      code: 'two_factor_enrollment_required',
+      twoFASetupRequired: true,
+      tempToken: 'setup-token',
+    };
+    (request.refreshToken as jest.Mock).mockResolvedValueOnce(enrollmentPayload);
+    mockRedirectIfTwoFactorSetupPayload.mockReturnValue(true);
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const sse = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+
+    await act(async () => {
+      sse._emit('error', { responseCode: 401 });
+      await Promise.resolve();
+    });
+    await advanceRetryTimer(60000);
+
+    expect(mockRedirectIfTwoFactorSetupPayload).toHaveBeenCalledWith(enrollmentPayload);
+    expect(sse.stream).toHaveBeenCalledTimes(1);
+    expect(mockSSEInstances.length).toBe(sseCount);
+    expect(mockErrorHandler).not.toHaveBeenCalled();
     unmount();
   });
 

@@ -1198,7 +1198,7 @@
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/QRPhase.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 3
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/VerifyPhase.tsx": {

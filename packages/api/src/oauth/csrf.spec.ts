@@ -222,7 +222,10 @@ describe('setOpenIDMarkerCookies', () => {
     const signedUserId = (res.cookie as jest.Mock).mock.calls.find(
       ([name]) => name === OPENID_USER_ID_COOKIE,
     )?.[1];
-    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({ id: 'user-123' });
+    expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({
+      id: 'user-123',
+      issuedAtMs: expect.any(Number),
+    });
   });
 
   /** Preserves the marker's binding to the durable refresh-token session: a marker signed for one
@@ -244,6 +247,7 @@ describe('setOpenIDMarkerCookies', () => {
     expect(jwt.verify(signedUserId, 'marker-secret')).toMatchObject({
       id: 'user-123',
       refreshTokenHash: crypto.createHash('sha256').update('the-refresh-token').digest('base64url'),
+      issuedAtMs: expect.any(Number),
     });
   });
 

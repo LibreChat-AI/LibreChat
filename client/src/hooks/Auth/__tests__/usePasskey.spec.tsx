@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { clearTwoFactorSetupToken, readTwoFactorSetupToken } from 'librechat-data-provider';
 import { usePasskeySignIn } from '../usePasskey';
 
 type Deferred = {
@@ -91,5 +92,43 @@ describe('usePasskeySignIn', () => {
     });
     expect(mockGetPasskeyLoginOptions).toHaveBeenCalledTimes(2);
     expect(mockStartAuthentication).toHaveBeenCalledTimes(2);
+  });
+
+  describe('after the ceremony', () => {
+    const signInWith = async (response: Record<string, unknown>) => {
+      mockStartAuthentication.mockImplementation(({ useBrowserAutofill }) =>
+        useBrowserAutofill ? deferred().promise : Promise.resolve({ id: 'credential' }),
+      );
+      mockVerifyPasskeyLogin.mockResolvedValue(response);
+      const { result } = renderHook(() => usePasskeySignIn({ enabled: true }));
+      await act(async () => {
+        await result.current.signIn();
+      });
+    };
+
+    afterEach(() => {
+      clearTwoFactorSetupToken();
+    });
+
+    it('sends an account that must enroll to two-factor setup with its credential', async () => {
+      await signInWith({
+        code: 'TWO_FACTOR_ENROLLMENT_REQUIRED',
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'setup-token',
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith('/login/2fa/setup', { replace: true });
+      expect(readTwoFactorSetupToken()).toBe('setup-token');
+    });
+
+    it('sends an enrolled account to the code challenge', async () => {
+      await signInWith({ twoFAPending: true, tempToken: 'challenge-token' });
+
+      expect(mockNavigate).toHaveBeenCalledWith('/login/2fa?tempToken=challenge-token', {
+        replace: true,
+      });
+      expect(readTwoFactorSetupToken()).toBeFalsy();
+    });
   });
 });
