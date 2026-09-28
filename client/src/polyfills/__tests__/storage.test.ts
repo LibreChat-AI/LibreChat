@@ -1,7 +1,7 @@
 import { createMemoryStorage, installStorageFallback } from '../storage';
 
-function deniedWindow(): Window {
-  const target = {};
+function deniedWindow(): Pick<Window, 'localStorage' | 'sessionStorage'> {
+  const target = {} as Pick<Window, 'localStorage' | 'sessionStorage'>;
   for (const name of ['localStorage', 'sessionStorage']) {
     Object.defineProperty(target, name, {
       configurable: true,
@@ -10,13 +10,13 @@ function deniedWindow(): Window {
       },
     });
   }
-  return target as Window;
+  return target;
 }
 
 describe('installStorageFallback', () => {
   it('leaves accessible storage untouched', () => {
     const storage = createMemoryStorage();
-    const target = { localStorage: storage, sessionStorage: storage } as unknown as Window;
+    const target = { localStorage: storage, sessionStorage: storage };
     expect(installStorageFallback(target)).toEqual([]);
     expect(target.localStorage).toBe(storage);
   });

@@ -1,4 +1,5 @@
 type StorageName = 'localStorage' | 'sessionStorage';
+type StorageHost = Pick<Window, StorageName>;
 
 const STORAGE_NAMES: StorageName[] = ['localStorage', 'sessionStorage'];
 
@@ -38,7 +39,7 @@ export function createMemoryStorage(): Storage {
   });
 }
 
-function isAccessible(target: Window, name: StorageName): boolean {
+function isAccessible(target: StorageHost, name: StorageName): boolean {
   try {
     return target[name] != null;
   } catch {
@@ -52,7 +53,7 @@ function isAccessible(target: Window, name: StorageName): boolean {
  * app. Where the getter throws, it is replaced with an in-memory storage for the page's
  * lifetime, so the app runs on defaults and remembers nothing across reloads.
  */
-export function installStorageFallback(target: Window): StorageName[] {
+export function installStorageFallback(target: StorageHost): StorageName[] {
   return STORAGE_NAMES.filter((name) => {
     if (isAccessible(target, name)) {
       return false;

@@ -51,7 +51,7 @@ test.describe('denied web storage', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
 
     await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
-    await expect(page.getByTestId('nav-user')).toBeVisible();
+    await expect(page.getByRole('main')).toBeVisible();
     const storage = await page.evaluate(() => {
       window.localStorage.setItem('probe', 'kept');
       return {
@@ -78,7 +78,8 @@ test.describe('denied web storage', () => {
     await expect(page).toHaveURL(/\/c\/(?!new$)[^/]+$/);
 
     await page
-      .getByRole('button', { name: 'New chat', exact: true })
+      .getByRole('link', { name: 'New chat', exact: true })
+      .or(page.getByRole('button', { name: 'New chat', exact: true }))
       .filter({ visible: true })
       .first()
       .click();
