@@ -1112,7 +1112,9 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
   it('settles a compaction snapshot under its live id and blocks the error row', async () => {
     const { saved, deps: d } = deps({ 'live-response': [partialSummaryRow()] });
 
-    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: true,
+    });
 
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({
@@ -1131,10 +1133,28 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
       'live-response': [partialSummaryRow()],
     });
 
-    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: true,
+    });
 
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ messageId: 'live-response' });
+  });
+
+  /** The collision with no live row saved must not swallow the failure: the
+   *  error row proceeds under the failed run's own response id, where it can
+   *  never overwrite the anchor. */
+  it('redirects the error row to the live id when only the anchor matched', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'anchor-shaped-match' }],
+    });
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: false,
+      errorRowMessageId: 'live-response',
+    });
+
+    expect(saved).toHaveLength(0);
   });
 
   it('blocks the error row for an ordinary turn with an existing row, writing nothing', async () => {
@@ -1143,7 +1163,7 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
       'live-response': [{ messageId: 'live-response', _id: 'partial' }],
     });
 
-    await expect(settleExistingRowsBeforeErrorTurn({}, d)).resolves.toBe(true);
+    await expect(settleExistingRowsBeforeErrorTurn({}, d)).resolves.toEqual({ covered: true });
 
     expect(saved).toHaveLength(0);
     // The ordinary early return never reads the live row.
@@ -1153,7 +1173,9 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
   it('lets the error row through when no row covers the turn', async () => {
     const { saved, deps: d } = deps({});
 
-    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(false);
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toEqual({
+      covered: false,
+    });
 
     expect(saved).toHaveLength(0);
   });
