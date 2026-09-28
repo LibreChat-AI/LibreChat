@@ -156,7 +156,6 @@ const TwoFactorScreen: React.FC = React.memo(() => {
           <Button
             type="submit"
             variant="submit"
-            aria-label={localize('com_auth_continue')}
             data-testid="login-button"
             disabled={isLoading}
             className="w-full rounded-2xl px-4 py-3 text-sm font-medium disabled:opacity-80"
