@@ -20,6 +20,11 @@ const mockRestoreToComposer = jest.fn();
 let convertSteersForTest: ReturnType<typeof useSteerConvert>;
 let observedQueueForTest: QueuedMessage[];
 let setSteersForTest: (updater: (prev: PendingSteer[]) => PendingSteer[]) => void;
+let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
+
+jest.mock('~/Providers', () => ({
+  useFileMapContext: () => mockFileMap,
+}));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -27,18 +32,24 @@ jest.mock('~/hooks', () => ({
   useSteerReclaim: jest.requireActual('~/hooks/Chat/useSteerCancel').useSteerReclaim,
 }));
 
-jest.mock('@librechat/client', () => ({
-  useToastContext: () => ({ showToast: mockShowToast }),
-  /** Trigger-only stand-in: the receipt renders its marks as the hover card's
-   *  custom trigger, so the mock must render children under the accessible
-   *  name rather than swallowing them. */
-  InfoHoverCard: ({ text, children }: { text: string; children?: React.ReactNode }) => (
-    <button type="button" aria-label={text}>
-      {children}
-    </button>
-  ),
-  ESide: { Top: 'top', Bottom: 'bottom' },
-}));
+jest.mock('~/../test/mockMorphIcon', () => jest.requireActual('~/../test/mockMorphIcon'));
+
+jest.mock('@librechat/client', () => {
+  const { createSteerMorphIconMock } = jest.requireActual('~/../test/mockMorphIcon');
+  return {
+    useToastContext: () => ({ showToast: mockShowToast }),
+    /** Trigger-only stand-in: the receipt renders its marks as the hover card's
+     *  custom trigger, so the mock must render children under the accessible
+     *  name rather than swallowing them. */
+    InfoHoverCard: ({ text, children }: { text: string; children?: React.ReactNode }) => (
+      <button type="button" aria-label={text}>
+        {children}
+      </button>
+    ),
+    ESide: { Top: 'top', Bottom: 'bottom' },
+    MorphIcon: createSteerMorphIconMock(),
+  };
+});
 
 jest.mock('~/data-provider', () => ({
   useCancelSteerMutation: () => ({ mutateAsync: mockCancelMutateAsync }),
@@ -75,8 +86,20 @@ jest.mock('~/components/Chat/Input/Files/ImagePreview', () => ({
 
 jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileName }: { open: boolean; fileName: string }) =>
-    open ? <div data-testid="steer-file-preview">{fileName}</div> : null,
+  default: ({
+    open,
+    fileName,
+    deliveryPath,
+  }: {
+    open: boolean;
+    fileName: string;
+    deliveryPath?: string;
+  }) =>
+    open ? (
+      <div data-testid="steer-file-preview" data-delivery-path={deliveryPath}>
+        {fileName}
+      </div>
+    ) : null,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
@@ -167,6 +190,7 @@ async function clickMenuItem(label: string) {
 describe('InFlightSteers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFileMap = {};
     mockCancelMutateAsync.mockResolvedValue({ removed: true });
     mockRestoreToComposer.mockReturnValue(true);
     observedQueueForTest = [];
@@ -628,6 +652,29 @@ describe('InFlightSteers', () => {
     expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
   });
 
+  it.each(['application/pdf', 'image/png'])(
+    'hydrates %s preview metadata after the steer',
+    (type) => {
+      const steer: PendingSteer = {
+        steerId: 's1',
+        text: 'see attached',
+        status: 'pending',
+        createdAt: 1,
+        files: [{ file_id: 'f1', filename: 'notes.pdf', type }],
+      };
+      const rendered = renderSteers([steer]);
+
+      mockFileMap = { f1: { llmDeliveryPath: 'text' } };
+      rendered.rerender(steersElement([steer]));
+
+      fireEvent.click(screen.getByTestId('steer-file'));
+      expect(screen.getByTestId('steer-file-preview')).toHaveAttribute(
+        'data-delivery-path',
+        'text',
+      );
+    },
+  );
+
   it('renders markdown the same way the applied part will, so text does not reflow on apply', () => {
     renderSteers([{ steerId: 's1', text: '**bold** steer', status: 'pending', createdAt: 1 }], {
       enableUserMsgMarkdown: true,
@@ -730,9 +777,11 @@ describe('InFlightSteers', () => {
       ]);
       const toggle = screen.getByRole('button', { name: 'com_ui_show_more' });
       expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(toggle.querySelector('[data-icon="chevron-down"]')).not.toBeNull();
       fireEvent.click(toggle);
       const collapse = screen.getByRole('button', { name: 'com_ui_show_less' });
       expect(collapse).toHaveAttribute('aria-expanded', 'true');
+      expect(collapse.querySelector('[data-icon="chevron-up"]')).not.toBeNull();
     } finally {
       scrollHeight.mockRestore();
     }
@@ -813,6 +862,10 @@ describe('InFlightSteers — interrupt-now escalation', () => {
     expect(screen.queryByTestId('steer-escalate-now')).toBeNull();
     expect(document.activeElement).toBe(screen.getByLabelText('com_ui_more_options'));
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_steer_in_flight_preempt');
+    // Preempting steers use ZapOff; non-preempt uses Zap.
+    expect(
+      screen.getByTestId('in-flight-steer').querySelector('[data-icon="zap-off"]'),
+    ).not.toBeNull();
   });
 
   it('flips the receipt to interrupting on the click, confirming its check only on the ACK', async () => {

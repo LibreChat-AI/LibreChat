@@ -2,12 +2,14 @@ import { useMemo } from 'react';
 import { FileText } from 'lucide-react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
 import parseJsonField from './parseJsonField';
 import { useToolCallIntent } from './intent';
+import { TOOL_ROW_CLASSES } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -84,7 +86,10 @@ export default function ReadFileCall({
   onExpand?: () => void;
 }) {
   const localize = useLocalize();
-  const filePath = useMemo(() => parseJsonField(args, 'file_path'), [args]);
+  const filePath = useMemo(
+    () => parseJsonField(args, 'path') || parseJsonField(args, 'file_path'),
+    [args],
+  );
   const intent = useToolCallIntent(args);
   const fileName = filePath.split('/').pop() || filePath;
   const lang = useMemo(() => langFromPath(filePath), [filePath]);
@@ -98,11 +103,11 @@ export default function ReadFileCall({
     runStepStatus,
   });
 
-  const highlighted = useLazyHighlight(hasOutput ? output : undefined, lang);
+  const highlighted = useLazyHighlight(showCode && hasOutput ? output : undefined, lang);
 
   return (
     <>
-      <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5">
+      <div className={TOOL_ROW_CLASSES}>
         <ProgressText
           phase={phase}
           onClick={toggleCode}
@@ -129,7 +134,12 @@ export default function ReadFileCall({
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {hasOutput && (
-            <div className="my-2 overflow-hidden rounded-lg border border-border-light bg-surface-secondary">
+            <div
+              className={cn(
+                toolPanelSpacingClassName,
+                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+              )}
+            >
               <CodeWindowHeader language={fileName} code={output} />
               <pre className="max-h-[300px] overflow-auto bg-surface-chat p-4 font-mono text-xs dark:bg-surface-primary-alt">
                 <code className={`hljs language-${lang} !whitespace-pre`}>

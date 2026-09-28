@@ -64,7 +64,7 @@ function DynamicCheckbox({
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40">
+                <small className="opacity-40 high-contrast:opacity-100">
                   ({localize('com_endpoint_default')}:{' '}
                   {defaultValue != null ? localize('com_ui_yes') : localize('com_ui_no')})
                 </small>

@@ -24,6 +24,9 @@ async function sweepOnce(options: {
     eraseScheduleIfDrained: jest.fn(async () => false),
     markEraseAttempted: jest.fn(async () => undefined),
     getRunsForReconciliation: jest.fn(async () => []),
+    getUnbookkeptRuns: jest.fn(async () => []),
+    finalizeBookkeeping: jest.fn(async () => undefined),
+    markRunsReconciled: jest.fn(async () => undefined),
   };
   const sweep = startScheduleErasureSweep({
     methods: methods as unknown as ScheduleMethods,
@@ -118,6 +121,9 @@ describe('topology-safe dead-delivery convergence', () => {
       getRunsForReconciliation: jest.fn(async () => [
         oldRun({ deliveryKey: 'dk-1', ...options.run } as Partial<IScheduleRun>),
       ]),
+      getUnbookkeptRuns: jest.fn(async () => []),
+      finalizeBookkeeping: jest.fn(async () => undefined),
+      markRunsReconciled: jest.fn(async () => undefined),
     };
     const getTriggerDelivery = jest.fn(async () => options.delivery ?? null);
     const clearReconciledJob = jest.fn(async () => undefined);
@@ -328,6 +334,64 @@ describe('topology-safe dead-delivery convergence', () => {
   });
 });
 
+describe('permanent MCP bookkeeping recovery without an armed scheduler', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('replays a half-bookkept MCP run without applying ordinary failure policy', async () => {
+    const mcp = [
+      {
+        server: 'Graph',
+        status: 'mcp_configuration_missing' as const,
+        detail: 'unattended_auth_required' as const,
+      },
+    ];
+    const permanent = oldRun({ status: 'error', error: 'MCP unavailable', mcp });
+    const ordinary = oldRun({
+      scheduleId: 'schedule-2',
+      status: 'error',
+      error: 'Temporary upstream failure',
+    });
+    const methods = {
+      getDeletingSchedules: jest.fn(async () => []),
+      getActiveRunsForSchedule: jest.fn(async () => []),
+      eraseScheduleIfDrained: jest.fn(async () => false),
+      markEraseAttempted: jest.fn(async () => undefined),
+      getRunsForReconciliation: jest.fn(async () => []),
+      recordRunOutcome: jest.fn(async () => undefined),
+      getUnbookkeptRuns: jest.fn(async () => [permanent, ordinary]),
+      finalizeBookkeeping: jest.fn(async () => undefined),
+      markRunsReconciled: jest.fn(async () => undefined),
+    };
+    const sweep = startScheduleErasureSweep({
+      methods: methods as unknown as ScheduleMethods,
+      getJobStatus: jest.fn(async () => null),
+      getTriggerDelivery: jest.fn(async () => null),
+      clearReconciledJob: jest.fn(async () => undefined),
+      canInferOwnerDeathFromMissingJob: false,
+    });
+    await jest.advanceTimersByTimeAsync(5 * 60_000);
+    sweep.stop();
+    expect(methods.finalizeBookkeeping).toHaveBeenCalledTimes(1);
+    expect(methods.finalizeBookkeeping).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduleId: 'schedule-1',
+        status: 'error',
+        mcp,
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+      }),
+    );
+    expect(methods.markRunsReconciled).toHaveBeenCalledWith([permanent, ordinary]);
+  });
+});
+
 describe('dead-delivery certainty fence', () => {
   beforeEach(() => {
     jest.useFakeTimers();
@@ -350,6 +414,9 @@ describe('dead-delivery certainty fence', () => {
       eraseScheduleIfDrained: jest.fn(async () => false),
       markEraseAttempted: jest.fn(async () => undefined),
       getRunsForReconciliation: jest.fn(async () => [oldRun({ deliveryKey: 'dk-1' } as never)]),
+      getUnbookkeptRuns: jest.fn(async () => []),
+      finalizeBookkeeping: jest.fn(async () => undefined),
+      markRunsReconciled: jest.fn(async () => undefined),
     };
     const sweep = startScheduleErasureSweep({
       methods: methods as unknown as ScheduleMethods,

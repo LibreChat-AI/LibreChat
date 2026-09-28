@@ -34,6 +34,7 @@ const fileSnapshotSchema = new Schema<SharedFileSnapshot>(
     width: { type: Number },
     height: { type: Number },
     model: { type: String },
+    llmDeliveryPath: { type: String, enum: ['provider', 'text', 'none'] },
     previewRevision: { type: String },
     sourceDispatchedAt: { type: Number },
     tenantId: { type: String },

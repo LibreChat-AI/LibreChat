@@ -11,17 +11,16 @@ const {
 const {
   checkAccess,
   GenerationJobManager,
+  GENERATION_RECOVERY_FAILED_ERROR,
   isPendingActionStale,
-  mapToolApprovalResolutions,
+  resolveToolApprovalResume,
   resolveAskUserQuestionResume,
   buildResolvedAskUserQuestion,
   appendResolvedAskUserQuestion,
   attachAskUserQuestionAnswers,
   findAskUserQuestionContentIndex,
-  findUndecidedToolCalls,
-  findDisallowedDecisions,
-  findIncompleteDecisions,
   computeAgentRequestFingerprint,
+  computeLegacyAgentRequestFingerprint,
   captureAgentCheckpointGeneration,
   deleteAgentCheckpoint,
   buildAbortedResponseMetadata,
@@ -30,6 +29,7 @@ const {
   getAgentCheckpointer,
   isContentFilterError,
   preflightResumeContent,
+  reportLocatorTraversalFailure,
   getResumeProvenance,
   getUserFacingResumeError,
   decrementPendingRequest,
@@ -45,6 +45,10 @@ const {
   createAgentEventActionRecorder,
   createAgentEventActorDetachedActionLifecycle,
   findAgentEventAppliedAction,
+  assertCodeExecutionApprovalBinding,
+  collectReachableAgents,
+  restoreScheduledTokenContext,
+  recoverTurnMessageReference,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const { decryptMetadata } = require('~/server/services/ActionService');
@@ -74,6 +78,7 @@ const {
   reserveAgentEventActorDetachedAction,
   markAgentEventActorDetachedActionRunning,
   settleAgentEventActorDetachedAction,
+  appendConvoMessageReference,
 } = require('~/models');
 const {
   acquireEventChildGenerationLease,
@@ -194,6 +199,7 @@ async function deleteFailedResumeCheckpoint(args, context) {
 const GENERIC_RESUME_ERROR = 'Resume failed';
 
 const resumeContentProtectionDependencies = {
+  onTraversalFailure: reportLocatorTraversalFailure,
   getAgentCheckpointer,
   checkAccess,
   getMessages,
@@ -263,6 +269,28 @@ async function resolveAccumulatedAttachments({ client, conversationId, responseM
   return mergeAttachments(existing, resolved);
 }
 
+/**
+ * A resumed turn persists its response with a bare `saveMessage`, which writes the row and
+ * never tells the conversation about it. The title write used to rebuild that array in
+ * passing; it no longer does, so each resumed save carries its own reference. Nothing else
+ * in a resumed turn could have appended it, so there is no prior write to consult.
+ */
+const recoverResumedResponseReference = (
+  { userId, conversationId, client, savedResponseMessage },
+  context,
+) =>
+  recoverTurnMessageReference(
+    { appendConvoMessageReference },
+    {
+      userId,
+      conversationId,
+      messageId: savedResponseMessage?._id == null ? undefined : String(savedResponseMessage._id),
+      alreadyRecorded: false,
+      managesConversation: !client?.skipSaveConvo,
+      context,
+    },
+  );
+
 /** Resolve the segment's content for an unfinished save (mirrors finalize's source). */
 async function resolveSegmentContent(client, streamId, expectedCreatedAt) {
   const liveContent = Array.isArray(client?.contentParts) ? client.contentParts : [];
@@ -309,7 +337,9 @@ async function persistRePauseProgress({ req, client, job, streamId, conversation
     {
       userId,
       isTemporary: meta.isTemporary ?? req.body?.isTemporary,
-      expiredAt: req._agentEventBindingRetention?.expiredAt,
+      expiredAt:
+        req._agentEventBindingRetention?.expiredAt ??
+        (meta.retentionExpiresAt ? new Date(meta.retentionExpiresAt) : undefined),
       interfaceConfig: req?.config?.interfaceConfig,
     },
     {
@@ -327,6 +357,10 @@ async function persistRePauseProgress({ req, client, job, streamId, conversation
   if (!savedResponseMessage) {
     throw new Error('Re-pause response progress could not be persisted');
   }
+  await recoverResumedResponseReference(
+    { userId, conversationId, client, savedResponseMessage },
+    'api/server/controllers/agents/resume.js - recovered re-paused response reference',
+  );
 }
 
 /** Untenanted jobs (pre-multi-tenancy) remain accessible if the userId check passes. */
@@ -343,27 +377,7 @@ function resolveResumeValue(pendingAction, body) {
   const payload = pendingAction.payload;
   if (payload?.type === 'tool_approval') {
     const resolutions = Array.isArray(body.decisions) ? body.decisions : [];
-    const undecided = findUndecidedToolCalls(payload, resolutions);
-    if (undecided.length > 0) {
-      return { status: 400, error: 'Every paused tool call must be decided', undecided };
-    }
-    // Enforce the policy's per-tool allowed_decisions — a crafted POST must not
-    // approve a tool the policy restricted to (e.g.) reject/respond.
-    const disallowed = findDisallowedDecisions(payload, resolutions);
-    if (disallowed.length > 0) {
-      return { status: 403, error: 'Decision not permitted for one or more tools', disallowed };
-    }
-    // `edit`/`respond` must carry their payload — otherwise toSdkDecision's defensive
-    // defaults ({} / '') would resume with an empty input/result the user didn't approve.
-    const incomplete = findIncompleteDecisions(resolutions);
-    if (incomplete.length > 0) {
-      return {
-        status: 400,
-        error: 'edit requires editedArguments and respond requires responseText',
-        incomplete,
-      };
-    }
-    return { resumeValue: mapToolApprovalResolutions(resolutions) };
+    return resolveToolApprovalResume(payload, resolutions);
   }
   if (payload?.type === 'ask_user_question') {
     return resolveAskUserQuestionResume(payload, body);
@@ -532,7 +546,9 @@ async function finalizeResumedTurn({
       {
         userId,
         isTemporary,
-        expiredAt: req._agentEventBindingRetention?.expiredAt,
+        expiredAt:
+          req._agentEventBindingRetention?.expiredAt ??
+          (meta.retentionExpiresAt ? new Date(meta.retentionExpiresAt) : undefined),
         interfaceConfig: req?.config?.interfaceConfig,
       },
       responseMessage,
@@ -541,6 +557,10 @@ async function finalizeResumedTurn({
     if (!savedResponseMessage) {
       throw new Error('Resumed response could not be persisted before terminal publication');
     }
+    await recoverResumedResponseReference(
+      { userId, conversationId, client, savedResponseMessage },
+      'api/server/controllers/agents/resume.js - recovered resumed response reference',
+    );
     if (appliedEventActor != null) {
       const recorded = await recordAgentEventActorReconciliation({
         user: userId,
@@ -908,7 +928,13 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
   // when the paused action carries a fingerprint (in-flight pauses from before this
   // change won't), and recomputed from the resume body's graph-determining fields.
   const pinnedFingerprint = pendingAction.requestFingerprint;
-  if (pinnedFingerprint && pinnedFingerprint !== computeAgentRequestFingerprint(req.body ?? {})) {
+  const pinnedFingerprintV2 = pendingAction.requestFingerprintV2;
+  const legacyFingerprint = computeLegacyAgentRequestFingerprint(req.body ?? {});
+  const currentFingerprint = computeAgentRequestFingerprint(req.body ?? {});
+  if (
+    (pinnedFingerprint && pinnedFingerprint !== legacyFingerprint) ||
+    (pinnedFingerprintV2 && pinnedFingerprintV2 !== currentFingerprint)
+  ) {
     return sendGenerationJson(
       res,
       403,
@@ -1031,7 +1057,9 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
   let resumeState;
   let preparedContent;
   try {
-    resumeState = await GenerationJobManager.getResumeState(streamId, job.createdAt);
+    resumeState = await GenerationJobManager.getResumeState(streamId, job.createdAt, {
+      validateEarlyBufferRecovery: true,
+    });
     const batchedAnswer =
       mapped.resumeValue?.answers != null &&
       typeof mapped.resumeValue.answers === 'object' &&
@@ -1086,6 +1114,40 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       '[ResumeAgentController] Resume content preflight failed',
       getSafeErrorMetadata(err),
     );
+    if (scheduleId) {
+      const terminalJob = await GenerationJobManager.getJob(streamId).catch(() => null);
+      if (
+        terminalJob?.createdAt === job.createdAt &&
+        terminalJob.status === 'error' &&
+        terminalJob.error === GENERATION_RECOVERY_FAILED_ERROR
+      ) {
+        try {
+          await recordScheduleOutcome({
+            scheduleId,
+            scheduledFor,
+            streamId,
+            jobCreatedAt: job.createdAt,
+            status: 'error',
+            conversationId,
+            error: GENERATION_RECOVERY_FAILED_ERROR,
+          });
+        } catch (scheduleError) {
+          logger.error(
+            '[ResumeAgentController] Failed to settle scheduled recovery failure',
+            getSafeErrorMetadata(scheduleError),
+          );
+        }
+        await deleteFailedResumeCheckpoint(
+          {
+            conversationId,
+            checkpointerCfg,
+            job,
+            checkpointGeneration: await checkpointGenerationPromise,
+          },
+          'scheduled recovery validation failure',
+        );
+      }
+    }
     if (isContentFilterError(err)) {
       return sendGenerationJson(res, err.statusCode, err.body, generationProtocolVersion);
     }
@@ -1772,22 +1834,36 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       );
     }
 
+    const mcpRequestBody =
+      job.metadata.mcpRequestBody ??
+      createMCPRuntimeRequestBody({
+        messageId: job.metadata.responseMessageId,
+        conversationId: streamId,
+        codeEnvironmentMode:
+          req.body.codeEnvironmentMode ?? req.resolvedConversation?.codeEnvironmentMode,
+        codeWorkspaces: req.body.codeWorkspaces ?? req.resolvedConversation?.codeWorkspaces,
+        parentMessageId: job.metadata.userMessage?.messageId ?? Constants.NO_PARENT,
+      });
     const result = await initializeClient({
+      scheduledTokenContext: restoreScheduledTokenContext(req, job.metadata),
       req,
       res,
       endpointOption: req.body.endpointOption,
       signal: job.abortController.signal,
       jobCreatedAt: job.createdAt,
       checkpointNamespace,
-      requestBody:
-        job.metadata.mcpRequestBody ??
-        createMCPRuntimeRequestBody({
-          messageId: job.metadata.responseMessageId,
-          conversationId: streamId,
-          parentMessageId: job.metadata.userMessage?.messageId ?? Constants.NO_PARENT,
-        }),
+      foregroundRunId: mcpRequestBody.messageId,
+      requestBody: mcpRequestBody,
     });
     client = result.client;
+
+    // The user approved the code action against the route/session selected at
+    // pause time. Re-resolve it on this replica and fail before provider/tool
+    // execution if the environment, worker, or workspace scope moved.
+    assertCodeExecutionApprovalBinding(
+      pendingAction.codeExecutionBinding,
+      collectReachableAgents([client.options?.agent, ...(client.agentConfigs?.values() ?? [])]),
+    );
 
     // Bind the rebuilt client to the in-flight turn's identity (no new user message).
     client.conversationId = streamId;
@@ -1930,6 +2006,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
             jobCreatedAt: job.createdAt,
             status: 'requires_action',
             conversationId,
+            checkpointNamespace: client.checkpointNamespace,
           });
         }
       } else {

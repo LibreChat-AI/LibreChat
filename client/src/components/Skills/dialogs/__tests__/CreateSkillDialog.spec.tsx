@@ -6,6 +6,7 @@ const mockMutate = jest.fn();
 const mockNavigate = jest.fn();
 const mockSetIsOpen = jest.fn();
 const mockShowToast = jest.fn();
+let mockOnError: ((error: unknown) => void) | undefined;
 
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
@@ -47,10 +48,13 @@ jest.mock('@librechat/client', () => {
 });
 
 jest.mock('~/data-provider', () => ({
-  useCreateSkillMutation: () => ({
-    mutate: mockMutate,
-    isLoading: false,
-  }),
+  useCreateSkillMutation: (options: { onError: (error: unknown) => void }) => {
+    mockOnError = options.onError;
+    return {
+      mutate: mockMutate,
+      isLoading: false,
+    };
+  },
 }));
 
 jest.mock('~/hooks', () => ({
@@ -61,6 +65,9 @@ jest.mock('~/hooks', () => ({
       com_ui_skill_instructions: 'Instructions',
       com_ui_cancel: 'Cancel',
       com_ui_create: 'Create',
+      com_ui_skill_create_error: 'Failed to create skill',
+      com_ui_skill_name_exists: 'A skill with this name already exists',
+      com_ui_skill_name_reserved: 'This skill name is reserved',
     };
     return translations[key] ?? key;
   },
@@ -73,6 +80,41 @@ jest.mock('~/utils', () => ({
 describe('CreateSkillDialog', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockOnError = undefined;
+  });
+
+  it('localizes structured validation errors', () => {
+    render(<CreateSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
+
+    mockOnError?.({
+      response: {
+        status: 400,
+        data: {
+          issues: [{ field: 'name', code: 'RESERVED_WORD', message: 'settings is reserved' }],
+        },
+      },
+    });
+
+    expect(mockShowToast).toHaveBeenCalledWith({
+      status: 'error',
+      message: 'This skill name is reserved',
+    });
+  });
+
+  it('preserves middleware messages and localizes duplicate names', () => {
+    render(<CreateSkillDialog isOpen={true} setIsOpen={mockSetIsOpen} />);
+
+    mockOnError?.({ response: { status: 403, data: { message: 'Permission denied' } } });
+    expect(mockShowToast).toHaveBeenLastCalledWith({
+      status: 'error',
+      message: 'Permission denied',
+    });
+
+    mockOnError?.({ response: { status: 409, data: { error: 'server prose' } } });
+    expect(mockShowToast).toHaveBeenLastCalledWith({
+      status: 'error',
+      message: 'A skill with this name already exists',
+    });
   });
 
   it('does not submit an ancestor form when rendered through a portal', async () => {

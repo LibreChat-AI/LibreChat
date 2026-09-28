@@ -32,6 +32,7 @@ export { default as useFocusTrap } from './useFocusTrap';
 export { default as useFavorites } from './useFavorites';
 export { default as useToolFavorites } from './useToolFavorites';
 export { default as useChatBadges } from './useChatBadges';
+export { default as useAdaptiveIcon } from './useAdaptiveIcon';
 export { default as useScrollToRef } from './useScrollToRef';
 export { default as useIsActiveItem } from './useIsActiveItem';
 export { default as useLocalStorage } from './useLocalStorage';

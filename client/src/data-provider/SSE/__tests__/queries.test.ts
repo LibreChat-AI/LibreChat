@@ -43,6 +43,7 @@ import {
   queueTitleGeneration,
   useActiveJobs,
   resetActiveJobsGrace,
+  extendActiveJobsGrace,
   getActiveJobsRefetchInterval,
   ACTIVE_JOBS_POLL_MS,
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
@@ -128,6 +129,36 @@ describe('useActiveJobs successor grace', () => {
 
     now += 1_000;
     expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(ACTIVE_JOBS_POLL_MS);
+  });
+
+  it('keeps listening for as long as a successor is known to be owed', () => {
+    /** The deterministic path: a queued turn the backend has taken ownership
+     *  of needs no window, because the client already knows a run is coming. */
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, true)).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS * 10;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, true)).toBe(ACTIVE_JOBS_POLL_MS);
+  });
+
+  it('restarts the window from a live observation the list never saw', () => {
+    /** A pane attached to the run a queued turn produced, and that run
+     *  finished before the list polled. The list's clock is stale; the
+     *  observation is what keeps an unpredicted continuation discoverable. */
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS * 3;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(false);
+
+    extendActiveJobsGrace();
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS + 1;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(false);
+  });
+
+  it('stops once a successor is no longer owed', () => {
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, true)).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS + 1;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, false)).toBe(false);
   });
 
   it('stops once the handover window has passed without a successor', () => {

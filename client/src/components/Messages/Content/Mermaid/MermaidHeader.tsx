@@ -1,7 +1,8 @@
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
+import { Eye, Code2 } from 'lucide';
 import copy from 'copy-to-clipboard';
-import { TooltipAnchor } from '@librechat/client';
-import { Code2, Expand, Eye } from 'lucide-react';
+import { Expand } from 'lucide-react';
+import { MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { MermaidDimensions } from '~/utils/diagram/export';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize } from '~/hooks';
@@ -106,11 +107,7 @@ const MermaidHeader: React.FC<MermaidHeaderProps> = memo(
                 className={iconBtnClass}
                 onClick={handleToggleCode}
               >
-                {showCode ? (
-                  <Eye className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <Code2 className="h-4 w-4" aria-hidden="true" />
-                )}
+                <MorphIcon icon={showCode ? Eye : Code2} className="h-4 w-4" />
               </button>
             }
           />

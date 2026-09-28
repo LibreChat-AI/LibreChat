@@ -90,6 +90,22 @@ export async function enableMemory(page: Page) {
   await expect(page.getByRole('checkbox', { name: 'Memory' })).toBeVisible();
 }
 
+/** Enable the ephemeral Code Interpreter (execute_code) capability from the tool menu. */
+export async function enableCodeInterpreter(page: Page) {
+  await page.getByRole('button', { name: 'Tools Options' }).click();
+  await page.getByTestId('tools-menu-run-code').click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('checkbox', { name: 'Run Code' })).toBeVisible();
+}
+
+/** Enable the ephemeral File Search capability from the composer tool menu. */
+export async function enableFileSearch(page: Page) {
+  await page.getByRole('button', { name: 'Tools Options' }).click();
+  await page.getByTestId('tools-menu-file-search').click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('checkbox', { name: 'File Search' })).toBeVisible();
+}
+
 /** The conversation messages container. */
 export const messagesView = (page: Page) => page.getByTestId('messages-view');
 
@@ -368,4 +384,101 @@ export async function requestJson<T>(
 
 export async function fetchJson<T>(page: Page, path: string, token: string): Promise<T> {
   return requestJson<T>(page, { path, token });
+}
+
+/** Base URLs of the fake code-exec + RAG servers started by playwright.config.mock.ts. */
+/** Defaults must match `playwright.config.mock.ts`, which keeps these clear of
+ *  the MCP (8765/8766) and label (8889) fixtures. */
+export const CODE_API_BASE = `http://127.0.0.1:${process.env.E2E_CODE_API_PORT || '8790'}`;
+export const RAG_API_BASE = `http://127.0.0.1:${process.env.E2E_RAG_API_PORT || '8791'}`;
+
+export type CodeProvisionRecord = {
+  filename: string;
+  kind: string;
+  id: string;
+  storage_session_id: string;
+  fileId: string;
+};
+
+export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
+
+/** Files the fake code server received via /upload (proof they reached the code env). */
+export async function getCodeProvisionedUploads(page: Page): Promise<CodeProvisionRecord[]> {
+  const response = await page.request.get(`${CODE_API_BASE}/__debug/uploads`);
+  expect(response.ok(), 'fake code server /__debug/uploads should respond').toBeTruthy();
+  const body = (await response.json()) as { uploads: CodeProvisionRecord[] };
+  return body.uploads;
+}
+
+/** Files the fake RAG server embedded via /embed (proof they reached the vector DB). */
+export async function getRagEmbedded(page: Page): Promise<RagEmbedRecord[]> {
+  const response = await page.request.get(`${RAG_API_BASE}/__debug/embedded`);
+  expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
+  const body = (await response.json()) as { embedded: RagEmbedRecord[] };
+  return body.embedded;
+}
+
+/** Clear both fake servers' recorded provisioning (call at test start for isolation). */
+export async function resetProvisioning(page: Page): Promise<void> {
+  await Promise.all([
+    page.request.post(`${CODE_API_BASE}/__debug/reset`),
+    page.request.post(`${RAG_API_BASE}/__debug/reset`),
+  ]);
+}
+
+/** Shape of a file record as returned by POST /api/files and GET /api/files. */
+export type UploadedFile = {
+  file_id?: string;
+  filename?: string;
+  type?: string;
+  llmDeliveryPath?: string;
+  embedded?: boolean;
+  metadata?: { codeEnvRef?: { storage_session_id?: string; file_id?: string } };
+};
+
+export type AttachFile = { name: string; mimeType: string; content: string };
+
+/** Unique, filesystem-safe name so tests never collide on accumulated fake-server state. */
+export const uniqueName = (prefix: string) =>
+  `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
+
+const isFilesUpload = (url: string, method: string) =>
+  method === 'POST' && /\/api\/files(?:\?|$)/.test(new URL(url).pathname);
+
+/** Wait for the next POST /api/files upload response. */
+export function waitForUpload(page: Page) {
+  return page.waitForResponse((r) => isFilesUpload(r.url(), r.request().method()), {
+    timeout: 30000,
+  });
+}
+
+/** Attach a file via the unified single button (no tool resource). */
+export async function uploadViaUnifiedButton(page: Page, file: AttachFile) {
+  const uploadResponse = waitForUpload(page);
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.locator('#attach-file-button').click(),
+  ]);
+  await fileChooser.setFiles({
+    name: file.name,
+    mimeType: file.mimeType,
+    buffer: Buffer.from(file.content, 'utf8'),
+  });
+  return uploadResponse;
+}
+
+/** Attach a file via a named option in the legacy 3-way dropdown. */
+export async function uploadViaLegacyOption(page: Page, optionName: string, file: AttachFile) {
+  const uploadResponse = waitForUpload(page);
+  await page.locator('#attach-file-menu-button').click();
+  const [fileChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.getByRole('menuitem', { name: optionName }).click(),
+  ]);
+  await fileChooser.setFiles({
+    name: file.name,
+    mimeType: file.mimeType,
+    buffer: Buffer.from(file.content, 'utf8'),
+  });
+  return uploadResponse;
 }

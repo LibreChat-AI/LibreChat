@@ -10,6 +10,7 @@ export * from './EditorContext';
 export * from './ChatFormContext';
 export * from './BookmarkContext';
 export * from './MessageContext';
+export * from './AuthorContext';
 export * from './AssistantsContext';
 export * from './AgentsContext';
 export * from './AssistantsMapContext';

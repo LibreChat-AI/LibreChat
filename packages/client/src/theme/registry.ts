@@ -8,6 +8,7 @@ import type {
   ThemeDefinition,
   ThemeMode,
 } from './types';
+import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
 export const THEME_VERSION = 1 as const;
@@ -17,7 +18,7 @@ export const THEME_VERSION = 1 as const;
  * hand-maintained token maps, so a slot added to one and missed in another
  * fails the build rather than surfacing as a broken theme downstream.
  */
-type SeriesSlot = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type SeriesSlot = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type Assert<Declared extends true> = Declared;
 type DeclaredIn<Keys extends PropertyKey, Tokens> = [Keys] extends [keyof Tokens] ? true : false;
 
@@ -30,6 +31,20 @@ export type SeriesTokensAreDeclared = [
 export const themeColorTokens: readonly (keyof IThemeRGB)[] = Object.freeze(
   Object.keys(defaultTheme) as Array<keyof IThemeRGB>,
 );
+
+/**
+ * What the verified mark is measured against: the fill it wore before it had a
+ * token, the check it carries, and the backgrounds `ToolCard` takes at rest and
+ * on hover. A theme naming any of these coordinated the mark; one naming none
+ * of them never looked at it.
+ */
+export const MARK_NEIGHBOURHOOD: readonly (keyof IThemeRGB)[] = Object.freeze([
+  'rgb-status-success-strong',
+  'rgb-text-on-status',
+  'rgb-surface-dialog',
+  'rgb-surface-secondary',
+  'rgb-surface-tertiary',
+]);
 
 export const themeAppearanceProperties: Readonly<
   Record<keyof IThemeAppearance, `--theme-${string}`>
@@ -89,6 +104,51 @@ export const libreChatTheme: ThemeDefinition = Object.freeze({
     dark: { colors: darkTheme },
   },
   brands: defaultBrands,
+});
+
+/**
+ * Built-in accessibility theme behind the `high-contrast-light` and
+ * `high-contrast-dark` appearance modes. `HIGH_CONTRAST_THEME_NAME` is what
+ * `applyResolvedTheme` stamps onto `data-theme`, and what the `high-contrast`
+ * class on `<html>` mirrors for the CSS-only variables the token layer cannot
+ * reach (see the `html.high-contrast` block in `client/src/style.css`).
+ */
+export const HIGH_CONTRAST_THEME_NAME = 'high-contrast' as const;
+
+/**
+ * A brand fill carries a glyph and has to stand out from the canvas, and both
+ * flip between the modes, so the brands are declared per mode: dark tints under
+ * a white glyph on white, bright tints under a black glyph on black. Hue is kept
+ * so a provider stays recognisable; the worst pair measures 8.76:1 for both the
+ * glyph and the silhouette, against 2.30:1 for the standard brand set.
+ */
+const highContrastLightBrands: Partial<IThemeBrands> = Object.freeze({
+  'provider-openai': '#00563d',
+  'provider-openai-gpt4': '#4d1a99',
+  'provider-openai-reasoning': '#000000',
+  'provider-anthropic': '#6b3d00',
+  'provider-azure': '#00417a',
+  'provider-bedrock': '#00504d',
+  'provider-foreground': '#ffffff',
+});
+
+const highContrastDarkBrands: Partial<IThemeBrands> = Object.freeze({
+  'provider-openai': '#7ff0b3',
+  'provider-openai-gpt4': '#c8a3ff',
+  'provider-openai-reasoning': '#ffffff',
+  'provider-anthropic': '#ffc94d',
+  'provider-azure': '#8cc8ff',
+  'provider-bedrock': '#5ce6db',
+  'provider-foreground': '#000000',
+});
+
+export const highContrastTheme: ThemeDefinition = Object.freeze({
+  version: THEME_VERSION,
+  name: HIGH_CONTRAST_THEME_NAME,
+  modes: {
+    light: { colors: highContrastLightTheme, brands: highContrastLightBrands },
+    dark: { colors: highContrastDarkTheme, brands: highContrastDarkBrands },
+  },
 });
 
 const rgbPattern = /^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})$/;
@@ -159,6 +219,27 @@ const appearanceValidators: Record<keyof IThemeAppearance, (value: unknown) => b
   motionNormal: isDuration,
 };
 
+/** Shared by the theme-wide `brands` and each mode's override block. */
+function collectBrandErrors(brands: unknown): string[] {
+  if (!isPlainRecord(brands)) {
+    return [];
+  }
+
+  return Object.entries(brands).flatMap(([key, value]) => {
+    if (!themeBrandTokens.includes(key as keyof IThemeBrands)) {
+      return [`Unknown brand token: ${key}`];
+    }
+    /** Only the glyph is a flat colour; a fill may also be a gradient. */
+    const isColorOnly = key === 'provider-foreground';
+    const isValidBrand =
+      typeof value === 'string' &&
+      (isColorOnly
+        ? hexColorPattern.test(value)
+        : hexColorPattern.test(value) || isLinearGradient(value));
+    return value !== undefined && !isValidBrand ? [`Invalid brand value for ${key}: ${value}`] : [];
+  });
+}
+
 export function validateThemeDefinition(theme: ThemeDefinition): string[] {
   const errors: string[] = [];
 
@@ -201,7 +282,7 @@ export function validateThemeDefinition(theme: ThemeDefinition): string[] {
     }
 
     Object.keys(definition).forEach((key) => {
-      if (key !== 'colors' && key !== 'appearance') {
+      if (key !== 'colors' && key !== 'appearance' && key !== 'brands') {
         errors.push(`Unknown ${mode} theme field: ${key}`);
       }
     });
@@ -235,29 +316,37 @@ export function validateThemeDefinition(theme: ThemeDefinition): string[] {
         }
       });
     }
+
+    if (definition.brands !== undefined && !isPlainRecord(definition.brands)) {
+      errors.push(`Theme brands for ${mode} must be an object`);
+    } else {
+      errors.push(...collectBrandErrors(definition.brands));
+    }
   });
 
   if (theme.brands !== undefined && !isPlainRecord(theme.brands)) {
     errors.push('Theme brands must be an object');
   } else {
-    Object.entries(theme.brands ?? {}).forEach(([key, value]) => {
-      if (!themeBrandTokens.includes(key as keyof IThemeBrands)) {
-        errors.push(`Unknown brand token: ${key}`);
-        return;
-      }
-      const isColorOnly = key === 'provider-foreground';
-      const isValidBrand =
-        typeof value === 'string' &&
-        (isColorOnly
-          ? hexColorPattern.test(value)
-          : hexColorPattern.test(value) || isLinearGradient(value));
-      if (value !== undefined && !isValidBrand) {
-        errors.push(`Invalid brand value for ${key}: ${value}`);
-      }
-    });
+    errors.push(...collectBrandErrors(theme.brands));
   }
 
   return errors;
+}
+
+/**
+ * A partial theme promises that an omitted value falls back, and
+ * `Partial<IThemeBrands>` lets a key be present with `undefined`. Spreading
+ * that would overwrite the inherited brand with nothing, and unlike colors,
+ * which `mapColors` skips when undefined, every brand token is written to the
+ * DOM unconditionally, so the avatar would lose its fill entirely.
+ */
+function definedBrands(brands?: Partial<IThemeBrands>): Partial<IThemeBrands> {
+  if (!brands) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(brands).filter(([, value]) => value !== undefined),
+  ) as Partial<IThemeBrands>;
 }
 
 export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedThemeDefinition {
@@ -275,6 +364,20 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ? { 'rgb-surface-composer-hover': customColors['rgb-surface-hover'] }
       : {};
   /**
+   * Code blocks are tied to the same mode-specific surfaces by the legacy CSS:
+   * `surface-primary-alt` in light and `presentation` in dark. Keep that
+   * relationship for themes created before `surface-code` was registered,
+   * rather than pinning their syntax colours to the bundled code surface.
+   */
+  const codeSurfaceSource =
+    mode === 'dark'
+      ? customColors?.['rgb-presentation']
+      : customColors?.['rgb-surface-primary-alt'];
+  const codeSurfaceFallback =
+    customColors?.['rgb-surface-code'] === undefined && codeSurfaceSource !== undefined
+      ? { 'rgb-surface-code': codeSurfaceSource }
+      : {};
+  /**
    * Themes written before the shimmer stops existed cannot name them, and
    * filling the omission from the bundled base would pin their in-flight labels
    * to LibreChat's own sweep — a theme that restates its text as white would
@@ -287,6 +390,65 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-text-primary'] !== undefined
       ? { 'rgb-shimmer-base': customColors['rgb-text-primary'] }
       : {};
+  const textMutedFallback =
+    customColors?.['rgb-text-muted'] === undefined &&
+    customColors?.['rgb-text-tertiary'] !== undefined
+      ? { 'rgb-text-muted': customColors['rgb-text-tertiary'] }
+      : {};
+  const chartWidgetSurfaceFallback =
+    customColors?.['rgb-chart-widget-surface'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-chart-widget-surface': customColors['rgb-surface-primary'] }
+      : {};
+  const chartWidgetStrokeFallback =
+    customColors?.['rgb-chart-widget-stroke'] === undefined &&
+    customColors?.['rgb-border-light'] !== undefined
+      ? { 'rgb-chart-widget-stroke': customColors['rgb-border-light'] }
+      : {};
+  /**
+   * Slot 8 arrived after the seven-slot scale shipped, so a stored or
+   * environment theme that paints its own scale cannot name it. Filling the
+   * omission from the bundled base would drop LibreChat's indigo onto that
+   * theme's own surfaces — the one pairing it never checked, since the stop's
+   * 3:1 mark contrast is a claim about the bundled surfaces only. The RESOLVED
+   * secondary text is the one colour that tracks whatever the theme reads its
+   * body copy against, whether it names its own or inherits ours, so slot 8
+   * stays exactly as visible as that text; hue-neutral, it cannot collide with
+   * a custom slot 1–7 under protanopia/deuteranopia either. A theme that wants
+   * a hue for slot 8 names it, the way `rgb-surface-composer-hover` opts out of
+   * its own fallback.
+   */
+  const ownsSeriesScale =
+    customColors != null &&
+    ([1, 2, 3, 4, 5, 6, 7] as const).some(
+      (slot) => customColors[`rgb-series-${slot}`] !== undefined,
+    );
+  const seriesEightFallback =
+    customColors?.['rgb-series-8'] === undefined && ownsSeriesScale
+      ? {
+          'rgb-series-8': customColors?.['rgb-text-secondary'] ?? baseColors['rgb-text-secondary'],
+        }
+      : {};
+  /**
+   * The verified mark was painted with `status-success-strong` until it earned
+   * its own token, so a theme that paints what the mark is measured against —
+   * the fill it used to wear, the check it carries, or the card it sits on —
+   * coordinated that green and cannot have named the blue. Dropping LibreChat's
+   * stock blue into such a palette puts an unchecked pairing on surfaces the
+   * theme chose; keeping the old fill preserves the relationship it did check.
+   * A theme that repaints anything else keeps the bundled default, and any
+   * theme takes the blue by naming the token, the way
+   * `rgb-surface-composer-hover` opts out of its own fallback.
+   */
+  const ownsMarkSurroundings =
+    customColors != null && MARK_NEIGHBOURHOOD.some((token) => customColors[token] !== undefined);
+  const verifiedFallback =
+    ownsMarkSurroundings && customColors?.['rgb-status-verified'] === undefined
+      ? {
+          'rgb-status-verified':
+            customColors?.['rgb-status-success-strong'] ?? baseColors['rgb-status-success-strong'],
+        }
+      : {};
 
   return {
     version: THEME_VERSION,
@@ -295,11 +457,22 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     colors: {
       ...baseColors,
       ...customColors,
+      ...codeSurfaceFallback,
       ...composerHoverFallback,
       ...shimmerBaseFallback,
+      ...textMutedFallback,
+      ...chartWidgetSurfaceFallback,
+      ...chartWidgetStrokeFallback,
+      ...seriesEightFallback,
+      ...verifiedFallback,
     } as Required<IThemeRGB>,
     appearance: { ...defaultAppearance, ...definition?.appearance },
-    brands: { ...defaultBrands, ...theme.brands },
+    /** Mode last: a mode override is more specific than the theme-wide set. */
+    brands: {
+      ...defaultBrands,
+      ...definedBrands(theme.brands),
+      ...definedBrands(definition?.brands),
+    },
   };
 }
 

@@ -7,6 +7,7 @@ import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
+import { toolPanelSpacingClassName } from './disclosure';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
 import { useToolCallIntent } from './Parts/intent';
@@ -311,10 +312,10 @@ function FileHeader({
         <TooltipAnchor
           description={localize('com_ui_relevance')}
           side="top"
-          className="flex items-center"
+          className="flex cursor-help items-center"
         >
           <span
-            className="shrink-0 rounded bg-surface-tertiary px-1.5 py-0.5 text-[11px] tabular-nums leading-none text-text-secondary"
+            className="shrink-0 cursor-help rounded bg-surface-tertiary px-1.5 py-0.5 text-[11px] tabular-nums leading-none text-text-secondary"
             aria-label={`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`}
           >
             {Math.round(relevance * 100)}%
@@ -380,8 +381,6 @@ export default function RetrievalCall({
   });
   const hasOutput = !!output && !isError(output);
   const autoExpand = useRecoilValue(store.autoExpandTools);
-  const [showOutput, setShowOutput] = useState(() => autoExpand && hasOutput);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showOutput);
 
   const fileSources = useMemo(() => extractFileSources(attachments), [attachments]);
   const parsedResults = useMemo(
@@ -402,6 +401,9 @@ export default function RetrievalCall({
   );
 
   const hasResults = displayResults.length > 0;
+  const hasExpandableContent = phase !== 'failed' && hasResults;
+  const [showOutput, setShowOutput] = useState(() => autoExpand && hasExpandableContent);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showOutput);
 
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
@@ -437,10 +439,14 @@ export default function RetrievalCall({
   }, [displayResults, previewIndex]);
 
   useEffect(() => {
-    if (autoExpand && hasOutput) {
+    if (!hasExpandableContent) {
+      setShowOutput(false);
+      return;
+    }
+    if (autoExpand) {
       setShowOutput(true);
     }
-  }, [autoExpand, hasOutput]);
+  }, [autoExpand, hasExpandableContent]);
 
   const handleToggleOutput = useCallback(() => {
     setShowOutput((prev) => {
@@ -453,7 +459,7 @@ export default function RetrievalCall({
   }, [onExpand]);
 
   return (
-    <div className="my-1">
+    <div>
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (phase === 'running') {
@@ -474,7 +480,7 @@ export default function RetrievalCall({
       <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
         <ProgressText
           phase={phase}
-          onClick={hasOutput ? handleToggleOutput : undefined}
+          onClick={hasExpandableContent ? handleToggleOutput : undefined}
           inProgressText={intent ?? localize('com_ui_searching_files')}
           /** A cancelled step must not read "Retrieved files" beside a
            *  cancellation icon while the live region says "Cancelled". */
@@ -485,14 +491,14 @@ export default function RetrievalCall({
           }
           durationMs={runStepDurationMs}
           icon={<ToolIcon type="file_search" isAnimating={phase === 'running'} />}
-          hasInput={hasOutput}
+          hasInput={hasExpandableContent}
           isExpanded={showOutput}
         />
       </div>
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
-          {hasOutput && hasResults && (
-            <div className="my-2 flex flex-col gap-2">
+          {hasExpandableContent && (
+            <div className={cn(toolPanelSpacingClassName, 'flex flex-col gap-2')}>
               {displayResults.map((item, i) => {
                 return (
                   <div

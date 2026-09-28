@@ -68,9 +68,7 @@ router.get('/', async (req, res) => {
 
     const editableAgentIds = agentsResponse.data.map((agent) => agent.id);
     const actions =
-      editableAgentIds.length > 0
-        ? await db.getActions({ agent_id: { $in: editableAgentIds } })
-        : [];
+      editableAgentIds.length > 0 ? await db.getActions({ agentId: editableAgentIds }) : [];
 
     for (const action of actions) {
       if (blockFilteredActionProjection(req.config?.filters, res, action)) {
@@ -171,7 +169,7 @@ router.post(
       // Permissions already validated by middleware - load agent directly
       initialPromises.push(db.getAgent({ id: agent_id }));
       if (requestedActionId) {
-        initialPromises.push(db.getActions({ action_id: requestedActionId }, true));
+        initialPromises.push(db.getActions({ actionId: requestedActionId }, true));
       }
 
       /** @type {[Agent, [Action|undefined]]} */
@@ -254,7 +252,7 @@ router.post(
 
       /** @type {Action} */
       const updatedAction = await db.updateAction(
-        { action_id: requestedActionId ?? action_id, agent_id },
+        { actionId: requestedActionId ?? action_id, agentId: agent_id },
         actionUpdateData,
       );
 
@@ -323,7 +321,7 @@ router.delete(
         { tools: updatedTools, actions: updatedActions },
         { updatingUserId: req.user.id, forceVersion: true },
       );
-      const deleted = await db.deleteAction({ action_id, agent_id });
+      const deleted = await db.deleteAction({ actionId: action_id, agentId: agent_id });
       if (!deleted) {
         logger.warn('[Agent Action Delete] No matching action document found', {
           action_id,

@@ -1,5 +1,9 @@
 const express = require('express');
-const { createContentFilter, extractAssistantContent } = require('@librechat/api');
+const {
+  reportLocatorTraversalFailure,
+  createContentFilter,
+  extractAssistantContent,
+} = require('@librechat/api');
 const { configMiddleware } = require('~/server/middleware');
 const v1 = require('~/server/controllers/assistants/v1');
 const v2 = require('~/server/controllers/assistants/v2');
@@ -11,6 +15,7 @@ const tools = require('./tools');
 const router = express.Router();
 router.use(configMiddleware);
 const filterAssistantContent = createContentFilter({
+  onTraversalFailure: reportLocatorTraversalFailure,
   getFilters: (req) => req.config?.filters,
   extract: (req) => extractAssistantContent(req.body),
   getOpaqueFileInput: (req) => req.body,

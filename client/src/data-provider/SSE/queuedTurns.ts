@@ -83,8 +83,10 @@ export function shouldPollAgentQueuedTurns(
   receipts: unknown,
   reconcileUntil?: number,
   observedAt = Date.now(),
+  expectsReceipts = false,
 ): boolean {
   return (
+    expectsReceipts ||
     (reconcileUntil != null && observedAt < reconcileUntil) ||
     (Array.isArray(receipts) &&
       receipts.some(
@@ -95,11 +97,40 @@ export function shouldPollAgentQueuedTurns(
   );
 }
 
+/**
+ * Whether the backend owes this conversation a run it will start itself.
+ *
+ * Wider than {@link shouldPollAgentQueuedTurns} in exactly one way: `admitted`.
+ * The receipt poll stops there because there is nothing left to wait for — but
+ * for a pane that is not attached, `admitted` is the strongest evidence it will
+ * get that a run exists, and the receipt is dropped from the projection almost
+ * immediately after (the chip goes, so its id leaves the known set). Anyone
+ * deciding whether to keep listening for that run must count it.
+ */
+export function isQueuedTurnSuccessorOwed(receipts: unknown): boolean {
+  return (
+    Array.isArray(receipts) &&
+    receipts.some(
+      (item: AgentQueuedTurnReceipt) =>
+        item.status === 'queued' ||
+        item.status === 'admitted' ||
+        (item.status === 'claimed' && item.failure?.code !== 'ADMISSION_INDETERMINATE'),
+    )
+  );
+}
+
+/**
+ * `expectsReceipts` keeps the poll alive while the caller still holds a
+ * server-owned row the projection has not settled. A snapshot fetched while
+ * the enqueue is still committing can come back empty, and a poll that stops
+ * on that answer would leave a fast successor unnoticed until the next focus.
+ */
 export function useAgentQueuedTurns(
   conversationId: string,
   enabled: boolean,
   clientRequestIds: string[] = [],
   reconcileUntil?: number,
+  expectsReceipts = false,
 ) {
   const queryClient = useQueryClient();
   const knownIds = [...new Set(clientRequestIds)].sort();
@@ -116,7 +147,9 @@ export function useAgentQueuedTurns(
     refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
     refetchInterval: (receipts) =>
-      shouldPollAgentQueuedTurns(receipts, reconcileUntil) ? 2_000 : false,
+      shouldPollAgentQueuedTurns(receipts, reconcileUntil, Date.now(), expectsReceipts)
+        ? 2_000
+        : false,
     retry: false,
   });
   const { refetch } = query;

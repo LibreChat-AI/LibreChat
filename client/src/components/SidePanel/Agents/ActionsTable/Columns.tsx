@@ -10,13 +10,20 @@ export type Spec = {
   domain: string;
 };
 
-/** Color-codes the HTTP verb the way API docs do, so the method reads at a glance. */
+/**
+ * Color-codes the HTTP verb the way API docs do, so the method reads at a
+ * glance. The hues come from the categorical series ramp, which is what that
+ * scale is for: identity rather than status, contrast-checked per mode, and
+ * separable under simulated deuteranopia. Slots are chosen to stay close to the
+ * conventional verb colours. `delete` is the one exception, taking the error
+ * role, because destructive really is a status.
+ */
 const METHOD_STYLES: Record<string, string> = {
-  get: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
-  post: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-  put: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-  patch: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
-  delete: 'bg-red-500/10 text-red-600 dark:text-red-400',
+  get: 'bg-series-1/10 text-series-1',
+  post: 'bg-series-7/10 text-series-7',
+  put: 'bg-series-4/10 text-series-4',
+  patch: 'bg-series-6/10 text-series-6',
+  delete: 'bg-status-error-subtle text-status-error',
 };
 
 function HeaderCell({ labelKey }: { labelKey: TranslationKeys }) {

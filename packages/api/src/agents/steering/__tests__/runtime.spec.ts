@@ -457,10 +457,12 @@ describe('createSteerDrainHook', () => {
       files: [{ file_id: 'f-gone' }],
     });
 
+    const onMediaError = jest.fn();
     const hook = createSteerDrainHook({
       streamId,
       jobCreatedAt: job.createdAt,
       applySteer: jest.fn(),
+      onMediaError,
       buildMedia: async () => {
         throw new Error('encode failed');
       },
@@ -470,6 +472,10 @@ describe('createSteerDrainHook', () => {
     expect(output.injectedMessages).toEqual([
       { role: 'user', content: 'words survive', source: 'steer' },
     ]);
+    expect(onMediaError).toHaveBeenCalledWith(
+      expect.objectContaining({ steerId: 's1' }),
+      expect.objectContaining({ message: 'encode failed' }),
+    );
   });
 });
 

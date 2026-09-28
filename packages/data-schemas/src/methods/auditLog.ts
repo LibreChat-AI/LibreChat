@@ -14,7 +14,9 @@ import type {
   RecordAuditEntryOptions,
   VerifyAuditChainOptions,
 } from '~/types';
+import type { IndexBuildOptions } from '~/utils/retry';
 import { GENESIS_HASH, PLATFORM_CHAIN_KEY } from '~/schema/auditLog';
+import { createIndexesWithRetry } from '~/utils/retry';
 import { AUDIT_ACTION_CATEGORY } from '~/types/admin';
 import logger from '~/config/winston';
 
@@ -290,7 +292,18 @@ function buildFilter(chainKey: string, filters: AuditLogFilters): FilterQuery<IA
   return query;
 }
 
-export function createAuditLogMethods(mongoose: typeof import('mongoose')): AuditLogMethods {
+/** Longest wait on the request path for a peer's index build before an append fails open. */
+const AUDIT_INDEX_BUILD_DEADLINE_MS = 10_000;
+
+export interface AuditLogMethodOptions {
+  /** Overrides for the append index build; tests shorten its polling and deadline. */
+  indexBuild?: IndexBuildOptions;
+}
+
+export function createAuditLogMethods(
+  mongoose: typeof import('mongoose'),
+  options: AuditLogMethodOptions = {},
+): AuditLogMethods {
   function model(): Model<IAuditLog> {
     return mongoose.models.AuditLog as Model<IAuditLog>;
   }
@@ -301,18 +314,22 @@ export function createAuditLogMethods(mongoose: typeof import('mongoose')): Audi
    * during the startup window before a background build finishes, two writers
    * could insert the same `seq` with no duplicate-key error and silently fork
    * the chain. Build the indexes once before the first append so serialization
-   * never depends on a background build. Memoized; reset on failure so a later
-   * write retries.
+   * never depends on a background build — letting Mongoose's own background
+   * build settle first, so the two never overlap on a single-build engine. The
+   * wait for a peer's build is bounded, because this runs on the request path:
+   * past the deadline the append fails open below instead of holding the
+   * request. Memoized; reset on failure so a later write retries.
    */
   let indexPromise: Promise<unknown> | null = null;
   function ensureIndexes(): Promise<unknown> {
     if (!indexPromise) {
-      indexPromise = model()
-        .createIndexes()
-        .catch((err) => {
-          indexPromise = null;
-          throw err;
-        });
+      indexPromise = createIndexesWithRetry(model(), {
+        peerBuildDeadlineMs: AUDIT_INDEX_BUILD_DEADLINE_MS,
+        ...options.indexBuild,
+      }).catch((err) => {
+        indexPromise = null;
+        throw err;
+      });
     }
     return indexPromise;
   }

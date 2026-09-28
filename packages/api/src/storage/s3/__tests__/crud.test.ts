@@ -1118,6 +1118,34 @@ describe('S3 CRUD', () => {
       expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(1);
     });
 
+    it('requests the decoded key for a non-ASCII file name', async () => {
+      const { getS3FileStream } = await import('../crud');
+      await getS3FileStream(
+        {} as ServerRequest,
+        'https://test-bucket.s3.amazonaws.com/images/user123/%D0%94%D0%BE%D0%B3%D0%BE%D0%B2%D0%BE%D1%80.pdf',
+      );
+
+      const [call] = s3Mock.commandCalls(GetObjectCommand);
+      expect(call.args[0].input.Key).toBe(
+        'images/user123/\u0414\u043e\u0433\u043e\u0432\u043e\u0440.pdf',
+      );
+    });
+
+    it('streams by the recorded key even when the stored URL no longer parses', async () => {
+      const { getS3FileStream } = await import('../crud');
+      const { resolveDownloadPath } = await import('~/storage/path');
+      const file = {
+        filepath: 'not a url: presigned link expired and was overwritten',
+        storageKey: 'uploads/user123/Ársreikningur 2025.pdf',
+      };
+
+      await getS3FileStream({} as ServerRequest, resolveDownloadPath(file));
+
+      const [call] = s3Mock.commandCalls(GetObjectCommand);
+      expect(call.args[0].input.Key).toBe(file.storageKey);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
     it('handles errors when retrieving stream', async () => {
       s3Mock.on(GetObjectCommand).rejects(new Error('Stream error'));
 
@@ -1457,10 +1485,46 @@ describe('S3 CRUD', () => {
 
     it('handles URL with query parameters', async () => {
       const { extractKeyFromS3Url } = await import('../crud');
-      const key = extractKeyFromS3Url(
-        'https://bucket.s3.amazonaws.com/images/user123/file.png?X-Amz-Signature=abc',
-      );
+      const signedUrl =
+        'https://bucket.s3.amazonaws.com/images/user123/file.png?X-Amz-Signature=abc';
+      const key = extractKeyFromS3Url(signedUrl);
       expect(key).toBe('images/user123/file.png');
+      expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(signedUrl);
+      expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(key);
+    });
+
+    it('decodes percent-encoded keys from virtual-hosted-style URLs', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url(
+        'https://bucket.s3.amazonaws.com/uploads/user123/abc__%C3%81rsreikningur_2025.pdf',
+      );
+      expect(key).toBe('uploads/user123/abc__Ársreikningur_2025.pdf');
+    });
+
+    it('decodes percent-encoded keys from path-style URLs', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url(
+        'https://s3.us-west-2.amazonaws.com/test-bucket/uploads/user123/%E6%97%A5%E6%9C%AC%E8%AA%9E.pdf',
+      );
+      expect(key).toBe('uploads/user123/日本語.pdf');
+    });
+
+    it('preserves a literal percent in a filename (round-trip through %25)', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url('https://bucket.s3.amazonaws.com/uploads/100%25_done.pdf');
+      expect(key).toBe('uploads/100%_done.pdf');
+    });
+
+    it('returns a raw key untouched even when it contains a percent sign', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = 'uploads/user123/100%_done.pdf';
+      expect(extractKeyFromS3Url(key)).toBe(key);
+    });
+
+    it('falls back to the raw value on a malformed escape sequence', async () => {
+      const { extractKeyFromS3Url } = await import('../crud');
+      const key = extractKeyFromS3Url('https://bucket.s3.amazonaws.com/uploads/bad%E0%A4A.pdf');
+      expect(key).toBe('uploads/bad%E0%A4A.pdf');
     });
 
     it('extracts key from path-style regional endpoint', async () => {
@@ -1511,12 +1575,13 @@ describe('S3 CRUD', () => {
       expect(key).toBe('folder/file.txt');
     });
 
-    it('handles URLs with encoded characters', async () => {
+    it('decodes URLs with encoded characters back to the stored key', async () => {
       const { extractKeyFromS3Url } = await import('../crud');
       const key = extractKeyFromS3Url(
         'https://bucket.s3.amazonaws.com/test-bucket/images/user123/my%20file%20name.jpg',
       );
-      expect(key).toBe('images/user123/my%20file%20name.jpg');
+      /** The object was stored under `my file name.jpg`; `%20` is URL transport, not part of the key. */
+      expect(key).toBe('images/user123/my file name.jpg');
     });
 
     it('handles deep nested paths', async () => {
@@ -1543,12 +1608,12 @@ describe('S3 CRUD', () => {
       expect(result).toBe(malformedUrl);
     });
 
-    it('strips bucket from custom endpoint URLs (MinIO, R2)', async () => {
+    it('decodes a signed path-style custom endpoint URL for a legacy record', async () => {
       const { extractKeyFromS3Url } = await import('../crud');
       const key = extractKeyFromS3Url(
-        'https://minio.example.com/test-bucket/images/user123/file.jpg',
+        'https://minio.example.com/test-bucket/images/user123/my%20file.jpg?X-Amz-Credential=secret&X-Amz-Signature=signed',
       );
-      expect(key).toBe('images/user123/file.jpg');
+      expect(key).toBe('images/user123/my file.jpg');
     });
   });
 

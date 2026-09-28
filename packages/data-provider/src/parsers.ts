@@ -2,7 +2,7 @@ import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezonePlugin from 'dayjs/plugin/timezone.js';
 import type { ZodIssue } from 'zod';
-import type * as a from './types/assistants';
+import type * as a from './types/content';
 import type * as s from './schemas';
 import type * as t from './types';
 import {
@@ -10,6 +10,8 @@ import {
   openRouterSchema,
   googleSchema,
   EModelEndpoint,
+  isAgentsEndpoint,
+  isAssistantsEndpoint,
   Providers,
   anthropicSchema,
   assistantSchema,
@@ -505,6 +507,72 @@ export function getEphemeralSender({
 }): string {
   return modelLabel ?? specLabel ?? modelDisplayLabel ?? '';
 }
+
+/** Built-in endpoints; anything else in `endpoint` is a custom endpoint's own name. */
+const builtInEndpoints = new Set<string>(Object.values(EModelEndpoint));
+
+/**
+ * Whether a persisted `sender` is a label someone configured rather than the
+ * model-derived name `getResponseSender` produces.
+ *
+ * The sender is the one thing that records which it was: `resolveSender` writes an
+ * agent's name, then the `getEphemeralSender` chain (`modelLabel` → a model spec's
+ * `label` → an endpoint's `modelDisplayLabel`), and falls back to `getResponseSender`
+ * only when none of those is set. Asking the message rather than the conversation
+ * settles three things a settings lookup cannot: labels that live in config a caller
+ * may not hold, labels an endpoint ignores (Anthropic keeps reading `Claude` whatever
+ * `chatGptLabel` says, and matches here), and labels changed since the message was
+ * written — its header still shows the sender it was written under.
+ *
+ * Equality is the test, so the only way to be wrong is a stored name that no longer
+ * matches what the current heuristics produce, which withholds a model rather than
+ * revealing one.
+ */
+export const isConfiguredSender = ({
+  sender,
+  endpoint,
+  endpointType,
+  model,
+  isCreatedByUser,
+}: {
+  sender?: string | null;
+  endpoint?: EModelEndpoint | string | null;
+  endpointType?: EModelEndpoint | string | null;
+  model?: string | null;
+  isCreatedByUser?: boolean | null;
+}): boolean => {
+  /** A user turn is headed by the person who wrote it, so it has no model to withhold
+   *  and its `User` sender would never match a derived name. */
+  if (isCreatedByUser === true) {
+    return false;
+  }
+  /** Agents and assistants are named by whoever authored them: the header shows that
+   *  name whether or not the response stored a sender, and `getResponseSender` has no
+   *  branch to derive one. */
+  if (isAgentsEndpoint(endpoint) || isAssistantsEndpoint(endpoint)) {
+    return true;
+  }
+  if (sender == null || sender === '') {
+    return false;
+  }
+  /** A custom endpoint carries its own configured name in `endpoint`, which
+   *  `getResponseSender` recognizes only through `endpointType`. */
+  const resolvedType =
+    endpointType ??
+    (endpoint != null && !builtInEndpoints.has(endpoint) ? EModelEndpoint.custom : undefined);
+  const derived = getResponseSender({
+    endpoint: endpoint as EModelEndpoint,
+    endpointType: resolvedType as EModelEndpoint,
+    model,
+  });
+  /** An endpoint this cannot name — an older message stored without one, say — says
+   *  nothing either way, and reading that silence as "configured" would withhold the
+   *  model from every unlabelled row it reached. */
+  if (derived === '') {
+    return false;
+  }
+  return sender !== derived;
+};
 
 /**
  * Encodes an ephemeral agent ID from endpoint, model, optional sender, and optional index.

@@ -136,7 +136,9 @@ export class LeaderElection {
         'NX',
       );
 
-      if (result !== 'OK') return false;
+      if (result !== 'OK') {
+        return (await LeaderElection.getLeaderUUID()) === this.UUID && this.refreshTimer != null;
+      }
 
       this.clearRefreshTimer();
       this.refreshTimer = setInterval(async () => {

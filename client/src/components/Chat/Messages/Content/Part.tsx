@@ -7,7 +7,7 @@ import {
   imageGenTools,
   isImageVisionTool,
 } from 'librechat-data-provider';
-import type { TMessageContentParts, TAttachment } from 'librechat-data-provider';
+import type { TMessageContentParts, TAttachment, PartMetadata } from 'librechat-data-provider';
 import {
   ImageGen,
   ExecuteCode,
@@ -18,16 +18,25 @@ import {
   Summary,
   Text,
   SkillCall,
+  MemoryCall,
   ReadFileCall,
   FileAuthoringCall,
   BashCall,
   SubagentCall,
   SteerPart,
 } from './Parts';
-import { getCachedPreview, getActivityLabelPart, getActivityLabelText } from '~/utils';
+import {
+  getCachedPreview,
+  getActivityLabelPart,
+  getActivityLabelText,
+  getPartKeyIndex,
+} from '~/utils';
+import BackgroundTaskCall from './Parts/BackgroundTaskCall';
 import { getAskUserQuestionPart } from '~/utils/approval';
 import AskUserQuestionCall from './AskUserQuestionCall';
 import { isBashProgrammaticToolCall } from './routing';
+import { isError } from './ToolOutput/OutputRenderer';
+import { useMessageContext } from '~/Providers';
 import { ErrorMessage } from './MessageContent';
 import AskUserQuestion from './AskUserQuestion';
 import RetrievalCall from './RetrievalCall';
@@ -38,6 +47,13 @@ import Container from './Container';
 import WebSearch from './WebSearch';
 import ToolCall from './ToolCall';
 import Image from './Image';
+
+const isFailedImageCall = (
+  output: string | null | undefined,
+  runStepStatus: PartMetadata['runStepStatus'],
+): boolean =>
+  runStepStatus !== 'cancelled' &&
+  (runStepStatus === 'failed' || (typeof output === 'string' && isError(output)));
 
 type PartProps = {
   part?: TMessageContentParts;
@@ -60,6 +76,7 @@ const Part = memo(function Part({
   hideAttachments,
   onToolExpand,
 }: PartProps) {
+  const { partIndex } = useMessageContext();
   if (!part) {
     return null;
   }
@@ -152,6 +169,7 @@ const Part = memo(function Part({
     }
     return (
       <Reasoning
+        partKeyIndex={getPartKeyIndex(part, partIndex ?? 0)}
         reasoning={reasoning}
         isLast={isLast ?? false}
         reasoningLabel={part.reasoning_label}
@@ -164,7 +182,9 @@ const Part = memo(function Part({
         model={part.model}
         provider={part.provider}
         tokenCount={part.tokenCount}
+        initiatedBy={part.initiatedBy}
         summarizing={part.summarizing}
+        failed={part.failed}
       />
     );
   } else if (part.type === ContentTypes.ACTIVITY_LABEL) {
@@ -206,6 +226,7 @@ const Part = memo(function Part({
               runStepStatus={toolCall.runStepStatus}
               runStepDurationMs={toolCall.runStepDurationMs}
               backgrounded={toolCall.backgrounded}
+              backgroundCancelled={toolCall.backgroundTask?.cancelled === true}
               attachments={attachments}
               commandField="code"
               hideAttachments={hideAttachments}
@@ -225,6 +246,7 @@ const Part = memo(function Part({
               runStepStatus={toolCall.runStepStatus}
               runStepDurationMs={toolCall.runStepDurationMs}
               backgrounded={toolCall.backgrounded}
+              backgroundCancelled={toolCall.backgroundTask?.cancelled === true}
               output={toolCall.output ?? ''}
               initialProgress={toolCall.progress ?? 0.1}
               args={toolCall.args}
@@ -238,6 +260,22 @@ const Part = memo(function Part({
           toolCall.name === 'image_edit_oai' ||
           toolCall.name === 'gemini_image_gen'
         ) {
+          if (isFailedImageCall(toolCall.output, toolCall.runStepStatus)) {
+            return (
+              <ToolCall
+                name={toolCall.name}
+                args={toolCall.args ?? ''}
+                output={toolCall.output}
+                initialProgress={toolCall.progress ?? 0.1}
+                isSubmitting={isSubmitting}
+                isLast={isLast}
+                runStepStatus={toolCall.runStepStatus}
+                attachments={attachments}
+                hideAttachments={hideAttachments}
+                onExpand={onToolExpand}
+              />
+            );
+          }
           return (
             <ImageGen
               initialProgress={toolCall.progress ?? 0.1}
@@ -263,6 +301,21 @@ const Part = memo(function Part({
               showCursor={showCursor}
               failed={'inputValidationError' in toolCall && toolCall.inputValidationError === true}
               onExpand={onToolExpand}
+            />
+          );
+        } else if (toolCall.name === Constants.CHECK_BACKGROUND_TASK) {
+          return (
+            <BackgroundTaskCall
+              args={toolCall.args}
+              output={toolCall.output ?? ''}
+              initialProgress={toolCall.progress ?? 0.1}
+              isSubmitting={isSubmitting}
+              runStepStatus={toolCall.runStepStatus}
+              runStepDurationMs={toolCall.runStepDurationMs}
+              attachments={attachments}
+              hideAttachments={hideAttachments}
+              onExpand={onToolExpand}
+              toolCallId={toolCallId}
             />
           );
         } else if (toolCall.name === 'skill') {
@@ -301,7 +354,23 @@ const Part = memo(function Part({
               runStepStatus={toolCall.runStepStatus}
               attachments={attachments}
               persistedContent={persistedContent}
+              subagentIdentity={toolCall.subagentIdentity}
               hideAttachments={hideAttachments}
+            />
+          );
+        } else if (toolCall.name === 'set_memory' || toolCall.name === 'delete_memory') {
+          return (
+            <MemoryCall
+              toolName={toolCall.name}
+              args={toolCall.args}
+              output={toolCall.output ?? ''}
+              initialProgress={toolCall.progress ?? 0.1}
+              isSubmitting={isSubmitting}
+              runStepStatus={toolCall.runStepStatus}
+              runStepDurationMs={toolCall.runStepDurationMs}
+              attachments={attachments}
+              hideAttachments={hideAttachments}
+              onExpand={onToolExpand}
             />
           );
         } else if (toolCall.name === 'read_file') {
@@ -343,6 +412,7 @@ const Part = memo(function Part({
               runStepStatus={toolCall.runStepStatus}
               runStepDurationMs={toolCall.runStepDurationMs}
               backgrounded={toolCall.backgrounded}
+              backgroundCancelled={toolCall.backgroundTask?.cancelled === true}
               attachments={attachments}
               hideAttachments={hideAttachments}
               onExpand={onToolExpand}
@@ -358,6 +428,7 @@ const Part = memo(function Part({
               isSubmitting={isSubmitting}
               runStepStatus={toolCall.runStepStatus}
               attachments={attachments}
+              hideAttachments={hideAttachments}
               isLast={isLast}
               onExpand={onToolExpand}
             />
@@ -391,7 +462,9 @@ const Part = memo(function Part({
             isLast={isLast}
             hideAttachments={hideAttachments}
             onExpand={onToolExpand}
-            runStepStatus={toolCall.runStepStatus}
+            runStepStatus={
+              toolCall.backgroundTask?.cancelled === true ? 'cancelled' : toolCall.runStepStatus
+            }
             runStepDurationMs={toolCall.runStepDurationMs}
           />
         );
@@ -444,6 +517,22 @@ const Part = memo(function Part({
       ToolCallTypes.FUNCTION in toolCall &&
       imageGenTools.has(toolCall.function.name)
     ) {
+      if (isFailedImageCall(toolCall.function.output, toolCall.runStepStatus)) {
+        return (
+          <ToolCall
+            name={toolCall.function.name}
+            args={toolCall.function.arguments as string}
+            output={toolCall.function.output}
+            initialProgress={toolCall.progress ?? 0.1}
+            isSubmitting={isSubmitting}
+            isLast={isLast}
+            runStepStatus={toolCall.runStepStatus}
+            attachments={attachments}
+            hideAttachments={hideAttachments}
+            onExpand={onToolExpand}
+          />
+        );
+      }
       return (
         <ImageGen
           initialProgress={toolCall.progress ?? 0.1}
@@ -486,6 +575,7 @@ const Part = memo(function Part({
       <Image
         imagePath={cached ?? imageFile.filepath}
         altText={imageFile.filename ?? 'Uploaded Image'}
+        alignRight={isCreatedByUser}
         width={imageFile.width}
         height={imageFile.height}
       />

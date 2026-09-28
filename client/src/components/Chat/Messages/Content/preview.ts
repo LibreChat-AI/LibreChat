@@ -1,4 +1,5 @@
 import { FileSources } from 'librechat-data-provider';
+import type { TFile } from 'librechat-data-provider';
 
 type PreviewKind = 'pdf' | 'text' | false;
 
@@ -36,6 +37,18 @@ export function getFileExtension(filename: string): string {
 
 export function shouldUseSharedFileDownload(shareId?: string, fileId?: string): boolean {
   return !!shareId && !!fileId;
+}
+
+export function shouldUseExtractedTextPreview(deliveryPath?: TFile['llmDeliveryPath']): boolean {
+  return deliveryPath === 'text';
+}
+
+export function isExtractedTextPreviewLoading(
+  status: 'pending' | 'ready' | 'failed' | undefined,
+  isInitialLoading: boolean,
+  isError: boolean,
+): boolean {
+  return !isError && (isInitialLoading || status === 'pending');
 }
 
 function getPreviewKindByMime(mime?: string): PreviewKind {

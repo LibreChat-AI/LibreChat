@@ -11,6 +11,7 @@ import {
 import { useGetStartupConfig } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { normalizeRumPath } from './routes';
+import { getClientBuildId } from './build';
 
 const PROXY_API_KEY = 'librechat-rum-proxy';
 
@@ -118,6 +119,7 @@ function buildGlobalAttributes(
   return Object.fromEntries(
     Object.entries({
       route,
+      clientBuildId: getClientBuildId(),
       role: user?.role,
       userId: user?.id,
       orgId: user?.tenantId,

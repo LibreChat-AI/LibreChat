@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { v4 } from 'uuid';
 import { SSE } from 'sse.js';
+import { useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilCallback } from 'recoil';
 import {
@@ -60,11 +61,14 @@ import {
   mergeRestagedQuotes,
   removeConvoFromAllQueries,
   upsertConvoInAllQueries,
+  invalidateConversationLists,
   countTaggedApprovalParts,
   countTrailingOutputChars,
   markStreamStartFailedMetadata,
   findPendingActionMessageIndex,
   insertQueuedOrigin,
+  hydrateFileDeliveryMetadata,
+  isCompactionAnchorProjection,
 } from '~/utils';
 import {
   useGetUserBalance,
@@ -78,10 +82,21 @@ import {
   supportsGenerationProtocolV2,
   GENERATION_PROTOCOL_VERSION,
 } from '~/data-provider';
-import useEventHandlers, { buildCreatedInitialResponse } from './useEventHandlers';
+import {
+  recoveryDispositionsFamily,
+  canRestoreRecovery,
+  blockRecovery,
+} from '~/components/Chat/Steering/recovery';
+import useEventHandlers, {
+  buildCreatedInitialResponse,
+  keepLocalCodeApprovalMode,
+} from './useEventHandlers';
+import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { useFileMapContext } from '~/Providers';
 import useUsageHandler from './useUsageHandler';
+import useLocalize from '~/hooks/useLocalize';
 import store from '~/store';
 
 type ChatHelpers = Pick<
@@ -493,6 +508,38 @@ const replaceNewConversationUrl = (conversationId: string) => {
 const shouldHydrateMessage = (message: TMessage) =>
   !hasConcreteConversationId(message.conversationId);
 
+/** Recovery must identify the response itself: regenerations share a user
+ * parent, and array order says nothing about which sibling just completed.
+ * A fresh-turn placeholder has no server response ID yet; only an unambiguous
+ * persisted child can stand in for it. */
+const completedResponseMessageId = (
+  messages: TMessage[] | undefined,
+  userMessageId: string | undefined,
+  responseMessageId: string | undefined,
+): string | undefined => {
+  if (messages == null || userMessageId == null) {
+    return undefined;
+  }
+  const target = responseMessageId?.replace(/_+$/, '');
+  const hasResponseIdentity = target != null && target !== userMessageId;
+  let candidate: string | undefined;
+  let ambiguous = false;
+  for (const message of messages) {
+    if (message.isCreatedByUser !== false || message.parentMessageId !== userMessageId) {
+      continue;
+    }
+    if (hasResponseIdentity) {
+      if (message.messageId === target) {
+        return message.messageId;
+      }
+      continue;
+    }
+    ambiguous ||= candidate != null;
+    candidate = message.messageId;
+  }
+  return hasResponseIdentity || ambiguous ? undefined : candidate;
+};
+
 const hydrateMessageConversationId = (message: TMessage, conversationId: string): TMessage =>
   shouldHydrateMessage(message) ? { ...message, conversationId } : message;
 
@@ -570,12 +617,28 @@ const buildResumeEventSubmission = (
     currentUserMessage.conversationId ??
     currentSubmission.conversation?.conversationId;
 
-  const userMessage = {
-    ...currentUserMessage,
-    ...resumeState.userMessage,
-    conversationId,
-    isCreatedByUser: true,
-  } as TMessage;
+  /**
+   * A compaction submits no user turn: its user-message slot names the LEAF it
+   * summarizes up to, and the server projects that anchor as identity only
+   * (`projectCompactionAnchor` — no parent, no author). Adopting the projection
+   * as a user row would rewrite the leaf into an empty, parentless message, so
+   * an anchored run keeps the identity it resumed with.
+   */
+  /** Read from the projection as well as the flag: a re-attach whose submission
+   *  never learned it was a compaction still has to recognize the anchor. */
+  const anchoredUserMessage =
+    currentSubmission.compact === true || isCompactionAnchorProjection(resumeState.userMessage);
+
+  const userMessage = (
+    anchoredUserMessage
+      ? { ...currentUserMessage, conversationId }
+      : {
+          ...currentUserMessage,
+          ...resumeState.userMessage,
+          conversationId,
+          isCreatedByUser: true,
+        }
+  ) as TMessage;
 
   const responseMessageId =
     resumeState.responseMessageId ??
@@ -604,6 +667,9 @@ const buildResumeEventSubmission = (
     },
     userMessage,
     initialResponse,
+    /** Carried so every consumer of the resumed submission — the merges below,
+     *  the abort-error write — reads the same answer this resolved. */
+    ...(anchoredUserMessage && { compact: true }),
   } as EventSubmission;
 };
 
@@ -667,12 +733,20 @@ const mergeResumeMessages = (
   userMessage: TMessage,
   responseMessage: TMessage,
   indexes: ResumeMessageIndexes,
+  /**
+   * An anchored run — a compaction — owns no user row. Its user-message slot
+   * holds the leaf the summary hangs off, a row the transcript already has:
+   * merging the slot onto it would replace that answer with an empty user
+   * message, and inserting it would duplicate its id. Either way the row loses
+   * its parent and `buildTree` files it as a phantom root, folding the thread.
+   */
+  anchoredUserMessage = false,
 ): TMessage[] => {
   const nextMessages = [...messages];
   let { userIndex, responseIndex, preliminaryResponseIndex } = indexes;
   const { preliminaryUserIndex } = indexes;
 
-  if (preliminaryUserIndex >= 0) {
+  if (preliminaryUserIndex >= 0 && !anchoredUserMessage) {
     if (userIndex >= 0) {
       nextMessages.splice(preliminaryUserIndex, 1);
       if (userIndex > preliminaryUserIndex) {
@@ -711,12 +785,16 @@ const mergeResumeMessages = (
     }
   }
 
-  if (userIndex >= 0) {
+  if (userIndex >= 0 && !anchoredUserMessage) {
     nextMessages[userIndex] = { ...nextMessages[userIndex], ...userMessage };
   }
 
   if (responseIndex >= 0) {
     nextMessages[responseIndex] = { ...nextMessages[responseIndex], ...responseMessage };
+  }
+
+  if (anchoredUserMessage) {
+    return responseIndex >= 0 ? nextMessages : [...nextMessages, responseMessage];
   }
 
   if (userIndex >= 0 && responseIndex >= 0) {
@@ -751,10 +829,15 @@ export default function useResumableSSE(
   isAddedRequest = false,
   runIndex = 0,
 ) {
+  const jotaiStore = useStore();
+  const localize = useLocalize();
   const queryClient = useQueryClient();
   const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
 
   const { token, isAuthenticated } = useAuthContext();
+  const fileMap = useFileMapContext();
+  const fileMapRef = useRef(fileMap);
+  fileMapRef.current = fileMap;
   const { setMessages, getMessages, setConversation, setIsSubmitting, newConversation } =
     chatHelpers;
 
@@ -872,10 +955,15 @@ export default function useResumableSSE(
           return;
         }
         set(store.queuedMessagesByConvoId(conversationId), (prev) =>
-          insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt),
+          canRestoreRecovery(
+            jotaiStore.get(recoveryDispositionsFamily(conversationId)),
+            origin.item,
+          )
+            ? insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt)
+            : prev,
         );
       },
-    [],
+    [jotaiStore],
   );
 
   /** Removes the pending chip once its steer is injected (the inline content
@@ -1051,13 +1139,18 @@ export default function useResumableSSE(
               const keepLocalPreempt =
                 (localChip?.preemptRevision ?? 0) > (steer.preemptRevision ?? 0);
               const chipGenerationCreatedAt = generationCreatedAt ?? localChip?.generationCreatedAt;
+              const restoredFiles = hydrateFileDeliveryMetadata(
+                steer.files,
+                localChip?.files,
+                fileMapRef.current,
+              );
               return {
                 steerId: steer.steerId,
                 ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
                 text: steer.text,
                 status: 'pending' as const,
                 createdAt: steer.createdAt ?? Date.now(),
-                ...(steer.files && steer.files.length > 0 && { files: steer.files }),
+                ...(restoredFiles && restoredFiles.length > 0 && { files: restoredFiles }),
                 ...((keepLocalPreempt ? localChip?.preempt : steer.preempt) === true && {
                   preempt: true,
                 }),
@@ -1291,6 +1384,23 @@ export default function useResumableSSE(
         return;
       }
       const startedAsNewConversation = optimisticStreamIdsRef.current.has(currentStreamId);
+      /** Terminal handlers below are fenced by this subscription and its generation.
+       * Clear every key the same run may have occupied, including the temporary
+       * new-chat key, so aborts and resumes from another tab cannot leave a stale
+       * approval card beside an idle composer. */
+      const clearPendingApprovalForTerminal = (conversationId?: string | null) => {
+        const conversationIds = new Set<string>([
+          currentStreamId,
+          ...(conversationId ? [conversationId] : []),
+          ...(currentSubmission.conversation?.conversationId
+            ? [currentSubmission.conversation.conversationId]
+            : []),
+          ...(startedAsNewConversation ? [String(Constants.NEW_CONVO)] : []),
+        ]);
+        for (const id of conversationIds) {
+          jotaiStore.set(pendingApprovalActionFamily(id), null);
+        }
+      };
       const clearAttachedGenerationCreatedAt = () => {
         updateActiveGenerationCreatedAt(currentStreamId, null, generationCreatedAt);
         if (startedAsNewConversation) {
@@ -1447,6 +1557,11 @@ export default function useResumableSSE(
         if (!isCurrentSubscription()) {
           return;
         }
+        const pendingConversationId =
+          pendingAction.conversationId ??
+          currentSubmission.conversation?.conversationId ??
+          currentStreamId;
+        jotaiStore.set(pendingApprovalActionFamily(pendingConversationId), pendingAction);
         const retryNextFrame = () => {
           if (attempt < PENDING_ACTION_MAX_RETRY_FRAMES) {
             pendingActionRetryRef.current = requestAnimationFrame(() => {
@@ -1492,6 +1607,47 @@ export default function useResumableSSE(
       };
 
       /**
+       * The identities this pane may be rendering the in-flight response under
+       * before the first run step renames it to the server's pre-allocated id:
+       * the submission's placeholder (updated on `created`) and the padded form
+       * of the live user message. Read at call time — `created` reassigns both.
+       */
+      const livePlaceholderIds = () => [
+        currentSubmission.initialResponse?.messageId,
+        userMessage?.messageId ? `${userMessage.messageId}_` : undefined,
+      ];
+
+      /**
+       * A regenerate seeds the renamed response from `submission.initialResponse`
+       * rather than the store tail (an edited resubmission seeds from its
+       * content), so a part committed to the placeholder only in the store would
+       * be dropped by the first run step's rename. Keep the submission the step
+       * handler receives in step with the placeholder this pane mutated.
+       */
+      const syncSubmissionPlaceholder = (updated: TMessage) => {
+        if (updated.messageId !== currentSubmission.initialResponse?.messageId) {
+          return;
+        }
+        currentSubmission = { ...currentSubmission, initialResponse: updated };
+        submissionRef.current = currentSubmission;
+      };
+
+      /**
+       * Edit-and-resubmit keeps the retained prefix on the client while the
+       * server indexes only the NEW content, so every server-claimed index —
+       * run steps (`useStepHandler`), labels and steers — shifts past it or
+       * lands inside the prefix and overwrites kept content. The captured
+       * length is used over the live array because a resume sync replaces
+       * `initialResponse.content` with the server's completion-local snapshot.
+       */
+      const editPrefixLength = () =>
+        currentSubmission.editedContent != null && !editPrefixClearedRef.current
+          ? (currentSubmission.editPrefixLength ??
+            currentSubmission.initialResponse?.content?.length ??
+            0)
+          : 0;
+
+      /**
        * Places an injected steer part on the in-flight response message and
        * resolves its pending chip. Same bounded next-frame retry as pending
        * actions for the inject-before-render race (the assistant placeholder
@@ -1535,12 +1691,18 @@ export default function useResumableSSE(
          * steer part is placed and synced. */
         flushPendingDeltas();
         const messages = getMessages() ?? [];
-        const index = findSteerMessageIndex(messages, event);
+        const index = findSteerMessageIndex(messages, event, livePlaceholderIds());
         if (index < 0) {
           retryNextFrame();
           return;
         }
-        const updated = applySteerPart(messages[index], event);
+        const prefixLength = editPrefixLength();
+        const updated = applySteerPart(
+          messages[index],
+          typeof event.index === 'number' && prefixLength > 0
+            ? { ...event, index: event.index + prefixLength }
+            : event,
+        );
         if (updated !== messages[index]) {
           /** Stamped only when the inline part is actually committed, in the
            *  same batch, so its first render sees the flag and plays the
@@ -1559,6 +1721,7 @@ export default function useResumableSSE(
           nextMessages[index] = updated;
           setMessages(nextMessages);
           syncStepMessage(updated);
+          syncSubmissionPlaceholder(updated);
         }
       };
 
@@ -1591,7 +1754,7 @@ export default function useResumableSSE(
          * copy back into the step handler's authoritative map). */
         flushPendingDeltas();
         const messages = getMessages() ?? [];
-        const index = findActivityLabelMessageIndex(messages, event);
+        const index = findActivityLabelMessageIndex(messages, event, livePlaceholderIds());
         if (index < 0) {
           retryNextFrame();
           return;
@@ -1610,12 +1773,7 @@ export default function useResumableSSE(
          *  space — a label shifting differently from its tools would overwrite
          *  another part, and a gap fill would miss its own reservation and
          *  leave the placeholder pending forever. */
-        const prefixLength =
-          currentSubmission.editedContent != null && !editPrefixClearedRef.current
-            ? (currentSubmission.editPrefixLength ??
-              (currentSubmission.initialResponse as TMessage | undefined)?.content?.length ??
-              0)
-            : 0;
+        const prefixLength = editPrefixLength();
         const phasePart = event.part as TActivityLabelEvent['part'] & {
           activity_label_type?: 'phase';
           activity_start_index?: number;
@@ -1670,6 +1828,7 @@ export default function useResumableSSE(
           nextMessages[index] = updated;
           setMessages(nextMessages);
           syncStepMessage(updated);
+          syncSubmissionPlaceholder(updated);
         }
       };
 
@@ -1696,12 +1855,7 @@ export default function useResumableSSE(
           retryNextFrame();
           return;
         }
-        const prefixLength =
-          currentSubmission.editedContent != null && !editPrefixClearedRef.current
-            ? (currentSubmission.editPrefixLength ??
-              (currentSubmission.initialResponse as TMessage | undefined)?.content?.length ??
-              0)
-            : 0;
+        const prefixLength = editPrefixLength();
         let contentIndex = event.index + prefixLength;
         if (
           prefixLength > 0 &&
@@ -1933,6 +2087,7 @@ export default function useResumableSSE(
               conversationId: data.conversation?.conversationId,
               hasResponseMessage: !!data.responseMessage,
             });
+            clearPendingApprovalForTerminal(finalConvoId);
             clearComposerDrafts(runIndex, currentSubmission.conversation?.conversationId, {
               includeNewChatDraft:
                 !currentSubmission.conversation?.conversationId ||
@@ -2007,6 +2162,9 @@ export default function useResumableSSE(
               startedAsNewConvo: runEndTarget.startedAsNewConvo,
               endedAt: Date.now(),
               generationCreatedAt,
+              ...(data.responseMessage?.messageId != null && {
+                responseMessageId: data.responseMessage.messageId,
+              }),
             });
             // Clear handler maps on stream completion to prevent memory leaks
             clearStepMaps();
@@ -2259,6 +2417,7 @@ export default function useResumableSSE(
                   userMessage,
                   responseMessage,
                   messageIndexes,
+                  resumeSubmission.compact === true,
                 );
                 logger.log('ResumableSSE', 'SYNC updating message', {
                   messageId: responseMessage.messageId,
@@ -2285,7 +2444,15 @@ export default function useResumableSSE(
                   content: data.resumeState.aggregatedContent,
                   isCreatedByUser: false,
                 } as TMessage;
-                setMessages(mergeResumeMessages(messages, userMessage, newMessage, messageIndexes));
+                setMessages(
+                  mergeResumeMessages(
+                    messages,
+                    userMessage,
+                    newMessage,
+                    messageIndexes,
+                    resumeSubmission.compact === true,
+                  ),
+                );
                 resetContentHandler();
                 syncStepMessage(newMessage);
               }
@@ -2744,7 +2911,7 @@ export default function useResumableSSE(
           if (!isCurrentSubscription()) {
             return;
           }
-          await queryClient.invalidateQueries({ queryKey: [QueryKeys.allConversations] });
+          await invalidateConversationLists(queryClient);
           if (!isCurrentSubscription()) {
             return;
           }
@@ -2860,6 +3027,7 @@ export default function useResumableSSE(
         resetLive({ ...currentSubmission, userMessage });
         removeActiveJob(currentStreamId);
         clearAttachedGenerationCreatedAt();
+        clearPendingApprovalForTerminal(reconciliationConvoId);
         clearComposerDrafts(runIndex, reconciliationConvoId, {
           includeNewChatDraft:
             !reconciliationConvoId ||
@@ -2885,11 +3053,23 @@ export default function useResumableSSE(
         } else if (event.terminalStatus === 'error') {
           reconciliationOutcome = 'error';
         }
+        const reconciledResponseMessageId =
+          reconciliationOutcome === 'completed'
+            ? completedResponseMessageId(
+                persistedMessages,
+                userMessage?.messageId,
+                status?.resumeState?.responseMessageId ??
+                  currentSubmission.initialResponse?.messageId,
+              )
+            : undefined;
         setRunEnd({
           conversationId: reconciliationConvoId,
           outcome: reconciliationOutcome,
           endedAt: Date.now(),
           generationCreatedAt: status?.createdAt ?? generationCreatedAt,
+          ...(reconciledResponseMessageId != null && {
+            responseMessageId: reconciledResponseMessageId,
+          }),
         });
         setSubmission(null);
         setStreamId(null);
@@ -2968,6 +3148,8 @@ export default function useResumableSSE(
               }
               const fetched = await queryClient.fetchQuery<TMessage[]>({
                 queryKey: messageQueryKey,
+                // The first stream can finish before CREATED mounts the saved-chat query.
+                queryFn: () => dataService.getMessagesByConvoId(convoId),
               });
               if (!isCurrentSubscription()) {
                 return;
@@ -3131,22 +3313,47 @@ export default function useResumableSSE(
 
           removeActiveJob(currentStreamId);
           clearAttachedGenerationCreatedAt();
+          clearPendingApprovalForTerminal(recoveryConvoId);
           if (
             !createdStreamIdsRef.current.has(currentStreamId) &&
             optimisticStreamIdsRef.current.has(currentStreamId)
           ) {
-            if (isResume) {
-              // A resumed subscribe attaches to an already-adopted stream (e.g. a deduped
-              // start request). A 404 means the job is gone — but the conversation may be
-              // persisted (the original completed and was cleaned up) or may never have
-              // existed (the winner died before persisting). Don't guess: reconcile against
-              // the server so a real conversation stays and a phantom is dropped.
-              queryClient.invalidateQueries({ queryKey: [QueryKeys.allConversations] });
-              queryClient.invalidateQueries({ queryKey: [QueryKeys.pinnedConversations] });
-            } else {
-              // Fresh optimistic stream that never started: prune immediately.
-              removeConvoFromAllQueries(queryClient, currentStreamId);
+            // Both fresh and resumed subscriptions can miss every event of a fast turn.
+            // A missing job proves neither that the conversation was saved nor that it failed.
+            try {
+              const persisted = await dataService.getConversationById(recoveryConvoId);
+              if (!isCurrentSubscription()) return;
+              if (persisted?.conversationId === recoveryConvoId) {
+                queryClient.setQueryData([QueryKeys.conversation, recoveryConvoId], persisted);
+                upsertConvoInAllQueries(queryClient, persisted);
+                if (!isAddedRequest) {
+                  setConversation?.((current) => {
+                    if (
+                      current?.conversationId != null &&
+                      current.conversationId !== Constants.NEW_CONVO &&
+                      current.conversationId !== recoveryConvoId
+                    )
+                      return current;
+                    return keepLocalCodeApprovalMode(
+                      { ...current, ...persisted },
+                      current,
+                      current?.conversationId,
+                    );
+                  });
+                }
+              }
+            } catch (error) {
+              if (!isCurrentSubscription()) return;
+              if (toStartGenerationError(error)?.response?.status === 404) {
+                removeConvoFromAllQueries(queryClient, currentStreamId);
+              }
             }
+            // An inconclusive read must not turn a saved chat into a phantom.
+            invalidateConversationLists(queryClient);
+            queryClient.invalidateQueries({ queryKey: [QueryKeys.pinnedConversations] });
+          }
+          if (persistedMessages) {
+            setMessages(persistedMessages);
           }
           subscriptionRetired = true;
           setIsSubmitting(false);
@@ -3230,6 +3437,7 @@ export default function useResumableSSE(
           flushPendingDeltas();
           removeActiveJob(currentStreamId);
           clearAttachedGenerationCreatedAt();
+          clearPendingApprovalForTerminal(recoveryConvoId);
           resetLive({ ...currentSubmission, userMessage });
           if (
             !createdStreamIdsRef.current.has(currentStreamId) &&
@@ -3559,6 +3767,7 @@ export default function useResumableSSE(
           resetLive({ ...currentSubmission, userMessage });
           removeActiveJob(currentStreamId);
           clearAttachedGenerationCreatedAt();
+          clearPendingApprovalForTerminal(recoveryConvoId);
           if (
             !createdStreamIdsRef.current.has(currentStreamId) &&
             optimisticStreamIdsRef.current.has(currentStreamId)
@@ -3574,11 +3783,23 @@ export default function useResumableSSE(
           } else if (status.status === 'aborted') {
             recoveryOutcome = 'aborted';
           }
+          const recoveredResponseMessageId =
+            recoveryOutcome === 'completed'
+              ? completedResponseMessageId(
+                  persistedMessages,
+                  userMessage?.messageId,
+                  status?.resumeState?.responseMessageId ??
+                    currentSubmission.initialResponse?.messageId,
+                )
+              : undefined;
           setRunEnd({
             conversationId: recoveryConvoId,
             outcome: recoveryOutcome,
             endedAt: Date.now(),
             generationCreatedAt: status.createdAt ?? generationCreatedAt,
+            ...(recoveredResponseMessageId != null && {
+              responseMessageId: recoveredResponseMessageId,
+            }),
           });
           setSubmission(null);
           setStreamId(null);
@@ -3683,6 +3904,8 @@ export default function useResumableSSE(
       }
     },
     [
+      isAddedRequest,
+      setConversation,
       runIndex,
       token,
       setAbortScroll,
@@ -3728,6 +3951,7 @@ export default function useResumableSSE(
       addActiveJob,
       setSubmission,
       updateActiveGenerationCreatedAt,
+      jotaiStore,
     ],
   );
 
@@ -3757,6 +3981,23 @@ export default function useResumableSSE(
       const readinessDeadline = Date.now() + START_GENERATION_READINESS_TIMEOUT_MS;
 
       while (!signal?.aborted) {
+        const recoverySteerId = getRecoverySteerId(currentSubmission);
+        const conversationId = currentSubmission.conversation?.conversationId;
+        if (
+          recoverySteerId != null &&
+          conversationId &&
+          jotaiStore.get(recoveryDispositionsFamily(conversationId))[recoverySteerId] != null
+        ) {
+          restoreQueuedSubmission(currentSubmission);
+          errorHandler({
+            data: getStreamStartFailureData(localize('com_ui_steer_recovery_held')),
+            submission: currentSubmission as EventSubmission,
+          });
+          setShowStopButton(false);
+          setIsSubmitting(false);
+          setSubmission(null);
+          return null;
+        }
         requestAttempts += 1;
         try {
           const data = await postGenerationRequest<unknown>(url, payload, { signal });
@@ -3888,6 +4129,19 @@ export default function useResumableSSE(
       const errorData = startError?.response?.data;
       const responseStatus = startError?.response?.status;
       if (responseStatus != null && responseStatus >= 400 && responseStatus < 500) {
+        const recoverySteerId = getRecoverySteerId(currentSubmission);
+        const conversationId = currentSubmission.conversation?.conversationId;
+        const recoveryRejected =
+          errorData != null &&
+          typeof errorData === 'object' &&
+          'code' in errorData &&
+          (errorData.code === 'RECOVERY_PAYLOAD_MISMATCH' ||
+            errorData.code === 'INVALID_RECOVERY_REQUEST');
+        if (recoveryRejected && recoverySteerId != null && conversationId) {
+          jotaiStore.set(recoveryDispositionsFamily(conversationId), (previous) =>
+            blockRecovery(previous, recoverySteerId),
+          );
+        }
         // The server rejected admission before exposing a generation. Restore
         // the exact queue row/position; ambiguous transport/5xx outcomes must
         // first reconcile durable state instead of risking a duplicate start.
@@ -3941,6 +4195,8 @@ export default function useResumableSSE(
       clearStepMaps,
       convertSteersToQueued,
       errorHandler,
+      jotaiStore,
+      localize,
       restoreQueuedSubmission,
       setIsSubmitting,
       setShowStopButton,
@@ -4133,7 +4389,7 @@ export default function useResumableSSE(
                 if (!isCurrentEffect()) {
                   return;
                 }
-                await queryClient.invalidateQueries({ queryKey: [QueryKeys.allConversations] });
+                await invalidateConversationLists(queryClient);
                 if (!isCurrentEffect()) {
                   return;
                 }
@@ -4203,7 +4459,7 @@ export default function useResumableSSE(
                 if (!isCurrentEffect()) {
                   return;
                 }
-                await queryClient.invalidateQueries({ queryKey: [QueryKeys.allConversations] });
+                await invalidateConversationLists(queryClient);
                 if (!isCurrentEffect()) {
                   return;
                 }
@@ -4225,7 +4481,16 @@ export default function useResumableSSE(
                 replacementStart.conversationId,
               ]);
               if (authoritativeConversation?.conversationId === replacementStart.conversationId) {
-                setConversation?.(authoritativeConversation);
+                const localConversationId = isInitialNewConversation(submission)
+                  ? Constants.NEW_CONVO
+                  : replacementStart.conversationId;
+                setConversation?.((current) =>
+                  keepLocalCodeApprovalMode(
+                    authoritativeConversation,
+                    current,
+                    localConversationId,
+                  ),
+                );
               }
               queryClient.setQueryData(streamStatusQueryKey(replacementStart.conversationId), {
                 ...replacementStatus,
@@ -4323,12 +4588,30 @@ export default function useResumableSSE(
             }
 
             if (persistedConversation != null) {
+              /** The persisted copy carries the mode the settled turn started
+               *  with; a pick made while the start was pending is newer. The
+               *  live conversation still holds the new-chat id here because no
+               *  stream event ran for this turn. */
+              const settledCopy = persistedConversation;
+              const localConversationId = startedAsNewConvo
+                ? Constants.NEW_CONVO
+                : settledConversationId;
+              const conversationRecord = keepLocalCodeApprovalMode(
+                settledCopy,
+                queryClient.getQueryData<TConversation>([
+                  QueryKeys.conversation,
+                  settledConversationId,
+                ]),
+                settledConversationId,
+              );
               queryClient.setQueryData(
                 [QueryKeys.conversation, settledConversationId],
-                persistedConversation,
+                conversationRecord,
               );
-              upsertConvoInAllQueries(queryClient, persistedConversation);
-              setConversation?.(persistedConversation);
+              upsertConvoInAllQueries(queryClient, conversationRecord);
+              setConversation?.((current) =>
+                keepLocalCodeApprovalMode(settledCopy, current, localConversationId),
+              );
               if (startedAsNewConvo) {
                 replaceNewConversationUrl(settledConversationId);
               }
@@ -4349,7 +4632,7 @@ export default function useResumableSSE(
               if (!isCurrentEffect()) {
                 return;
               }
-              await queryClient.invalidateQueries({ queryKey: [QueryKeys.allConversations] });
+              await invalidateConversationLists(queryClient);
               if (!isCurrentEffect()) {
                 return;
               }

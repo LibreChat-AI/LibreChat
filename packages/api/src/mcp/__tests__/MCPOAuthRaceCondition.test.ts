@@ -826,6 +826,11 @@ describe('MCP OAuth Race Condition Fixes', () => {
       await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
 
       const calls: string[] = [];
+      const guardedDeleteSpy = jest.spyOn(flowManager, 'deleteFlowIfCurrent');
+      guardedDeleteSpy.mockImplementation(async (id, type) => {
+        calls.push(`${type}:${id}`);
+        return 'updated';
+      });
       const deleteFlowSpy = jest.spyOn(flowManager, 'deleteFlow');
       deleteFlowSpy.mockImplementation(async (id, type) => {
         calls.push(`${type}:${id}`);
@@ -869,13 +874,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
       await flowManager.initFlow(flowId, 'mcp_oauth', { state });
       await MCPOAuthHandler.storeStateMapping(state, flowId, flowManager);
 
-      const realDeleteFlow = flowManager.deleteFlow.bind(flowManager);
-      jest.spyOn(flowManager, 'deleteFlow').mockImplementation(async (id, type) => {
-        if (type === 'mcp_oauth') {
-          return false;
-        }
-        return realDeleteFlow(id, type);
-      });
+      jest.spyOn(flowManager, 'deleteFlowIfCurrent').mockResolvedValue('missing');
 
       await expect(MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager)).rejects.toThrow(
         'Failed to fully delete OAuth flow',
@@ -886,7 +885,7 @@ describe('MCP OAuth Race Condition Fixes', () => {
       expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeTruthy();
     });
 
-    it('still deletes the flow and rejects when the metadata read hits a storage error', async () => {
+    it('does not blindly delete the flow when the metadata read hits a storage error', async () => {
       const flowManager = createFlowManager();
       const flowId = 'user1:test-server';
       const state = 'unreadable-state-pqr678';
@@ -899,11 +898,10 @@ describe('MCP OAuth Race Condition Fixes', () => {
         .mockRejectedValueOnce(new Error('read connection lost'));
 
       await expect(MCPOAuthHandler.deleteFlowAndStateMapping(flowId, flowManager)).rejects.toThrow(
-        'Failed to fully delete OAuth flow',
+        'read connection lost',
       );
 
-      /** The callback-capable flow must not survive token deletion */
-      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeFalsy();
+      expect(await flowManager.getFlowState(flowId, 'mcp_oauth')).toBeTruthy();
     });
 
     it('still deletes the flow when metadata carries no state', async () => {

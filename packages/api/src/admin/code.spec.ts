@@ -28,7 +28,7 @@ function mockResponse(): MockResponse {
 function request(): ServerRequest {
   return {
     params: { environmentId: 'attached-vm' },
-    user: { id: 'admin-1', role: 'ADMIN' },
+    user: { id: 'admin-1', role: 'ADMIN', tenantId: 'tenant-1' },
   } as unknown as ServerRequest;
 }
 
@@ -85,7 +85,13 @@ describe('createAdminCodeEnvironmentHandlers', () => {
           Authorization: 'Bearer administrator-bootstrap-token',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ workerId: 'vm-1' }),
+        body: JSON.stringify({
+          workerId: 'vm-1',
+          binding: {
+            tenantId: 'tenant-1',
+            principal: { type: 'deployment', id: 'attached-vm' },
+          },
+        }),
       }),
     );
     expect(response.statusCode).toBe(200);
@@ -96,6 +102,25 @@ describe('createAdminCodeEnvironmentHandlers', () => {
       expiresAt: '2099-08-30T12:00:00.000Z',
     });
     expect(JSON.stringify(response.body)).not.toContain('administrator-bootstrap-token');
+  });
+
+  it('fails closed before outbound traffic when tenant context is unavailable', async () => {
+    const fetchImpl = jest.fn();
+    const handlers = createAdminCodeEnvironmentHandlers({
+      getAppConfig: jest.fn().mockResolvedValue(config()),
+      resolveTenantId: jest.fn(() => {
+        throw new Error('missing tenant context');
+      }),
+      readSecret: jest.fn().mockReturnValue('administrator-bootstrap-token'),
+      fetchImpl,
+    });
+    const response = mockResponse();
+
+    await handlers.createPairing(request(), response);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body).toEqual({ error: 'Code environment tenant context is unavailable' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('uses only YAML config when resolving pairing secrets and destinations', async () => {

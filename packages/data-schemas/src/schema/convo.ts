@@ -41,8 +41,14 @@ const convoSchema: Schema<IConversation> = new Schema(
       default: false,
     },
     ...conversationPreset,
+    codeEnvironmentRevision: { type: Number, select: false },
     agent_id: {
       type: String,
+    },
+    initial_agent_id: {
+      type: String,
+      default: undefined,
+      select: false,
     },
     subagentThread: {
       type: {
@@ -136,6 +142,7 @@ const convoSchema: Schema<IConversation> = new Schema(
               maxlength: MAX_AGENT_EVENT_ACTOR_SUMMARY_LENGTH,
             },
             tokenCount: { type: Number, min: 0, required: true },
+            version: { type: Number, min: 1 },
           },
           _id: false,
           default: undefined,
@@ -231,6 +238,18 @@ const convoSchema: Schema<IConversation> = new Schema(
     /** Fail-closed invocation proof. Active records block later turns through checkpoint,
      * history, and outcome settlement; settled receipts no longer block new IDs but keep
      * delayed owners from reacquiring an invocation that already applied its action. */
+    agentEventActorCleanup: {
+      type: [
+        {
+          threadId: { type: String, required: true },
+          checkpointId: { type: String, required: true },
+          checkpointNs: { type: String, required: true },
+          _id: false,
+        },
+      ],
+      default: undefined,
+      select: false,
+    },
     agentEventActorReconciliations: {
       type: [
         {
@@ -319,7 +338,11 @@ const convoSchema: Schema<IConversation> = new Schema(
         handlingGenerationCreatedAt: { type: Number, min: 0, default: undefined },
         actionId: { type: String, required: true },
         jobCreatedAt: { type: Number, required: true },
-        status: { type: String, enum: ['pending', 'claimed', 'closed'], required: true },
+        status: {
+          type: String,
+          enum: ['pending', 'claimed', 'pending_owned', 'claimed_owned', 'closed'],
+          required: true,
+        },
         resumeAttemptId: { type: String, default: undefined },
         outcome: {
           type: String,
@@ -371,12 +394,22 @@ convoSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 convoSchema.index({ createdAt: 1, updatedAt: 1 });
 convoSchema.index({ conversationId: 1, user: 1, tenantId: 1 }, { unique: true });
 convoSchema.index({ tenantId: 1, isTemporary: 1, createdAt: -1, _id: -1 });
+/** Insights attributes new conversations by an immutable primary agent and falls back
+ * to the mutable agent field only for legacy rows where the primary field is absent. */
+convoSchema.index({ tenantId: 1, isTemporary: 1, initial_agent_id: 1, createdAt: -1, _id: -1 });
+convoSchema.index({ tenantId: 1, isTemporary: 1, agent_id: 1, createdAt: -1, _id: -1 });
 convoSchema.index({ user: 1, _id: 1 });
 convoSchema.index({ user: 1, chatProjectId: 1, updatedAt: -1, _id: -1 });
 convoSchema.index({ user: 1, chatProjectId: 1, createdAt: -1, _id: -1 });
 /** The archive view pages by `archivedAt`, then `createdAt`, then `_id`; the middle key
  * carries the legacy group, whose rows all share a missing `archivedAt`. */
 convoSchema.index({ user: 1, isArchived: 1, archivedAt: -1, createdAt: -1, _id: -1 });
+
+/** Sidebar list indexes for the active/archive filters: each sort carries its secondary
+ * key and `_id` tie-breaker so MongoDB can serve the cursor order without an in-memory sort. */
+convoSchema.index({ user: 1, isArchived: 1, updatedAt: -1, _id: -1 });
+convoSchema.index({ user: 1, isArchived: 1, createdAt: -1, updatedAt: -1, _id: -1 });
+convoSchema.index({ user: 1, isArchived: 1, title: 1, updatedAt: 1, _id: 1 });
 
 /** The sidebar's pinned section filters on user + pinned and pages by `updatedAt`. */
 convoSchema.index({ user: 1, pinned: 1, updatedAt: -1, _id: -1 });

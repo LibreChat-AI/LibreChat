@@ -31,7 +31,10 @@ const { mcp_all, mcp_delimiter } = Constants;
 type ModelParametersWithPromptPrefix = AgentModelParameters & { promptPrefix?: string | null };
 
 export interface LoadAgentDeps {
-  getAgent: (searchParameter: { id: string }) => Promise<Agent | null>;
+  /** Resolves the agent without its `versions` history; `version` carries the count. */
+  getAgent: (searchParameter: {
+    id: string;
+  }) => Promise<(Agent & { version?: number; versions?: { length: number } }) | null>;
   getMCPServerTools: (
     userId: string,
     serverName: string,
@@ -242,8 +245,6 @@ export async function loadAgent(
     return null;
   }
 
-  // Set version count from versions array length
-  const agentWithVersion = agent as Agent & { versions?: unknown[]; version?: number };
-  agentWithVersion.version = agentWithVersion.versions ? agentWithVersion.versions.length : 0;
+  agent.version ??= agent.versions?.length ?? 0;
   return agent;
 }

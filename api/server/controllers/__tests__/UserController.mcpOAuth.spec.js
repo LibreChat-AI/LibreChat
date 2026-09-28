@@ -7,21 +7,25 @@ const mockGetLogStores = jest.fn();
 const mockGetMCPManager = jest.fn();
 const mockGetFlowStateManager = jest.fn();
 const mockGetMCPServersRegistry = jest.fn();
+const mockPersistMCPAuthorizationFenceRetry = jest.fn();
+const mockClearMCPAuthorizationFenceRetry = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: { error: jest.fn(), info: jest.fn(), warn: jest.fn() },
   getTenantId: jest.fn(),
   webSearchKeys: [],
 }));
 
 jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
   Tools: {},
-  CacheKeys: { FLOWS: 'flows' },
   Constants: { mcp_delimiter: '_mcp_', mcp_prefix: 'mcp_' },
   FileSources: {},
 }));
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
   MCPOAuthHandler: {
     generateFlowId: jest.fn((userId, serverName, tenantId) => {
       const flowId = `${userId}:${serverName}`;
@@ -86,6 +90,11 @@ jest.mock('~/server/services/Config/getCachedTools', () => ({
   invalidateCachedTools: (...args) => mockInvalidateCachedTools(...args),
 }));
 
+jest.mock('~/server/services/MCPAuthorizationFenceRetry', () => ({
+  persistMCPAuthorizationFenceRetry: (...args) => mockPersistMCPAuthorizationFenceRetry(...args),
+  clearMCPAuthorizationFenceRetry: (...args) => mockClearMCPAuthorizationFenceRetry(...args),
+}));
+
 jest.mock('~/server/services/Files/process', () => ({
   processDeleteRequest: jest.fn().mockResolvedValue({ deletedFileIds: [], failedFileIds: [] }),
 }));
@@ -139,6 +148,10 @@ function createRequest() {
 
 function setupMCPMocks() {
   const flowManager = {
+    acquireLease: jest.fn().mockResolvedValue({
+      generation: 1,
+      release: jest.fn().mockResolvedValue(undefined),
+    }),
     deleteFlow: jest.fn().mockResolvedValue(true),
   };
   const mcpManager = {
@@ -181,10 +194,65 @@ const storedOAuthBinding = {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockPersistMCPAuthorizationFenceRetry.mockResolvedValue('retry-v1');
+  mockClearMCPAuthorizationFenceRetry.mockResolvedValue(undefined);
   getTenantId.mockReturnValue(undefined);
+  mockFindToken.mockImplementation(async ({ type }) => ({
+    token: `encrypted-${type}`,
+    metadata: { credential_set_id: credentialSetId },
+  }));
 });
 
 describe('updateUserPluginsController MCP OAuth cleanup', () => {
+  it('does not mutate credentials when durable fence preparation fails', async () => {
+    setupMCPMocks();
+    const { updateUserPluginAuth } = require('~/server/services/PluginService');
+    const error = new Error('retry storage unavailable');
+    mockPersistMCPAuthorizationFenceRetry.mockRejectedValueOnce(error);
+    const req = createRequest();
+    req.body = {
+      pluginKey: 'mcp_test-server',
+      action: 'install',
+      auth: { API_KEY: 'new-key' },
+    };
+
+    const res = createResponse();
+    await updateUserPluginsController(req, res);
+
+    expect(updateUserPluginAuth).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(logger.error).toHaveBeenCalledWith('[updateUserPluginsController]', error);
+  });
+
+  it('advances the fence after a partial MCP credential batch commits', async () => {
+    setupMCPMocks();
+    const { updateUserPluginAuth } = require('~/server/services/PluginService');
+    const laterFailure = Object.assign(new Error('second field failed'), { status: 400 });
+    updateUserPluginAuth.mockResolvedValueOnce({}).mockResolvedValueOnce(laterFailure);
+    const req = createRequest();
+    req.body = {
+      pluginKey: 'mcp_test-server',
+      action: 'install',
+      auth: { API_KEY: 'new-key', ACCOUNT: 'new-account' },
+    };
+
+    const res = createResponse();
+    await updateUserPluginsController(req, res);
+
+    expect(mockPersistMCPAuthorizationFenceRetry.mock.invocationCallOrder[0]).toBeLessThan(
+      updateUserPluginAuth.mock.invocationCallOrder[0],
+    );
+    expect(mockInvalidateCachedTools).toHaveBeenCalledWith({
+      userId: 'user-1',
+      serverName: 'test-server',
+    });
+    expect(mockClearMCPAuthorizationFenceRetry).toHaveBeenCalledWith(
+      { userId: 'user-1', serverName: 'test-server' },
+      'retry-v1',
+    );
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
   it('invalidates the shared tool generation even when local disconnect fails', async () => {
     const { mcpManager } = setupMCPMocks();
     mcpManager.disconnectUserConnection.mockRejectedValue(new Error('local dispose failed'));
@@ -228,8 +296,11 @@ describe('updateUserPluginsController MCP OAuth cleanup', () => {
     expect(MCPTokenStorage.getClientInfoAndMetadata).toHaveBeenCalledWith({
       userId: 'user-1',
       serverName: 'test-server',
-      findToken: mockFindToken,
+      findToken: expect.any(Function),
     });
+    expect(mcpManager.disconnectUserConnection.mock.invocationCallOrder[0]).toBeLessThan(
+      MCPTokenStorage.getClientInfoAndMetadata.mock.invocationCallOrder[0],
+    );
     expect(MCPTokenStorage.deleteUserTokens).toHaveBeenCalledWith({
       userId: 'user-1',
       serverName: 'test-server',
@@ -401,7 +472,7 @@ describe('updateUserPluginsController MCP OAuth cleanup', () => {
     expect(MCPTokenStorage.getTokens).toHaveBeenCalledWith({
       userId: 'user-1',
       serverName: 'test-server',
-      findToken: mockFindToken,
+      findToken: expect.any(Function),
     });
     expect(logger.warn).toHaveBeenCalledWith(
       '[maybeUninstallOAuthMCP] Unable to load OAuth tokens for test-server; clearing local token state.',
@@ -443,7 +514,7 @@ describe('updateUserPluginsController MCP OAuth cleanup', () => {
     expect(MCPTokenStorage.getTokens).toHaveBeenCalledWith({
       userId: 'user-1',
       serverName: 'test-server',
-      findToken: mockFindToken,
+      findToken: expect.any(Function),
     });
     expect(MCPTokenStorage.assertCredentialSetBinding).toHaveBeenCalledWith(
       'test-server',

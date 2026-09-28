@@ -11,6 +11,7 @@ import {
 import type {
   EmbeddedResource,
   ListToolsResult,
+  ResourceLink,
   ImageContent,
   AudioContent,
   TextContent,
@@ -19,7 +20,12 @@ import type {
 import type { SearchResultData, UIResource, TPlugin } from 'librechat-data-provider';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type { LCTool } from '@librechat/agents';
-import type { OboTokenResolver, OboTrustChecker, UpstreamTokenProvider } from '~/mcp/oauth/obo';
+import type {
+  OboTokenResolver,
+  OboTrustChecker,
+  UpstreamTokenProvider,
+  UpstreamTokenProviderResolver,
+} from '~/mcp/oauth/obo';
 import type { AuthIdentityContext } from '~/utils/identity';
 import type { GraphTokenResolver } from '~/utils/graph';
 import type { FlowStateManager } from '~/flow/manager';
@@ -27,7 +33,7 @@ import type { RequestBody } from '~/types/http';
 import type * as o from '~/mcp/oauth/types';
 
 export type MCPRuntimeRequestBody = Required<Pick<RequestBody, 'messageId' | 'conversationId'>> &
-  Pick<RequestBody, 'parentMessageId'>;
+  Pick<RequestBody, 'parentMessageId' | 'codeEnvironmentMode' | 'codeWorkspaces'>;
 
 export type StdioOptions = z.infer<typeof StdioOptionsSchema>;
 export type WebSocketOptions = z.infer<typeof WebSocketOptionsSchema>;
@@ -73,8 +79,19 @@ export type OAuthHandledSource = 'silent-refresh' | 'interactive';
 
 export type MCPTool = Tool;
 export type MCPToolListResponse = ListToolsResult;
-export type ToolContentPart = TextContent | ImageContent | EmbeddedResource | AudioContent;
-export type { TextContent, ImageContent, EmbeddedResource, AudioContent };
+export type ToolContentPart =
+  | TextContent
+  | ImageContent
+  | EmbeddedResource
+  | ResourceLink
+  | AudioContent;
+export type ResourceContents = EmbeddedResource['resource'];
+export type ResourceBody = {
+  text?: string;
+  image?: ImageContent;
+  binaryBytes?: number;
+};
+export type { TextContent, ImageContent, EmbeddedResource, ResourceLink, AudioContent };
 export type MCPToolCallResponse =
   | undefined
   | {
@@ -204,9 +221,22 @@ export type AddServerResult = {
   config: ParsedServerConfig;
 };
 
+/** Mutable per-creation budget shared by every direct-bearer recovery layer. */
+export interface DirectBearerRecoveryState {
+  attempted: boolean;
+  /** Request-local credential snapshot shared with checkout joiners and the first tool call. */
+  resolvedConfig?: MCPOptions;
+}
+
 export interface BasicConnectionOptions {
   serverName: string;
   serverConfig: MCPOptions;
+  /** Original unresolved definition retained across asynchronous credential preprocessing. */
+  serverDefinition?: MCPOptions;
+  /** Original trusted definition retained when serverConfig already contains request-resolved credentials. */
+  directBearerSourceConfig?: ParsedServerConfig;
+  /** Internal one-shot fence shared with the connection owner. */
+  directBearerRecoveryState?: DirectBearerRecoveryState;
   useSSRFProtection?: boolean;
   allowedDomains?: string[] | null;
   /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
@@ -226,6 +256,10 @@ export interface UserConnectionContext {
   requestBody?: RequestBody;
   requestScopedConnections?: RequestScopedMCPConnectionStore;
   graphTokenResolver?: GraphTokenResolver;
+  /** Live OpenID session credential source for trusted direct bearer and OBO configurations. */
+  upstreamTokenProvider?: UpstreamTokenProvider;
+  /** Deferred credential source used only after a server is confirmed to require OBO. */
+  upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
   connectionTimeout?: number;
   /** Cancels the connection's SDK requests when the caller itself is cancelled; previously only
    *  OAuth connections could carry a signal, leaving non-OAuth discovery uncancellable. */
@@ -234,12 +268,44 @@ export interface UserConnectionContext {
    *  only a single `connect()`, so a caller that must return within a fixed budget sets this to
    *  cap every segment, including `tools/list` pagination and the unauthenticated fallback. */
   deadlineMs?: number;
+  /** Advances application authorization state after OAuth token persistence succeeds. */
+  onOAuthCredentialsChanged?: (scope: { userId: string; serverName: string }) => Promise<void>;
+  /**
+   * Persists authorization-fence intent before OAuth token rows change and returns its publisher.
+   * The publisher reports the generation it wrote, so a caller that fenced its own credential
+   * change can adopt that generation instead of the one it captured beforehand.
+   */
+  onOAuthCredentialsChanging?: (scope: {
+    userId: string;
+    serverName: string;
+  }) => Promise<() => Promise<string | undefined>>;
+  /**
+   * Receives discovery work the caller stopped waiting for at its deadline or abort, such as an
+   * OAuth token flow still persisting a refresh. The work keeps running; the promise settles with it.
+   */
+  onDiscoveryDetached?: (work: Promise<unknown>) => void;
+  /**
+   * Reports the publication generation carried by credentials the factory adopted from an
+   * authorization or refresh it did not perform. A caller leasing a generation captured before it
+   * resolved credentials moves the lease to the reported one while that is the generation
+   * currently stored: the build then leases under the publication that stored its credentials
+   * and stays fenced by any rotation that followed them.
+   */
+  onOAuthCredentialsAdopted?: (publicationGeneration: string) => Promise<void>;
+  /**
+   * Runs before the factory re-reads credentials from storage because a credential change
+   * invalidated its cached token flow. A caller leasing a generation captured earlier re-captures
+   * it here, ahead of the read, so a rotation that follows the read still fences the build.
+   */
+  onOAuthCredentialsInvalidated?: () => Promise<string | void>;
 }
 
 export interface RequestScopedMCPConnectionStore {
   connections: Map<string, unknown>;
   pending: Map<string, Promise<unknown>>;
   disposeConnection?: (connectionKey: string, connection: unknown) => Promise<void>;
+  /** Set before cleanup snapshots pending work; new connection attempts must fail closed. */
+  cleanupStarted?: boolean;
 }
 
 export interface OAuthStartOptions {
@@ -258,7 +324,6 @@ export interface OAuthConnectionOptions extends UserConnectionContext {
   returnOnOAuth?: boolean;
   oboTokenResolver?: OboTokenResolver;
   oboTrustChecker?: OboTrustChecker;
-  upstreamTokenProvider?: UpstreamTokenProvider;
   oboIdentityContext?: AuthIdentityContext;
 }
 
@@ -268,7 +333,11 @@ export interface UserMCPConnectionOptions extends UserConnectionContext {
   forceNew?: boolean;
   ephemeralConnection?: boolean;
   serverConfig?: ParsedServerConfig;
+  /** Internal one-shot fence shared across connection initialization and initial tools/list. */
+  directBearerRecoveryState?: DirectBearerRecoveryState;
   flowManager?: FlowStateManager<o.MCPOAuthTokens | null>;
+  /** Request-local resolved credentials; serverConfig remains the authoritative definition. */
+  directBearerResolvedConfig?: MCPOptions;
   tokenMethods?: TokenMethods;
   signal?: AbortSignal;
   oauthStart?: OAuthStartHandler;
@@ -276,7 +345,6 @@ export interface UserMCPConnectionOptions extends UserConnectionContext {
   returnOnOAuth?: boolean;
   oboTokenResolver?: OboTokenResolver;
   oboTrustChecker?: OboTrustChecker;
-  upstreamTokenProvider?: UpstreamTokenProvider;
   oboIdentityContext?: AuthIdentityContext;
 }
 
@@ -293,11 +361,17 @@ export interface ToolDiscoveryOptions {
   connectionTimeout?: number;
   /** Absolute epoch-ms bound on the whole discovery operation; see `UserConnectionContext`. */
   deadlineMs?: number;
+  onOAuthCredentialsChanged?: (scope: { userId: string; serverName: string }) => Promise<void>;
+  onOAuthCredentialsChanging?: UserConnectionContext['onOAuthCredentialsChanging'];
+  /** Updates the discovery flight when it adopts credentials published by a peer. */
+  onOAuthCredentialsAdopted?: (generation: string) => Promise<void>;
+  onDiscoveryDetached?: UserConnectionContext['onDiscoveryDetached'];
   /** Pre-resolved config-source servers for tenant-scoped lookup */
   configServers?: Record<string, ParsedServerConfig>;
   oboTokenResolver?: OboTokenResolver;
   oboTrustChecker?: OboTrustChecker;
   upstreamTokenProvider?: UpstreamTokenProvider;
+  upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
   oboIdentityContext?: AuthIdentityContext;
 }
 
@@ -305,4 +379,5 @@ export interface ToolDiscoveryResult {
   tools: Tool[] | null;
   oauthRequired: boolean;
   oauthUrl: string | null;
+  authenticationKind?: 'oauth' | 'obo' | 'server';
 }

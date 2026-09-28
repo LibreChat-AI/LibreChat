@@ -319,6 +319,43 @@ async function createOversizedToolResultStreamableServer(
   };
 }
 
+describe('direct bearer HTTP rejection', () => {
+  it.each([
+    ['sse', 401],
+    ['sse', 403],
+    ['streamable-http', 401],
+    ['streamable-http', 403],
+  ] as const)('preserves a structured %s POST status %s', async (type, status) => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(status);
+      res.end('credential rejected');
+    });
+    const close = trackSockets(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}/mcp`;
+    const connection = new MCPConnection({
+      serverName: 'direct-bearer',
+      serverConfig: { type, url },
+      useSSRFProtection: false,
+      directBearerRecoveryEnabled: true,
+    });
+    const createFetch = Reflect.get(connection, 'createFetchFunction') as (
+      getHeaders: () => Record<string, string>,
+    ) => CustomFetch;
+    try {
+      await expect(
+        createFetch.call(connection, () => ({ Authorization: 'Bearer token' }))(url, {
+          method: 'POST',
+          body: '{}',
+        }),
+      ).rejects.toMatchObject({ name: 'MCPTransportAuthenticationError', status });
+    } finally {
+      await connection.dispose();
+      await close();
+    }
+  });
+});
+
 describe('MCP SSRF protection – redirect blocking', () => {
   let redirectServer: TestServer;
   let conn: MCPConnection | null;
@@ -956,6 +993,68 @@ describe('MCP SSRF protection – customFetch input shapes', () => {
   let conn: MCPConnection | null;
   const originalMaxResponseBytes = process.env.MCP_STREAMABLE_HTTP_MAX_RESPONSE_BYTES;
   const originalMaxLineBytes = process.env.MCP_STREAMABLE_HTTP_MAX_LINE_BYTES;
+
+  it.each([true, false])(
+    'uses the live bearer on SSE stream reconnect only in direct mode: %s',
+    async (directBearerRecoveryEnabled) => {
+      const requests: http.IncomingHttpHeaders[] = [];
+      let stream: http.ServerResponse | undefined;
+      let reconnected!: () => void;
+      const reconnect = new Promise<void>((resolve) => {
+        reconnected = resolve;
+      });
+      const server = http.createServer((req, res) => {
+        requests.push(req.headers);
+        stream = res;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write('retry: 10\nevent: endpoint\ndata: /messages\n\n');
+        if (requests.length === 2) {
+          reconnected();
+        }
+      });
+      const close = trackSockets(server);
+      const port = await getFreePort();
+      await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+      const config = {
+        type: 'sse' as const,
+        url: `http://127.0.0.1:${port}/sse`,
+        headers: {
+          Authorization: 'Bearer old-token',
+          'X-Access-Token': 'old-token',
+          'X-Operator': 'configured',
+        },
+      };
+      conn = new MCPConnection({
+        serverName: 'sse-live-bearer',
+        serverConfig: config,
+        useSSRFProtection: false,
+        directBearerRecoveryEnabled,
+      });
+      const transport = await conn['constructTransport'](config);
+      try {
+        await transport.start();
+        conn.setRequestHeaders({
+          AUTHORIZATION: 'Bearer fresh-token',
+          'X-Access-Token': 'fresh-token',
+          'X-Request': 'private',
+        });
+        stream?.end();
+        await reconnect;
+        expect(requests[0].authorization).toBe('Bearer old-token');
+        expect(requests[1].authorization).toBe(
+          directBearerRecoveryEnabled ? 'Bearer fresh-token' : 'Bearer old-token',
+        );
+        expect(requests[1]['x-operator']).toBe('configured');
+        expect(requests[1]['x-access-token']).toBe(
+          directBearerRecoveryEnabled ? 'fresh-token' : 'old-token',
+        );
+        expect(requests[1]['x-request']).toBeUndefined();
+      } finally {
+        await transport.close();
+        await close();
+      }
+    },
+  );
 
   afterEach(async () => {
     if (originalMaxResponseBytes == null) {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import { Button } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
 import { CSSTransition } from 'react-transition-group';
@@ -17,6 +18,7 @@ import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import Container from '~/components/Chat/Messages/Content/Container';
 import { EmptyText } from '~/components/Chat/Messages/Content/Parts';
 import ScrollToBottom from '~/components/Messages/ScrollToBottom';
+import { showThinkingAtom } from '~/store/showThinking';
 import { useChatSurface } from './surface';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -78,12 +80,27 @@ function SubagentControlHistory({
             key={control.invocationId}
             className="rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-sm"
           >
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <StatusIcon size={14} aria-hidden className="shrink-0 text-text-secondary" />
-              <span className="font-medium">{localize(CONTROL_ACTION_LABELS[control.action])}</span>
-              <span className="ml-auto text-xs text-text-secondary" aria-live="polite">
+              <span className="min-w-0 flex-1 font-medium">
+                {localize(CONTROL_ACTION_LABELS[control.action])}
+              </span>
+              <span className="ml-auto shrink-0 text-xs text-text-secondary" aria-live="polite">
                 {localize(CONTROL_STATUS_LABELS[control.status])}
               </span>
+              {control.status === 'accepted' &&
+                control.controlId != null &&
+                onCancelControl != null && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => onCancelControl(control.controlId as string)}
+                  >
+                    {localize('com_ui_subagent_control_withdraw')}
+                  </Button>
+                )}
             </div>
             {control.message != null && control.message !== '' && (
               <div className="mt-1 break-words text-text-secondary">
@@ -103,19 +120,6 @@ function SubagentControlHistory({
                 )}
               </div>
             )}
-            {control.status === 'accepted' &&
-              control.controlId != null &&
-              onCancelControl != null && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="mt-1 h-7 px-2 text-xs"
-                  onClick={() => onCancelControl(control.controlId as string)}
-                >
-                  {localize('com_ui_subagent_control_withdraw')}
-                </Button>
-              )}
           </div>
         );
       })}
@@ -139,7 +143,7 @@ export function SubagentActivityScrollSurface({
   const scrollButtonRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [isSettled, setIsSettled] = useState(false);
-  const { showScrollButton: scrollButtonPreference } = useChatSurface();
+  const { showScrollButton: scrollButtonPreference, maximizeChatSpace } = useChatSurface();
 
   useEffect(() => {
     const scroll = scrollRef.current;
@@ -192,6 +196,7 @@ export function SubagentActivityScrollSurface({
         <ScrollToBottom
           ref={scrollButtonRef}
           scrollHandler={scrollToBottom}
+          maximizeChatSpace={maximizeChatSpace}
           interactive={isSettled}
         />
       </CSSTransition>
@@ -322,6 +327,7 @@ export function SubagentActivityContent({
   onCancelControl?: (controlId: string) => void;
 }) {
   const localize = useLocalize();
+  const showThinking = useAtomValue(showThinkingAtom);
   const isSubmitting = isLiveSubagentStatus(activity.status);
   const parts = useMemo(() => activity.items.map(toContentPart), [activity.items]);
 
@@ -353,7 +359,9 @@ export function SubagentActivityContent({
         isCreatedByUser={false}
         isLast
         isSubmitting={isSubmitting}
+        showThinking={showThinking}
         isLatestMessage={isSubmitting}
+        foldLiveActivity={false}
       />
     );
   }

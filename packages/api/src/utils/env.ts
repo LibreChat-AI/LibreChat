@@ -10,6 +10,7 @@ import {
   processOpenIDPlaceholders,
   OpenIDReauthRequiredError,
 } from './oidc';
+import { getAdminApiKeyHeader } from '~/mcp/headers';
 
 /**
  * Provenance marker for MCP servers contributed by an Agent Plugins package.
@@ -417,36 +418,13 @@ export function processMCPEnv(params: {
 
   const newObj: MCPOptions = structuredClone(options);
 
-  // Apply admin-provided API key to headers at runtime
-  // Note: User-provided keys use {{MCP_API_KEY}} placeholder in headers,
-  // which is processed later via customUserVars replacement
-  if ('apiKey' in newObj && newObj.apiKey) {
-    const apiKeyConfig = newObj.apiKey as {
-      key?: string;
-      source: 'admin' | 'user';
-      authorization_type: 'basic' | 'bearer' | 'custom';
-      custom_header?: string;
+  const adminHeader = getAdminApiKeyHeader(newObj.apiKey);
+  if (adminHeader) {
+    const objWithHeaders = newObj as { headers?: Record<string, string> };
+    objWithHeaders.headers = {
+      ...objWithHeaders.headers,
+      [adminHeader.name]: adminHeader.value,
     };
-
-    if (apiKeyConfig.source === 'admin' && apiKeyConfig.key) {
-      const { key, authorization_type, custom_header } = apiKeyConfig;
-      const headerName =
-        authorization_type === 'custom' ? custom_header || 'X-Api-Key' : 'Authorization';
-
-      let headerValue = key;
-      if (authorization_type === 'basic') {
-        headerValue = `Basic ${key}`;
-      } else if (authorization_type === 'bearer') {
-        headerValue = `Bearer ${key}`;
-      }
-
-      // Initialize headers if needed and add the API key header (overwrites if header already exists)
-      const objWithHeaders = newObj as { headers?: Record<string, string> };
-      if (!objWithHeaders.headers) {
-        objWithHeaders.headers = {};
-      }
-      objWithHeaders.headers[headerName] = headerValue;
-    }
   }
 
   if ('env' in newObj && newObj.env) {

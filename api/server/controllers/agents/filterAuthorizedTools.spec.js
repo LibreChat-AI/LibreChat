@@ -371,7 +371,7 @@ describe('MCP Tool Authorization', () => {
     });
 
     test('should preserve an existing MCP tool key with multiple delimiters when registry is unavailable', async () => {
-      // Regression test for https://github.com/danny-avila/LibreChat/issues/14440:
+      // Regression test for https://github.com/LibreChat-AI/LibreChat/issues/14440:
       // a tool key with more than one delimiter occurrence is not inherently
       // malformed - it just means the raw tool-name half (everything before
       // the *last* delimiter) itself contains the delimiter substring, which
@@ -434,7 +434,7 @@ describe('MCP Tool Authorization', () => {
     });
 
     test('should resolve MCP tool keys with multiple delimiters using the last segment as the server name', async () => {
-      // Regression test for https://github.com/danny-avila/LibreChat/issues/14440.
+      // Regression test for https://github.com/LibreChat-AI/LibreChat/issues/14440.
       // A tool key with more than one delimiter occurrence is not inherently
       // malformed - it means the raw tool-name half (the part before the
       // *last* delimiter, which is always the segment LibreChat itself

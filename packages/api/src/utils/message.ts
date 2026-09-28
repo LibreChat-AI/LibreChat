@@ -12,8 +12,13 @@ type GetMessagesByParentId = (
 /** Fields to strip from files before client transmission */
 const FILE_STRIP_FIELDS = ['text', '_id', '__v'] as const;
 
-/** Fields to strip from messages before client transmission */
-const MESSAGE_STRIP_FIELDS = ['fileContext'] as const;
+/** Fields to strip from messages before client transmission.
+ * Both are prompt-building inputs: `fileContext` is text extracted from
+ * attachments and `image_urls` holds base64 image inputs. Terminal events are
+ * additionally projected centrally by `projectTerminalEvent`; this stays as
+ * defense in depth for the non-terminal senders (`error.js`,
+ * `abortMiddleware.js`). */
+const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
 
 /**
  * Strips large/unnecessary fields from a file object before transmitting to client.
@@ -63,7 +68,8 @@ export function buildMessageFiles<T extends Partial<TFile>>(
 
 /**
  * Sanitizes a message object before transmitting to client.
- * Removes large fields like `fileContext` and strips `text` from embedded files.
+ * Removes prompt-building fields (`fileContext`, `image_urls`) and strips
+ * `text` from embedded files.
  *
  * @param message - The message object to sanitize
  * @returns A new message object safe for client transmission

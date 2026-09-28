@@ -332,6 +332,7 @@ describe('User Methods - Database Tests', () => {
       const balance = await Balance.findOne({ user: userId });
       expect(balance).toBeDefined();
       expect(balance?.tokenCredits).toBe(1000);
+      expect(balance?._id.toString()).toBe(userId.toString());
     });
   });
 

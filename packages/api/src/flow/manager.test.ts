@@ -1,5 +1,5 @@
 import { Keyv } from 'keyv';
-import { FlowStateManager, PENDING_STALE_MS } from './manager';
+import { FlowStateManager, FlowStateNotFoundError, PENDING_STALE_MS } from './manager';
 import { FlowState } from './types';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -48,7 +48,218 @@ describe('FlowStateManager', () => {
     jest.clearAllMocks();
   });
 
+  it.each([false, true])(
+    'preserves named failures across serialized stores (guarded: %s)',
+    async (guarded) => {
+      jest.useFakeTimers();
+      const keyv = new Keyv({ serialize: JSON.stringify, deserialize: JSON.parse });
+      const owner = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      const peer = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      try {
+        await owner.initFlow('refresh', 'mcp_get_tokens');
+        const flow = await owner.getFlowState('refresh', 'mcp_get_tokens');
+        const waiting = peer.createFlowWithHandler(
+          'refresh',
+          'mcp_get_tokens',
+          async () => 'unexpected',
+        );
+        const result = waiting.catch((error: Error) => error);
+        const expected = {
+          name: 'MCPTokenRefreshUnavailableError',
+          message: 'retry later',
+        };
+        await Promise.resolve();
+        const error = new Error('retry later');
+        error.name = 'MCPTokenRefreshUnavailableError';
+        if (guarded) {
+          await owner.failFlowIfCurrent('refresh', 'mcp_get_tokens', flow!.createdAt, '', error);
+        } else {
+          await owner.failFlow('refresh', 'mcp_get_tokens', error);
+        }
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(await result).toMatchObject(expected);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
   describe('Concurrency Tests', () => {
+    it('atomically updates the default in-memory Keyv envelope', async () => {
+      const keyv = new Keyv({
+        namespace: 'flow-atomic-test',
+        serialize: JSON.stringify,
+        deserialize: JSON.parse,
+      });
+      const manager = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      await manager.initFlow('oauth-flow', 'mcp_oauth', { state: 'expected-state' });
+      const flow = await manager.getFlowState('oauth-flow', 'mcp_oauth');
+
+      await expect(
+        manager.failFlowIfCurrent(
+          'oauth-flow',
+          'mcp_oauth',
+          flow!.createdAt,
+          'expected-state',
+          'cancelled',
+        ),
+      ).resolves.toBe('updated');
+
+      expect(await manager.getFlowState('oauth-flow', 'mcp_oauth')).toMatchObject({
+        status: 'FAILED',
+        error: 'cancelled',
+      });
+    });
+
+    it('treats an expired in-memory envelope as missing during a guarded mutation', async () => {
+      const keyv = new Keyv({
+        namespace: 'flow-expiry-test',
+        serialize: JSON.stringify,
+        deserialize: JSON.parse,
+      });
+      const manager = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      await manager.initFlow('oauth-flow', 'mcp_oauth', { state: 'expected-state' });
+      const flow = await manager.getFlowState('oauth-flow', 'mcp_oauth');
+      const memoryStore = keyv.store as Map<string, string>;
+      const [storedKey, raw] = [...memoryStore.entries()][0];
+      const envelope = JSON.parse(raw);
+      envelope.expires = Date.now() - 1;
+      memoryStore.set(storedKey, JSON.stringify(envelope));
+
+      await expect(
+        manager.completeFlowIfCurrent(
+          'oauth-flow',
+          'mcp_oauth',
+          flow!.createdAt,
+          'expected-state',
+          'late-result',
+        ),
+      ).resolves.toBe('missing');
+      expect(memoryStore.has(storedKey)).toBe(false);
+    });
+
+    it('does not delete a replacement OAuth attempt', async () => {
+      await flowManager.initFlow('oauth-flow', 'mcp_oauth', { state: 'new-state' });
+
+      await expect(
+        flowManager.deleteFlowIfCurrent('oauth-flow', 'mcp_oauth', 1, 'old-state'),
+      ).resolves.toBe('stale');
+
+      expect(await flowManager.getFlowState('oauth-flow', 'mcp_oauth')).toMatchObject({
+        status: 'PENDING',
+        metadata: { state: 'new-state' },
+      });
+    });
+
+    it('does not complete a replacement OAuth attempt', async () => {
+      await flowManager.initFlow('oauth-flow', 'mcp_oauth', { state: 'new-state' });
+
+      await expect(
+        flowManager.completeFlowIfCurrent('oauth-flow', 'mcp_oauth', 1, 'old-state', 'old-result'),
+      ).resolves.toBe('stale');
+
+      expect(await flowManager.getFlowState('oauth-flow', 'mcp_oauth')).toMatchObject({
+        status: 'PENDING',
+        metadata: { state: 'new-state' },
+      });
+    });
+
+    it('does not overwrite an already completed OAuth attempt', async () => {
+      await flowManager.initFlow('oauth-flow', 'mcp_oauth', { state: 'expected-state' });
+      const flow = await flowManager.getFlowState('oauth-flow', 'mcp_oauth');
+      await flowManager.completeFlow('oauth-flow', 'mcp_oauth', 'first-result');
+
+      await expect(
+        flowManager.completeFlowIfCurrent(
+          'oauth-flow',
+          'mcp_oauth',
+          flow!.createdAt,
+          'expected-state',
+          'second-result',
+        ),
+      ).resolves.toBe('stale');
+
+      expect(await flowManager.getFlowState('oauth-flow', 'mcp_oauth')).toMatchObject({
+        status: 'COMPLETED',
+        result: 'first-result',
+      });
+    });
+
+    it('settles a fresher result over a completion from the same observed attempt', async () => {
+      await flowManager.initFlow('token-flow', 'mcp_get_tokens');
+      const flow = await flowManager.getFlowState('token-flow', 'mcp_get_tokens');
+      await flowManager.completeFlow('token-flow', 'mcp_get_tokens', 'old-token');
+
+      await expect(
+        flowManager.settleFlowIfCurrent(
+          'token-flow',
+          'mcp_get_tokens',
+          flow!.createdAt,
+          '',
+          'fresh-token',
+        ),
+      ).resolves.toBe('updated');
+
+      expect(await flowManager.getFlowState('token-flow', 'mcp_get_tokens')).toMatchObject({
+        status: 'COMPLETED',
+        result: 'fresh-token',
+      });
+    });
+
+    it('settles a fresher result over a failure from the same observed attempt', async () => {
+      await flowManager.initFlow('token-flow', 'mcp_get_tokens');
+      const flow = await flowManager.getFlowState('token-flow', 'mcp_get_tokens');
+      await flowManager.failFlow('token-flow', 'mcp_get_tokens', new Error('stale failure'));
+
+      await expect(
+        flowManager.settleFlowIfCurrent(
+          'token-flow',
+          'mcp_get_tokens',
+          flow!.createdAt,
+          '',
+          'fresh-token',
+        ),
+      ).resolves.toBe('updated');
+
+      expect(await flowManager.getFlowState('token-flow', 'mcp_get_tokens')).toMatchObject({
+        status: 'COMPLETED',
+        result: 'fresh-token',
+      });
+    });
+
+    it('does not settle a replacement token-flow attempt', async () => {
+      await flowManager.initFlow('token-flow', 'mcp_get_tokens');
+
+      await expect(
+        flowManager.settleFlowIfCurrent('token-flow', 'mcp_get_tokens', 1, '', 'old-token'),
+      ).resolves.toBe('stale');
+
+      expect(await flowManager.getFlowState('token-flow', 'mcp_get_tokens')).toMatchObject({
+        status: 'PENDING',
+      });
+    });
+
+    it('fails only the observed OAuth attempt', async () => {
+      await flowManager.initFlow('oauth-flow', 'mcp_oauth', { state: 'expected-state' });
+      const flow = await flowManager.getFlowState('oauth-flow', 'mcp_oauth');
+
+      await expect(
+        flowManager.failFlowIfCurrent(
+          'oauth-flow',
+          'mcp_oauth',
+          flow!.createdAt,
+          'expected-state',
+          'cancelled',
+        ),
+      ).resolves.toBe('updated');
+
+      expect(await flowManager.getFlowState('oauth-flow', 'mcp_oauth')).toMatchObject({
+        status: 'FAILED',
+        error: 'cancelled',
+        metadata: { state: 'expected-state' },
+      });
+    });
+
     it('should handle concurrent flow creation and return same result', async () => {
       const flowId = 'test-flow';
       const type = 'test-type';
@@ -87,6 +298,35 @@ describe('FlowStateManager', () => {
           result: 'fresh-result',
         }),
       );
+    });
+
+    it('should return the externally completed result when handler loses failure race', async () => {
+      const flowId = 'failure-race-flow';
+      const type = 'test-type';
+
+      const result = await flowManager.createFlowWithHandler(flowId, type, async () => {
+        await flowManager.completeFlow(flowId, type, 'fresh-result');
+        throw new Error('stale failure');
+      });
+
+      expect(result).toBe('fresh-result');
+    });
+
+    it('should re-read completion that wins after its guarded failure write', async () => {
+      const flowId = 'post-failure-race-flow';
+      const type = 'test-type';
+      const originalFail = flowManager.failFlowIfCurrent.bind(flowManager);
+      jest.spyOn(flowManager, 'failFlowIfCurrent').mockImplementation(async (...args) => {
+        const failureResult = await originalFail(...args);
+        await flowManager.settleFlowIfCurrent(flowId, type, args[2], args[3], 'fresh-result');
+        return failureResult;
+      });
+
+      const result = await flowManager.createFlowWithHandler(flowId, type, async () => {
+        throw new Error('stale failure');
+      });
+
+      expect(result).toBe('fresh-result');
     });
 
     it('should handle flow timeout correctly', async () => {
@@ -304,6 +544,15 @@ describe('FlowStateManager', () => {
     });
   });
 
+  it('does not recreate a missing flow when monitoring a published attempt', async () => {
+    await expect(
+      flowManager.createFlow('deleted-oauth-flow', 'mcp_oauth', {}, undefined, false),
+    ).rejects.toThrow('mcp_oauth flow not found');
+    await expect(
+      flowManager.getFlowState('deleted-oauth-flow', 'mcp_oauth'),
+    ).resolves.toBeUndefined();
+  });
+
   describe('deleteFlow', () => {
     const flowId = 'test-flow-123';
     const type = 'test-type';
@@ -357,6 +606,142 @@ describe('FlowStateManager', () => {
         ci: true,
       });
     });
+
+    it('serves a completed result without waiting on the monitor interval', async () => {
+      const completedResult: TokenResult = {
+        access_token: 'cached_token',
+        refresh_token: 'refresh_token',
+        expires_at: Date.now() + 3600000,
+      };
+      await tokenStore.set(flowKey, {
+        type,
+        status: 'COMPLETED',
+        metadata: {},
+        createdAt: Date.now() - 5000,
+        completedAt: Date.now() - 4000,
+        result: completedResult,
+      } as FlowState<TokenResult>);
+      const handlerSpy = jest.fn();
+
+      const startedAt = Date.now();
+      await expect(
+        tokenFlowManager.createFlowWithHandler(flowId, type, handlerSpy),
+      ).resolves.toEqual(completedResult);
+
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+      expect(handlerSpy).not.toHaveBeenCalled();
+    });
+
+    it('replaces a failure nobody retains instead of waiting on it', async () => {
+      await tokenStore.set(flowKey, {
+        type,
+        status: 'FAILED',
+        metadata: {},
+        createdAt: Date.now() - 5000,
+        failedAt: Date.now() - 4000,
+        error: 'earlier attempt failed',
+      } as FlowState<TokenResult>);
+      const freshResult: TokenResult = { access_token: 'fresh_token', refresh_token: 'refresh' };
+      const handlerSpy = jest.fn().mockResolvedValue(freshResult);
+
+      await expect(
+        tokenFlowManager.createFlowWithHandler(flowId, type, handlerSpy),
+      ).resolves.toEqual(freshResult);
+
+      expect(handlerSpy).toHaveBeenCalledTimes(1);
+      await expect(tokenFlowManager.getFlowState(flowId, type)).resolves.toEqual(
+        expect.objectContaining({ status: 'COMPLETED', result: freshResult }),
+      );
+    });
+
+    it('still reports a retained failure to a later attempt', async () => {
+      const retainingManager = new FlowStateManager<TokenResult>(tokenStore as unknown as Keyv, {
+        ttl: 30000,
+        retainedFailureTypes: [type],
+        ci: true,
+      });
+      await tokenStore.set(flowKey, {
+        type,
+        status: 'FAILED',
+        metadata: {},
+        createdAt: Date.now() - 5000,
+        failedAt: Date.now() - 4000,
+        error: 'earlier attempt failed',
+      } as FlowState<TokenResult>);
+      const handlerSpy = jest.fn();
+
+      await expect(
+        retainingManager.createFlowWithHandler(flowId, type, handlerSpy),
+      ).rejects.toThrow('earlier attempt failed');
+
+      expect(handlerSpy).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('rejects with FlowStateNotFoundError when the pending flow it joined disappears', async () => {
+      await tokenStore.set(flowKey, {
+        type,
+        status: 'PENDING',
+        metadata: {},
+        createdAt: Date.now(),
+      } as FlowState<TokenResult>);
+      const handlerSpy = jest.fn();
+
+      const joined = tokenFlowManager.createFlowWithHandler(flowId, type, handlerSpy);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await tokenFlowManager.deleteFlow(flowId, type);
+
+      await expect(joined).rejects.toBeInstanceOf(FlowStateNotFoundError);
+      await expect(joined).rejects.toThrow('mcp_get_tokens Flow state not found');
+      expect(handlerSpy).not.toHaveBeenCalled();
+    }, 15000);
+
+    it('rejects instead of serving a completed result to an aborted caller', async () => {
+      await tokenStore.set(flowKey, {
+        type,
+        status: 'COMPLETED',
+        metadata: {},
+        createdAt: Date.now() - 5000,
+        completedAt: Date.now() - 4000,
+        result: { access_token: 'cached_token', refresh_token: 'refresh' },
+      } as FlowState<TokenResult>);
+      const handlerSpy = jest.fn();
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        tokenFlowManager.createFlowWithHandler(flowId, type, handlerSpy, controller.signal),
+      ).rejects.toThrow('mcp_get_tokens flow aborted');
+
+      expect(handlerSpy).not.toHaveBeenCalled();
+    });
+
+    it('leaves the shared flow in place when a joiner aborts', async () => {
+      await tokenStore.set(flowKey, {
+        type,
+        status: 'PENDING',
+        metadata: {},
+        createdAt: Date.now(),
+      } as FlowState<TokenResult>);
+      const controller = new AbortController();
+      const joiner = tokenFlowManager.createFlowWithHandler(
+        flowId,
+        type,
+        jest.fn(),
+        controller.signal,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      controller.abort();
+
+      await expect(joiner).rejects.toThrow('mcp_get_tokens flow aborted');
+      await expect(tokenFlowManager.getFlowState(flowId, type)).resolves.toEqual(
+        expect.objectContaining({ status: 'PENDING' }),
+      );
+
+      const settled: TokenResult = { access_token: 'settled_token', refresh_token: 'refresh' };
+      const otherWaiter = tokenFlowManager.createFlowWithHandler(flowId, type, jest.fn());
+      await tokenFlowManager.completeFlow(flowId, type, settled);
+      await expect(otherWaiter).resolves.toEqual(settled);
+    }, 15000);
 
     it('should execute handler when existing flow has expired token', async () => {
       const expiredTokenResult: TokenResult = {
@@ -922,6 +1307,65 @@ describe('FlowStateManager', () => {
     });
   });
 
+  describe('createFlowWithHandler - atomic attempt claims', () => {
+    const type = 'mcp_get_tokens';
+    let claimingManager: FlowStateManager<string>;
+
+    beforeEach(() => {
+      const keyv = new Keyv({
+        namespace: `flow-claim-${Date.now()}`,
+        serialize: JSON.stringify,
+        deserialize: JSON.parse,
+      });
+      claimingManager = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+    });
+
+    const slowHandler = (result: string) =>
+      jest.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return result;
+      });
+
+    it('runs one handler when concurrent attempts replace a failure from the same millisecond', async () => {
+      const flowId = 'claimed-after-failure';
+      /** A replacement created in the same millisecond as the failure shares its `createdAt`. */
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      try {
+        await expect(
+          claimingManager.createFlowWithHandler(flowId, type, async () => {
+            throw new Error('earlier attempt failed');
+          }),
+        ).rejects.toThrow('earlier attempt failed');
+        const first = slowHandler('first');
+        const second = slowHandler('second');
+
+        const results = await Promise.all([
+          claimingManager.createFlowWithHandler(flowId, type, first),
+          claimingManager.createFlowWithHandler(flowId, type, second),
+        ]);
+
+        expect(new Set(results).size).toBe(1);
+        expect(first.mock.calls.length + second.mock.calls.length).toBe(1);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    }, 15000);
+
+    it('runs one handler when concurrent attempts create the same absent flow', async () => {
+      const flowId = 'claimed-when-absent';
+      const first = slowHandler('first');
+      const second = slowHandler('second');
+
+      const results = await Promise.all([
+        claimingManager.createFlowWithHandler(flowId, type, first),
+        claimingManager.createFlowWithHandler(flowId, type, second),
+      ]);
+
+      expect(new Set(results).size).toBe(1);
+      expect(first.mock.calls.length + second.mock.calls.length).toBe(1);
+    }, 15000);
+  });
+
   describe('isFlowStale', () => {
     const flowId = 'test-flow-stale';
     const type = 'test-type';
@@ -1129,6 +1573,70 @@ describe('FlowStateManager', () => {
       // Should use failedAt (30s) not createdAt (10m)
       expect(result.isStale).toBe(false);
       expect(result.age).toBeLessThan(60 * 1000);
+    });
+  });
+
+  describe('cross-replica leases', () => {
+    it('rejects stale work after teardown advances the generation', async () => {
+      const generation = await flowManager.getLeaseGeneration('user:server');
+      if (generation === null) {
+        throw new Error('lease unexpectedly active');
+      }
+      const teardown = await flowManager.acquireLease('user:server', {
+        advanceGeneration: true,
+      });
+
+      expect(teardown?.generation).toBe(generation + 1);
+      await expect(flowManager.getLeaseGeneration('user:server')).resolves.toBeNull();
+      await teardown?.release();
+      await expect(
+        flowManager.acquireLease('user:server', { expectedGeneration: generation }),
+      ).resolves.toBeNull();
+    });
+
+    it('serializes holders and preserves the generation after release', async () => {
+      const first = await flowManager.acquireLease('shared-owner');
+      expect(first).not.toBeNull();
+      await expect(flowManager.getLeaseGeneration('shared-owner')).resolves.toBe(first?.generation);
+      await expect(flowManager.acquireLease('shared-owner', { waitMs: 0 })).resolves.toBeNull();
+
+      await first?.release();
+      const second = await flowManager.acquireLease('shared-owner', {
+        expectedGeneration: first?.generation,
+      });
+      expect(second?.generation).toBe(first?.generation);
+      await second?.release();
+    });
+
+    it('expires released in-memory generations after the stale-work horizon', async () => {
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      const teardown = await flowManager.acquireLease('expiring-owner', {
+        advanceGeneration: true,
+      });
+      await teardown?.release();
+      expect(await flowManager.getLeaseGeneration('expiring-owner')).toBe(1);
+
+      clock.mockReturnValue(now + 24 * 60 * 60_000 + 1);
+      expect(await flowManager.getLeaseGeneration('expiring-owner')).toBe(0);
+      clock.mockRestore();
+    });
+
+    it('treats an active pre-purpose lease as teardown during rolling upgrades', async () => {
+      const leases = (
+        FlowStateManager as unknown as {
+          inMemoryLeases: Map<string, Record<string, unknown>>;
+        }
+      ).inMemoryLeases;
+      leases.set('lease:legacy-owner', {
+        generation: 4,
+        owner: 'old-replica',
+        leaseUntil: Date.now() + 60_000,
+        expiresAt: Date.now() + 60_000,
+      });
+
+      await expect(flowManager.getLeaseGeneration('legacy-owner')).resolves.toBeNull();
+      leases.delete('lease:legacy-owner');
     });
   });
 });

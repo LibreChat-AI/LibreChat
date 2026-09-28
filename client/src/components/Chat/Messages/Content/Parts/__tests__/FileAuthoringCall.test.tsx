@@ -29,12 +29,17 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
     phase,
     inProgressText,
     finishedText,
+    icon,
   }: {
     phase: 'running' | 'completed' | 'cancelled' | 'failed';
     inProgressText: string;
     finishedText: string;
+    icon: React.ReactNode;
   }) => (
-    <div data-testid="progress-text">{phase === 'running' ? inProgressText : finishedText}</div>
+    <div data-testid="progress-text">
+      {icon}
+      {phase === 'running' ? inProgressText : finishedText}
+    </div>
   ),
 }));
 
@@ -132,6 +137,7 @@ describe('FileAuthoringCall', () => {
     );
 
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Updated SKILL.md');
+    expect(document.querySelector('.lucide-file-pen-line')).not.toBeNull();
   });
 
   it('prefers the output diff over the args preview after edit_file completes', () => {
@@ -158,9 +164,8 @@ describe('FileAuthoringCall', () => {
       />,
     );
 
-    const preview = screen.getByText((_, element) => element?.tagName.toLowerCase() === 'code');
-    expect(preview).toHaveTextContent('-old line');
-    expect(preview).toHaveTextContent('+new line');
+    expect(screen.getByText('old line')).toBeInTheDocument();
+    expect(screen.getByText('new line')).toBeInTheDocument();
     expect(screen.queryByText(/--- old_text/)).not.toBeInTheDocument();
   });
 
@@ -179,9 +184,8 @@ describe('FileAuthoringCall', () => {
       />,
     );
 
-    const preview = screen.getByText((_, element) => element?.tagName.toLowerCase() === 'code');
-    expect(preview).toHaveTextContent('-missing text');
-    expect(preview).toHaveTextContent('+replacement');
+    expect(screen.getByText('missing text')).toBeInTheDocument();
+    expect(screen.getByText('replacement')).toBeInTheDocument();
     expect(screen.getByText(/matched 0 locations/)).toBeInTheDocument();
   });
 
@@ -201,12 +205,10 @@ describe('FileAuthoringCall', () => {
     );
 
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Editing SKILL.md');
-    expect(screen.getByTestId('code-window-header')).toHaveAttribute('data-language', 'diff');
-    const preview = screen.getByText((_, element) => element?.tagName.toLowerCase() === 'code');
-    expect(preview).toHaveTextContent('--- old_text');
-    expect(preview).toHaveTextContent('+++ new_text');
-    expect(preview).toHaveTextContent('-description: Old behavior');
-    expect(preview).toHaveTextContent('+description: New behavior');
+    expect(screen.getByTestId('code-window-header')).toHaveAttribute('data-language', 'SKILL.md');
+    expect(screen.queryByText(/--- old_text/)).not.toBeInTheDocument();
+    expect(screen.getByText('description: Old behavior')).toBeInTheDocument();
+    expect(screen.getByText('description: New behavior')).toBeInTheDocument();
   });
 
   it('streams create_file content from partial JSON string args during run_step_delta', () => {
@@ -238,9 +240,8 @@ describe('FileAuthoringCall', () => {
       />,
     );
 
-    const preview = screen.getByText((_, element) => element?.tagName.toLowerCase() === 'code');
-    expect(preview).toHaveTextContent('-description: Old behavior');
-    expect(preview).toHaveTextContent('+description: New beh');
+    expect(screen.getByText('description: Old behavior')).toBeInTheDocument();
+    expect(screen.getByText('description: New beh')).toBeInTheDocument();
   });
 
   it('streams batched edit_file previews from a partial edits array', () => {
@@ -258,13 +259,12 @@ describe('FileAuthoringCall', () => {
       />,
     );
 
-    const preview = screen.getByText((_, element) => element?.tagName.toLowerCase() === 'code');
-    expect(preview).toHaveTextContent('--- old_text 1');
-    expect(preview).toHaveTextContent('-first old');
-    expect(preview).toHaveTextContent('+first new');
-    expect(preview).toHaveTextContent('--- old_text 2');
-    expect(preview).toHaveTextContent('-second old');
-    expect(preview).toHaveTextContent('+second n');
+    const diff = screen.getByTestId('diff-view');
+    expect(screen.getByText('first old')).toBeInTheDocument();
+    expect(screen.getByText('first new')).toBeInTheDocument();
+    expect(screen.getByText('second old')).toBeInTheDocument();
+    expect(screen.getByText('second n')).toBeInTheDocument();
+    expect(diff).toBeInTheDocument();
   });
 
   it('shows batched edit_file replacements from edits args while the call is in progress', () => {
@@ -284,11 +284,56 @@ describe('FileAuthoringCall', () => {
       />,
     );
 
-    const preview = screen.getByText((_, element) => element?.tagName.toLowerCase() === 'code');
-    expect(preview).toHaveTextContent('--- old_text 1');
-    expect(preview).toHaveTextContent('+++ new_text 2');
-    expect(preview).toHaveTextContent('-first old');
-    expect(preview).toHaveTextContent('+second new');
+    expect(screen.getByText('first old')).toBeInTheDocument();
+    expect(screen.getByText('second new')).toBeInTheDocument();
+  });
+  it('renders replacements from a JSON-stringified edits batch after workspace update', () => {
+    render(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={{
+          file_path: 'workspace/demo/SKILL.md',
+          edits: JSON.stringify([
+            { old_text: 'description: Old behavior', new_text: 'description: New behavior' },
+            { old_text: 'status: draft', new_text: 'status: published' },
+          ]),
+        }}
+        output="Updated workspace/demo/SKILL.md with 2 exact replacements."
+      />,
+    );
+
+    expect(screen.getByText('description: Old behavior')).toBeInTheDocument();
+    expect(screen.getByText('description: New behavior')).toBeInTheDocument();
+    expect(screen.getByText('status: draft')).toBeInTheDocument();
+    expect(screen.getByText('status: published')).toBeInTheDocument();
+    expect(
+      screen.getByText('Updated workspace/demo/SKILL.md with 2 exact replacements.'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders replacements from JSON-stringified edits entries after workspace update', () => {
+    render(
+      <FileAuthoringCall
+        toolName="edit_file"
+        initialProgress={1}
+        isSubmitting={false}
+        args={{
+          file_path: 'workspace/demo/SKILL.md',
+          edits: [
+            JSON.stringify({ old_text: 'enabled: false', new_text: 'enabled: true' }),
+            JSON.stringify({ old_text: 'tier: free', new_text: 'tier: pro' }),
+          ],
+        }}
+        output="Updated workspace/demo/SKILL.md with 2 exact replacements."
+      />,
+    );
+
+    expect(screen.getByText('enabled: false')).toBeInTheDocument();
+    expect(screen.getByText('enabled: true')).toBeInTheDocument();
+    expect(screen.getByText('tier: free')).toBeInTheDocument();
+    expect(screen.getByText('tier: pro')).toBeInTheDocument();
   });
 });
 

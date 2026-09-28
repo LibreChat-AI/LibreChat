@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
 import { AsyncLocalStorage } from 'async_hooks';
-import { CacheKeys, PrincipalType } from 'librechat-data-provider';
+import { CacheKeys, PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { TPrincipalSearchResult } from 'librechat-data-provider';
 import type { Model, ClientSession, FilterQuery } from 'mongoose';
 import type { CacheStore, IGroup, IRole, IUser } from '~/types';
@@ -1077,7 +1077,7 @@ export function createUserGroupMethods(
   function transformUserToTPrincipalSearchResult(
     user: Pick<
       IUser,
-      'id' | 'name' | 'email' | 'username' | 'avatar' | 'provider' | 'idOnTheSource'
+      'id' | 'name' | 'email' | 'username' | 'avatar' | 'provider' | 'idOnTheSource' | 'role'
     >,
   ): TPrincipalSearchResult {
     return {
@@ -1090,6 +1090,7 @@ export function createUserGroupMethods(
       provider: user.provider,
       source: 'local',
       idOnTheSource: user.idOnTheSource || user.id,
+      isAdmin: user.role === SystemRoles.ADMIN,
     };
   }
 
@@ -1137,7 +1138,7 @@ export function createUserGroupMethods(
 
     if (!typeFilter || typeFilter.includes(PrincipalType.USER)) {
       /** Note: searchUsers is imported from ~/models and needs to be passed in or implemented */
-      const userFields = 'name email username avatar provider idOnTheSource';
+      const userFields = 'name email username avatar provider idOnTheSource role';
       /** For now, we'll use a direct query instead of searchUsers */
       const User = mongoose.models.User as Model<IUser>;
       const regex = new RegExp(escapedPattern, 'i');
@@ -1162,6 +1163,7 @@ export function createUserGroupMethods(
               avatar: user.avatar,
               provider: user.provider,
               idOnTheSource: user.idOnTheSource,
+              role: user.role,
             }),
           ),
         ),
@@ -1199,6 +1201,7 @@ export function createUserGroupMethods(
               name: role.name,
               source: 'local' as const,
               idOnTheSource: role.name,
+              isAdmin: role.name === SystemRoles.ADMIN,
             })),
           ),
         );

@@ -564,6 +564,94 @@ describe('OpenIDRefreshFlight', () => {
     expect(result).toEqual(tokens);
   });
 
+  it('waits for validated publication instead of returning deferred credentials', async () => {
+    db.findOpenIDRefreshFlight
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValueOnce({
+        status: 'completed',
+        ownerId: 'owner-1',
+        encryptedResult: 'encrypted:{"access_token":"unpublished","__deferredPublication":true}',
+      })
+      .mockResolvedValueOnce({
+        status: 'completed',
+        ownerId: 'owner-1',
+        encryptedResult: 'encrypted:{"access_token":"published"}',
+      });
+    await expect(
+      waitForOpenIDRefreshFlight({
+        key: 'flight-key',
+        requirePublication: true,
+        timeoutMs: 1000,
+        intervalMs: 1,
+      }),
+    ).resolves.toEqual({ access_token: 'published' });
+    expect(db.findOpenIDRefreshFlight).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(['before-read', 'during-read', 'during-delay'])(
+    'cancels publication polling %s without another database read',
+    async (phase) => {
+      const controller = new AbortController();
+      const reason = new Error('request stopped');
+      let finishRead;
+      db.findOpenIDRefreshFlight.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishRead = resolve;
+          }),
+      );
+      if (phase === 'before-read') controller.abort(reason);
+      const waiting = waitForOpenIDRefreshFlight({
+        key: 'publication-key',
+        requirePublication: true,
+        timeoutMs: 10000,
+        intervalMs: 5000,
+        signal: controller.signal,
+      });
+      const outcome = waiting.then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      if (phase !== 'before-read') {
+        if (phase === 'during-read') controller.abort(reason);
+        finishRead(null);
+        await new Promise((resolve) => setImmediate(resolve));
+        if (phase === 'during-delay') controller.abort(reason);
+      }
+      await expect(outcome).resolves.toEqual({ error: reason });
+      expect(db.findOpenIDRefreshFlight).toHaveBeenCalledTimes(phase === 'before-read' ? 0 : 1);
+    },
+  );
+
+  it('bounds the publication wait without returning an unvalidated result', async () => {
+    db.findOpenIDRefreshFlight.mockResolvedValue({
+      status: 'completed',
+      ownerId: 'owner-1',
+      expiresAt: new Date(Date.now() + 60000),
+      encryptedResult: 'encrypted:{"access_token":"unpublished","__deferredPublication":true}',
+    });
+    await expect(
+      waitForOpenIDRefreshFlight({
+        key: 'flight-key',
+        requirePublication: true,
+        timeoutMs: 5,
+        intervalMs: 1,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('keeps cross-worker pre-grant cancellation retryable rather than requiring sign-in', async () => {
+    db.findOpenIDRefreshFlight.mockResolvedValueOnce({
+      status: 'failed',
+      errorMessage: 'OPENID_REFRESH_CANCELLED_BEFORE_GRANT',
+    });
+    await expect(waitForOpenIDRefreshFlight({ key: 'flight-key' })).rejects.toMatchObject({
+      status: 503,
+      retryable: true,
+    });
+  });
+
   it('throws when another worker records a failed flight', async () => {
     db.findOpenIDRefreshFlight.mockResolvedValueOnce({
       status: 'failed',

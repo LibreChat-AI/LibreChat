@@ -1,5 +1,5 @@
 import React from 'react';
-import { Copy } from 'lucide-react';
+import { Copy } from 'lucide';
 import ActionButton from '~/components/Messages/Content/ActionButton';
 import { useLocalize } from '~/hooks';
 

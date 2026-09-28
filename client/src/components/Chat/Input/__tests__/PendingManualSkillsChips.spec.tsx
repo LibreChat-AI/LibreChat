@@ -31,11 +31,12 @@ describe('PendingManualSkillsChips', () => {
   });
 
   it('renders one chip per queued skill', () => {
-    renderWithSkills(['brand-guidelines', 'pptx']);
+    const { container } = renderWithSkills(['brand-guidelines', 'pptx']);
     const items = screen.getAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveTextContent('brand-guidelines');
     expect(items[1]).toHaveTextContent('pptx');
+    expect(container.querySelector('svg')).toHaveClass('text-status-info');
   });
 
   it('removes the chip when its × button is clicked', async () => {

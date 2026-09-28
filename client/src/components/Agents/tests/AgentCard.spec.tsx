@@ -185,6 +185,27 @@ describe('AgentCard', () => {
     expect(screen.getByText('A test agent for testing purposes')).toBeInTheDocument();
   });
 
+  it('renders an HTML description as plain text in the card and accessible label', () => {
+    render(
+      <Wrapper>
+        <AgentCard
+          agent={{
+            ...mockAgent,
+            description:
+              '<span>Assistant for projects. <a href="https://example.com">Read the guide</a></span>',
+          }}
+        />
+      </Wrapper>,
+    );
+
+    expect(screen.getByText('Assistant for projects. Read the guide')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Read the guide' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button')).toHaveAttribute(
+      'aria-label',
+      'Test Agent agent. Assistant for projects. Read the guide',
+    );
+  });
+
   it('displays avatar when provided as object', () => {
     render(
       <Wrapper>

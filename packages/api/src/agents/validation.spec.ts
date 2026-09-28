@@ -15,6 +15,42 @@ import {
   validateAgentModel,
 } from './validation';
 
+describe('agent Git identity validation', () => {
+  const base = { provider: 'openAI', model: 'gpt-4o-mini', tools: [] };
+
+  it('accepts and trims a valid commit identity', () => {
+    expect(
+      agentCreateSchema.parse({
+        ...base,
+        git_identity: { name: '  Coding Agent  ', email: '  agent@example.com  ' },
+      }).git_identity,
+    ).toEqual({ name: 'Coding Agent', email: 'agent@example.com' });
+  });
+
+  it('accepts a GitHub App bot noreply address for commit attribution', () => {
+    const git_identity = {
+      name: 'Lia',
+      email: '328778573+lia-by-librechat[bot]@users.noreply.github.com',
+    };
+    expect(agentCreateSchema.parse({ ...base, git_identity }).git_identity).toEqual(git_identity);
+  });
+
+  it.each([
+    { name: '', email: 'agent@example.com' },
+    { name: 'Coding Agent\nInjected', email: 'agent@example.com' },
+    { name: 'Coding Agent', email: 'not-an-email' },
+    { name: 'Coding Agent', email: 'lia-by-librechat[bot]@users.noreply.github.com' },
+    { name: 'Coding Agent', email: '328778573+lia-by-librechat[bot]@example.com' },
+  ])('rejects an unsafe or incomplete identity: %j', (git_identity) => {
+    expect(agentCreateSchema.safeParse({ ...base, git_identity }).success).toBe(false);
+  });
+
+  it('accepts null only when updating to clear a configured identity', () => {
+    expect(agentCreateSchema.safeParse({ ...base, git_identity: null }).success).toBe(false);
+    expect(agentUpdateSchema.parse({ git_identity: null })).toEqual({ git_identity: null });
+  });
+});
+
 describe('agentSubagentsSchema', () => {
   const graph = {
     type: 'research_team',
@@ -233,6 +269,17 @@ describe('agentCreateSchema with subagents', () => {
       subagents: { enabled: true, allowSelf: true, agent_ids: [] },
     });
     expect(result.success).toBe(true);
+  });
+
+  it.each([true, false])('preserves the explicit file sharing choice %s', (shareFiles) => {
+    const result = agentCreateSchema.parse({
+      ...base,
+      subagents: { enabled: true, shareFiles },
+    });
+    expect(result.subagents?.shareFiles).toBe(shareFiles);
+    expect(agentUpdateSchema.parse({ subagents: { shareFiles } }).subagents?.shareFiles).toBe(
+      shareFiles,
+    );
   });
 
   it('accepts the current-agent placeholder in a graph subagent', () => {

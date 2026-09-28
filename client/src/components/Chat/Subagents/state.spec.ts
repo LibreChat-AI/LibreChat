@@ -34,6 +34,19 @@ const update = (overrides: Partial<SubagentUpdateEvent> = {}): SubagentUpdateEve
 });
 
 describe('reduceSubagentProgress', () => {
+  it('retains graph kind when later frames omit identity metadata', () => {
+    const first = reduceSubagentProgress(null, [update({ subagentKind: 'graph' })]);
+    const next = reduceSubagentProgress(first, [
+      update({ activityEventId: 'activity-2', subagentKind: undefined }),
+    ]);
+    expect(next?.subagentKind).toBe('graph');
+    const batched = reduceSubagentProgress(null, [
+      update({ subagentKind: 'graph' }),
+      update({ activityEventId: 'activity-2', subagentKind: undefined }),
+    ]);
+    expect(batched?.subagentKind).toBe('graph');
+  });
+
   it('folds an event delivered by both parent and detached streams only once', () => {
     const event = update();
     const first = reduceSubagentProgress(null, [event]);

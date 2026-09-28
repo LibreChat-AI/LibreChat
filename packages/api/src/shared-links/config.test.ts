@@ -102,6 +102,23 @@ describe('isFileSnapshotEnabled', () => {
 });
 
 describe('buildSharedLinkStartupPayload', () => {
+  it.each([0, 100, 60000])(
+    'includes the configured highlight cadence %i without other settings',
+    (codeHighlightThrottleMs) => {
+      expect(
+        buildSharedLinkStartupPayload(
+          appConfig({
+            interfaceConfig: {
+              codeHighlightThrottleMs,
+              modelSelect: true,
+            },
+          }),
+          {},
+        ),
+      ).toEqual({ appTitle: 'LibreChat', interface: { codeHighlightThrottleMs } });
+    },
+  );
+
   it('builds the share-view startup allowlist', () => {
     const payload = buildSharedLinkStartupPayload(
       appConfig({

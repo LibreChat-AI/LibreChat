@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { Provider as JotaiProvider } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import MultiMessage from '../MultiMessage';
@@ -63,14 +64,16 @@ const msg = (messageId: string): TMessage =>
 const tree = (ids: string[]) => ids.map((id) => msg(id));
 
 const treeElement = (ids: string[]) => (
-  <RecoilRoot>
-    <MultiMessage
-      messageId="parent-1"
-      messagesTree={tree(ids)}
-      currentEditId={null}
-      setCurrentEditId={jest.fn()}
-    />
-  </RecoilRoot>
+  <JotaiProvider>
+    <RecoilRoot>
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={tree(ids)}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />
+    </RecoilRoot>
+  </JotaiProvider>
 );
 
 const displayed = () => screen.getAllByTestId('row')[0].textContent;
@@ -170,7 +173,11 @@ describe('MultiMessage sibling selection', () => {
   it('matches the wider layout of a parallel assistant response', () => {
     const assistant = {
       ...msg('assistant'),
-      content: [{ type: 'text', text: 'answer', groupId: 'parallel-group' }],
+      /** Two agents, so the response really does lay out columns. */
+      content: [
+        { type: 'text', text: 'primary', agentId: 'agent_a', groupId: 1 },
+        { type: 'text', text: 'added', agentId: 'agent_b____1', groupId: 1 },
+      ],
     } as unknown as TMessage;
 
     render(
@@ -187,6 +194,35 @@ describe('MultiMessage sibling selection', () => {
     expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
       'data-has-parallel-content',
       'true',
+    );
+  });
+
+  it('keeps the standard width when a group is backed by one agent', () => {
+    /** A multi-agent graph stamps a group id on every starting node, so an
+     *  ordinary agent that merely has subagents available carries one on its
+     *  OWN output. Widening for columns that never arrive is the regression. */
+    const assistant = {
+      ...msg('assistant'),
+      content: [
+        { type: 'text', text: 'thinking', agentId: 'agent_a', groupId: 1 },
+        { type: 'text', text: 'answer', agentId: 'agent_a', groupId: 1 },
+      ],
+    } as unknown as TMessage;
+
+    render(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="parent-1"
+          messagesTree={[assistant]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
+      'data-has-parallel-content',
+      'false',
     );
   });
 

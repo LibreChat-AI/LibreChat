@@ -5,8 +5,13 @@ import { getE2EUser } from '../../setup/user';
 import { clearUserConversations, deleteConversations, seedConversations } from './db';
 import type { SeedConvo } from './db';
 
-/** Size of the virtualized chat list grid vs. its measured container. */
-const sizes = (page: Page) =>
+/**
+ * Width of the virtualized chat list grid vs. its measured container. The list
+ * no longer owns a scroll pane: it renders at its natural height inside the
+ * sidebar's single scroll surface, so its height follows the rows it holds and
+ * only its width has to track the box it is measured against.
+ */
+const widths = (page: Page) =>
   page.evaluate(() => {
     const grid = document.querySelector<HTMLElement>('aside .ReactVirtualized__Grid');
     const wrap = grid?.parentElement ?? null;
@@ -16,26 +21,21 @@ const sizes = (page: Page) =>
       grid: gridRect ? gridRect.width : -1,
       wrap: wrapRect ? wrapRect.width : -1,
       gridH: gridRect ? gridRect.height : -1,
-      wrapH: wrapRect ? wrapRect.height : -1,
     };
   });
 
 /**
- * Polls until the grid matches its container AND the size has stopped changing
+ * Polls until the grid matches its container AND the width has stopped changing
  * between samples — the sidebar expand/collapse animation runs for 300ms, and a
  * tracking-only check can match mid-animation on slow CI machines.
  */
-const settledSizes = async (page: Page) => {
-  let prev = await sizes(page);
+const settledWidths = async (page: Page) => {
+  let prev = await widths(page);
   for (let attempt = 0; attempt < 40; attempt++) {
     await page.waitForTimeout(350);
-    const next = await sizes(page);
-    const tracked =
-      next.wrap > 0 &&
-      next.wrapH > 0 &&
-      Math.abs(next.grid - next.wrap) <= 1 &&
-      Math.abs(next.gridH - next.wrapH) <= 1;
-    const stable = Math.abs(next.grid - prev.grid) <= 1 && Math.abs(next.gridH - prev.gridH) <= 1;
+    const next = await widths(page);
+    const tracked = next.wrap > 0 && next.gridH > 0 && Math.abs(next.grid - next.wrap) <= 1;
+    const stable = Math.abs(next.grid - prev.grid) <= 1;
     if (tracked && stable) {
       return next;
     }
@@ -45,16 +45,30 @@ const settledSizes = async (page: Page) => {
 };
 
 test.describe('sidebar chat list', () => {
+  let sized: SeedConvo[] = [];
+
+  test.afterEach(async () => {
+    if (sized.length) {
+      await deleteConversations(sized.map((convo) => convo.conversationId));
+      sized = [];
+    }
+  });
+
   test('chat list width tracks the sidebar through resize and collapse cycles', async ({
     page,
   }) => {
     test.setTimeout(60000);
+    /* The grid is as tall as the rows it renders, so a list with nothing in it
+     * has no box to measure: seed the rows this test measures against. */
+    sized = buildSeed();
+    await seedConversations(getE2EUser().email, sized);
+
     await page.goto('/c/new', { timeout: 10000 });
     await expect(page.locator('aside .ReactVirtualized__Grid').first()).toBeVisible({
       timeout: 20000,
     });
 
-    const initial = await settledSizes(page);
+    const initial = await settledWidths(page);
 
     const separator = page.locator('[role="separator"][aria-label="Resize sidebar"]');
     const sepBox = await separator.boundingBox();
@@ -70,18 +84,20 @@ test.describe('sidebar chat list', () => {
     }
     await page.mouse.up();
 
-    const widened = await settledSizes(page);
+    const widened = await settledWidths(page);
     expect(widened.grid).toBeGreaterThan(initial.grid);
 
     await page.locator('aside').getByTestId('close-sidebar-button').click();
     await page.locator('aside').getByTestId('open-sidebar-button').click();
 
-    const reopened = await settledSizes(page);
+    const reopened = await settledWidths(page);
     expect(reopened.grid).toBeGreaterThan(initial.grid);
 
+    /* A shorter viewport changes how much of the list is on screen, never how
+     * wide its rows are measured. */
     await page.setViewportSize({ width: 1280, height: 540 });
-    const shrunken = await settledSizes(page);
-    expect(shrunken.gridH).toBeLessThan(reopened.gridH);
+    const shrunken = await settledWidths(page);
+    expect(Math.abs(shrunken.grid - reopened.grid)).toBeLessThanOrEqual(1);
   });
 });
 

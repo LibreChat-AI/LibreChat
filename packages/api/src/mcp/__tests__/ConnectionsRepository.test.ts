@@ -151,6 +151,33 @@ describe('ConnectionsRepository', () => {
       expect(mockConnection.refreshToolList).not.toHaveBeenCalled();
     });
 
+    it('refuses an app connection for a server declaring chat-only headers', async () => {
+      mockServerConfigs.server1 = {
+        ...mockServerConfigs.server1,
+        requestHeaders: { 'X-Workspace': 'workspace-1' },
+      } as t.ParsedServerConfig;
+
+      const result = await repository.get('server1');
+
+      /** A shared session would carry these into its own `initialize` and
+       *  `tools/list`, which every later catalog read reuses. */
+      expect(result).toBeNull();
+      expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
+    });
+
+    it('still creates a user-owned connection for a server declaring chat-only headers', async () => {
+      mockServerConfigs.server1 = {
+        ...mockServerConfigs.server1,
+        requestHeaders: { 'X-Workspace': 'workspace-1' },
+      } as t.ParsedServerConfig;
+      const userRepository = new ConnectionsRepository('user-1');
+
+      const result = await userRepository.get('server1');
+
+      expect(result).toBe(mockConnection);
+      expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(1);
+    });
+
     it('serializes concurrent creation so only one connection is retained', async () => {
       const [first, second] = await Promise.all([
         repository.get('server1'),

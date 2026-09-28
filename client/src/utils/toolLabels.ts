@@ -14,6 +14,7 @@ export const TOOL_FRIENDLY_NAME_KEYS: Record<string, TranslationKeys> = {
   run_tools_with_code: 'com_ui_tool_name_code',
   run_tools_with_bash: 'com_ui_tool_name_code',
   bash_tool: 'com_ui_tool_name_code',
+  [Constants.CHECK_BACKGROUND_TASK]: 'com_ui_background_tasks',
   web_search: 'com_ui_tool_name_web_search',
   image_gen_oai: 'com_ui_tool_name_image_gen',
   image_edit_oai: 'com_ui_tool_name_image_edit',
@@ -22,6 +23,12 @@ export const TOOL_FRIENDLY_NAME_KEYS: Record<string, TranslationKeys> = {
   code_interpreter: 'com_ui_tool_name_code_analysis',
   retrieval: 'com_ui_tool_name_file_search',
   ask_user_question: 'com_ui_tool_name_ask_user_question',
+  create_file: 'com_ui_tool_name_create_file',
+  set_memory: 'com_ui_tool_name_set_memory',
+  edit_file: 'com_ui_tool_name_edit_file',
+  delete_memory: 'com_ui_tool_name_delete_memory',
+  skill: 'com_ui_skill',
+  read_file: 'com_ui_tool_name_read_file',
 };
 
 export interface ParsedToolName {

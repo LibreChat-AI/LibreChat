@@ -7,6 +7,8 @@ import type { OpenIDTokenInfo } from '~/utils/oidc';
 import type { MCPOAuthTokens } from './types';
 import { getSkewedTokenExpiresAtMs, getTokenExpiresAtMs } from '~/oauth/expiry';
 import { extractOpenIDTokenInfo, isOpenIDTokenValid } from '~/utils/oidc';
+import { detachOnAbort } from '~/utils/promises';
+import { isAbortError } from '~/utils/errors';
 
 export interface OboConfig {
   scopes: string;
@@ -38,9 +40,100 @@ export type OboTokenResolver = (
  *   - throws: refresh was attempted and the IdP rejected it. Caller wraps as
  *     `session_refresh_failed`.
  */
-export type UpstreamTokenProvider = () => Promise<OIDCTokens | null>;
+export type UpstreamTokenProvider = (options?: {
+  forceRefresh?: boolean;
+  signal?: AbortSignal;
+}) => Promise<OIDCTokens | null>;
+
+/** Target resolved from server configuration after the OBO trust check. Scopes are not an audience. */
+export interface UpstreamTokenTarget {
+  readonly mcpServer: string;
+  readonly scopes: string;
+}
+
+/** Lazily supplies a renewable upstream-token provider when an OBO server actually needs one. */
+export type UpstreamTokenProviderResolver = (options?: {
+  signal?: AbortSignal;
+  target?: UpstreamTokenTarget;
+}) => UpstreamTokenProvider | undefined | Promise<UpstreamTokenProvider | undefined>;
+
+/** Scheduled OBO credentials must not replace the browser's direct-bearer source. */
+export function selectMCPUpstreamTokenProvider({
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
+  createSessionProvider,
+}: {
+  upstreamTokenProvider?: UpstreamTokenProvider | null;
+  upstreamTokenProviderResolver?: UpstreamTokenProviderResolver | null;
+  createSessionProvider: () => UpstreamTokenProvider;
+}): UpstreamTokenProvider | null | undefined {
+  return upstreamTokenProviderResolver
+    ? upstreamTokenProvider
+    : (upstreamTokenProvider ?? createSessionProvider());
+}
+
+function normalizeOboCancellation(error: unknown, signal?: AbortSignal): unknown {
+  if (signal?.aborted && error === signal.reason && !isAbortError(error)) {
+    return Object.assign(new Error('The operation was aborted.', { cause: error }), {
+      name: 'AbortError',
+    });
+  }
+  return error;
+}
+
+/** Detach cancelled callers and preserve cancellation for arbitrary AbortController reasons. */
+export async function awaitOboOperation<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  try {
+    return await detachOnAbort(operation, signal);
+  } catch (error) {
+    throw normalizeOboCancellation(error, signal);
+  }
+}
+
+/** Keep lookup failures inside resolveOboToken's typed failure boundary. */
+export function createLazyOboUpstreamTokenProvider(
+  resolver: UpstreamTokenProviderResolver,
+  signal?: AbortSignal,
+  target?: UpstreamTokenTarget,
+): UpstreamTokenProvider {
+  let pending: Promise<UpstreamTokenProvider | undefined> | undefined;
+  return async (options) => {
+    const effectiveSignal = options?.signal ?? signal;
+    try {
+      effectiveSignal?.throwIfAborted();
+      pending ??= Promise.resolve()
+        .then(() => {
+          effectiveSignal?.throwIfAborted();
+          return resolver({ signal: effectiveSignal, ...(target ? { target } : {}) });
+        })
+        .catch((error) => {
+          pending = undefined;
+          throw error;
+        });
+      const provider = await detachOnAbort(pending, effectiveSignal);
+      effectiveSignal?.throwIfAborted();
+      if (!provider) {
+        pending = undefined;
+        throw new OboTokenResolutionError(
+          'missing_upstream_provider',
+          'No renewable upstream credential provider is available for this MCP server.',
+        );
+      }
+      return await detachOnAbort(
+        provider({ ...options, signal: effectiveSignal }),
+        effectiveSignal,
+      );
+    } catch (error) {
+      throw normalizeOboCancellation(error, effectiveSignal);
+    }
+  };
+}
 
 export type OboTokenResolutionReason =
+  | 'missing_upstream_provider'
   | 'missing_upstream_token'
   | 'missing_upstream_access_token'
   | 'empty_exchange_response'
@@ -116,7 +209,7 @@ export class OboTokenResolutionError extends Error {
   }
 }
 
-function isRetryableOboExchangeError(error: unknown): boolean {
+export function isRetryableOboExchangeError(error: unknown): boolean {
   const taggedRetryable = getErrorRetryableFlag(error);
   if (taggedRetryable != null) {
     return taggedRetryable;
@@ -191,6 +284,11 @@ function buildUpstreamTokenInfo(
  * itself carries that verified upstream bearer — still works. Browser requests
  * whose Express session was cleared reject in the provider instead of reaching
  * this fallback with a stale strategy-time snapshot.
+ *
+ * @param forceRefresh Bypasses the resolver's token cache. Set it when the downstream
+ * server has rejected the current credential: a revoked or scope-invalidated token is
+ * still inside its cached lifetime, so a cached read would hand back the same rejected
+ * bearer instead of minting a replacement.
  */
 export async function resolveOboToken(
   user: IUser,
@@ -198,11 +296,16 @@ export async function resolveOboToken(
   oboTokenResolver: OboTokenResolver,
   upstreamTokenProvider: UpstreamTokenProvider,
   identityContext?: AuthIdentityContext,
+  forceRefresh = false,
 ): Promise<MCPOAuthTokens> {
   let liveTokens: OIDCTokens | null;
   try {
     liveTokens = await upstreamTokenProvider();
   } catch (error) {
+    if (isAbortError(error)) throw error;
+    if (error instanceof OboTokenResolutionError && error.reason === 'missing_upstream_provider') {
+      throw error;
+    }
     logger.error('[OBO] Upstream session refresh failed:', error);
     const retryable = isRetryableOboExchangeError(error);
     throw new OboTokenResolutionError(
@@ -240,7 +343,7 @@ export async function resolveOboToken(
       user,
       tokenInfo.accessToken,
       oboConfig.scopes,
-      true,
+      !forceRefresh,
       identityContext,
     );
 
@@ -283,6 +386,7 @@ export async function resolveOboToken(
       expires_at: skewedExpiresAt,
     };
   } catch (error) {
+    if (isAbortError(error)) throw error;
     if (error instanceof OboTokenResolutionError) {
       throw error;
     }

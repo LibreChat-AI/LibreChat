@@ -108,7 +108,7 @@ export default function BookmarkCardActions({ bookmark }: BookmarkCardActionsPro
           selection={{
             selectHandler: confirmDelete,
             selectClasses:
-              'bg-surface-destructive text-white transition-all duration-200 hover:bg-surface-destructive-hover',
+              'bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover',
             selectText: localize('com_ui_delete'),
           }}
         />

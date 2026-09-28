@@ -1,10 +1,13 @@
 import { Fragment, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { useRecoilState } from 'recoil';
 import * as Ariakit from '@ariakit/react';
-import { Zap, ZapOff, Clock, ArrowUp, CircleHelp, MoreHorizontal } from 'lucide-react';
+import { Zap, ZapOff, Clock } from 'lucide';
+import { MorphIcon } from '@librechat/client';
+import { ArrowUp, CircleHelp, MoreHorizontal } from 'lucide-react';
 import type { Ref } from 'react';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
+import { QUEUE_ICON, STEER_ICON } from '~/components/Chat/Steering/identity';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -283,12 +286,12 @@ export function useDefaultToggleEntry(steering: SteeringControls): MenuEntry {
         next === 'queue'
           ? localize('com_ui_turn_on_queueing')
           : localize('com_ui_turn_on_steering'),
-      icon:
-        next === 'queue' ? (
-          <Clock className="h-4 w-4 text-cyan-500" aria-hidden="true" />
-        ) : (
-          <Zap className="h-4 w-4 text-amber-500" aria-hidden="true" />
-        ),
+      icon: (
+        <MorphIcon
+          icon={next === 'queue' ? Clock : Zap}
+          className={cn('h-4 w-4', next === 'queue' ? QUEUE_ICON : STEER_ICON)}
+        />
+      ),
       info: localize('com_nav_info_during_run_action'),
       onClick: () => steering.setDefaultAction(next),
     };
@@ -311,10 +314,11 @@ export function useInterruptToggleEntry(): MenuEntry {
       label: interruptsByDefault
         ? localize('com_ui_wait_for_tool_steps')
         : localize('com_ui_always_interrupt'),
-      icon: interruptsByDefault ? (
-        <Zap className="h-4 w-4 text-amber-500" aria-hidden="true" />
-      ) : (
-        <ZapOff className="h-4 w-4 text-amber-500" aria-hidden="true" />
+      icon: (
+        <MorphIcon
+          icon={interruptsByDefault ? Zap : ZapOff}
+          className={cn('h-4 w-4', STEER_ICON)}
+        />
       ),
       info: localize(
         !interruptsByDefault && defaultAction === 'queue'

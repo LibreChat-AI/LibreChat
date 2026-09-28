@@ -82,7 +82,7 @@ test.describe('activity labels', () => {
 
   /**
    * The header is the feature: once a label lands it REPLACES the generic
-   * "Used N tools" verb above the same tool cards.
+   * "Ran N actions" verb above the same tool cards.
    */
   test('renders the generated label as the tool-group header', async ({ page, request }) => {
     test.setTimeout(120000);
@@ -94,7 +94,7 @@ test.describe('activity labels', () => {
     await expect(
       messagesView(page).getByRole('button', { name: 'Stored two facts in memory' }),
     ).toBeVisible({ timeout: 30000 });
-    await expect(messagesView(page).getByRole('button', { name: 'Used 2 tools' })).toHaveCount(0);
+    await expect(messagesView(page).getByRole('button', { name: /^Ran 2 actions/ })).toHaveCount(0);
   });
 
   /**
@@ -141,7 +141,7 @@ test.describe('activity labels', () => {
 
   /**
    * A whitespace-only label must fill null. There is deliberately no templated
-   * stand-in ("ran 2 tools" only restates the cards), so the block renders
+   * stand-in ("Ran 2 actions" only restates the cards), so the block renders
    * exactly as it would without the feature.
    */
   test('leaves the generic header when the model returns a blank label', async ({
@@ -154,7 +154,7 @@ test.describe('activity labels', () => {
 
     await runLabeledTurn(page, label);
 
-    await expect(messagesView(page).getByRole('button', { name: 'Used 2 tools' })).toBeVisible({
+    await expect(messagesView(page).getByRole('button', { name: /^Ran 2 actions/ })).toBeVisible({
       timeout: 30000,
     });
   });
@@ -169,7 +169,7 @@ test.describe('activity labels', () => {
 
     /** The turn still finished (asserted in runLabeledTurn) and the block kept
      *  its generic header rather than rendering an empty row. */
-    await expect(messagesView(page).getByRole('button', { name: 'Used 2 tools' })).toBeVisible({
+    await expect(messagesView(page).getByRole('button', { name: /^Ran 2 actions/ })).toBeVisible({
       timeout: 30000,
     });
     /** At least one attempt was made and failed; the client may retry a 5xx,
@@ -191,7 +191,7 @@ test.describe('activity labels', () => {
       timeout: 60000,
     });
 
-    await expect(messagesView(page).getByRole('button', { name: 'Used 2 tools' })).toBeVisible();
+    await expect(messagesView(page).getByRole('button', { name: /^Ran 2 actions/ })).toBeVisible();
     expect(await getLabelRequestsFor(request, label)).toHaveLength(0);
   });
 

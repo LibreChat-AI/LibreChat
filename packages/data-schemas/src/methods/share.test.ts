@@ -1,7 +1,13 @@
 import { nanoid } from 'nanoid';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
+import {
+  Tools,
+  Constants,
+  ContentTypes,
+  EModelEndpoint,
+  getResponseSender,
+} from 'librechat-data-provider';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type * as t from '~/types';
 import {
@@ -58,6 +64,7 @@ describe('Share Methods', () => {
         textFormat: { type: String, enum: ['html', 'text'] },
         status: { type: String, enum: ['pending', 'ready', 'failed'] },
         previewError: String,
+        llmDeliveryPath: { type: String, enum: ['provider', 'text', 'none'] },
         metadata: mongoose.Schema.Types.Mixed,
         tenantId: String,
       },
@@ -81,6 +88,7 @@ describe('Share Methods', () => {
           default: undefined,
         },
         model: String,
+        sender: String,
         iconURL: String,
         endpoint: String,
         conversationSignature: String,
@@ -104,6 +112,10 @@ describe('Share Methods', () => {
         conversationId: { type: String, required: true },
         title: String,
         user: String,
+        endpoint: String,
+        endpointType: String,
+        modelLabel: String,
+        chatGptLabel: String,
       },
       { timestamps: true },
     );
@@ -513,6 +525,136 @@ describe('Share Methods', () => {
   });
 
   describe('getSharedMessages', () => {
+    /** Publishes through `createSharedLink` with one response whose stored `sender` is
+     *  what the header will render, so what a viewer reads back is the published flag. */
+    const publishWithSender = async (sender?: string, endpoint = EModelEndpoint.openAI) => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await Conversation.create({ conversationId, user: userId, title: 'Shared', endpoint });
+      await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'Reply',
+        isCreatedByUser: false,
+        endpoint,
+        model: 'gpt-4o',
+        sender,
+        parentMessageId: Constants.NO_PARENT,
+      });
+      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
+      return { userId, conversationId, shareId };
+    };
+
+    /* The header renders the stored `sender`, so a link publishing a label must not swap
+       it for the model the label stands in for. */
+    test('flags a link whose messages show a configured sender', async () => {
+      const { shareId } = await publishWithSender('Acme Assistant');
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result?.hasConfiguredSender).toBe(true);
+    });
+
+    test('leaves a model-derived sender unflagged', async () => {
+      const { shareId } = await publishWithSender(
+        getResponseSender({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+      );
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result).toBeDefined();
+      expect(result).not.toHaveProperty('hasConfiguredSender');
+    });
+
+    /* Anthropic's sender ignores `chatGptLabel` and writes 'Claude', so the model has to
+       stay reachable — the stored sender says so without the settings being consulted. */
+    test('leaves an endpoint that wrote its own name unflagged', async () => {
+      const { shareId } = await publishWithSender('Claude', EModelEndpoint.anthropic);
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result).not.toHaveProperty('hasConfiguredSender');
+    });
+
+    test('publishes no label text of its own', async () => {
+      const { shareId } = await publishWithSender('Acme Assistant');
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      const senders = result?.messages.map((message) => message.sender);
+      expect(senders).toContain('Acme Assistant');
+      /** Only the messages carry it, where the content preflight inspects it. */
+      expect(result?.hasConfiguredSender).toBe(true);
+    });
+
+    /* The conversation's settings changing cannot start revealing the model on a link
+       that is already public: the messages it published keep the sender they were
+       written under, and nothing about the link is re-derived from the conversation. */
+    test('is unmoved by the conversation changing after the link is published', async () => {
+      const { userId, conversationId, shareId } = await publishWithSender('Acme Assistant');
+      await Conversation.updateOne({ conversationId, user: userId }, { $set: { modelLabel: '' } });
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result?.hasConfiguredSender).toBe(true);
+    });
+
+    /* One older message stored without an endpoint cannot be named, and reading that
+       silence as a label would disable the hover for the whole transcript. */
+    test('is unmoved by a message stored without an endpoint', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await Conversation.create({ conversationId, user: userId, title: 'Legacy' });
+      await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'Reply',
+        isCreatedByUser: false,
+        model: 'gpt-4o',
+        sender: 'GPT-4o',
+        parentMessageId: Constants.NO_PARENT,
+      });
+      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result).not.toHaveProperty('hasConfiguredSender');
+    });
+
+    /* Only messages the link actually publishes have a say. */
+    test('ignores a labelled message outside the shared branch', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      const modelSender = getResponseSender({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' });
+      await Conversation.create({ conversationId, user: userId, title: 'Branched' });
+      const root = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'Shared reply',
+        isCreatedByUser: false,
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-4o',
+        sender: modelSender,
+        parentMessageId: Constants.NO_PARENT,
+      });
+      await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'Later reply',
+        isCreatedByUser: false,
+        endpoint: EModelEndpoint.openAI,
+        model: 'gpt-4o',
+        sender: 'Acme Assistant',
+        parentMessageId: root.messageId,
+      });
+      const { shareId } = await shareMethods.createSharedLink(
+        userId,
+        conversationId,
+        root.messageId,
+      );
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result).not.toHaveProperty('hasConfiguredSender');
+    });
+
     test('should retrieve and anonymize shared messages', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const conversationId = `conv_${nanoid()}`;
@@ -971,6 +1113,7 @@ describe('Share Methods', () => {
         source: 'local',
         type: 'image/png',
         bytes: 2048,
+        llmDeliveryPath: 'text',
       });
 
       const message = await Message.create({
@@ -1016,6 +1159,7 @@ describe('Share Methods', () => {
       // share-scoped route, storage/identity internals stripped, ids anonymized.
       expect(steerFile.filepath).toBe(`/api/share/${shareId}/files/steer-file-2`);
       expect(steerFile).toMatchObject({ filename: 'steer.png', type: 'image/png' });
+      expect(steerFile.llmDeliveryPath).toBe('text');
       expect(steerFile).not.toHaveProperty('storageKey');
       expect(steerFile).not.toHaveProperty('user');
       expect(steerFile.conversationId).toBe(result?.conversationId);
@@ -1023,6 +1167,7 @@ describe('Share Methods', () => {
 
       const share = await SharedLink.findOne({ shareId }).lean();
       expect(share?.fileSnapshots?.map((snapshot) => snapshot.file_id)).toContain('steer-file-2');
+      expect(share?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
     });
 
     test('leaves safe non-steer content untouched (same array reference)', () => {
@@ -3178,6 +3323,123 @@ describe('Share Methods', () => {
       // viewer's fork is validated against.
       expect(saved?.updatedAt?.getTime()).toBe(published?.updatedAt?.getTime());
       expect(result?.updatedAt?.getTime()).toBe(published?.updatedAt?.getTime());
+    });
+
+    test('enriches delivery metadata in existing revision-matching snapshots', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await seedConversation(userId, conversationId);
+      const docId = await createFile(userId, { llmDeliveryPath: 'text' });
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: '',
+        isCreatedByUser: false,
+        content: [
+          {
+            type: 'steer',
+            steerId: 'legacy-steer',
+            steer: 'read this',
+            files: [{ file_id: docId, filename: 'report.pdf', type: 'application/pdf' }],
+          },
+        ],
+      });
+      const shareId = `share_${nanoid()}`;
+      await SharedLink.create({
+        shareId,
+        conversationId,
+        user: userId,
+        messages: [message._id],
+        fileSnapshots: [
+          {
+            file_id: docId,
+            source: 'local',
+            filepath: `/uploads/${userId}/${docId}`,
+            filename: 'report.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+          },
+        ],
+      });
+      const published = await SharedLink.findOne({ shareId }).lean();
+
+      await expect(
+        shareMethods.getSharedMessages(shareId, undefined, {
+          preflight: async () => {
+            throw new Error('policy rejected');
+          },
+        }),
+      ).rejects.toThrow('policy rejected');
+      const afterRejectedPreflight = await SharedLink.findOne({ shareId }).lean();
+      expect(afterRejectedPreflight?.fileSnapshots?.[0].llmDeliveryPath).toBeUndefined();
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      const content = result?.messages[0].content as Array<Record<string, unknown>>;
+      const file = (content[0].files as Array<Record<string, unknown>>)[0];
+      expect(file.llmDeliveryPath).toBe('text');
+
+      const saved = await SharedLink.findOne({ shareId }).lean();
+      expect(saved?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
+      expect(saved?.updatedAt?.getTime()).toBe(published?.updatedAt?.getTime());
+      const find = jest.spyOn(File, 'find');
+      await shareMethods.getSharedMessages(shareId);
+      expect(find).not.toHaveBeenCalled();
+      find.mockRestore();
+
+      await SharedLink.updateOne({ shareId }, { $unset: { 'fileSnapshots.0.llmDeliveryPath': 1 } });
+      await shareMethods.getSharedMessages(shareId, undefined, {
+        preflight: async () => {
+          await SharedLink.updateOne({ shareId }, { $set: { fileSnapshots: [] } });
+        },
+      });
+      const republished = await SharedLink.findOne({ shareId }).lean();
+      expect(republished?.fileSnapshots).toEqual([]);
+    });
+
+    test('does not enrich an existing snapshot after its file revision changes', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await seedConversation(userId, conversationId);
+      const docId = await createFile(userId, {
+        llmDeliveryPath: 'text',
+        previewRevision: 'current-revision',
+      });
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'legacy file',
+        isCreatedByUser: true,
+        files: [{ file_id: docId, filename: 'report.pdf', type: 'application/pdf' }],
+      });
+      const shareId = `share_${nanoid()}`;
+      await SharedLink.create({
+        shareId,
+        conversationId,
+        user: userId,
+        messages: [message._id],
+        fileSnapshots: [
+          {
+            file_id: docId,
+            source: 'local',
+            filepath: `/uploads/${userId}/${docId}`,
+            filename: 'report.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+            previewRevision: 'published-revision',
+          },
+        ],
+      });
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result?.messages[0].files?.[0].llmDeliveryPath).toBeUndefined();
+      const saved = await SharedLink.findOne({ shareId }).lean();
+      expect(saved?.fileSnapshots?.[0].llmDeliveryPath).toBeNull();
+      const find = jest.spyOn(File, 'find');
+      await shareMethods.getSharedMessages(shareId);
+      expect(find).not.toHaveBeenCalled();
+      find.mockRestore();
     });
 
     test('runs public projection preflight before persisting a legacy backfill', async () => {

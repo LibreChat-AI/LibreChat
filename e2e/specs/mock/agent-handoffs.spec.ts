@@ -757,12 +757,11 @@ test.describe('agent handoffs', () => {
       });
       await expect(transferCard).toBeEnabled();
       await transferCard.click();
-      await expect(
-        messagesView(page).getByText('Handoff instructions:', { exact: true }),
-      ).toBeVisible();
-      await expect(
-        messagesView(page).getByText(JSON.stringify({ brief: payload }), { exact: true }),
-      ).toBeVisible();
+      const handoffDetails = messagesView(page).getByRole('region', {
+        name: 'Handoff instructions',
+      });
+      await expect(handoffDetails).toBeVisible();
+      await expect(handoffDetails.getByText(payload, { exact: true })).toBeVisible();
 
       await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
       const conversationUrl = page.url();

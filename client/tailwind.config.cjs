@@ -17,7 +17,28 @@ module.exports = {
   theme: {
     fontFamily: {
       sans: ['Inter', 'sans-serif'],
-      mono: ['Roboto Mono', 'monospace'],
+      /**
+       * Roboto Mono is self-hosted (the `@font-face` block in `style.css`), so code
+       * renders the same on every platform and carries real bold and italic faces
+       * rather than ones the browser synthesizes by smearing and shearing.
+       *
+       * The tail is reached while the font loads, if it fails, and per glyph for the
+       * characters the bundled latin subset omits — box drawing in terminal output
+       * most visibly. It is ordered so those glyphs come from a face whose advance
+       * width matches Roboto Mono's and keeps its columns: `ui-monospace` resolves
+       * to SF Mono on macOS, and Cascadia Mono ships with Windows Terminal.
+       * Consolas is last of the named faces because it is narrower than the rest.
+       */
+      mono: [
+        'Roboto Mono',
+        'ui-monospace',
+        'SFMono-Regular',
+        'Menlo',
+        'Cascadia Mono',
+        'Liberation Mono',
+        'Consolas',
+        'monospace',
+      ],
     },
     // fontFamily: {
     //   sans: ['Söhne', 'sans-serif'],

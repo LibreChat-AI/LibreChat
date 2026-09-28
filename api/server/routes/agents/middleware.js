@@ -4,6 +4,7 @@ const {
   preAuthTenantMiddleware,
   createRequireApiKeyAuth,
   createRemoteAgentAuth,
+  createAgentManagementAuth,
   createCheckAgentTriggerAccess,
   createCheckRemoteAgentAccess,
 } = require('@librechat/api');
@@ -22,6 +23,12 @@ const requireRemoteAgentAuth = createRemoteAgentAuth({
   findUser: db.findUser,
   getRolesByNames: db.findRolesByNames,
   updateUser: db.updateUser,
+  isPrincipalActive: db.isAgentTriggerPrincipalActive,
+  getAppConfig,
+});
+
+const requireAgentManagementAuth = createAgentManagementAuth({
+  findUser: db.findUser,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
   getAppConfig,
 });
@@ -45,5 +52,6 @@ module.exports = {
   checkAgentTriggerPermission,
   preAuthTenantMiddleware,
   requireRemoteAgentAuth,
+  requireAgentManagementAuth,
   checkRemoteAgentsFeature,
 };

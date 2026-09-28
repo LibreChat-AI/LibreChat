@@ -40,6 +40,7 @@ module.exports = api.createOpenIDSessionRefreshService({
     flight.assertOpenIDRefreshSessionGenerationAvailable,
   completeOpenIDRefreshFlight: flight.completeOpenIDRefreshFlight,
   createOpenIDRefreshFlightKey: flight.createOpenIDRefreshFlightKey,
+  createRefreshTokenBridgeFlightKey: bridge.createRefreshTokenBridgeFlightKey,
   failOpenIDRefreshFlight: flight.failOpenIDRefreshFlight,
   waitForOpenIDRefreshFlight: flight.waitForOpenIDRefreshFlight,
   withOpenIDRefreshFlightLease: flight.withOpenIDRefreshFlightLease,

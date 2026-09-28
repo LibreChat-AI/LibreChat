@@ -25,5 +25,6 @@ export default defineConfig({
     /thread-fold\.spec\.ts/,
     /tool-approvals\.spec\.ts/,
     /usage\.spec\.ts/,
+    /scenarios\/redis-stream\.spec\.ts/,
   ],
 });

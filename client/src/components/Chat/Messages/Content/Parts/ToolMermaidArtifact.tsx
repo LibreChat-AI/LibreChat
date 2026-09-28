@@ -1,4 +1,4 @@
-import { memo, useId, useLayoutEffect, useMemo } from 'react';
+import { memo, useId, useLayoutEffect, useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
 import { useRecoilState } from 'recoil';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
@@ -29,6 +29,10 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
   const claimKey = useId();
   const [claim, setClaim] = useRecoilState(store.toolArtifactClaim(toolArtifactKey(file)));
   const isMyClaim = claim === claimKey;
+  /* Once the diagram collapses into its trigger row, that row carries the
+   * filename and the download itself, so this header would repeat both
+   * beside it. */
+  const [isRowMode, setIsRowMode] = useState(false);
 
   useLayoutEffect(() => {
     setClaim(claimKey);
@@ -58,7 +62,7 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
 
   return (
     <div className="my-2 flex w-full flex-col gap-1">
-      {(attachment.filename || attachment.filepath) && (
+      {!isRowMode && (attachment.filename || attachment.filepath) && (
         <div className="flex items-center justify-between gap-2">
           {attachment.filename && (
             <div
@@ -89,11 +93,24 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
       {/* `id` is optional on Mermaid; pass only when we have a real file_id
           so the component generates a unique render target on its own. */}
       {file.file_id ? (
-        <Mermaid id={file.file_id} artifact={artifact ?? undefined}>
+        <Mermaid
+          id={file.file_id}
+          artifact={artifact ?? undefined}
+          onDownload={attachment.filepath ? handleDownload : undefined}
+          onRowModeChange={setIsRowMode}
+          rowTitle={attachment.filename ? visibleFilename : undefined}
+        >
           {text}
         </Mermaid>
       ) : (
-        <Mermaid artifact={artifact ?? undefined}>{text}</Mermaid>
+        <Mermaid
+          artifact={artifact ?? undefined}
+          onDownload={attachment.filepath ? handleDownload : undefined}
+          onRowModeChange={setIsRowMode}
+          rowTitle={attachment.filename ? visibleFilename : undefined}
+        >
+          {text}
+        </Mermaid>
       )}
     </div>
   );

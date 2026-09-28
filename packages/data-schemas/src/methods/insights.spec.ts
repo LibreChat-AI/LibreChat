@@ -6,6 +6,40 @@ import { createInsightsMethods } from './insights';
 import { createUserModel } from '../models/user';
 
 let mongoServer: MongoMemoryServer;
+const selectedAgents = [{ id: 'agent-a', name: 'Agent A' }];
+
+const fixtures = {
+  conversations: {
+    insertOne: (document: Record<string, unknown>) =>
+      mongoose.models.Conversation.collection.insertOne({ agent_id: 'agent-a', ...document }),
+    insertMany: (documents: Array<Record<string, unknown>>) =>
+      mongoose.models.Conversation.collection.insertMany(
+        documents.map((document) => ({ agent_id: 'agent-a', ...document })),
+      ),
+  },
+  messages: {
+    insertOne: (document: Record<string, unknown>) =>
+      mongoose.models.Message.collection.insertOne({
+        ...(document.isCreatedByUser === false ? { model: 'agent-a' } : {}),
+        ...document,
+      }),
+    insertMany: (documents: Array<Record<string, unknown>>) =>
+      mongoose.models.Message.collection.insertMany(
+        documents.map((document) => ({
+          ...(document.isCreatedByUser === false ? { model: 'agent-a' } : {}),
+          ...document,
+        })),
+      ),
+  },
+};
+
+function createScopedInsightsMethods() {
+  const methods = createInsightsMethods(mongoose);
+  return {
+    getInsights: (options: Parameters<typeof methods.getInsights>[0]) =>
+      methods.getInsights({ ...options, agents: selectedAgents, agentIds: ['agent-a'] }),
+  };
+}
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
@@ -61,7 +95,7 @@ describe('Insights methods', () => {
       },
     ]);
 
-    await mongoose.models.Conversation.collection.insertMany([
+    await fixtures.conversations.insertMany([
       {
         conversationId: 'old-conversation',
         tenantId: 'tenant-a',
@@ -97,7 +131,7 @@ describe('Insights methods', () => {
       ['other-assistant', 'other-conversation', otherTenantUserId, false],
     ] as const;
 
-    await mongoose.models.Message.collection.insertMany([
+    await fixtures.messages.insertMany([
       ...messages.map(([messageId, conversationId, userId, isCreatedByUser]) => ({
         messageId,
         conversationId,
@@ -136,7 +170,7 @@ describe('Insights methods', () => {
       },
     ]);
 
-    const result = await createInsightsMethods(mongoose).getInsights({
+    const result = await createScopedInsightsMethods().getInsights({
       tenantId: 'tenant-a',
       range: '7d',
     });
@@ -204,7 +238,45 @@ describe('Insights methods', () => {
       },
     ]);
 
-    await mongoose.models.Message.collection.insertMany([
+    await fixtures.conversations.insertMany([
+      {
+        conversationId: 'churned-conversation-1',
+        tenantId: 'tenant-a',
+        user: churnedUserId.toString(),
+        createdAt: daysAgo(60),
+        isTemporary: false,
+      },
+      {
+        conversationId: 'churned-conversation-2',
+        tenantId: 'tenant-a',
+        user: churnedUserId.toString(),
+        createdAt: daysAgo(29),
+        isTemporary: false,
+      },
+      {
+        conversationId: 'previously-churned-conversation',
+        tenantId: 'tenant-a',
+        user: previouslyChurnedUserId.toString(),
+        createdAt: daysAgo(40),
+        isTemporary: false,
+      },
+      {
+        conversationId: 'active-conversation',
+        tenantId: 'tenant-a',
+        user: activeUserId.toString(),
+        createdAt: daysAgo(27),
+        isTemporary: false,
+      },
+      {
+        conversationId: 'other-conversation',
+        tenantId: 'tenant-b',
+        user: otherTenantUserId.toString(),
+        createdAt: daysAgo(35),
+        isTemporary: false,
+      },
+    ]);
+
+    await fixtures.messages.insertMany([
       {
         messageId: 'churned-first-prompt',
         conversationId: 'churned-conversation-1',
@@ -277,7 +349,7 @@ describe('Insights methods', () => {
       },
     ]);
 
-    const result = await createInsightsMethods(mongoose).getInsights({
+    const result = await createScopedInsightsMethods().getInsights({
       tenantId: 'tenant-a',
       range: '7d',
     });
@@ -288,7 +360,7 @@ describe('Insights methods', () => {
         name: 'Churned User',
         email: 'churned@example.com',
         conversations: 2,
-        messages: 4,
+        messages: 3,
         firstSeen: daysAgo(60).toISOString(),
         lastSeen: daysAgo(29).toISOString(),
       },
@@ -314,7 +386,7 @@ describe('Insights methods', () => {
         email: 'second@example.com',
       },
     ]);
-    await mongoose.models.Conversation.collection.insertMany([
+    await fixtures.conversations.insertMany([
       {
         conversationId: 'shared-client-id',
         tenantId: 'tenant-a',
@@ -334,7 +406,7 @@ describe('Insights methods', () => {
         isTemporary: false,
       },
     ]);
-    await mongoose.models.Message.collection.insertMany([
+    await fixtures.messages.insertMany([
       {
         messageId: 'first-prompt',
         conversationId: 'shared-client-id',
@@ -389,7 +461,7 @@ describe('Insights methods', () => {
       },
     ]);
 
-    const methods = createInsightsMethods(mongoose);
+    const methods = createScopedInsightsMethods();
     const insights = await methods.getInsights({ tenantId: 'tenant-a', range: '7d' });
     const byUser = new Map(insights.latest.conversations.map((row) => [row.userId, row]));
 
@@ -418,6 +490,132 @@ describe('Insights methods', () => {
     ]);
   });
 
+  it('attributes conversations to their immutable primary agent and messages to their source', async () => {
+    const now = new Date();
+    const userId = new mongoose.Types.ObjectId();
+    await mongoose.models.User.collection.insertOne({
+      _id: userId,
+      tenantId: 'tenant-a',
+      name: 'Mixed Agent User',
+      email: 'mixed@example.com',
+    });
+    await fixtures.conversations.insertMany([
+      {
+        conversationId: 'legacy-agent-a',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        createdAt: now,
+        updatedAt: now,
+        isTemporary: false,
+      },
+      {
+        conversationId: 'primary-agent-a',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        initial_agent_id: 'agent-a',
+        agent_id: 'agent-b',
+        createdAt: now,
+        updatedAt: now,
+        isTemporary: false,
+      },
+      {
+        conversationId: 'explicitly-unattributed',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        initial_agent_id: null,
+        agent_id: 'agent-a',
+        createdAt: now,
+        updatedAt: now,
+        isTemporary: false,
+      },
+      {
+        conversationId: 'subagent-thread',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        initial_agent_id: 'agent-a',
+        subagentThread: { parentConversationId: 'primary-agent-a' },
+        createdAt: now,
+        updatedAt: now,
+        isTemporary: false,
+      },
+    ]);
+    await fixtures.messages.insertMany([
+      {
+        messageId: 'primary-user',
+        conversationId: 'primary-agent-a',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        createdAt: now,
+        updatedAt: now,
+        isCreatedByUser: true,
+        isTemporary: false,
+        text: 'Use the primary agent',
+        tokenCount: 5,
+      },
+      {
+        messageId: 'secondary-assistant',
+        conversationId: 'primary-agent-a',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        createdAt: now,
+        updatedAt: now,
+        isCreatedByUser: false,
+        isTemporary: false,
+        model: 'agent-b',
+        text: 'Answered by a secondary agent',
+        tokenCount: 7,
+      },
+      {
+        messageId: 'unattributed-assistant',
+        conversationId: 'explicitly-unattributed',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        createdAt: now,
+        updatedAt: now,
+        isCreatedByUser: false,
+        isTemporary: false,
+        model: 'agent-a',
+        text: 'Must remain unattributed',
+        tokenCount: 13,
+      },
+      {
+        messageId: 'subagent-assistant',
+        conversationId: 'subagent-thread',
+        tenantId: 'tenant-a',
+        user: userId.toString(),
+        createdAt: now,
+        updatedAt: now,
+        isCreatedByUser: false,
+        isTemporary: false,
+        model: 'agent-a',
+        text: 'Nested work',
+        tokenCount: 11,
+      },
+    ]);
+
+    const methods = createInsightsMethods(mongoose);
+    const agentAInsights = await methods.getInsights({
+      tenantId: 'tenant-a',
+      range: '7d',
+      agents: selectedAgents,
+      agentIds: ['agent-a'],
+    });
+    const agentBInsights = await methods.getInsights({
+      tenantId: 'tenant-a',
+      range: '7d',
+      agents: [{ id: 'agent-b', name: 'Agent B' }],
+      agentIds: ['agent-b'],
+    });
+
+    expect(agentAInsights.summary).toEqual(
+      expect.objectContaining({ totalConversations: 2, totalMessages: 1, totalTokens: 5 }),
+    );
+    expect(agentAInsights.agents).toEqual(selectedAgents);
+    expect(agentBInsights.summary).toEqual(
+      expect.objectContaining({ totalConversations: 0, totalMessages: 1, totalTokens: 7 }),
+    );
+  });
+
   it('bounds latest conversation message totals to a custom range', async () => {
     const from = new Date('2026-01-01T00:00:00.000Z');
     const to = new Date('2026-01-07T23:59:59.999Z');
@@ -432,7 +630,7 @@ describe('Insights methods', () => {
       name: 'Historical User',
       email: 'historical@example.com',
     });
-    await mongoose.models.Conversation.collection.insertOne({
+    await fixtures.conversations.insertOne({
       conversationId: 'historical-conversation',
       tenantId: 'tenant-a',
       user: userId.toString(),
@@ -441,7 +639,7 @@ describe('Insights methods', () => {
       updatedAt: afterRange,
       isTemporary: false,
     });
-    await mongoose.models.Message.collection.insertMany([
+    await fixtures.messages.insertMany([
       {
         messageId: 'temporary-prompt',
         conversationId: 'historical-conversation',
@@ -492,7 +690,7 @@ describe('Insights methods', () => {
       },
     ]);
 
-    const result = await createInsightsMethods(mongoose).getInsights({
+    const result = await createScopedInsightsMethods().getInsights({
       tenantId: 'tenant-a',
       range: 'custom',
       fromTimestamp: from.toISOString(),
@@ -519,7 +717,7 @@ describe('Insights methods', () => {
       name: 'Pacific User',
       email: 'pacific@example.com',
     });
-    await mongoose.models.Conversation.collection.insertMany(
+    await fixtures.conversations.insertMany(
       activity.map((createdAt, index) => ({
         conversationId: `pacific-${index}`,
         tenantId: 'tenant-a',
@@ -529,7 +727,7 @@ describe('Insights methods', () => {
         isTemporary: false,
       })),
     );
-    await mongoose.models.Message.collection.insertMany(
+    await fixtures.messages.insertMany(
       activity.map((createdAt, index) => ({
         messageId: `pacific-message-${index}`,
         conversationId: `pacific-${index}`,
@@ -543,7 +741,7 @@ describe('Insights methods', () => {
       })),
     );
 
-    const result = await createInsightsMethods(mongoose).getInsights({
+    const result = await createScopedInsightsMethods().getInsights({
       tenantId: 'tenant-a',
       range: 'custom',
       fromTimestamp: '2026-08-01T07:00:00.000Z',
@@ -568,7 +766,7 @@ describe('Insights methods', () => {
       name: 'Eastern User',
       email: 'eastern@example.com',
     });
-    await mongoose.models.Conversation.collection.insertOne({
+    await fixtures.conversations.insertOne({
       conversationId: 'dst-fallback',
       tenantId: 'tenant-a',
       user: userId.toString(),
@@ -576,7 +774,7 @@ describe('Insights methods', () => {
       updatedAt: activity,
       isTemporary: false,
     });
-    await mongoose.models.Message.collection.insertOne({
+    await fixtures.messages.insertOne({
       messageId: 'dst-fallback-message',
       conversationId: 'dst-fallback',
       tenantId: 'tenant-a',
@@ -588,7 +786,7 @@ describe('Insights methods', () => {
       text: 'Message before the repeated hour',
     });
 
-    const result = await createInsightsMethods(mongoose).getInsights({
+    const result = await createScopedInsightsMethods().getInsights({
       tenantId: 'tenant-a',
       range: 'custom',
       fromTimestamp: '2026-10-04T04:00:00.000Z',
@@ -605,7 +803,7 @@ describe('Insights methods', () => {
   });
 
   it('fills every local calendar date across a daylight saving time change', async () => {
-    const result = await createInsightsMethods(mongoose).getInsights({
+    const result = await createScopedInsightsMethods().getInsights({
       tenantId: 'tenant-a',
       range: 'custom',
       fromTimestamp: '2026-03-08T04:30:00.000Z',
@@ -646,7 +844,7 @@ describe('Insights methods', () => {
         email: 'secret@example.com',
       },
     ]);
-    await mongoose.models.Conversation.collection.insertMany([
+    await fixtures.conversations.insertMany([
       {
         conversationId: 'incident-review-123',
         tenantId: 'tenant-a',
@@ -672,7 +870,7 @@ describe('Insights methods', () => {
         isTemporary: false,
       },
     ]);
-    await mongoose.models.Message.collection.insertMany([
+    await fixtures.messages.insertMany([
       {
         messageId: 'message-a',
         conversationId: 'incident-review-123',
@@ -708,7 +906,7 @@ describe('Insights methods', () => {
       },
     ]);
 
-    const methods = createInsightsMethods(mongoose);
+    const methods = createScopedInsightsMethods();
     const byConversationId = await methods.getInsights({
       tenantId: 'tenant-a',
       range: '7d',
@@ -746,7 +944,7 @@ describe('Insights methods', () => {
     const messageAggregateSpy = jest.spyOn(mongoose.models.Message, 'aggregate');
 
     try {
-      await createInsightsMethods(mongoose).getInsights({
+      await createScopedInsightsMethods().getInsights({
         tenantId: 'tenant-a',
         range: '7d',
         search: 'conversation-id',
@@ -757,6 +955,7 @@ describe('Insights methods', () => {
         $facet?: Record<string, unknown>;
         $limit?: number;
         $lookup?: Record<string, unknown>;
+        $match?: Record<string, unknown>;
         $setWindowFields?: Record<string, unknown>;
         $unionWith?: unknown;
       };
@@ -781,6 +980,14 @@ describe('Insights methods', () => {
             stage.$facet == null && stage.$setWindowFields == null && stage.$unionWith == null,
         ),
       ).toBe(true);
+      expect(JSON.stringify(allStages)).not.toContain('"$expr"');
+      expect(JSON.stringify(allStages)).not.toContain('"$type"');
+      expect(
+        conversationPipelines.every((pipeline) => {
+          const firstMatch = pipeline.find((stage) => stage.$match)?.$match;
+          return Array.isArray(firstMatch?.$or);
+        }),
+      ).toBe(true);
       expect(searchedPipelines).toHaveLength(2);
       expect(searchedPipelines.some((pipeline) => pipeline.some((stage) => stage.$count))).toBe(
         true,
@@ -799,7 +1006,7 @@ describe('Insights methods', () => {
     const aggregateSpy = jest.spyOn(mongoose.models.Conversation, 'aggregate');
 
     try {
-      await createInsightsMethods(mongoose).getInsights({
+      await createScopedInsightsMethods().getInsights({
         tenantId: 'tenant-a',
         range: '7d',
         search: 'alice@example.com',
@@ -813,7 +1020,9 @@ describe('Insights methods', () => {
         .map(([pipeline]) => pipeline as SearchStage[])
         .find((pipeline) => pipeline.some((stage) => stage.$lookup));
       const identityLookup = searchedPipeline?.find((stage) => stage.$lookup)?.$lookup;
-      const ownerConversion = searchedPipeline?.find((stage) => stage.$addFields)?.$addFields;
+      const ownerConversion = searchedPipeline?.find(
+        (stage) => stage.$addFields?.insightsUserId,
+      )?.$addFields;
 
       expect(identityLookup).toEqual({
         from: 'users',

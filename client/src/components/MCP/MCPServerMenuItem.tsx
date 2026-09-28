@@ -10,6 +10,7 @@ import {
   type ConnectionStatusMap,
 } from './mcpServerUtils';
 import MCPServerStatusIcon from './MCPServerStatusIcon';
+import CustomIcon from '~/components/ui/CustomIcon';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -58,10 +59,10 @@ export default function MCPServerMenuItem({
       {/* Server Icon with Status Dot */}
       <div className="relative flex-shrink-0">
         {server.config?.iconPath ? (
-          <img
+          <CustomIcon
             src={server.config.iconPath}
-            className="h-8 w-8 rounded-lg object-cover"
-            alt={displayName}
+            className="h-8 w-8 rounded-lg object-cover text-text-primary"
+            alt=""
           />
         ) : (
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface-tertiary">

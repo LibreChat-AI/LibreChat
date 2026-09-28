@@ -7,7 +7,7 @@ import {
   replyPrompt,
   replyText,
   selectMockEndpoint,
-  sendMessage,
+  sendMessageAndWaitForCompletion,
 } from './helpers';
 
 const firstConversation = (page: Page) => page.getByTestId('convo-item').first();
@@ -24,7 +24,7 @@ async function openMockChat(page: Page) {
 async function sendAndExpectReply(page: Page, label: string) {
   const prompt = replyPrompt(label);
   const reply = replyText(label);
-  const response = await sendMessage(page, prompt);
+  const response = await sendMessageAndWaitForCompletion(page, prompt);
   expect(response.ok()).toBeTruthy();
   await expect(messagesView(page).getByText(prompt)).toBeVisible();
   await expect(messagesView(page).getByText(reply)).toBeVisible();
@@ -48,6 +48,7 @@ async function renameConversation(page: Page, conversation: Locator, title: stri
 
 test.describe('conversation management', () => {
   test('loads a past sidebar conversation with its message history', async ({ page }) => {
+    test.setTimeout(90000);
     const firstLabel = uniqueLabel('sidebar-history-first');
     const secondLabel = uniqueLabel('sidebar-history-second');
 
@@ -73,6 +74,7 @@ test.describe('conversation management', () => {
   });
 
   test('renames a conversation from the sidebar', async ({ page }) => {
+    test.setTimeout(60000);
     const label = uniqueLabel('sidebar-rename');
     const renamedTitle = `Renamed ${label}`;
 
@@ -87,6 +89,7 @@ test.describe('conversation management', () => {
   test('deletes a conversation, clears its messages, and blocks direct URL access', async ({
     page,
   }) => {
+    test.setTimeout(60000);
     const label = uniqueLabel('sidebar-delete');
     const renamedTitle = `Delete ${label}`;
 

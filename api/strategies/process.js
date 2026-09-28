@@ -29,9 +29,9 @@ const handleExistingUser = async (oldUser, avatarUrl, appConfig, email) => {
   const hasManualFlag =
     typeof oldUser?.avatar === 'string' && oldUser.avatar.includes('?manual=true');
 
-  if (isLocal && (!oldUser?.avatar || !hasManualFlag)) {
+  if (avatarUrl && isLocal && (!oldUser?.avatar || !hasManualFlag)) {
     updatedAvatar = avatarUrl;
-  } else if (!isLocal && (!oldUser?.avatar || !hasManualFlag)) {
+  } else if (avatarUrl && !isLocal && (!oldUser?.avatar || !hasManualFlag)) {
     const userId = oldUser._id;
     const resizedBuffer = await resizeAvatar({
       userId,
@@ -102,7 +102,7 @@ const createSocialUser = async ({
   const fileStrategy = appConfig?.fileStrategy ?? process.env.CDN_PROVIDER;
   const isLocal = fileStrategy === FileSources.local;
 
-  if (!isLocal) {
+  if (avatarUrl && !isLocal) {
     const resizedBuffer = await resizeAvatar({
       userId: newUserId,
       input: avatarUrl,

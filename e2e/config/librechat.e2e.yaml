@@ -72,10 +72,38 @@ mcpServers:
       client_id: e2e-oauth-client
   # __E2E_DYNAMIC_MCP_NETWORK_SERVERS__
 
+# Per-endpoint file upload config so both upload UXs get e2e coverage:
+# - Mock Provider A keeps the legacy 3-way dropdown (chat.spec.ts exercises
+#   "Upload to Provider"); legacyFileUploadUX also forces llmDeliveryPath
+#   'provider', so that test's CSV still reaches the model.
+# - Mock Provider B uses the unified single button with spreadsheet/csv routed
+#   to llmDeliveryPath 'none' (unified-upload.spec.ts).
+fileConfig:
+  endpoints:
+    'Mock Run Files':
+      defaultLLMDeliveryPath:
+        overrides:
+          'application/pdf': 'provider'
+          'text/plain': 'text'
+          'text/csv': 'none'
+    'Mock Provider A':
+      legacyFileUploadUX: true
+    'Mock Provider B':
+      defaultLLMDeliveryPath:
+        overrides:
+          'text/csv': 'none'
+          'text/plain': 'none'
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'none'
+          # Routed to the provider: still delivered to the model AND shown in chat.
+          'text/markdown': 'provider'
+
 endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    fileSharing:
+      enabled: true
+      allowSiblingSharing: true
     capabilities:
       - deferred_tools
       - execute_code
@@ -92,6 +120,7 @@ endpoints:
       - chain
       - ocr
       - run_in_background
+      - stateful_code_sessions
     # __E2E_CODE_BRIDGE_CONFIG__
     # Keep the shared mock profile non-interactive except for the dedicated
     # approval probe. This exercises real HITL pause/resume without wedging the
@@ -110,6 +139,15 @@ endpoints:
     # in model-fixture record mode (E2E_MODEL_FIXTURES=record); a comment
     # otherwise, so the credential-free profile never gains a live endpoint.
     # __E2E_MODEL_RECORD_PROVIDER__
+    - name: 'Mock Run Files'
+      apiKey: 'e2e-mock-run-files'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-run-files'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Run Files'
     - name: 'Mock Provider A'
       apiKey: 'e2e-mock-key-a'
       baseURL: 'http://127.0.0.1:8889/v1'

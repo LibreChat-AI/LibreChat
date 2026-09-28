@@ -9,6 +9,8 @@ import type {
 } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 
+import { normalizeLimit, queryString } from '~/utils';
+
 const PROJECT_NOT_FOUND = 'Project not found';
 const CONVERSATION_NOT_FOUND = 'Conversation not found';
 
@@ -37,26 +39,8 @@ type ProjectHandlerDependencies = Pick<
 
 const getUserId = (req: ProjectRequest): string => req.user?.id ?? req.user?._id?.toString() ?? '';
 
-const queryString = (value: Request['query'][string]): string | undefined => {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return queryString(value[0]);
-  }
-  return undefined;
-};
-
 const normalizeString = (value: string | null | undefined): string =>
   typeof value === 'string' ? value.trim() : '';
-
-const normalizeLimit = (value: Request['query'][string]): number => {
-  const limit = parseInt(queryString(value) ?? '', 10);
-  if (!Number.isFinite(limit)) {
-    return 25;
-  }
-  return Math.min(Math.max(limit, 1), 100);
-};
 
 const normalizeSortBy = (value: Request['query'][string]): ChatProjectSortBy | undefined => {
   const sortBy = queryString(value);

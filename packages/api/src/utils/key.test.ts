@@ -1,7 +1,8 @@
 import path from 'path';
 import axios from 'axios';
+import { ErrorTypes } from 'librechat-data-provider';
+import { checkUserKeyExpiry, loadServiceKey } from './key';
 import { readFileAsString } from './files';
-import { loadServiceKey } from './key';
 
 jest.mock('fs');
 jest.mock('axios');
@@ -183,5 +184,32 @@ describe('loadServiceKey', () => {
 
     const result = await loadServiceKey(invalidBase64);
     expect(result).toBeNull();
+  });
+});
+
+describe('checkUserKeyExpiry', () => {
+  it('accepts a key that has not expired', () => {
+    expect(() =>
+      checkUserKeyExpiry(new Date(Date.now() + 60_000).toISOString(), 'openAI'),
+    ).not.toThrow();
+  });
+
+  /** A locale-formatted date cannot be parsed back reliably by a client in another locale. */
+  it('reports an expired key with a locale-independent ISO timestamp', () => {
+    const expiresAt = '2026-08-01T09:30:00.000Z';
+
+    let thrown: Error | undefined;
+    try {
+      checkUserKeyExpiry(expiresAt, 'google');
+    } catch (error) {
+      thrown = error as Error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(JSON.parse(thrown?.message ?? '')).toEqual({
+      type: ErrorTypes.EXPIRED_USER_KEY,
+      expiredAt: expiresAt,
+      endpoint: 'google',
+    });
   });
 });

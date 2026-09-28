@@ -262,6 +262,11 @@ describe('MCPConnection standalone SSE stream conflict', () => {
       .transport?.sessionId;
     expect(firstSessionId).toBeTruthy();
 
+    /**
+     * `client.connect()` assigns the new session id as soon as initialize returns,
+     * before `connectClient` emits `connected`. Waiting on the id swap alone races
+     * that handshake, so require a live connection on the rebuilt session.
+     */
     await waitForCondition(async () => {
       const current = (connection as unknown as { transport?: { sessionId?: string } }).transport
         ?.sessionId;

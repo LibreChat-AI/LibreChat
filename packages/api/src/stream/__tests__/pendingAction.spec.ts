@@ -659,6 +659,20 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       expect(await manager.approvals.pause('nonexistent', buildAction('nonexistent'))).toBe(false);
     });
 
+    test('replacing a paused generation removes its approval and rejects a late decision', async () => {
+      const streamId = 'stream-replace-paused-generation';
+      const predecessor = await manager.createJob(streamId, 'user-1');
+      const action = buildAction(streamId);
+      await manager.approvals.pause(streamId, action);
+      const replacement = await manager.createJob(streamId, 'user-1');
+
+      expect(replacement.createdAt).not.toBe(predecessor.createdAt);
+      expect(await manager.approvals.peek(streamId)).toBeNull();
+      expect((await manager.getResumeState(streamId))?.pendingAction).toBeUndefined();
+      expect(await manager.approvals.resolve(streamId, action.actionId)).toBe(false);
+      expect(await manager.getJobStatus(streamId)).toBe('running');
+    });
+
     test('a predecessor interrupt cannot pause a replacement generation', async () => {
       const streamId = 'stream-pause-epoch-fence';
       const predecessor = await manager.createJob(streamId, 'user-1');

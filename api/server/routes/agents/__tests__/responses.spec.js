@@ -4,6 +4,9 @@
  * Tests the /v1/responses endpoint against the Open Responses specification
  * compliance tests. Uses real Anthropic API for LLM calls.
  *
+ * Run with:
+ * NODE_OPTIONS=--experimental-vm-modules RUN_RESPONSES_LIVE_TESTS=1 npx jest responses.spec --runInBand
+ *
  * @see https://openresponses.org/specification
  * @see https://github.com/openresponses/openresponses/blob/main/src/lib/compliance-tests.ts
  */
@@ -19,11 +22,10 @@ const originalEnv = {
 process.env.CREDS_KEY = '0123456789abcdef0123456789abcdef';
 process.env.CREDS_IV = '0123456789abcdef';
 
-/** Skip tests if ANTHROPIC_API_KEY is not available */
-const SKIP_INTEGRATION_TESTS = !process.env.ANTHROPIC_API_KEY;
-if (SKIP_INTEGRATION_TESTS) {
-  console.warn('ANTHROPIC_API_KEY not found - skipping integration tests');
-}
+const shouldRunLive =
+  process.env.RUN_RESPONSES_LIVE_TESTS === '1' &&
+  process.env.ANTHROPIC_API_KEY != null &&
+  process.env.ANTHROPIC_API_KEY !== '';
 
 jest.mock('meilisearch', () => ({
   MeiliSearch: jest.fn().mockImplementation(() => ({
@@ -69,9 +71,13 @@ jest.mock('~/app/clients/tools', () => ({
 
 jest.mock('~/config', () => ({
   createMCPServersRegistry: jest.fn(),
+  getMCPServersRegistry: jest.fn().mockReturnValue({
+    ensureConfigServers: jest.fn().mockResolvedValue({}),
+  }),
   createMCPManager: jest.fn().mockResolvedValue({
     getAppToolFunctions: jest.fn().mockResolvedValue({}),
   }),
+  getMCPManager: jest.fn().mockReturnValue({}),
 }));
 
 const express = require('express');
@@ -369,9 +375,9 @@ async function createThinkingAgent(overrides = {}) {
   });
 }
 
-const describeWithApiKey = SKIP_INTEGRATION_TESTS ? describe.skip : describe;
+const describeIfLive = shouldRunLive ? describe : describe.skip;
 
-describeWithApiKey('Open Responses API Integration Tests', () => {
+describeIfLive('Open Responses API Integration Tests', () => {
   // Increase timeout for real API calls
   jest.setTimeout(120000);
 

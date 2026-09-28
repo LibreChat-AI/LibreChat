@@ -12,9 +12,15 @@ interface AgentSubagentsProps {
   field: ControllerRenderProps<AgentForm, 'subagents'>;
   currentAgentId: string;
   maxSubagents: number;
+  fileSharingEnabled?: boolean;
 }
 
-const AgentSubagents: React.FC<AgentSubagentsProps> = ({ field, currentAgentId, maxSubagents }) => {
+const AgentSubagents: React.FC<AgentSubagentsProps> = ({
+  field,
+  currentAgentId,
+  maxSubagents,
+  fileSharingEnabled = false,
+}) => {
   const localize = useLocalize();
 
   const fieldValue = field.value;
@@ -48,6 +54,13 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({ field, currentAgentId, 
   const setAllowSelf = useCallback(
     (next: boolean) => {
       field.onChange({ ...value, enabled: true, allowSelf: next });
+    },
+    [field, value],
+  );
+
+  const setShareFiles = useCallback(
+    (next: boolean) => {
+      field.onChange({ ...value, shareFiles: next });
     },
     [field, value],
   );
@@ -119,6 +132,20 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({ field, currentAgentId, 
             }
           />
 
+          {fileSharingEnabled && (
+            <ToggleSetting
+              id="subagents-share-files-toggle"
+              label={localize('com_ui_agent_subagents_share_files')}
+              checked={value.shareFiles === true}
+              onCheckedChange={setShareFiles}
+              info={
+                <p className="text-sm text-text-secondary">
+                  {localize('com_ui_agent_subagents_share_files_info')}
+                </p>
+              }
+            />
+          )}
+
           <div className="flex flex-col gap-0.5">
             <ListMeta
               label={localize('com_ui_agent_subagents_agents')}
@@ -158,7 +185,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({ field, currentAgentId, 
           </div>
 
           {nothingToSpawn && (
-            <p className="flex items-center gap-2 text-xs italic text-amber-600 dark:text-amber-400">
+            <p className="flex items-center gap-2 text-xs italic text-text-warning">
               <Users size={14} aria-hidden="true" />
               {localize('com_ui_agent_subagents_empty')}
             </p>

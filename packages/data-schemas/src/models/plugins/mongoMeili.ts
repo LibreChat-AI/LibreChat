@@ -15,6 +15,14 @@ import type { IConversation, IMessage } from '~/types';
 import { buildRetentionVisibilityFilter, legacyPermanentExpirationFilter } from '~/utils/retention';
 import logger from '~/config/meiliLogger';
 
+/** Internal per-query bypass for writes to non-searchable bookkeeping fields. A WeakSet keeps
+ * this marker out of driver options and stored data. Other model middleware still runs. */
+const queriesWithoutMeiliIndexing = new WeakSet<object>();
+export function withoutMeiliIndexing<T extends object>(query: T): T {
+  queriesWithoutMeiliIndexing.add(query);
+  return query;
+}
+
 interface MongoMeiliOptions {
   host: string;
   apiKey: string;
@@ -186,7 +194,16 @@ const buildIndexableQuery = (
   };
 };
 
-const buildExcludedIndexedQuery = (excludeFromIndexPath?: string): FilterQuery<unknown> | null => {
+/**
+ * Excluded documents that may still hold a Meili entry. The legacy branch matches a
+ * `_meiliCleanupVersion` that is absent or null, written as a null equality rather than
+ * `$exists: false` so `meili_excluded_legacy_cleanup_v4` can serve it: a partial index
+ * accepts null equality and rejects `$exists: false`, and the planner only reaches a
+ * partial index through a predicate that implies its filter.
+ */
+export const buildExcludedIndexedQuery = (
+  excludeFromIndexPath?: string,
+): FilterQuery<unknown> | null => {
   if (excludeFromIndexPath == null) {
     return null;
   }
@@ -196,7 +213,7 @@ const buildExcludedIndexedQuery = (excludeFromIndexPath?: string): FilterQuery<u
     $or: [
       { _meiliIndex: true },
       { _meiliIndexAttempted: true },
-      { _meiliIndex: false, _meiliCleanupVersion: { $exists: false } },
+      { _meiliIndex: false, _meiliCleanupVersion: null },
     ],
   };
 };
@@ -478,6 +495,7 @@ const createMeiliMongooseModel = ({
       );
 
       // Get approximate total count for raw estimation, the sync should not overcome this number
+      // eslint-disable-next-line no-restricted-syntax -- a collection-wide estimate is the quantity wanted here: it bounds a full-index sync and only feeds a progress log, so a tenant-scoped count would be wrong, not just unnecessary.
       const approxTotalCount = await this.estimatedDocumentCount();
       logger.info(
         `[syncWithMeili] Approximate total number of all ${collectionName}: ${approxTotalCount}`,
@@ -987,14 +1005,21 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
         },
       },
     );
+    /* Serves the legacy branch of `buildExcludedIndexedQuery`. MongoDB rewrites
+     * `$exists: false` into `$not`, which no `partialFilterExpression` accepts, so the
+     * unstamped state is expressed as a null equality: it admits an absent or null
+     * `_meiliCleanupVersion` and keeps every already-stamped document out, which is what
+     * bounds this index to the shrinking legacy population rather than to every
+     * excluded document ever written. Cleanup stamps the version, and the document
+     * leaves the index. */
     schema.index(
       { _meiliIndex: 1, _meiliCleanupVersion: 1, [options.primaryKey]: 1 },
       {
-        name: 'meili_excluded_legacy_cleanup_v3',
+        name: 'meili_excluded_legacy_cleanup_v4',
         partialFilterExpression: {
           [options.excludeFromIndexPath]: { $exists: true },
           _meiliIndex: { $eq: false },
-          _meiliCleanupVersion: { $exists: false },
+          _meiliCleanupVersion: { $eq: null },
         },
       },
     );
@@ -1129,6 +1154,10 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
   });
 
   schema.pre('findOneAndUpdate', function (next) {
+    if (queriesWithoutMeiliIndexing.has(this)) {
+      next();
+      return;
+    }
     const query = this as Query<unknown, unknown>;
     if (meiliEnabled) {
       const version = new mongoose.Types.ObjectId().toString();

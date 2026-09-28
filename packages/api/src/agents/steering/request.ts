@@ -235,18 +235,22 @@ function hasTenantMismatch(
   return metadata?.tenantId != null && metadata.tenantId !== user.tenantId;
 }
 
-/** DELIBERATELY quote-independent: this exact 3-field hash is what EVERY
- *  deployed replica version computes, so a lost-ACK retry can replay its
- *  receipt no matter which replica wrote it or reads it. Quote identity is
- *  enforced separately via `SteerReceipt.requestedQuotesFingerprint`, which
- *  only quote-aware readers consult. */
+/** DELIBERATELY quote-independent and display-metadata-independent: the
+ *  legacy 3-field hash saw these same file refs before `llmDeliveryPath` was
+ *  added, so a lost-ACK retry can replay its receipt across rollout versions.
+ *  Quote identity is enforced separately via
+ *  `SteerReceipt.requestedQuotesFingerprint`, which only quote-aware readers
+ *  consult. */
 function steerFingerprint(
   text: string,
   files: Partial<TFile>[] | undefined,
   preempt: boolean,
 ): string {
+  const stableFiles = (files ?? []).map((file) =>
+    Object.fromEntries(Object.entries(file).filter(([key]) => key !== 'llmDeliveryPath')),
+  );
   return createHash('sha256')
-    .update(JSON.stringify({ text, files: files ?? [], preempt }))
+    .update(JSON.stringify({ text, files: stableFiles, preempt }))
     .digest('base64url');
 }
 

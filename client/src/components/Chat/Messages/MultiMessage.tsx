@@ -1,15 +1,16 @@
 import { memo, useEffect, useRef, useCallback } from 'react';
-import { useRecoilState } from 'recoil';
+import { useAtom } from 'jotai';
 import { isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import type { TMessageProps } from '~/common';
 import EventSubagentActivityGroup from '~/components/Chat/Subagents/EventSubagentActivityGroup';
 import MessageContent from '~/components/Messages/MessageContent';
+import { siblingIdxFamily, siblingKey } from './Thread/state';
 import { useRowMountWindow } from '~/hooks/Messages';
+import { hasParallelLanes } from '~/utils/lanes';
 import MessageParts from './MessageParts';
 import Message from './Message';
-import store from '~/store';
 
 /** First-run sentinel for `parentRef`: `messageId` itself may legitimately be
  *  null/undefined at the root level, so those can't mark "not yet bound". */
@@ -22,7 +23,7 @@ function MultiMessage({
   currentEditId,
   setCurrentEditId,
 }: TMessageProps) {
-  const [siblingIdx, setSiblingIdx] = useRecoilState(store.messagesSiblingIdxFamily(messageId));
+  const [siblingIdx, setSiblingIdx] = useAtom(siblingIdxFamily(siblingKey(messageId)));
   const mountWindow = useRowMountWindow();
 
   const setSiblingIdxRev = useCallback(
@@ -199,8 +200,7 @@ function MultiMessage({
   }
   const isEditingActivityAnchor =
     typeof currentEditId === 'string' && activityParentMessageIds.includes(currentEditId);
-  const hasParallelContent =
-    !message.isCreatedByUser && message.content?.some((part) => part?.groupId != null) === true;
+  const hasParallelContent = !message.isCreatedByUser && hasParallelLanes(message.content);
 
   /**
    * The child recursion is a sibling of the row (not rendered inside it), so a

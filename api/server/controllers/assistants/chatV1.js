@@ -5,13 +5,16 @@ const {
   sendEvent,
   countTokens,
   checkBalance,
+  createBalanceReservations,
   getBalanceConfig,
+  getSafeErrorText,
   getModelMaxTokens,
   getTransactionsConfig,
   ATTACHMENT_ONLY_TEXT,
   isContentFilterError,
   hasActiveFilePolicy,
   preflightAssistantRunContent,
+  reportLocatorTraversalFailure,
   preflightAssistantUserMessageContent,
 } = require('@librechat/api');
 const {
@@ -45,10 +48,10 @@ const { createRunBody } = require('~/server/services/createRunBody');
 const { sendResponse } = require('~/server/middleware/error');
 const setHeaders = require('~/server/middleware/setHeaders');
 const {
-  createAutoRefillTransaction,
-  findBalanceByUser,
-  upsertBalanceFields,
+  releaseBalanceReservation,
+  renewBalanceReservation,
   getTransactions,
+  reserveBalance,
   getMultiplier,
   getConvo,
   getFiles,
@@ -124,6 +127,7 @@ const chatV1 = async (req, res) => {
   /** @type {Run | undefined} - The completed run, undefined if incomplete */
   let completedRun;
   let contentRejected = false;
+  const balanceReservations = createBalanceReservations();
 
   const handleError = async (error) => {
     const defaultErrorMessage =
@@ -163,7 +167,7 @@ const chatV1 = async (req, res) => {
     } else if (error?.message?.includes(ViolationTypes.TOKEN_BALANCE)) {
       return sendResponse(req, res, messageData, error.message);
     } else {
-      logger.error('[/assistants/chat/]', error);
+      logger.error(`[/assistants/chat/] ${getSafeErrorText(error)}`);
     }
 
     if (!openai || !thread_id || !run_id) {
@@ -302,7 +306,7 @@ const chatV1 = async (req, res) => {
       // Count tokens up to the current context window
       promptTokens = Math.min(promptTokens, getModelMaxTokens(model));
 
-      await checkBalance(
+      return await checkBalance(
         {
           req,
           res,
@@ -314,12 +318,12 @@ const chatV1 = async (req, res) => {
           },
         },
         {
-          findBalanceByUser,
           getMultiplier,
-          createAutoRefillTransaction,
+          reserveBalance,
+          renewBalanceReservation,
+          releaseBalanceReservation,
           logViolation,
           balanceConfig,
-          upsertBalanceFields,
         },
       );
     };
@@ -335,6 +339,7 @@ const chatV1 = async (req, res) => {
     let persistedAssistant;
     try {
       persistedAssistant = await preflightAssistantRunContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
         config: req.config,
         openai,
         user: req.user,
@@ -546,6 +551,7 @@ const chatV1 = async (req, res) => {
       await getRequestFileIds();
       try {
         await preflightAssistantUserMessageContent({
+          onTraversalFailure: reportLocatorTraversalFailure,
           config: req.config,
           user: req.user,
           message: userMessage,
@@ -560,7 +566,7 @@ const chatV1 = async (req, res) => {
       }
     }
 
-    const promises = [initializeThread(), checkBalanceBeforeRun()];
+    const promises = [initializeThread(), balanceReservations.track(checkBalanceBeforeRun())];
     await Promise.all(promises);
 
     const sendInitialResponse = () => {
@@ -651,6 +657,7 @@ const chatV1 = async (req, res) => {
 
     try {
       await preflightAssistantRunContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
         config: req.config,
         openai,
         user: req.user,
@@ -678,7 +685,7 @@ const chatV1 = async (req, res) => {
     }
 
     if (response.run.status === RunStatus.IN_PROGRESS) {
-      processRun(true);
+      balanceReservations.holdUntil(processRun(true));
     }
 
     completedRun = response.run;
@@ -750,6 +757,8 @@ const chatV1 = async (req, res) => {
     }
   } catch (error) {
     await handleError(error);
+  } finally {
+    await balanceReservations.release();
   }
 };
 

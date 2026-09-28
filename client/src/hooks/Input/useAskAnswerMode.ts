@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { atom, useRecoilState, useRecoilValue } from 'recoil';
+import { useAtom } from 'jotai';
+import {
+  collapsedAskActionsAtom,
+  askAnswerSelectionAtom,
+  askAnswerCheckedAtom,
+  askAnswerTextAtom,
+  releasedComposerTextAtom,
+  useAskAnswerHost,
+} from '~/components/Chat/ask/state';
 import {
   useAskSubmitStatus,
   useResumeSubmit,
@@ -9,36 +17,9 @@ import {
   findLiveAskUserQuestion,
   splitOtherOption,
 } from '~/utils/approval';
+import { getAskAnswerDraftId, morphTransition, setDraft } from '~/utils';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { useOptionalChatFormContext } from '~/Providers';
-import { getAskAnswerDraftId } from '~/utils';
-import store from '~/store';
-
-/** Dismissed action ids — recoil so every consumer reacts. */
-const dismissedAskActionsAtom = atom<string[]>({
-  key: 'askAnswerModeDismissedActions',
-  default: [],
-});
-
-/** Collapsed action ids: popover chrome hidden, answer mode still live. */
-const collapsedAskActionsAtom = atom<string[]>({
-  key: 'askAnswerModeCollapsedActions',
-  default: [],
-});
-
-/** Currently highlighted option row (keyboard cursor), or nothing. */
-const askAnswerSelectionAtom = atom<number | null>({
-  key: 'askAnswerModeSelection',
-  default: null,
-});
-
-/** Checked option rows for a multi-select question — shared across the
- *  popover, the composer, and the chat card so every surface shows (and
- *  submits) the same set. */
-const askAnswerCheckedAtom = atom<number[]>({
-  key: 'askAnswerModeChecked',
-  default: [],
-});
 
 /**
  * First-class "answer mode" for a live `ask_user_question` pause. Clicking an
@@ -51,11 +32,10 @@ const askAnswerCheckedAtom = atom<number[]>({
  * conversation draft is stashed on entry and restored once the question
  * resolves.
  *
- * Two ways out short of answering: `collapse` hides the popover chrome but
- * KEEPS the pause live (the question renders in the chat card, which still
- * answers it), while the × `dismiss` exits answer mode entirely. `Skip`
- * resumes the run with a canned decline notice. Collapsing always returns the
- * composer to normal chat — see `composerLocked`.
+ * One way out short of answering: `collapse` (the popover's chevron, or
+ * Escape) moves the question to the chat card AND releases the composer, so
+ * the user can type a normal message; the card's chevron moves it back.
+ * `Skip` resumes the run with a canned decline notice.
  *
  * `handleComposerKeyDown` only steers selection from the EMPTY composer and
  * reports whether it consumed the key.
@@ -71,17 +51,16 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     select: findLiveAskUserQuestion,
   });
   const liveAsk = enabled ? (liveAskData ?? null) : null;
-  const [dismissedIds, setDismissedIds] = useRecoilState(dismissedAskActionsAtom);
-  const [collapsedIds, setCollapsedIds] = useRecoilState(collapsedAskActionsAtom);
-  const [selected, setSelected] = useRecoilState(askAnswerSelectionAtom);
-  const [checked, setChecked] = useRecoilState(askAnswerCheckedAtom);
-  const saveDrafts = useRecoilValue<boolean>(store.saveDrafts);
+  const [collapsedIds, setCollapsedIds] = useAtom(collapsedAskActionsAtom);
+  const [selected, setSelected] = useAtom(askAnswerSelectionAtom);
+  const [checked, setChecked] = useAtom(askAnswerCheckedAtom);
+  const [answerDrafts, setAnswerDrafts] = useAtom(askAnswerTextAtom);
+  const [releasedComposerText, setReleasedComposerText] = useAtom(releasedComposerTextAtom);
+  const saveDrafts = useAskAnswerHost();
   const { submitAskAnswer } = useResumeSubmit();
-  /** Recoil-backed so the lock/status works from the composer, which renders
+  /** Jotai-backed so the lock/status works from the composer, which renders
    *  outside `ApprovalProvider` (where the context status would be inert). */
   const { getAskStatus } = useAskSubmitStatus();
-  /** Absent outside ChatView (Share/search render the answer card without the
-   *  composer form) — resets are simply skipped there. */
   const formContext = useOptionalChatFormContext();
   /** Resume callbacks may settle after this ChatForm has navigated to another
    * conversation (the form instance is intentionally reused across routes).
@@ -97,6 +76,10 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     actionId: liveAsk?.actionId,
     formContext,
   };
+  /** Read by the resume success callback, which settles long after the render
+   *  that armed it, so it must not close over a stale stash. */
+  const releasedComposerTextRef = useRef(releasedComposerText);
+  releasedComposerTextRef.current = releasedComposerText;
   const mountedRef = useRef(true);
   useEffect(() => {
     // Strict Mode runs setup, cleanup, then setup again in development; each
@@ -111,7 +94,6 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    *  no-op so a double-click or a stray Skip can't race a second resume. */
   const status = liveAsk != null ? getAskStatus(liveAsk.actionId) : 'idle';
   const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
-  const dismissed = liveAsk != null && dismissedIds.includes(liveAsk.actionId);
   /**
    * An EXPIRED question can no longer be answered, so it drops out of answer
    * mode entirely: the popover closes, the composer reverts to a normal
@@ -127,22 +109,17 @@ export default function useAskAnswerMode(conversationId?: string | null) {
    * submit whose store write couldn't run) holds the popover open over an
    * answered question with every option greyed out.
    */
-  const active = liveAsk != null && !dismissed && status !== 'expired' && status !== 'submitted';
-  const collapsed = active && collapsedIds.includes(liveAsk.actionId);
-  /** The popover renders only while expanded; collapse keeps `active` but
-   *  hands the question display to the chat card. */
-  const popoverVisible = active && !collapsed;
-  const batchMode = (liveAsk?.questions?.length ?? 0) > 0;
+  const answerable = liveAsk != null && status !== 'expired' && status !== 'submitted';
+  /** Moved to the chat: the card owns the question and the composer is free. */
+  const collapsed = answerable && collapsedIds.includes(liveAsk.actionId);
   /**
-   * Which role the composer plays for this pause. A single question is
-   * answered IN the composer, so it stays live for as long as the pause does.
-   * A batch is answered in its own card, so the composer has nothing to
-   * contribute and locks — but ONLY while the popover is up. Collapsing has to
-   * hand the composer back, because every other way out is gone once the
-   * popover closes: the stop button hides behind `composerAnswers` and Escape
-   * would reach a disabled textarea. Staying locked past collapse left no way
-   * to type, send, or stop the run short of reloading the page.
+   * Answer mode: the popover is up AND the composer is the free-form answer
+   * box. The two are deliberately the same condition because the composer's answer
+   * role is only discoverable while the popover explains it.
    */
+  const active = answerable && !collapsed;
+  const popoverVisible = active;
+  const batchMode = (liveAsk?.questions?.length ?? 0) > 0;
   const composerAnswers = active && !batchMode;
   const composerLocked = popoverVisible && batchMode;
   const multiSelect = !batchMode && liveAsk != null && liveAsk.question.multiSelect === true;
@@ -156,6 +133,93 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     [batchMode, liveAsk],
   );
 
+  const lastAnswerableRef = useRef<{
+    conversationId: typeof conversationId;
+    actionId: string;
+    submitting: boolean;
+    composerText: string;
+  } | null>(null);
+  /** Expiration and server-side removal bypass the success callback. Recover
+   *  the in-memory message on those exits too, without crossing conversations
+   *  or replacing text edited while a resume was in flight. */
+  useEffect(() => {
+    const previous = lastAnswerableRef.current;
+    if (answerable && liveAsk) {
+      const sameAction =
+        previous != null &&
+        previous.conversationId === conversationId &&
+        previous.actionId === liveAsk.actionId;
+      const submitting = status === 'submitting';
+      lastAnswerableRef.current = {
+        conversationId,
+        actionId: liveAsk.actionId,
+        submitting,
+        composerText:
+          sameAction && submitting && previous.submitting
+            ? previous.composerText
+            : (formContext?.getValues('text') ?? ''),
+      };
+      return;
+    }
+    lastAnswerableRef.current = null;
+    /** Recovery is keyed by the stash's own conversation, not by what this
+     *  hook happened to observe. Navigating away mid-resume clears the ref
+     *  while the stash rightly stays put, and the settle then lands with
+     *  nobody watching that exit — so coming back is the last chance to hand
+     *  the message over, and gating on the ref stranded it in the atom. */
+    const stashed = Object.entries(releasedComposerText).find(
+      ([, stash]) => stash.conversationId === conversationId,
+    );
+    if (!stashed) {
+      return;
+    }
+    const [actionId, stash] = stashed;
+    const composerText = formContext?.getValues('text') ?? '';
+    /** Only the exit this hook armed knows what the composer held when the
+     *  resume started. On a revisit the composer is whatever the route
+     *  restored, so an empty one is the only target that cannot clobber
+     *  something newer. Either way the entry goes: anything the user typed
+     *  since is newer than the stash. */
+    const restorable =
+      previous != null && previous.actionId === actionId
+        ? !previous.submitting || composerText === previous.composerText
+        : composerText === '';
+    if (restorable) {
+      formContext?.setValue('text', stash.text);
+    }
+    setReleasedComposerText((current) => {
+      if (current[actionId] == null) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[actionId];
+      return next;
+    });
+  }, [
+    answerable,
+    conversationId,
+    liveAsk,
+    status,
+    formContext,
+    releasedComposerText,
+    setReleasedComposerText,
+  ]);
+  const answerText = liveAsk != null ? (answerDrafts[liveAsk.actionId] ?? '') : '';
+  const setAnswerText = useCallback(
+    (text: string) => {
+      if (liveAsk && !batchMode) {
+        setAnswerDrafts((current) => ({ ...current, [liveAsk.actionId]: text }));
+        /** While the card owns the answer, `useAutoSave` is tracking the
+         *  conversation draft instead. Keep the dormant ask draft current so
+         *  expanding can restore this edit without clobbering that message. */
+        if (saveDrafts) {
+          setDraft({ id: getAskAnswerDraftId(liveAsk.actionId), value: text });
+        }
+      }
+    },
+    [batchMode, liveAsk, saveDrafts, setAnswerDrafts],
+  );
+
   /** Selection state is per-question: a new pause must never inherit a stale
    *  highlight (or checks) whose Enter would submit the previous question's
    *  choice. */
@@ -164,36 +228,121 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     setChecked([]);
   }, [liveAsk?.actionId, setSelected, setChecked]);
 
-  const dismiss = useCallback(() => {
-    if (liveAsk) {
-      setDismissedIds((prev) =>
-        prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
-      );
-    }
-  }, [liveAsk, setDismissedIds]);
+  /** Popover ⇄ chat-card handoffs run inside a view transition: both
+   *  surfaces carry the same `view-transition-name`, so the browser morphs
+   *  one into the other instead of swapping. Both are user-event driven,
+   *  which morphTransition's synchronous flush requires.
+   *
+   *  Batches opt out: only the single-question surfaces declare
+   *  `view-transition-name: ask-question`, so wrapping a batch handoff would
+   *  give the browser nothing to pair and it would cross-fade the whole root
+   *  (chat plus composer) instead. */
+  const runHandoff = useCallback(
+    (update: () => void) => {
+      if (batchMode) {
+        update();
+        return;
+      }
+      morphTransition(update);
+    },
+    [batchMode],
+  );
 
   const collapse = useCallback(() => {
     if (liveAsk) {
-      setCollapsedIds((prev) =>
-        prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
-      );
+      const composerAnswer = !batchMode ? (formContext?.getValues('text') ?? answerText) : '';
+      runHandoff(() => {
+        if (!batchMode) {
+          setAnswerDrafts((current) => ({ ...current, [liveAsk.actionId]: composerAnswer }));
+          /** An existing stash is restored regardless of the CURRENT
+           *  preference: it was captured while saving was off, so it never
+           *  reached the conversation draft and this is its only recovery path.
+           *  Gating on `!saveDrafts` dropped it whenever the user enabled
+           *  saving between expanding and collapsing. */
+          const released = releasedComposerText[liveAsk.actionId];
+          if (released) {
+            formContext?.setValue('text', released.text);
+            setReleasedComposerText((current) => {
+              if (current[liveAsk.actionId] == null) {
+                return current;
+              }
+              const next = { ...current };
+              delete next[liveAsk.actionId];
+              return next;
+            });
+          } else if (!saveDrafts) {
+            formContext?.reset();
+          }
+        }
+        setCollapsedIds((prev) =>
+          prev.includes(liveAsk.actionId) ? prev : [...prev, liveAsk.actionId],
+        );
+      });
     }
-  }, [liveAsk, setCollapsedIds]);
+  }, [
+    liveAsk,
+    batchMode,
+    formContext,
+    answerText,
+    saveDrafts,
+    releasedComposerText,
+    setReleasedComposerText,
+    setAnswerDrafts,
+    setCollapsedIds,
+    runHandoff,
+  ]);
 
   const expand = useCallback(() => {
     if (liveAsk) {
-      setCollapsedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
+      /** Read before the transition: the composer is about to be handed back
+       *  to the answer, and an ordinary unsent message typed while the card
+       *  owned the question must survive the round trip. */
+      const released = !batchMode && !saveDrafts ? (formContext?.getValues('text') ?? '') : '';
+      runHandoff(() => {
+        /** Autosave restores the ask-specific draft after the key switch. If
+         *  drafts are disabled, perform that handoff directly. */
+        if (!batchMode && !saveDrafts) {
+          if (released) {
+            setReleasedComposerText((current) => ({
+              ...current,
+              [liveAsk.actionId]: { conversationId: conversationId ?? null, text: released },
+            }));
+          }
+          formContext?.setValue('text', answerText);
+        } else if (!batchMode && answerText) {
+          /** Drafts were re-enabled after this answer was captured with saving
+           *  off, so no ask draft exists for autosave to restore: the composer
+           *  would open empty and the next collapse would read that empty
+           *  value back over the in-memory answer. Seed it so the handoff has
+           *  something to read. The in-memory value is authoritative because
+           *  `setAnswerText` writes both while saving is on. */
+          setDraft({ id: getAskAnswerDraftId(liveAsk.actionId), value: answerText });
+        }
+        setCollapsedIds((prev) => prev.filter((id) => id !== liveAsk.actionId));
+      });
     }
-  }, [liveAsk, setCollapsedIds]);
+  }, [
+    liveAsk,
+    conversationId,
+    batchMode,
+    saveDrafts,
+    formContext,
+    answerText,
+    setReleasedComposerText,
+    setCollapsedIds,
+    runHandoff,
+  ]);
 
+  /** Pure check toggle: the keyboard highlight is steered only by the
+   *  composer's digit/arrow shortcuts, so a mouse toggle never leaves a
+   *  row painted `selected` after it is unchecked. */
   const toggleChecked = useCallback(
     (index: number) => {
-      setSelected(index);
       setChecked((prev) =>
         prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index],
       );
     },
-    [setSelected, setChecked],
+    [setChecked],
   );
 
   const canSubmit =
@@ -203,15 +352,15 @@ export default function useAskAnswerMode(conversationId?: string | null) {
 
   /**
    * Shared answer dispatch: sends the run's resume and clears the phase.
-   * Gated on the live pause (NOT `active` — the chat card must still answer a
-   * dismissed question) and on `locked` (no duplicate resumes while one is in
+   * Gated on the live pause (NOT `active`, because the chat card must still
+   * answer a collapsed question) and on `locked` (no duplicate resumes while one is in
    * flight).
    *
    * The selection/composer cleanup runs ONLY after the resume is accepted (in
-   * `submitAskAnswer`'s success path): a failed resume — the 16k answer-cap
-   * 400, an expired action, a network error — leaves `status` re-answerable,
-   * so wiping the composer (the user's only copy of a free-form answer) up
-   * front would lose it. The composer only resets when its text was consumed
+   * `submitAskAnswer`'s success path): a retryable failed resume — the 16k
+   * answer-cap 400 or a network error — must preserve the user's free-form
+   * answer. Terminal exits separately restore any released normal message.
+   * The composer only resets when its text was consumed
    * by the answer or when the draft machinery will restore the stashed
    * conversation draft; with drafts disabled and an option-click answer the
    * typed text is left alone.
@@ -237,12 +386,43 @@ export default function useAskAnswerMode(conversationId?: string | null) {
           }
           setSelected(null);
           setChecked([]);
-          if (
-            (consumedComposerText || (wasActive && saveDrafts)) &&
-            currentScope.formContext?.getValues('text') === submittedComposerText
-          ) {
-            currentScope.formContext.reset();
+          /** Drop only the answered question's entry, so a draft belonging to
+           *  another paused conversation survives and the map stays bounded. */
+          setAnswerDrafts((current) => {
+            if (current[submittedActionId] == null) {
+              return current;
+            }
+            const next = { ...current };
+            delete next[submittedActionId];
+            return next;
+          });
+          /** A successful answer never goes through `collapse`, so the released
+           *  text has to be handed back here too or the user's ordinary message
+           *  dies with the question. Restored on EVERY submission path, not
+           *  just the free-text one: only that path sets
+           *  `consumedComposerText`, so gating on it discarded the stash on an
+           *  option click or Skip.
+           *
+           *  Both writes require the composer to still hold what was
+           *  submitted. The textarea stays editable while the resume is in
+           *  flight, and anything typed since is newer than both the stash and
+           *  the answer, so it wins. */
+          const released = releasedComposerTextRef.current[submittedActionId];
+          if (currentScope.formContext?.getValues('text') === submittedComposerText) {
+            if (released) {
+              currentScope.formContext.setValue('text', released.text);
+            } else if (consumedComposerText || (wasActive && saveDrafts)) {
+              currentScope.formContext.reset();
+            }
           }
+          setReleasedComposerText((current) => {
+            if (current[submittedActionId] == null) {
+              return current;
+            }
+            const next = { ...current };
+            delete next[submittedActionId];
+            return next;
+          });
         },
       });
       return true;
@@ -253,10 +433,12 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       active,
       saveDrafts,
       conversationId,
+      setReleasedComposerText,
       formContext,
       submitAskAnswer,
       setSelected,
       setChecked,
+      setAnswerDrafts,
     ],
   );
 
@@ -339,8 +521,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
 
   /**
    * Explicitly decline: resumes the run with a canned notice so the model
-   * knows the user chose not to answer. A client-side dismiss alone would
-   * leave the run paused until expiry — a hung turn.
+   * knows the user chose not to answer.
    */
   const skip = useCallback((): boolean => {
     if (!active) {
@@ -389,7 +570,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
        */
       if (options.length === 0 || !popoverVisible) {
         if (e.key === 'Escape') {
-          dismiss();
+          collapse();
           return true;
         }
         return false;
@@ -398,6 +579,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       if (!Number.isNaN(digit) && digit >= 1 && digit <= Math.min(options.length, 9)) {
         e.preventDefault();
         if (multiSelect) {
+          setSelected(digit - 1);
           toggleChecked(digit - 1);
         } else {
           setSelected(digit - 1);
@@ -420,7 +602,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
         return true;
       }
       if (e.key === 'Escape') {
-        dismiss();
+        collapse();
         return true;
       }
       return false;
@@ -436,7 +618,7 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       submit,
       submitText,
       toggleChecked,
-      dismiss,
+      collapse,
       setSelected,
     ],
   );
@@ -475,8 +657,6 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     batchMode,
     liveAsk,
     options,
-    dismissed,
-    dismiss,
     collapsed,
     collapse,
     expand,
@@ -489,6 +669,8 @@ export default function useAskAnswerMode(conversationId?: string | null) {
     setSelected,
     checked,
     toggleChecked,
+    answerText,
+    setAnswerText,
     canSubmit,
     submit,
     submitOption,

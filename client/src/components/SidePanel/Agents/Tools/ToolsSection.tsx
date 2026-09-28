@@ -1,16 +1,7 @@
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Plus } from 'lucide-react';
 import { useFormContext, useWatch } from 'react-hook-form';
-import {
-  Label,
-  Switch,
-  OGDialog,
-  HoverCard,
-  HoverCardPortal,
-  HoverCardContent,
-  OGDialogTemplate,
-  useToastContext,
-} from '@librechat/client';
+import { Label, OGDialog, OGDialogTemplate, useToastContext } from '@librechat/client';
 import {
   PermissionTypes,
   Permissions,
@@ -20,7 +11,6 @@ import {
   removeCodeExecutionCaller,
 } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
 import type { CapabilityFileCounts } from './items/capabilities';
 import type { AgentItem } from './items/types';
 import type { AgentForm } from '~/common';
@@ -30,21 +20,19 @@ import {
   useResolvedSkills,
   useUninstallToolCredentials,
 } from './hooks';
-import { computeToggleAction, skillsSelectionTransition } from './items/mutations';
-import { useListSkillsQuery, useDeleteAgentAction } from '~/data-provider';
+import { useSkillsInfiniteQuery, useDeleteAgentAction } from '~/data-provider';
 import { requiresFileManagerRemoval } from './items/capabilities';
 import { useRemoveMCPTool, useVisibleTools } from '~/hooks/MCP';
 import ToolsMarketplaceDialog from './ToolsMarketplaceDialog';
+import { computeToggleAction } from './items/mutations';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers';
-import { isEphemeralAgent, ESide } from '~/common';
 import ItemDialog from './ItemDialog/ItemDialog';
 import { mcpAllToken } from './items/selectors';
-import { InfoTrigger } from '../Advanced/ui';
-import { Collapse } from '~/components/ui';
+import { isEphemeralAgent } from '~/common';
+import SkillsSection from './SkillsSection';
 import SkillsDialog from './SkillsDialog';
 import ToolRow from './ToolRow';
-import { cn } from '~/utils';
 
 interface Props {
   agentId: string;
@@ -87,95 +75,26 @@ export default function ToolsSection({ agentId }: Props) {
     [agentsConfig],
   );
   const showSkills = hasSkillsAccess && skillsEnabled;
-  const { data: skillsData } = useListSkillsQuery({ limit: 100 }, { enabled: showSkills });
-  const resolvedSkills = useResolvedSkills(skillsData?.skills);
-
+  /** The same infinite query the section and the picker use, so all three
+   *  consumers share one cache entry and one request. A plain list query hits
+   *  the same endpoint under a different key, which React Query cannot
+   *  deduplicate: the first page would be fetched twice. Only the first page
+   *  is needed here, and pagination stays driven by whoever opens a list. */
+  const { data: skillsData } = useSkillsInfiniteQuery({ limit: 100 }, { enabled: showSkills });
+  /** `undefined` until the first page lands: `useResolvedSkills` treats it as
+   *  "not loaded yet" and skips its per-id fallback lookups. */
+  const skillSummaries = useMemo(
+    () => (skillsData ? skillsData.pages.flatMap((page) => page.skills) : undefined),
+    [skillsData],
+  );
   const skillsValue = useWatch({ control, name: 'skills' });
   const skillsEnabledValue = useWatch({ control, name: 'skills_enabled' });
-  const skillAuthoringEnabledValue = useWatch({ control, name: 'skill_authoring_enabled' });
   const skillsScopeValue = useWatch({ control, name: 'skills_scope' });
-  const explicitSkillsEnabled = skillsEnabledValue === true;
-  const skillsCapabilityEnabled = explicitSkillsEnabled || skillAuthoringEnabledValue === true;
-  const effectiveSkillsScope = resolveAgentSkillsScope(
-    skillsValue,
-    skillsEnabledValue,
-    skillsScopeValue,
-  );
-  const useAllSkills = explicitSkillsEnabled && effectiveSkillsScope === SkillsScope.all;
-  /** Selection stashed when "use all skills" turns on, so turning it back off
-   * restores the previous picks instead of destroying them. Cleared when the
-   * agent changes — the section isn't remounted on switch (only the form
-   * resets), so a stale stash could otherwise restore one agent's allowlist
-   * into another. */
-  const stashedSkillsRef = useRef<string[]>([]);
-  const [prevAgentId, setPrevAgentId] = useState(agentId);
-  if (prevAgentId !== agentId) {
-    setPrevAgentId(agentId);
-    stashedSkillsRef.current = [];
-  }
-
-  const handleSkillsEnabledChange = useCallback(
-    (checked: boolean) => {
-      if (!checked) {
-        setValue('skills_enabled', false, { shouldDirty: true });
-        setValue('skill_authoring_enabled', false, { shouldDirty: true });
-        return;
-      }
-      const current = (getValues('skills') ?? []) as string[];
-      if (current.length === 0 && getValues('skills_scope') === SkillsScope.all) {
-        setValue('skills_enabled', true, { shouldDirty: true });
-        setValue('skill_authoring_enabled', false, { shouldDirty: true });
-        return;
-      }
-      const transition = skillsSelectionTransition(
-        current,
-        getValues('skills_enabled'),
-        getValues('skill_authoring_enabled'),
-        getValues('skills_scope'),
-      );
-      if (transition.enabled !== undefined) {
-        setValue('skills_enabled', transition.enabled, { shouldDirty: true });
-      }
-      if (transition.authoringEnabled !== undefined) {
-        setValue('skill_authoring_enabled', transition.authoringEnabled, { shouldDirty: true });
-      }
-      if (transition.scope !== undefined) {
-        setValue('skills_scope', transition.scope, { shouldDirty: true });
-      }
-    },
-    [getValues, setValue],
-  );
-
-  const handleUseAllSkillsChange = useCallback(
-    (checked: boolean) => {
-      if (checked) {
-        stashedSkillsRef.current = (getValues('skills') ?? []) as string[];
-        setValue('skills', [], { shouldDirty: true });
-        setValue('skills_enabled', true, { shouldDirty: true });
-        setValue('skill_authoring_enabled', false, { shouldDirty: true });
-        setValue('skills_scope', SkillsScope.all, { shouldDirty: true });
-        return;
-      }
-      const restored = stashedSkillsRef.current;
-      setValue('skills', restored, { shouldDirty: true });
-      const transition = skillsSelectionTransition(
-        restored,
-        getValues('skills_enabled'),
-        getValues('skill_authoring_enabled'),
-        getValues('skills_scope'),
-      );
-      if (transition.enabled !== undefined) {
-        setValue('skills_enabled', transition.enabled, { shouldDirty: true });
-      }
-      if (transition.authoringEnabled !== undefined) {
-        setValue('skill_authoring_enabled', transition.authoringEnabled, { shouldDirty: true });
-      }
-      if (transition.scope !== undefined) {
-        setValue('skills_scope', transition.scope, { shouldDirty: true });
-      }
-    },
-    [getValues, setValue],
-  );
+  /** Only Selected renders allowlist rows, so the per-id fallback lookups are
+   *  worth issuing only there. An All-scoped agent keeps its previous picks,
+   *  which would otherwise cost one request per retained id on every view. */
+  const skillsMode = resolveAgentSkillsScope(skillsValue, skillsEnabledValue, skillsScopeValue);
+  const resolvedSkills = useResolvedSkills(skillSummaries, skillsMode === SkillsScope.selected);
 
   const uninstallToolCredentials = useUninstallToolCredentials();
 
@@ -224,26 +143,14 @@ export default function ToolsSection({ agentId }: Props) {
           break;
         }
         case 'skill-remove': {
+          /** The mode is explicit, so emptying the allowlist stays in
+           *  `selected` rather than silently disabling skills. */
           const current = (getValues('skills') ?? []) as string[];
-          const next = current.filter((s) => s !== patch.id);
-          setValue('skills', next, { shouldDirty: true });
-          const transition = skillsSelectionTransition(
-            next,
-            getValues('skills_enabled'),
-            getValues('skill_authoring_enabled'),
-            getValues('skills_scope'),
+          setValue(
+            'skills',
+            current.filter((s) => s !== patch.id),
+            { shouldDirty: true },
           );
-          if (transition.enabled !== undefined) {
-            setValue('skills_enabled', transition.enabled, { shouldDirty: true });
-          }
-          if (transition.authoringEnabled !== undefined) {
-            setValue('skill_authoring_enabled', transition.authoringEnabled, {
-              shouldDirty: true,
-            });
-          }
-          if (transition.scope !== undefined) {
-            setValue('skills_scope', transition.scope, { shouldDirty: true });
-          }
           break;
         }
         case 'mcp-remove':
@@ -350,73 +257,12 @@ export default function ToolsSection({ agentId }: Props) {
         onRemove={handleQuickRemove}
       />
       {showSkills && (
-        <SelectedSection
-          title={localize('com_ui_skills')}
-          addLabel={localize('com_ui_add_skills')}
-          emptyLabel={localize('com_ui_skills_empty')}
-          emptyHint={localize('com_ui_skills_empty_hint')}
+        <SkillsSection
           items={skillItems}
           onAdd={() => setSkillsOpen(true)}
           onInfo={setDialogItem}
           onRemove={handleQuickRemove}
-          badgeText={useAllSkills ? localize('com_ui_all_proper') : undefined}
-          showAdd={skillsCapabilityEnabled && !useAllSkills}
-          showBody={skillsCapabilityEnabled && !useAllSkills}
-        >
-          <div className="mb-1.5 flex items-center justify-between gap-3 px-1">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span
-                id="skills-enabled-label"
-                className="truncate text-[13px] font-medium text-text-primary"
-              >
-                {localize('com_ui_skills_enable')}
-              </span>
-              <HoverCard openDelay={50}>
-                <InfoTrigger />
-                <HoverCardPortal>
-                  <HoverCardContent side={ESide.Top} className="w-80">
-                    <p className="text-sm text-text-secondary">
-                      {localize('com_ui_skills_enable_hint')}
-                    </p>
-                  </HoverCardContent>
-                </HoverCardPortal>
-              </HoverCard>
-            </div>
-            <Switch
-              id="skills-enabled"
-              checked={skillsCapabilityEnabled}
-              onCheckedChange={handleSkillsEnabledChange}
-              aria-labelledby="skills-enabled-label"
-            />
-          </div>
-          <div className="mb-1.5 flex items-center justify-between gap-3 px-1">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span
-                id="use-all-skills-label"
-                className="truncate text-[13px] font-medium text-text-primary"
-              >
-                {localize('com_ui_skills_use_all')}
-              </span>
-              <HoverCard openDelay={50}>
-                <InfoTrigger />
-                <HoverCardPortal>
-                  <HoverCardContent side={ESide.Top} className="w-80">
-                    <p className="text-sm text-text-secondary">
-                      {localize('com_ui_skills_use_all_hint')}
-                    </p>
-                  </HoverCardContent>
-                </HoverCardPortal>
-              </HoverCard>
-            </div>
-            <Switch
-              id="use-all-skills"
-              checked={useAllSkills}
-              disabled={!skillsCapabilityEnabled}
-              onCheckedChange={handleUseAllSkillsChange}
-              aria-labelledby="use-all-skills-label"
-            />
-          </div>
-        </SelectedSection>
+        />
       )}
       {open && <ToolsMarketplaceDialog open={open} onOpenChange={setOpen} agentId={agentId} />}
       {skillsOpen && (
@@ -443,7 +289,7 @@ export default function ToolsSection({ agentId }: Props) {
           selection={{
             selectHandler: confirmActionRemoval,
             selectClasses:
-              'bg-surface-destructive hover:bg-surface-destructive-hover transition-colors duration-200 text-white',
+              'bg-surface-destructive hover:bg-surface-destructive-hover transition-colors duration-200 text-text-on-status',
             selectText: localize('com_ui_delete'),
           }}
         />
@@ -468,7 +314,7 @@ export default function ToolsSection({ agentId }: Props) {
           selection={{
             selectHandler: confirmMcpRemoval,
             selectClasses:
-              'bg-surface-destructive hover:bg-surface-destructive-hover transition-colors duration-200 text-white',
+              'bg-surface-destructive hover:bg-surface-destructive-hover transition-colors duration-200 text-text-on-status',
             selectText: localize('com_ui_delete'),
           }}
         />
@@ -486,12 +332,6 @@ interface SelectedSectionProps {
   onAdd: () => void;
   onInfo: (item: AgentItem) => void;
   onRemove: (item: AgentItem) => void;
-  /** Replaces the item-count badge next to the title. */
-  badgeText?: string;
-  showAdd?: boolean;
-  showBody?: boolean;
-  /** Rendered between the header and the item list / empty state. */
-  children?: ReactNode;
 }
 
 function SelectedSection({
@@ -503,13 +343,9 @@ function SelectedSection({
   onAdd,
   onInfo,
   onRemove,
-  badgeText,
-  showAdd = true,
-  showBody = true,
-  children,
 }: SelectedSectionProps) {
   const localize = useLocalize();
-  const badge = badgeText ?? (items.length > 0 ? String(items.length) : undefined);
+  const badge = items.length > 0 ? String(items.length) : undefined;
   return (
     <div className="mb-3 flex flex-col">
       <div className="mb-1 flex items-center justify-between">
@@ -525,39 +361,31 @@ function SelectedSection({
           type="button"
           onClick={onAdd}
           aria-label={addLabel}
-          aria-hidden={!showAdd || undefined}
-          tabIndex={showAdd ? 0 : -1}
-          className={cn(
-            'inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary',
-            !showAdd && 'pointer-events-none opacity-0',
-          )}
+          className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
         >
           <Plus className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
           {localize('com_ui_add')}
         </button>
       </div>
-      {children}
-      <Collapse open={showBody}>
-        {items.length === 0 ? (
-          <button
-            type="button"
-            onClick={onAdd}
-            className="flex w-full flex-col items-center gap-1 rounded-xl border border-dashed border-border-light px-2 py-4 text-text-secondary transition-colors hover:border-border-medium hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
-          >
-            <Plus className="h-4 w-4" aria-hidden="true" />
-            <span className="text-xs">{emptyLabel}</span>
-            <span className="text-[11px] text-text-secondary">{emptyHint}</span>
-          </button>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {items.map((item) => (
-              <li key={`${item.kind}:${item.id}`}>
-                <ToolRow item={item} onInfo={onInfo} onRemove={onRemove} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </Collapse>
+      {items.length === 0 ? (
+        <button
+          type="button"
+          onClick={onAdd}
+          className="flex w-full flex-col items-center gap-1 rounded-xl border border-dashed border-border-light px-2 py-4 text-text-secondary transition-colors hover:border-border-medium hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          <span className="text-xs">{emptyLabel}</span>
+          <span className="text-[11px] text-text-secondary">{emptyHint}</span>
+        </button>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {items.map((item) => (
+            <li key={`${item.kind}:${item.id}`}>
+              <ToolRow item={item} onInfo={onInfo} onRemove={onRemove} />
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

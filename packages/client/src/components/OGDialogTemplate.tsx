@@ -121,7 +121,12 @@ const OGDialogTemplate: ForwardRefExoticComponent<
       overlayClassName={overlayClassName}
       showCloseButton={showCloseButton}
       ref={ref}
-      className={cn('w-11/12 border-none bg-surface-dialog text-text-primary', className ?? '')}
+      className={cn(
+        /** `border-none` clears the default edge; the contrast variant has to
+         *  restore the style as well as the width to survive it. */
+        'w-11/12 border-none bg-surface-dialog text-text-primary high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none',
+        className ?? '',
+      )}
       onClick={(e) => e.stopPropagation()}
     >
       <OGDialogHeader className={cn(headerClassName ?? '')}>

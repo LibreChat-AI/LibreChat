@@ -49,7 +49,7 @@ const VersionBadge = ({
 
 const getTimelineConnectorClasses = (isSelected: boolean, isProduction: boolean) => {
   if (isSelected) {
-    return 'border-status-success bg-status-success text-text-inverted';
+    return 'border-status-success-strong bg-status-success-strong text-text-on-status';
   }
   if (isProduction) {
     return 'border-status-success-border bg-transparent text-status-success';

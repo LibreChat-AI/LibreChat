@@ -1,10 +1,9 @@
 import crypto from 'crypto';
+import { Readable, pipeline } from 'stream';
+import { logger } from '@librechat/data-schemas';
 import { getSignedUrl } from '@aws-sdk/cloudfront-signer';
 import { CloudFrontClient, CreateInvalidationCommand } from '@aws-sdk/client-cloudfront';
-import { logger } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
-import type { Readable } from 'stream';
-import type { ServerRequest } from '~/types';
 import type {
   SaveBufferParams,
   GetURLParams,
@@ -14,12 +13,11 @@ import type {
   SaveURLResult,
   UploadResult,
 } from '~/storage/types';
-import { getCloudFrontConfig } from '~/cdn/cloudfront';
-import { s3Config } from '~/storage/s3/s3Config';
-import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
-import { sanitizeContentDispositionFilename } from '~/storage/validation';
+import type { ServerRequest } from '~/types';
 import {
+  parseS3Key,
   getS3Key,
+  extractKeyFromS3Url,
   saveBufferToS3,
   saveURLToS3WithMetadata,
   uploadFileToS3,
@@ -27,6 +25,16 @@ import {
   getS3FileStream,
   resolveStoredS3Key,
 } from '~/storage/s3/crud';
+import {
+  getRemoteFileFetchMaxBytes,
+  getRemoteFileFetchTimeoutMs,
+  assertRemoteFileContentLength,
+  createRemoteFileByteLimitTransform,
+} from '~/storage/url';
+import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
+import { sanitizeContentDispositionFilename } from '~/storage/validation';
+import { getCloudFrontConfig } from '~/cdn/cloudfront';
+import { s3Config } from '~/storage/s3/s3Config';
 
 let _cloudFrontClient: CloudFrontClient | null = null;
 
@@ -77,14 +85,25 @@ function isInlineFileUpload({ basePath, file, useInlinePath }: UploadFileParams)
   return (basePath ?? defaultBasePath) === defaultBasePath && file.mimetype?.startsWith('image/');
 }
 
+/**
+ * Percent-encodes each path segment of an S3 key (the separators stay literal). Without this a
+ * CloudFront URL carries the raw key while an SDK-generated S3 URL carries an encoded one, so the
+ * two forms of `file.filepath` disagree about what a `%` means: a key containing the literal text
+ * `%20` would be indistinguishable from a key containing a space. Encoding here keeps both
+ * producers consistent, which is what lets `extractKeyFromS3Url` decode unconditionally. The
+ * invalidation path must use the same encoding, or it no longer matches the cached viewer URL.
+ */
+function encodeKeyPath(s3Key: string): string {
+  return s3Key.replace(/^\/+/, '').split('/').map(encodeURIComponent).join('/');
+}
+
 function buildCloudFrontUrl(s3Key: string): string {
   const config = getCloudFrontConfig();
   if (!config?.domain) {
     throw new Error('[buildCloudFrontUrl] CloudFront not initialized.');
   }
   const cleanDomain = config.domain.replace(/\/+$/, '');
-  const cleanKey = s3Key.replace(/^\/+/, '');
-  return `${cleanDomain}/${cleanKey}`;
+  return `${cleanDomain}/${encodeKeyPath(s3Key)}`;
 }
 
 function signUrl(url: string | URL): string {
@@ -235,8 +254,7 @@ export async function deleteFileFromCloudFront(req: ServerRequest, file: TFile):
     try {
       const client = getOrCreateCloudFrontClient();
       // CloudFront URL pathname matches S3 key when no origin path prefix is configured
-      const key = resolveStoredS3Key(file);
-      const path = key.startsWith('/') ? key : `/${key}`;
+      const path = `/${encodeKeyPath(resolveStoredS3Key(file))}`;
 
       await client.send(
         new CreateInvalidationCommand({
@@ -257,12 +275,65 @@ export async function deleteFileFromCloudFront(req: ServerRequest, file: TFile):
   }
 }
 
-/** Get file stream from S3 storage. */
+/** Get a file stream from its owning regional origin. */
 export async function getCloudFrontFileStream(
   req: ServerRequest,
   filePath: string,
+  options?: { signal?: AbortSignal },
 ): Promise<Readable> {
-  return getS3FileStream(req, filePath);
+  const key = extractKeyFromS3Url(filePath);
+  const storageRegion = parseS3Key(key)?.storageRegion;
+  const localStorageRegion = getCloudFrontConfig()?.storageRegion ?? s3Config.AWS_REGION;
+
+  if (!storageRegion || storageRegion === localStorageRegion) {
+    return getS3FileStream(req, key, options);
+  }
+
+  const maxBytes = getRemoteFileFetchMaxBytes();
+  const unsignedUrl = buildCloudFrontUrl(key);
+  const config = getCloudFrontConfig();
+  const url = config?.privateKey && config.keyPairId ? signUrl(unsignedUrl) : unsignedUrl;
+  const controller = new AbortController();
+  const signal = options?.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  const timeout = setTimeout(() => controller.abort(), getRemoteFileFetchTimeoutMs());
+  let response: Response;
+  try {
+    response = await fetch(url, { signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    const error = new Error(
+      `[getCloudFrontFileStream] CloudFront returned ${response.status} ${response.statusText}`,
+    ) as Error & { status: number };
+    error.status = response.status;
+    throw error;
+  }
+  if (!response.body) {
+    throw new Error('[getCloudFrontFileStream] CloudFront response body is empty');
+  }
+
+  try {
+    assertRemoteFileContentLength(response.headers, maxBytes);
+  } catch (error) {
+    await response.body.cancel().catch(() => undefined);
+    throw error;
+  }
+  const stream = createRemoteFileByteLimitTransform(maxBytes);
+  pipeline(
+    Readable.fromWeb(response.body as unknown as Parameters<typeof Readable.fromWeb>[0], {
+      signal,
+    }),
+    stream,
+    () => {
+      /** Pipeline forwards failures to the returned stream and closes both ends. */
+    },
+  );
+  return stream;
 }
 
 /** Get a signed CloudFront URL for an authorized file download. */

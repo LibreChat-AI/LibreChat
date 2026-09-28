@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import HeaderLabel, { getHeaderModelName } from '../HeaderLabel';
+import HeaderLabel, { getHeaderHoverLabel, getHeaderModelName } from '../HeaderLabel';
 
 describe('getHeaderModelName', () => {
   it('prefers a real model over an agent document id', () => {
@@ -18,6 +18,20 @@ describe('getHeaderModelName', () => {
 
   it('returns nothing when only an assistant id is available', () => {
     expect(getHeaderModelName(undefined, undefined, 'asst_abc')).toBeUndefined();
+  });
+});
+
+describe('getHeaderHoverLabel', () => {
+  it('falls through to the model when the sender is not a configured label', () => {
+    expect(getHeaderHoverLabel(false, 'agent_abc', 'gemma4:12b-it-qat')).toBe('gemma4:12b-it-qat');
+    expect(getHeaderHoverLabel(undefined, 'gemma4:12b-it-qat')).toBe('gemma4:12b-it-qat');
+  });
+
+  /* A preset or model spec that configured the sender has chosen what the header
+     says; the hover swap must not reveal the model it stands in for. */
+  it('withholds the model when the sender is a configured label', () => {
+    expect(getHeaderHoverLabel(true, 'z-ai/glm-5.3-flash')).toBeUndefined();
+    expect(getHeaderHoverLabel(true, 'agent_abc', 'z-ai/glm-5.3-flash')).toBeUndefined();
   });
 });
 

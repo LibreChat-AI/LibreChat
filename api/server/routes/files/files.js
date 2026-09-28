@@ -8,6 +8,7 @@ const {
   refreshS3FileUrls,
   handleFilesUsageRequest,
   buildDeleteFilesResponse,
+  deleteAgentResourceFiles,
   shouldUseUploadSse,
   startUploadSseStream,
   sendUploadPolicyError,
@@ -18,6 +19,9 @@ const {
   assertUploadContentAllowed,
   hasActiveFilePolicy,
   sanitizeFilename,
+  checkToolResourceUploadPermission,
+  resolveAssistantToolPermissions,
+  resolveDownloadPath,
 } = require('@librechat/api');
 const {
   Time,
@@ -39,10 +43,16 @@ const {
   processDeleteRequest,
   processAgentFileUpload,
 } = require('~/server/services/Files/process');
+const {
+  resolveEffectiveToolResource,
+  resolveUploadEndpoint,
+  resolveUploadAgent,
+} = require('~/server/services/Files/routing');
 const { fileAccess } = require('~/server/middleware/accessResources/fileAccess');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getOpenAIClient } = require('~/server/controllers/assistants/helpers');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const { getRoleByName } = require('~/models');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { cleanFileName, getContentDisposition } = require('~/server/utils/files');
 const { getLogStores } = require('~/cache');
@@ -236,20 +246,36 @@ router.delete('/', async (req, res) => {
         });
       }
 
-      const toolResourceFiles = agent.tool_resources?.[req.body.tool_resource]?.file_ids ?? [];
-      const agentFiles = files
-        .filter((f) => toolResourceFiles.includes(f.file_id))
-        .map((file) => ({ tool_resource: req.body.tool_resource, file_id: file.file_id }));
-      if (agentFiles.length === 0) {
+      const agentDeletion = await deleteAgentResourceFiles(
+        {
+          agentId: req.body.agent_id,
+          agentObjectId: agent._id.toString(),
+          toolResource: req.body.tool_resource,
+          requestedFileIds: fileIds,
+          attachedFileIds: agent.tool_resources?.[req.body.tool_resource]?.file_ids ?? [],
+          files: dbFiles.map((file) => ({
+            file_id: file.file_id,
+            owner: file.user?.toString() ?? null,
+            file,
+          })),
+          userId: req.user.id.toString(),
+        },
+        {
+          getSharedResourceFileIds: db.getSharedResourceFileIds,
+          removeAgentResourceFiles: db.removeAgentResourceFiles,
+          deleteFiles: (agentFiles) => processDeleteRequest({ req, files: agentFiles }),
+        },
+      );
+
+      if (agentDeletion.outcome == null) {
         res.status(200).json({ message: 'File associations removed successfully from agent' });
         return;
       }
 
-      await db.removeAgentResourceFiles({
-        agent_id: req.body.agent_id,
-        files: agentFiles,
-      });
-      res.status(200).json({ message: 'File associations removed successfully from agent' });
+      logger.debug(
+        `[/files] Agent files deleted successfully: ${agentDeletion.destroyedFileIds.join(', ')}`,
+      );
+      sendDeleteResult(agentDeletion.outcome, 'Files deleted successfully');
       return;
     }
 
@@ -289,10 +315,10 @@ router.delete('/', async (req, res) => {
     /* Handle assistant unlinking even if no valid files to delete */
     if (req.body.assistant_id && req.body.tool_resource && dbFiles.length === 0) {
       const assistant = await db.getAssistant({
-        id: req.body.assistant_id,
+        assistantId: req.body.assistant_id,
       });
 
-      const toolResourceFiles = assistant.tool_resources?.[req.body.tool_resource]?.file_ids ?? [];
+      const toolResourceFiles = assistant?.tool_resources?.[req.body.tool_resource]?.file_ids ?? [];
       const assistantFiles = files.filter((f) => toolResourceFiles.includes(f.file_id));
 
       const result = await processDeleteRequest({ req, files: assistantFiles });
@@ -700,7 +726,7 @@ router.get('/download/:userId/:file_id', fileAccess, async (req, res) => {
         return res.status(501).send('Not Implemented');
       }
 
-      const fileStream = await getDownloadStream(req, file.storageKey || file.filepath);
+      const fileStream = await getDownloadStream(req, resolveDownloadPath(file));
 
       fileStream.on('error', (streamError) => {
         logger.error('[DOWNLOAD ROUTE] Stream error:', streamError);
@@ -725,7 +751,44 @@ router.get('/download/:userId/:file_id', fileAccess, async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+/**
+ * A v1 Knowledge upload posts `assistant_id` with no `tool_resource`, so the
+ * resource map has nothing to authorize against. What the file will feed is the
+ * assistant's own native tools, so read those and require their grants.
+ *
+ * Runs here rather than at attach time so a denied role never gets its bytes
+ * into provider storage — an authorization failure after the remote upload
+ * leaves an untracked file behind and reports 500 for what is a 403.
+ *
+ * @returns {Promise<{ ok: boolean, openai?: OpenAI }>} `ok: false` once a
+ * response has been sent. The client it had to build is returned so processing
+ * reuses it rather than re-reading the user's key.
+ */
+const assertLegacyAssistantUploadAllowed = async (req, res, metadata) => {
+  const isLegacyAssistantAttach =
+    isAssistantsEndpoint(metadata.endpoint) &&
+    metadata.assistant_id != null &&
+    !metadata.message_file &&
+    !metadata.tool_resource;
+  if (!isLegacyAssistantAttach) {
+    return { ok: true };
+  }
+
+  const { openai } = await getOpenAIClient({ req });
+  const assistant = await openai.beta.assistants.retrieve(metadata.assistant_id);
+  const isNativeToolPermitted = await resolveAssistantToolPermissions({
+    req,
+    tools: assistant?.tools,
+    getRoleByName,
+  });
+  if ((assistant?.tools ?? []).some((tool) => !isNativeToolPermitted(tool))) {
+    res.status(403).json({ message: 'Forbidden: Insufficient permissions' });
+    return { ok: false };
+  }
+  return { ok: true, openai };
+};
+
+const handleFileUpload = async (req, res) => {
   const metadata = req.body;
   let cleanup = true;
 
@@ -740,13 +803,70 @@ router.post('/', async (req, res) => {
 
   try {
     req.file.originalname = sanitizeFilename(req.file.originalname);
-    filterFile({ req });
+    const isAssistants = isAssistantsEndpoint(metadata.endpoint);
+
+    /* Authorization runs before anything reads the target agent. Validating against a
+     * record the caller cannot access answers with that agent's provider limits and
+     * content policy, so the rejection itself reports its configuration. */
+    if (!isAssistants) {
+      const denied = await verifyAgentUploadPermission({
+        req,
+        res,
+        metadata,
+        getAgent: ({ id }) => resolveUploadAgent(req, id),
+        checkPermission,
+        hasUploadBypass: () => hasCapability(req.user, SystemCapabilities.MANAGE_AGENTS),
+      });
+      if (denied) {
+        return;
+      }
+    }
+
+    /* Same configuration for validation and routing: an agent upload arrives as
+     * `agents` but is processed under the agent's own provider. */
+    const effectiveEndpoint = await resolveUploadEndpoint({
+      endpoint: metadata.endpoint,
+      agent_id: metadata.agent_id,
+      req,
+    });
+    /* Carried so processing routes under the same configuration validation used, and so
+     * it can tell whether any enabled tool could consume a file kept off the model path,
+     * both from the one agent read this request already made. */
+    metadata.effectiveEndpoint = effectiveEndpoint;
+    /* Left undefined when no agent record backs this upload, as for an ephemeral agent
+     * that exists only for the request. Processing then cannot judge what tools could
+     * consume the file and does not try. */
+    const uploadAgent = await resolveUploadAgent(req, metadata.agent_id);
+    metadata.agentTools = uploadAgent?.tools;
+    metadata.useResponsesApi ??= uploadAgent?.model_parameters?.useResponsesApi;
+    filterFile({ req, endpoint: effectiveEndpoint });
+
+    /* Same destination the processing path will use: a unified upload routed to text
+     * becomes a context resource, and the preflight must account for that extraction
+     * before fail-closing on an uninspectable derived field. */
+    const effectiveToolResource = await resolveEffectiveToolResource({ req, metadata });
+
+    /** Check the role permission before any content inspection: a forbidden upload
+     * must be rejected without reading or embedding the file. */
+    const uploadAllowed = await checkToolResourceUploadPermission({
+      req,
+      toolResource: metadata.tool_resource,
+      getRoleByName,
+    });
+    if (!uploadAllowed) {
+      return res.status(403).json({ message: 'Forbidden: Insufficient permissions' });
+    }
+
+    const legacyAssistantUpload = await assertLegacyAssistantUploadAllowed(req, res, metadata);
+    if (!legacyAssistantUpload.ok) {
+      return;
+    }
 
     await assertUploadContentAllowed({
       filters: req.config?.filters,
       file: req.file,
       endpoint: metadata.endpoint,
-      toolResource: metadata.tool_resource,
+      toolResource: effectiveToolResource,
       fileConfig: mergeFileConfig(req.config?.fileConfig),
       ocrConfigured: req.config?.ocr != null,
       ragConfigured: !!process.env.RAG_API_URL,
@@ -756,29 +876,15 @@ router.post('/', async (req, res) => {
     metadata.temp_file_id = metadata.file_id;
     metadata.file_id = req.file_id;
 
-    if (isAssistantsEndpoint(metadata.endpoint)) {
+    if (isAssistants) {
       openSseStreamIfRequested();
-      return await processFileUpload({ req, res, metadata, sseStream });
-    }
-
-    let skipUploadAuth = false;
-    try {
-      skipUploadAuth = await hasCapability(req.user, SystemCapabilities.MANAGE_AGENTS);
-    } catch (err) {
-      logger.warn('[/files] capability check failed, denying bypass:', getSafeErrorMetadata(err));
-    }
-
-    if (!skipUploadAuth) {
-      const denied = await verifyAgentUploadPermission({
+      return await processFileUpload({
         req,
         res,
         metadata,
-        getAgent: db.getAgent,
-        checkPermission,
+        sseStream,
+        openai: legacyAssistantUpload.openai,
       });
-      if (denied) {
-        return;
-      }
     }
 
     openSseStreamIfRequested();
@@ -845,6 +951,9 @@ router.post('/', async (req, res) => {
       sseStream.close();
     }
   }
-});
+};
+
+router.post('/', handleFileUpload);
 
 module.exports = router;
+module.exports.handleFileUpload = handleFileUpload;

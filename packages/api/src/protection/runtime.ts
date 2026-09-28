@@ -1,4 +1,3 @@
-import { logger } from '@librechat/data-schemas';
 import {
   MAX_PII_CUSTOM_PATTERNS_TOTAL,
   MAX_PII_CUSTOM_REGEX_CHARACTERS,
@@ -31,6 +30,7 @@ import {
   isContentTraversalProtected,
 } from './adapters/nested';
 import { isLegacyPiiFragment } from './legacy';
+import { recordAuditFinding } from './audit';
 
 interface CompiledFilter {
   readonly detectorId: string;
@@ -47,6 +47,7 @@ export interface ContentInspectionConfig {
 }
 
 export interface ConfiguredContentInspector {
+  readonly hasAuditRules: boolean;
   createSession(): ConfiguredContentInspectionSession;
   inspect(fragments: Iterable<TextContentFragment>): ProtectionFinding | null;
 }
@@ -347,7 +348,7 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
           detectorId: rule.detectorId,
         };
         if (rule.action === 'audit') {
-          const auditMetadata = {
+          recordAuditFinding({
             action: rule.action,
             detectorId: configuredFinding.detectorId,
             ruleId: configuredFinding.ruleId,
@@ -355,11 +356,7 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
             source: configuredFinding.source,
             field: configuredFinding.field,
             provenance: configuredFinding.provenance,
-          };
-          logger.info(
-            `[content-filter] Audit-only finding ${JSON.stringify(auditMetadata)}`,
-            auditMetadata,
-          );
+          });
           continue;
         }
         firstBlockingFinding ??= configuredFinding;
@@ -398,6 +395,7 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
   };
 
   return {
+    hasAuditRules,
     createSession,
     inspect(fragments) {
       return inspect(fragments, new Array(rules.length));

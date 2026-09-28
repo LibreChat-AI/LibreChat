@@ -1,0 +1,3 @@
+# Generated artifact. Owned by `npm run -w @librechat/api openapi:generate`,
+# checked by `openapi:check`. Do not let Prettier reformat it.
+packages/api/openapi/agents.openapi.json

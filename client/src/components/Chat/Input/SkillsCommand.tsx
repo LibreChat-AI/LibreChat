@@ -19,7 +19,7 @@ import store from '~/store';
 
 const commandChar = '$';
 const ROW_HEIGHT = 44;
-const skillIcon = <ScrollText className="icon-md text-cyan-500" />;
+const skillIcon = <ScrollText className="icon-md text-status-info" />;
 
 /**
  * Determines whether a skill should appear in the `$` command popover.

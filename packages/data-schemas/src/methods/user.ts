@@ -272,10 +272,11 @@ export function createUserMethods(
         };
       }
 
-      await Balance.findOneAndUpdate({ user: user._id }, update, {
-        upsert: true,
-        new: true,
-      }).lean();
+      await Balance.findOneAndUpdate(
+        { _id: user._id },
+        { ...update, $setOnInsert: { user: user._id } },
+        { upsert: true, new: true },
+      ).lean();
     }
 
     if (returnUser) {

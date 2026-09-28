@@ -46,6 +46,8 @@ describe('resolveProviderId', () => {
     expect(resolveProviderId('vertexai')).toBe(ProviderId.google);
     expect(resolveProviderId('grok')).toBe(ProviderId.xai);
     expect(resolveProviderId('kimi')).toBe(ProviderId.moonshot);
+    expect(resolveProviderId('AMD Lemonade')).toBe(ProviderId.lemonade);
+    expect(resolveProviderId('Lemonade Server')).toBe(ProviderId.lemonade);
   });
 
   it('returns null for empty and unknown input', () => {

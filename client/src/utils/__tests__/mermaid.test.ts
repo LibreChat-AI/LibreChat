@@ -3,6 +3,7 @@ import {
   sanitizeMermaidSvg,
   artifactFlowchartConfig,
   inlineFlowchartConfig,
+  contrastMermaidVariables,
   getMermaidFiles,
 } from '~/utils/mermaid';
 
@@ -267,5 +268,172 @@ describe('mermaid config', () => {
       expect(result).toContain('second line');
       expect(result).toMatch(/<br\s*\/>/);
     });
+  });
+});
+
+describe('high contrast mermaid palette', () => {
+  it('stays out of the way in the standard themes', () => {
+    expect(contrastMermaidVariables(false, false)).toBeUndefined();
+    expect(contrastMermaidVariables(true, false)).toBeUndefined();
+  });
+
+  /** Mermaid's own `neutral` and `dark` palettes are unreachable from a theme
+   *  token, so a contrast mode has to drive them through themeVariables. */
+  it('puts diagrams on the canvas with ink marks in both contrast modes', () => {
+    const light = contrastMermaidVariables(false, true)!;
+    expect(light.background).toBe('#ffffff');
+    expect(light.mainBkg).toBe('#ffffff');
+    expect(light.lineColor).toBe('#000000');
+    expect(light.textColor).toBe('#000000');
+    expect(light.nodeBorder).toBe('#000000');
+
+    const dark = contrastMermaidVariables(true, true)!;
+    expect(dark.background).toBe('#000000');
+    expect(dark.mainBkg).toBe('#000000');
+    expect(dark.lineColor).toBe('#ffffff');
+    expect(dark.textColor).toBe('#ffffff');
+    expect(dark.nodeBorder).toBe('#ffffff');
+  });
+
+  it('switches the artifact document to the base theme and the contrast canvas', () => {
+    const standard = getMermaidFiles('graph TD; a-->b', true, false);
+    const component = standard['/components/ui/MermaidDiagram.tsx'];
+    expect(component).toContain('theme: "dark"');
+    expect(component).not.toContain('themeVariables');
+    expect(standard['mermaid.css']).toContain('#212121');
+
+    const contrast = getMermaidFiles('graph TD; a-->b', true, true);
+    const contrastComponent = contrast['/components/ui/MermaidDiagram.tsx'];
+    expect(contrastComponent).toContain('theme: "base"');
+    expect(contrastComponent).toContain('"lineColor":"#ffffff"');
+    expect(contrast['mermaid.css']).toContain('#000000');
+  });
+
+  it('builds the artifact controls from the contrast palette', () => {
+    const standard = getMermaidFiles('graph TD; a-->b', false, false)[
+      '/components/ui/MermaidDiagram.tsx'
+    ];
+    expect(standard).toContain('rgba(0, 0, 0, 0.1)');
+
+    const contrast = getMermaidFiles('graph TD; a-->b', false, true)[
+      '/components/ui/MermaidDiagram.tsx'
+    ];
+    /** Fixed greys and 10%-alpha borders cannot clear the floors on a pure
+     *  canvas, so none of them may survive into the contrast document. */
+    expect(contrast).not.toContain('rgba(0, 0, 0, 0.1)');
+    expect(contrast).not.toContain('#374151');
+    expect(contrast).not.toContain('#6B7280');
+    expect(contrast).toContain('2px solid #000000');
+    expect(contrast).toContain('color: "#000000"');
+  });
+
+  it('maps Gantt tasks and labels to contrast-safe semantic colors', () => {
+    const light = contrastMermaidVariables(false, true)!;
+    expect(light).toMatchObject({
+      taskBkgColor: '#0b4fa0',
+      activeTaskBkgColor: '#8f3b00',
+      doneTaskBkgColor: '#005c2e',
+      doneTaskBorderColor: '#005c2e',
+      critBkgColor: '#a10000',
+      critBorderColor: '#a10000',
+      gridColor: '#000000',
+      taskTextColor: '#ffffff',
+      taskTextDarkColor: '#ffffff',
+      taskTextOutsideColor: '#000000',
+    });
+
+    const dark = contrastMermaidVariables(true, true)!;
+    expect(dark).toMatchObject({
+      taskBkgColor: '#6bb8ff',
+      activeTaskBkgColor: '#ffb366',
+      doneTaskBkgColor: '#7ff0b3',
+      doneTaskBorderColor: '#7ff0b3',
+      critBkgColor: '#ff8f8f',
+      critBorderColor: '#ff8f8f',
+      gridColor: '#ffffff',
+      taskTextColor: '#000000',
+      taskTextDarkColor: '#000000',
+      taskTextOutsideColor: '#ffffff',
+    });
+  });
+
+  /** Eight branch slots against a seven-slot ramp. The contract is that no two
+   *  branches share a colour and none of them disappears into the canvas, which
+   *  is exactly what wrapping the eighth slot back to the first would break. */
+  it('gives every Git branch a distinct, visible colour', () => {
+    for (const isDarkMode of [false, true]) {
+      const vars = contrastMermaidVariables(isDarkMode, true)!;
+      const branches = Array.from({ length: 8 }, (_, index) => vars[`git${index}`]);
+
+      expect(new Set(branches).size).toBe(8);
+      expect(branches).not.toContain(vars.background);
+      /** The first seven are the palette's categorical ramp, the same one the
+       *  pie slots draw from; the eighth falls back to the ink. */
+      expect(branches.slice(0, 7)).toEqual(
+        Array.from({ length: 7 }, (_, index) => vars[`pie${index + 1}`]),
+      );
+      expect(branches[7]).toBe(vars.textColor);
+      /** Branch labels are drawn on the branch colour, not on the canvas, and
+       *  the ramp sits on the far side of the canvas, so the canvas is the
+       *  readable label here. */
+      expect(Array.from({ length: 8 }, (_, index) => vars[`gitBranchLabel${index}`])).toEqual(
+        Array(8).fill(vars.background),
+      );
+      expect(Array.from({ length: 8 }, (_, index) => vars[`gitInv${index}`])).toEqual(
+        Array(8).fill(vars.textColor),
+      );
+      expect(vars).toMatchObject({
+        commitLabelColor: vars.textColor,
+        commitLabelBackground: vars.background,
+        tagLabelColor: vars.textColor,
+        tagLabelBackground: vars.background,
+        tagLabelBorder: isDarkMode ? '#ffffff' : '#000000',
+      });
+    }
+  });
+
+  it('themes artifact render errors with the semantic destructive color', () => {
+    const light = getMermaidFiles('invalid', false, true);
+    const lightComponent = light['/components/ui/MermaidDiagram.tsx'];
+    expect(lightComponent).toContain('class="mermaid-error"');
+    expect(light['mermaid.css']).toContain('color: #a10000');
+
+    const dark = getMermaidFiles('invalid', true, true);
+    const darkComponent = dark['/components/ui/MermaidDiagram.tsx'];
+    expect(darkComponent).toContain('class="mermaid-error"');
+    expect(dark['mermaid.css']).toContain('color: #ff8f8f');
+  });
+
+  /** Every node fill is the canvas here, and mermaid derives `pie1..pie3` from
+   *  the primary, secondary and tertiary colours, so without the series ramp a
+   *  pie chart loses its encoding entirely. */
+  it('keeps pie slices distinct from each other and the canvas', () => {
+    for (const isDarkMode of [false, true]) {
+      const vars = contrastMermaidVariables(isDarkMode, true)!;
+      const slices = Array.from({ length: 12 }, (_, index) => vars[`pie${index + 1}`]);
+
+      expect(slices.every(Boolean)).toBe(true);
+      expect(slices.some((slice) => slice === vars.background)).toBe(false);
+      /** Seven distinct slots, wrapping after that, so no neighbour repeats. */
+      expect(new Set(slices).size).toBe(7);
+      slices.slice(0, 6).forEach((slice, index) => {
+        expect(slice).not.toBe(slices[index + 1]);
+      });
+    }
+  });
+
+  /** Slice labels sit on a series colour, and the ramp lives on the far side of
+   *  the canvas so the slices are visible, so the canvas ink is the wrong ink
+   *  for them. Title and legend are drawn on the canvas and keep it. */
+  it('labels slices with the opposing ink and titles with the canvas ink', () => {
+    const light = contrastMermaidVariables(false, true)!;
+    expect(light.pieSectionTextColor).toBe('#ffffff');
+    expect(light.pieTitleTextColor).toBe('#000000');
+    expect(light.pieLegendTextColor).toBe('#000000');
+
+    const dark = contrastMermaidVariables(true, true)!;
+    expect(dark.pieSectionTextColor).toBe('#000000');
+    expect(dark.pieTitleTextColor).toBe('#ffffff');
+    expect(dark.pieLegendTextColor).toBe('#ffffff');
   });
 });

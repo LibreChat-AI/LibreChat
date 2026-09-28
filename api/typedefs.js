@@ -1115,6 +1115,18 @@
  */
 
 /**
+ * @exports BalanceReservation
+ * @typedef {import('@librechat/api').BalanceReservation} BalanceReservation
+ * @memberof typedefs
+ */
+
+/**
+ * @exports BalanceReservations
+ * @typedef {import('@librechat/api').BalanceReservations} BalanceReservations
+ * @memberof typedefs
+ */
+
+/**
  * @exports Keyv
  * @typedef {import('keyv')} Keyv
  * @memberof typedefs

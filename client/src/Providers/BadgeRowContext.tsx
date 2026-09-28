@@ -37,6 +37,7 @@ interface BadgeRowProviderProps {
   isSubmitting?: boolean;
   conversationId?: string | null;
   specName?: string | null;
+  observeToolAuthorization?: boolean;
 }
 
 export default function BadgeRowProvider({
@@ -44,6 +45,7 @@ export default function BadgeRowProvider({
   isSubmitting,
   conversationId,
   specName,
+  observeToolAuthorization = false,
 }: BadgeRowProviderProps) {
   const lastContextKeyRef = useRef<string>('');
   const hasInitializedRef = useRef(false);
@@ -275,6 +277,7 @@ export default function BadgeRowProvider({
     storageContextKey,
     specName,
     ownsChatSelection: true,
+    observeToolAuthorization,
   });
 
   const value: BadgeRowContextType = {

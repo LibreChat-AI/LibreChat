@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useRef } from 'react';
+import { useSetRecoilState } from 'recoil';
 import { ArrowUpLeft } from 'lucide-react';
 import {
   Table,
@@ -25,17 +26,22 @@ import {
 } from '@tanstack/react-table';
 import {
   megabyte,
+  Constants,
+  EToolResources,
   mergeFileConfig,
   checkOpenAIStorage,
+  isEphemeralAgentId,
   isAssistantsEndpoint,
   getEndpointFileConfig,
+  defaultAgentCapabilities,
   fileConfig as defaultFileConfig,
 } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
+import { useLocalize, useUpdateFiles, useGetAgentsConfig, useAgentCapabilities } from '~/hooks';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import { useFileMapContext, useChatContext } from '~/Providers';
-import { useLocalize, useUpdateFiles } from '~/hooks';
 import { useGetFileConfig } from '~/data-provider';
+import { ephemeralAgentByConvoId } from '~/store';
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -91,6 +97,11 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
     select: (data) => mergeFileConfig(data),
   });
   const { addFile } = useUpdateFiles(setFiles);
+  const setEphemeralAgent = useSetRecoilState(
+    ephemeralAgentByConvoId(conversation?.conversationId ?? Constants.NEW_CONVO),
+  );
+  const { agentsConfig } = useGetAgentsConfig();
+  const capabilities = useAgentCapabilities(agentsConfig?.capabilities ?? defaultAgentCapabilities);
 
   const handleFileClick = useCallback(
     (file: TFile) => {
@@ -184,6 +195,20 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
         }
       }
 
+      /** Mirror `AttachFileMenu`: an embedded file is unreadable unless file search is on.
+       * The ephemeral flag governs direct chats only — a saved agent's own `tools` decide,
+       * so writing it there would be dead state the badge row still reflects. */
+      if (
+        fileData.embedded === true &&
+        capabilities.fileSearchEnabled &&
+        isEphemeralAgentId(conversation.agent_id)
+      ) {
+        setEphemeralAgent((prev) => ({
+          ...prev,
+          [EToolResources.file_search]: true,
+        }));
+      }
+
       addFile({
         progress: 1,
         attached: true,
@@ -197,9 +222,20 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
         source: fileData.source,
         size: fileData.bytes,
         metadata: fileData.metadata,
+        llmDeliveryPath: fileData.llmDeliveryPath,
       });
     },
-    [addFile, files, fileMap, conversation, localize, showToast, fileConfig],
+    [
+      addFile,
+      files,
+      fileMap,
+      conversation,
+      localize,
+      showToast,
+      fileConfig,
+      setEphemeralAgent,
+      capabilities.fileSearchEnabled,
+    ],
   );
 
   const filenameFilter = table.getColumn('filename')?.getFilterValue() as string;

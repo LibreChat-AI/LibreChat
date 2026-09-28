@@ -1,11 +1,15 @@
-import { HITL_MESSAGE_FILTER_FIELDS, RetentionMode } from 'librechat-data-provider';
+import {
+  backgroundResultMetadata,
+  HITL_MESSAGE_FILTER_FIELDS,
+  RetentionMode,
+} from 'librechat-data-provider';
 import type { DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { AppConfig, IConversation, IMessage } from '~/types';
+import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
-import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import logger from '~/config/winston';
 
@@ -272,14 +276,27 @@ function getSteerUserSubmittedPaths(content: unknown): string[] {
  */
 function buildMessageSaveUpdate(
   update: Record<string, unknown>,
-  options: { stampModelOutputOnInsert: boolean; unsetContextMeta: boolean },
+  options: {
+    stampModelOutputOnInsert: boolean;
+    unsetContextMeta: boolean;
+    retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+  },
 ): UpdateQuery<IMessage> {
-  if (!options.stampModelOutputOnInsert && !options.unsetContextMeta) {
+  if (
+    !options.stampModelOutputOnInsert &&
+    !options.unsetContextMeta &&
+    options.retentionOnInsert == null
+  ) {
     return update;
   }
   return {
     $set: update,
-    ...(options.stampModelOutputOnInsert && { $setOnInsert: { isUserSubmitted: false } }),
+    ...((options.stampModelOutputOnInsert || options.retentionOnInsert != null) && {
+      $setOnInsert: {
+        ...(options.stampModelOutputOnInsert && { isUserSubmitted: false }),
+        ...options.retentionOnInsert,
+      },
+    }),
     ...(options.unsetContextMeta && { $unset: { contextMeta: 1 } }),
   };
 }
@@ -290,7 +307,12 @@ async function findOneAndMergeMessageProvenance(
   update: Record<string, unknown>,
   userSubmittedPaths: readonly string[],
   userSubmittedMessageFieldPaths: readonly UserSubmittedMessageFieldPath[],
-  options: { upsert: boolean; stampModelOutputOnInsert?: boolean; unsetContextMeta?: boolean },
+  options: {
+    upsert: boolean;
+    stampModelOutputOnInsert?: boolean;
+    unsetContextMeta?: boolean;
+    retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+  },
 ) {
   const safeUpdate = { ...update };
   delete safeUpdate._id;
@@ -332,6 +354,8 @@ async function findOneAndMergeMessageProvenance(
         filter,
         {
           $set: { ...safeUpdate, ...provenance },
+          ...(current == null &&
+            options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
           ...(options.unsetContextMeta && { $unset: { contextMeta: 1 } }),
         },
         { upsert: options.upsert && current == null, new: true },
@@ -399,6 +423,36 @@ const SUBAGENT_VIEW_CONTROL_STRING_CODE_POINT_LIMIT = 128;
  * never the `news` collection). The JSON export mirrors this cache, so
  * fields removed here also leave user exports.
  */
+/**
+ * A response the server generated and sampled into a trace. Its trace fields are
+ * an ownership claim, so rows a client authored (the message-create route and
+ * imports stamp `isUserSubmitted: true`) never count, even if one was persisted
+ * with forged fields before those writes stripped them.
+ */
+/** A response's position in trace order: its creation time, then its `_id`. */
+function traceOrderKey(createdAt: Date, id: Types.ObjectId): string {
+  return `${createdAt.getTime().toString(36)}.${id.toString()}`;
+}
+
+function parseTraceOrderKey(key: string): { createdAt: Date; id: string } | undefined {
+  const [time, hex] = key.split('.');
+  const createdAt = new Date(Number.parseInt(time ?? '', 36));
+  if (Number.isNaN(createdAt.getTime()) || hex == null || !/^[0-9a-f]{24}$/.test(hex)) {
+    return undefined;
+  }
+  return { createdAt, id: hex };
+}
+
+/** An explicit tenant scope, so a read without request tenant context still cannot span tenants. */
+const traceTenantScope = (tenantId?: string) =>
+  tenantId == null ? { tenantId: { $exists: false } } : { tenantId };
+
+const SERVER_AUTHORED_SAMPLED_RESPONSE = {
+  langfuseSampled: true,
+  isCreatedByUser: false,
+  isUserSubmitted: { $ne: true },
+} as const;
+
 export const CLIENT_MESSAGE_SELECT: string = [
   '-_id',
   '-__v',
@@ -411,6 +465,7 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-contextMeta',
   '-langfuseSampled',
   '-langfuseDestinationIds',
+  '-langfuseRunId',
   '-metadata.thoughtSignatures',
   '-content.tool_call.backgroundTask.resultClaim',
   '-content.tool_call.backgroundTask.completionWakeup',
@@ -439,15 +494,23 @@ export interface BackgroundToolResultRecord {
   taskId: string;
   toolCallId: string;
   toolName: string;
-  status: 'completed' | 'error';
+  status: 'completed' | 'error' | 'cancelled';
   output: string;
   agentId?: string;
+  /** When the task reached this terminal status. Absent on rows written before
+   * the stamp existed, so a consumer must treat it as optional. */
+  settledAt?: Date;
 }
 
 export type BackgroundToolResultClaim =
   | { status: 'not_found' | 'not_ready' }
-  | { status: 'claimed'; claim?: { kind: 'manual' | 'wakeup'; claimId: string } }
-  | { status: 'acquired'; results: BackgroundToolResultRecord[] };
+  | { status: 'outcome_unknown'; toolName: string }
+  | {
+      status: 'claimed';
+      claim?: { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string };
+      messageId?: string;
+    }
+  | { status: 'acquired'; results: BackgroundToolResultRecord[]; messageId?: string };
 
 export type SubagentThreadViewMessageRecord = Pick<
   IMessage,
@@ -547,6 +610,41 @@ export type ParentSubagentTaskRecord = {
   >;
 };
 
+/** A response message whose run was sampled into a trace. */
+export interface SampledTraceMessage {
+  messageId: string;
+  createdAt?: Date;
+  /** Opaque ids of the tracing destinations eligible to hold the trace, when recorded. */
+  langfuseDestinationIds?: string[];
+  /** The run whose trace this response reports, when it is not the message's own id. */
+  langfuseRunId?: string;
+  /** Opaque position in the conversation's response order, which a later read can resume from. */
+  orderKey?: string;
+}
+
+export interface ConversationTraceRefs {
+  /** Creation time of the user's earliest message in the conversation. */
+  firstMessageAt?: Date;
+  /** Sampled response messages, oldest first. */
+  sampledMessages: SampledTraceMessage[];
+}
+
+/**
+ * Reads a stored terminal stamp defensively: rows written before the stamp existed
+ * omit it, and a document can reach here from a raw read where the date is still a
+ * string, so an unusable value is reported as absent rather than as `Invalid Date`.
+ */
+function toSettledAt(value: unknown): Date | undefined {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? undefined : value;
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+  return undefined;
+}
+
 export interface MessageMethods {
   saveMessage(
     ctx: {
@@ -561,6 +659,32 @@ export interface MessageMethods {
     },
     metadata?: { context?: string },
   ): Promise<IMessage | null | undefined>;
+  /**
+   * Reads the references a trace viewer needs for one of the user's
+   * conversations: when it began and which responses were sampled into traces.
+   */
+  getConversationTraceRefs(input: {
+    user: string;
+    conversationId: string;
+    tenantId?: string;
+    /** Only this response, when it is a sampled one. */
+    messageId?: string;
+    /** The newest response to include, by the `orderKey` a previous read returned for it. */
+    through?: { messageId: string; orderKey: string };
+    /** The most responses to return, newest first from `through`; all of them when absent. */
+    limit?: number;
+  }): Promise<ConversationTraceRefs>;
+  /**
+   * Whether any of the user's responses in the conversation was sampled into a
+   * trace that one of `destinationIds` can hold. A response with no recorded
+   * destinations predates the record and counts for every destination.
+   */
+  hasSampledTraceMessage(input: {
+    user: string;
+    conversationId: string;
+    tenantId?: string;
+    destinationIds: string[];
+  }): Promise<boolean>;
   recordSubagentTaskControlReceipt(input: {
     userId: string;
     conversationId: string;
@@ -622,24 +746,34 @@ export interface MessageMethods {
       taskId: string;
       toolName: string;
       status: 'completed' | 'error';
+      cancelled?: true;
       settledAt: Date;
       completionWakeup?: true;
+      completionReceipt?: true;
       resultClaim?: {
         kind: 'manual' | 'wakeup';
         claimId: string;
         claimedAt: Date;
+        generationId?: string;
       };
     };
   }): Promise<{ matched: boolean; unfinished: boolean }>;
   claimBackgroundToolResults(params: {
     userId: string;
     conversationId: string;
-    messageId: string;
+    /** Optional on recovery polls after the process-local task registry was lost. */
+    messageId?: string;
     taskId: string;
     agentId?: string;
     kind: 'manual' | 'wakeup';
     claimId: string;
+    /** Response generation that owns this manual result delivery. */
+    generationId?: string;
+    /** Manual owner-process takeover after automatic delivery was retired. */
+    allowUnfinished?: boolean;
     limit?: number;
+    /** Includes JSON escaping, delimiters, and empty result fields. */
+    maxMetadataChars?: number;
   }): Promise<BackgroundToolResultClaim>;
   releaseBackgroundToolResultClaims(params: {
     userId: string;
@@ -726,6 +860,48 @@ function agentOwnershipFilter(prefix: string, agentId: string): Record<string, u
   };
 }
 
+type UpdateToolCallResultInput = {
+  userId: string;
+  messageId: string;
+  conversationId: string;
+  toolCallId: string;
+  stepId?: string;
+  /** Scopes the part match when provider tool-call ids repeat across
+   *  agents in one response message (e.g. `call_0` per response); a part
+   *  without agent identity matches any caller (single-agent runs). */
+  agentId?: string;
+  output?: string;
+  attachments?: unknown[];
+  /**
+   * Stamps `backgrounded: true` onto the patched tool call. Replacing the
+   * dispatch-handle output with the settled task's stdout destroys the only
+   * signal renderers had that this call ran detached (the handle JSON and
+   * the live status-marker attachment are both transient), so the patch
+   * that erases it must persist a durable one alongside.
+   */
+  markBackgrounded?: boolean;
+  backgroundTask?: {
+    taskId: string;
+    toolName: string;
+    status: 'completed' | 'error';
+    cancelled?: true;
+    settledAt: Date;
+    completionWakeup?: true;
+    completionReceipt?: true;
+    resultClaim?: {
+      kind: 'manual' | 'wakeup';
+      claimId: string;
+      claimedAt: Date;
+      generationId?: string;
+    };
+  };
+};
+
+type SteplessToolCallFallback = {
+  content: NonNullable<IMessage['content']>;
+  hasResultClaim: boolean;
+};
+
 export function createMessageMethods(mongoose: typeof import('mongoose')): MessageMethods {
   /**
    * Saves a message in the database.
@@ -768,6 +944,9 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
+      delete update.isTemporary;
+      delete update.expiredAt;
+      let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
 
       if (expiredAt instanceof Date && !Number.isNaN(expiredAt.getTime())) {
         if (typeof isTemporary === 'boolean') {
@@ -778,12 +957,31 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         if (typeof isTemporary === 'boolean') {
           update.isTemporary = isTemporary;
         }
-        try {
-          update.expiredAt = createTempChatExpirationDate(interfaceConfig);
-        } catch (err) {
-          logger.error('Error creating temporary chat expiration date:', err);
-          logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
-          update.expiredAt = createFallbackRetentionDate();
+        if (
+          typeof isTemporary === 'boolean' ||
+          interfaceConfig.generalChatRetention === undefined
+        ) {
+          try {
+            update.expiredAt = createChatExpirationDate(interfaceConfig, isTemporary);
+          } catch (err) {
+            logger.error('Error creating chat expiration date:', err);
+            logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
+            update.expiredAt = createFallbackRetentionDate();
+          }
+        } else {
+          try {
+            retentionOnInsert = {
+              expiredAt: createChatExpirationDate(interfaceConfig, false),
+              isTemporary: false,
+            };
+          } catch (err) {
+            logger.error('Error creating chat expiration date:', err);
+            logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
+            retentionOnInsert = {
+              expiredAt: createFallbackRetentionDate(),
+              isTemporary: false,
+            };
+          }
         }
       } else if (isTemporary === true) {
         update.isTemporary = true;
@@ -834,16 +1032,42 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
             update,
             userSubmittedPaths,
             userSubmittedMessageFieldPaths,
-            { upsert: true, stampModelOutputOnInsert, unsetContextMeta },
+            { upsert: true, stampModelOutputOnInsert, unsetContextMeta, retentionOnInsert },
           )
         : await Message.findOneAndUpdate(
             { messageId: params.messageId, user: userId },
-            buildMessageSaveUpdate(update, { stampModelOutputOnInsert, unsetContextMeta }),
+            buildMessageSaveUpdate(update, {
+              stampModelOutputOnInsert,
+              unsetContextMeta,
+              retentionOnInsert,
+            }),
             { upsert: true, new: true },
           );
 
       if (message == null) {
         return message;
+      }
+
+      /** Reuse the saved row's chat type when callers omit it, preserving existing deadlines. */
+      if (
+        interfaceConfig?.retentionMode === RetentionMode.ALL &&
+        interfaceConfig.generalChatRetention !== undefined &&
+        typeof isTemporary !== 'boolean' &&
+        message.expiredAt == null
+      ) {
+        const deadline = createChatExpirationDate(interfaceConfig, message.isTemporary === true);
+        const result = await Message.updateOne(
+          {
+            _id: message._id,
+            expiredAt: null,
+            isTemporary: message.isTemporary === true ? true : { $ne: true },
+          },
+          { $set: { expiredAt: deadline } },
+          { timestamps: false },
+        );
+        if (result.modifiedCount > 0) {
+          message.expiredAt = deadline;
+        }
       }
 
       if (
@@ -1030,50 +1254,98 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
    * finalize will overwrite the patch with in-memory content, so callers
    * should keep re-applying until a finalized row is patched.
    */
-  async function updateToolCallResult({
+  async function updateToolCallResult(
+    input: UpdateToolCallResultInput,
+  ): Promise<{ matched: boolean; unfinished: boolean }> {
+    const exact = await settleToolCallResult(input, input.stepId);
+    if (exact.matched || input.stepId == null) {
+      return exact;
+    }
+    /** A turn resumed after an approval pause persists the tool calls it made
+     * before the pause without their step ids, so an exact step match can never
+     * land and the settled result would be given up. On a finished row, fall back
+     * to the one part with this call id (and agent scope) that has no stored step.
+     * An unfinished row may not hold the real part yet, and more than one
+     * candidate means a repeated provider id: both stay unmatched rather than
+     * patching the wrong part. */
+    const fallback = await getSteplessToolCallFallback(input);
+    if (fallback == null) {
+      return exact;
+    }
+    return settleToolCallResult(input, null, fallback);
+  }
+
+  async function getSteplessToolCallFallback({
     userId,
     messageId,
     conversationId,
     toolCallId,
     stepId,
     agentId,
-    output,
-    attachments,
-    markBackgrounded,
-    backgroundTask,
-  }: {
-    userId: string;
-    messageId: string;
-    conversationId: string;
-    toolCallId: string;
-    stepId?: string;
-    /** Scopes the part match when provider tool-call ids repeat across
-     *  agents in one response message (e.g. `call_0` per response); a part
-     *  without agent identity matches any caller (single-agent runs). */
-    agentId?: string;
-    output?: string;
-    attachments?: unknown[];
-    /**
-     * Stamps `backgrounded: true` onto the patched tool call. Replacing the
-     * dispatch-handle output with the settled task's stdout destroys the only
-     * signal renderers had that this call ran detached (the handle JSON and
-     * the live status-marker attachment are both transient), so the patch
-     * that erases it must persist a durable one alongside.
-     */
-    markBackgrounded?: boolean;
-    backgroundTask?: {
-      taskId: string;
-      toolName: string;
-      status: 'completed' | 'error';
-      settledAt: Date;
-      completionWakeup?: true;
-      resultClaim?: {
-        kind: 'manual' | 'wakeup';
-        claimId: string;
-        claimedAt: Date;
-      };
-    };
-  }): Promise<{ matched: boolean; unfinished: boolean }> {
+  }: UpdateToolCallResultInput): Promise<SteplessToolCallFallback | undefined> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const row = await Message.findOne({ messageId, user: userId, conversationId })
+      .select({ content: 1, unfinished: 1 })
+      .lean<Pick<IMessage, 'content' | 'unfinished'> | null>();
+    if (row == null || row.unfinished === true) {
+      return;
+    }
+    let candidates = 0;
+    let hasResultClaim = false;
+    const content = row.content ?? [];
+    for (const part of content) {
+      const entry = part as {
+        type?: unknown;
+        agentId?: unknown;
+        tool_call?: {
+          id?: unknown;
+          stepId?: unknown;
+          agentId?: unknown;
+          backgroundTask?: { resultClaim?: unknown };
+        };
+      } | null;
+      if (entry?.type !== 'tool_call' || entry.tool_call?.id !== toolCallId) {
+        continue;
+      }
+      const owner = entry.agentId ?? entry.tool_call.agentId;
+      if (agentId != null && owner != null && owner !== agentId) {
+        continue;
+      }
+      /** An unmatched write can mean attachment contention, not a missing
+       * identity. Never substitute a sibling for an existing exact part. */
+      if (entry.tool_call.stepId === stepId) {
+        return;
+      }
+      if (entry.tool_call.stepId != null) {
+        continue;
+      }
+      candidates += 1;
+      if (candidates > 1) {
+        return;
+      }
+      hasResultClaim = entry.tool_call.backgroundTask?.resultClaim != null;
+    }
+    return candidates === 1 ? { content, hasResultClaim } : undefined;
+  }
+
+  async function settleToolCallResult(
+    {
+      userId,
+      messageId,
+      conversationId,
+      toolCallId,
+      stepId,
+      agentId,
+      output,
+      attachments,
+      markBackgrounded,
+      backgroundTask,
+    }: UpdateToolCallResultInput,
+    /** A step id to match exactly, `null` to match a part with no stored step,
+     * or `undefined` to ignore steps. */
+    stepMatch: string | null | undefined,
+    fallback?: SteplessToolCallFallback,
+  ): Promise<{ matched: boolean; unfinished: boolean }> {
     /** One source of truth for which content part this settle may touch:
      * `prefix: ''` yields the `$elemMatch` document filter, `prefix: 'part.'`
      * the arrayFilters element filter — the same predicate in one dialect,
@@ -1083,14 +1355,16 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     const partScope = (prefix: string): Record<string, unknown> => ({
       [`${prefix}type`]: 'tool_call',
       [`${prefix}tool_call.id`]: toolCallId,
-      ...(stepId != null ? { [`${prefix}tool_call.stepId`]: stepId } : {}),
+      ...(stepMatch !== undefined ? { [`${prefix}tool_call.stepId`]: stepMatch } : {}),
       ...(agentId != null ? agentOwnershipFilter(prefix, agentId) : {}),
     });
     const messageFilter = {
       messageId,
       user: userId,
       conversationId,
-      content: { $elemMatch: partScope('') },
+      ...(fallback == null
+        ? { content: { $elemMatch: partScope('') } }
+        : { content: fallback.content, unfinished: { $ne: true } }),
     };
     const partIdentityFilter = partScope('part.');
     /** Amazon DocumentDB rejects aggregation-pipeline updates, so the part
@@ -1113,7 +1387,12 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         partPatch['content.$[part].tool_call.backgroundTask.taskId'] = backgroundTask.taskId;
         partPatch['content.$[part].tool_call.backgroundTask.toolName'] = backgroundTask.toolName;
         partPatch['content.$[part].tool_call.backgroundTask.status'] = backgroundTask.status;
+        partPatch['content.$[part].tool_call.backgroundTask.cancelled'] =
+          backgroundTask.cancelled === true;
         partPatch['content.$[part].tool_call.backgroundTask.settledAt'] = backgroundTask.settledAt;
+        if (backgroundTask.completionReceipt === true) {
+          partPatch['content.$[part].tool_call.backgroundTask.completionReceipt'] = true;
+        }
         if (backgroundTask.completionWakeup === true) {
           partPatch['content.$[part].tool_call.backgroundTask.completionWakeup'] = true;
         } else {
@@ -1125,8 +1404,18 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     if (Object.keys(partPatch).length === 0 && !mergingAttachments) {
       return { matched: false, unfinished: false };
     }
+    /** Fence the fallback on the content used to establish its unique identity.
+     * A concurrent save or claim must invalidate the whole write, including any
+     * supplied claim. The snapshot lets us preserve an existing claim and stamp
+     * a missing one atomically with settlement, rather than before this fence. */
+    const settlePatch = {
+      ...partPatch,
+      ...(fallback != null && !fallback.hasResultClaim && backgroundTask?.resultClaim != null
+        ? { 'content.$[part].tool_call.backgroundTask.resultClaim': backgroundTask.resultClaim }
+        : {}),
+    };
     const settleUpdate = {
-      ...(Object.keys(partPatch).length > 0 ? { $set: partPatch } : {}),
+      ...(Object.keys(settlePatch).length > 0 ? { $set: settlePatch } : {}),
       ...(disarmWakeup
         ? { $unset: { 'content.$[part].tool_call.backgroundTask.completionWakeup': 1 } }
         : {}),
@@ -1149,7 +1438,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
        * instead expose a claimable terminal part that lets a second consumer
        * deliver the same result. A crash between the writes is healed by the
        * settle retry, whose claim write no-ops against its own stamp. */
-      if (backgroundTask?.resultClaim != null) {
+      if (fallback == null && backgroundTask?.resultClaim != null) {
         await Message.updateOne(
           messageFilter,
           {
@@ -1233,7 +1522,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           },
           {
             ...settleUpdate,
-            $set: { ...partPatch, attachments: merged },
+            $set: { ...settlePatch, attachments: merged },
           },
           settleOptions,
         ).lean<{ unfinished?: boolean } | null>();
@@ -1258,7 +1547,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     }
   }
 
-  const MAX_BACKGROUND_TOOL_RESULT_BATCH = 8;
+  const MAX_BACKGROUND_TOOL_RESULT_BATCH = 16;
   /** Bounds the attachments-merge fence retries. Each lost round means a
    * concurrent writer changed the array, so re-reading converges. */
   const ATTACHMENT_MERGE_CAS_ATTEMPTS = 8;
@@ -1266,7 +1555,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   function readBackgroundToolResultClaim(
     row: Pick<IMessage, 'content'>,
     taskId: string,
-  ): { kind: 'manual' | 'wakeup'; claimId: string } | undefined {
+  ): { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string } | undefined {
     for (const part of row.content ?? []) {
       if (part == null || typeof part !== 'object' || Array.isArray(part)) {
         continue;
@@ -1276,7 +1565,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           tool_call?: {
             backgroundTask?: {
               taskId?: unknown;
-              resultClaim?: { kind?: unknown; claimId?: unknown };
+              resultClaim?: { kind?: unknown; claimId?: unknown; generationId?: unknown };
             };
           };
         }
@@ -1290,7 +1579,13 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         typeof claim.claimId === 'string' &&
         claim.claimId.length > 0
       ) {
-        return { kind: claim.kind, claimId: claim.claimId };
+        return {
+          kind: claim.kind,
+          claimId: claim.claimId,
+          ...(typeof claim.generationId === 'string' && claim.generationId.length > 0
+            ? { generationId: claim.generationId }
+            : {}),
+        };
       }
       return;
     }
@@ -1315,6 +1610,8 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
             taskId?: unknown;
             toolName?: unknown;
             status?: unknown;
+            cancelled?: unknown;
+            settledAt?: unknown;
             resultClaim?: { kind?: unknown; claimId?: unknown };
           };
         };
@@ -1337,16 +1634,63 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       } else if (typeof toolCall.agentId === 'string') {
         resultAgentId = toolCall.agentId;
       }
+      const settledAt = toSettledAt(task.settledAt);
       results.push({
         taskId: task.taskId,
         toolCallId: toolCall.id,
         toolName: task.toolName,
-        status: task.status,
+        status: task.cancelled === true ? 'cancelled' : task.status,
         output: typeof toolCall.output === 'string' ? toolCall.output : '',
         ...(resultAgentId == null ? {} : { agentId: resultAgentId }),
+        ...(settledAt == null ? {} : { settledAt }),
       });
     }
     return results;
+  }
+
+  function readBackgroundToolHandle(
+    message: IMessage,
+    taskId: string,
+    agentId?: string,
+  ): string | undefined {
+    for (const part of message.content ?? []) {
+      if (part == null || typeof part !== 'object' || Array.isArray(part)) {
+        continue;
+      }
+      const record = part as {
+        agentId?: unknown;
+        tool_call?: { agentId?: unknown; output?: unknown };
+      };
+      const partAgentId = record.agentId ?? record.tool_call?.agentId;
+      const sameAgent =
+        agentId == null ||
+        partAgentId == null ||
+        (typeof partAgentId === 'string' && partAgentId === agentId);
+      const output = record.tool_call?.output;
+      if (!sameAgent || typeof output !== 'string' || !output.includes(taskId)) {
+        continue;
+      }
+      try {
+        const handle = JSON.parse(output) as {
+          background_task_id?: unknown;
+          subagent_type?: unknown;
+          tool?: unknown;
+          status?: unknown;
+        };
+        if (
+          handle.background_task_id === taskId &&
+          handle.status === 'running' &&
+          typeof handle.subagent_type !== 'string' &&
+          typeof handle.tool === 'string' &&
+          handle.tool.length > 0
+        ) {
+          return handle.tool;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return;
   }
 
   /** Atomically elects manual polling or one automatic continuation. Wakeups
@@ -1360,42 +1704,92 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     agentId,
     kind,
     claimId,
-    limit = kind === 'wakeup' ? MAX_BACKGROUND_TOOL_RESULT_BATCH : 1,
-  }: {
-    userId: string;
-    conversationId: string;
-    messageId: string;
-    taskId: string;
-    agentId?: string;
-    kind: 'manual' | 'wakeup';
-    claimId: string;
-    limit?: number;
-  }): Promise<BackgroundToolResultClaim> {
+    generationId,
+    allowUnfinished = false,
+    limit = kind === 'wakeup' ? 8 : 1,
+    maxMetadataChars,
+  }: Parameters<
+    MessageMethods['claimBackgroundToolResults']
+  >[0]): Promise<BackgroundToolResultClaim> {
+    const requestedMessageId = messageId?.trim();
+    const requestedGenerationId = generationId?.trim();
     if (
-      messageId.length === 0 ||
-      messageId.length > 256 ||
+      (requestedMessageId != null &&
+        (requestedMessageId.length === 0 || requestedMessageId.length > 256)) ||
       taskId.length === 0 ||
       taskId.length > 256 ||
       claimId.length === 0 ||
       claimId.length > 128 ||
-      (kind !== 'manual' && kind !== 'wakeup')
+      (requestedGenerationId != null &&
+        (requestedGenerationId.length === 0 || requestedGenerationId.length > 256)) ||
+      (requestedGenerationId != null && kind !== 'manual') ||
+      (allowUnfinished && kind !== 'manual') ||
+      (kind !== 'manual' && kind !== 'wakeup') ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      (maxMetadataChars != null &&
+        (!Number.isSafeInteger(maxMetadataChars) || maxMetadataChars < 1))
     ) {
       throw new TypeError('Invalid background tool result claim');
     }
     const boundedLimit = Math.max(1, Math.min(MAX_BACKGROUND_TOOL_RESULT_BATCH, limit));
     const Message = mongoose.models.Message as Model<IMessage>;
-    const row = await Message.findOne({ user: userId, conversationId, messageId })
-      .select({ content: 1, unfinished: 1 })
+    const row = await Message.findOne({
+      user: userId,
+      conversationId,
+      ...(requestedMessageId != null
+        ? { messageId: requestedMessageId }
+        : {
+            content: {
+              $elemMatch: { 'tool_call.backgroundTask.taskId': taskId },
+            },
+          }),
+    })
+      .select({ content: 1, unfinished: 1, messageId: 1 })
+      .sort({ createdAt: -1, _id: -1 })
       .lean<IMessage | null>();
     if (row == null) {
+      if (requestedMessageId == null) {
+        const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const handleRow = await Message.findOne({
+          user: userId,
+          conversationId,
+          content: {
+            $elemMatch: {
+              type: 'tool_call',
+              'tool_call.output': new RegExp(`"background_task_id"\\s*:\\s*"${escapedTaskId}"`),
+              ...(agentId == null ? {} : agentOwnershipFilter('', agentId)),
+            },
+          },
+        })
+          .select({ content: 1 })
+          .sort({ createdAt: -1, _id: -1 })
+          .lean<IMessage | null>();
+        const toolName =
+          handleRow == null ? undefined : readBackgroundToolHandle(handleRow, taskId, agentId);
+        if (toolName != null) {
+          return { status: 'outcome_unknown', toolName };
+        }
+      }
       return { status: 'not_found' };
     }
-    if (row.unfinished === true) {
+    /** Only an owner-process manual poll that already retired automatic
+     * delivery may consume a terminal receipt on an unfinished response.
+     * Every other claimant waits for finalization, preventing a poll from
+     * racing the automatic continuation while the parent generation runs. */
+    if (row.unfinished === true && !(kind === 'manual' && allowUnfinished)) {
       return { status: 'not_ready' };
     }
+    const resolvedMessageId = row.messageId;
+    if (typeof resolvedMessageId !== 'string' || resolvedMessageId.length === 0) {
+      return { status: 'not_found' };
+    }
+    const recoveredSource = requestedMessageId == null ? { messageId: resolvedMessageId } : {};
     const requestedClaim = readBackgroundToolResultClaim(row, taskId);
     const replaying = requestedClaim?.kind === kind && requestedClaim.claimId === claimId;
     const candidates: string[] = [];
+    const costs = new Map<string, number>();
+    let receiptBacked = false;
     let requestedState: 'ready' | 'claimed' | 'missing' = 'missing';
     for (const part of row.content ?? []) {
       if (part == null || typeof part !== 'object' || Array.isArray(part)) {
@@ -1423,6 +1817,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       const claimable =
         terminal && wakeupEligible && sameAgent && (replaying ? replay : resultClaim == null);
       if (candidateId === taskId) {
+        receiptBacked = task?.completionReceipt === true;
         if (claimable) {
           requestedState = 'ready';
         } else if (resultClaim != null) {
@@ -1431,10 +1826,28 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       }
       if (
         claimable &&
+        (candidateId === taskId || task?.completionReceipt !== true) &&
         (candidateId === taskId || kind === 'wakeup') &&
         candidates.length < boundedLimit
       ) {
         candidates.push(candidateId);
+      }
+      if (claimable && (candidateId === taskId || candidates.includes(candidateId))) {
+        const call = (part as { tool_call?: { id?: string } }).tool_call;
+        if (typeof call?.id === 'string' && typeof task?.toolName === 'string') {
+          const terminalStatus = task.status === 'error' ? 'error' : 'completed';
+          costs.set(
+            candidateId,
+            JSON.stringify(
+              backgroundResultMetadata({
+                taskId: candidateId,
+                toolCallId: call.id,
+                toolName: task.toolName,
+                status: task.cancelled === true ? 'cancelled' : terminalStatus,
+              }),
+            ).length + 1,
+          );
+        }
       }
     }
     if (requestedState === 'missing') {
@@ -1444,20 +1857,46 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       return {
         status: 'claimed',
         ...(requestedClaim == null ? {} : { claim: requestedClaim }),
+        ...recoveredSource,
       };
     }
     if (!candidates.includes(taskId)) {
       candidates.unshift(taskId);
       candidates.splice(boundedLimit);
     }
+    if (!replaying) {
+      /** A receipt lives on another document, so it cannot join this atomic
+       * message-row batch. Keep its delivery task-local in both directions. */
+      if (receiptBacked) candidates.splice(0, candidates.length, taskId);
+      if (maxMetadataChars != null) {
+        let remaining = maxMetadataChars - 1 - (costs.get(taskId) ?? maxMetadataChars);
+        if (remaining < 0)
+          throw new TypeError('Background result metadata exceeds its input budget');
+        const admitted = candidates.filter((id) => {
+          if (id === taskId) return true;
+          const cost = costs.get(id) ?? maxMetadataChars;
+          if (cost > remaining) return false;
+          remaining -= cost;
+          return true;
+        });
+        candidates.splice(0, candidates.length, ...admitted);
+      }
+    }
     const claimedAt = new Date();
-    const claimStamp = { kind, claimId, claimedAt };
+    const claimStamp = {
+      kind,
+      claimId,
+      claimedAt,
+      ...(kind === 'manual' && requestedGenerationId != null
+        ? { generationId: requestedGenerationId }
+        : {}),
+    };
     const updated = await Message.findOneAndUpdate(
       {
         user: userId,
         conversationId,
-        messageId,
-        unfinished: { $ne: true },
+        messageId: resolvedMessageId,
+        ...(kind === 'manual' && allowUnfinished ? {} : { unfinished: { $ne: true } }),
         content: {
           $elemMatch: {
             type: 'tool_call',
@@ -1549,10 +1988,11 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     const results = parseBackgroundToolResults(updated, { kind, claimId });
     const competingClaim = readBackgroundToolResultClaim(updated, taskId);
     return results.some((result) => result.taskId === taskId)
-      ? { status: 'acquired', results }
+      ? { status: 'acquired', results, ...recoveredSource }
       : {
           status: 'claimed',
           ...(competingClaim == null ? {} : { claim: competingClaim }),
+          ...recoveredSource,
         };
   }
 
@@ -1662,6 +2102,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         endpoint: updatedMessage.endpoint,
         langfuseSampled: updatedMessage.langfuseSampled,
         langfuseDestinationIds: updatedMessage.langfuseDestinationIds,
+        langfuseRunId: updatedMessage.langfuseRunId,
       };
     } catch (err) {
       logger.error('Error updating message:', err);
@@ -3116,6 +3557,121 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     );
   }
 
+  async function getConversationTraceRefs({
+    user,
+    conversationId,
+    tenantId,
+    messageId,
+    through,
+    limit,
+  }: {
+    user: string;
+    conversationId: string;
+    tenantId?: string;
+    messageId?: string;
+    through?: { messageId: string; orderKey: string };
+    limit?: number;
+  }): Promise<ConversationTraceRefs> {
+    try {
+      const Message = mongoose.models.Message as Model<IMessage>;
+      const scope = { user, conversationId, ...traceTenantScope(tenantId) };
+      const anchor = through != null ? parseTraceOrderKey(through.orderKey) : undefined;
+      const range =
+        anchor != null
+          ? {
+              $or: [
+                { createdAt: { $lt: anchor.createdAt } },
+                {
+                  createdAt: anchor.createdAt,
+                  _id: { $lte: new mongoose.Types.ObjectId(anchor.id) },
+                },
+              ],
+            }
+          : {};
+      const query = Message.find({
+        ...scope,
+        ...SERVER_AUTHORED_SAMPLED_RESPONSE,
+        ...(messageId != null ? { messageId } : {}),
+        ...range,
+      }).select('_id messageId createdAt langfuseDestinationIds langfuseRunId');
+      const bounded = limit != null;
+      /** `_id` breaks ties between responses saved in the same millisecond, so every page
+       *  request rebuilds the same turn order its cursor was positioned in. */
+      const sorted = bounded
+        ? query.sort({ createdAt: -1, _id: -1 }).limit(limit)
+        : query.sort({ createdAt: 1, _id: 1 });
+      const [first, rows] = await Promise.all([
+        Message.findOne(scope)
+          .select('createdAt -_id')
+          .sort({ createdAt: 1 })
+          .lean<Pick<IMessage, 'createdAt'>>(),
+        through != null && anchor == null
+          ? []
+          : sorted.lean<
+              Array<
+                Pick<
+                  IMessage,
+                  'messageId' | 'createdAt' | 'langfuseDestinationIds' | 'langfuseRunId'
+                > & { _id: Types.ObjectId }
+              >
+            >(),
+      ]);
+      const sampled = bounded ? rows.reverse() : rows;
+      /** A position that no longer names its response (deleted, or never issued) resumes nothing. */
+      if (through != null && sampled[sampled.length - 1]?.messageId !== through.messageId) {
+        return { firstMessageAt: first?.createdAt, sampledMessages: [] };
+      }
+      return {
+        firstMessageAt: first?.createdAt,
+        sampledMessages: sampled
+          .filter((message) => typeof message.messageId === 'string')
+          .map(({ _id, messageId: id, createdAt, langfuseDestinationIds, langfuseRunId }) => ({
+            messageId: id,
+            ...(createdAt != null ? { createdAt, orderKey: traceOrderKey(createdAt, _id) } : {}),
+            ...(Array.isArray(langfuseDestinationIds) ? { langfuseDestinationIds } : {}),
+            ...(typeof langfuseRunId === 'string' && langfuseRunId.length > 0
+              ? { langfuseRunId }
+              : {}),
+          })),
+      };
+    } catch (err) {
+      logger.error('Error getting conversation trace references:', err);
+      throw err;
+    }
+  }
+
+  async function hasSampledTraceMessage({
+    user,
+    conversationId,
+    tenantId,
+    destinationIds,
+  }: {
+    user: string;
+    conversationId: string;
+    tenantId?: string;
+    destinationIds: string[];
+  }): Promise<boolean> {
+    try {
+      const Message = mongoose.models.Message as Model<IMessage>;
+      const match = await Message.findOne({
+        user,
+        conversationId,
+        ...traceTenantScope(tenantId),
+        ...SERVER_AUTHORED_SAMPLED_RESPONSE,
+        $or: [
+          { langfuseDestinationIds: null },
+          { langfuseDestinationIds: { $in: destinationIds } },
+        ],
+      })
+        .select('_id')
+        .lean();
+      return match != null;
+    } catch (err) {
+      logger.error('Error checking for a sampled trace message:', err);
+      throw err;
+    }
+  }
+
   /**
    * Retrieves a single message from the database.
    */
@@ -3214,6 +3770,8 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     releaseSubagentTaskResultClaim,
     deleteMessagesSince,
     getMessages,
+    getConversationTraceRefs,
+    hasSampledTraceMessage,
     getMessagesForSubagentThreadView,
     listSubagentTasksForThreads,
     getMessage,

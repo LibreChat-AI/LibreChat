@@ -94,6 +94,18 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
     code_environment_id: {
       type: String,
     },
+    code_workspace_id: { type: String },
+    repositoryInstructions: { type: String, enum: ['prefer', 'defer', 'off'] },
+    git_identity: {
+      type: new Schema(
+        {
+          name: { type: String, required: true },
+          email: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     /** @deprecated Use edges instead */
     agent_ids: {
       type: [String],
@@ -163,6 +175,7 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
 agentSchema.index({ id: 1, tenantId: 1 }, { unique: true });
 agentSchema.index({ mcpServerNames: 1, tenantId: 1 });
 agentSchema.index({ updatedAt: -1, _id: 1 });
+agentSchema.index({ tenantId: 1, updatedAt: -1, _id: 1 });
 agentSchema.index({ 'edges.to': 1 });
 
 export default agentSchema;

@@ -1,5 +1,6 @@
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { clearLocalStorage } from '~/utils/localStorage';
 import store from '~/store';
@@ -53,7 +54,7 @@ export default function useClearStates() {
           reset(store.globalAudioPlayingFamily(key));
           reset(store.activeRunFamily(key));
           reset(store.audioRunFamily(key));
-          reset(store.messagesSiblingIdxFamily(key.toString()));
+          jotaiStore.set(siblingIdxFamily(siblingKey(key.toString())), 0);
         }
 
         clearLocalStorage(skipFirst);

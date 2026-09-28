@@ -28,7 +28,9 @@ describe('archive-all mutation cache refresh', () => {
     mockArchiveAllConversations.mockReset();
   });
 
-  it('refetches archived queries and removes inactive detail caches', async () => {
+  /** Nothing cached survives archiving everything, but an unmounted variant is dropped
+   *  rather than refetched: it reconciles from scratch when something mounts it. */
+  it('drops inactive list variants and detail caches', async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false },
@@ -36,13 +38,11 @@ describe('archive-all mutation cache refresh', () => {
       },
     });
     const archivedQuery = jest.fn().mockResolvedValue({ pages: [], pageParams: [] });
+    const archivedKey = [QueryKeys.archivedConversations, { isArchived: true }];
     const projectKey = [QueryKeys.project, 'project-1'];
     const conversationKey = [QueryKeys.conversation, 'conversation-1'];
 
-    await queryClient.fetchQuery(
-      [QueryKeys.archivedConversations, { isArchived: true }],
-      archivedQuery,
-    );
+    await queryClient.fetchQuery(archivedKey, archivedQuery);
     queryClient.setQueryData(projectKey, { _id: 'project-1', conversationCount: 1 });
     queryClient.setQueryData(conversationKey, {
       conversationId: 'conversation-1',
@@ -59,8 +59,9 @@ describe('archive-all mutation cache refresh', () => {
     });
 
     await waitFor(() => {
-      expect(archivedQuery).toHaveBeenCalledTimes(2);
+      expect(queryClient.getQueryData(archivedKey)).toBeUndefined();
     });
+    expect(archivedQuery).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryData(projectKey)).toBeUndefined();
     expect(queryClient.getQueryData(conversationKey)).toBeUndefined();
 
@@ -179,13 +180,11 @@ describe('archive-all mutation cache refresh', () => {
       },
     });
     const archivedQuery = jest.fn().mockResolvedValue({ pages: [], pageParams: [] });
+    const archivedKey = [QueryKeys.archivedConversations, { isArchived: true }];
     const projectKey = [QueryKeys.project, 'project-1'];
     const conversationKey = [QueryKeys.conversation, 'conversation-1'];
 
-    await queryClient.fetchQuery(
-      [QueryKeys.archivedConversations, { isArchived: true }],
-      archivedQuery,
-    );
+    await queryClient.fetchQuery(archivedKey, archivedQuery);
     queryClient.setQueryData(projectKey, { _id: 'project-1', conversationCount: 1 });
     queryClient.setQueryData(conversationKey, {
       conversationId: 'conversation-1',
@@ -202,7 +201,7 @@ describe('archive-all mutation cache refresh', () => {
     });
 
     await waitFor(() => {
-      expect(archivedQuery).toHaveBeenCalledTimes(2);
+      expect(queryClient.getQueryData(archivedKey)).toBeUndefined();
     });
     expect(queryClient.getQueryData(projectKey)).toBeUndefined();
     expect(queryClient.getQueryData(conversationKey)).toBeUndefined();

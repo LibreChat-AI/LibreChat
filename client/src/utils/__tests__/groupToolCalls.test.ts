@@ -22,26 +22,33 @@ const label = (text: string): TMessageContentParts =>
     pending: text.length === 0,
   }) as unknown as TMessageContentParts;
 
+const textPart = (text = 'answer'): TMessageContentParts =>
+  ({ type: ContentTypes.TEXT, text }) as unknown as TMessageContentParts;
+
+const transferPart = (): TMessageContentParts =>
+  ({
+    type: ContentTypes.TOOL_CALL,
+    [ContentTypes.TOOL_CALL]: { id: 'x', name: 'lc_transfer_to_agent', args: '{}' },
+  }) as unknown as TMessageContentParts;
+
 const withIndex = (parts: TMessageContentParts[]): PartWithIndex[] =>
   parts.map((part, idx) => ({ part, idx }));
 
 describe('groupSequentialToolCalls with activity labels', () => {
   /**
    * Every batch publishes its reservation the moment the batch ends, so an
-   * empty label is the NORMAL state while generation is in flight. It must
-   * render exactly as the feature-off path does: a lone tool call stays a
-   * single (no group wrapper) and THINK parts stay standalone.
+   * empty label is the NORMAL state while generation is in flight. Reasoning
+   * folds into the run either way, so a lone tool call with its thinking
+   * still groups, just without a labelPart.
    */
-  it('leaves a single tool call and its reasoning untouched while the label is empty', () => {
+  it('groups a single tool call with its reasoning while the label is empty', () => {
     const grouped = groupSequentialToolCalls(
       withIndex([think('deciding what to search'), toolCall('t1'), label('')]),
     );
 
-    expect(grouped).toHaveLength(2);
-    expect(grouped[0]).toMatchObject({ type: 'single' });
-    expect(grouped[1]).toMatchObject({ type: 'single' });
-    /** No labelPart anywhere, and crucially no 'tool-group' wrapper. */
-    expect(grouped.some((entry) => entry.type === 'tool-group')).toBe(false);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]).toMatchObject({ type: 'tool-group' });
+    expect((grouped[0] as { labelPart?: PartWithIndex }).labelPart).toBeUndefined();
   });
 
   /** A blank/failed fill is permanent, and must stay equally invisible. */
@@ -196,5 +203,107 @@ describe('groupSequentialToolCalls with activity labels', () => {
     expect(group.labelPart?.part).toMatchObject({
       [ContentTypes.ACTIVITY_LABEL]: 'Fetched the docs',
     });
+  });
+});
+
+describe('groupSequentialToolCalls reasoning transparency', () => {
+  it('groups two adjacent tool calls', () => {
+    const result = groupSequentialToolCalls(withIndex([toolCall('a'), toolCall('b')]));
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ type: 'tool-group' });
+    expect(result[0].type === 'tool-group' && result[0].parts).toHaveLength(2);
+  });
+
+  it('keeps a single tool call ungrouped', () => {
+    const result = groupSequentialToolCalls(withIndex([toolCall('a')]));
+    expect(result).toEqual([{ type: 'single', part: { part: expect.anything(), idx: 0 } }]);
+  });
+
+  it('absorbs reasoning interleaved between tool calls into one group', () => {
+    const result = groupSequentialToolCalls(
+      withIndex([toolCall('a'), think('mid'), toolCall('b')]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('tool-group');
+    expect(result[0].type === 'tool-group' && result[0].parts.map((p) => p.idx)).toEqual([0, 1, 2]);
+  });
+
+  it('absorbs leading and trailing reasoning around a tool run', () => {
+    const result = groupSequentialToolCalls(
+      withIndex([think('lead'), toolCall('a'), toolCall('b'), think('trail')]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('tool-group');
+    expect(result[0].type === 'tool-group' && result[0].parts).toHaveLength(4);
+  });
+
+  it('groups a lone tool call wrapped in reasoning', () => {
+    const result = groupSequentialToolCalls(
+      withIndex([think('lead'), toolCall('a'), think('trail')]),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('tool-group');
+    expect(result[0].type === 'tool-group' && result[0].parts.map((p) => p.idx)).toEqual([0, 1, 2]);
+  });
+
+  it('keeps a lone tool call without reasoning inline', () => {
+    const result = groupSequentialToolCalls(withIndex([toolCall('a'), textPart()]));
+    expect(result.map((g) => g.type)).toEqual(['single', 'single']);
+  });
+
+  it('keeps pure reasoning (no tool call) standalone', () => {
+    const result = groupSequentialToolCalls(withIndex([think('only'), textPart()]));
+    expect(result.map((g) => g.type)).toEqual(['single', 'single']);
+  });
+
+  it('does not pull a thought-then-answer tail into a preceding group', () => {
+    const result = groupSequentialToolCalls(
+      withIndex([toolCall('a'), toolCall('b'), textPart(), think('tail'), textPart('final')]),
+    );
+    expect(result.map((g) => g.type)).toEqual(['tool-group', 'single', 'single', 'single']);
+  });
+
+  it('splits tool runs separated by a non-reasoning part', () => {
+    const result = groupSequentialToolCalls(
+      withIndex([toolCall('a'), toolCall('b'), textPart(), toolCall('c'), toolCall('d')]),
+    );
+    expect(result.map((g) => g.type)).toEqual(['tool-group', 'single', 'tool-group']);
+  });
+
+  /** An unlabeled group auto-collapses once complete, so commentary folded
+   *  into it would hide the assistant's prose behind a generic action
+   *  header. Reasoning still folds in; only commentary splits the run. */
+  it('keeps unlabeled commentary out of the collapsing tool group', () => {
+    const result = groupSequentialToolCalls(
+      withIndex([
+        toolCall('a'),
+        toolCall('b'),
+        text('here is what I found so far', 'commentary'),
+        toolCall('c'),
+        toolCall('d'),
+        label(''),
+      ]),
+    );
+    expect(result.map((g) => g.type)).toEqual(['tool-group', 'single', 'tool-group']);
+  });
+
+  it('still folds reasoning into a run that commentary split', () => {
+    const result = groupSequentialToolCalls(
+      withIndex([
+        think('deciding'),
+        toolCall('a'),
+        text('a note mid-run', 'commentary'),
+        think('reconsidering'),
+        toolCall('b'),
+        label(''),
+      ]),
+    );
+
+    expect(result.map((g) => g.type)).toEqual(['tool-group', 'single', 'tool-group']);
+  });
+
+  it('does not group transfer/handoff tool calls', () => {
+    const result = groupSequentialToolCalls(withIndex([transferPart(), transferPart()]));
+    expect(result.map((g) => g.type)).toEqual(['single', 'single']);
   });
 });

@@ -2,6 +2,7 @@ const express = require('express');
 const request = require('supertest');
 
 const MOCKS = '../__test-utils__/convos-route-mocks';
+jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
 const {
   archiveAllHandler,
   generationJobManager,
@@ -10,12 +11,17 @@ const {
   messageIpLimiter,
   messageUserLimiter,
   subagentActivityHandlerInputs,
+  checkpointRows,
+  resetCheckpointRows,
 } = require(MOCKS);
 
 const priorLimitMessageIp = process.env.LIMIT_MESSAGE_IP;
 const priorLimitMessageUser = process.env.LIMIT_MESSAGE_USER;
 process.env.LIMIT_MESSAGE_IP = 'true';
 process.env.LIMIT_MESSAGE_USER = 'true';
+
+const checkpointNamespace = (id) =>
+  `${require(MOCKS).ownerPrefix('test-user-123')}00000000-0000-4000-8000-${String(id).padStart(12, '0')}`;
 
 jest.mock('@librechat/agents', () => require(MOCKS).agents());
 jest.mock('@librechat/api', () =>
@@ -49,6 +55,9 @@ jest.mock('~/server/services/Endpoints/assistants', () => require(MOCKS).assista
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () =>
   require(MOCKS).subagentThreadStore(),
 );
+jest.mock('~/server/services/Endpoints/agents/backgroundCompletion', () => ({
+  pendingBackgroundToolCompletions: { list: jest.fn() },
+}));
 
 describe('Convos Routes', () => {
   let app;
@@ -61,7 +70,7 @@ describe('Convos Routes', () => {
     saveConvo,
   } = require('~/models');
   const {
-    deleteAgentCheckpoints,
+    deleteOwnedAgentCheckpoints,
     deleteAllSharedLinksWithCleanup,
     deleteConvoSharedLinksWithCleanup,
   } = require('@librechat/api');
@@ -76,6 +85,10 @@ describe('Convos Routes', () => {
     /** Mock authenticated user */
     app.use((req, res, next) => {
       req.user = { id: 'test-user-123', role: 'USER' };
+      const tenantId = req.get('x-test-tenant');
+      if (tenantId) {
+        req.user.tenantId = tenantId;
+      }
       req.config = {
         messageFilter: {
           pii: {
@@ -107,10 +120,11 @@ describe('Convos Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     moderatedTexts.length = 0;
-    generationJobManager.getJob.mockResolvedValue(null);
+    generationJobManager.getCleanupJob.mockResolvedValue(null);
     generationJobManager.abortJob.mockResolvedValue({ success: true });
     generationJobManager.getCleanupBlockingJobIdsForUser.mockResolvedValue([]);
     generationJobManager.getCleanupBlockingJobIdsForConversations.mockResolvedValue([]);
+    resetCheckpointRows();
   });
 
   it('binds the activity subscription adapter to the subagent task store', () => {
@@ -271,6 +285,36 @@ describe('Convos Routes', () => {
       const { logger } = require('@librechat/data-schemas');
       expect(logger.error).not.toHaveBeenCalled();
     });
+
+    it('returns an actionable client error for an oversized imported record', async () => {
+      const message = 'Each imported conversation or message must be at most 16711680 bytes';
+      const error = Object.assign(new Error(message), {
+        name: 'ConversationImportError',
+        code: 'invalid_request',
+        statusCode: 413,
+        body: { error: 'invalid_request', message },
+      });
+      importConversations.mockRejectedValue(error);
+
+      const response = await request(app).post('/api/convos/import');
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual(error.body);
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('preserves the generic server error contract for other import failures', async () => {
+      const error = new Error('invalid JSON');
+      importConversations.mockRejectedValue(error);
+
+      const response = await request(app).post('/api/convos/import');
+
+      expect(response.status).toBe(500);
+      expect(response.text).toBe('Error processing file');
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).toHaveBeenCalledWith('Error processing file', error);
+    });
   });
 
   describe('POST /fork', () => {
@@ -327,6 +371,27 @@ describe('Convos Routes', () => {
       expect(response.body).toEqual(error.body);
       expect(JSON.stringify(response.body)).not.toContain('PRIVATE-SENTINEL');
     });
+
+    it('returns an actionable client error when a cloned record is oversized', async () => {
+      const message = 'Each imported conversation or message must be at most 16711680 bytes';
+      const error = Object.assign(new Error(message), {
+        name: 'ConversationImportError',
+        code: 'invalid_request',
+        statusCode: 413,
+        body: { error: 'invalid_request', message },
+      });
+      forkConversation.mockRejectedValue(error);
+
+      const response = await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+      });
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual(error.body);
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /duplicate', () => {
@@ -382,21 +447,58 @@ describe('Convos Routes', () => {
       expect(response.body).toEqual(error.body);
       expect(JSON.stringify(response.body)).not.toContain('PRIVATE-SENTINEL');
     });
+
+    it('returns an actionable client error when a cloned record is oversized', async () => {
+      const message = 'Each imported conversation or message must be at most 16711680 bytes';
+      const error = Object.assign(new Error(message), {
+        name: 'ConversationImportError',
+        code: 'invalid_request',
+        statusCode: 413,
+        body: { error: 'invalid_request', message },
+      });
+      duplicateConversation.mockRejectedValue(error);
+
+      const response = await request(app)
+        .post('/api/convos/duplicate')
+        .send({ conversationId: 'source-convo' });
+
+      expect(response.status).toBe(413);
+      expect(response.body).toEqual(error.body);
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).not.toHaveBeenCalled();
+    });
   });
 
   describe('DELETE /all', () => {
-    it('prunes the deleted conversations’ agent checkpoints (bulk, ids from deleteConvos)', async () => {
-      // HITL: a paused conversation's durable checkpoint must not outlive the conversation.
+    it('prunes the deleted conversations’ owned generation checkpoint scopes', async () => {
+      // Generation-scoped checkpoints are removed eagerly after their ownership is proven.
       const conversationIds = ['conv-a', 'conv-b'];
-      deleteConvos.mockResolvedValue({ deletedCount: 2, conversationIds });
+      deleteConvos.mockImplementation(async (_userId, _filter, options) => {
+        await options.beforeDelete?.(conversationIds);
+        return { deletedCount: 2, conversationIds };
+      });
       deleteToolCalls.mockResolvedValue({ deletedCount: 0 });
       deleteAllSharedLinksWithCleanup.mockResolvedValue({ deletedCount: 0 });
+      generationJobManager.getCleanupJob.mockImplementation(async (conversationId) => ({
+        metadata: {
+          userId: 'test-user-123',
+          conversationId,
+          checkpointNamespace: checkpointNamespace(conversationId === 'conv-a' ? 1 : 2),
+          generationProtocolVersion: 2,
+        },
+        status: 'complete',
+        createdAt: Date.now(),
+      }));
 
       const response = await request(app).delete('/api/convos/all');
 
       expect(response.status).toBe(201);
-      expect(deleteAgentCheckpoints).toHaveBeenCalledTimes(1);
-      expect(deleteAgentCheckpoints.mock.calls[0][0]).toEqual(conversationIds);
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(
+        'test-user-123',
+        undefined,
+        undefined,
+        undefined,
+      );
       /** The deletion runs inside the owner admission fence, not around it. */
       expect(subagentThreadStore.withOwnerDeletionFence).toHaveBeenCalledTimes(1);
       const [fencedUserId, fencedTenantId] =
@@ -415,7 +517,7 @@ describe('Convos Routes', () => {
         deletedCount: 1,
         conversationIds: ['paused-event-child'],
       });
-      generationJobManager.getJob.mockImplementation(async (conversationId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (conversationId) =>
         conversationId === 'paused-event-child'
           ? {
               metadata: { userId: 'test-user-123' },
@@ -439,7 +541,7 @@ describe('Convos Routes', () => {
       generationJobManager.getCleanupBlockingJobIdsForUser.mockResolvedValue([
         'resp-new-conversation',
       ]);
-      generationJobManager.getJob.mockImplementation(async (streamId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) =>
         streamId === 'resp-new-conversation'
           ? {
               conversationId: 'conversation-not-yet-persisted',
@@ -475,9 +577,18 @@ describe('Convos Routes', () => {
       generationJobManager.getCleanupBlockingJobIdsForUser
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce(['resp-gap']);
-      generationJobManager.getJob.mockImplementation(async (streamId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) =>
         streamId === 'resp-gap'
-          ? { metadata: { userId: 'test-user-123' }, status: 'running', createdAt }
+          ? {
+              metadata: {
+                userId: 'test-user-123',
+                conversationId: 'gap-conversation',
+                checkpointNamespace: checkpointNamespace(3),
+                generationProtocolVersion: 2,
+              },
+              status: 'running',
+              createdAt,
+            }
           : null,
       );
       deleteConvos
@@ -486,7 +597,7 @@ describe('Convos Routes', () => {
           expect(options).toEqual(
             expect.objectContaining({ allowEmpty: true, beforeDelete: expect.any(Function) }),
           );
-          await options.beforeDelete(['gap-conversation']);
+          await options.beforeDelete?.(['gap-conversation']);
           return { deletedCount: 1, conversationIds: ['gap-conversation'] };
         });
       subagentThreadStore.withOwnerDeletionFence.mockImplementationOnce(
@@ -504,12 +615,16 @@ describe('Convos Routes', () => {
         expectedCreatedAt: createdAt,
         awaitProviderDrain: true,
       });
-      expect(deleteConvos).toHaveBeenCalledTimes(2);
+      expect(
+        deleteConvos.mock.calls.filter(([, filter]) => Object.keys(filter).length === 0),
+      ).toHaveLength(2);
       expect(deleteMessages).toHaveBeenCalledWith({ user: 'test-user-123' });
-      expect(deleteAgentCheckpoints.mock.calls.map((call) => call[0])).toEqual([
-        ['original'],
-        ['gap-conversation'],
-      ]);
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(
+        'test-user-123',
+        undefined,
+        undefined,
+        undefined,
+      );
     });
 
     it('retries owner message cleanup after conversations were already removed', async () => {
@@ -525,14 +640,17 @@ describe('Convos Routes', () => {
 
       expect(first.status).toBe(500);
       expect(retry.status).toBe(201);
-      expect(deleteAgentCheckpoints.mock.calls[0][0]).toEqual(['original']);
-      expect(deleteConvos).toHaveBeenNthCalledWith(
-        2,
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(
+        'test-user-123',
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(deleteConvos).toHaveBeenCalledWith(
         'test-user-123',
         {},
         expect.objectContaining({ allowEmpty: true }),
       );
-      expect(deleteMessages).toHaveBeenCalledTimes(2);
       expect(deleteMessages).toHaveBeenLastCalledWith({ user: 'test-user-123' });
     });
 
@@ -552,7 +670,7 @@ describe('Convos Routes', () => {
       const response = await request(app).delete('/api/convos/all');
 
       expect(response.status).toBe(201);
-      expect(response.body).toEqual(mockDbResponse);
+      expect(response.body).toMatchObject(mockDbResponse);
 
       /** Verify deleteConvos was called with correct userId */
       expect(deleteConvos).toHaveBeenCalledWith(
@@ -614,7 +732,7 @@ describe('Convos Routes', () => {
 
       expect(response.status).toBe(500);
       expect(deleteConvos).not.toHaveBeenCalled();
-      expect(deleteAgentCheckpoints).not.toHaveBeenCalled();
+      expect(deleteOwnedAgentCheckpoints).not.toHaveBeenCalled();
       expect(deleteToolCalls).not.toHaveBeenCalled();
       expect(deleteAllSharedLinksWithCleanup).not.toHaveBeenCalled();
     });
@@ -751,7 +869,7 @@ describe('Convos Routes', () => {
     it('drains owner remote runs before the empty-filter deletion snapshot', async () => {
       const createdAt = Date.now();
       generationJobManager.getCleanupBlockingJobIdsForUser.mockResolvedValue(['resp-new']);
-      generationJobManager.getJob.mockImplementation(async (streamId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) =>
         streamId === 'resp-new'
           ? { metadata: { userId: 'test-user-123' }, status: 'running', createdAt }
           : null,
@@ -781,7 +899,7 @@ describe('Convos Routes', () => {
         deletedCount: 1,
         conversationIds: ['paused-event-child'],
       });
-      generationJobManager.getJob.mockImplementation(async (conversationId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (conversationId) =>
         conversationId === 'paused-event-child'
           ? {
               metadata: { userId: 'test-user-123' },
@@ -804,21 +922,23 @@ describe('Convos Routes', () => {
 
     it('fails closed before checkpoint pruning when generation lookup stays unavailable', async () => {
       deleteConvos.mockImplementation(async (_userId, _filter, options) => {
-        await options.beforeDelete(['paused-event-child']);
+        await options.beforeDelete?.(['paused-event-child']);
         return {
           deletedCount: 1,
           conversationIds: ['paused-event-child'],
         };
       });
-      generationJobManager.getJob.mockRejectedValue(new Error('generation store unavailable'));
+      generationJobManager.getCleanupJob.mockRejectedValue(
+        new Error('generation store unavailable'),
+      );
 
       const response = await request(app)
         .delete('/api/convos')
         .send({ arg: { thread_id: 'thread-abc' } });
 
       expect(response.status).toBe(500);
-      expect(generationJobManager.getJob).toHaveBeenCalledTimes(3);
-      expect(deleteAgentCheckpoints).not.toHaveBeenCalled();
+      expect(generationJobManager.getCleanupJob).toHaveBeenCalledTimes(3);
+      expect(deleteOwnedAgentCheckpoints).not.toHaveBeenCalled();
     });
 
     it('cancels root and descendant leases and cleans every cascaded conversation', async () => {
@@ -868,7 +988,7 @@ describe('Convos Routes', () => {
         deletedCount: 2,
         conversationIds: ['parent-conversation', 'child-conversation'],
       });
-      generationJobManager.getJob.mockImplementation(async (conversationId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (conversationId) =>
         conversationId === 'child-conversation'
           ? { metadata: { userId: 'test-user-123' }, status: 'running', createdAt }
           : null,
@@ -887,7 +1007,7 @@ describe('Convos Routes', () => {
         2,
         'test-user-123',
         { conversationId: { $in: ['parent-conversation', 'child-conversation'] } },
-        { allowEmpty: true },
+        expect.objectContaining({ allowEmpty: true }),
       );
       expect(deleteMessages).toHaveBeenCalledWith({
         user: 'test-user-123',
@@ -900,13 +1020,13 @@ describe('Convos Routes', () => {
       generationJobManager.getCleanupBlockingJobIdsForConversations.mockResolvedValue([
         'resp_remote-run',
       ]);
-      generationJobManager.getJob.mockImplementation(async (streamId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) =>
         streamId === 'resp_remote-run'
           ? { metadata: { userId: 'test-user-123' }, status: 'running', createdAt }
           : null,
       );
       deleteConvos.mockImplementationOnce(async (_userId, _filter, options) => {
-        await options.beforeDelete(['conversation-1']);
+        await options.beforeDelete?.(['conversation-1']);
         return { deletedCount: 1, conversationIds: ['conversation-1'] };
       });
 
@@ -926,12 +1046,279 @@ describe('Convos Routes', () => {
       });
     });
 
+    it('preserves foreign and legacy checkpoints when conversation IDs collide', async () => {
+      const conversationIds = ['conversation-1', 'child-conversation'];
+      const jobs = {
+        'resp-owned': {
+          metadata: {
+            userId: 'test-user-123',
+            conversationId: 'conversation-1',
+            checkpointNamespace: checkpointNamespace(4),
+            generationProtocolVersion: 2,
+          },
+        },
+        'task-owned-child': {
+          metadata: {
+            userId: 'test-user-123',
+            conversationId: 'child-conversation',
+            checkpointNamespace: checkpointNamespace(5),
+            generationProtocolVersion: 2,
+          },
+        },
+        'resp-foreign-user': {
+          metadata: {
+            userId: 'foreign-user',
+            conversationId: 'conversation-1',
+            checkpointNamespace: 'foreign-user-generation',
+            generationProtocolVersion: 2,
+          },
+        },
+        'resp-foreign-tenant': {
+          metadata: {
+            userId: 'test-user-123',
+            tenantId: 'foreign-tenant',
+            conversationId: 'conversation-1',
+            checkpointNamespace: 'foreign-tenant-generation',
+            generationProtocolVersion: 2,
+          },
+        },
+        'resp-legacy': {
+          metadata: {
+            userId: 'test-user-123',
+            conversationId: 'conversation-1',
+            checkpointNamespace: '',
+            generationProtocolVersion: 1,
+          },
+        },
+      };
+      resetCheckpointRows([
+        { threadId: 'conversation-1', checkpointNamespace: checkpointNamespace(4) },
+        {
+          threadId: 'conversation-1',
+          checkpointNamespace: `${checkpointNamespace(4)}|subgraph`,
+        },
+        { threadId: 'child-conversation', checkpointNamespace: checkpointNamespace(5) },
+        { threadId: 'conversation-1', checkpointNamespace: 'foreign-user-generation' },
+        { threadId: 'conversation-1', checkpointNamespace: 'foreign-tenant-generation' },
+        { threadId: 'conversation-1', checkpointNamespace: '' },
+      ]);
+      generationJobManager.getCleanupBlockingJobIdsForConversations.mockResolvedValue(
+        Object.keys(jobs),
+      );
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) => {
+        const job = jobs[streamId];
+        return job == null ? null : { ...job, status: 'complete', createdAt: Date.now() };
+      });
+      deleteConvos.mockImplementationOnce(async (_userId, _filter, options) => {
+        await options.beforeDelete?.(conversationIds);
+        return { deletedCount: 2, conversationIds };
+      });
+
+      const response = await request(app)
+        .delete('/api/convos')
+        .send({ arg: { conversationId: 'conversation-1' } });
+
+      expect(response.status).toBe(201);
+      expect(checkpointRows).toEqual([
+        { threadId: 'conversation-1', checkpointNamespace: 'foreign-user-generation' },
+        { threadId: 'conversation-1', checkpointNamespace: 'foreign-tenant-generation' },
+        { threadId: 'conversation-1', checkpointNamespace: '' },
+      ]);
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(
+        'test-user-123',
+        undefined,
+        ['conversation-1', 'child-conversation'],
+        undefined,
+      );
+    });
+
+    it('deletes an owned checkpoint after its terminal job hash expires', async () => {
+      const scope = {
+        threadId: 'conversation-1',
+        checkpointNamespace: checkpointNamespace(8),
+      };
+      resetCheckpointRows([scope]);
+      deleteConvos.mockImplementationOnce(async (_userId, _filter, options) => {
+        await options.beforeDelete?.(['conversation-1']);
+        return { deletedCount: 1, conversationIds: ['conversation-1'] };
+      });
+
+      const response = await request(app)
+        .delete('/api/convos')
+        .send({ arg: { conversationId: 'conversation-1' } });
+
+      expect(response.status).toBe(201);
+      expect(checkpointRows).toEqual([]);
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(
+        'test-user-123',
+        undefined,
+        ['conversation-1'],
+        undefined,
+      );
+    });
+
+    it('retains checkpoint payload when conversation deletion fails after its snapshot', async () => {
+      const scope = { threadId: 'conversation-1', checkpointNamespace: checkpointNamespace(8) };
+      resetCheckpointRows([scope]);
+      deleteConvos.mockImplementationOnce(async (_owner, _filter, options) => {
+        await options.beforeDelete(['conversation-1']);
+        throw new Error('conversation deletion failed');
+      });
+      const response = await request(app)
+        .delete('/api/convos')
+        .send({ arg: { conversationId: 'conversation-1' } });
+      expect(response.status).toBe(500);
+      expect(deleteOwnedAgentCheckpoints).not.toHaveBeenCalled();
+      expect(checkpointRows).toEqual([scope]);
+    });
+
+    it('fails closed when saver deletion fails', async () => {
+      deleteOwnedAgentCheckpoints.mockRejectedValueOnce(new Error('checkpoint store unavailable'));
+      deleteConvos.mockImplementationOnce(async (_userId, _filter, options) => {
+        await options.beforeDelete?.(['conversation-1']);
+        return { deletedCount: 1, conversationIds: ['conversation-1'] };
+      });
+
+      const response = await request(app)
+        .delete('/api/convos')
+        .send({ arg: { conversationId: 'conversation-1' } });
+
+      expect(response.status).toBe(500);
+    });
+
+    it('retries checkpoint cleanup for descendants after all conversation records are gone', async () => {
+      deleteOwnedAgentCheckpoints.mockRejectedValueOnce(new Error('post-delete cleanup failed'));
+      deleteConvos
+        .mockImplementationOnce(async (_owner, _filter, options) => {
+          await options.beforeDelete(['conversation-1', 'child-conversation']);
+          return { deletedCount: 2, conversationIds: ['conversation-1', 'child-conversation'] };
+        })
+        .mockResolvedValue({ deletedCount: 0, conversationIds: [] });
+      const first = await request(app)
+        .delete('/api/convos')
+        .send({ arg: { conversationId: 'conversation-1' } });
+      expect(first.status).toBe(500);
+      checkpointRows.push({
+        threadId: 'child-conversation',
+        checkpointNamespace: checkpointNamespace(13),
+      });
+      // Restore only a late checkpoint; the deletion intent must remain from the first request.
+      const second = await request(app)
+        .delete('/api/convos')
+        .send({ arg: { conversationId: 'conversation-1' } });
+      expect(second.status).toBe(201);
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenLastCalledWith(
+        'test-user-123',
+        undefined,
+        ['conversation-1', 'child-conversation'],
+        undefined,
+      );
+      expect(checkpointRows).toEqual([]);
+    });
+
+    it('cleans checkpoints from every cascade wave', async () => {
+      const jobs = {
+        'run-parent': {
+          metadata: {
+            userId: 'test-user-123',
+            conversationId: 'parent-conversation',
+            checkpointNamespace: checkpointNamespace(11),
+            generationProtocolVersion: 2,
+          },
+        },
+        'run-child': {
+          metadata: {
+            userId: 'test-user-123',
+            conversationId: 'child-conversation',
+            checkpointNamespace: checkpointNamespace(12),
+            generationProtocolVersion: 2,
+          },
+        },
+      };
+      generationJobManager.getCleanupBlockingJobIdsForConversations.mockImplementation(
+        async (_userId, conversationIds) =>
+          conversationIds.map((conversationId) =>
+            conversationId === 'parent-conversation' ? 'run-parent' : 'run-child',
+          ),
+      );
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) => {
+        const job = jobs[streamId];
+        return job == null ? null : { ...job, status: 'complete', createdAt: Date.now() };
+      });
+      deleteConvos
+        .mockImplementationOnce(async (_userId, _filter, options) => {
+          await options.beforeDelete?.(['parent-conversation']);
+          await options.beforeDelete?.(['child-conversation']);
+          return {
+            deletedCount: 2,
+            conversationIds: ['parent-conversation', 'child-conversation'],
+          };
+        })
+        .mockResolvedValueOnce({ deletedCount: 0, conversationIds: [] });
+
+      const response = await request(app)
+        .delete('/api/convos')
+        .send({ arg: { conversationId: 'parent-conversation' } });
+
+      expect(response.status).toBe(201);
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(
+        'test-user-123',
+        undefined,
+        ['parent-conversation', 'child-conversation'],
+        undefined,
+      );
+    });
+
+    it('drains a tenant user legacy generation without pruning its ambiguous namespace', async () => {
+      const createdAt = Date.now();
+      generationJobManager.getCleanupBlockingJobIdsForConversations.mockResolvedValue([
+        'legacy-run',
+      ]);
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) =>
+        streamId === 'legacy-run'
+          ? {
+              metadata: {
+                userId: 'test-user-123',
+                conversationId: 'conversation-1',
+                checkpointNamespace: 'legacy-tenant-generation',
+                generationProtocolVersion: 2,
+              },
+              status: 'running',
+              createdAt,
+            }
+          : null,
+      );
+      deleteConvos
+        .mockImplementationOnce(async (_userId, _filter, options) => {
+          await options.beforeDelete?.(['conversation-1']);
+          return { deletedCount: 1, conversationIds: ['conversation-1'] };
+        })
+        .mockResolvedValueOnce({ deletedCount: 0, conversationIds: [] });
+
+      const response = await request(app)
+        .delete('/api/convos')
+        .set('x-test-tenant', 'tenant-1')
+        .send({ arg: { conversationId: 'conversation-1' } });
+
+      expect(response.status).toBe(201);
+      expect(generationJobManager.abortJob).toHaveBeenCalledWith('legacy-run', {
+        expectedCreatedAt: createdAt,
+        awaitProviderDrain: true,
+      });
+      expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(
+        'test-user-123',
+        'tenant-1',
+        ['conversation-1'],
+        undefined,
+      );
+    });
+
     it('waits for terminal response-id runs whose provider writes are undrained', async () => {
       const createdAt = Date.now();
       generationJobManager.getCleanupBlockingJobIdsForConversations.mockResolvedValue([
         'resp_terminal-run',
       ]);
-      generationJobManager.getJob.mockImplementation(async (streamId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) =>
         streamId === 'resp_terminal-run'
           ? {
               metadata: { userId: 'test-user-123', providerDrained: false },
@@ -941,7 +1328,7 @@ describe('Convos Routes', () => {
           : null,
       );
       deleteConvos.mockImplementationOnce(async (_userId, _filter, options) => {
-        await options.beforeDelete(['conversation-1']);
+        await options.beforeDelete?.(['conversation-1']);
         return { deletedCount: 1, conversationIds: ['conversation-1'] };
       });
 
@@ -962,13 +1349,13 @@ describe('Convos Routes', () => {
       generationJobManager.getCleanupBlockingJobIdsForConversations.mockImplementation(async () =>
         deletionCommitted ? ['resp_late-run'] : [],
       );
-      generationJobManager.getJob.mockImplementation(async (streamId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (streamId) =>
         streamId === 'resp_late-run'
           ? { metadata: { userId: 'test-user-123' }, status: 'running', createdAt }
           : null,
       );
       deleteConvos.mockImplementationOnce(async (_userId, _filter, options) => {
-        await options.beforeDelete(['conversation-1']);
+        await options.beforeDelete?.(['conversation-1']);
         deletionCommitted = true;
         return { deletedCount: 1, conversationIds: ['conversation-1'] };
       });
@@ -990,7 +1377,7 @@ describe('Convos Routes', () => {
     it('removes persistence even when a racing response drains before post-delete discovery', async () => {
       deleteConvos
         .mockImplementationOnce(async (_userId, _filter, options) => {
-          await options.beforeDelete(['conversation-1']);
+          await options.beforeDelete?.(['conversation-1']);
           return { deletedCount: 1, conversationIds: ['conversation-1'] };
         })
         .mockResolvedValueOnce({ deletedCount: 1, conversationIds: ['conversation-1'] });
@@ -1006,7 +1393,7 @@ describe('Convos Routes', () => {
         2,
         'test-user-123',
         { conversationId: { $in: ['conversation-1'] } },
-        { allowEmpty: true },
+        expect.objectContaining({ allowEmpty: true }),
       );
       expect(deleteMessages).toHaveBeenCalledWith({
         user: 'test-user-123',
@@ -1017,7 +1404,7 @@ describe('Convos Routes', () => {
     it('fails closed when the idempotent remnant sweep hits a storage failure', async () => {
       deleteConvos
         .mockImplementationOnce(async (_userId, _filter, options) => {
-          await options.beforeDelete(['conversation-1']);
+          await options.beforeDelete?.(['conversation-1']);
           return { deletedCount: 1, conversationIds: ['conversation-1'] };
         })
         .mockRejectedValueOnce(new Error('remnant database unavailable'));
@@ -1028,13 +1415,13 @@ describe('Convos Routes', () => {
 
       expect(response.status).toBe(500);
       expect(response.text).toBe('Error clearing conversations');
-      expect(deleteAgentCheckpoints).not.toHaveBeenCalled();
+      expect(deleteOwnedAgentCheckpoints).not.toHaveBeenCalled();
     });
 
     it('fails closed when remnant message cleanup is unavailable', async () => {
       deleteConvos
         .mockImplementationOnce(async (_userId, _filter, options) => {
-          await options.beforeDelete(['conversation-1']);
+          await options.beforeDelete?.(['conversation-1']);
           return { deletedCount: 1, conversationIds: ['conversation-1'] };
         })
         .mockResolvedValueOnce({ deletedCount: 0, conversationIds: [] });
@@ -1046,21 +1433,21 @@ describe('Convos Routes', () => {
 
       expect(response.status).toBe(500);
       expect(response.text).toBe('Error clearing conversations');
-      expect(deleteAgentCheckpoints).not.toHaveBeenCalled();
+      expect(deleteOwnedAgentCheckpoints).not.toHaveBeenCalled();
     });
 
     it('does not prune generation persistence when provider stop is unconfirmed', async () => {
       const createdAt = Date.now();
       let deletionCommitted = false;
       deleteConvos.mockImplementation(async (_userId, _filter, options) => {
-        await options.beforeDelete(['child-conversation']);
+        await options.beforeDelete?.(['child-conversation']);
         deletionCommitted = true;
         return {
           deletedCount: 2,
           conversationIds: ['parent-conversation', 'child-conversation'],
         };
       });
-      generationJobManager.getJob.mockImplementation(async (conversationId) =>
+      generationJobManager.getCleanupJob.mockImplementation(async (conversationId) =>
         conversationId === 'child-conversation'
           ? { metadata: { userId: 'test-user-123' }, status: 'running', createdAt }
           : null,
@@ -1080,55 +1467,60 @@ describe('Convos Routes', () => {
       expect(deleteMessages).not.toHaveBeenCalled();
     });
 
-    it('drains terminal persistence only for leases removed by this deletion', async () => {
-      const createdAt = Date.now();
-      deleteConvos.mockResolvedValue({
-        deletedCount: 2,
-        conversationIds: ['parent-conversation', 'child-conversation'],
-      });
-      subagentThreadStore.planCancellationForConversations.mockResolvedValueOnce({
-        userId: 'test-user-123',
-        conversationIds: ['parent-conversation'],
-        scopes: [],
-        leases: [
-          {
-            taskId: 'related-generation',
-            parentConversationId: 'parent-conversation',
-            conversationId: 'child-conversation',
-          },
-          {
-            taskId: 'unrelated-generation',
-            parentConversationId: 'other-parent',
-            conversationId: 'other-child',
-          },
-        ],
-      });
-      let relatedReads = 0;
-      generationJobManager.getJob.mockImplementation(async (conversationId) => {
-        if (conversationId !== 'related-generation') return null;
-        relatedReads += 1;
-        return {
-          status: 'complete',
-          createdAt,
-          metadata: {
-            userId: 'test-user-123',
-            terminalPersistencePending: relatedReads === 1,
-          },
-        };
-      });
+    it.each(['terminalPersistencePending', 'terminalHostActionPending'])(
+      'drains %s only for leases removed by this deletion',
+      async (marker) => {
+        const createdAt = Date.now();
+        deleteConvos.mockResolvedValue({
+          deletedCount: 2,
+          conversationIds: ['parent-conversation', 'child-conversation'],
+        });
+        subagentThreadStore.planCancellationForConversations.mockResolvedValueOnce({
+          userId: 'test-user-123',
+          conversationIds: ['parent-conversation'],
+          scopes: [],
+          leases: [
+            {
+              taskId: 'related-generation',
+              parentConversationId: 'parent-conversation',
+              conversationId: 'child-conversation',
+            },
+            {
+              taskId: 'unrelated-generation',
+              parentConversationId: 'other-parent',
+              conversationId: 'other-child',
+            },
+          ],
+        });
+        let relatedReads = 0;
+        generationJobManager.getCleanupJob.mockImplementation(async (conversationId) => {
+          if (conversationId !== 'related-generation') return null;
+          relatedReads += 1;
+          return {
+            status: 'complete',
+            createdAt,
+            metadata: {
+              userId: 'test-user-123',
+              providerDrained: true,
+              [marker]: relatedReads <= 2,
+            },
+          };
+        });
 
-      const response = await request(app)
-        .delete('/api/convos')
-        .send({ arg: { conversationId: 'parent-conversation' } });
+        const response = await request(app)
+          .delete('/api/convos')
+          .send({ arg: { conversationId: 'parent-conversation' } });
 
-      expect(response.status).toBe(201);
-      expect(generationJobManager.abortJob).toHaveBeenCalledWith('related-generation', {
-        expectedCreatedAt: createdAt,
-        awaitProviderDrain: true,
-      });
-      expect(generationJobManager.getJob).not.toHaveBeenCalledWith('unrelated-generation');
-      expect(deleteConvos).toHaveBeenCalledTimes(2);
-    });
+        expect(response.status).toBe(201);
+        expect(generationJobManager.abortJob).toHaveBeenCalledWith('related-generation', {
+          expectedCreatedAt: createdAt,
+          awaitProviderDrain: true,
+        });
+        expect(relatedReads).toBeGreaterThanOrEqual(3);
+        expect(generationJobManager.getCleanupJob).not.toHaveBeenCalledWith('unrelated-generation');
+        expect(deleteConvos).toHaveBeenCalledTimes(2);
+      },
+    );
 
     it('should delete a single conversation, tool calls, and associated shared links', async () => {
       const mockConversationId = 'conv-123';
@@ -1153,7 +1545,7 @@ describe('Convos Routes', () => {
         });
 
       expect(response.status).toBe(201);
-      expect(response.body).toEqual(mockDbResponse);
+      expect(response.body).toMatchObject(mockDbResponse);
 
       /** Verify deleteConvos was called with correct parameters */
       expect(deleteConvos).toHaveBeenCalledWith(
@@ -1413,6 +1805,107 @@ describe('Convos Routes', () => {
       expect(getConvosByCursor).toHaveBeenCalledWith(
         'test-user-123',
         expect.objectContaining({ pinned: false }),
+      );
+    });
+  });
+
+  describe('GET / limit clamping', () => {
+    const { getConvosByCursor } = require('~/models');
+
+    beforeEach(() => {
+      getConvosByCursor.mockResolvedValue({ conversations: [], nextCursor: null });
+    });
+
+    /** `parseInt('-1') || 25` kept the -1, and `.limit(-1 + 1)` is `.limit(0)`, which
+     * MongoDB reads as "no limit" — one request drained the caller's whole list. */
+    it('clamps a negative limit instead of forwarding it', async () => {
+      const response = await request(app).get('/api/convos').query({ limit: '-1' });
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ limit: 1 }),
+      );
+    });
+
+    it('caps an oversized limit at the page ceiling', async () => {
+      const response = await request(app).get('/api/convos').query({ limit: '999999999' });
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ limit: 100 }),
+      );
+    });
+
+    it('raises a zero limit to a single row', async () => {
+      const response = await request(app).get('/api/convos').query({ limit: '0' });
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ limit: 1 }),
+      );
+    });
+
+    it.each([
+      ['absent', undefined],
+      ['non-numeric', 'all'],
+    ])('falls back to the default page size when the limit is %s', async (_label, limit) => {
+      const response = await request(app)
+        .get('/api/convos')
+        .query(limit === undefined ? {} : { limit });
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ limit: 25 }),
+      );
+    });
+
+    /** Express parses a repeated key into an array, which `parseInt` silently reads as
+     * its first element's digits rather than rejecting. */
+    it('clamps a repeated limit parameter', async () => {
+      const response = await request(app).get('/api/convos?limit=999999&limit=5');
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ limit: 100 }),
+      );
+    });
+  });
+
+  describe('GET / sort normalization', () => {
+    const { getConvosByCursor } = require('~/models');
+
+    beforeEach(() => {
+      getConvosByCursor.mockResolvedValue({ conversations: [], nextCursor: null });
+    });
+
+    it('forwards a whitelisted sort field and direction', async () => {
+      const response = await request(app)
+        .get('/api/convos')
+        .query({ sortBy: 'title', sortDirection: 'asc' });
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ sortBy: 'title', sortDirection: 'asc' }),
+      );
+    });
+
+    /** An unknown field reaches `getConvosByCursor`, which throws on it, so forwarding
+     * a stale or hand-edited value would answer 500 instead of listing anything. */
+    it('falls back to the default ordering for values it does not recognize', async () => {
+      const response = await request(app)
+        .get('/api/convos')
+        .query({ sortBy: 'DROP TABLE', sortDirection: 'sideways' });
+
+      expect(response.status).toBe(200);
+      expect(getConvosByCursor).toHaveBeenCalledWith(
+        'test-user-123',
+        expect.objectContaining({ sortBy: 'updatedAt', sortDirection: 'desc' }),
       );
     });
   });

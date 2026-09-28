@@ -58,6 +58,11 @@ interface CodeEnvRefBase {
    * the same wire profile, so this key prevents their file IDs from being
    * reused against a different Code API server. */
   executionRouteKey?: string;
+  /** Epoch ms when the file was uploaded to the code env; drives the liveness
+   *  fast-path (distinct from the usage-bumped `updatedAt`). */
+  provisionedAt?: number;
+  /** Actual destination used when uploading this storage object. */
+  sandboxFilename?: string;
 }
 
 export type CodeExecutionProfile = 'default' | 'stateful';

@@ -1,12 +1,16 @@
 const mongoose = require('mongoose');
+const express = require('express');
+const request = require('supertest');
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
-const { agentSchema, aclEntrySchema, fileSchema, userSchema } = require('@librechat/data-schemas');
+const { createModels, tenantStorage, SystemCapabilities } = require('@librechat/data-schemas');
 const {
   Tools,
   SkillsScope,
   FileSources,
+  Permissions,
   PermissionBits,
+  PermissionTypes,
   PrincipalModel,
   PrincipalType,
   ResourceType,
@@ -98,9 +102,17 @@ const {
 
 const {
   CONTENT_TRAVERSAL_MAX_DEPTH,
+  createAgentManagementAuth,
+  createAgentManagementCreateHandler,
+  createAgentManagementDeleteHandler,
+  createAgentManagementReadHandlers,
+  createAgentManagementUpdateHandler,
   mergeDeploymentSkillIds,
   refreshS3Url,
 } = require('@librechat/api');
+const { grantPermission } = require('~/server/services/PermissionService');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const db = require('~/models');
 
 /**
  * @type {import('mongoose').Model<import('@librechat/data-schemas').IAgent>}
@@ -153,12 +165,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     mongoServer = await MongoMemoryServer.create();
     const mongoUri = mongoServer.getUri();
     await mongoose.connect(mongoUri);
-    Agent = mongoose.models.Agent || mongoose.model('Agent', agentSchema);
-    AclEntry = mongoose.models.AclEntry || mongoose.model('AclEntry', aclEntrySchema);
-    User = mongoose.models.User || mongoose.model('User', userSchema);
-    // Register File so orphan-pruning tests (and the tool_resources validation
-    // test, which now needs real File docs for its ids) have a working model.
-    mongoose.models.File || mongoose.model('File', fileSchema);
+    createModels(mongoose);
+    Agent = mongoose.models.Agent;
+    AclEntry = mongoose.models.AclEntry;
+    User = mongoose.models.User;
   }, 20000);
 
   afterAll(async () => {
@@ -307,6 +317,76 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(await Agent.countDocuments()).toBe(0);
     });
 
+    test('rejects a workspace default without an explicit attached environment', async () => {
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'default-vm',
+                  name: 'Default VM',
+                  type: 'attached',
+                  baseURL: 'https://code.example.com/v1',
+                  default: true,
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = {
+        name: 'Unbound Workspace Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        code_workspace_id: 'project-a',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
+      expect(await Agent.countDocuments()).toBe(0);
+    });
+
+    test('rejects a workspace default for a managed environment', async () => {
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'managed-runtime',
+                  name: 'Managed Runtime',
+                  type: 'managed',
+                  baseURL: 'https://code.example.com/v1',
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = {
+        name: 'Managed Workspace Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        code_environment_id: 'managed-runtime',
+        code_workspace_id: 'project-a',
+      };
+
+      await createAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
+      expect(await Agent.countDocuments()).toBe(0);
+    });
+
     test('should block configured agent instruction content before persistence', async () => {
       mockReq.config = {
         filters: {
@@ -371,6 +451,328 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(agentInDb).toBeDefined();
       expect(agentInDb.name).toBe('Test Agent');
       expect(agentInDb.author.toString()).toBe(mockReq.user.id);
+    });
+
+    test('management creation can be updated and read through the authenticated management API', async () => {
+      const tenantId = `tenant-${nanoid(8)}`;
+      const clientId = `client-${nanoid(8)}`;
+      const principal = await tenantStorage.run({ tenantId }, () => createOwner());
+      const userId = principal._id.toString();
+      const getRoleByName = jest.fn().mockResolvedValue({
+        permissions: {
+          [PermissionTypes.AGENTS]: {
+            [Permissions.USE]: true,
+            [Permissions.CREATE]: true,
+          },
+        },
+      });
+      grantPermission.mockImplementation(
+        async ({ principalType, principalId, resourceType, resourceId, grantedBy }) =>
+          AclEntry.create({
+            principalType,
+            principalModel: PrincipalModel.USER,
+            principalId,
+            resourceType,
+            resourceId,
+            permBits: OWNER_PERMISSION_BITS,
+            grantedBy,
+            grantedAt: new Date(),
+          }),
+      );
+      const auth = createAgentManagementAuth({
+        findUser: db.findUser,
+        isPrincipalActive: jest.fn().mockResolvedValue(true),
+        getAppConfig: jest.fn().mockResolvedValue({
+          endpoints: {
+            agents: {
+              managementApi: {
+                auth: {
+                  oidc: {
+                    enabled: true,
+                    audience: 'agent-management',
+                    issuer: 'https://issuer.example.com/',
+                  },
+                  clients: [{ clientId, tenantId, userId }],
+                },
+              },
+            },
+          },
+        }),
+        verifyAccessToken: jest.fn().mockResolvedValue({
+          azp: clientId,
+          sub: `${clientId}@clients`,
+          exp: Math.floor(Date.now() / 1000) + 300,
+        }),
+      });
+      const create = createAgentManagementCreateHandler({
+        getRoleByName,
+        createAgent: createAgentHandler,
+      });
+      const checkAgentPermission = async ({
+        userId: accessibleUserId,
+        resourceType,
+        resourceId,
+        requiredPermission,
+      }) =>
+        (await AclEntry.exists({
+          principalId: accessibleUserId,
+          resourceType,
+          resourceId,
+          permBits: { $bitsAllSet: requiredPermission },
+        })) != null;
+      const hasCapability = jest.fn().mockResolvedValue(false);
+      const reads = createAgentManagementReadHandlers({
+        getRoleByName,
+        getAgentWithVersionCount: db.getAgentWithVersionCount,
+        getAgentManagementListByAccess: db.getAgentManagementListByAccess,
+        findAccessibleResources: async ({ userId: accessibleUserId, resourceType }) =>
+          AclEntry.distinct('resourceId', {
+            principalId: accessibleUserId,
+            resourceType,
+            permBits: { $bitsAllSet: PermissionBits.EDIT },
+          }),
+        checkPermission: checkAgentPermission,
+        hasCapability,
+      });
+      const update = createAgentManagementUpdateHandler({
+        getRoleByName,
+        getAgentWithVersionCount: db.getAgentWithVersionCount,
+        checkPermission: checkAgentPermission,
+        hasCapability,
+        updateAgent: updateAgentHandler,
+      });
+      const remove = createAgentManagementDeleteHandler({
+        getRoleByName,
+        getAgentWithVersionCount: db.getAgentWithVersionCount,
+        checkPermission: checkAgentPermission,
+        hasCapability,
+        deleteAgent: db.deleteAgent,
+      });
+      const app = express();
+      app.use(express.json());
+      app.use('/api/agents/v1/agents', auth);
+      app.post('/api/agents/v1/agents', (req, res) => {
+        req.config = {};
+        return create(req, res);
+      });
+      app.get('/api/agents/v1/agents', reads.list);
+      app.get('/api/agents/v1/agents/:id', reads.get);
+      app.patch('/api/agents/v1/agents/:id', (req, res) => {
+        req.config = {};
+        return update(req, res);
+      });
+      app.delete('/api/agents/v1/agents/:id', remove);
+
+      const createdResponse = await request(app)
+        .post('/api/agents/v1/agents')
+        .set('Authorization', 'Bearer valid-token')
+        .send({
+          name: 'Managed Agent',
+          description: 'Description that remains unchanged',
+          provider: 'openai',
+          model: 'gpt-4',
+          avatar: { filepath: 'avatars/managed.png', source: 'local' },
+          conversation_starters: ['Help me get started'],
+        });
+
+      expect(createdResponse.status).toBe(201);
+      expect(createdResponse.body).toEqual(
+        expect.objectContaining({
+          id: expect.stringMatching(/^agent_/),
+          name: 'Managed Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          version: 1,
+        }),
+      );
+      expect(createdResponse.body).not.toHaveProperty('_id');
+      expect(createdResponse.body).not.toHaveProperty('author');
+      expect(createdResponse.body).not.toHaveProperty('tenantId');
+
+      const [retrievedResponse, listedResponse] = await Promise.all([
+        request(app)
+          .get(`/api/agents/v1/agents/${createdResponse.body.id}`)
+          .set('Authorization', 'Bearer valid-token'),
+        request(app).get('/api/agents/v1/agents').set('Authorization', 'Bearer valid-token'),
+      ]);
+
+      expect(retrievedResponse.status).toBe(200);
+      expect(retrievedResponse.body).toEqual(createdResponse.body);
+      expect(listedResponse.status).toBe(200);
+      expect(listedResponse.body.data).toEqual([createdResponse.body]);
+
+      const otherTenantId = `tenant-${nanoid(8)}`;
+      const currentTenantGraphId = `agent_${nanoid()}`;
+      const otherTenantGraphId = `agent_${nanoid()}`;
+      await tenantStorage.run({ tenantId }, async () => {
+        await Agent.create({
+          id: currentTenantGraphId,
+          name: 'Current tenant graph',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: principal._id,
+          edges: [{ from: '', to: createdResponse.body.id, edgeType: 'handoff' }],
+        });
+        await User.updateOne(
+          { _id: principal._id },
+          { $set: { favorites: [{ agentId: createdResponse.body.id }] } },
+        );
+      });
+      const otherTenantPrincipal = await tenantStorage.run(
+        { tenantId: otherTenantId },
+        async () => {
+          const owner = await createOwner();
+          await Agent.create({
+            id: createdResponse.body.id,
+            name: 'Other tenant Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            author: owner._id,
+          });
+          await Agent.create({
+            id: otherTenantGraphId,
+            name: 'Other tenant graph',
+            provider: 'openai',
+            model: 'gpt-4',
+            author: owner._id,
+            edges: [{ from: '', to: createdResponse.body.id, edgeType: 'handoff' }],
+          });
+          await User.updateOne(
+            { _id: owner._id },
+            { $set: { favorites: [{ agentId: createdResponse.body.id }] } },
+          );
+          return owner;
+        },
+      );
+
+      const updatedResponse = await request(app)
+        .patch(`/api/agents/v1/agents/${createdResponse.body.id}`)
+        .set('Authorization', 'Bearer valid-token')
+        .send({
+          name: 'Updated Managed Agent',
+          avatar: null,
+          conversation_starters: [],
+        });
+
+      expect(updatedResponse.status).toBe(200);
+      expect(updatedResponse.body).toEqual(
+        expect.objectContaining({
+          id: createdResponse.body.id,
+          name: 'Updated Managed Agent',
+          description: 'Description that remains unchanged',
+          avatar: null,
+          conversation_starters: [],
+          version: 2,
+        }),
+      );
+      expect(updatedResponse.body).not.toHaveProperty('_id');
+      expect(updatedResponse.body).not.toHaveProperty('author');
+      expect(updatedResponse.body).not.toHaveProperty('tenantId');
+
+      const retrievedAfterUpdate = await request(app)
+        .get(`/api/agents/v1/agents/${createdResponse.body.id}`)
+        .set('Authorization', 'Bearer valid-token');
+      expect(retrievedAfterUpdate.status).toBe(200);
+      expect(retrievedAfterUpdate.body).toEqual(updatedResponse.body);
+
+      const created = await Agent.collection.findOne({
+        id: createdResponse.body.id,
+        tenantId,
+      });
+      const otherTenantAgent = await Agent.collection.findOne({
+        id: createdResponse.body.id,
+        tenantId: otherTenantId,
+      });
+      expect(created.tenantId).toBe(tenantId);
+      expect(created.author.toString()).toBe(userId);
+      expect(created.name).toBe('Updated Managed Agent');
+      expect(created.description).toBe('Description that remains unchanged');
+      expect(created.avatar).toBeNull();
+      expect(created.conversation_starters).toEqual([]);
+      expect(created.versions).toHaveLength(2);
+      expect(otherTenantAgent.name).toBe('Other tenant Agent');
+      expect(grantPermission).toHaveBeenCalledWith(
+        expect.objectContaining({
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          resourceType: ResourceType.AGENT,
+        }),
+      );
+
+      const deletedResponse = await request(app)
+        .delete(`/api/agents/v1/agents/${createdResponse.body.id}`)
+        .set('Authorization', 'Bearer valid-token');
+      expect(deletedResponse.status).toBe(200);
+      expect(deletedResponse.body).toEqual({ id: createdResponse.body.id, deleted: true });
+
+      const [retrievedAfterDelete, repeatedDelete] = await Promise.all([
+        request(app)
+          .get(`/api/agents/v1/agents/${createdResponse.body.id}`)
+          .set('Authorization', 'Bearer valid-token'),
+        request(app)
+          .delete(`/api/agents/v1/agents/${createdResponse.body.id}`)
+          .set('Authorization', 'Bearer valid-token'),
+      ]);
+      expect(retrievedAfterDelete.status).toBe(404);
+      expect(repeatedDelete.status).toBe(404);
+      await expect(Agent.exists({ id: createdResponse.body.id, tenantId })).resolves.toBeNull();
+      await expect(
+        Agent.exists({ id: createdResponse.body.id, tenantId: otherTenantId }),
+      ).resolves.not.toBeNull();
+      await expect(
+        Agent.exists({
+          id: currentTenantGraphId,
+          tenantId,
+          'edges.to': createdResponse.body.id,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        Agent.exists({
+          id: otherTenantGraphId,
+          tenantId: otherTenantId,
+          'edges.to': createdResponse.body.id,
+        }),
+      ).resolves.not.toBeNull();
+      await expect(
+        User.exists({
+          _id: principal._id,
+          tenantId,
+          'favorites.agentId': createdResponse.body.id,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        User.exists({
+          _id: otherTenantPrincipal._id,
+          tenantId: otherTenantId,
+          'favorites.agentId': createdResponse.body.id,
+        }),
+      ).resolves.not.toBeNull();
+    });
+
+    test('management creation rejects caller-controlled ownership', async () => {
+      const handler = createAgentManagementCreateHandler({
+        getRoleByName: jest.fn().mockResolvedValue({
+          permissions: {
+            [PermissionTypes.AGENTS]: {
+              [Permissions.USE]: true,
+              [Permissions.CREATE]: true,
+            },
+          },
+        }),
+        createAgent: createAgentHandler,
+      });
+      mockReq.user.tenantId = 'tenant-a';
+      mockReq.body = {
+        name: 'Managed Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId().toString(),
+      };
+
+      await handler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(await Agent.countDocuments()).toBe(0);
     });
 
     test('should reject creation with unauthorized fields (mass assignment protection)', async () => {
@@ -1274,12 +1676,74 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(agentInDb.code_environment_id).toBeUndefined();
     });
 
+    test('allows a workspace-only update for an existing attached environment', async () => {
+      await Agent.updateOne({ id: existingAgentId }, { code_environment_id: 'attached-vm' });
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'attached-vm',
+                  name: 'Attached VM',
+                  type: 'attached',
+                  baseURL: 'https://bridge.example.com/v1',
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = { code_workspace_id: 'project-a' };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.code_environment_id).toBe('attached-vm');
+      expect(agentInDb.code_workspace_id).toBe('project-a');
+    });
+
+    test('rejects a workspace-only update without an attached environment', async () => {
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'default-vm',
+                  name: 'Default VM',
+                  type: 'attached',
+                  baseURL: 'https://bridge.example.com/v1',
+                  default: true,
+                },
+              ],
+            },
+          },
+        },
+      };
+      mockReq.body = { code_workspace_id: 'project-a' };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.code_workspace_id).toBeUndefined();
+    });
+
     test('allows disabling stateful sessions after the configured environment is removed', async () => {
       await Agent.updateOne(
         { id: existingAgentId },
         {
           stateful_code_sessions: true,
           code_environment_id: 'removed-vm',
+          code_workspace_id: 'project-a',
         },
       );
       mockReq.user.id = existingAgentAuthorId.toString();
@@ -1297,6 +1761,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       mockReq.body = {
         stateful_code_sessions: false,
         code_environment_id: 'removed-vm',
+        code_workspace_id: 'project-a',
       };
 
       await updateAgentHandler(mockReq, mockRes);
@@ -1305,6 +1770,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       const agentInDb = await Agent.findOne({ id: existingAgentId });
       expect(agentInDb.stateful_code_sessions).toBe(false);
       expect(agentInDb.code_environment_id).toBe('removed-vm');
+      expect(agentInDb.code_workspace_id).toBe('project-a');
     });
 
     test('restores the deployment-default code environment', async () => {
@@ -1313,6 +1779,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         {
           stateful_code_sessions: true,
           code_environment_id: 'attached-vm',
+          code_workspace_id: 'project-a',
         },
       );
       mockReq.user.id = existingAgentAuthorId.toString();
@@ -1342,6 +1809,22 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.status).not.toHaveBeenCalledWith(400);
       const agentInDb = await Agent.findOne({ id: existingAgentId });
       expect(agentInDb.code_environment_id).toBeUndefined();
+      expect(agentInDb.code_workspace_id).toBe('');
+    });
+
+    test('clears a configured Git identity', async () => {
+      await Agent.updateOne(
+        { id: existingAgentId },
+        { git_identity: { name: 'Coding Agent', email: 'agent@example.com' } },
+      );
+      mockReq.user.id = existingAgentAuthorId.toString();
+      mockReq.params.id = existingAgentId;
+      mockReq.body = { git_identity: null };
+
+      await updateAgentHandler(mockReq, mockRes);
+
+      const agentInDb = await Agent.findOne({ id: existingAgentId });
+      expect(agentInDb.git_identity).toBeUndefined();
     });
 
     test('allows unrelated edits to an existing scope after policy is tightened', async () => {
@@ -2521,6 +3004,67 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(mockRes.json.mock.calls[0][0].agent.tool_options).toEqual({});
     });
 
+    test('duplicateAgentHandler preserves a disabled stale workspace binding', async () => {
+      const sourceAgent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Disabled BYOM Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        stateful_code_sessions: false,
+        code_environment_id: 'removed-vm',
+        code_workspace_id: 'project-a',
+      });
+      jest.spyOn(db, 'getActions').mockResolvedValueOnce([]);
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = sourceAgent.id;
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      expect(mockRes.json.mock.calls[0][0].agent).toEqual(
+        expect.objectContaining({
+          stateful_code_sessions: false,
+          code_environment_id: 'removed-vm',
+          code_workspace_id: 'project-a',
+        }),
+      );
+    });
+
+    test('duplicateAgentHandler rejects an active stale workspace binding', async () => {
+      const sourceAgent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Active BYOM Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        stateful_code_sessions: true,
+        code_environment_id: 'removed-vm',
+        code_workspace_id: 'project-a',
+      });
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = sourceAgent.id;
+
+      await duplicateAgentHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
+    });
+
     test('revertAgentVersionHandler removes restored programmatic options without Code Interpreter', async () => {
       const agent = await Agent.create({
         id: `agent_${uuidv4()}`,
@@ -2547,6 +3091,83 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       expect(mockRes.json).toHaveBeenCalled();
       expect(mockRes.json.mock.calls[0][0].tool_options).toEqual({});
+    });
+
+    test('revertAgentVersionHandler restores a disabled stale workspace binding', async () => {
+      const agent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Current Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        versions: [
+          {
+            name: 'Disabled Historical BYOM Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            stateful_code_sessions: false,
+            code_environment_id: 'removed-vm',
+            code_workspace_id: 'project-a',
+          },
+        ],
+      });
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = agent.id;
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).not.toHaveBeenCalledWith(400);
+      const persisted = await Agent.findOne({ id: agent.id }).lean();
+      expect(persisted).toEqual(
+        expect.objectContaining({
+          stateful_code_sessions: false,
+          code_environment_id: 'removed-vm',
+          code_workspace_id: 'project-a',
+        }),
+      );
+    });
+
+    test('revertAgentVersionHandler rejects a stale binding that inherits active sessions', async () => {
+      const agent = await Agent.create({
+        id: `agent_${uuidv4()}`,
+        name: 'Current Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: mockReq.user.id,
+        stateful_code_sessions: true,
+        versions: [
+          {
+            name: 'Historical BYOM Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            code_environment_id: 'removed-vm',
+            code_workspace_id: 'project-a',
+          },
+        ],
+      });
+      mockReq.config = {
+        endpoints: {
+          agents: {
+            statefulCodeSessions: { environments: [] },
+          },
+        },
+      };
+      mockReq.params.id = agent.id;
+      mockReq.body = { version_index: 0 };
+
+      await revertAgentVersionHandler(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        error: 'Code workspace defaults require an explicit attached code environment',
+      });
     });
 
     test('revertAgentVersionHandler does not update unchanged tool options', async () => {
@@ -2771,6 +3392,81 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
     });
 
+    test('lets a manage:agents role discover unshared agents by search', async () => {
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_MANAGER_TEST',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      mockReq.user = {
+        id: userB.toString(),
+        role: 'LIST_MANAGER_TEST',
+        idOnTheSource: null,
+      };
+      mockReq.query.search = 'A2';
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      expect(await hasCapability(mockReq.user, SystemCapabilities.MANAGE_AGENTS)).toBe(true);
+      await getListAgentsHandler(mockReq, mockRes);
+
+      const response = mockRes.json.mock.calls[0][0];
+      expect(response.data.map((agent) => agent.id)).toEqual([agentA2.id]);
+      expect(response.data[0].isEditable).toBe(true);
+      expect(findAccessibleResources).toHaveBeenCalledWith(
+        expect.objectContaining({ resourceType: ResourceType.AGENT }),
+      );
+    });
+
+    test('restricts a manager to the authenticated tenant even without ambient tenant context', async () => {
+      const tenantA = `tenant-a-${uuidv4()}`;
+      const tenantB = `tenant-b-${uuidv4()}`;
+      const name = 'Tenant-Scoped Discovery';
+      const agentInA = await tenantStorage.run({ tenantId: tenantA }, () =>
+        Agent.create({
+          id: `agent_${nanoid(12)}`,
+          name,
+          provider: 'openai',
+          model: 'gpt-4',
+          author: userA,
+        }),
+      );
+      await tenantStorage.run({ tenantId: tenantB }, () =>
+        Agent.create({
+          id: `agent_${nanoid(12)}`,
+          name,
+          provider: 'openai',
+          model: 'gpt-4',
+          author: userB,
+        }),
+      );
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_TENANT_MANAGER',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      mockReq.user = {
+        id: userB.toString(),
+        role: 'LIST_TENANT_MANAGER',
+        idOnTheSource: null,
+        tenantId: tenantA,
+      };
+      mockReq.query.search = name;
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+
+      await getListAgentsHandler(mockReq, mockRes);
+      expect(mockCache.get).toHaveBeenCalledWith(
+        `${userB.toString()}:${tenantA}:agents_avatar_refresh`,
+      );
+      expect(mockRes.json.mock.calls[0][0].data.map((agent) => agent.id)).toEqual([agentInA.id]);
+
+      mockRes.json.mockClear();
+      mockReq.user.tenantId = undefined;
+      await getListAgentsHandler(mockReq, mockRes);
+      expect(mockRes.json.mock.calls[0][0].data).toHaveLength(0);
+    });
+
     test('should return empty list when user has no accessible agents', async () => {
       // User B has no permissions and no owned agents
       mockReq.user.id = userB.toString();
@@ -2986,16 +3682,20 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(Object.keys(agent).sort()).toEqual(
         [
           '_id',
+          'agent_ids',
           'author',
           'avatar',
           'category',
           'conversation_starters',
           'description',
+          'edges',
           'id',
           'isEditable',
           'is_promoted',
           'name',
+          'subagents',
           'support_contact',
+          'tools',
           'updatedAt',
         ].sort(),
       );
@@ -3007,6 +3707,9 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           author: userA.toString(),
           category: 'general',
           is_promoted: true,
+          tools: ['execute_code'],
+          edges: [{ from: agentA1.id, to: agentA2.id }],
+          subagents: { enabled: true, agent_ids: [agentA2.id] },
         }),
       );
     });
@@ -3484,6 +4187,68 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
     });
 
+    test('refreshes only manager search results without writing or losing later cursor pages', async () => {
+      const db = require('~/models');
+      const name = 'Paged Manager Avatar';
+      const firstAgent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name,
+        provider: 'openai',
+        model: 'gpt-4',
+        author: userA,
+        avatar: { source: FileSources.s3, filepath: 'first.jpg' },
+      });
+      const secondAgent = await Agent.create({
+        id: `agent_${nanoid(12)}`,
+        name,
+        provider: 'openai',
+        model: 'gpt-4',
+        author: userA,
+        avatar: { source: FileSources.s3, filepath: 'second.jpg' },
+      });
+      await db.grantCapability({
+        principalType: PrincipalType.ROLE,
+        principalId: 'LIST_AVATAR_MANAGER',
+        capability: SystemCapabilities.MANAGE_AGENTS,
+      });
+      const mockReq = {
+        user: { id: userB.toString(), role: 'LIST_AVATAR_MANAGER', idOnTheSource: null },
+        query: { search: name, limit: '1' },
+      };
+      const mockRes = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+      const listSpy = jest.spyOn(db, 'getListAgentsByAccess');
+      const updateSpy = jest.spyOn(db, 'updateAgent');
+      findAccessibleResources.mockResolvedValue([]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockImplementation(async ({ filepath }) => `signed:${filepath}`);
+
+      try {
+        await getListAgentsHandler(mockReq, mockRes);
+        const pageOne = mockRes.json.mock.calls[0][0];
+        expect(pageOne.data).toHaveLength(1);
+        expect(pageOne.after).toBeTruthy();
+        expect(pageOne.data[0].avatar.filepath).toMatch(/^signed:/);
+        expect(listSpy).toHaveBeenCalledTimes(1);
+        expect(refreshS3Url).toHaveBeenCalledTimes(1);
+        expect(updateSpy).not.toHaveBeenCalled();
+
+        mockRes.json.mockClear();
+        mockReq.query.cursor = pageOne.after;
+        await getListAgentsHandler(mockReq, mockRes);
+        const pageTwo = mockRes.json.mock.calls[0][0];
+        expect(pageTwo.data).toHaveLength(1);
+        expect([pageOne.data[0].id, pageTwo.data[0].id].sort()).toEqual(
+          [firstAgent.id, secondAgent.id].sort(),
+        );
+        expect(pageTwo.data[0].avatar.filepath).toMatch(/^signed:/);
+        expect(refreshS3Url).toHaveBeenCalledTimes(2);
+        expect(updateSpy).not.toHaveBeenCalled();
+      } finally {
+        listSpy.mockRestore();
+        updateSpy.mockRestore();
+      }
+    });
+
     test('should skip avatar refresh if cache hit', async () => {
       mockCache.get.mockResolvedValue({ urlCache: {} });
       findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
@@ -3502,6 +4267,22 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       // Should not call refreshS3Url when cache hit
       expect(refreshS3Url).not.toHaveBeenCalled();
+    });
+
+    test('does not treat a manager page cache as an ACL-wide refresh after role downgrade', async () => {
+      mockCache.get.mockResolvedValue({ urlCache: {}, scope: 'page' });
+      findAccessibleResources.mockResolvedValue([agentWithS3Avatar._id]);
+      findPubliclyAccessibleResources.mockResolvedValue([]);
+      refreshS3Url.mockResolvedValue('refreshed-after-downgrade.jpg');
+      const mockReq = { user: { id: userA.toString(), role: 'USER' }, query: {} };
+      const mockRes = { status: jest.fn().mockReturnThis(), json: jest.fn().mockReturnThis() };
+
+      await getListAgentsHandler(mockReq, mockRes);
+
+      expect(refreshS3Url).toHaveBeenCalledTimes(1);
+      expect(mockRes.json.mock.calls[0][0].data[0].avatar.filepath).toBe(
+        'refreshed-after-downgrade.jpg',
+      );
     });
 
     test('should refresh and persist S3 avatars on cache miss', async () => {

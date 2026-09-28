@@ -71,6 +71,26 @@ describe('OpenIDRefreshFlight Methods', () => {
     expect(second.flight?.status).toBe('pending');
   });
 
+  it('reads an existing flight from the primary when resolving an acquisition conflict', async () => {
+    const readSpy = jest.spyOn(mongoose.Query.prototype, 'read');
+    await methods.acquireOpenIDRefreshFlight({
+      key: 'flight-key',
+      ownerId: 'owner-1',
+      lockExpiresAt: new Date(Date.now() + 30000),
+      expiresAt: new Date(Date.now() + 60000),
+    });
+
+    await methods.acquireOpenIDRefreshFlight({
+      key: 'flight-key',
+      ownerId: 'owner-2',
+      lockExpiresAt: new Date(Date.now() + 30000),
+      expiresAt: new Date(Date.now() + 60000),
+    });
+
+    expect(readSpy).toHaveBeenCalledWith('primary');
+    readSpy.mockRestore();
+  });
+
   it('reclaims an expired pending lock', async () => {
     await methods.acquireOpenIDRefreshFlight({
       key: 'flight-key',
@@ -211,6 +231,15 @@ describe('OpenIDRefreshFlight Methods', () => {
     );
 
     await expect(methods.findOpenIDRefreshFlight({ key: 'flight-key' })).resolves.toBeNull();
+  });
+
+  it('reads publication state from the primary', async () => {
+    const readSpy = jest.spyOn(mongoose.Query.prototype, 'read');
+
+    await methods.findOpenIDRefreshFlight({ key: 'flight-key' });
+
+    expect(readSpy).toHaveBeenCalledWith('primary');
+    readSpy.mockRestore();
   });
 
   it('persists a logout revocation fence that an active owner cannot publish through', async () => {

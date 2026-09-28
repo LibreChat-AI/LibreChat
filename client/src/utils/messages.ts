@@ -90,6 +90,34 @@ export const getMessageBranchSiblingParentIds = (
   return Array.from(parentIds);
 };
 
+/**
+ * True when a resumed run's user-message slot is a compaction ANCHOR rather than
+ * a turn the run created.
+ *
+ * A compaction submits no user turn: the slot names the LEAF it summarizes up
+ * to, which the server projects as identity only (`projectCompactionAnchor` —
+ * id, conversation, empty text, and no parent). Every other run publishes the
+ * turn it created, parent included (`getPreliminaryUserMessage`), so the absent
+ * parent is what separates the two.
+ *
+ * The anchor's author cannot separate them: Compact runs on whatever leaf the
+ * branch ends with and `canCompact` does not restrict its author, so the anchor
+ * is an assistant answer on one branch and a user message on the next (see
+ * `isUserInitiatedCompaction`). Testing for a non-user row recognized only the
+ * first kind and left the second rewritten on every re-attach.
+ */
+export const isCompactionAnchorProjection = (
+  userMessage?: {
+    messageId?: string;
+    parentMessageId?: string | null;
+    text?: string | null;
+  } | null,
+): boolean =>
+  userMessage?.messageId != null &&
+  userMessage.messageId !== '' &&
+  userMessage.parentMessageId == null &&
+  (userMessage.text == null || userMessage.text === '');
+
 export const getBranchSiblingIndexesForTarget = (
   messages: TMessage[] | null | undefined,
   targetMessageId: string | null | undefined,
@@ -204,7 +232,7 @@ const getPartToolCall = (part: TMessageContentParts): Agents.ToolCall | undefine
 /** Slots the persistence compaction leaves nothing behind for: the
  * dual-message `type: ''` placeholders, text/think parts that never received a
  * delta, and tool calls missing their `tool_call` payload. */
-const isEmptyContentPart = (part: TMessageContentParts): boolean => {
+export const isEmptyContentPart = (part: TMessageContentParts): boolean => {
   if (!part.type) {
     return true;
   }

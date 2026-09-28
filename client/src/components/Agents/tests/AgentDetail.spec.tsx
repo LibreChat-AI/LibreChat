@@ -49,6 +49,15 @@ jest.mock('~/utils/agents', () => ({
   )),
 }));
 
+jest.mock('~/utils/endpoints', () => ({
+  specDisplayFieldReset: {
+    spec: null,
+    iconURL: null,
+    modelLabel: null,
+    greeting: undefined,
+  },
+}));
+
 jest.mock('~/Providers', () => ({
   useChatContext: jest.fn(),
 }));
@@ -260,7 +269,49 @@ describe('AgentDetail', () => {
           endpoint: EModelEndpoint.agents,
           agent_id: 'test-agent-id',
           title: 'Chat with Test Agent',
+          spec: null,
+          iconURL: null,
+          modelLabel: null,
+          greeting: undefined,
         },
+      });
+    });
+
+    it('should clear model spec display fields when starting an agent chat', async () => {
+      const user = userEvent.setup();
+      const mockNewConversation = jest.fn();
+      const { useChatContext } = require('~/Providers');
+      (useChatContext as jest.Mock).mockReturnValue({
+        conversation: {
+          conversationId: 'test-convo-id',
+          spec: 'ClickHouse Agent',
+          iconURL: '/images/clickhouse.svg',
+          modelLabel: 'ClickHouse Agent',
+        },
+        newConversation: mockNewConversation,
+      });
+      const { useDefaultConvo } = require('~/hooks');
+      (useDefaultConvo as jest.Mock).mockReturnValue(({ conversation, preset }) => ({
+        ...conversation,
+        ...preset,
+      }));
+
+      renderWithProviders(<AgentDetail {...defaultProps} />);
+      await user.click(screen.getByRole('button', { name: 'com_agents_start_chat' }));
+
+      expect(mockNewConversation).toHaveBeenCalledWith({
+        template: expect.objectContaining({
+          endpoint: EModelEndpoint.agents,
+          agent_id: 'test-agent-id',
+          spec: null,
+          iconURL: null,
+          modelLabel: null,
+        }),
+        preset: expect.objectContaining({
+          spec: null,
+          iconURL: null,
+          modelLabel: null,
+        }),
       });
     });
 

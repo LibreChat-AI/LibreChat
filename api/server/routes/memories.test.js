@@ -55,19 +55,6 @@ jest.mock('@librechat/api', () => ({
   contentFilterBlockResponse: jest.fn(),
 }));
 
-jest.mock('librechat-data-provider', () => ({
-  PermissionTypes: { MEMORIES: 'MEMORIES' },
-  Permissions: {
-    USE: 'USE',
-    READ: 'READ',
-    CREATE: 'CREATE',
-    UPDATE: 'UPDATE',
-    OPT_OUT: 'OPT_OUT',
-  },
-  ResourceType: { AGENT: 'agent' },
-  PermissionBits: { VIEW: 1 },
-}));
-
 jest.mock('~/server/services/PermissionService', () => ({
   checkPermission: (...args) => mockCheckPermission(...args),
   findAccessibleResources: jest.fn().mockResolvedValue([]),

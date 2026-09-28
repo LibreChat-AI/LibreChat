@@ -3,6 +3,7 @@ const {
   ioredisClient,
   registerShutdownTask,
   duplicateIoRedisClient,
+  createIoRedisSubscriber,
   createSubagentThreadTaskStore,
   createSubagentCompletionWakeupHandler,
   GenerationJobManager,
@@ -11,7 +12,7 @@ const {
   SubagentActivityStream,
 } = require('@librechat/api');
 const db = require('~/models');
-const { enqueueAgentTrigger } = require('../../Agents/triggers');
+const { enqueueAgentTrigger, expediteCompletionWakeups } = require('../../Agents/triggers');
 
 const GENERATION_DRAIN_TIMEOUT_MS = 45_000;
 const GENERATION_DRAIN_POLL_MS = 100;
@@ -77,6 +78,8 @@ const subagentThreadTaskStore = createSubagentThreadTaskStore(
     releaseOwnerAdmission: db.releaseSubagentAdmission,
     cancelUnroutedTask: cancelUnroutedGeneration,
     onTaskPrepared: completionWakeupHandler,
+    onTaskSettled: (userId, conversationId, taskIds) =>
+      expediteCompletionWakeups({ user: userId, conversationId, taskIds }),
   },
 );
 
@@ -110,13 +113,19 @@ async function configureSubagentTaskRouting() {
   if (ioredisClient == null || typeof ioredisClient.duplicate !== 'function') {
     throw new Error('Redis subagent task routing requires a dedicated subscriber connection.');
   }
-  const subscriber = ioredisClient.duplicate();
+  const subscriber = createIoRedisSubscriber(
+    ioredisClient,
+    '[SubagentTaskRouting] task subscriber',
+  );
   /** A dedicated publisher without the offline queue: the shared client would hold a
    * command issued during a disconnect and deliver it after the caller gave up, so a
    * steer the caller was told had failed could still reach the child. Failing fast
    * turns that into the honest `unavailable` the caller already handles. */
   const publisher = duplicateIoRedisClient(ioredisClient, { enableOfflineQueue: false });
-  const activitySubscriber = ioredisClient.duplicate();
+  const activitySubscriber = createIoRedisSubscriber(
+    ioredisClient,
+    '[SubagentTaskRouting] activity subscriber',
+  );
   const activityPublisher = duplicateIoRedisClient(ioredisClient, { enableOfflineQueue: false });
   const transport = new RedisSubagentTaskControlTransport(publisher, subscriber, {
     namespace: cacheConfig.REDIS_KEY_PREFIX,

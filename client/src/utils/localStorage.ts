@@ -60,7 +60,10 @@ export function clearLocalStorage(skipFirst?: boolean) {
       key === LocalStorageKeys.LAST_SPEC ||
       key === LocalStorageKeys.LAST_TOOLS ||
       key === LocalStorageKeys.LAST_MODEL ||
-      key === LocalStorageKeys.FILES_TO_DELETE
+      key === LocalStorageKeys.FILES_TO_DELETE ||
+      /** A permissive code approval default belongs to the account that chose it, not to
+       * whoever signs in next on a shared browser. */
+      key === LocalStorageKeys.LAST_CODE_APPROVAL_MODE
     ) {
       localStorage.removeItem(key);
     }

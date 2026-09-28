@@ -393,6 +393,53 @@ describe('Langfuse feedback scores', () => {
     expect(getFetchMock()).toHaveBeenCalledTimes(1);
   });
 
+  it('records the sampling decision of the run a failed turn stands for', async () => {
+    process.env.LANGFUSE_SAMPLE_RATE = '0.5';
+    await loadFeedback();
+    const { getLangfuseTraceMessageFields } = await import('./destinations');
+    const { isLangfuseTraceSampled } = await import('./policy');
+    const { traceIdForMessage } = await import('./trace');
+    const ids = Array.from({ length: 64 }, (_, index) => `id-${index}`);
+    const sampled = (id: string) => isLangfuseTraceSampled(traceIdForMessage(id));
+    const runId = ids.find(sampled) as string;
+    const rowId = ids.find((id) => !sampled(id)) as string;
+
+    await expect(getLangfuseTraceMessageFields(undefined, rowId, { runId })).resolves.toEqual({
+      langfuseSampled: true,
+      langfuseDestinationIds: [expect.any(String)],
+      langfuseRunId: runId,
+    });
+    await expect(getLangfuseTraceMessageFields(undefined, runId)).resolves.not.toHaveProperty(
+      'langfuseRunId',
+    );
+    await expect(getLangfuseTraceMessageFields(undefined, rowId)).resolves.toMatchObject({
+      langfuseSampled: false,
+    });
+  });
+
+  it('names the run of a failed turn only when that run was created', async () => {
+    await loadFeedback();
+    const { getFailedTurnTraceFields } = await import('./destinations');
+
+    await expect(
+      getFailedTurnTraceFields(undefined, {
+        messageId: 'user-1_',
+        runId: 'run-1',
+        runCreated: false,
+      }),
+    ).resolves.toEqual({});
+    await expect(
+      getFailedTurnTraceFields(undefined, { messageId: 'user-1_', runId: null, runCreated: true }),
+    ).resolves.toEqual({});
+    await expect(
+      getFailedTurnTraceFields(undefined, {
+        messageId: 'user-1_',
+        runId: 'run-1',
+        runCreated: true,
+      }),
+    ).resolves.toMatchObject({ langfuseSampled: true, langfuseRunId: 'run-1' });
+  });
+
   it('keeps the central destination identity stable when credentials rotate', async () => {
     const { sendFeedbackScore } = await loadFeedback();
     const { getLangfuseTraceDestinationIds } = await import('./destinations');

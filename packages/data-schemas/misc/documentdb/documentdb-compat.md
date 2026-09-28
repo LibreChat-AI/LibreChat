@@ -161,17 +161,68 @@ in the docs.
 - **DocumentDB 8.0 pipeline-update acceptance** — 8.0 added `$set`/`$unset`
   aggregation _stages_, but AWS never documents pipeline-form updates; the
   harness probe answers this live.
-- **`collMod` is only "Partial"** on every version — avoid
-  `Model.syncIndexes()` against DocumentDB (it may issue `collMod` beyond the
-  documented `expireAfterSeconds`).
-- **Read-side aggregations** (3 files: `methods/prompt.ts`,
-  `methods/aclEntry.ts`, `methods/agentCategory.ts`) were not audited
-  stage-by-stage; no exotic stages (`$facet`, `$setWindowFields`,
-  `$unionWith`, `$graphLookup`) are used anywhere.
+- **`collMod` is only "Partial"** on every version — `Model.syncIndexes()`
+  may issue `collMod` beyond the documented `expireAfterSeconds`, so the static
+  guard rejects it outright.
+- **Aggregation operators — now enforced, not observed.** 29 `aggregate`
+  calls across 11 files (`insights.ts`, `message.ts`, `mcpAuthority.ts`,
+  `agent.ts`, `aclEntry.ts`, `triggerDelivery.ts`, `queuedTurn.ts`,
+  `prompt.ts`, `conversation.ts`, `agentCategory.ts`,
+  `packages/api/src/code/lifecycle.ts`). An earlier inventory here named three
+  files because it was built from `.aggregate(`, which never matches the
+  generically typed `.aggregate<T>(` form the newer code uses. Every operator
+  in use (`$strLenBytes`, `$let`, `$map`, `$reduce`, `$regexMatch`, `$convert`,
+  `$anyElementTrue`, …) is in AWS's 5.0 supported list, and
+  `methods/documentdb.spec.ts` now rejects the full unsupported matrix,
+  `$set`/`$unset` at stage position, and the `$count` accumulator. Several
+  operators are 4.0+/5.0-only (`$expr`, `$switch`, `$convert`, `$regexMatch`,
+  array-form `$first`), which reinforces the 5.0+ recommendation.
 - **No faithful local emulator exists.** The `documentdb-local` Docker image
   is the PostgreSQL-based Linux Foundation project — AWS's own OSS blog
   confirms "a different engine than the one used in Amazon DocumentDB." Live
   regression testing must run against a real cluster.
+
+## Proven, fixed — edge cleanup pipeline update (every version)
+
+`removeAgentIdsFromEdges` (`methods/agent.ts`, since #14428) pruned deleted
+agent ids out of every graph's `edges` with an aggregation-pipeline update —
+the class fixed everywhere else in #15375. The static guard missed it because
+the pipeline reached `updateMany` as a function's return value rather than an
+array literal or an array-bound variable; the guard now follows calls to
+functions declared or annotated to return an array, and independently rejects
+`$set`/`$unset` at stage position. The rewrite reads each matching graph,
+prunes in code, and writes the result back behind a compare-and-set on the
+edges it read (`tenantSafeBulkWrite`, one round trip for every graph), so a
+concurrent edit is never overwritten — the atomicity the pipeline provided, at
+the cost of one extra read on the agent-delete path.
+
+## Proven, fixed — concurrent index builds (every version)
+
+DocumentDB admits one index build per collection at a time and rejects a
+second with code 40333 where MongoDB would serialize it. `utils/retry.ts`
+exists for exactly this and the boot builds go through it — but three callers
+bypassed it, and one sits on the agent hot path:
+
+- **`MongoDBSaver.setup()`** (`@langchain/langgraph-checkpoint-mongodb`) starts
+  the compound and TTL builds of each checkpoint collection in a single
+  `Promise.allSettled` and returns the rejections instead of throwing;
+  `buildMongoSaver` logged them and proceeded. On DocumentDB one build per
+  collection lost that race on every boot — the TTL index is pushed second,
+  making it the likely loser, so checkpoints accumulated without bound.
+  `setupCheckpointIndexes` now re-runs the idempotent `setup()` while any
+  rejection is a 40333; each pass admits one more build until all exist.
+- `methods/auditLog.ts` called `model.createIndexes()` raw before the chain's
+  first append; `migrations/mcpAuthorityIndexes.ts` and
+  `migrations/mcpServerNames.ts` called `collection.createIndex()` raw. All
+  three now go through the helpers (`buildIndexWithRetry` is the
+  raw-collection form of `createIndexesWithRetry`).
+
+`methods/documentdb.spec.ts` rejects any `createIndex` / `createIndexes` /
+`syncIndexes` / `ensureIndexes` outside `utils/retry.ts` unless it is the
+argument of `buildIndexWithRetry`, so the class cannot recur silently. The
+method sweep cannot see this class at all — it drives exported methods, and
+these builds happen inside a third-party `setup()` and in migrations — which
+is how it survived three audits.
 
 ## Regression strategy
 
@@ -189,14 +240,15 @@ in the docs.
 
 ## Support matrix and recommendation
 
-| Capability (LibreChat dependency)       | 3.6 | 4.0 | 5.0 | 8.0 | Elastic |
-| --------------------------------------- | --- | --- | --- | --- | ------- |
-| Pipeline updates (**no longer used**)   | ✗   | ✗   | ✗   | ?   | ✗       |
-| Plain update operators (all writes now) | ✓   | ✓   | ✓   | ✓   | ✓       |
-| Unique indexes                          | ✓   | ✓   | ✓   | ✓   | ✗       |
-| Partial unique indexes (OAuth ids)      | ✗   | ✗   | ✓   | ✓   | ✗       |
-| Transactions (runtime-probed)           | ✗   | ✓   | ✓   | ✓   | ✗       |
-| TTL indexes                             | ✓   | ✓   | ✓   | ✓   | ✓       |
+| Capability (LibreChat dependency)        | 3.6 | 4.0 | 5.0 | 8.0 | Elastic |
+| ---------------------------------------- | --- | --- | --- | --- | ------- |
+| Pipeline updates (**no longer used**)    | ✗   | ✗   | ✗   | ?   | ✗       |
+| Plain update operators (all writes now)  | ✓   | ✓   | ✓   | ✓   | ✓       |
+| Unique indexes                           | ✓   | ✓   | ✓   | ✓   | ✗       |
+| Partial unique indexes (OAuth ids)       | ✗   | ✗   | ✓   | ✓   | ✗       |
+| Transactions (runtime-probed)            | ✗   | ✓   | ✓   | ✓   | ✗       |
+| TTL indexes                              | ✓   | ✓   | ✓   | ✓   | ✓       |
+| Concurrent index builds (now serialized) | ✗   | ✗   | ✗   | ✗   | ✗       |
 
 **Recommendation**: support **DocumentDB 5.0+ instance-based** with
 `retryWrites=false` documented as required. 4.0 functions with
@@ -263,10 +315,16 @@ matrices (`SWEEP_REPORT_PATH`).
 Corrected-harness baseline (replica-set MongoDB, real ACL cascades, index DDL
 and transaction-lifecycle instrumentation, per-invocation async attribution,
 seeded authority-transaction case, constructor exports excluded, a fresh
-method bundle per case): **370 of 509 methods issue at least one query; zero
-rejections on MongoDB**. The remaining 139 issue none (validation
+method bundle per case, criteria-shaped parameters synthesized as objects):
+**385 of 518 methods issue at least one query; zero rejections on MongoDB**.
+The remaining 133 issue none (validation
 rejected the synthesized arguments, or a guard short-circuited); they are
-listed in the matrix and shrink by adding `ARG_OVERRIDES` entries. The report's `rows` payload is normalized for
+listed in the matrix and shrink by adding `ARG_OVERRIDES` entries. Watch this count across releases: the typed
+criteria refactor (#15580) silently took six adjudicated methods to
+un-driven because the sweep synthesized a string for a `query` parameter and
+`buildFilter` fails closed on it — a coverage regression that a green suite
+hides. Diffing matrices, not reading the pass line, is what catches it. The
+report's `rows` payload is normalized for
 cross-engine diffing (`diff <(jq .rows a.json) <(jq .rows b.json)`); run
 metadata lives outside it.
 

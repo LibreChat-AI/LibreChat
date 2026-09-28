@@ -6,6 +6,7 @@ import type { AgentForm, ExtendedFile } from '~/common';
 import type { BuiltinId } from '../../items/types';
 import { useVerifyAgentToolAuth } from '~/data-provider';
 import CodeBackground from '../../../Code/Background';
+import CodeSettings from '../../../Code/Settings';
 import SearchAction from '../../../Search/Action';
 import FileContext from '../../../FileContext';
 import FileSearch from '../../../FileSearch';
@@ -144,6 +145,7 @@ export default function BuiltinSection({
   if (builtinId === 'execute_code') {
     body = (
       <div className="flex flex-col gap-4">
+        <CodeSettings />
         <CodeBackground />
         <CodeFiles agent_id={agentId} files={codeFiles} />
       </div>

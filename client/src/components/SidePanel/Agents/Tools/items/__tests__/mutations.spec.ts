@@ -1,7 +1,7 @@
-import { SkillsScope, AgentCapabilities, ArtifactModes } from 'librechat-data-provider';
+import { AgentCapabilities, ArtifactModes } from 'librechat-data-provider';
 import type { AgentItem } from '../types';
 import { makePlugin, makeSkill, makeMcpServer, makeAction } from 'test/itemFactories';
-import { computeToggleAction, skillsSelectionTransition } from '../mutations';
+import { computeToggleAction } from '../mutations';
 
 const builtinCode: AgentItem = {
   kind: 'builtin',
@@ -127,37 +127,6 @@ describe('computeToggleAction', () => {
     expect(computeToggleAction(action, { selected: true })).toEqual({
       type: 'action-remove',
       actionId: 'a1',
-    });
-  });
-});
-
-describe('skillsSelectionTransition', () => {
-  test('a non-empty selection enables skills and selects the allowlist scope', () => {
-    expect(skillsSelectionTransition(['s1'], undefined, undefined, undefined)).toEqual({
-      enabled: true,
-      authoringEnabled: false,
-      scope: SkillsScope.selected,
-    });
-    expect(skillsSelectionTransition(['s1', 's2'], false, true, SkillsScope.none)).toEqual({
-      enabled: true,
-      authoringEnabled: false,
-      scope: SkillsScope.selected,
-    });
-  });
-
-  test('an existing matching selection state needs no writes', () => {
-    expect(skillsSelectionTransition(['s1'], true, false, SkillsScope.selected)).toEqual({});
-  });
-
-  test('clearing the selection keeps the capability enabled in authoring-only mode', () => {
-    expect(skillsSelectionTransition([], true, false, SkillsScope.selected)).toEqual({
-      enabled: false,
-      authoringEnabled: true,
-      scope: SkillsScope.none,
-    });
-    expect(skillsSelectionTransition([], false, false, undefined)).toEqual({
-      authoringEnabled: true,
-      scope: SkillsScope.none,
     });
   });
 });

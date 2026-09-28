@@ -124,6 +124,58 @@ describe('useAgentToolPermissions', () => {
       expect(result.current.tools).toEqual([Tools.execute_code, Tools.file_search]);
     });
 
+    it('should use the hydrated code environment when available', () => {
+      const agentId = 'agent_test';
+      mockUseAgentsMapContext.mockReturnValue({
+        [agentId]: {
+          id: agentId,
+          tools: [Tools.execute_code],
+          code_environment_id: 'stale',
+          stateful_code_sessions: false,
+        },
+      });
+      mockUseGetAgentByIdQuery.mockReturnValue({
+        data: {
+          id: agentId,
+          tools: [Tools.execute_code],
+          code_environment_id: 'attached-vm',
+          stateful_code_sessions: true,
+        },
+      });
+
+      const { result } = renderHook(() => useAgentToolPermissions(agentId));
+
+      expect(result.current.codeEnvironmentId).toBe('attached-vm');
+      expect(result.current.statefulCodeSessionsAllowedByAgent).toBe(true);
+    });
+
+    it('preserves execution graph metadata omitted by the basic agent response', () => {
+      const agentId = 'agent_test';
+      mockUseAgentsMapContext.mockReturnValue({
+        [agentId]: {
+          id: agentId,
+          tools: [Tools.execute_code],
+          code_environment_id: 'attached-vm',
+          code_workspace_id: 'project-a',
+          stateful_code_sessions: true,
+          agent_ids: ['agent-child'],
+        },
+      });
+      mockUseGetAgentByIdQuery.mockReturnValue({
+        data: { id: agentId, name: 'Safe agent response' },
+      });
+
+      const { result } = renderHook(() => useAgentToolPermissions(agentId));
+
+      expect(result.current.agent).toMatchObject({
+        id: agentId,
+        name: 'Safe agent response',
+        code_environment_id: 'attached-vm',
+        code_workspace_id: 'project-a',
+        agent_ids: ['agent-child'],
+      });
+    });
+
     it('should fallback to agent map data when API data is not available', () => {
       const agentId = 'agent_test';
       const agentMapData = {

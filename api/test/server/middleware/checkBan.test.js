@@ -401,6 +401,55 @@ describe('checkBan middleware', () => {
     });
   });
 
+  describe('non-string cache keys (#16025)', () => {
+    const objectIdHex = '507f1f77bcf86cd799439011';
+    const objectId = {
+      toString() {
+        return objectIdHex;
+      },
+    };
+
+    it('stringifies ObjectId user keys when Redis is off', async () => {
+      const next = jest.fn();
+      const req = createReq({ user: { _id: objectId } });
+
+      await checkBan(req, createRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(mockBanCacheGet).toHaveBeenCalledWith(objectIdHex);
+      expect(mockBanLogsGet).toHaveBeenCalledWith(objectIdHex);
+      for (const [key] of mockBanCacheGet.mock.calls) {
+        expect(typeof key).toBe('string');
+      }
+    });
+
+    it('stringifies numeric user keys when Redis is off', async () => {
+      await checkBan(createReq({ user: { _id: 12345 } }), createRes(), jest.fn());
+
+      expect(mockBanCacheGet).toHaveBeenCalledWith('12345');
+      expect(mockBanLogsGet).toHaveBeenCalledWith('12345');
+    });
+
+    it('stringifies ObjectId user keys in Redis-prefixed cache lookups', async () => {
+      process.env.USE_REDIS = 'true';
+
+      await checkBan(createReq({ user: { _id: objectId } }), createRes(), jest.fn());
+
+      expect(mockBanCacheGet).toHaveBeenCalledWith(`ban_cache:user:${objectIdHex}`);
+      expect(mockBanLogsGet).toHaveBeenCalledWith(objectIdHex);
+    });
+
+    it('stringifies ObjectId user keys from email lookup', async () => {
+      findUser.mockResolvedValueOnce({ _id: objectId });
+      const req = createReq({ user: null, body: { email: 'oauth@example.com' } });
+
+      await checkBan(req, createRes(), jest.fn());
+
+      expect(mockBanCacheGet).toHaveBeenCalledWith(objectIdHex);
+      expect(mockBanLogsGet).toHaveBeenCalledWith(objectIdHex);
+    });
+  });
+
   describe('Redis key paths (Finding 2 regression)', () => {
     beforeEach(() => {
       process.env.USE_REDIS = 'true';

@@ -108,18 +108,26 @@ function Harness() {
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <DragDropWrapper>
-          <ChatForm index={0} />
+          <ChatForm
+            index={0}
+            isLandingPage={false}
+            footerBelow={false}
+            centerFormOnLanding={false}
+          />
         </DragDropWrapper>
       </ChatContext.Provider>
     </ChatFormProvider>
   );
 }
 
-function renderComposer() {
+function renderComposer({ legacyUploadUX = false }: { legacyUploadUX?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  queryClient.setQueryData([QueryKeys.fileConfig], {});
+  queryClient.setQueryData(
+    [QueryKeys.fileConfig],
+    legacyUploadUX ? { legacyFileUploadUX: true } : {},
+  );
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
@@ -157,6 +165,10 @@ const pasteImage = (textarea: HTMLElement) => {
  * trigger to return focus to when it closes and used to leave focus on
  * `document.body` — which reads to the user as "the send button is enabled but
  * Enter does nothing", since Enter-to-send is a textarea key handler.
+ *
+ * The dialog only exists on a `legacyFileUploadUX` endpoint. Unified upload routes
+ * a pasted file straight to its destination, so these render in legacy mode and the
+ * unified path is covered separately below.
  */
 describe('composer focus after a pasted upload', () => {
   beforeEach(() => {
@@ -172,7 +184,7 @@ describe('composer focus after a pasted upload', () => {
   });
 
   test('returns focus to the composer when the upload dialog closes', async () => {
-    renderComposer();
+    renderComposer({ legacyUploadUX: true });
 
     const textarea = await screen.findByTestId('text-input');
     await userEvent.click(textarea);
@@ -189,7 +201,7 @@ describe('composer focus after a pasted upload', () => {
   }, 20000);
 
   test('Enter still sends after a pasted upload, with no further typing', async () => {
-    renderComposer();
+    renderComposer({ legacyUploadUX: true });
 
     const textarea = await screen.findByTestId('text-input');
     await userEvent.click(textarea);
@@ -204,6 +216,59 @@ describe('composer focus after a pasted upload', () => {
 
     /** Straight to the keyboard: clicking or typing first would restore focus
      * on its own and hide the regression this covers. */
+    fireEvent.keyDown(document.activeElement as Element, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => expect(mockAsk).toHaveBeenCalled());
+    expect(mockAsk.mock.calls[0][0]).toEqual(expect.objectContaining({ text: 'hi' }));
+  }, 20000);
+});
+
+/**
+ * Unified upload routes a pasted file to its destination without raising the chooser,
+ * so the dialog that used to steal focus never opens. The user-facing contract is the
+ * same either way: the composer keeps focus and Enter still sends.
+ */
+describe('composer focus after a pasted upload in unified mode', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    global.URL.createObjectURL = jest.fn(() => 'blob:preview');
+    global.URL.revokeObjectURL = jest.fn();
+    (global as unknown as { Image: unknown }).Image = StubImage;
+    mockUpload.mockReset();
+    mockAsk.mockReset();
+    mockUpload.mockImplementation((body: FormData) =>
+      Promise.resolve({ ...uploadResponse, temp_file_id: body.get('file_id') as string }),
+    );
+  });
+
+  test('uploads without a destination dialog and leaves focus in the composer', async () => {
+    renderComposer();
+
+    const textarea = await screen.findByTestId('text-input');
+    await userEvent.click(textarea);
+    await userEvent.type(textarea, 'hi');
+    expect(textarea).toHaveFocus();
+
+    pasteImage(textarea);
+
+    await waitFor(() => expect(mockUpload).toHaveBeenCalled());
+    expect(screen.queryAllByRole('button', { name: /upload/i })).toHaveLength(0);
+    expect(textarea).toHaveFocus();
+  }, 20000);
+
+  test('Enter still sends after a pasted upload, with no further typing', async () => {
+    renderComposer();
+
+    const textarea = await screen.findByTestId('text-input');
+    await userEvent.click(textarea);
+    await userEvent.type(textarea, 'hi');
+
+    pasteImage(textarea);
+    await waitFor(() => expect(mockUpload).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('send-button')).toBeEnabled());
+
+    /** Straight to the keyboard, as above: any click or keystroke first would restore
+     * focus on its own and hide a regression. */
     fireEvent.keyDown(document.activeElement as Element, { key: 'Enter', code: 'Enter' });
 
     await waitFor(() => expect(mockAsk).toHaveBeenCalled());

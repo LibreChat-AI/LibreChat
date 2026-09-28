@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
-import { ContentTypes, stripReasoningLabelMetadata } from 'librechat-data-provider';
 import { useUpdateMessageContentMutation } from 'librechat-data-provider/react-query';
-import type { TMessageContentParts, TextData } from 'librechat-data-provider';
+import {
+  ContentTypes,
+  findMessageById,
+  stripReasoningLabelMetadata,
+} from 'librechat-data-provider';
+import type { TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { useMessagesConversation, useMessagesOperations } from '~/Providers';
-import { splitMarkdownIntoBlocks } from './splitMarkdown';
+import { getPartText, isEditablePart, withPartText } from './editableParts';
+import { findRerunParent } from './rerunParent';
 import { useGetAddedConvo } from '~/hooks/Chat';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -30,41 +35,6 @@ type EditContentPartsProps = {
   siblingIdx: number | null;
   setSiblingIdx: (value: number) => void;
   renderReadOnlyPart: (part: TMessageContentParts, index: number, isLastPart: boolean) => ReactNode;
-};
-
-/** An editable part holds either a bare string or a `{ value, annotations }` object,
- *  which is how the Assistants thread sync stores a response that carries file
- *  citations. Both the read and the write below go through this, so an edit lands in
- *  the same shape it was read from. */
-const getPartValue = (part: TMessageContentParts): string | TextData => {
-  if (part.type === ContentTypes.TEXT) {
-    return part.text;
-  }
-  if (part.type === ContentTypes.THINK) {
-    return part.think;
-  }
-  return undefined;
-};
-
-const getPartText = (part: TMessageContentParts): string | undefined => {
-  const value = getPartValue(part);
-  return typeof value === 'string' ? value : value?.value;
-};
-
-const withPartText = (part: TMessageContentParts, text: string): string | TextData => {
-  const value = getPartValue(part);
-  return value != null && typeof value === 'object' ? { ...value, value: text } : text;
-};
-
-const containsArtifact = (text: string): boolean => {
-  if (!text.includes('artifact')) {
-    return false;
-  }
-  try {
-    return splitMarkdownIntoBlocks(text).some((block) => block.artifactCount > 0);
-  } catch {
-    return false;
-  }
 };
 
 export default function EditContentParts({
@@ -92,20 +62,17 @@ export default function EditContentParts({
   const editableParts = useMemo<EditablePart[]>(() => {
     const result: EditablePart[] = [];
     content.forEach((part, localIndex) => {
-      if (!part || (part.type !== ContentTypes.TEXT && part.type !== ContentTypes.THINK)) {
-        return;
-      }
-      if (part.type === ContentTypes.TEXT && part.tool_call_ids != null) {
+      if (!part || !isEditablePart(part)) {
         return;
       }
       const original = getPartText(part);
-      if (original == null || containsArtifact(original)) {
+      if (original == null) {
         return;
       }
       result.push({
         index: localIndex + contentIndexOffset,
         localIndex,
-        type: part.type,
+        type: part.type as EditableType,
         original,
       });
     });
@@ -132,9 +99,20 @@ export default function EditContentParts({
     () => changedParts.some((part) => (drafts[part.index] ?? '').trim() === ''),
     [changedParts, drafts],
   );
-  const editedMessage = getMessages()?.find((item) => item.messageId === messageId);
-  const rerunRequiresSave = editedMessage?.isCreatedByUser !== true && changedParts.length > 1;
+  const editedMessage = findMessageById(getMessages(), messageId);
   const isBusy = isSubmitting || isSaving;
+  /** A rerun replays the parent as the turn's user message, so a model turn with no
+   *  user turn behind it — chained onto another model turn, or left at the root by an
+   *  import — has none. The action is withheld rather than offered and silently
+   *  refused, the footer says why, and Save still applies. */
+  const canRerun =
+    editedMessage?.isCreatedByUser === true ||
+    findRerunParent(getMessages(), editedMessage?.parentMessageId) != null;
+  /** Only meaningful while a rerun is on offer: it explains why this one is held
+   *  back until the edits are saved. A save-only editor reports unsaved changes
+   *  instead of an unavailable action's precondition. */
+  const rerunRequiresSave =
+    canRerun && editedMessage?.isCreatedByUser !== true && changedParts.length > 1;
 
   useEffect(() => {
     const editor = firstEditorRef.current;
@@ -271,9 +249,9 @@ export default function EditContentParts({
           },
         ) === false;
     } else {
-      const parentMessage = messages?.find(
-        (item) => item.messageId === editedMessage.parentMessageId,
-      );
+      /** The same resolution the withheld button is gated on, so a rendered Rerun and
+       *  the submission it runs cannot disagree about the turn being replayed. */
+      const parentMessage = findRerunParent(messages, editedMessage.parentMessageId);
       if (!parentMessage) {
         return;
       }
@@ -355,7 +333,7 @@ export default function EditContentParts({
         enterEdit(true);
         return;
       }
-      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      if (canRerun && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         updateAndRerun();
         return;
@@ -365,11 +343,13 @@ export default function EditContentParts({
         void saveChanges();
       }
     },
-    [enterEdit, saveChanges, updateAndRerun],
+    [canRerun, enterEdit, saveChanges, updateAndRerun],
   );
 
-  /** Both states share the footer's status slot so neither can add a row and
-   *  shift the message below it. */
+  /** Every state shares the footer's one status slot so none can add a row and
+   *  shift the message below it, which orders them by how actionable they are:
+   *  a blocked or pending save first, then why the footer offers no rerun — the
+   *  question a Save-only editor otherwise leaves unanswered. */
   const getStatusMessage = () => {
     if (hasBlankEdit) {
       return localize('com_ui_message_part_empty');
@@ -379,6 +359,9 @@ export default function EditContentParts({
     }
     if (changedParts.length > 0) {
       return localize('com_ui_unsaved_changes');
+    }
+    if (!canRerun) {
+      return localize('com_ui_rerun_needs_user_turn');
     }
     return '';
   };
@@ -426,7 +409,11 @@ export default function EditContentParts({
                 }
                 onKeyDown={handleKeyDown}
                 aria-label={`${localize('com_ui_editable_message')}: ${label}`}
-                aria-keyshortcuts="Control+Enter Meta+Enter Control+S Meta+S Escape"
+                aria-keyshortcuts={
+                  canRerun
+                    ? 'Control+Enter Meta+Enter Control+S Meta+S Escape'
+                    : 'Control+S Meta+S Escape'
+                }
                 disabled={isBusy}
                 minRows={3}
                 dir={isRTL ? 'rtl' : 'ltr'}
@@ -466,14 +453,16 @@ export default function EditContentParts({
           >
             {isSaving ? localize('com_ui_saving') : localize('com_ui_save')}
           </Button>
-          <Button
-            size="sm"
-            variant="submit"
-            onClick={updateAndRerun}
-            disabled={rerunRequiresSave || hasBlankEdit || isBusy}
-          >
-            {changedParts.length > 0 ? localize('com_ui_update_rerun') : localize('com_ui_rerun')}
-          </Button>
+          {canRerun && (
+            <Button
+              size="sm"
+              variant="submit"
+              onClick={updateAndRerun}
+              disabled={rerunRequiresSave || hasBlankEdit || isBusy}
+            >
+              {changedParts.length > 0 ? localize('com_ui_update_rerun') : localize('com_ui_rerun')}
+            </Button>
+          )}
         </div>
       </footer>
     </section>

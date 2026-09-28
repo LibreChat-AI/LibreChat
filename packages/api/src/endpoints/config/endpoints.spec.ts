@@ -177,6 +177,32 @@ describe('createEndpointsConfigService', () => {
       expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
     });
 
+    it.each([true, false])(
+      'exposes file sharing policy to the agent builder when enabled=%s',
+      async (enabled) => {
+        const fileSharing = {
+          enabled,
+          allowSiblingSharing: false,
+          maxFiles: 100,
+          ttlMs: 3_600_000,
+        };
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(
+              appConfig({ endpoints: { [EModelEndpoint.agents]: { fileSharing } } }),
+            ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]?.fileSharing).toEqual(fileSharing);
+      },
+    );
+
     it('exposes the deployment stateful environment allowlist', async () => {
       const deps = createMockDeps({
         loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
@@ -186,6 +212,7 @@ describe('createEndpointsConfigService', () => {
           appConfig({
             endpoints: {
               [EModelEndpoint.agents]: {
+                toolApproval: { enabled: false },
                 statefulCodeSessions: {
                   allowedEnvironments: ['user', 'agent-user'],
                   environments: [
@@ -219,6 +246,8 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
         allowedEnvironments: ['user', 'agent-user'],
+        approvalsEnabled: false,
+        approvalModes: [],
         environments: [
           {
             id: 'attached-vm',
@@ -270,8 +299,43 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
         allowedEnvironments: ['user'],
+        approvalsEnabled: true,
+        approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
         environments: [],
       });
+    });
+
+    it.each([
+      [{ enabled: true }, ['ask']],
+      [{ enabled: true, mode: 'default' }, ['ask']],
+      [{ enabled: true, mode: 'dontAsk' }, ['ask']],
+      [{ enabled: true, mode: 'bypass' }, ['ask', 'acceptEdits', 'fullAccess']],
+    ])('exposes approval modes allowed by endpoint policy %p', async (toolApproval, expected) => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval,
+                statefulCodeSessions: {
+                  allowedEnvironments: ['user'],
+                  environments: [],
+                },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions?.approvalModes).toEqual(
+        expected,
+      );
     });
 
     it('merges bedrock availableRegions', async () => {

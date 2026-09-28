@@ -1288,17 +1288,21 @@ describe('emitChunk durability (Redis-mode chunk log)', () => {
     const store = new InMemoryJobStore({ ttlAfterComplete: 60000 });
     const transport = new InMemoryEventTransport();
     const redisModeManager = buildRedisModeManager(store, transport);
+    let subscription: Awaited<ReturnType<typeof redisModeManager.subscribe>> | undefined;
     try {
       const streamId = 'steer-fire-and-forget';
       const job = await redisModeManager.createJob(streamId, 'user-1');
+      subscription = await redisModeManager.subscribe(streamId, () => undefined);
 
-      // Never resolves: the per-delta hot path must not gate on durability.
+      // After subscriber admission, the per-delta hot path must not gate on durability.
+      // Pre-admission events intentionally await the append so recovery cannot miss them.
       jest.spyOn(store, 'appendChunk').mockReturnValue(new Promise<boolean>(() => undefined));
       const publishSpy = jest.spyOn(transport, 'emitChunk');
 
       await redisModeManager.emitChunk(streamId, steerEvent);
       expect(publishSpy).toHaveBeenCalledWith(streamId, steerEvent, job.createdAt);
     } finally {
+      subscription?.unsubscribe();
       await redisModeManager.destroy();
     }
   });

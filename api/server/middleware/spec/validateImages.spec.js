@@ -311,13 +311,11 @@ describe('validateImageRequest middleware', () => {
       expect(next).toHaveBeenCalled();
       expect(getAssistant).toHaveBeenCalledWith(
         {
-          'avatar.filepath': {
-            $in: [
-              '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png',
-              '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png?manual=false',
-              '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png?manual=true',
-            ],
-          },
+          avatarFilepath: [
+            '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png',
+            '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png?manual=false',
+            '/images/65cfb246f7ecadb8b1e8036c/assistant-avatar.png?manual=true',
+          ],
         },
         { _id: 1, assistant_id: 1, endpoint: 1 },
       );

@@ -65,6 +65,75 @@ describe('MCP tools-changed dispatch', () => {
     );
   });
 
+  it('keeps catalog headers and request overrides in the server identity', () => {
+    const declared: ParsedServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { 'X-Workspace': 'catalog-1' },
+      requestHeaders: { 'X-Workspace': 'chat' },
+    };
+    const generation = getMCPAppToolsPublicationGeneration(declared);
+    expect(
+      getMCPAppToolsPublicationGeneration({
+        ...declared,
+        headers: { 'X-Workspace': 'catalog-2' },
+      }),
+    ).not.toBe(generation);
+    expect(
+      getMCPAppToolsPublicationGeneration({
+        ...declared,
+        requestHeaders: { 'X-Workspace': 'chat-2' },
+      }),
+    ).not.toBe(generation);
+    expect(
+      getMCPAppToolsPublicationGeneration({
+        ...declared,
+        headers: { 'X-Workspace': 'chat' },
+        requestHeaders: undefined,
+      }),
+    ).not.toBe(generation);
+  });
+
+  it('rotates the declared identity when a chat override of the catalog API key changes', () => {
+    const config: ParsedServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com',
+      source: 'yaml',
+      apiKey: { source: 'admin', authorization_type: 'bearer', key: 'catalog' },
+      requestHeaders: { Authorization: 'Bearer chat-one' },
+    };
+    expect(getMCPAppToolsPublicationGeneration(config)).not.toBe(
+      getMCPAppToolsPublicationGeneration({
+        ...config,
+        requestHeaders: { Authorization: 'Bearer chat-two' },
+      }),
+    );
+  });
+
+  it('includes request-header environment changes without mutating the declaration', () => {
+    const variable = 'MCP_REQUEST_HEADER_GENERATION_TEST';
+    const original = process.env[variable];
+    const config: ParsedServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com',
+      source: 'yaml',
+      requestHeaders: { 'X-Workspace': `\${${variable}}` },
+    };
+    try {
+      process.env[variable] = 'first';
+      const first = getMCPAppToolsPublicationGeneration(config);
+      process.env[variable] = 'second';
+      expect(getMCPAppToolsPublicationGeneration(config)).not.toBe(first);
+      expect(config.requestHeaders).toEqual({ 'X-Workspace': `\${${variable}}` });
+    } finally {
+      if (original === undefined) {
+        delete process.env[variable];
+      } else {
+        process.env[variable] = original;
+      }
+    }
+  });
+
   it('includes the resolved runtime environment in app publication generations', () => {
     const variable = 'LIBRECHAT_MCP_CATALOG_ORIGIN_TEST';
     const original = process.env[variable];

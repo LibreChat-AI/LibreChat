@@ -2,12 +2,16 @@ import { logger } from '@librechat/data-schemas';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { SkillsScope, isEphemeralAgentId, resolveAgentSkillsScope } from 'librechat-data-provider';
 import { formatSkillCatalog, SkillToolDefinition, ReadFileToolDefinition } from '@librechat/agents';
+import type {
+  Agent,
+  CodeWorkspaceOperation,
+  CodeWorkspaceDescriptor,
+} from 'librechat-data-provider';
 import type { LCToolRegistry, LCTool, InjectedMessage } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
-import type { Agent } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
+import { getSkillToolDefinition, isSkillToolAvailable, registerCodeExecutionTools } from './tools';
 import { createSkillContentDigest } from './compatibility';
-import { registerCodeExecutionTools } from './tools';
 import { logAxiosError } from '~/utils';
 
 /**
@@ -95,10 +99,12 @@ const MAX_CATALOG_PAGES = 10;
 /** Page size used when paginating to fill the active-skill quota. */
 const CATALOG_PAGE_SIZE = 100;
 /**
- * Per-entry description cap applied by `formatSkillCatalog` before the
- * catalog is injected into agent context. `@librechat/agents` truncates
- * silently, so this mirrors the default so we can warn when authors' skill
- * descriptions will not reach the model verbatim.
+ * Per-entry description cap requested of `formatSkillCatalog`, mirroring the
+ * SDK default. It is a ceiling, not a guarantee: `@librechat/agents` applies
+ * it first, then truncates further — proportionally against its own context
+ * budget, and finally to names-only — so a description well under this cap
+ * can still be cut. Delivered length is measured from the emitted catalog
+ * rather than assumed from this value.
  */
 const SKILL_CATALOG_MAX_ENTRY_CHARS = 250;
 /** Hard ceiling on skill names a model spec can request by config. */
@@ -428,6 +434,13 @@ export interface InjectSkillCatalogParams {
   codeEnvAvailable?: boolean;
   /** When true, bash_tool registers with the hedged stateful-session description. */
   statefulSessions?: boolean;
+  /** When true, read_file exposes the attached worker's workspace namespace. */
+  workspaceTools?: boolean;
+  /** Live operation ceiling for the selected attached workspace. */
+  workspaceOperations?: ReadonlySet<CodeWorkspaceOperation>;
+  /** Deployment ceiling advertised on attached Bash tool definitions. */
+  workspaceCommandTimeoutMaxMs?: number;
+  workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** Current user ID — used to determine skill ownership for active-state resolution. */
   userId?: string;
   /** Per-user skill overrides: `{ [skillId]: boolean }`. Missing entries use the default. */
@@ -436,6 +449,12 @@ export interface InjectSkillCatalogParams {
   defaultActiveOnShare?: boolean;
   /** Admin-configured cap on the model-visible catalog. Defaults to 100. */
   maxCatalogSkills?: number;
+  /**
+   * When true, the model may author skills this run, so the `skill` tool
+   * registers even with an empty catalog and its guidance accepts a name the
+   * model creates mid-run. See `isSkillToolAvailable`.
+   */
+  skillAuthoringAvailable?: boolean;
   /** Read-only catalog snapshot preloaded for current-policy inspection. */
   resolvedCatalog?: ResolvedSkillCatalog;
 }
@@ -583,6 +602,54 @@ export async function resolveSkillCatalog(
   };
 }
 
+/** Filler used to build the measurement probe; never reaches the model. */
+const CATALOG_PROBE_CHAR = 'x';
+
+/**
+ * How much of each skill's description reaches the model, aligned to `skills`.
+ *
+ * Measured on a probe rather than on the real catalog. Every decision in
+ * `formatSkillCatalog`'s truncation ladder reads description `.length` and
+ * never description content, so formatting same-length filler reproduces the
+ * real cuts exactly — while guaranteeing the output can be parsed, since
+ * filler carries no newline and no entry marker and skill names are validated
+ * to `^[a-z0-9][a-z0-9-]*$`.
+ *
+ * The real catalog cannot be measured: a description may contain newlines, so
+ * an entry is not one line; duplicate names share a rendering; and truncation
+ * can splice one entry's tail onto the next, so even a whole-entry match can
+ * be satisfied by text the model never received as that entry.
+ */
+function measureCatalogDescriptions(
+  skills: Array<{ name: string; description: string }>,
+  options: Parameters<typeof formatSkillCatalog>[1],
+): number[] {
+  const probe = formatSkillCatalog(
+    skills.map((s) => ({
+      name: s.name,
+      description: CATALOG_PROBE_CHAR.repeat(s.description.length),
+    })),
+    options,
+  );
+  const delivered = new Array<number>(skills.length).fill(0);
+  let index = 0;
+  for (const line of probe.split('\n')) {
+    if (index >= skills.length) {
+      break;
+    }
+    const prefix = `- ${skills[index].name}`;
+    if (line === prefix) {
+      index++;
+      continue;
+    }
+    if (line.startsWith(`${prefix}: `)) {
+      delivered[index] = line.length - prefix.length - 2;
+      index++;
+    }
+  }
+  return delivered;
+}
+
 /**
  * Queries accessible skills, formats a budget-aware catalog, appends it to the
  * agent's additional_instructions, and registers the SkillTool definition.
@@ -606,11 +673,16 @@ export async function injectSkillCatalog(
     listSkillsByAccess,
     codeEnvAvailable,
     statefulSessions,
+    workspaceTools,
+    workspaceOperations,
+    workspaceCommandTimeoutMaxMs,
+    workspaceEnvironment,
     userId,
     skillStates,
     defaultActiveOnShare = false,
     maxCatalogSkills,
     resolvedCatalog,
+    skillAuthoringAvailable = false,
   } = params;
   const { activeSkills, catalogLimit, visibleCount, reachedEnd } =
     resolvedCatalog ??
@@ -623,7 +695,14 @@ export async function injectSkillCatalog(
       maxCatalogSkills,
     }));
 
-  if (activeSkills.length === 0) {
+  /**
+   * Nothing to catalog and nothing the model could author: skip registration
+   * entirely rather than spend description tokens on tools with no targets.
+   * Authoring runs fall through — the `skill` tool still registers below so a
+   * skill created mid-run is invocable, and `read_file` stays available for
+   * its bundled files.
+   */
+  if (activeSkills.length === 0 && !skillAuthoringAvailable) {
     return {
       toolDefinitions: inputDefs,
       skillCount: 0,
@@ -687,43 +766,53 @@ export async function injectSkillCatalog(
   /**
    * Catalog text is gated on the visible subset — `disable-model-invocation`
    * skills cost zero context tokens. When no visible skills exist, the
-   * model gets no catalog and the `skill` tool is omitted from the
-   * registry (registering it would burn description tokens for a tool
-   * the model has no targets for). `read_file` and `bash_tool` are still
+   * model gets no catalog, and the `skill` tool is omitted from the
+   * registry unless this run can author one (registering it otherwise
+   * would burn description tokens for a tool the model has no targets
+   * for). `read_file` and `bash_tool` are still
    * registered though: manually-primed disabled skills can have their
    * SKILL.md body in context referring to `references/*` and `scripts/*`,
    * and those reads would otherwise be impossible.
    */
   if (catalogVisibleSkills.length > 0) {
-    for (const s of catalogVisibleSkills) {
-      if (s.description.length > SKILL_CATALOG_MAX_ENTRY_CHARS) {
-        logger.warn(
-          `[injectSkillCatalog] skill "${s.name}" description truncated to ${SKILL_CATALOG_MAX_ENTRY_CHARS} chars for the model catalog (was ${s.description.length})`,
-        );
-      }
-    }
+    const catalogOptions = {
+      contextWindowTokens: contextWindowTokens || 200_000,
+      maxEntryChars: SKILL_CATALOG_MAX_ENTRY_CHARS,
+    };
     const catalog = formatSkillCatalog(
       catalogVisibleSkills.map((s) => ({ name: s.name, description: s.description })),
-      {
-        contextWindowTokens: contextWindowTokens || 200_000,
-        maxEntryChars: SKILL_CATALOG_MAX_ENTRY_CHARS,
-      },
+      catalogOptions,
     );
     if (catalog) {
+      const delivered = measureCatalogDescriptions(catalogVisibleSkills, catalogOptions);
+      for (let i = 0; i < catalogVisibleSkills.length; i++) {
+        const s = catalogVisibleSkills[i];
+        const reached = delivered[i];
+        if (reached >= s.description.length) {
+          continue;
+        }
+        logger.warn(
+          reached === 0
+            ? `[injectSkillCatalog] skill "${s.name}" description was dropped from the model catalog (was ${s.description.length} chars) — the catalog exceeded its context budget`
+            : `[injectSkillCatalog] skill "${s.name}" description reached the model truncated to ${reached} of ${s.description.length} chars`,
+        );
+      }
       agent.additional_instructions = agent.additional_instructions
         ? `${agent.additional_instructions}\n\n${catalog}`
         : catalog;
     }
   }
 
-  const skillToolDef: LCTool = {
-    name: SkillToolDefinition.name,
-    description: SkillToolDefinition.description,
-    parameters: SkillToolDefinition.parameters as unknown as LCTool['parameters'],
-  };
+  const skillToolDef = getSkillToolDefinition(skillAuthoringAvailable);
+  const skillToolAvailable = isSkillToolAvailable({
+    modelInvocableSkillsAvailable: catalogVisibleSkills.length > 0,
+    skillAuthoringAvailable,
+  });
 
   /**
-   * `skill` tool is conditional on having anything for the model to invoke.
+   * `skill` tool is conditional on having anything for the model to invoke —
+   * a catalog-visible skill, or an authoring run where the model can create
+   * one and invoke it in the same conversation.
    * `read_file` + `bash_tool` go through `registerCodeExecutionTools` so
    * a prior registration from `initializeAgent` (for the `execute_code`
    * capability) upgrades to the skill-aware `read_file` definition without
@@ -733,8 +822,22 @@ export async function injectSkillCatalog(
    * `codeEnvAvailable` as before.
    */
   let workingDefs: LCTool[] = [...(inputDefs ?? [])];
-  if (catalogVisibleSkills.length > 0) {
-    workingDefs.push(skillToolDef);
+  if (skillToolAvailable) {
+    /**
+     * Replace rather than skip, so the registry the host handler resolves and
+     * the array the model reads never disagree about which variant is live.
+     * Skipping would leave an earlier catalog-only definition telling an
+     * authoring run's model that a skill it just created is an invalid name —
+     * the exact failure this registration exists to prevent — while the
+     * registry claimed otherwise. Mirrors how `registerCodeExecutionTools`
+     * upgrades a code-only `read_file` in place instead of suppressing it.
+     */
+    const existingIndex = workingDefs.findIndex((def) => def.name === skillToolDef.name);
+    if (existingIndex >= 0) {
+      workingDefs[existingIndex] = skillToolDef;
+    } else {
+      workingDefs.push(skillToolDef);
+    }
     toolRegistry?.set(skillToolDef.name, skillToolDef);
   }
 
@@ -756,13 +859,16 @@ export async function injectSkillCatalog(
     includeBash: codeEnvAvailable === true,
     enableToolOutputReferences: codeEnvAvailable === true,
     statefulSessions: statefulSessions === true,
+    workspaceTools: workspaceTools === true,
+    workspaceOperations,
+    workspaceCommandTimeoutMaxMs,
+    workspaceEnvironment,
   });
   workingDefs = codeExecResult.toolDefinitions;
 
-  const toolNames =
-    catalogVisibleSkills.length > 0
-      ? [skillToolDef.name, ReadFileToolDefinition.name]
-      : [ReadFileToolDefinition.name];
+  const toolNames = skillToolAvailable
+    ? [skillToolDef.name, ReadFileToolDefinition.name]
+    : [ReadFileToolDefinition.name];
 
   return {
     toolDefinitions: workingDefs,

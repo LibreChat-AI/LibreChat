@@ -57,7 +57,7 @@ const validateAndUpdateTool = async ({ req, tool, assistant_id }) => {
   }
   if (!toolNameRegex.test(tool.function.name)) {
     const [functionName, domain] = tool.function.name.split(actionDelimiter);
-    actions = await getActions({ assistant_id, user: req.user.id }, true);
+    actions = await getActions({ assistantId: assistant_id, user: req.user.id }, true);
     const matchingActions = actions.filter((action) => {
       const metadata = action.metadata;
       if (!metadata) {
@@ -157,14 +157,11 @@ async function domainParser(domain, inverse = false) {
 /**
  * Loads action sets based on the user and assistant ID.
  *
- * @param {Object} searchParams - The parameters for loading action sets.
- * @param {string} searchParams.user - The user identifier.
- * @param {string} [searchParams.agent_id]- The agent identifier.
- * @param {string} [searchParams.assistant_id]- The assistant identifier.
+ * @param {import('@librechat/data-schemas').ActionQuery} query - The criteria for loading action sets.
  * @returns {Promise<Action[] | null>} A promise that resolves to an array of actions or `null` if no match.
  */
-async function loadActionSets(searchParams) {
-  return await getActions(searchParams, true);
+async function loadActionSets(query) {
+  return await getActions(query, true);
 }
 
 /**
@@ -513,8 +510,8 @@ async function decryptMetadata(metadata) {
  */
 const deleteAssistantActions = async ({ req, assistant_id }) => {
   try {
-    await deleteActions({ assistant_id, user: req.user.id });
-    await deleteAssistant({ assistant_id, user: req.user.id });
+    await deleteActions({ assistantId: assistant_id, user: req.user.id });
+    await deleteAssistant({ assistantId: assistant_id, user: req.user.id });
   } catch (error) {
     const message = 'Trouble deleting Assistant Actions for Assistant ID: ' + assistant_id;
     logger.error(message, error);

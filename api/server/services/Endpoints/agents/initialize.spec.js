@@ -14,6 +14,11 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const mockInitializeAgent = jest.fn();
 const mockValidateAgentModel = jest.fn();
+const mockGetAppConfig = jest.fn();
+jest.mock('~/server/services/Config', () => ({
+  ...jest.requireActual('~/server/services/Config'),
+  getAppConfig: (...args) => mockGetAppConfig(...args),
+}));
 
 function deferred() {
   let resolve;
@@ -64,12 +69,8 @@ jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn(),
   loadToolsForExecution: (...args) => mockLoadToolsForExecution(...args),
   getAccessibleMcpServerNames: (...args) => mockGetAccessibleMcpServerNames(...args),
-  isFatalAgentInitializationError: (error) =>
-    [
-      'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
-      'resource_recovery_required',
-      'stateful_code_environment_not_allowed',
-    ].includes(error?.code),
+  isFatalAgentInitializationError:
+    jest.requireActual('@librechat/api').isFatalAgentInitializationError,
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
@@ -92,7 +93,7 @@ jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
 
-const { initializeClient } = require('./initialize');
+const { createInitializeClient, initializeClient } = require('./initialize');
 const { processAddedConvo } = require('./addedConvo');
 const { getSkillDbMethods, getSkillToolDeps } = require('./skillDeps');
 const { loadAgentTools } = require('~/server/services/ToolService');
@@ -176,6 +177,79 @@ describe('initializeClient — processAgent ACL gate', () => {
     },
   });
 
+  it.each([false, true])('defers host credential resolution with restored=%s', async (restored) => {
+    const upstreamTokenProvider = jest.fn();
+    const resolveUpstreamTokenProvider = jest.fn().mockResolvedValue(upstreamTokenProvider);
+    const hostInitializeClient = createInitializeClient({ resolveUpstreamTokenProvider });
+    const req = makeReq();
+    req._isScheduledFire = true;
+    req._isAgentTrigger = !restored;
+    req.body.agent_id = PRIMARY_ID;
+    req.body.agentTrigger = {
+      version: 1,
+      event: {
+        type: 'schedule.occurrence',
+        occurredAt: 0,
+        source: { type: 'schedule', id: 'sched-1' },
+      },
+    };
+    const signal = new AbortController().signal;
+    mockInitializeAgent.mockImplementationOnce(async ({ loadTools, agent }) => {
+      await loadTools({
+        tools: ['run_query_mcp_warehouse'],
+        model: agent.model,
+        agentId: agent.id,
+        provider: agent.provider,
+      });
+      return makePrimaryConfig([]);
+    });
+
+    await hostInitializeClient({
+      req,
+      res: {},
+      signal,
+      scheduledTokenContext: restored
+        ? {
+            scheduleId: 'sched-1',
+            ownerId: req.user.id,
+            agentId: PRIMARY_ID,
+            invocationMode: 'delegated',
+          }
+        : undefined,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(resolveUpstreamTokenProvider).not.toHaveBeenCalled();
+    const toolLoadParams = loadAgentTools.mock.calls[0][0];
+    expect(toolLoadParams.upstreamTokenProvider).toBeUndefined();
+    const resolver = toolLoadParams.upstreamTokenProviderResolver;
+    await expect(resolver({ signal })).resolves.toBe(upstreamTokenProvider);
+    expect(resolveUpstreamTokenProvider).toHaveBeenCalledWith(req.user, {
+      signal,
+      context: {
+        scheduleId: 'sched-1',
+        ownerId: req.user.id,
+        agentId: PRIMARY_ID,
+        invocationMode: 'delegated',
+      },
+    });
+  });
+
+  it('keeps interactive agent initialization independent of the host resolver', async () => {
+    const resolveUpstreamTokenProvider = jest.fn();
+    const hostInitializeClient = createInitializeClient({ resolveUpstreamTokenProvider });
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+
+    await hostInitializeClient({
+      req: makeReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(resolveUpstreamTokenProvider).not.toHaveBeenCalled();
+  });
+
   it('replaces untrusted artifact route metadata with the executing agent context', async () => {
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
 
@@ -230,6 +304,9 @@ describe('initializeClient — processAgent ACL gate', () => {
         jobCreatedAt: 1234,
       }),
     );
+    expect(
+      require('~/server/controllers/agents/callbacks').createBackgroundCodeResultHandler,
+    ).toHaveBeenCalledWith(expect.objectContaining({ jobCreatedAt: 1234 }));
     expect(createToolEndCallback).toHaveBeenCalledWith(
       expect.objectContaining({
         streamId: 'conv_1',
@@ -299,11 +376,85 @@ describe('initializeClient — processAgent ACL gate', () => {
     });
   });
 
+  it('binds foreground tool execution to the host-owned run signal', async () => {
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+    const controller = new AbortController();
+    const req = makeReq();
+    req.body.messageId = 'user-message-1';
+
+    await initializeClient({
+      req,
+      res: {},
+      signal: controller.signal,
+      endpointOption: makeEndpointOption(),
+      foregroundRunId: 'response-1',
+      requestBody: { messageId: 'response-1', conversationId: 'conv_1' },
+    });
+
+    expect(capturedToolExecuteOptions.runSignal).toBe(controller.signal);
+    expect(capturedToolExecuteOptions.foregroundRunId).toBe('response-1');
+  });
+
+  it('threads the deployment ordinary-tool cancellation gate into execution', async () => {
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+    const disabledReq = makeReq();
+
+    await initializeClient({
+      req: disabledReq,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+    expect(capturedToolExecuteOptions.ordinaryToolCancellation).toBe(false);
+    expect(capturedToolExecuteOptions.backgroundCompletionResultMaxChars).toBeUndefined();
+
+    const enabledReq = makeReq();
+    enabledReq.config.endpoints.agents = {
+      backgroundTasks: { ordinaryToolCancellation: true, completionResultMaxChars: 4096 },
+    };
+    await initializeClient({
+      req: enabledReq,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+    expect(capturedToolExecuteOptions.ordinaryToolCancellation).toBe(true);
+    expect(capturedToolExecuteOptions.backgroundCompletionResultMaxChars).toBe(4096);
+  });
+
   it('propagates an expected-MCP-tools failure from the runtime tool loader', async () => {
     const toolError = Object.assign(new Error('Expected MCP tools are unavailable'), {
       code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
       statusCode: 503,
     });
+    loadAgentTools.mockRejectedValueOnce(toolError);
+    mockInitializeAgent.mockImplementationOnce(async ({ req, res, loadTools, agent }) => {
+      await loadTools({
+        req,
+        res,
+        tools: ['run_query_mcp_warehouse'],
+        model: agent.model,
+        agentId: agent.id,
+        provider: agent.provider,
+      });
+      return makePrimaryConfig([]);
+    });
+
+    await expect(
+      initializeClient({
+        req: makeReq(),
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      }),
+    ).rejects.toBe(toolError);
+  });
+
+  it.each([
+    new (require('@librechat/api').OpenIDReauthRequiredError)('Please sign in again'),
+    new (require('@librechat/api').MCPAuthenticationRejectedError)('private-mcp', false),
+    new (require('@librechat/api').MCPAuthenticationRefreshError)(new Error('Retry later')),
+  ])('preserves credential failure through the runtime agent loader: %s', async (toolError) => {
     loadAgentTools.mockRejectedValueOnce(toolError);
     mockInitializeAgent.mockImplementationOnce(async ({ req, res, loadTools, agent }) => {
       await loadTools({
@@ -846,12 +997,17 @@ describe('initializeClient — subagent loading', () => {
       requestBody,
     });
 
-    expect(mockInitializeAgent.mock.calls[0][0].requestBody).toBe(requestBody);
-    expect(agentClientArgs.mcpRequestBody).toBe(requestBody);
+    const normalizedRequestBody = mockInitializeAgent.mock.calls[0][0].requestBody;
+    expect(normalizedRequestBody).toEqual({
+      ...requestBody,
+      codeEnvironmentMode: 'without_attached',
+      codeWorkspaces: undefined,
+    });
+    expect(agentClientArgs.mcpRequestBody).toBe(normalizedRequestBody);
 
     await capturedToolExecuteOptions.loadTools([], PRIMARY_ID);
     expect(mockLoadToolsForExecution).toHaveBeenCalledWith(
-      expect.objectContaining({ requestBody }),
+      expect.objectContaining({ requestBody: normalizedRequestBody }),
     );
   });
 
@@ -1052,6 +1208,8 @@ describe('initializeClient — subagent loading', () => {
       'read_file',
       'create_file',
       'edit_file',
+      'search_workspace',
+      'list_workspace_files',
     ]);
 
     await expect(
@@ -1408,33 +1566,39 @@ describe('initializeClient — subagent loading', () => {
     const req = makeSubagentReq();
     req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
     req.config.endpoints.agents.statefulCodeSessions = { allowedEnvironments: ['user'] };
+    process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';
+    process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
 
-    await expect(
-      initializeClient({
-        req,
-        res: {},
-        signal: new AbortController().signal,
-        endpointOption: makeEndpointOption(),
-      }),
-    ).rejects.toMatchObject({
-      code: ErrorTypes.STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED,
-    });
+    try {
+      await expect(
+        initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        }),
+      ).rejects.toMatchObject({
+        code: ErrorTypes.STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED,
+      });
 
-    expect(agentClientArgs).toBeUndefined();
-    expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+      expect(agentClientArgs).toBeUndefined();
+      expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+    } finally {
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+    }
   });
 
-  it('retains a configured Code API route on lazy subagent descriptors', async () => {
+  it('binds a versioned implicit stateful route into lazy subagent metadata', async () => {
     const subAgent = await createAgent({
       id: SUBAGENT_ID,
-      name: 'Attached Stateful Subagent',
+      name: 'Implicit Stateful Subagent',
       provider: 'openai',
       model: 'gpt-4',
       author: new mongoose.Types.ObjectId(),
       tools: ['execute_code'],
       stateful_code_sessions: true,
-      stateful_code_environment: 'agent-user',
-      code_environment_id: 'attached-vm',
+      stateful_code_environment: 'user',
     });
     await grantView(subAgent);
     mockInitializeAgent.mockResolvedValue(
@@ -1443,40 +1607,219 @@ describe('initializeClient — subagent loading', () => {
       }),
     );
     const req = makeSubagentReq();
+    req.body.codeEnvironmentMode = 'without_attached';
     req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
-    req.config.endpoints.agents.statefulCodeSessions = {
-      allowedEnvironments: ['agent-user'],
-      environments: [
-        {
-          id: 'attached-vm',
-          name: 'Attached VM',
-          type: 'attached',
-          baseURL: 'https://bridge.example.com/v1/',
-          default: true,
-        },
-      ],
-    };
+    req.config.endpoints.agents.statefulCodeSessions = { allowedEnvironments: ['user'] };
+    process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';
+    process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
 
-    await initializeClient({
-      req,
-      res: {},
-      signal: new AbortController().signal,
-      endpointOption: makeEndpointOption(),
-    });
+    try {
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
 
-    expect(agentClientArgs.agent.lazySubagentConfigs[0]).toEqual(
-      expect.objectContaining({
-        codeSessionKey: expect.stringMatching(/^execute_code:stateful:[a-f0-9]{32}:v3:/),
-        codeExecutionContext: expect.objectContaining({
-          baseUrl: 'https://bridge.example.com/v1',
-          environmentId: 'attached-vm',
-          environmentType: 'attached',
-          executionProfile: 'stateful',
-          executionRouteKey: expect.stringMatching(/^stateful:[a-f0-9]{32}$/),
+      expect(agentClientArgs.agent.lazySubagentConfigs[0]).toEqual(
+        expect.objectContaining({
+          codeExecutionContext: expect.objectContaining({
+            baseUrl: 'https://stateful-code.example.com/v1',
+            executionProfile: 'stateful',
+            statefulSessions: true,
+          }),
         }),
-      }),
-    );
+      );
+    } finally {
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+    }
   });
+
+  it.each([
+    [true, 'request', false],
+    [false, 'request', false],
+    [true, 'fallback', false],
+    [true, 'override', false],
+    [true, 'override-resolved', false],
+    [true, 'resolved', false],
+    [true, 'moved', true],
+    [false, 'resolved-null', false],
+    [true, 'resolved-null', true],
+    [false, 'other-owner', false],
+  ])(
+    'validates the lazy subagent workspace before exposure: registered=%s source=%s moves=%s',
+    async (registered, source, movesEnabled) => {
+      const subAgent = await createAgent({
+        id: SUBAGENT_ID,
+        name: 'Attached Stateful Subagent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        stateful_code_environment: 'agent-user',
+        code_environment_id: 'attached-vm',
+      });
+      await grantView(subAgent);
+      mockInitializeAgent.mockResolvedValue(
+        makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+        }),
+      );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
+      req.config.endpoints.agents.statefulCodeSessions = {
+        allowedEnvironments: ['agent-user'],
+        conversationMoves: { enabled: movesEnabled },
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            owner: 'deployment',
+            pairing: { workerId: 'lazy-worker', tokenEnv: 'TEST_LAZY_WORKSPACE_TOKEN' },
+            baseURL: 'https://bridge.example.com/v1/',
+            default: true,
+          },
+        ],
+      };
+      req.body.codeWorkspaces = [{ environmentId: 'attached-vm', workspaceId: 'project-b' }];
+      if (source === 'request' && !registered) {
+        req.body.codeWorkspaces[0].workspaceId = 'removed-project';
+      }
+      let requestBody;
+      if (source !== 'request') {
+        const conversation = await mongoose.model('Conversation').create({
+          conversationId: req.body.conversationId,
+          endpoint: 'agents',
+          user: source === 'other-owner' ? new mongoose.Types.ObjectId().toString() : req.user.id,
+          codeWorkspaces: req.body.codeWorkspaces,
+        });
+        delete req.body.codeWorkspaces;
+        if (source === 'moved') {
+          req.resolvedConversation = {
+            ...conversation.toObject(),
+            codeWorkspaces: [{ environmentId: 'old-machine', workspaceId: 'old-project' }],
+          };
+        } else if (source === 'resolved') req.resolvedConversation = conversation.toObject();
+        else if (source !== 'resolved-null') delete req.resolvedConversation;
+        if (source.startsWith('override')) {
+          conversation.codeWorkspaces = [
+            { environmentId: 'attached-vm', workspaceId: 'wrong-source' },
+          ];
+          await conversation.save();
+          if (source === 'override-resolved') req.resolvedConversation = conversation.toObject();
+          requestBody = { ...req.body, conversationId: 'effective-target' };
+          await mongoose.model('Conversation').create({
+            conversationId: requestBody.conversationId,
+            endpoint: 'agents',
+            user: req.user.id,
+            codeWorkspaces: [{ environmentId: 'attached-vm', workspaceId: 'project-b' }],
+          });
+        }
+      }
+      mockGetAppConfig.mockResolvedValue(req.config);
+      process.env.TEST_LAZY_WORKSPACE_TOKEN = 'test-token';
+      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            workerId: 'lazy-worker',
+            online: true,
+            ready: true,
+            leaseExpiresInMs: 45000,
+            capabilities: {
+              statefulWorkspace: true,
+              sandboxProfile: 'native-srt',
+              runtimes: ['bash'],
+              workspaceTools: {
+                protocolVersion: 1,
+                operations: ['read_file'],
+                workspaces: [{ id: 'project-b' }],
+              },
+            },
+          }),
+        ),
+      );
+      const readSpy = jest.spyOn(db, 'readAdmittedConvoCodeEnvironmentDecision');
+      try {
+        const initialization = initializeClient({
+          req,
+          requestBody,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        const defaultsWithoutAttached =
+          source === 'other-owner' || (source === 'resolved-null' && !movesEnabled);
+        if (!registered && !defaultsWithoutAttached) {
+          await expect(initialization).rejects.toMatchObject({
+            code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
+          });
+          expect(agentClientArgs).toBeUndefined();
+          return;
+        }
+        await initialization;
+        if (movesEnabled)
+          expect(readSpy).toHaveBeenCalledWith(
+            req.user.id,
+            requestBody?.conversationId ?? req.body.conversationId,
+          );
+        else expect(readSpy).not.toHaveBeenCalled();
+        if (defaultsWithoutAttached) {
+          expect(fetchSpy).not.toHaveBeenCalled();
+          expect(agentClientArgs.mcpRequestBody).toEqual(
+            expect.objectContaining({ codeEnvironmentMode: 'without_attached' }),
+          );
+          return;
+        }
+        if (source === 'fallback' || source.startsWith('override')) {
+          mockInitializeAgent.mockImplementationOnce(async (params) => {
+            expect(params.req.resolvedConversation.codeWorkspaces).toEqual([
+              { environmentId: 'attached-vm', workspaceId: 'project-b' },
+            ]);
+            await params.loadTools({ ...subAgent, agentId: SUBAGENT_ID });
+            return makeSubagentConfig(SUBAGENT_ID);
+          });
+          await agentClientArgs.agent.lazySubagentConfigs[0].resolve({
+            signal: new AbortController().signal,
+          });
+          expect(loadAgentTools).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+              req: expect.objectContaining({
+                resolvedConversation: expect.objectContaining({
+                  codeWorkspaces: [{ environmentId: 'attached-vm', workspaceId: 'project-b' }],
+                }),
+              }),
+            }),
+          );
+        }
+      } finally {
+        fetchSpy.mockRestore();
+        readSpy.mockRestore();
+        delete process.env.TEST_LAZY_WORKSPACE_TOKEN;
+      }
+
+      expect(agentClientArgs.agent.lazySubagentConfigs[0]).toEqual(
+        expect.objectContaining({
+          codeSessionKey: expect.stringMatching(/^execute_code:stateful:[a-f0-9]{32}:v3:/),
+          codeExecutionContext: expect.objectContaining({
+            baseUrl: 'https://bridge.example.com/v1',
+            environmentId: 'attached-vm',
+            environmentType: 'attached',
+            codeWorkspace: {
+              environmentId: 'attached-vm',
+              workspaceId: 'project-b',
+              operations: ['read_file'],
+            },
+            executionProfile: 'stateful',
+            executionRouteKey: expect.stringMatching(/^stateful:[a-f0-9]{32}$/),
+          }),
+        }),
+      );
+    },
+  );
 
   it('omits a descriptor when its metadata lookup fails without aborting the primary run', async () => {
     const primaryConfig = makePrimaryConfig({
@@ -1861,6 +2204,19 @@ describe('initializeClient — subagent loading', () => {
       'tool_intents',
       'stateful_code_sessions',
     );
+    req.config.endpoints.agents.statefulCodeSessions = {
+      allowedEnvironments: ['user'],
+      environments: [
+        {
+          id: 'managed-code',
+          name: 'Managed code',
+          type: 'managed',
+          baseURL: 'https://stateful-code.example.com/v1',
+          default: true,
+        },
+      ],
+    };
+    mockGetAppConfig.mockResolvedValue(req.config);
     const { userMCPAuthMap } = await initializeClient({
       req,
       res: {},

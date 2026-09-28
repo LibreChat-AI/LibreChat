@@ -8,7 +8,7 @@ import {
   runAsSystem,
   tenantStorage,
 } from '@librechat/data-schemas';
-import type { IAgent, IAssistant, SystemCapability } from '@librechat/data-schemas';
+import type { IAgent, IAssistant, AssistantQuery, SystemCapability } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { FilterQuery, ProjectionType, Types } from 'mongoose';
 
@@ -72,7 +72,7 @@ export interface ImageAuthorizationDeps {
     projection?: ProjectionType<IAgent>,
   ) => Promise<Pick<IAgent, '_id'> | null>;
   getAssistant: (
-    query: FilterQuery<IAssistant>,
+    query: AssistantQuery,
     projection?: ProjectionType<IAssistant>,
   ) => Promise<AssistantImageRecord | null>;
   getImageConfig?: (params: { userId: string; user: ImageUser }) => Promise<{
@@ -334,7 +334,7 @@ async function canViewAssistantAvatar(
   deps: ImageAuthorizationDeps,
 ): Promise<boolean> {
   const assistant = await deps.getAssistant(
-    { 'avatar.filepath': { $in: getStoredPathCandidates(imagePath.canonicalPath) } },
+    { avatarFilepath: getStoredPathCandidates(imagePath.canonicalPath) },
     { _id: 1, assistant_id: 1, endpoint: 1 },
   );
   if (!assistant) {

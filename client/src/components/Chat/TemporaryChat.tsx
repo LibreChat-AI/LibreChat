@@ -1,4 +1,4 @@
-import { MessageCircleDashed } from 'lucide-react';
+import { HatGlasses } from 'lucide-react';
 import { Chip, TooltipAnchor } from '@librechat/client';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
@@ -32,7 +32,7 @@ export function TemporaryChat() {
                 : 'bg-presentation shadow-sm hover:bg-surface-active-alt',
             )}
           >
-            <MessageCircleDashed className="icon-md" aria-hidden="true" />
+            <HatGlasses className="icon-md" aria-hidden="true" />
           </button>
         }
       />
@@ -59,7 +59,7 @@ export function TemporaryChatIndicator() {
       size="theme"
       shape="theme"
       className="flex-shrink-0"
-      leading={<MessageCircleDashed className="size-4 shrink-0" aria-hidden="true" />}
+      leading={<HatGlasses className="size-4 shrink-0" aria-hidden="true" />}
     >
       <span className="max-md:sr-only">{localize('com_ui_temporary')}</span>
     </Chip>

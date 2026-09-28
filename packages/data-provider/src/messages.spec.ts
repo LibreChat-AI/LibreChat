@@ -1,7 +1,9 @@
+import type { SummaryContentPart } from './types/content';
 import type { ParentMessage } from './messages';
 import type { TFile } from './types/files';
 import type { TMessage } from './types';
-import { buildTree } from './messages';
+import { buildTree, findMessageById, isCompactedLeaf, isUserInitiatedCompaction } from './messages';
+import { ContentTypes } from './types/runs';
 
 const msg = (messageId: string, parentMessageId: string, over: Partial<TMessage> = {}): TMessage =>
   ({
@@ -194,5 +196,94 @@ describe('buildTree', () => {
       expect(buildTree({ messages, fileMap: fileMapA })).not.toBe(treeA);
       expect(buildTree({ messages })).toBe(bare);
     });
+  });
+});
+
+describe('isCompactedLeaf', () => {
+  const summary = (overrides: Record<string, unknown> = {}) => ({
+    type: ContentTypes.SUMMARY,
+    content: [{ type: ContentTypes.TEXT, text: 'checkpoint' }],
+    boundary: { messageId: 'step_summary', contentIndex: 0 },
+    ...overrides,
+  });
+
+  it('is true for a bare, finished summary', () => {
+    expect(isCompactedLeaf({ content: [summary()] } as TMessage)).toBe(true);
+  });
+
+  it.each([
+    ['no content', undefined],
+    ['empty content', []],
+    ['a summary next to text', [summary(), { type: ContentTypes.TEXT, text: 'reply' }]],
+    ['a summary still streaming', [summary({ summarizing: true })]],
+    ['a failed summary', [summary({ failed: true })]],
+    ['a streamed summary that never recorded a boundary', [summary({ boundary: undefined })]],
+    ['an empty summary', [summary({ content: [] })]],
+  ])('is false for %s', (_label, content) => {
+    expect(isCompactedLeaf({ content } as TMessage)).toBe(false);
+  });
+});
+
+describe('findMessageById', () => {
+  const thread = () => [
+    msg('u1', '00000000-0000-0000-0000-000000000000', { isCreatedByUser: true }),
+    msg('a1', 'u1'),
+  ];
+
+  it('resolves a message by id and reports a missing one', () => {
+    const messages = thread();
+    expect(findMessageById(messages, 'a1')).toBe(messages[1]);
+    expect(findMessageById(messages, 'absent')).toBeUndefined();
+    expect(findMessageById(messages, null)).toBeUndefined();
+    expect(findMessageById(null, 'a1')).toBeUndefined();
+  });
+
+  /** The index is memoized per array identity, and a cache write replaces the
+   *  array. Answering a later lookup from the previous array's rows would hand
+   *  the caller a message the thread no longer holds. */
+  it('answers from the array it was given, not from a previous one', () => {
+    const before = thread();
+    expect(findMessageById(before, 'a1')).toBe(before[1]);
+
+    const edited = { ...before[1], text: 'edited' };
+    const after = [before[0], edited];
+
+    expect(findMessageById(after, 'a1')).toBe(edited);
+    expect(findMessageById(before, 'a1')).toBe(before[1]);
+  });
+});
+
+describe('isUserInitiatedCompaction', () => {
+  const summary = (overrides: Partial<SummaryContentPart> = {}): SummaryContentPart => ({
+    type: ContentTypes.SUMMARY,
+    content: [{ type: ContentTypes.TEXT, text: 'checkpoint' }],
+    ...overrides,
+  });
+
+  it('is true for the summary a Compact action produced', () => {
+    expect(
+      isUserInitiatedCompaction({ content: [summary({ initiatedBy: 'user' })] } as TMessage),
+    ).toBe(true);
+  });
+
+  /** A compaction that produced no summary marks its error part instead: that
+   *  turn is still a compaction, whatever it hangs off. */
+  it('is true for the failure a compaction recorded instead of a summary', () => {
+    expect(
+      isUserInitiatedCompaction({
+        content: [{ type: ContentTypes.ERROR, error: 'failed', initiatedBy: 'user' }],
+      } as TMessage),
+    ).toBe(true);
+  });
+
+  /** An automatic summary detour carries no marker: that turn answers a user
+   *  message and stays rerunnable. */
+  it.each([
+    ['an unmarked summary', [summary()]],
+    ['an unmarked error part', [{ type: ContentTypes.ERROR, error: 'failed' }]],
+    ['a plain answer', [{ type: ContentTypes.TEXT, text: 'reply' }]],
+    ['no content', undefined],
+  ])('is false for %s', (_label, content) => {
+    expect(isUserInitiatedCompaction({ content } as TMessage)).toBe(false);
   });
 });

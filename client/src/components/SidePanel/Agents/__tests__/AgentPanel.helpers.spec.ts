@@ -1,8 +1,12 @@
 /**
  * @jest-environment jsdom
  */
-import { Constants, type Agent } from 'librechat-data-provider';
-import type { AgentModelParameters } from 'librechat-data-provider';
+import { Constants, EModelEndpoint, type Agent } from 'librechat-data-provider';
+import type {
+  AgentCreateParams,
+  AgentUpdateParams,
+  AgentModelParameters,
+} from 'librechat-data-provider';
 import type { FieldNamesMarkedBoolean } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import {
@@ -12,6 +16,13 @@ import {
   hasPersistedDirtyFields,
   mayHavePersistedChange,
 } from '../AgentPanel';
+
+test('the create identity contract excludes the update-only clear sentinel', () => {
+  const createAcceptsNull: null extends AgentCreateParams['git_identity'] ? true : false = false;
+  const updateAcceptsNull: null extends AgentUpdateParams['git_identity'] ? true : false = true;
+  expect(createAcceptsNull).toBe(false);
+  expect(updateAcceptsNull).toBe(true);
+});
 
 const createForm = (): AgentForm => ({
   agent: undefined,
@@ -160,6 +171,45 @@ describe('composeAgentUpdatePayload', () => {
     expect(payload.code_environment_id).toBeUndefined();
   });
 
+  it('normalizes a configured Git identity', () => {
+    const form = createForm();
+    form.git_identity = { name: '  Coding Agent  ', email: '  agent@example.com  ' };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.git_identity).toEqual({
+      name: 'Coding Agent',
+      email: 'agent@example.com',
+    });
+  });
+
+  it('clears an empty Git identity when updating an agent', () => {
+    const form = createForm();
+    form.git_identity = { name: '', email: '' };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.git_identity).toBeNull();
+  });
+
+  it('does not turn a partially filled Git identity into a clear operation', () => {
+    const form = createForm();
+    form.git_identity = { name: 'Coding Agent', email: '' };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.git_identity).toEqual({ name: 'Coding Agent', email: '' });
+  });
+
+  it('omits an empty Git identity when creating an agent', () => {
+    const form = createForm();
+    form.git_identity = { name: '', email: '' };
+
+    const { payload } = composeAgentUpdatePayload(form);
+
+    expect(payload.git_identity).toBeUndefined();
+  });
+
   it('persists standalone skill authoring separately from catalog access', () => {
     const form = createForm();
     form.skills = [];
@@ -170,6 +220,67 @@ describe('composeAgentUpdatePayload', () => {
 
     expect(payload.skills_enabled).toBe(false);
     expect(payload.skill_authoring_enabled).toBe(true);
+  });
+
+  it.each([
+    [EModelEndpoint.anthropic, 'claude-opus-5-5'],
+    [EModelEndpoint.bedrock, 'global.anthropic.claude-opus-5-5'],
+  ])(
+    'preserves model-hidden %s settings when saving without opening the model panel',
+    (provider, model) => {
+      const form = createForm();
+      form.provider = provider;
+      form.model = model;
+      const stored = {
+        maxContextTokens: null,
+        max_context_tokens: null,
+        max_output_tokens: null,
+        top_p: null,
+        frequency_penalty: null,
+        presence_penalty: null,
+        thinking: false,
+        thinkingBudget: 4096,
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+      };
+      form.model_parameters = stored;
+      const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
+        endpointsConfig: {},
+        startupConfig: {},
+      });
+      expect(payload.model_parameters).toEqual(form.model_parameters);
+      expect(JSON.parse(JSON.stringify(payload)).model_parameters).toEqual(form.model_parameters);
+    },
+  );
+
+  it('prunes dropped model parameters during submission', () => {
+    const form = createForm();
+    form.provider = EModelEndpoint.openAI;
+    form.model_parameters.model = 'deployment-override';
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
+      endpointsConfig: {},
+      startupConfig: {
+        endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },
+      },
+    });
+
+    expect(payload.model_parameters?.temperature).toBe(1);
+    expect(payload.model_parameters?.top_p).toBeUndefined();
+    expect(payload.model_parameters?.model).toBe('deployment-override');
+  });
+
+  it('preserves model parameters during submission when the provider schema is unknown', () => {
+    const form = createForm();
+    form.provider = 'removed-provider';
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
+      endpointsConfig: {},
+      startupConfig: {},
+    });
+
+    expect(payload.model_parameters).toEqual(form.model_parameters);
   });
 });
 

@@ -1,5 +1,6 @@
 import { normalizeServerName } from 'librechat-data-provider';
 import type { Connection, Types } from 'mongoose';
+import { buildIndexWithRetry } from '~/utils/retry';
 
 interface MCPServerNameRow {
   _id: Types.ObjectId;
@@ -96,13 +97,17 @@ export async function backfillMCPServerNormalizedNames(
     // eslint-disable-next-line no-restricted-syntax -- offline all-tenant migration intentionally bypasses request tenant scoping
     await collection.bulkWrite(updates, { ordered: true });
   }
-  await collection.createIndex(
-    { normalizedServerName: 1, tenantId: 1 },
-    {
-      name: 'normalizedServerName_1_tenantId_1',
-      unique: true,
-      partialFilterExpression: { normalizedServerName: { $exists: true } },
-    },
+  await buildIndexWithRetry(
+    () =>
+      collection.createIndex(
+        { normalizedServerName: 1, tenantId: 1 },
+        {
+          name: 'normalizedServerName_1_tenantId_1',
+          unique: true,
+          partialFilterExpression: { normalizedServerName: { $exists: true } },
+        },
+      ),
+    'createIndex(normalizedServerName_1_tenantId_1)',
   );
   return { scanned, updated };
 }

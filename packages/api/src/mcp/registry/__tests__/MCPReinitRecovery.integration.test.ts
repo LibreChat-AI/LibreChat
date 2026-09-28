@@ -28,6 +28,7 @@ import type { Socket } from 'net';
 import type * as t from '~/mcp/types';
 import { registryStatusCache } from '~/mcp/registry/cache/RegistryStatusCache';
 import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
+import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPInspectionFailedError } from '~/mcp/errors';
@@ -36,6 +37,7 @@ import { MCPConnection } from '~/mcp/connection';
 import { MCPManager } from '~/mcp/MCPManager';
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual<typeof import('@librechat/data-schemas')>('@librechat/data-schemas'),
   logger: {
     info: jest.fn(),
     warn: jest.fn(),
@@ -107,6 +109,22 @@ async function safeDisconnect(conn: MCPConnection | null): Promise<void> {
   await conn.disconnect();
 }
 
+function makeUser(): IUser {
+  return {
+    _id: new Types.ObjectId(),
+    id: new Types.ObjectId().toString(),
+    username: 'testuser',
+    email: 'test@example.com',
+    name: 'Test',
+    avatar: '',
+    provider: 'email',
+    role: 'user',
+    emailVerified: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as IUser;
+}
+
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -135,6 +153,43 @@ interface TestServer {
   url: string;
   port: number;
   close: () => Promise<void>;
+}
+
+/**
+ * Lets the first inspection run and holds every later one until released, so a test can connect
+ * to the first recovery before a second inspection would write.
+ */
+function holdLaterInspections(): {
+  firstStarted: Promise<void>;
+  release: () => void;
+  calls: () => number;
+} {
+  const inspect = MCPServerInspector.inspect.bind(MCPServerInspector);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => {
+    markFirstStarted = resolve;
+  });
+  const spy = jest
+    .spyOn(MCPServerInspector, 'inspect')
+    .mockImplementation(async (...args: Parameters<typeof MCPServerInspector.inspect>) => {
+      if (spy.mock.calls.length === 1) {
+        markFirstStarted();
+      } else {
+        await released;
+      }
+      return inspect(...args);
+    });
+  return { firstStarted, release, calls: () => spy.mock.calls.length };
+}
+
+interface ReinitOutcome {
+  success: boolean;
+  /** Tool count from a complete snapshot; `null` when the snapshot was incomplete */
+  tools: number | null;
 }
 
 async function createMCPServerOnPort(port: number): Promise<TestServer> {
@@ -335,7 +390,7 @@ describe('MCP reinitialize recovery – integration (issue #12143)', () => {
     expect(config2!.inspectionFailed).toBe(true);
   });
 
-  it('concurrent reinspectServer calls should not crash or corrupt state', async () => {
+  it('concurrent reinspectServer calls share one inspection and all recover', async () => {
     const deadPort = await getFreePort();
     await MCPServersInitializer.initialize({
       'race-server': {
@@ -346,34 +401,25 @@ describe('MCP reinitialize recovery – integration (issue #12143)', () => {
     expect((await registry.getServerConfig('race-server'))!.inspectionFailed).toBe(true);
 
     server = await createMCPServerOnPort(deadPort);
+    const inspectSpy = jest.spyOn(MCPServerInspector, 'inspect');
 
     // Simulate multiple users clicking Reinitialize at the same time.
-    // reinitMCPServer calls reinspectServer internally — this tests the critical section.
-    const n = 3 + Math.floor(Math.random() * 8); // 3–10 concurrent calls
-    const results = await Promise.allSettled(
-      Array.from({ length: n }, () => registry.reinspectServer('race-server', 'CACHE')),
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => registry.reinspectServer('race-server', 'CACHE')),
     );
 
-    const successes = results.filter((r) => r.status === 'fulfilled');
-    const failures = results.filter((r) => r.status === 'rejected');
-
-    // At least one must succeed
-    expect(successes.length).toBeGreaterThanOrEqual(1);
-
-    // Any failure must be the "not in a failed state" guard (the first call already
-    // replaced the stub), not an unhandled crash or data corruption.
-    for (const f of failures) {
-      expect((f as PromiseRejectedResult).reason.message).toMatch(/not in a failed state/);
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+    for (const result of results) {
+      expect(result.config).toEqual(results[0].config);
     }
 
-    // Final state must be fully recovered regardless of how many succeeded
     const config = await registry.getServerConfig('race-server');
-    expect(config).toBeDefined();
+    expect(config).toEqual(results[0].config);
     expect(config!.inspectionFailed).toBeUndefined();
     expect(config!.tools).toContain('echo');
   });
 
-  it('concurrent reinitMCPServer-equivalent flows should not crash or corrupt state', async () => {
+  it('concurrent reinitMCPServer-equivalent flows all connect with the recovered tools', async () => {
     const deadPort = await getFreePort();
     const serverName = 'concurrent-reinit';
     const configs: t.MCPServers = {
@@ -396,35 +442,18 @@ describe('MCP reinitialize recovery – integration (issue #12143)', () => {
     server = await createMCPServerOnPort(deadPort);
 
     const flowManager = new FlowStateManager<null>(new Keyv(), { ttl: 60_000 });
-    const makeUser = (): IUser =>
-      ({
-        _id: new Types.ObjectId(),
-        id: new Types.ObjectId().toString(),
-        username: 'testuser',
-        email: 'test@example.com',
-        name: 'Test',
-        avatar: '',
-        provider: 'email',
-        role: 'user',
-        emailVerified: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }) as IUser;
 
     /**
-     * Replicate reinitMCPServer logic: check inspectionFailed → reinspect → getConnection.
+     * Replicate reinitMCPServer logic: recover a failed config → getConnection → tools snapshot.
      * Each call uses a distinct user to simulate concurrent requests from different users.
      */
-    async function simulateReinitMCPServer(): Promise<{ success: boolean; tools: number }> {
+    async function simulateReinitMCPServer(): Promise<ReinitOutcome> {
       const user = makeUser();
-      const config = await registry.getServerConfig(serverName, user.id);
+      let config = await registry.getServerConfig(serverName, user.id);
       if (config?.inspectionFailed) {
-        try {
-          const storageLocation = config.dbId ? 'DB' : 'CACHE';
-          await registry.reinspectServer(serverName, storageLocation, user.id);
-        } catch {
-          // Mirrors reinitMCPServer early return on failed reinspection
-          return { success: false, tools: 0 };
+        config = await registry.recoverServerConfig(serverName, config, user.id);
+        if (!config) {
+          return { success: false, tools: null };
         }
       }
 
@@ -433,42 +462,167 @@ describe('MCP reinitialize recovery – integration (issue #12143)', () => {
         user,
         flowManager,
         forceNew: true,
+        serverConfig: config,
       });
 
-      const tools = await connection.fetchTools();
-      return { success: true, tools: tools.length };
+      const snapshot = await connection.fetchToolsSnapshot();
+      return { success: true, tools: snapshot.complete ? snapshot.tools.length : null };
     }
 
-    const n = 3 + Math.floor(Math.random() * 5); // 3–7 concurrent calls
-    const results = await Promise.allSettled(
-      Array.from({ length: n }, () => simulateReinitMCPServer()),
-    );
+    const results = await Promise.all(Array.from({ length: 5 }, () => simulateReinitMCPServer()));
 
-    // All promises should resolve (no unhandled throws)
-    for (const r of results) {
-      expect(r.status).toBe('fulfilled');
-    }
-
-    const values = (results as PromiseFulfilledResult<{ success: boolean; tools: number }>[]).map(
-      (r) => r.value,
-    );
-
-    // At least one full reinit must succeed with tools
-    const succeeded = values.filter((v) => v.success);
-    expect(succeeded.length).toBeGreaterThanOrEqual(1);
-    for (const s of succeeded) {
-      expect(s.tools).toBe(2);
-    }
-
-    // Any that returned success: false hit the reinspect guard — that's fine
-    const earlyReturned = values.filter((v) => !v.success);
-    expect(earlyReturned.every((v) => v.tools === 0)).toBe(true);
+    // One recovery is written before any flow connects, so no connection is replaced mid-snapshot
+    expect(results).toEqual(Array.from({ length: 5 }, () => ({ success: true, tools: 2 })));
 
     // Final registry state must be fully recovered
     const finalConfig = await registry.getServerConfig(serverName);
     expect(finalConfig).toBeDefined();
     expect(finalConfig!.inspectionFailed).toBeUndefined();
     expect(finalConfig!.tools).toContain('echo');
+  });
+
+  it('reports an incomplete tool snapshot when a newer config replaces the held app connection', async () => {
+    const deadPort = await getFreePort();
+    const serverName = 'replaced-connection';
+    (MCPManager as unknown as { instance: null }).instance = null;
+    await MCPManager.createInstance({
+      [serverName]: { type: 'streamable-http', url: `http://127.0.0.1:${deadPort}/` },
+    });
+    const mcpManager = MCPManager.getInstance();
+    server = await createMCPServerOnPort(deadPort);
+    const flowManager = new FlowStateManager<null>(new Keyv(), { ttl: 60_000 });
+
+    const firstUser = makeUser();
+    await registry.reinspectServer(serverName, 'CACHE', firstUser.id);
+    const held = await mcpManager.getConnection({ serverName, user: firstUser, flowManager });
+
+    // What an admin edit does: store a newer config
+    await registry.updateServer(serverName, { type: 'streamable-http', url: server.url }, 'CACHE');
+    const replacement = await mcpManager.getConnection({
+      serverName,
+      user: makeUser(),
+      flowManager,
+    });
+    expect(replacement).not.toBe(held);
+
+    // reinitMCPServer keeps cached tools for an incomplete snapshot; a complete empty one would
+    // publish an empty catalog
+    await expect(held.fetchToolsSnapshot()).resolves.toMatchObject({ complete: false, tools: [] });
+    const current = await replacement.fetchToolsSnapshot();
+    expect(current.complete).toBe(true);
+    expect(current.tools.map((tool) => tool.name).sort()).toEqual(['echo', 'greet']);
+  });
+
+  it('keeps a connection made after recovery current when another request reinspects mid-flight', async () => {
+    const serverName = 'mid-flight-reinspection';
+    server = await createMCPServerOnPort(await getFreePort());
+    (MCPManager as unknown as { instance: null }).instance = null;
+    const mcpManager = await MCPManager.createInstance({});
+    await registry.addServerStub(serverName, { type: 'streamable-http', url: server.url }, 'CACHE');
+    const flowManager = new FlowStateManager<null>(new Keyv(), { ttl: 60_000 });
+    const inspections = holdLaterInspections();
+
+    const first = registry.reinspectServer(serverName, 'CACHE');
+    await inspections.firstStarted;
+    const second = registry.reinspectServer(serverName, 'CACHE');
+    const firstResult = await first;
+    const recoveredConnection = await mcpManager.getConnection({
+      serverName,
+      user: makeUser(),
+      flowManager,
+    });
+
+    inspections.release();
+    const secondResult = await second;
+    const laterConnection = await mcpManager.getConnection({
+      serverName,
+      user: makeUser(),
+      flowManager,
+    });
+    const stored = await registry.getServerConfig(serverName);
+    const snapshot = await recoveredConnection.fetchToolsSnapshot();
+
+    expect(inspections.calls()).toBe(1);
+    expect(secondResult.config).toEqual(firstResult.config);
+    expect(stored).toEqual(firstResult.config);
+    expect(recoveredConnection.isStale(stored!.updatedAt!)).toBe(false);
+    expect(laterConnection).toBe(recoveredConnection);
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.tools.map((tool) => tool.name).sort()).toEqual(['echo', 'greet']);
+  });
+
+  it('keeps the first recovery when a reinspection under other allowlists finishes later', async () => {
+    const serverName = 'allowlist-reinspection';
+    (MCPServersRegistry as unknown as { instance: undefined }).instance = undefined;
+    registry = MCPServersRegistry.createInstance(
+      mockMongoose,
+      ['127.0.0.1'],
+      undefined,
+      async (ctx) => ({
+        allowedDomains: ctx?.userId === 'user-b' ? ['127.0.0.1', 'localhost'] : ['127.0.0.1'],
+        allowedAddresses: null,
+      }),
+    );
+    server = await createMCPServerOnPort(await getFreePort());
+    (MCPManager as unknown as { instance: null }).instance = null;
+    const mcpManager = await MCPManager.createInstance({});
+    await registry.addServerStub(serverName, { type: 'streamable-http', url: server.url }, 'CACHE');
+    const flowManager = new FlowStateManager<null>(new Keyv(), { ttl: 60_000 });
+    const inspections = holdLaterInspections();
+
+    const first = registry.reinspectServer(serverName, 'CACHE', 'user-a');
+    await inspections.firstStarted;
+    const second = registry.reinspectServer(serverName, 'CACHE', 'user-b');
+    const firstResult = await first;
+    const recoveredConnection = await mcpManager.getConnection({
+      serverName,
+      user: makeUser(),
+      flowManager,
+    });
+
+    inspections.release();
+    const secondResult = await second;
+    const laterConnection = await mcpManager.getConnection({
+      serverName,
+      user: makeUser(),
+      flowManager,
+    });
+    const snapshot = await recoveredConnection.fetchToolsSnapshot();
+
+    expect(inspections.calls()).toBe(2);
+    expect(secondResult.config).toEqual(firstResult.config);
+    await expect(registry.getServerConfig(serverName)).resolves.toEqual(firstResult.config);
+    expect(laterConnection).toBe(recoveredConnection);
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.tools.map((tool) => tool.name).sort()).toEqual(['echo', 'greet']);
+  });
+
+  it('connects a request that read the stub before another request recovered the server', async () => {
+    const serverName = 'stale-stub-reinspection';
+    server = await createMCPServerOnPort(await getFreePort());
+    (MCPManager as unknown as { instance: null }).instance = null;
+    const mcpManager = await MCPManager.createInstance({});
+    await registry.addServerStub(serverName, { type: 'streamable-http', url: server.url }, 'CACHE');
+    const flowManager = new FlowStateManager<null>(new Keyv(), { ttl: 60_000 });
+    const user = makeUser();
+
+    const staleStub = await registry.getServerConfig(serverName, user.id);
+    const { config: recovered } = await registry.reinspectServer(serverName, 'CACHE');
+    const inspectSpy = jest.spyOn(MCPServerInspector, 'inspect');
+    const serverConfig = await registry.recoverServerConfig(serverName, staleStub!, user.id);
+    const connection = await mcpManager.getConnection({
+      serverName,
+      user,
+      flowManager,
+      serverConfig,
+    });
+    const snapshot = await connection.fetchToolsSnapshot();
+
+    expect(staleStub!.inspectionFailed).toBe(true);
+    expect(inspectSpy).not.toHaveBeenCalled();
+    expect(serverConfig).toEqual(recovered);
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.tools.map((tool) => tool.name).sort()).toEqual(['echo', 'greet']);
   });
 
   it('reinspectServer should throw MCPInspectionFailedError when the server is still unreachable', async () => {

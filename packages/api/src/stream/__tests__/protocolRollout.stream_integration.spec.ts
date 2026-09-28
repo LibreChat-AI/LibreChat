@@ -35,8 +35,36 @@ describe('Redis generation protocol rollout bridge', () => {
     expect(legacy.generationProtocolVersion).toBe(1);
     expect(legacy.checkpointNamespace).toBeUndefined();
     expect(current.generationProtocolVersion).toBe(2);
-    expect(current.checkpointNamespace).toBe(String(current.createdAt));
+    expect(current.checkpointNamespace).toEqual(expect.any(String));
+    expect(current.checkpointNamespace).not.toBe(String(current.createdAt));
     expect((await store.getJob(current.streamId))?.generationProtocolVersion).toBe(2);
+  });
+
+  test('same-millisecond cross-owner jobs receive distinct checkpoint scopes', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const first = await store.createJob(
+        'redis-same-ms-a',
+        'owner-a',
+        'shared-conversation',
+        'tenant-a',
+        { providerExecutionId: 'shared-execution' },
+      );
+      const second = await store.createJob(
+        'redis-same-ms-b',
+        'owner-b',
+        'shared-conversation',
+        'tenant-b',
+        { providerExecutionId: 'shared-execution' },
+      );
+
+      expect(first.createdAt).toBe(second.createdAt);
+      expect(first.checkpointNamespace).not.toBe(second.checkpointNamespace);
+      expect(first.checkpointNamespace).toMatch(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/);
+      expect(second.checkpointNamespace).toMatch(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   test('v1 receipt API falls back to a receiptless legacy queue and drain', async () => {

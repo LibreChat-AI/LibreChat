@@ -36,6 +36,20 @@ describe('getLazySubagentConfigId', () => {
     );
   });
 
+  it('changes when the Git author identity changes', () => {
+    expect(
+      getLazySubagentConfigId({
+        ...agent,
+        git_identity: { name: 'First Agent', email: 'first@example.com' },
+      }),
+    ).not.toBe(
+      getLazySubagentConfigId({
+        ...agent,
+        git_identity: { name: 'Second Agent', email: 'second@example.com' },
+      }),
+    );
+  });
+
   it('is stable across key order and excludes secret values', () => {
     const first = getLazySubagentConfigId({
       ...agent,

@@ -29,6 +29,7 @@ jest.mock('./useNewConvo', () => ({
 
 const STORAGE_KEY = 'customKeyboardShortcuts';
 const copyMock = copy as jest.MockedFunction<typeof copy>;
+let queryClient: QueryClient;
 
 function buildConversation(conversationId: string, title: string): TConversation {
   return { conversationId, title, endpoint: 'agents' } as TConversation;
@@ -67,7 +68,7 @@ function renderHarness(
   };
   return render(<Harness />, {
     wrapper: ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={new QueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <RecoilRoot initializeState={initializeState}>
           <MemoryRouter initialEntries={[route]}>{children}</MemoryRouter>
         </RecoilRoot>
@@ -77,12 +78,14 @@ function renderHarness(
 }
 
 beforeEach(() => {
+  queryClient = new QueryClient();
   window.localStorage.clear();
   copyMock.mockClear();
 });
 
 afterEach(() => {
   cleanup();
+  queryClient.clear();
   document.body.replaceChildren();
 });
 

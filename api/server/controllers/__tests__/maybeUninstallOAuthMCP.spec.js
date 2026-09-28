@@ -22,6 +22,7 @@ const mockLoggerError = jest.fn();
 const mockGetTenantId = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: { info: mockLoggerInfo, warn: mockLoggerWarn, error: mockLoggerError },
   getTenantId: (...args) => mockGetTenantId(...args),
   webSearchKeys: [],
@@ -29,6 +30,7 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => {
   return {
+    ...jest.requireActual('@librechat/api'),
     MCPOAuthHandler: {
       revokeOAuthToken: (...args) => mockRevokeOAuthToken(...args),
       deleteFlowAndStateMapping: (...args) => mockDeleteFlowAndStateMapping(...args),
@@ -41,6 +43,8 @@ jest.mock('@librechat/api', () => {
         return tenantId ? `tenant:${encodeURIComponent(tenantId)}:${flowId}` : flowId;
       },
     },
+    isOAuthServer: (config) =>
+      config.requiresOAuth !== false && (config.requiresOAuth || config.oauth != null),
     MCPTokenStorage: {
       getTokens: (...args) => mockGetTokens(...args),
       getClientInfoAndMetadata: (...args) => mockGetClientInfoAndMetadata(...args),
@@ -55,8 +59,8 @@ jest.mock('@librechat/api', () => {
 });
 
 jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
   Tools: {},
-  CacheKeys: { FLOWS: 'flows' },
   Constants: { mcp_delimiter: '::', mcp_prefix: 'mcp_' },
   FileSources: {},
   ResourceType: {},
@@ -65,6 +69,10 @@ jest.mock('librechat-data-provider', () => ({
 jest.mock('~/config', () => ({
   getMCPManager: jest.fn(),
   getFlowStateManager: jest.fn(() => ({
+    acquireLease: jest.fn().mockResolvedValue({
+      generation: 1,
+      release: jest.fn().mockResolvedValue(undefined),
+    }),
     deleteFlow: (...args) => mockDeleteFlow(...args),
   })),
   getMCPServersRegistry: jest.fn(() => ({
@@ -161,6 +169,8 @@ const serverConfig = {
   oauth_headers: { 'X-Tenant': 'acme' },
 };
 
+const parsedServerConfig = { ...serverConfig };
+
 const appConfig = {
   mcpServers: { acme: serverConfig },
 };
@@ -182,6 +192,10 @@ function setupOAuthServerFound() {
   mockGetAllowedDomains.mockReturnValue(['https://acme.example.com']);
   mockGetAllowedAddresses.mockReturnValue(null);
   mockGetClientInfoAndMetadata.mockResolvedValue({ clientInfo, clientMetadata });
+  mockFindToken.mockImplementation(async ({ type }) => ({
+    token: `encrypted-${type}`,
+    metadata: { credential_set_id: credentialSetId },
+  }));
 }
 
 describe('maybeUninstallOAuthMCP', () => {
@@ -234,6 +248,41 @@ describe('maybeUninstallOAuthMCP', () => {
     expect(mockDeleteFlowAndStateMapping).toHaveBeenCalledTimes(1);
   });
 
+  test('scopes metadata-missing cleanup to token records snapshotted before flow cancellation', async () => {
+    setupOAuthServerFound();
+    mockGetClientInfoAndMetadata.mockResolvedValue(null);
+    mockFindToken.mockImplementation(async ({ type }) =>
+      type === 'mcp_oauth' ? { token: 'encrypted-old-access' } : null,
+    );
+    mockDeleteUserTokens.mockImplementation(
+      async ({ userId: ownerId, serverName: name, deleteToken }) => {
+        const identifier = `mcp:${name}`;
+        await deleteToken({
+          userId: ownerId,
+          type: 'mcp_oauth_client',
+          identifier: `${identifier}:client`,
+        });
+        await deleteToken({ userId: ownerId, type: 'mcp_oauth', identifier });
+        await deleteToken({
+          userId: ownerId,
+          type: 'mcp_oauth_refresh',
+          identifier: `${identifier}:refresh`,
+        });
+      },
+    );
+
+    await maybeUninstallOAuthMCP(userId, pluginKey, appConfig);
+
+    expect(mockDeleteTokens).toHaveBeenCalledTimes(1);
+    expect(mockDeleteTokens).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'mcp_oauth',
+        identifier: 'mcp:acme',
+        token: 'encrypted-old-access',
+      }),
+    );
+  });
+
   test('clears stored state when client info cannot be loaded', async () => {
     setupOAuthServerFound();
     mockGetClientInfoAndMetadata.mockRejectedValue(new Error('bad client data'));
@@ -279,7 +328,13 @@ describe('maybeUninstallOAuthMCP', () => {
       credential_set_id: credentialSetId,
     });
     mockRevokeOAuthToken.mockResolvedValue(undefined);
-    mockDeleteUserTokens.mockResolvedValue(undefined);
+    mockFindToken.mockResolvedValue({
+      token: 'encrypted-old-token',
+      metadata: { credential_set_id: credentialSetId },
+    });
+    mockDeleteUserTokens.mockImplementation(async ({ deleteToken }) => {
+      await deleteToken({ userId, type: 'mcp_oauth', identifier: `mcp:${serverName}` });
+    });
     mockDeleteFlow.mockResolvedValue(undefined);
 
     await maybeUninstallOAuthMCP(userId, pluginKey, appConfig);
@@ -292,11 +347,32 @@ describe('maybeUninstallOAuthMCP', () => {
 
     expect(mockDeleteUserTokens).toHaveBeenCalledTimes(1);
     expect(mockDeleteUserTokens.mock.calls[0][0]).toMatchObject({ userId, serverName });
+    expect(mockDeleteTokens).toHaveBeenCalledWith(
+      expect.objectContaining({ token: 'encrypted-old-token' }),
+    );
+    expect(mockDeleteTokens.mock.calls[0][0]).not.toHaveProperty('metadataCredentialSetId');
 
     expect(mockDeleteFlow).toHaveBeenCalledTimes(1);
     expect(mockDeleteFlow.mock.calls[0][1]).toBe('mcp_get_tokens');
     expect(mockDeleteFlowAndStateMapping).toHaveBeenCalledTimes(1);
     expect(mockDeleteFlowAndStateMapping).toHaveBeenCalledWith('user-123:acme', expect.anything());
+  });
+
+  test('uses a retained deleted-server config to revoke before clearing local state', async () => {
+    setupOAuthServerFound();
+    mockGetServerConfig.mockResolvedValue(null);
+    mockGetOAuthServers.mockResolvedValue(new Set());
+    mockGetTokens.mockResolvedValue({
+      access_token: 'access-abc',
+      credential_set_id: credentialSetId,
+    });
+
+    await maybeUninstallOAuthMCP(userId, pluginKey, appConfig, parsedServerConfig);
+
+    expect(mockGetOAuthServers).not.toHaveBeenCalled();
+    expect(mockRevokeOAuthToken).toHaveBeenCalledTimes(1);
+    expect(mockDeleteUserTokens).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFlowAndStateMapping).toHaveBeenCalledTimes(1);
   });
 
   test('does not revoke tokens from a concurrently replaced credential generation', async () => {

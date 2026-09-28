@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import type { IAgentTriggerDeliveryDocument } from '~/types/triggerDelivery';
+import { AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS } from '~/types/triggerDelivery';
 
 const failureSchema = new Schema(
   {
@@ -147,6 +148,38 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
     capabilityClaimToken: { type: String },
     /** Private process-owner heartbeat; never projected to legacy consumers. */
     producerLeaseUntil: { type: Date, select: false },
+    backgroundToolResult: {
+      type: new Schema(
+        {
+          status: {
+            type: String,
+            enum: ['completed', 'error', 'cancelled'],
+            required: true,
+          },
+          output: {
+            type: String,
+            required: true,
+            maxlength: AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS,
+          },
+          settledAt: { type: Date, required: true },
+          resultClaim: {
+            type: new Schema(
+              {
+                kind: { type: String, enum: ['wakeup'], required: true },
+                claimId: { type: String, required: true, maxlength: 128 },
+                claimedAt: { type: Date, required: true },
+              },
+              { _id: false },
+            ),
+            required: false,
+          },
+        },
+        { _id: false },
+      ),
+      select: false,
+    },
+    backgroundToolResultErasedAt: { type: Date, select: false },
+    backgroundToolResultDeletionPendingAt: { type: Date, select: false },
     attempts: { type: Number, required: true, default: 0, min: 0 },
     availableAt: { type: Date, required: true },
     envelopeBytes: { type: Number, min: 0 },
@@ -185,6 +218,7 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
     requeueCount: { type: Number, default: 0, min: 0 },
     stagingRecoveryAt: { type: Date },
     laneCleanupPendingAt: { type: Date },
+    wakeRequestedAt: { type: Date },
   },
   { timestamps: true },
 );
@@ -220,10 +254,24 @@ triggerDeliverySchema.index(
   { sparse: true },
 );
 triggerDeliverySchema.index({ status: 1, updatedAt: -1 });
+/** One user's waiting deliveries, read when that user's generation settles. */
+triggerDeliverySchema.index({ user: 1, status: 1, availableAt: 1 });
+/** Bounded background-result polls by owner, conversation, capability and status. */
+triggerDeliverySchema.index({
+  user: 1,
+  'envelope.event.source.type': 1,
+  'envelope.event.source.id': 1,
+  'envelope.target.conversationId': 1,
+  requiredWorkerCapability: 1,
+  status: 1,
+  updatedAt: -1,
+  _id: -1,
+});
 triggerDeliverySchema.index({ 'actorReceipt.resolution': 1 }, { sparse: true });
 triggerDeliverySchema.index({ user: 1, actorActionAdmittedAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ stagingRecoveryAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ laneCleanupPendingAt: 1 }, { sparse: true });
+triggerDeliverySchema.index({ backgroundToolResultDeletionPendingAt: 1 }, { sparse: true });
 // Only successful rows receive expiresAt. Dead letters remain available until
 // an operator explicitly requeues or removes them.
 triggerDeliverySchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

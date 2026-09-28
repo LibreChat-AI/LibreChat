@@ -72,6 +72,15 @@ describe('resolveEndpointProviderId', () => {
     expect(resolveEndpointProviderId({ name: 'Mistral' })).toBe(ProviderId.mistral);
   });
 
+  it('brands a renamed local Lemonade endpoint without branding other localhost services', () => {
+    const baseURL = 'http://localhost:13305/v1';
+    expect(resolveEndpointProviderId({ name: 'Local GPU', baseURL, iconURL: 'lemonade' })).toBe(
+      ProviderId.lemonade,
+    );
+    expect(resolveEndpointProviderId({ name: 'AMD Lemonade', baseURL })).toBe(ProviderId.lemonade);
+    expect(resolveEndpointProviderId({ name: 'Local GPU', baseURL })).toBeUndefined();
+  });
+
   it('returns undefined for a self-hosted gateway with no signal', () => {
     expect(
       resolveEndpointProviderId({
@@ -97,9 +106,14 @@ describe('resolveEndpointProviderId', () => {
 
   it('carries a host for every provider that one can identify', () => {
     /** Host-unresolvable by nature: bedrock is region-scoped under a shared AWS suffix,
-     *  and mlx and ollama are served from the operator's own machine. Anything else added
+     *  and Lemonade, MLX and Ollama run on operator-defined hosts. Anything else added
      *  to ProviderId without a host silently falls through to the generic mark. */
-    const hostUnresolvable: ProviderId[] = [ProviderId.bedrock, ProviderId.mlx, ProviderId.ollama];
+    const hostUnresolvable: ProviderId[] = [
+      ProviderId.bedrock,
+      ProviderId.lemonade,
+      ProviderId.mlx,
+      ProviderId.ollama,
+    ];
     const covered = new Set(providerHosts.map(([, provider]) => provider));
 
     const missing = Object.values(ProviderId).filter(

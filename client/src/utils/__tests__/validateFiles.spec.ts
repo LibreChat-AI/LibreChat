@@ -57,6 +57,42 @@ describe('validateFiles', () => {
     expect(setError).not.toHaveBeenCalled();
   });
 
+  it('rejects a type outside a restricted endpoint allowlist in unified mode', () => {
+    endpointFileConfig = makeEndpointConfig({
+      supportedMimeTypes: [/^image\/(jpeg|png)$/],
+    });
+    const fileList = [makeFile('notes.txt', 'text/plain', 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: defaultFileConfig,
+    });
+
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith('Unsupported file type: text/plain');
+  });
+
+  it('accepts a type the restricted endpoint allowlist permits in unified mode', () => {
+    endpointFileConfig = makeEndpointConfig({
+      supportedMimeTypes: [/^image\/(jpeg|png)$/],
+    });
+    const fileList = [makeFile('shot.png', 'image/png', 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: defaultFileConfig,
+    });
+
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
   it('rejects when endpoint is disabled', () => {
     endpointFileConfig = makeEndpointConfig({ disabled: true });
     const fileList = [makeFile('doc.pdf', 'application/pdf', 1024)];

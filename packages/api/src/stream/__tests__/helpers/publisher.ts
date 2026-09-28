@@ -76,13 +76,20 @@ export function createMockPublisher(): MockPublisher {
       _expectedGenerationId: string,
       _allowRetainedEpoch: string,
       _generationEpochGraceTtl: string,
+      _requireActiveJob: string,
+      sequenceCount = '1',
+      ...chunkSuffixes: string[]
     ) => {
       if (_numKeys === 1) {
         const frontier = await publisher.get(seqKey);
         await publisher.publish(jobKey, _generationEpochKey);
         return frontier ?? '0';
       }
+      const count = Number(sequenceCount);
       const val = (await publisher.incr(seqKey)) as number;
+      for (let i = 1; i < count; i++) {
+        await publisher.incr(seqKey);
+      }
       let ttl = Number(ttlSeconds);
       const seqTtl = (await publisher.ttl(seqKey)) as number;
       if (seqTtl < Math.floor(ttl / 2)) {
@@ -93,7 +100,13 @@ export function createMockPublisher(): MockPublisher {
         await publisher.expire(seqKey, ttl);
       }
       const seq = val - 1;
-      await publisher.publish(channel, `${prefix}${seq}${suffix}`);
+      if (chunkSuffixes.length > 0) {
+        for (let i = 0; i < count; i++) {
+          await publisher.publish(channel, `${prefix}${seq + i}${chunkSuffixes[i]}`);
+        }
+      } else {
+        await publisher.publish(channel, `${prefix}${seq}${suffix}`);
+      }
       return seq;
     },
   );

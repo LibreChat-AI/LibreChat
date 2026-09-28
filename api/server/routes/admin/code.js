@@ -7,7 +7,10 @@ const { requireJwtAuth } = require('~/server/middleware');
 
 const router = express.Router();
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
-const requireCodeEnvironmentManage = requireCapability(SystemCapabilities.MANAGE_CODE_ENVIRONMENTS);
+const requireCodeEnvironmentManage = requireCapability(
+  SystemCapabilities.MANAGE_CODE_ENVIRONMENTS,
+  { platformOnly: true },
+);
 const handlers = createAdminCodeEnvironmentHandlers({ getAppConfig });
 
 router.use(requireJwtAuth, requireAdminAccess, requireCodeEnvironmentManage);

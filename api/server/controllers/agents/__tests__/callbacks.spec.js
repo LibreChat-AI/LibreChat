@@ -8,6 +8,7 @@ jest.mock('nanoid', () => ({
 jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
   writeAttachmentEvent: jest.fn(),
+  createOwnedToolEndHandler: jest.fn((callback) => ({ handle: callback })),
   GenerationJobManager: {
     emitChunk: jest.fn(),
   },
@@ -21,9 +22,9 @@ jest.mock('@librechat/api', () => ({
         }
       : null,
   ),
-  isCodeSessionToolName: jest.fn((name) =>
-    ['execute_code', 'bash_tool', 'read_file'].includes(name),
-  ),
+  isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
+  isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
+  collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -210,10 +211,17 @@ describe('resumable event generation fencing', () => {
     );
     const contextUsageSink = { latest: null, count: 0, onSnapshot };
     const usageEmitSink = [{ input_tokens: 10 }];
+    /** The call this snapshot already accounts for: a later tool-limit stop counts
+     *  the results of the calls missing from this set. */
+    const contentParts = [
+      { type: 'text', text: 'answering' },
+      { type: 'tool_call', tool_call: { id: 'call_1', name: 'grep' } },
+    ];
     const data = { contextBudget: 1000, remainingContextTokens: 400 };
     const handlers = getDefaultHandlers({
       res: { write: jest.fn() },
       aggregateContent: jest.fn(),
+      contentParts,
       toolEndCallback: jest.fn(),
       collectedUsage: [],
       streamId: 'conversation-1',
@@ -230,7 +238,12 @@ describe('resumable event generation fencing', () => {
       });
     await Promise.resolve();
 
-    expect(contextUsageSink).toMatchObject({ latest: data, count: 1, latestUsageIndex: 1 });
+    expect(contextUsageSink).toMatchObject({
+      latest: data,
+      count: 1,
+      latestUsageIndex: 1,
+      latestToolCallIds: new Set(['call_1']),
+    });
     expect(onSnapshot).toHaveBeenCalledTimes(1);
     expect(settled).toBe(false);
     releaseSnapshot();
@@ -467,6 +480,73 @@ describe('createToolEndCallback', () => {
     };
     artifactPromises = [];
   });
+
+  it('preserves separate owners for final search artifacts with repeated tool-call IDs', async () => {
+    const toolEndCallback = createToolEndCallback({ req, res, artifactPromises });
+    for (const agentId of ['agent-a', 'agent-b']) {
+      await toolEndCallback(
+        {
+          output: {
+            tool_call_id: 'call_0',
+            artifact: {
+              [Tools.web_search]: {
+                turn: 0,
+                organic: [{ link: `https://example.com/${agentId}` }],
+              },
+            },
+          },
+        },
+        { run_id: 'run456', thread_id: 'thread789', agent_id: agentId },
+      );
+    }
+    const results = await Promise.all(artifactPromises);
+    expect(
+      results.map((attachment) => ({
+        owner: attachment.agentId,
+        link: attachment[Tools.web_search].organic[0].link,
+      })),
+    ).toEqual([
+      { owner: 'agent-a', link: 'https://example.com/agent-a' },
+      { owner: 'agent-b', link: 'https://example.com/agent-b' },
+    ]);
+  });
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s preserves memory payloads and their execution owner',
+    async (factoryName) => {
+      const toolEndCallback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
+      await toolEndCallback(
+        {
+          output: {
+            tool_call_id: 'call_0',
+            artifact: {
+              [Tools.memory]: {
+                key: 'project',
+                type: 'update',
+                value: 'owned',
+              },
+            },
+          },
+        },
+        {
+          run_id: 'run456',
+          thread_id: 'thread789',
+          agent_id: 'outer-agent',
+          executingAgentId: 'agent-a',
+          stepId: 'step-memory-1',
+        },
+      );
+
+      const [attachment] = await Promise.all(artifactPromises);
+      expect(attachment).toMatchObject({
+        type: Tools.memory,
+        toolCallId: 'call_0',
+        agentId: 'agent-a',
+        stepId: 'step-memory-1',
+        [Tools.memory]: { key: 'project', type: 'update', value: 'owned' },
+      });
+    },
+  );
 
   describe('ui_resources artifact handling', () => {
     it('should process ui_resources artifact and return attachment when headers not sent', async () => {

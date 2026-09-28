@@ -9,7 +9,9 @@ jest.mock('react-router-dom', () => ({
 }));
 
 jest.mock('recoil', () => ({
+  atomFamily: () => () => ({}),
   useRecoilValue: () => false,
+  useRecoilCallback: () => () => undefined,
 }));
 
 jest.mock('react-hook-form', () => ({
@@ -30,6 +32,8 @@ jest.mock('~/hooks', () => ({
   useResumeOnLoad: jest.fn(),
   useAdaptiveSSE: jest.fn(),
   useQueueDrain: jest.fn(),
+  useQueuedTurnReveal: jest.fn(),
+  useScrollbarGutterSeed: jest.fn(),
   useLocalize: () => (key: string) => key,
   useChatHelpers: () => ({
     conversation: mockConversation,
@@ -64,7 +68,14 @@ jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode })
 ));
 jest.mock('../Input/ChatForm', () => () => <div data-testid="chat-form" />);
 jest.mock('../Landing', () => () => <div data-testid="landing" />);
-jest.mock('../Footer', () => () => <div data-testid="footer" />);
+jest.mock('../Trace', () => ({
+  TraceSurface: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+jest.mock('../Footer', () => ({
+  __esModule: true,
+  default: () => <div data-testid="footer" />,
+  useConfiguredFooter: () => false,
+}));
 jest.mock('../Header', () => ({ readOnly }: { readOnly?: boolean }) => (
   <div data-read-only={String(readOnly)} data-testid="header" />
 ));

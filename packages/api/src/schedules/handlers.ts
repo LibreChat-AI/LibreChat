@@ -6,12 +6,13 @@ import {
   isCronCadence,
 } from 'librechat-data-provider';
 import type { TScheduleCadence, TCreateSchedule, TUpdateSchedule } from 'librechat-data-provider';
-import type { ScheduleMethods, ISchedule } from '@librechat/data-schemas';
+import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type {
   ScheduleDeleteResult,
   ScheduleUserContext,
   FireableSchedule,
+  ScheduleMCPPreflight,
   ScheduleLimits,
   FireResult,
 } from './types';
@@ -22,9 +23,11 @@ import {
   computeNextRunAt,
   isValidTimezone,
 } from './cadence';
+import { ScheduleMCPError, getScheduleMCPFailureCode } from './mcp';
 import { resolveScheduleProjectId } from './types';
 
 export interface SchedulesHandlersDeps {
+  preflightMCP: ScheduleMCPPreflight;
   methods: ScheduleMethods;
   getLimits: (user?: ScheduleUserContext) => Promise<ScheduleLimits>;
   /** Agent existence + VIEW access for the requesting user. */
@@ -39,7 +42,11 @@ export interface SchedulesHandlersDeps {
    *  hold lapse instead of retaining the upload forever. Throws when any file is gone. */
   markFilesUsed: (fileIds: string[], userId: string) => Promise<void>;
   /** Serialized manual fire (acquires the schedule lease); null if already leased. */
-  fireNow: (schedule: FireableSchedule, limits: ScheduleLimits) => Promise<FireResult | null>;
+  fireNow: (
+    schedule: FireableSchedule,
+    limits: ScheduleLimits,
+    options?: { signal?: AbortSignal },
+  ) => Promise<FireResult | null>;
   /**
    * Soft-deletes a schedule with quiescing: stops new claims, aborts in-flight
    * runs, and erases once drained. See ScheduleDeleteResult for the honest states.
@@ -239,7 +246,42 @@ export type WireSchedule = Pick<
   | 'configRevision'
   | 'createdAt'
   | 'updatedAt'
->;
+> & {
+  /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
+  inFlight?: Array<{ conversationId: string }>;
+};
+
+/** Only generating occurrences are read for the list. `ScheduleRun` is indexed by
+ *  status, not by user, and `started` rows are bounded globally by the capacity
+ *  slots; `requires_action` rows accumulate for as long as their approvals wait. */
+export const LISTED_RUN_STATUSES: readonly IScheduleRun['status'][] = ['started'];
+
+/**
+ * The chats a schedule's generating occurrences are producing. A reservation that
+ * has not been dispatched yet carries no conversation id, and there is nothing to
+ * look for until it does.
+ */
+export function toWireInFlight(
+  runs: readonly IScheduleRun[],
+): Array<{ conversationId: string }> | undefined {
+  const chats = runs.flatMap((run) =>
+    run.conversationId != null ? [{ conversationId: run.conversationId }] : [],
+  );
+  return chats.length > 0 ? chats : undefined;
+}
+
+function inFlightBySchedule(runs: readonly IScheduleRun[]): Map<string, IScheduleRun[]> {
+  const grouped = new Map<string, IScheduleRun[]>();
+  for (const run of runs) {
+    const list = grouped.get(run.scheduleId);
+    if (list) {
+      list.push(run);
+    } else {
+      grouped.set(run.scheduleId, [run]);
+    }
+  }
+  return grouped;
+}
 
 /**
  * Public projection. `limits` is optional only for callers that have none to hand;
@@ -251,6 +293,7 @@ export type WireSchedule = Pick<
 export function toWireSchedule(
   schedule: ISchedule,
   limits?: Pick<ScheduleLimits, 'projectId'>,
+  inFlight: readonly IScheduleRun[] = [],
 ): WireSchedule {
   return {
     id: schedule.id,
@@ -272,6 +315,7 @@ export function toWireSchedule(
     configRevision: schedule.configRevision,
     createdAt: schedule.createdAt,
     updatedAt: schedule.updatedAt,
+    ...(inFlight.length > 0 && { inFlight: toWireInFlight(inFlight) }),
   };
 }
 
@@ -321,6 +365,51 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       error: `Schedule interval must be at least ${limits.minIntervalMinutes} minutes`,
     });
     return false;
+  }
+
+  function responseAbortSignal(req: ServerRequest, res: Response): AbortSignal {
+    const controller = new AbortController();
+    const abort = () => controller.abort(new Error('Schedule request closed'));
+    const detach = () => {
+      req.off?.('aborted', abort);
+      res.off?.('close', abort);
+    };
+    req.once?.('aborted', abort);
+    res.once?.('close', abort);
+    res.once?.('finish', detach);
+    if (req.aborted === true || res.destroyed === true) abort();
+    return controller.signal;
+  }
+
+  async function validateMCP(
+    agentId: string,
+    req: ServerRequest,
+    res: Response,
+    signal: AbortSignal,
+    limits: ScheduleLimits,
+    scheduleId: string,
+  ): Promise<boolean> {
+    try {
+      await deps.preflightMCP(agentId, requestUser(req), {
+        scheduleId,
+        signal,
+        concurrency: limits.mcpPreflightConcurrency,
+        deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
+      });
+      return true;
+    } catch (error) {
+      if (signal.aborted) return false;
+      if (error instanceof ScheduleMCPError) {
+        res.status(error.code === 'mcp_unavailable' ? 503 : 400).json({
+          code: error.code,
+          error: error.message,
+          mcp: error.outcomes,
+        });
+      } else {
+        res.status(503).json({ code: 'mcp_unavailable', error: 'MCP preflight unavailable' });
+      }
+      return false;
+    }
   }
 
   async function validatePayload(
@@ -477,13 +566,21 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
   }
 
   async function listSchedules(req: ServerRequest, res: Response): Promise<void> {
-    const [schedules, limits] = await Promise.all([
-      deps.methods.getSchedulesByUser(requestUser(req).id),
-      deps.getLimits(requestUser(req)),
+    const user = requestUser(req);
+    // Three independent, user-scoped reads; the generating runs ride alongside so
+    // the list can name the chat each one is producing without a second round trip
+    // per card.
+    const [schedules, limits, inFlight] = await Promise.all([
+      deps.methods.getSchedulesByUser(user.id),
+      deps.getLimits(user),
+      deps.methods.getActiveRunsForUser(user.id, LISTED_RUN_STATUSES),
     ]);
-    retryDeferredDeletions(requestUser(req).id);
+    const inFlightBySchedule_ = inFlightBySchedule(inFlight);
+    retryDeferredDeletions(user.id);
     res.json({
-      schedules: schedules.map((schedule) => toWireSchedule(schedule, limits)),
+      schedules: schedules.map((schedule) =>
+        toWireSchedule(schedule, limits, inFlightBySchedule_.get(schedule.id)),
+      ),
       limits: {
         maxPerUser: limits.maxPerUser,
         // minIntervalMinutes ships with the list so the dialog can refuse a cadence
@@ -498,18 +595,30 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
   async function getSchedule(req: ServerRequest, res: Response): Promise<void> {
     const { id } = req.params as { id: string };
     const user = requestUser(req);
-    const [schedule, limits] = await Promise.all([
+    // The run read starts before ownership is established, so it is scoped to the
+    // caller — the same user-bound query the list uses — and narrowed here, rather
+    // than a by-schedule read that would touch rows the caller may not own.
+    const [schedule, limits, inFlight] = await Promise.all([
       deps.methods.getScheduleById(id, user.id),
       deps.getLimits(user),
+      deps.methods.getActiveRunsForUser(user.id, LISTED_RUN_STATUSES),
     ]);
     if (schedule == null) {
       res.status(404).json({ error: 'Schedule not found' });
       return;
     }
-    res.json(toWireSchedule(schedule, limits));
+    res.json(
+      toWireSchedule(
+        schedule,
+        limits,
+        inFlight.filter((run) => run.scheduleId === id),
+      ),
+    );
   }
 
   async function createSchedule(req: ServerRequest, res: Response): Promise<void> {
+    const mcpSignal = responseAbortSignal(req, res);
+    if (mcpSignal.aborted) return;
     const parsed = createSchedulePayloadSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Invalid schedule payload', issues: parsed.error.issues });
@@ -593,10 +702,17 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       user.id,
       parsed.data.clientRequestId,
     );
+    if (mcpSignal.aborted) return;
     if (replayed != null) {
       await respondToReplay(replayed);
       return;
     }
+    const id = `sched_${randomUUID()}`;
+    if (
+      parsed.data.enabled &&
+      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits, id))
+    )
+      return;
     // Project policy applies to a NEW insert only, and is therefore resolved AFTER every
     // replay lookup above. A committed create whose response was lost must still be
     // recoverable by an identical retry: applying today's policy first let a raised
@@ -638,7 +754,6 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     if (!withinIntervalFloor(res, parsed.data.cadence, parsed.data.timezone, limits)) {
       return;
     }
-    const id = `sched_${randomUUID()}`;
     const nextRunAt = parsed.data.enabled
       ? computeNextRunAt({
           cadence: parsed.data.cadence,
@@ -656,6 +771,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       res.status(500).json({ error: 'Failed to retain schedule attachments' });
       return;
     }
+    if (mcpSignal.aborted) return;
     // Atomic cap: createScheduleWithSlot claims a free per-user slot via the
     // {user, slot} partial unique index, so concurrent creates can never exceed
     // maxPerUser. 'limit' means a concurrent racer took the last slot after the
@@ -777,6 +893,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
   }
 
   async function updateSchedule(req: ServerRequest, res: Response): Promise<void> {
+    const mcpSignal = responseAbortSignal(req, res);
+    if (mcpSignal.aborted) return;
     const parsed = updateSchedulePayloadSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Invalid schedule payload', issues: parsed.error.issues });
@@ -801,6 +919,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       return;
     }
     const existing = await deps.methods.getScheduleById(id, user.id);
+    if (mcpSignal.aborted) return;
     if (existing == null) {
       res.status(404).json({ error: 'Schedule not found' });
       return;
@@ -853,6 +972,18 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       res.status(400).json({ error: 'Agent not found or not accessible' });
       return;
     }
+    if (
+      enabled &&
+      !(await validateMCP(
+        parsed.data.agent_id ?? existing.agent_id,
+        req,
+        res,
+        mcpSignal,
+        limits,
+        existing.id,
+      ))
+    )
+      return;
     // The destination is re-resolved on every edit that leaves the schedule ENABLED,
     // against the stored id when this PATCH does not touch the field — the same shape
     // as the stored-agent and effective-cadence rechecks above, and for the same
@@ -963,6 +1094,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         return;
       }
     }
+    if (mcpSignal.aborted) return;
     // FENCED on the revision this edit was computed from. `nextRunAt` above is derived
     // from (cadence, timezone) resolved against the row read at the top of this handler,
     // so two overlapping edits — one changing cadence, one changing timezone — would
@@ -1016,6 +1148,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
   }
 
   async function runScheduleNow(req: ServerRequest, res: Response): Promise<void> {
+    const signal = responseAbortSignal(req, res);
+    if (signal.aborted) return;
     const { id } = req.params as { id: string };
     if (await rejectIfUserDeleting(deps, requestUser(req).id, res)) {
       return;
@@ -1026,7 +1160,9 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       return;
     }
     const limits = await deps.getLimits(requestUser(req));
-    const result = await deps.fireNow(schedule, limits);
+    if (signal.aborted) return;
+    const result = await deps.fireNow(schedule, limits, { signal });
+    if (signal.aborted) return;
     if (result == null) {
       res.status(409).json({ error: 'A run for this schedule is already in progress' });
       return;
@@ -1034,12 +1170,24 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     if (!result.fired) {
       // A limiter refusal is the caller's own quota, not a conflicting schedule state,
       // so answer 429 rather than burying it in the generic 409.
-      res.status(result.skipped === 'rate_limited' ? 429 : 409).json({
-        error:
-          result.skipped === 'rate_limited'
-            ? 'Too many messages. Try running this schedule again shortly.'
-            : (result.error ?? `Run skipped (${result.skipped ?? 'unknown'})`),
+      const failedMCP = result.mcp?.filter((outcome) => outcome.status !== 'ready') ?? [];
+      const mcpStatus = failedMCP.length > 0 ? getScheduleMCPFailureCode(failedMCP) : undefined;
+      let status = 409;
+      if (result.skipped === 'rate_limited') status = 429;
+      else if (mcpStatus === 'mcp_unavailable' || result.mcpPreflightUnavailable === true)
+        status = 503;
+      else if (mcpStatus != null) status = 400;
+      const error =
+        result.skipped === 'rate_limited'
+          ? 'Too many messages. Try running this schedule again shortly.'
+          : (result.error ?? `Run skipped (${result.skipped ?? 'unknown'})`);
+      const responseCode =
+        mcpStatus ?? (result.mcpPreflightUnavailable === true ? 'mcp_unavailable' : undefined);
+      res.status(status).json({
+        error,
         skipped: result.skipped,
+        mcp: result.mcp,
+        ...(responseCode != null ? { code: responseCode } : {}),
       });
       return;
     }

@@ -17,12 +17,23 @@ type ButtonVariantOptions =
         | 'secondary'
         | 'ghost'
         | 'row-action'
+        | 'section-header'
         | 'section-action'
         | 'header-action'
         | null
         | undefined;
-      size?: 'default' | 'icon' | 'icon-sm' | 'icon-xs' | 'sm' | 'lg' | 'theme' | null | undefined;
-      shape?: 'default' | 'theme' | null | undefined;
+      size?:
+        | 'default'
+        | 'icon'
+        | 'icon-sm'
+        | 'icon-xs'
+        | 'icon-theme'
+        | 'sm'
+        | 'lg'
+        | 'theme'
+        | null
+        | undefined;
+      shape?: 'default' | 'theme' | 'round' | null | undefined;
     } & ClassProp)
   | undefined;
 
@@ -50,14 +61,32 @@ const buttonVariantRecipe = cva(
           'border border-border-light bg-transparent text-text-primary hover:bg-surface-secondary focus-visible:ring-text-primary focus-visible:ring-offset-0',
         secondary: 'bg-surface-secondary text-text-primary hover:bg-surface-hover',
         ghost: 'hover:bg-surface-hover hover:text-text-primary',
-        'row-action': 'hover:bg-surface-hover-alt hover:text-text-primary',
+        /**
+         * A compact action living inside a list row — a pinned row's unpin
+         * badge, a conversation's overflow trigger, a table row's controls. The
+         * rows stay `rounded-lg`; this sits one step inside them, so it
+         * overrides the base radius rather than matching its host.
+         */
+        'row-action': 'rounded-md hover:bg-surface-hover-alt hover:text-text-primary',
         link: 'text-text-primary underline-offset-4 hover:underline',
         submit: 'bg-surface-submit text-text-on-status hover:bg-surface-submit-hover',
+        /**
+         * The toggle that heads a collapsible sidebar section, such as Chats,
+         * Projects and Pinned. It stays a quiet label rather than a control:
+         * no hover fill, because a heading that lights up competes with the
+         * rows it heads. Its ring is inset because these sit flush against the
+         * section body, and it carries its own metrics through the compound
+         * below, since a section heading is sized by its text.
+         */
+        'section-header':
+          'justify-start gap-1 rounded-lg px-1 py-2 text-xs font-bold text-text-secondary focus-visible:ring-inset focus-visible:ring-offset-0',
         /**
          * A quiet icon action sitting beside a section heading in the sidebar.
          * Unlike `row-action`, it recedes until hovered so the heading stays
          * the thing being read, and its ring sits inside the control because
          * these sit close enough that an offset one would cross a neighbour.
+         * One radius step inside the heading row, like every other control that
+         * sits on one.
          */
         'section-action':
           'rounded-md text-text-secondary hover:bg-surface-active-alt hover:text-text-primary focus-visible:ring-inset focus-visible:ring-offset-0',
@@ -65,12 +94,17 @@ const buttonVariantRecipe = cva(
          * A control floating on the presentation surface — the sidebar
          * toggle in the chat header and its mirror in the mobile drawer
          * header, so the pair reads as one persistent button across views.
+         * The fill is opaque and not transparent: the chat header is a
+         * gradient that fades to nothing while the conversation scrolls
+         * underneath, so a see-through control has message text moving
+         * through it, and every neighbour in that row — model selector, new
+         * chat, overflow menu — already sits on `bg-presentation`.
          * `duration-0` makes the hover fill instant: these sit over a
          * scrolling gradient, where the shared color transition reads as
          * lag rather than polish.
          */
         'header-action':
-          'rounded-xl border border-border-light bg-transparent text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+          'rounded-xl border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
       },
       size: {
         default: 'h-10 px-4 py-2',
@@ -79,17 +113,45 @@ const buttonVariantRecipe = cva(
         icon: 'size-10',
         'icon-sm': 'size-8 p-0',
         'icon-xs': 'size-7',
+        /**
+         * A square icon control on the theme's control height — the size of
+         * every button in the composer's action row, for a control that has to
+         * line up with them.
+         */
+        'icon-theme': 'size-theme-control p-0',
         theme: 'h-theme-control gap-theme-compact px-theme-normal',
       },
       shape: {
         default: 'rounded-lg',
         theme: 'rounded-theme-control',
+        round: 'rounded-theme-control-round',
         unset: '',
       },
     },
     compoundVariants: [
       {
         variant: 'subtle',
+        shape: 'unset',
+        class: 'rounded-xl',
+      },
+      /* A section heading is sized by its own text, so it opts out of the
+       * default size recipe that every other caller supplies explicitly.
+       * Without this the default `h-10 px-4` is emitted after the variant and
+       * wins the merge, giving a 40px control in a 32px header row. */
+      {
+        variant: 'section-header',
+        size: 'default',
+        class: 'h-auto px-1 py-2',
+      },
+      /* `size: 'sm'` brings its own `rounded-lg`, emitted after the variant
+       * and so winning the merge. A text-bearing header control keeps the
+       * row's `rounded-xl` corner, matching the icon-sized ones beside it.
+       * Gated on `shape: 'unset'` like `subtle` above: a compound is emitted
+       * after the shape recipe, so an ungated one would silently outrank a
+       * caller that asked for `shape="theme"` or `shape="round"`. */
+      {
+        variant: 'header-action',
+        size: 'sm',
         shape: 'unset',
         class: 'rounded-xl',
       },

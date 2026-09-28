@@ -1,9 +1,10 @@
 import { logger } from '@librechat/data-schemas';
 import {
+  FileSources,
+  FileContext,
   EModelEndpoint,
   EToolResources,
   AgentCapabilities,
-  FileSources,
 } from 'librechat-data-provider';
 import type { TAgentsEndpoint, TFile } from 'librechat-data-provider';
 import type { IUser, AppConfig } from '@librechat/data-schemas';
@@ -15,6 +16,7 @@ import { primeResources } from './resources';
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
     error: jest.fn(),
+    info: jest.fn(),
   },
 }));
 
@@ -92,6 +94,131 @@ describe('primeResources', () => {
       expect(result.agentContextAttachments).toEqual(mockOcrFiles);
       expect(result.requestAttachments).toBeUndefined();
       expect(result.tool_resources).toEqual({});
+    });
+  });
+
+  describe('embedding state across agents that share a file record', () => {
+    const sharedContextFile = (embeddedEntities?: string[]): TFile =>
+      ({
+        user: 'user1',
+        file_id: 'shared-context-file',
+        filename: 'notes.pdf',
+        filepath: '/uploads/notes.pdf',
+        object: 'file' as const,
+        type: 'application/pdf',
+        bytes: 1024,
+        usage: 0,
+        embedded: true,
+        source: FileSources.local,
+        context: FileContext.agents,
+        ...(embeddedEntities ? { metadata: { embeddedEntities } } : {}),
+      }) as TFile;
+
+    const primeFor = (agentId: string, file: TFile) => {
+      mockGetFiles.mockResolvedValue([file]);
+      return primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: { [EToolResources.context]: { file_ids: ['shared-context-file'] } },
+        agentId,
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+    };
+
+    it('re-embeds for an agent whose namespace was never provisioned', async () => {
+      /* A duplicated agent inherits the file id but searches its own namespace, so the
+       * record-wide embedded flag cannot answer for it. */
+      const result = await primeFor('agent-b', sharedContextFile(['agent-a']));
+
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+        'shared-context-file',
+      ]);
+    });
+
+    it('does not re-embed for the agent that already provisioned it', async () => {
+      const result = await primeFor('agent-a', sharedContextFile(['agent-a']));
+
+      expect(result.provisionState).toBeUndefined();
+    });
+  });
+
+  describe('when policy screening rejects a persistent context file', () => {
+    it('keeps it out of provisioning and out of attachments', async () => {
+      /* These files are read inside primeResources, so the caller never sees them to
+       * filter. A provider or policy change since they were attached must still stop
+       * their bytes reaching the Code API or RAG. */
+      const rejected: TFile[] = [
+        {
+          user: 'user1',
+          file_id: 'stale-context-file',
+          filename: 'legacy.csv',
+          filepath: '/uploads/legacy.csv',
+          object: 'file' as const,
+          type: 'text/csv',
+          bytes: 1024,
+          embedded: false,
+          usage: 0,
+          source: FileSources.local,
+          metadata: { destinationChosen: false },
+        },
+      ];
+      mockGetFiles.mockResolvedValue(rejected);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: { [EToolResources.context]: { file_ids: ['stale-context-file'] } },
+        agentId: 'agent_test',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        screenPersistentFiles: () => [],
+      });
+
+      expect(result.provisionState).toBeUndefined();
+      expect(result.attachments).toBeUndefined();
+    });
+
+    it('still provisions a persistent context file the policy allows', async () => {
+      const allowed: TFile[] = [
+        {
+          user: 'user1',
+          file_id: 'live-context-file',
+          filename: 'data.csv',
+          filepath: '/uploads/data.csv',
+          object: 'file' as const,
+          type: 'text/csv',
+          bytes: 1024,
+          embedded: false,
+          usage: 0,
+          source: FileSources.local,
+          metadata: { destinationChosen: false },
+        },
+      ];
+      mockGetFiles.mockResolvedValue(allowed);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: { [EToolResources.context]: { file_ids: ['live-context-file'] } },
+        agentId: 'agent_test',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        screenPersistentFiles: (files) => files,
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual([
+        'live-context-file',
+      ]);
     });
   });
 
@@ -1110,7 +1237,7 @@ describe('primeResources', () => {
 
       expect(logger.error).toHaveBeenCalledWith('Error priming resources', error);
       expect(result.attachments).toEqual(mockFiles);
-      expect(result.tool_resources).toEqual(tool_resources);
+      expect(result.tool_resources).toEqual({});
     });
 
     it('should handle promise rejection in attachments', async () => {
@@ -1581,7 +1708,7 @@ describe('primeResources', () => {
       });
 
       expect(logger.error).toHaveBeenCalledWith('Error priming resources', expect.any(Error));
-      expect(result.tool_resources).toEqual(tool_resources);
+      expect(result.tool_resources).toEqual({});
     });
 
     it('should skip filtering when agentId is missing', async () => {
@@ -1689,6 +1816,1351 @@ describe('primeResources', () => {
 
       expect(result.attachments).toEqual(mockFiles);
       expect(result.tool_resources?.[EToolResources.image_edit]).toBeUndefined();
+    });
+  });
+
+  describe('llmDeliveryPath handling', () => {
+    it('should keep files with llmDeliveryPath "none" in attachments', async () => {
+      const providerFile: TFile = {
+        user: 'user1',
+        file_id: 'provider-file',
+        filename: 'image.png',
+        filepath: '/path/image.png',
+        type: 'image/png',
+        bytes: 1000,
+        object: 'file' as const,
+        usage: 0,
+        embedded: false,
+        source: FileSources.local,
+        llmDeliveryPath: 'provider',
+        width: 100,
+        height: 100,
+      };
+      const noneFile: TFile = {
+        user: 'user1',
+        file_id: 'none-file',
+        filename: 'audio.mp3',
+        filepath: '/path/audio.mp3',
+        type: 'audio/mpeg',
+        bytes: 5000,
+        object: 'file' as const,
+        usage: 0,
+        embedded: false,
+        source: FileSources.local,
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+      };
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([providerFile, noneFile]),
+        requestFileSet,
+        agentId: 'agent1',
+      });
+
+      const attachmentIds = result.attachments?.map((f) => f?.file_id);
+      expect(attachmentIds).toContain('provider-file');
+      expect(attachmentIds).toContain('none-file');
+    });
+
+    it('should include llmDeliveryPath "none" files in lazy provisioning state', async () => {
+      const noneFile: TFile = {
+        user: 'user1',
+        file_id: 'none-file',
+        filename: 'data.csv',
+        filepath: '/path/data.csv',
+        type: 'text/csv',
+        bytes: 5000,
+        object: 'file' as const,
+        usage: 0,
+        embedded: false,
+        source: FileSources.local,
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+      };
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([noneFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        loadCodeApiKey: jest.fn().mockResolvedValue('code-key'),
+      });
+
+      expect(result.attachments?.map((f) => f?.file_id)).toContain('none-file');
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toContain('none-file');
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toContain('none-file');
+    });
+
+    it('provisions nothing when the legacy destination chooser is active', async () => {
+      /* In legacy mode the destination is the user's explicit choice and the upload path
+       * already acted on it, so a missing reference records a decline, not pending work.
+       * Queueing on it would send the file to a service the user did not select. */
+      const providerFile: TFile = {
+        user: 'user1',
+        file_id: 'provider-file',
+        filename: 'data.csv',
+        filepath: '/path/data.csv',
+        type: 'text/csv',
+        bytes: 5000,
+        object: 'file' as const,
+        usage: 0,
+        embedded: false,
+        source: FileSources.local,
+      };
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([providerFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        loadCodeApiKey: jest.fn().mockResolvedValue('code-key'),
+      });
+
+      expect(result.attachments?.map((f) => f?.file_id)).toContain('provider-file');
+      expect(result.provisionState).toBeUndefined();
+    });
+
+    it('should include files with undefined llmDeliveryPath in attachments (legacy files)', async () => {
+      const legacyFile: TFile = {
+        user: 'user1',
+        file_id: 'legacy-file',
+        filename: 'doc.pdf',
+        filepath: '/path/doc.pdf',
+        type: 'application/pdf',
+        bytes: 2000,
+        object: 'file' as const,
+        usage: 0,
+        embedded: false,
+        source: FileSources.local,
+      };
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([legacyFile]),
+        requestFileSet,
+        agentId: 'agent1',
+      });
+
+      const attachmentIds = result.attachments?.map((f) => f?.file_id);
+      expect(attachmentIds).toContain('legacy-file');
+    });
+  });
+
+  describe('code auth gating for lazy provisioning', () => {
+    const priorAuthProvider = process.env.CODEAPI_AUTH_PROVIDER;
+    const priorJwtEnabled = process.env.CODEAPI_JWT_ENABLED;
+
+    afterEach(() => {
+      if (priorAuthProvider === undefined) {
+        delete process.env.CODEAPI_AUTH_PROVIDER;
+      } else {
+        process.env.CODEAPI_AUTH_PROVIDER = priorAuthProvider;
+      }
+      if (priorJwtEnabled === undefined) {
+        delete process.env.CODEAPI_JWT_ENABLED;
+      } else {
+        process.env.CODEAPI_JWT_ENABLED = priorJwtEnabled;
+      }
+    });
+
+    const makeCodeFile = (overrides: Partial<TFile> = {}): TFile => ({
+      user: 'user1',
+      file_id: 'code-file',
+      filename: 'data.csv',
+      filepath: '/path/data.csv',
+      type: 'text/csv',
+      bytes: 5000,
+      object: 'file' as const,
+      usage: 0,
+      embedded: false,
+      source: FileSources.local,
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+      ...overrides,
+    });
+
+    it('populates codeEnvFiles under JWT code auth without a legacy key', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([makeCodeFile()]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toContain('code-file');
+    });
+
+    it('still queues provisioning for an unauthenticated Code API deployment', async () => {
+      delete process.env.CODEAPI_AUTH_PROVIDER;
+      delete process.env.CODEAPI_JWT_ENABLED;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([makeCodeFile()]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        loadCodeApiKey: jest.fn().mockResolvedValue(undefined),
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toContain('code-file');
+    });
+
+    it('passes req through to checkSessionsAlive so JWT auth can mint tokens', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['ref-file']));
+      const refFile = makeCodeFile({
+        file_id: 'ref-file',
+        metadata: {
+          codeEnvRef: { kind: 'user', id: 'user1', storage_session_id: 'sess', file_id: 'remote' },
+        },
+      });
+
+      await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([refFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+      });
+
+      expect(checkSessionsAlive).toHaveBeenCalledWith(
+        expect.objectContaining({ req: mockReq, apiKey: undefined }),
+      );
+    });
+
+    it('queues re-provisioning and clears refs for a pre-categorized stale code file', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set<string>());
+      const staleFile = makeCodeFile({
+        file_id: 'stale-file',
+        metadata: {
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user1',
+            storage_session_id: 'sess',
+            file_id: 'remote',
+            executionProfile: 'default',
+            sandboxFilename: 'default-alias.csv',
+          },
+          codeEnvRefs: {
+            default: {
+              kind: 'user',
+              id: 'user1',
+              storage_session_id: 'sess',
+              file_id: 'remote',
+              executionProfile: 'default',
+              sandboxFilename: 'default-alias.csv',
+            },
+            'stateful:env1': {
+              kind: 'user',
+              id: 'user1',
+              storage_session_id: 'sess-2',
+              file_id: 'remote-2',
+              executionProfile: 'stateful',
+              sandboxFilename: 'stateful-alias.csv',
+            },
+          },
+        },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([staleFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toContain('stale-file');
+      expect(result.provisionState?.codeEnvRecoveryNames?.get('stale-file')).toEqual({
+        name: 'default-alias.csv',
+        isTargetScope: true,
+      });
+      expect(staleFile.metadata?.codeEnvRef).toBeUndefined();
+      expect(staleFile.metadata?.codeEnvRefs?.default).toBeUndefined();
+      expect(staleFile.metadata?.codeEnvRefs?.['stateful:env1']).toBeDefined();
+    });
+
+    it('probes a stateful route against its own Code API and clears its stale ref', async () => {
+      /* A configured deployment issues its own refs, so leaving it out of the probe left
+       * a dead session usable forever: nothing queued a replacement and the same file id
+       * was injected on every later turn. */
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set<string>());
+      const statefulFile = makeCodeFile({
+        file_id: 'stateful-stale',
+        metadata: {
+          codeEnvRefs: {
+            default: {
+              kind: 'user',
+              id: 'user1',
+              storage_session_id: 'sess-default',
+              file_id: 'remote-default',
+              executionProfile: 'default',
+              sandboxFilename: 'default-alias.csv',
+            },
+            'stateful:env1': {
+              kind: 'user',
+              id: 'user1',
+              storage_session_id: 'sess-2',
+              file_id: 'remote-2',
+              executionProfile: 'stateful',
+              sandboxFilename: 'stateful-alias.csv',
+              executionRouteKey: 'stateful:env1',
+            },
+          },
+        },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([statefulFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+        codeRouteKey: 'stateful:env1',
+        codeBaseUrl: 'https://stateful.example.com',
+      });
+
+      expect(checkSessionsAlive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseURL: 'https://stateful.example.com',
+          routeKey: 'stateful:env1',
+        }),
+      );
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toContain('stateful-stale');
+      expect(result.provisionState?.codeEnvRecoveryNames?.get('stateful-stale')).toEqual({
+        name: 'stateful-alias.csv',
+        isTargetScope: true,
+      });
+      expect(statefulFile.metadata?.codeEnvRefs?.['stateful:env1']).toBeUndefined();
+      /* Another deployment's ref is untouched: this probe never asked about it. */
+      expect(statefulFile.metadata?.codeEnvRefs?.default).toBeDefined();
+    });
+
+    it('keeps alive pre-categorized files out of the provisioning queue', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['alive-file']));
+      const aliveFile = makeCodeFile({
+        file_id: 'alive-file',
+        metadata: {
+          codeEnvRef: { kind: 'user', id: 'user1', storage_session_id: 'sess', file_id: 'remote' },
+        },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([aliveFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+      });
+
+      expect(result.provisionState).toBeUndefined();
+      const codeFiles = result.tool_resources?.[EToolResources.execute_code]?.files;
+      expect(codeFiles?.map((f) => f.file_id)).toContain('alive-file');
+    });
+
+    it('does not treat refs as stale when no liveness check ran', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const refFile = makeCodeFile({
+        file_id: 'unchecked-file',
+        metadata: {
+          codeEnvRef: { kind: 'user', id: 'user1', storage_session_id: 'sess', file_id: 'remote' },
+        },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([refFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+      });
+
+      expect(result.provisionState).toBeUndefined();
+      expect(refFile.metadata?.codeEnvRef).toBeDefined();
+    });
+
+    it('skips the liveness check when JWT auth has no req to mint from', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn();
+      const refFile = makeCodeFile({
+        file_id: 'principal-file',
+        metadata: {
+          codeEnvRef: { kind: 'user', id: 'user1', storage_session_id: 'sess', file_id: 'remote' },
+        },
+      });
+
+      const result = await primeResources({
+        principal: { id: 'user1', role: 'USER' },
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([refFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+      });
+
+      expect(checkSessionsAlive).not.toHaveBeenCalled();
+      expect(result.provisionState).toBeUndefined();
+      expect(refFile.metadata?.codeEnvRef).toBeDefined();
+    });
+
+    it('never clears a non-default route ref probed against the default Code API', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set<string>());
+      const statefulRef = {
+        kind: 'user' as const,
+        id: 'user1',
+        storage_session_id: 'sess-stateful',
+        file_id: 'remote-stateful',
+        executionProfile: 'stateful' as const,
+        executionRouteKey: 'stateful:abc',
+      };
+      const statefulFile = makeCodeFile({
+        file_id: 'stateful-file',
+        metadata: { codeEnvRef: statefulRef, codeEnvRefs: { 'stateful:abc': statefulRef } },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([statefulFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+        /* The agent runs on the same route the ref names, so the file is already usable
+         * and the probe has nothing to clear. */
+        codeRouteKey: 'stateful:abc',
+      });
+
+      expect(checkSessionsAlive).not.toHaveBeenCalled();
+      expect(result.provisionState).toBeUndefined();
+      expect(statefulFile.metadata?.codeEnvRef).toEqual(statefulRef);
+      expect(statefulFile.metadata?.codeEnvRefs?.['stateful:abc']).toEqual(statefulRef);
+    });
+
+    it('keeps a usable stateful reference when the default session behind it died', async () => {
+      /* Liveness is probed on the default route only, so a dead default session says
+       * nothing about the stateful deployment this turn runs on. Re-uploading there is
+       * redundant, and a failure would abort a tool call the existing file could serve. */
+      const defaultRef = {
+        kind: 'user' as const,
+        id: 'user1',
+        storage_session_id: 'sess-default',
+        file_id: 'remote-default',
+      };
+      const statefulRef = {
+        kind: 'user' as const,
+        id: 'user1',
+        storage_session_id: 'sess-stateful',
+        file_id: 'remote-stateful',
+        executionProfile: 'stateful' as const,
+        executionRouteKey: 'stateful:abc',
+      };
+      const bothRoutesFile = makeCodeFile({
+        file_id: 'both-routes-file',
+        metadata: {
+          codeEnvRef: defaultRef,
+          codeEnvRefs: { default: defaultRef, 'stateful:abc': statefulRef },
+        },
+      });
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set<string>());
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([bothRoutesFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+        codeRouteKey: 'stateful:abc',
+      });
+
+      expect(checkSessionsAlive).not.toHaveBeenCalled();
+      expect(result.provisionState?.codeEnvFiles ?? []).toEqual([]);
+      expect(bothRoutesFile.metadata?.codeEnvRefs?.['stateful:abc']).toEqual(statefulRef);
+    });
+
+    it('reprovisions a sandbox reference owned by another agent', async () => {
+      /* Code API derives its session key from the reference kind and id, so an agent-owned
+       * reference points at a session this caller cannot read. Reusing it adds the file to
+       * the second agent's code resources while the bytes live in the first agent's. */
+      const foreignRef = {
+        kind: 'agent' as const,
+        id: 'other-agent',
+        storage_session_id: 'sess-other',
+        file_id: 'remote-other',
+      };
+      const foreignScopedFile = makeCodeFile({
+        file_id: 'foreign-code-file',
+        metadata: { codeEnvRef: foreignRef, codeEnvRefs: { default: foreignRef } },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([foreignScopedFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual([
+        'foreign-code-file',
+      ]);
+    });
+
+    it('keeps a sandbox reference already owned by the requesting user', async () => {
+      /* The converse: a message attachment is provisioned under the user, so a matching
+       * user reference is reusable and must not be uploaded again every turn. */
+      const ownRef = {
+        kind: 'user' as const,
+        id: 'user1',
+        storage_session_id: 'sess-own',
+        file_id: 'remote-own',
+      };
+      const ownScopedFile = makeCodeFile({
+        file_id: 'own-code-file',
+        metadata: { codeEnvRef: ownRef, codeEnvRefs: { default: ownRef } },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([ownScopedFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+      });
+
+      expect(result.provisionState?.codeEnvFiles ?? []).toEqual([]);
+    });
+
+    it('queues a file whose only reference names another code route', async () => {
+      /* Priming resolves the active route alone, so a reference to a different deployment
+       * would leave the sandbox call without the attachment. */
+      const otherRouteRef = {
+        kind: 'user' as const,
+        id: 'user1',
+        storage_session_id: 'sess-a',
+        file_id: 'remote-a',
+        executionProfile: 'stateful' as const,
+        executionRouteKey: 'stateful:a',
+      };
+      const otherRouteFile = makeCodeFile({
+        file_id: 'other-route-file',
+        metadata: { codeEnvRef: otherRouteRef, codeEnvRefs: { 'stateful:a': otherRouteRef } },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([otherRouteFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        codeRouteKey: 'stateful:b',
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual([
+        'other-route-file',
+      ]);
+    });
+
+    it('queues persistent context files on a turn with no request attachments', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const contextFile: TFile = {
+        user: 'user1',
+        file_id: 'context-file',
+        filename: 'handbook.pdf',
+        filepath: '/uploads/handbook.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 2048,
+        embedded: false,
+        usage: 0,
+        metadata: { destinationChosen: false },
+      };
+      mockGetFiles.mockResolvedValue([contextFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: { [EToolResources.context]: { file_ids: ['context-file'] } },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toContain('context-file');
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toContain('context-file');
+    });
+
+    it('rebuilds an embedded agent context file as an agent-scoped file_id', async () => {
+      const embeddedContextFile: TFile = {
+        user: 'user1',
+        file_id: 'embedded-context',
+        filename: 'handbook.pdf',
+        filepath: '/uploads/handbook.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 2048,
+        embedded: true,
+        usage: 0,
+        context: FileContext.agents,
+        metadata: { embeddedEntities: ['agent1'] },
+      } as TFile;
+      mockGetFiles.mockResolvedValue([embeddedContextFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: { [EToolResources.context]: { file_ids: ['embedded-context'] } },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+      });
+
+      const searchResource = result.tool_resources?.[EToolResources.file_search];
+      expect(searchResource?.file_ids).toContain('embedded-context');
+      expect(searchResource?.files?.map((f) => f.file_id) ?? []).not.toContain('embedded-context');
+    });
+
+    it('re-embeds a foreign agent setup file attached as an ordinary message file', async () => {
+      /* Its vectors live under the other agent's entity, and the record-wide flag cannot
+       * say otherwise. Registering it for the user namespace on the strength of that flag
+       * leaves file_search querying a namespace holding none of its vectors, which returns
+       * nothing rather than failing. */
+      const foreignSetupFile = {
+        user: 'user1',
+        file_id: 'foreign-setup',
+        filename: 'handbook.pdf',
+        filepath: '/uploads/handbook.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 2048,
+        embedded: true,
+        usage: 0,
+        context: FileContext.agents,
+        metadata: { embeddedEntities: ['other-agent'] },
+      } as TFile;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([foreignSetupFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+
+      const searchResource = result.tool_resources?.[EToolResources.file_search];
+      expect(searchResource?.files?.map((f) => f.file_id) ?? []).not.toContain('foreign-setup');
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual(['foreign-setup']);
+    });
+
+    it('registers a file already embedded in the user namespace without re-queueing it', async () => {
+      /* The converse: once an unscoped upload records the user namespace, the file is
+       * reachable through .files and must not be embedded again every turn. */
+      const userNamespaceFile = {
+        user: 'user1',
+        file_id: 'user-embedded',
+        filename: 'handbook.pdf',
+        filepath: '/uploads/handbook.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 2048,
+        embedded: true,
+        usage: 0,
+        context: FileContext.agents,
+        metadata: { embeddedEntities: ['other-agent', 'user1'] },
+      } as TFile;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([userNamespaceFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+
+      const searchResource = result.tool_resources?.[EToolResources.file_search];
+      expect(searchResource?.files?.map((f) => f.file_id) ?? []).toContain('user-embedded');
+      expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+    });
+
+    it('re-embeds an agent context file recorded before namespaces were tracked', async () => {
+      /* Records predating per-namespace tracking cannot say which agent holds their
+       * vectors, so they are provisioned once for the agent that next uses them and carry
+       * the namespace afterwards. */
+      const legacyContextFile = {
+        user: 'user1',
+        file_id: 'legacy-context',
+        filename: 'handbook.pdf',
+        filepath: '/uploads/handbook.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 2048,
+        embedded: true,
+        usage: 0,
+        context: FileContext.agents,
+      } as TFile;
+      mockGetFiles.mockResolvedValue([legacyContextFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: { [EToolResources.context]: { file_ids: ['legacy-context'] } },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+        'legacy-context',
+      ]);
+    });
+
+    it('leaves a file alone whose destination came from the legacy chooser', async () => {
+      /* The endpoint deciding this turn need not be the one the file was uploaded under,
+       * so the request-level legacy check cannot answer for it. Its missing references
+       * are declines, not work to do. */
+      const chosenFile = {
+        user: 'user1',
+        file_id: 'legacy-chosen',
+        filename: 'notes.csv',
+        filepath: '/uploads/notes.csv',
+        object: 'file',
+        type: 'text/csv',
+        bytes: 512,
+        embedded: false,
+        usage: 0,
+        metadata: { destinationChosen: true },
+      } as TFile;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([chosenFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+      });
+
+      expect(result.provisionState).toBeUndefined();
+    });
+
+    it('queues a unified file even when this turn runs under the legacy setting', async () => {
+      /* The marker says the upload was not a legacy choice, so its missing references are
+       * work to do. Deferring to the request's setting would let the tool run without it
+       * after an administrator flips the endpoint or a handoff crosses providers. */
+      const unifiedFile = {
+        user: 'user1',
+        file_id: 'unified-under-legacy',
+        filename: 'notes.csv',
+        filepath: '/uploads/notes.csv',
+        object: 'file',
+        type: 'text/csv',
+        bytes: 512,
+        embedded: false,
+        usage: 0,
+        metadata: { destinationChosen: false },
+      } as TFile;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([unifiedFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+        'unified-under-legacy',
+      ]);
+    });
+
+    it('preserves chooser semantics for a record predating the marker', async () => {
+      /* Every markerless record predates unified routing. Missing destination evidence
+       * therefore means the chooser declined this consumer, regardless of today's mode. */
+      const legacyEraFile = {
+        user: 'user1',
+        file_id: 'pre-marker',
+        filename: 'notes.csv',
+        filepath: '/uploads/notes.csv',
+        object: 'file',
+        type: 'text/csv',
+        bytes: 512,
+        embedded: false,
+        usage: 0,
+      } as TFile;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([legacyEraFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+
+      expect(result.provisionState).toBeUndefined();
+    });
+
+    it('uses persisted membership as the destination for a pre-marker chooser file', async () => {
+      const legacySearchFile = {
+        user: 'user1',
+        file_id: 'pre-marker-search',
+        filename: 'notes.pdf',
+        filepath: '/uploads/notes.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 512,
+        embedded: false,
+        usage: 0,
+        source: FileSources.local,
+      } as TFile;
+      mockGetFiles.mockResolvedValue([legacySearchFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {
+          [EToolResources.file_search]: { file_ids: ['pre-marker-search'] },
+        },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+      });
+
+      expect(result.provisionState?.vectorDBFiles.map((file) => file.file_id)).toEqual([
+        'pre-marker-search',
+      ]);
+      expect(result.provisionState?.codeEnvFiles).toEqual([]);
+    });
+
+    it('removes a screened-out file id from the runtime tool resources', async () => {
+      /* The tool primers read these ids directly and re-check only access, so a record
+       * the screen rejected still reaches the Code API unless its id goes with it. */
+      const rejected = {
+        user: 'user1',
+        file_id: 'rejected-code',
+        filename: 'bundle.zip',
+        filepath: '/uploads/bundle.zip',
+        object: 'file',
+        type: 'application/zip',
+        bytes: 2048,
+        embedded: false,
+        usage: 0,
+        context: FileContext.agents,
+      } as TFile;
+      mockGetFiles.mockResolvedValue([rejected]);
+      const tool_resources = {
+        [EToolResources.execute_code]: { file_ids: ['rejected-code'] },
+      };
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources,
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        screenPersistentFiles: () => [],
+      });
+
+      expect(result.tool_resources?.[EToolResources.execute_code]?.file_ids ?? []).not.toContain(
+        'rejected-code',
+      );
+    });
+
+    it('keeps screened resources pruned when a later liveness probe fails', async () => {
+      const rejected = {
+        user: 'user1',
+        file_id: 'rejected-code',
+        filename: 'rejected.zip',
+        filepath: '/uploads/rejected.zip',
+        object: 'file',
+        type: 'application/zip',
+        bytes: 2048,
+        embedded: false,
+        usage: 0,
+        context: FileContext.agents,
+      } as TFile;
+      const allowed = {
+        ...rejected,
+        file_id: 'allowed-code',
+        filename: 'allowed.zip',
+        metadata: {
+          destinationChosen: false,
+          codeEnvRef: {
+            kind: 'agent',
+            id: 'agent1',
+            storage_session_id: 'session',
+            file_id: 'remote',
+          },
+        },
+      } as TFile;
+      mockGetFiles.mockResolvedValue([rejected, allowed]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {
+          [EToolResources.execute_code]: {
+            file_ids: ['rejected-code', 'allowed-code'],
+          },
+        },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        screenPersistentFiles: (files) => files.filter((file) => file.file_id === 'allowed-code'),
+        checkSessionsAlive: jest.fn().mockRejectedValue(new Error('code api unavailable')),
+      });
+
+      expect(result.tool_resources?.[EToolResources.execute_code]?.file_ids).toEqual([
+        'allowed-code',
+      ]);
+    });
+
+    it('queues a permanent code resource on a turn that attaches nothing', async () => {
+      /* A promoted code upload waits for the route the turn resolves, so it carries no
+       * sandbox reference. Without loading the agent's own code resources here, its first
+       * code call runs without the file it was uploaded for. */
+      const codeResourceFile = {
+        user: 'user1',
+        file_id: 'permanent-code',
+        filename: 'bundle.zip',
+        filepath: '/uploads/bundle.zip',
+        object: 'file',
+        type: 'application/zip',
+        bytes: 2048,
+        embedded: false,
+        usage: 0,
+        context: FileContext.agents,
+        metadata: { destinationChosen: false },
+      } as TFile;
+      mockGetFiles.mockResolvedValue([codeResourceFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {
+          [EToolResources.execute_code]: { file_ids: ['permanent-code'] },
+        },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual(['permanent-code']);
+    });
+
+    it('reprovisions a chooser message attachment onto the route this turn uses', async () => {
+      /* A message attachment is never in the agent's resources, so membership cannot show
+       * which destination the chooser picked. The reference it already carries can: only
+       * a code upload creates one. */
+      const defaultRef = {
+        kind: 'user' as const,
+        id: 'user1',
+        storage_session_id: 'sess-default',
+        file_id: 'remote-default',
+      };
+      const chosenAttachment = makeCodeFile({
+        file_id: 'chooser-attachment',
+        metadata: {
+          destinationChosen: true,
+          codeEnvRef: defaultRef,
+          codeEnvRefs: { default: defaultRef },
+        },
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([chosenAttachment]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        codeRouteKey: 'stateful:abc',
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual([
+        'chooser-attachment',
+      ]);
+      /* And still only that destination: search was declined at upload. */
+      expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+    });
+
+    it('reprovisions the destination a chooser upload was actually filed under', async () => {
+      /* A duplicated agent inherits the file id but not its vectors, and the marker says
+       * the upload was a chooser one without saying which destination it chose. Blanket
+       * suppression leaves search querying a namespace holding nothing. */
+      const inherited = {
+        user: 'user1',
+        file_id: 'inherited-search',
+        filename: 'handbook.pdf',
+        filepath: '/uploads/handbook.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 2048,
+        embedded: true,
+        usage: 0,
+        context: FileContext.agents,
+        metadata: { destinationChosen: true, embeddedEntities: ['original-agent'] },
+      } as TFile;
+      mockGetFiles.mockResolvedValue([inherited]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {
+          [EToolResources.file_search]: { file_ids: ['inherited-search'] },
+        },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.file_search, EToolResources.execute_code]),
+      });
+
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+        'inherited-search',
+      ]);
+      /* And only that destination: code was declined at upload. */
+      expect(result.provisionState?.codeEnvFiles ?? []).toEqual([]);
+    });
+
+    it('keeps a type the sandbox cannot take out of the code queue', async () => {
+      /* Uploading it aborts the whole tool batch over a file that was only ever meant for
+       * provider delivery. */
+      const clip = {
+        user: 'user1',
+        file_id: 'clip-file',
+        filename: 'clip.mp4',
+        filepath: '/uploads/clip.mp4',
+        object: 'file',
+        type: 'video/mp4',
+        bytes: 4096,
+        embedded: false,
+        usage: 0,
+      } as TFile;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([clip]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+      });
+
+      expect(result.provisionState?.codeEnvFiles ?? []).toEqual([]);
+    });
+
+    it('keeps a type the vector store cannot read out of the search queue', async () => {
+      /* Queueing it sends it to RAG on the next search call, and extraction refusing it
+       * aborts the tool over a file that was never a search candidate. */
+      const archive = {
+        user: 'user1',
+        file_id: 'archive-file',
+        filename: 'bundle.zip',
+        filepath: '/uploads/bundle.zip',
+        object: 'file',
+        type: 'application/zip',
+        bytes: 2048,
+        embedded: false,
+        usage: 0,
+      } as TFile;
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([archive]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+
+      expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+    });
+
+    it('queues a deferred candidate for provisioning without delivering it again', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const deferred = makeCodeFile({ file_id: 'deferred-file' });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        provisionCandidates: [deferred],
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toContain('deferred-file');
+      expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toContain('deferred-file');
+      /* The point of the separation: it must not become an attachment again. */
+      expect(result.attachments?.map((f) => f?.file_id) ?? []).not.toContain('deferred-file');
+    });
+
+    it('does not double-queue a candidate that is already an attachment', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const file = makeCodeFile({ file_id: 'shared-file' });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([file]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        provisionCandidates: [{ ...file }],
+      });
+
+      const queued = result.provisionState?.codeEnvFiles.filter((f) => f.file_id === 'shared-file');
+      expect(queued).toHaveLength(1);
+    });
+
+    it('never queues a text-source record, which has no streamable backing', async () => {
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const textFile = makeCodeFile({ file_id: 'text-record', source: FileSources.text });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([textFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+      });
+
+      expect(result.provisionState).toBeUndefined();
+      expect(result.attachments?.map((f) => f?.file_id)).toContain('text-record');
+    });
+
+    it('grants agent scope only to the active agent own resource files', async () => {
+      /* A user who owns another agent's setup file can attach it here. Scoping it to this
+       * agent would provision it under an identity this agent's other users share, so the
+       * record's context is not enough: membership in this agent's resources decides. */
+      const foreignSetupFile = makeCodeFile({
+        file_id: 'foreign-agent-file',
+        context: FileContext.agents,
+      });
+      const ownSetupFile = makeCodeFile({ file_id: 'own-agent-file', context: FileContext.agents });
+      mockGetFiles.mockResolvedValue([ownSetupFile]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: { [EToolResources.context]: { file_ids: ['own-agent-file'] } },
+        attachments: Promise.resolve([foreignSetupFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+      });
+
+      const scoped = result.provisionState?.agentScopedFileIds;
+      expect(scoped?.has('own-agent-file')).toBe(true);
+      expect(scoped?.has('foreign-agent-file')).toBe(false);
+    });
+
+    it('rebuilds an embedded code output under files, not agent file_ids', async () => {
+      const codeOutput: TFile = {
+        user: 'user1',
+        file_id: 'code-output',
+        filename: 'plot.csv',
+        filepath: '/uploads/plot.csv',
+        object: 'file',
+        type: 'text/csv',
+        bytes: 512,
+        embedded: true,
+        usage: 0,
+        context: FileContext.execute_code,
+      };
+      mockGetFiles.mockResolvedValue([codeOutput]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: { [EToolResources.context]: { file_ids: ['code-output'] } },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+      });
+
+      const searchResource = result.tool_resources?.[EToolResources.file_search];
+      expect(searchResource?.files?.map((f) => f.file_id)).toContain('code-output');
+      expect(searchResource?.file_ids ?? []).not.toContain('code-output');
+    });
+
+    it('rebuilds an embedded user attachment under files, not agent file_ids', async () => {
+      const embeddedAttachment: TFile = {
+        user: 'user1',
+        file_id: 'embedded-attachment',
+        filename: 'notes.pdf',
+        filepath: '/uploads/notes.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 1024,
+        embedded: true,
+        usage: 0,
+        context: FileContext.message_attachment,
+      };
+      mockGetFiles.mockResolvedValue([embeddedAttachment]);
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: { [EToolResources.context]: { file_ids: ['embedded-attachment'] } },
+        attachments: undefined,
+        requestFileSet,
+        agentId: 'agent1',
+      });
+
+      const searchResource = result.tool_resources?.[EToolResources.file_search];
+      expect(searchResource?.files?.map((f) => f.file_id)).toContain('embedded-attachment');
+      expect(searchResource?.file_ids ?? []).not.toContain('embedded-attachment');
     });
   });
 });

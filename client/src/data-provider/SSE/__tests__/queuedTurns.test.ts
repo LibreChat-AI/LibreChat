@@ -34,6 +34,7 @@ import {
   isDefiniteQueuedTurnRejection,
   isDefiniteQueuedTurnsUnsupported,
   shouldPollAgentQueuedTurns,
+  isQueuedTurnSuccessorOwed,
   useAgentQueuedTurns,
 } from '../queuedTurns';
 
@@ -142,6 +143,41 @@ describe('Agent queued-turn data adapter', () => {
     ).toBe(false);
     expect(shouldPollAgentQueuedTurns([{ status: 'claimed' }])).toBe(true);
     expect(shouldPollAgentQueuedTurns([{ status: 'queued' }])).toBe(true);
+  });
+
+  it('keeps polling an empty projection while the client still holds a server-owned row', () => {
+    expect(shouldPollAgentQueuedTurns([])).toBe(false);
+    expect(shouldPollAgentQueuedTurns([], undefined, Date.now(), true)).toBe(true);
+    expect(shouldPollAgentQueuedTurns(undefined, undefined, Date.now(), true)).toBe(true);
+  });
+
+  it('counts an admitted turn as an owed run, unlike the receipt poll', () => {
+    /**
+     * The receipt poll stops at `admitted` because nothing is left to wait
+     * for. A pane that is not attached is in the opposite position: `admitted`
+     * is the strongest evidence it will get that a run exists, and the receipt
+     * is dropped from the projection right after — so whoever decides whether
+     * to keep listening for that run has to count it.
+     */
+    expect(shouldPollAgentQueuedTurns([{ status: 'admitted' }])).toBe(false);
+    expect(isQueuedTurnSuccessorOwed([{ status: 'admitted' }])).toBe(true);
+  });
+
+  it('owes a run for the same live statuses the receipt poll waits on', () => {
+    expect(isQueuedTurnSuccessorOwed([{ status: 'queued' }])).toBe(true);
+    expect(isQueuedTurnSuccessorOwed([{ status: 'claimed' }])).toBe(true);
+    expect(
+      isQueuedTurnSuccessorOwed([
+        { status: 'claimed', failure: { code: 'ADMISSION_INDETERMINATE' } },
+      ]),
+    ).toBe(false);
+  });
+
+  it('owes nothing once a turn can no longer produce a run', () => {
+    expect(isQueuedTurnSuccessorOwed([{ status: 'cancelled' }])).toBe(false);
+    expect(isQueuedTurnSuccessorOwed([{ status: 'dead' }])).toBe(false);
+    expect(isQueuedTurnSuccessorOwed([])).toBe(false);
+    expect(isQueuedTurnSuccessorOwed(undefined)).toBe(false);
   });
 
   it('refreshes stopped reconciliation work on every mount and focus', () => {

@@ -1,8 +1,9 @@
 import { createElement } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
-import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import type { TSchedule } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import ScheduleDialog from '../ScheduleDialog';
@@ -23,6 +24,7 @@ jest.mock('react-i18next', () => ({
 }));
 
 const mockMutate = jest.fn();
+let createMutationOptions: { onError: (error: Error) => void } | undefined;
 
 /** Server-resolved schedule policy for the render under test. The dialog reads it from
  *  the schedules list query, the same cache entry the panel populates. */
@@ -67,11 +69,14 @@ jest.mock('~/data-provider', () => ({
     isFetchingNextPage: false,
     isLoading: false,
   }),
-  useCreateScheduleMutation: () => ({ mutate: mockMutate, isLoading: false }),
+  useCreateScheduleMutation: (options: { onError: (error: Error) => void }) => {
+    createMutationOptions = options;
+    return { mutate: mockMutate, isLoading: false };
+  },
   useUpdateScheduleMutation: () => ({ mutate: mockMutate, isLoading: false }),
 }));
 
-const renderDialog = (schedule?: Partial<TSchedule>) => {
+const renderDialog = (schedule?: Partial<TSchedule>, onOpenChange = jest.fn()) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -79,13 +84,13 @@ const renderDialog = (schedule?: Partial<TSchedule>) => {
     return createElement(
       QueryClientProvider,
       { client: queryClient },
-      createElement(ToastProvider, null, children),
+      createElement(MemoryRouter, null, createElement(ToastProvider, null, children)),
     );
   }
   return render(
     <ScheduleDialog
       open={true}
-      onOpenChange={jest.fn()}
+      onOpenChange={onOpenChange}
       schedule={schedule as TSchedule | undefined}
     />,
     { wrapper: Wrapper },
@@ -124,6 +129,7 @@ describe('ScheduleDialog', () => {
     mockUseClockFormat.mockReturnValue(true);
     mockUseWeekStart.mockReturnValue(0);
     mockFetchedProject = undefined;
+    createMutationOptions = undefined;
   });
 
   /**
@@ -139,6 +145,34 @@ describe('ScheduleDialog', () => {
     await user.click(within(dialog).getByRole('combobox', { name: 'com_ui_agent' }));
 
     expect(within(dialog).getByPlaceholderText('com_agents_search_name')).toBeInTheDocument();
+  });
+
+  it('closes before opening the agent that owns an admission failure', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = jest.fn();
+    renderDialog(undefined, onOpenChange);
+    const error = Object.assign(new Error('missing tool'), {
+      response: {
+        data: {
+          mcp: [
+            {
+              server: 'Notion',
+              agentId: 'child-agent',
+              status: 'mcp_configuration_missing',
+            },
+          ],
+        },
+      },
+    });
+
+    act(() => createMutationOptions?.onError(error));
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Notion, child-agent: com_ui_schedule_mcp_open_agent',
+      }),
+    );
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it('exposes frequency as a radiogroup with the default selected', () => {

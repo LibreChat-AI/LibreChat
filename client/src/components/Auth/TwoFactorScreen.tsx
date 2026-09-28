@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useToastContext } from '@librechat/client';
+import { ErrorTypes } from 'librechat-data-provider';
 import { useForm, Controller } from 'react-hook-form';
 import { REGEXP_ONLY_DIGITS, REGEXP_ONLY_DIGITS_AND_CHARS } from 'input-otp';
 import {
@@ -50,11 +51,13 @@ const TwoFactorScreen: React.FC = React.memo(() => {
     },
     onError: (error: unknown) => {
       setIsLoading(false);
-      const err = error as { response?: { data?: { message?: unknown } } };
-      const errorMsg =
-        typeof err.response?.data?.message === 'string'
-          ? err.response.data.message
-          : 'Error verifying 2FA';
+      const data = (error as { response?: { data?: { message?: unknown; code?: unknown } } })
+        .response?.data;
+      if (data?.code === ErrorTypes.AUTH_CROSS_ORIGIN) {
+        showToast({ message: localize('com_auth_error_login_cross_origin'), status: 'error' });
+        return;
+      }
+      const errorMsg = typeof data?.message === 'string' ? data.message : 'Error verifying 2FA';
       showToast({ message: errorMsg, status: 'error' });
     },
   });

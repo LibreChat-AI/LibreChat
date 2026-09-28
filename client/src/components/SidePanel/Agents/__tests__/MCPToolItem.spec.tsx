@@ -24,6 +24,42 @@ const tool = {
   metadata: { name: 'execute', description: 'Runs JavaScript code against the API.' },
 } as unknown as AgentToolType;
 
+const pressedOptions: Array<{
+  name: string;
+  overrides: Partial<React.ComponentProps<typeof MCPToolItem>>;
+  label: string;
+  border: string;
+}> = [
+  {
+    name: 'deferred',
+    overrides: { deferredToolsEnabled: true, isDeferred: true },
+    label: 'com_ui_mcp_defer_loading',
+    border: 'border-series-4',
+  },
+  {
+    name: 'programmatic',
+    overrides: {
+      programmaticToolsEnabled: true,
+      programmaticToolsAvailable: true,
+      isProgrammatic: true,
+    },
+    label: 'com_ui_mcp_programmatic',
+    border: 'border-series-6',
+  },
+  {
+    name: 'background',
+    overrides: { backgroundToolsEnabled: true, isBackground: true },
+    label: 'com_ui_mcp_background',
+    border: 'border-series-1',
+  },
+  {
+    name: 'intent',
+    overrides: { toolIntentsEnabled: true, isIntent: true },
+    label: 'com_ui_mcp_intent',
+    border: 'border-series-3',
+  },
+];
+
 function setup(overrides: Partial<React.ComponentProps<typeof MCPToolItem>> = {}) {
   const props = {
     tool,
@@ -94,11 +130,19 @@ describe('MCPToolItem', () => {
     expect(props.onToggleDefer).toHaveBeenCalledTimes(1);
   });
 
-  test('deferred tool keeps its warning color while hovered', () => {
-    setup({ deferredToolsEnabled: true, isDeferred: true });
-    const deferButton = screen.getByRole('button', { name: 'com_ui_mcp_defer_loading' });
-    expect(deferButton).toHaveClass('hover:text-text-secondary');
-    expect(deferButton.querySelector('svg')).toHaveClass('text-text-warning');
+  test.each(pressedOptions)('$name option uses a semantic pressed-state border', (option) => {
+    setup(option.overrides);
+    const button = screen.getByRole('button', { name: option.label });
+
+    expect(button).toHaveClass(
+      option.border,
+      'bg-surface-active',
+      'text-text-primary',
+      'hover:bg-surface-active-alt',
+    );
+    expect(button.querySelector('svg')?.className.baseVal).not.toMatch(
+      /text-(?:amber|violet|sky|teal)-/,
+    );
   });
 
   test('defer button is absent when deferred tools are disabled', () => {

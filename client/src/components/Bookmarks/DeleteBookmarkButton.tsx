@@ -74,7 +74,8 @@ const DeleteBookmarkButton: FC<{
           }
           selection={{
             selectHandler: confirmDelete,
-            selectClasses: 'bg-surface-destructive hover:bg-surface-destructive-hover text-white',
+            selectClasses:
+              'bg-surface-destructive hover:bg-surface-destructive-hover text-text-on-status',
             selectText: localize('com_ui_delete'),
           }}
         />

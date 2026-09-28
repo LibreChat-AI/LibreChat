@@ -361,4 +361,22 @@ describe('Code API JWT minting', () => {
     delete process.env.CODEAPI_JWT_ENABLED;
     await expect(getCodeApiAuthHeaders(baseRequest())).resolves.toEqual({});
   });
+
+  it('does not echo signing material when the private JWK is malformed', async () => {
+    process.env.CODEAPI_JWT_PRIVATE_JWK_JSON =
+      '{"kty":"OKP","crv":"Ed25519","d":MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgw,"x":"abc"}';
+
+    let failure: unknown;
+    try {
+      await mintCodeApiToken(baseRequest());
+    } catch (caught) {
+      failure = caught;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      'Code API JWT signing key could not be loaded (JWK format)',
+    );
+    expect((failure as Error).message).not.toContain('MIIEvgIBAD');
+  });
 });

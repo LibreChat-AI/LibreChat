@@ -7,6 +7,7 @@ const mockNewConversation = jest.fn();
 const mockClearMessagesCache = jest.fn();
 const mockInvalidateQueries = jest.fn();
 const mockClearAllDrafts = jest.fn();
+const mockClearFilesDraft = jest.fn();
 const mockDeleteFiles = jest.fn();
 const mockScheduleRetainedRetry = jest.fn();
 
@@ -78,6 +79,7 @@ jest.mock('~/hooks/useNewConvo', () => ({
 jest.mock('~/utils', () => ({
   clearMessagesCache: (...args: unknown[]) => mockClearMessagesCache(...args),
   clearAllDrafts: (...args: unknown[]) => mockClearAllDrafts(...args),
+  clearFilesDraft: (...args: unknown[]) => mockClearFilesDraft(...args),
   getNewConversationDraftId: (index = 0) => (index === 0 ? 'new' : `new:${index}`),
   getPendingDraftId: (index = 0) => (index === 0 ? 'pending' : `pending:${index}`),
   getComposerDraftId: (index = 0, conversationId?: string | null) => {
@@ -260,24 +262,34 @@ describe('useNewChat', () => {
     expect(mockNewConversation).toHaveBeenCalledTimes(1);
   });
 
-  it('drops the unsaved-chat draft before the reset restores from it', () => {
+  it('drops the unsaved-chat attachments before the reset restores from them', () => {
     const { result } = renderHook(() => useNewChat());
 
     act(() => result.current.startNewChat());
 
-    expect(mockClearAllDrafts).toHaveBeenCalledWith('new');
-    expect(mockClearAllDrafts.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockClearFilesDraft).toHaveBeenCalledWith('new');
+    expect(mockClearFilesDraft.mock.invocationCallOrder[0]).toBeLessThan(
       mockNewConversation.mock.invocationCallOrder[0],
     );
   });
 
-  it('drops only its own pane unsaved-chat draft', () => {
+  /** The reset is also how a user gets back to an unsaved chat they typed in and left, and the
+   * restore that puts an unwanted paste back is the same one that puts the message back. */
+  it('keeps what was typed in the unsaved chat', () => {
+    const { result } = renderHook(() => useNewChat());
+
+    act(() => result.current.startNewChat());
+
+    expect(mockClearAllDrafts).not.toHaveBeenCalledWith('new');
+  });
+
+  it('drops only its own pane unsaved-chat attachments', () => {
     const { result } = renderHook(() => useNewChat({ index: 1 }));
 
     act(() => result.current.startNewChat());
 
-    expect(mockClearAllDrafts).toHaveBeenCalledWith('new:1');
-    expect(mockClearAllDrafts).not.toHaveBeenCalledWith('new');
+    expect(mockClearFilesDraft).toHaveBeenCalledWith('new:1');
+    expect(mockClearFilesDraft).not.toHaveBeenCalledWith('new');
   });
 
   it('deletes the draft uploads a draft-saving user is discarding with the draft', () => {
@@ -315,7 +327,7 @@ describe('useNewChat', () => {
       ],
     });
     expect(mockDeleteFiles.mock.invocationCallOrder[0]).toBeLessThan(
-      mockClearAllDrafts.mock.invocationCallOrder[0],
+      mockClearFilesDraft.mock.invocationCallOrder[0],
     );
   });
 
@@ -490,7 +502,7 @@ describe('useNewChat', () => {
     act(() => result.current.startNewChat());
 
     expect(mockDeleteFiles).not.toHaveBeenCalled();
-    expect(mockClearAllDrafts).not.toHaveBeenCalledWith('new');
+    expect(mockClearFilesDraft).not.toHaveBeenCalledWith('new');
     expect(mockClearAllDrafts).toHaveBeenCalledWith('pending');
   });
 
@@ -895,7 +907,7 @@ describe('useNewChat', () => {
     act(() => result.current.startNewChat());
 
     expect(mockClearAllDrafts).toHaveBeenCalledWith('pending');
-    expect(mockClearAllDrafts).toHaveBeenCalledWith('new');
+    expect(mockClearFilesDraft).toHaveBeenCalledWith('new');
   });
 
   it('deletes pending-draft uploads before clearing them', () => {
@@ -944,7 +956,7 @@ describe('useNewChat', () => {
 
     expect(mockDeleteFiles).not.toHaveBeenCalled();
     expect(mockClearAllDrafts).not.toHaveBeenCalledWith('pending');
-    expect(mockClearAllDrafts).toHaveBeenCalledWith('new');
+    expect(mockClearFilesDraft).toHaveBeenCalledWith('new');
   });
 
   it('spares a reattached file from a retained deletion retry', async () => {

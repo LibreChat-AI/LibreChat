@@ -10,6 +10,25 @@ import type { QueryClient } from '@tanstack/react-query';
 import { handleMemoryArtifact } from '~/utils/memory';
 import store from '~/store';
 
+/** Identity of a re-emitted web-search snapshot: its tool call, turn, agent,
+ *  and host step. Scoped to `web_search` because that is the flow whose server
+ *  helper rebuilds and rewrites the whole payload on each highlight. The
+ *  provider reuses ids such as `call_0` across turns and the host can reuse a
+ *  turn number within one message, so the SDK step is part of the identity. */
+const searchSnapshotKeyOf = (attachment: TAttachment): string | undefined => {
+  if (attachment.type !== Tools.web_search) {
+    return undefined;
+  }
+  const toolCallId = (attachment as { toolCallId?: string }).toolCallId;
+  if (!toolCallId) {
+    return undefined;
+  }
+  const agentId = (attachment as { agentId?: string }).agentId ?? '';
+  const turn = attachment[Tools.web_search]?.turn;
+  const stepId = attachment.stepId ?? '';
+  return `${Tools.web_search}:${agentId}:${toolCallId}:${turn ?? 0}:${stepId}`;
+};
+
 export default function useAttachmentHandler(queryClient?: QueryClient) {
   const setAttachmentsMap = useSetRecoilState(store.messageAttachmentsMap);
 
@@ -138,6 +157,24 @@ export default function useAttachmentHandler(queryClient?: QueryClient) {
           }
           const merged = [...messageAttachments];
           merged[existingIndex] = next;
+          return { ...prevMap, [messageId]: merged };
+        }
+      }
+      /** Search attachments are full snapshots rather than deltas: the server
+       *  re-emits the entire payload after every highlight update, keeping the
+       *  same type, toolCallId and turn. They carry no `file_id`, so the upsert
+       *  above never saw them and each snapshot was appended, stacking one copy
+       *  of every image, product and place per update. Replace the previous
+       *  snapshot in place; a wholesale swap is right because the incoming
+       *  payload is complete. */
+      const searchSnapshotKey = searchSnapshotKeyOf(data);
+      if (searchSnapshotKey) {
+        const existingIndex = messageAttachments.findIndex(
+          (a) => searchSnapshotKeyOf(a) === searchSnapshotKey,
+        );
+        if (existingIndex > -1) {
+          const merged = [...messageAttachments];
+          merged[existingIndex] = data;
           return { ...prevMap, [messageId]: merged };
         }
       }

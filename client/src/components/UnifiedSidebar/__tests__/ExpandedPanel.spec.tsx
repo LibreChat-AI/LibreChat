@@ -44,6 +44,7 @@ jest.mock('~/store', () => {
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useNewConvo: () => ({ newConversation: mockNewConversation }),
+  useShowMarketplace: () => false,
 }));
 
 /**

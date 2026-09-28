@@ -1,9 +1,94 @@
 import { Types } from 'mongoose';
 import { Providers } from '@librechat/agents';
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, FileSources } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
-import { filterFilesByEndpointConfig } from './filter';
+import { filterFilesByEndpointConfig, filterFilesByEndpointRuntimeConfig } from './filter';
+
+describe('filterFilesByEndpointRuntimeConfig', () => {
+  const sizedFile = (filename: string, bytes: number): IMongoFile =>
+    ({
+      _id: new Types.ObjectId(),
+      user: new Types.ObjectId(),
+      file_id: new Types.ObjectId().toString(),
+      filename,
+      type: 'application/pdf',
+      bytes,
+      object: 'file',
+      usage: 0,
+      source: 'test',
+      filepath: `/test/${filename}`,
+    }) as unknown as IMongoFile;
+
+  /** Endpoint limits are configured in megabytes; 1 MB is 1_048_576 bytes. */
+  const appConfig = {
+    fileConfig: {
+      endpoints: {
+        default: { disabled: false, fileLimit: 10, fileSizeLimit: 1, totalSizeLimit: 1 },
+      },
+    },
+  } as unknown as AppConfig;
+
+  it('spends one total-size allowance across two filtered sets', () => {
+    const delivery = filterFilesByEndpointRuntimeConfig(appConfig, {
+      files: [sizedFile('delivered.pdf', 900_000)],
+      endpoint: 'default',
+    });
+    const deliveredBytes = delivery.reduce((sum, file) => sum + file.bytes, 0);
+
+    const deferred = filterFilesByEndpointRuntimeConfig(appConfig, {
+      files: [sizedFile('deferred.pdf', 900_000)],
+      endpoint: 'default',
+      consumedBytes: deliveredBytes,
+    });
+
+    expect(delivery).toHaveLength(1);
+    expect(deferred).toHaveLength(0);
+  });
+
+  it('still admits a second set that fits in the remaining allowance', () => {
+    const deferred = filterFilesByEndpointRuntimeConfig(appConfig, {
+      files: [sizedFile('deferred.pdf', 100_000)],
+      endpoint: 'default',
+      consumedBytes: 900_000,
+    });
+
+    expect(deferred).toHaveLength(1);
+  });
+
+  it('screens a converted image by the type it was accepted as', () => {
+    /* The allowlist admitted a png, conversion rewrote the stored type, and screening it
+     * by that drops a file the same allowlist accepted minutes earlier. */
+    const narrowConfig = {
+      fileConfig: {
+        endpoints: { default: { disabled: false, supportedMimeTypes: ['^image/png$'] } },
+      },
+    } as unknown as AppConfig;
+    const converted = {
+      ...sizedFile('photo.png', 1000),
+      type: 'image/webp',
+      metadata: { routingMimeType: 'image/png' },
+    } as unknown as IMongoFile;
+
+    expect(
+      filterFilesByEndpointRuntimeConfig(narrowConfig, { files: [converted], endpoint: 'default' }),
+    ).toHaveLength(1);
+  });
+
+  it('still screens an unconverted file by its own type', () => {
+    const narrowConfig = {
+      fileConfig: {
+        endpoints: { default: { disabled: false, supportedMimeTypes: ['^image/png$'] } },
+      },
+    } as unknown as AppConfig;
+    const webp = { ...sizedFile('photo.webp', 1000), type: 'image/webp' } as unknown as IMongoFile;
+
+    expect(
+      filterFilesByEndpointRuntimeConfig(narrowConfig, { files: [webp], endpoint: 'default' }),
+    ).toHaveLength(0);
+  });
+});
 
 describe('filterFilesByEndpointConfig', () => {
   /** Helper to create a mock file */
@@ -847,6 +932,31 @@ describe('filterFilesByEndpointConfig', () => {
       expect(result).toEqual([pdfFile, pngFile]);
     });
 
+    it('can preserve extracted-text sources that bypass provider MIME encoding', () => {
+      const req = {
+        config: {
+          fileConfig: {
+            endpoints: {
+              [Providers.OPENAI]: { supportedMimeTypes: ['^application/pdf$'] },
+            },
+          },
+        },
+      } as unknown as ServerRequest;
+      const extractedText = {
+        ...createMockFile('notes.txt'),
+        source: FileSources.text,
+        type: 'text/plain',
+      } as IMongoFile;
+
+      expect(
+        filterFilesByEndpointConfig(req, {
+          files: [extractedText],
+          endpoint: Providers.OPENAI,
+          preserveTextSources: true,
+        }),
+      ).toEqual([extractedText]);
+    });
+
     it('should keep all files when supportedMimeTypes is not set', () => {
       const req = {
         config: {
@@ -973,6 +1083,30 @@ describe('filterFilesByEndpointConfig', () => {
   });
 
   describe('total size limit filtering', () => {
+    it('can preserve aggregate survivors for explicit admission checks', () => {
+      const req = {
+        config: {
+          fileConfig: {
+            endpoints: {
+              [Providers.OPENAI]: { totalSizeLimit: 1 },
+            },
+          },
+        },
+      } as unknown as ServerRequest;
+      const files = [
+        { ...createMockFile('first.pdf'), bytes: 600_000 } as IMongoFile,
+        { ...createMockFile('second.pdf'), bytes: 600_000 } as IMongoFile,
+      ];
+
+      expect(
+        filterFilesByEndpointConfig(req, {
+          files,
+          endpoint: Providers.OPENAI,
+          skipTotalSizeLimit: true,
+        }),
+      ).toEqual(files);
+    });
+
     it('should filter files when total size exceeds totalSizeLimit', () => {
       const req = {
         config: {

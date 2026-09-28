@@ -60,6 +60,12 @@ jest.mock('~/server/routes/agents/v1', () => ({
 }));
 jest.mock('~/server/routes/agents/openai', () => require('express').Router());
 jest.mock('~/server/routes/agents/responses', () => require('express').Router());
+jest.mock('~/server/routes/agents/skills', () => require('express').Router());
+jest.mock('~/server/routes/agents/management', () => {
+  const router = require('express').Router();
+  router.use((_req, res) => res.status(200).json({ surface: 'management' }));
+  return router;
+});
 jest.mock('~/server/controllers/agents/steer', () => {
   const controller = (_req, _res, next) => next();
   controller.SteerDeliveryController = (_req, _res, next) => next();
@@ -69,6 +75,7 @@ jest.mock('~/server/controllers/agents/steer', () => {
 });
 jest.mock('~/server/controllers/agents/queuedTurns', () => ({
   AgentQueuedTurnEnqueueController: (_req, res) => res.status(202).json({ queued: true }),
+  AgentQueuedTurnEnqueueV2Controller: (_req, res) => res.status(202).json({ queued: true }),
   AgentQueuedTurnListController: (_req, res) => res.status(200).json({ queuedTurns: [] }),
   AgentQueuedTurnCancelController: (_req, res) => res.status(200).json({ cancelled: true }),
 }));
@@ -79,6 +86,15 @@ const agentsRouter = require('../index');
 const app = express();
 app.use(express.json());
 app.use('/agents', agentsRouter);
+
+describe('Agent Management route precedence', () => {
+  it('reaches management before the catch-all execution router', async () => {
+    const response = await request(app).get('/agents/v1/agents');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ surface: 'management' });
+  });
+});
 
 describe('start-generation idempotency before message limiters', () => {
   beforeEach(() => {
@@ -183,6 +199,13 @@ describe('start-generation idempotency before message limiters', () => {
 
   it.each([
     ['enqueue', () => request(app).post('/agents/chat/queued-turns').send({ text: 'next' })],
+    [
+      'v2 enqueue',
+      () =>
+        request(app)
+          .post('/agents/chat/queued-turns/v2')
+          .send({ text: 'next', codeApprovalMode: 'ask' }),
+    ],
     ['cancel', () => request(app).delete('/agents/chat/queued-turns/queued-turn-1')],
   ])('keeps queued-turn %s mutations behind message admission limiters', async (_label, send) => {
     const response = await send();

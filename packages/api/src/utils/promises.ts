@@ -12,7 +12,11 @@
  * The detached promise's later settlement is swallowed rather than surfacing as
  * an unhandled rejection.
  */
-export function detachOnAbort<T>(promise: Promise<T>, signal?: AbortSignal | null): Promise<T> {
+export function detachOnAbort<T>(
+  operation: T | PromiseLike<T>,
+  signal?: AbortSignal | null,
+): Promise<T> {
+  const promise = Promise.resolve(operation);
   if (signal == null) {
     return promise;
   }

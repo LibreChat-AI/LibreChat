@@ -4,6 +4,7 @@ import {
   getAgentCheckpointer,
   captureAgentCheckpointGeneration,
   deleteAgentCheckpoint,
+  deleteOwnedAgentCheckpoints,
   DEFAULT_CHECKPOINT_TTL_SECONDS,
   __resetCheckpointerForTests,
 } from './checkpointer';
@@ -48,6 +49,22 @@ describe('getApprovalTtlMs', () => {
   test('converts the resolved ttl to milliseconds', () => {
     expect(getApprovalTtlMs(undefined)).toBe(DEFAULT_CHECKPOINT_TTL_SECONDS * 1000);
     expect(getApprovalTtlMs({ ttl: 60 })).toBe(60_000);
+  });
+});
+
+describe('owner checkpoint cleanup', () => {
+  test('requires an authenticated owner', async () => {
+    await expect(deleteOwnedAgentCheckpoints('', undefined, undefined)).rejects.toThrow('owner');
+  });
+  test('does not require a database in memory mode', async () => {
+    await expect(
+      deleteOwnedAgentCheckpoints('user-1', undefined, undefined, { type: 'memory' }),
+    ).resolves.toBeUndefined();
+  });
+  test('fails closed when the durable database is unavailable', async () => {
+    await expect(deleteOwnedAgentCheckpoints('user-1', undefined, undefined)).rejects.toThrow(
+      'unavailable',
+    );
   });
 });
 

@@ -1,11 +1,16 @@
 const express = require('express');
-const { createContentFilter, extractToolArgumentContent } = require('@librechat/api');
+const {
+  reportLocatorTraversalFailure,
+  createContentFilter,
+  extractToolArgumentContent,
+} = require('@librechat/api');
 const { callTool, verifyToolAuth, getToolCalls } = require('~/server/controllers/tools');
 const { getAvailableTools } = require('~/server/controllers/PluginController');
 const { toolCallLimiter } = require('~/server/middleware');
 
 const router = express.Router();
 const filterToolArguments = createContentFilter({
+  onTraversalFailure: reportLocatorTraversalFailure,
   getFilters: (req) => req.config?.filters,
   extract: (req) => {
     const {

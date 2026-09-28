@@ -67,24 +67,18 @@ jest.mock('~/svgs', () => ({
   ),
 }));
 
-// Mock lucide-react icons
-jest.mock('lucide-react', () => ({
-  ArrowUp: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-up" className={className} />
-  ),
-  ArrowDown: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-down" className={className} />
-  ),
-  ArrowDownUp: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-down-up" className={className} />
-  ),
-  Inbox: ({ className }: { className?: string }) => (
-    <span data-testid="inbox-icon" className={className} />
-  ),
-  SearchX: ({ className }: { className?: string }) => (
-    <span data-testid="search-x-icon" className={className} />
-  ),
-}));
+// Mock MorphIcon, mapping lucide icon data back to per-icon test ids
+jest.mock('../MorphIcon', () => {
+  const { createMorphIconMock } = jest.requireActual('../../test/mockMorphIcon');
+  const { ArrowUp, ArrowDown, ArrowDownUp } = jest.requireActual('lucide');
+  return {
+    MorphIcon: createMorphIconMock([
+      [ArrowUp, 'arrow-up'],
+      [ArrowDown, 'arrow-down'],
+      [ArrowDownUp, 'arrow-down-up'],
+    ]),
+  };
+});
 
 // Mock Table components
 jest.mock('../Table', () => ({

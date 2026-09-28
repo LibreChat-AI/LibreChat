@@ -28,19 +28,44 @@
       }
     </style>
     <script>
-      const theme = localStorage.getItem('color-theme');
+      let theme = null;
+      try {
+        theme = localStorage.getItem('color-theme');
+      } catch (e) {
+        /* Web Storage denied by browser policy: the shell falls back to the system theme. */
+      }
       const loadingContainerStyle = document.createElement('style');
       let backgroundColor;
 
-      if (theme === 'dark') {
+      if (theme === 'high-contrast-dark') {
+        backgroundColor = '#000000';
+      } else if (theme === 'high-contrast-light') {
+        backgroundColor = '#ffffff';
+      } else if (theme === 'dark') {
         backgroundColor = '#0d0d0d';
       } else if (theme === 'light') {
         backgroundColor = '#ffffff';
-      } else if (theme === 'system') {
-        const prefersDarkScheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        backgroundColor = prefersDarkScheme ? '#0d0d0d' : '#ffffff';
       } else {
-        backgroundColor = '#ffffff';
+        /* `system`, and anything unset or unrecognised, which ThemeProvider also
+         * resolves as `system`. The OS decides the scheme and the contrast, and
+         * a contrast request moves the dark canvas to pure black, so keying off
+         * the scheme alone would flash #0d0d0d behind the black palette.
+         * The three contrast queries mirror ThemeProvider's `CONTRAST_QUERIES`:
+         * a Windows Contrast Theme reports `forced-colors: active` with
+         * `prefers-contrast: custom`, never `more`. */
+        const prefersDarkScheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const prefersMoreContrast = [
+          '(prefers-contrast: more)',
+          '(prefers-contrast: custom)',
+          '(forced-colors: active)',
+        ].some(function (query) {
+          return window.matchMedia(query).matches;
+        });
+        backgroundColor = prefersDarkScheme
+          ? prefersMoreContrast
+            ? '#000000'
+            : '#0d0d0d'
+          : '#ffffff';
       }
 
       loadingContainerStyle.innerHTML = `
@@ -83,6 +108,20 @@
               }
               safeAttributes[key] = value;
             });
+            /* Stamp before persistence: a recovery reload may precede the RUM module. */
+            safeAttributes.clientBuildId = 'unknown';
+            var entryScripts = document.querySelectorAll('script[type="module"][src]');
+            for (var i = 0; i < entryScripts.length; i++) {
+              var filename = entryScripts[i]
+                .getAttribute('src')
+                .split(/[?#]/, 1)[0]
+                .split('/')
+                .pop();
+              if (/^index[.-][\w-]+\.js$/.test(filename)) {
+                safeAttributes.clientBuildId = filename;
+                break;
+              }
+            }
             if (window.__lcRumQueue.length >= MAX_RUM_QUEUE) {
               window.__lcRumQueue.shift();
             }

@@ -39,7 +39,7 @@ export interface GoogleVideoBlock {
   data: string;
 }
 
-/** OpenRouter video block format */
+/** OpenAI-compatible video block format (OpenRouter, vLLM, configured custom endpoints) */
 export interface OpenRouterVideoBlock {
   type: 'video_url';
   video_url: {
@@ -91,6 +91,12 @@ export interface OpenAIFileBlock {
   };
 }
 
+/** OpenAI-compatible text part carrying a textual document's decoded contents */
+export interface OpenAITextDocumentBlock {
+  type: 'text';
+  text: string;
+}
+
 /** OpenAI Responses API file format */
 export interface OpenAIInputFileBlock {
   type: 'input_file';
@@ -114,6 +120,7 @@ export type DocumentBlock =
   | AnthropicDocumentBlock
   | GoogleDocumentBlock
   | OpenAIFileBlock
+  | OpenAITextDocumentBlock
   | OpenAIInputFileBlock
   | BedrockDocumentBlock;
 
@@ -136,7 +143,7 @@ export interface GoogleAudioBlock {
   data: string;
 }
 
-/** OpenRouter audio block format */
+/** OpenAI-compatible audio block format (OpenRouter, vLLM, configured custom endpoints) */
 export interface OpenRouterAudioBlock {
   type: 'input_audio';
   input_audio: {
@@ -159,8 +166,8 @@ export interface AudioResult {
   }>;
 }
 
-export interface ProcessedFile {
-  file: IMongoFile;
+export interface ProcessedFile<T = IMongoFile> {
+  file: T;
   content: string;
   metadata: {
     file_id: string;

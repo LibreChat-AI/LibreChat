@@ -88,6 +88,12 @@ const cacheConfig: {
   GLOBAL_PREFIX_SEPARATOR: string;
   REDIS_MAX_LISTENERS: number;
   REDIS_PING_INTERVAL: number;
+  /** Milliseconds a heartbeat PING may go unanswered before the socket is presumed dead */
+  REDIS_PING_TIMEOUT: number;
+  /** Heartbeat interval in seconds for dedicated pub/sub subscriber connections (0 = disabled) */
+  REDIS_SUBSCRIBER_PING_INTERVAL: number;
+  /** TCP keepalive idle delay in ms for ioredis sockets (0 = kernel default idle time) */
+  REDIS_KEEP_ALIVE: number;
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: number;
   /** Max number of reconnection attempts (0 = infinite) */
@@ -167,6 +173,12 @@ const cacheConfig: {
   GLOBAL_PREFIX_SEPARATOR: '::',
   REDIS_MAX_LISTENERS: math(process.env.REDIS_MAX_LISTENERS, 40),
   REDIS_PING_INTERVAL: math(process.env.REDIS_PING_INTERVAL, 0),
+  /** Milliseconds a heartbeat PING may go unanswered before the socket is presumed dead */
+  REDIS_PING_TIMEOUT: math(process.env.REDIS_PING_TIMEOUT, 5000),
+  /** Heartbeat interval in seconds for dedicated pub/sub subscriber connections (0 = disabled) */
+  REDIS_SUBSCRIBER_PING_INTERVAL: math(process.env.REDIS_SUBSCRIBER_PING_INTERVAL, 15),
+  /** TCP keepalive idle delay in ms for ioredis sockets (0 = kernel default idle time) */
+  REDIS_KEEP_ALIVE: math(process.env.REDIS_KEEP_ALIVE, 10000),
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: math(process.env.REDIS_RETRY_MAX_DELAY, 3000),
   /** Max number of reconnection attempts (0 = infinite) */

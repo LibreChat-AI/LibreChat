@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const { promisify } = require('util');
+const express = require('express');
 const request = require('supertest');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const mongoose = require('mongoose');
@@ -118,6 +120,34 @@ describe('Telemetry wiring', () => {
 describe('Startup readiness wiring', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 
+  it('starts code-environment lifecycle reconciliation only after Mongo connects', () => {
+    const connectIndex = source.indexOf('await connectDb();');
+    const reconcileIndex = source.indexOf('startCodeEnvironmentLifecycleReconciler({ mongoose });');
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(connectIndex).toBeGreaterThan(-1);
+    expect(reconcileIndex).toBeGreaterThan(connectIndex);
+    expect(listenIndex).toBeGreaterThan(reconcileIndex);
+    expect(
+      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose \}\);/g),
+    ).toHaveLength(1);
+  });
+
+  it('configures social logins with the app config loaded at startup in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const [name, contents] of [
+      ['index.js', source],
+      ['experimental.js', experimental],
+    ]) {
+      const appConfigIndex = contents.indexOf('const appConfig = await getAppConfig(');
+      const socialLoginsIndex = contents.indexOf('await configureSocialLogins(app, appConfig);');
+
+      expect([name, appConfigIndex > -1]).toEqual([name, true]);
+      expect([name, socialLoginsIndex > appConfigIndex]).toEqual([name, true]);
+    }
+  });
+
   it('awaits the shared Redis client before startup cache access', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
     const connectDbIndex = source.indexOf('await connectDb();');
@@ -156,6 +186,17 @@ describe('Startup readiness wiring', () => {
 
     expect(shutdownRegistrationIndex).toBeGreaterThan(-1);
     expect(shutdownRegistrationIndex).toBeLessThan(listenIndex);
+  });
+
+  it('registers background task draining with the graceful shutdown coordinator', () => {
+    const registrationIndex = source.indexOf('registerBackgroundTaskShutdown({');
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(registrationIndex).toBeGreaterThan(-1);
+    expect(registrationIndex).toBeLessThan(listenIndex);
+    expect(source).toContain(
+      'interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs',
+    );
   });
 
   it('configures HTTP timeouts before graceful shutdown handling', () => {
@@ -212,6 +253,7 @@ describe('Server Configuration', () => {
 
   let mongoServer;
   let app;
+  let server;
 
   /** Mocked fs.readFileSync for index.html */
   const originalReadFileSync = fs.readFileSync;
@@ -249,15 +291,24 @@ describe('Server Configuration', () => {
     mongoServer = await MongoMemoryServer.create();
     process.env.MONGO_URI = mongoServer.getUri();
     process.env.PORT = '0'; // Use a random available port
+    /* This deployment configures a footer, so the shell it serves has to say so
+       before any `/api/config` request: the composer lays out against it. */
+    process.env.CUSTOM_FOOTER = 'Operator policy footer';
+    /* index.js listens at module scope and exports only the app, so capture the server to close it. */
+    const listenSpy = jest.spyOn(express.application, 'listen');
     app = require('~/server');
 
     // Wait for the app to be healthy
     await healthCheckPoll(app);
+    server = listenSpy.mock.results[0].value;
+    listenSpy.mockRestore();
   });
 
   afterAll(async () => {
+    await promisify(server.close).call(server);
     await mongoServer.stop();
     await mongoose.disconnect();
+    delete process.env.CUSTOM_FOOTER;
   });
 
   it('should return OK for /health', async () => {
@@ -353,6 +404,19 @@ describe('Server Configuration', () => {
     expect(directIndexResponse.text).toContain('window.__LIBRECHAT_CONFIG__');
     expect(directIndexResponse.text).toContain('data-librechat-query-devtools="true"');
     expect(directIndexResponse.text).toContain('"enableQueryDevtools":true');
+  });
+
+  it('serves the configured-footer answer with the shell', async () => {
+    const [fallbackResponse, indexResponse] = await Promise.all([
+      request(app).get('/this/does/not/exist'),
+      request(app).get('/index.html'),
+    ]);
+
+    for (const response of [fallbackResponse, indexResponse]) {
+      expect(response.status).toBe(200);
+      expect(response.text).toContain('window.__LIBRECHAT_CONFIG__');
+      expect(response.text).toContain('"hasConfiguredFooter":true');
+    }
   });
 
   it('should return 500 for unknown errors via ErrorController', async () => {

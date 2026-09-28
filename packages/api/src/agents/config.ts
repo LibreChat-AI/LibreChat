@@ -1,7 +1,28 @@
+import {
+  DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS,
+  DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS,
+} from 'librechat-data-provider';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
 import { CREATE_FILE_TOOL_NAME } from '~/agents/tools';
 
 const DEFAULT_RECURSION_LIMIT = 50;
+
+export interface ModelTransportTimeouts {
+  bodyTimeout: number;
+  headersTimeout: number;
+}
+
+export function resolveModelTransportTimeouts(
+  agentsEConfig: Partial<TAgentsEndpoint> | undefined,
+): ModelTransportTimeouts {
+  return {
+    bodyTimeout:
+      agentsEConfig?.modelResponseBodyTimeoutMs ?? DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS,
+    headersTimeout:
+      agentsEConfig?.modelResponseHeadersTimeoutMs ??
+      DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS,
+  };
+}
 
 /**
  * Mirrors `RECURSION_MULTIPLIER` in `@librechat/agents` `SubagentExecutor`,

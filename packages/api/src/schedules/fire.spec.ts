@@ -5,6 +5,7 @@ import { getAgentTriggerIdempotencyKey } from '../agents/triggers/envelope';
 import { AgentTriggerDeliveryError } from '../agents/triggers/delivery';
 import { buildFireClientRequestId, fireSchedule } from './fire';
 import { withCapacitySlot } from './capacity';
+import { ScheduleMCPError } from './mcp';
 
 const OWNER: ScheduleUserContext = { id: 'user-1', tenantId: 't1', role: 'USER' };
 const LIMITS: ScheduleLimits = {
@@ -12,7 +13,10 @@ const LIMITS: ScheduleLimits = {
   maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
+  admissionConcurrency: 20,
   fireConcurrency: 5,
+  mcpPreflightConcurrency: 3,
+  mcpPreflightTimeoutMs: 300_000,
   requireProject: false,
 };
 
@@ -41,7 +45,7 @@ function makeSchedule(overrides: Partial<FireableSchedule> = {}): FireableSchedu
 function makeMethods() {
   const runs = new Map<
     string,
-    { status: string; conversationId?: string; capacitySlot?: number }
+    { status: string; conversationId?: string; capacitySlot?: number; admissionOnly?: boolean }
   >();
   const calls = {
     advance: 0,
@@ -88,6 +92,7 @@ function makeMethods() {
         scheduledFor: Date;
         conversationId?: string;
         capacitySlot?: number;
+        admissionOnly?: boolean;
         deliveryKey?: string;
       }) => {
         const k = key(data.scheduleId, data.scheduledFor);
@@ -115,6 +120,7 @@ function makeMethods() {
           status: 'started',
           conversationId: data.conversationId,
           capacitySlot: data.capacitySlot,
+          admissionOnly: data.admissionOnly,
         });
         return { run: { scheduleId: data.scheduleId, scheduledFor: data.scheduledFor } };
       },
@@ -124,6 +130,9 @@ function makeMethods() {
       let unslotted = 0;
       for (const r of runs.values()) {
         if (r.status !== 'started') {
+          continue;
+        }
+        if (r.admissionOnly) {
           continue;
         }
         if (typeof r.capacitySlot === 'number') {
@@ -175,6 +184,7 @@ function makeDeps(
     getLimits: async () => LIMITS,
     getUserContext: async () => OWNER,
     isOutOfBalance: async () => false,
+    preflightMCP: jest.fn().mockResolvedValue([]),
     agentAccess: async () => 'ok',
     hasScheduleAccess: async () => true,
     resolveFiles: async () => [],
@@ -256,6 +266,21 @@ describe('buildFireClientRequestId', () => {
 });
 
 describe('fireSchedule', () => {
+  it('preserves a claimed occurrence when the deployment switch turns off', async () => {
+    const { methods } = makeMethods();
+    const getLimits = jest.fn(async () => ({ ...LIMITS, enabled: false }));
+    const deps = makeDeps(methods, {
+      getLimits,
+    });
+
+    const result = await fireSchedule(deps, makeSchedule(), LIMITS, dueAt());
+
+    expect(result).toMatchObject({ fired: false, skipped: 'superseded' });
+    expect(methods.advanceSchedule).not.toHaveBeenCalled();
+    expect(methods.releaseLeaseByHolder).toHaveBeenCalledWith('sched-1', 'inst-1');
+    expect(getLimits).toHaveBeenCalledWith();
+  });
+
   it('fires the happy path and records fire details', async () => {
     const { methods, runs } = makeMethods();
     mockFetch(async () => okResponse());
@@ -496,6 +521,27 @@ describe('fireSchedule', () => {
     expect(methods.deleteScheduleRun).not.toHaveBeenCalled();
   });
 
+  it('completes readiness before requesting generation capacity', async () => {
+    const { methods } = makeMethods();
+    const order: string[] = [];
+    const deps = makeDeps(methods, {
+      preflightMCP: async () => {
+        order.push('readiness');
+        return [];
+      },
+      withGlobalCapacitySlot: async (_cap, claim) => {
+        order.push('generation-capacity');
+        const attempt = await claim(0);
+        return attempt === 'slot-taken' ? 'capacity' : attempt;
+      },
+    });
+    mockFetch(async () => okResponse());
+
+    await fireSchedule(deps, makeSchedule(), LIMITS, dueAt());
+
+    expect(order).toEqual(['readiness', 'generation-capacity']);
+  });
+
   it('does not let a principal override widen the global capacity cap', async () => {
     const { methods, runs } = makeMethods();
     // The single deployment-wide slot is already occupied.
@@ -513,6 +559,7 @@ describe('fireSchedule', () => {
     expect(result.skipped).toBe('capacity');
     expect(global.fetch).not.toHaveBeenCalled();
     expect(methods.reserveStartedRun).not.toHaveBeenCalled();
+    expect(methods.releaseLease).toHaveBeenCalledWith('sched-1', 'ct-1');
   });
 
   it('still honors an owner override that is STRICTER than the deployment cap', async () => {
@@ -817,4 +864,186 @@ describe('fireSchedule', () => {
     expect(calls.releaseLease).toBe(1);
     expect(calls.advance).toBe(0);
   });
+});
+
+it('settles an unavailable MCP occurrence without dispatching a generation', async () => {
+  const { methods } = makeMethods();
+  const failure = new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+  const deps = makeDeps(methods, {
+    preflightMCP: async () => {
+      throw failure;
+    },
+  });
+  const capacitySpy = jest.spyOn(deps, 'withGlobalCapacitySlot');
+  const result = await fireSchedule(deps, makeSchedule(), LIMITS, new Date('2026-09-09T12:00:00Z'));
+  expect(result).toMatchObject({ fired: false, mcp: failure.outcomes });
+  expect(capacitySpy).not.toHaveBeenCalled();
+  expect(methods.reserveStartedRun).toHaveBeenCalledWith(
+    expect.objectContaining({
+      admissionOnly: true,
+      error: failure.message,
+      mcp: failure.outcomes,
+    }),
+  );
+  expect(deps.enqueueTrigger).not.toHaveBeenCalled();
+  expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+    expect.objectContaining({
+      error: failure.message,
+      status: 'error',
+      clearConversationId: true,
+      mcp: failure.outcomes,
+    }),
+  );
+});
+
+it('does not settle or disable from a failed MCP preflight after losing its claim', async () => {
+  const { methods } = makeMethods();
+  (methods.revalidateClaim as jest.Mock).mockResolvedValueOnce(true).mockResolvedValue(false);
+  const deps = makeDeps(methods, {
+    preflightMCP: async () => {
+      throw new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+    },
+  });
+  const result = await fireSchedule(deps, makeSchedule(), LIMITS, new Date('2026-09-09T12:00:00Z'));
+  expect(result.skipped).toBe('superseded');
+  expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+  expect(methods.advanceSchedule).not.toHaveBeenCalled();
+});
+
+it('does not invent a server outcome for infrastructure preflight failures', async () => {
+  const { methods } = makeMethods();
+  const deps = makeDeps(methods, {
+    preflightMCP: async () => {
+      throw new Error('role database unavailable with private details');
+    },
+  });
+  const result = await fireSchedule(deps, makeSchedule(), LIMITS, new Date('2026-09-09T12:00:00Z'));
+  expect(result).toMatchObject({
+    fired: false,
+    error: 'MCP preflight unavailable',
+    mcpPreflightUnavailable: true,
+  });
+  expect(result.mcp).toBeUndefined();
+  expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+    expect.objectContaining({ error: 'MCP preflight unavailable' }),
+  );
+});
+
+it('bounds MCP preflight by the claim lease and the stricter concurrency config', async () => {
+  const { methods } = makeMethods();
+  const leaseUntil = new Date(Date.now() + 10_000);
+  const failure = new ScheduleMCPError([{ server: 'Notion', status: 'mcp_unavailable' }]);
+  const preflightMCP = jest.fn(async () => {
+    throw failure;
+  });
+  const deps = makeDeps(methods, {
+    preflightMCP,
+    getLimits: async (user) => ({
+      ...LIMITS,
+      mcpPreflightConcurrency: user == null ? 2 : 5,
+    }),
+  });
+
+  await fireSchedule(deps, makeSchedule({ leaseUntil }), LIMITS, new Date('2026-09-09T12:00:00Z'));
+
+  expect(preflightMCP).toHaveBeenCalledWith(
+    'agent-1',
+    OWNER,
+    expect.objectContaining({
+      scheduleId: 'sched-1',
+      concurrency: 2,
+      deadlineMs: leaseUntil.getTime(),
+    }),
+  );
+});
+
+it('bounds MCP preflight by the stricter owner and deployment timeout', async () => {
+  const { methods } = makeMethods();
+  const startedAt = Date.now();
+  let deadlineMs: number | undefined;
+  const preflightMCP: ScheduleEngineDeps['preflightMCP'] = async (_agentId, _user, options) => {
+    deadlineMs = options?.deadlineMs;
+    return [];
+  };
+  const deps = makeDeps(methods, {
+    preflightMCP,
+    getLimits: async (user) => ({
+      ...LIMITS,
+      mcpPreflightTimeoutMs: user == null ? 12_000 : 20_000,
+    }),
+  });
+
+  await fireSchedule(
+    deps,
+    makeSchedule({ leaseUntil: new Date(startedAt + 240_000) }),
+    LIMITS,
+    new Date('2026-09-09T12:00:00Z'),
+  );
+
+  expect(deadlineMs).toBeGreaterThanOrEqual(startedAt + 11_900);
+  expect(deadlineMs).toBeLessThanOrEqual(Date.now() + 12_000);
+});
+
+it('cancels MCP preflight before reserving or recording a run', async () => {
+  const { methods } = makeMethods();
+  const controller = new AbortController();
+  const deps = makeDeps(methods, {
+    preflightMCP: async (_agentId, _user, options) => {
+      expect(options?.signal).toBe(controller.signal);
+      controller.abort(new Error('schedule engine stopped'));
+      throw controller.signal.reason;
+    },
+  });
+
+  const result = await fireSchedule(
+    deps,
+    makeSchedule(),
+    LIMITS,
+    new Date('2026-09-09T12:00:00Z'),
+    { signal: controller.signal },
+  );
+
+  expect(result).toMatchObject({ fired: false, skipped: 'superseded' });
+  // Readiness now runs before generation reservation, so cancellation has no
+  // started row or capacity slot to roll back.
+  expect(methods.deleteScheduleRun).not.toHaveBeenCalled();
+  expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+  expect(methods.advanceSchedule).not.toHaveBeenCalled();
+});
+
+it('does not enqueue when Run Now is cancelled during final claim validation', async () => {
+  const { methods } = makeMethods();
+  const controller = new AbortController();
+  let releaseValidation: () => void = () => undefined;
+  let markValidationStarted: () => void = () => undefined;
+  const validationStarted = new Promise<void>((resolve) => {
+    markValidationStarted = resolve;
+  });
+  const validationGate = new Promise<void>((resolve) => {
+    releaseValidation = resolve;
+  });
+  let validations = 0;
+  (methods.revalidateClaim as jest.Mock).mockImplementation(async () => {
+    validations += 1;
+    if (validations === 2) {
+      markValidationStarted();
+      await validationGate;
+    }
+    return true;
+  });
+  const deps = makeDeps(methods);
+
+  const pending = fireSchedule(deps, makeSchedule(), LIMITS, new Date('2026-09-09T12:00:00Z'), {
+    manual: true,
+    signal: controller.signal,
+  });
+  await validationStarted;
+  controller.abort(new Error('Run Now request closed'));
+  releaseValidation();
+  const result = await pending;
+
+  expect(result).toMatchObject({ fired: false, skipped: 'superseded' });
+  expect(methods.deleteScheduleRun).toHaveBeenCalled();
+  expect(deps.enqueueTrigger).not.toHaveBeenCalled();
+  expect(methods.recordRunOutcome).not.toHaveBeenCalled();
 });

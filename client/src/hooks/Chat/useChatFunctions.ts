@@ -1,4 +1,5 @@
 import { v4 } from 'uuid';
+import { useStore } from 'jotai';
 import { cloneDeep } from 'lodash';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -37,8 +38,13 @@ import {
   stripStreamedIndexStamps,
 } from '~/utils';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import useGetConversation from '~/hooks/Conversations/useGetConversation';
+import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
+import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
+import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import store, { useGetEphemeralAgent } from '~/store';
 import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
@@ -199,6 +205,7 @@ export default function useChatFunctions({
   isSubmitting,
   latestMessage,
   setSubmission,
+  setConversation,
   conversation: immutableConversation,
 }: {
   index?: number;
@@ -211,6 +218,9 @@ export default function useChatFunctions({
   files?: Map<string, ExtendedFile>;
   setFiles?: SetterOrUpdater<Map<string, ExtendedFile>>;
   setSubmission: SetterOrUpdater<TSubmission | null>;
+  /** Supplied by the host that owns the conversation atom, so a send records the decision it
+   *  established without this hook becoming a second writer of that state. */
+  setConversation: SetterOrUpdater<TConversation | null>;
 }) {
   const navigate = useNavigate();
   const getSender = useGetSender();
@@ -224,6 +234,14 @@ export default function useChatFunctions({
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));
   const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(index));
   const focusRegeneratedResponse = useFocusRegeneratedResponse();
+  const jotaiStore = useStore();
+  const getConversation = useGetConversation(index);
+  const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
+  const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
+    immutableConversation,
+    addedConversation,
+  );
+  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
 
   /**
    * Atomically read + reset the per-conversation queue of manually-invoked
@@ -283,6 +301,7 @@ export default function useChatFunctions({
       isRegenerate = false,
       isContinued = false,
       isEdited = false,
+      compact = false,
       overrideMessages,
       overrideFiles,
       targetResponseMessageId,
@@ -304,14 +323,36 @@ export default function useChatFunctions({
      * regenerate of an already-validated file-only turn.
      */
     const replayFileCount = overrideFiles?.length ?? 0;
+    /** A compaction sends no text: it replays the branch, like a regenerate,
+     *  with the response placeholder parented onto the leaf. */
+    const regenerateShaped = isRegenerate || compact;
     if (
       !!isSubmitting ||
-      (!isRegenerate && !isSubmittableMessage(text, (files?.size ?? 0) + replayFileCount))
+      jotaiStore.get(revealedQueuedTurnFamily(immutableConversation?.conversationId ?? '')) !=
+        null ||
+      (!regenerateShaped && !isSubmittableMessage(text, (files?.size ?? 0) + replayFileCount))
     ) {
       return false;
     }
 
     const conversation = cloneDeep(immutableConversation);
+    const latestCodeApprovalMode = getConversation()?.codeApprovalMode;
+    const codeApprovalMode =
+      latestCodeApprovalMode != null && codeApprovalModes.includes(latestCodeApprovalMode)
+        ? latestCodeApprovalMode
+        : fallbackCodeApprovalMode;
+    const latestCodeWorkspaces = getConversation()?.codeWorkspaces ?? conversation?.codeWorkspaces;
+    const latestCodeEnvironmentMode =
+      getConversation()?.codeEnvironmentMode ?? conversation?.codeEnvironmentMode;
+    const workspaceSubmission = codeWorkspaceState.resolveSubmission(
+      latestCodeWorkspaces,
+      latestCodeEnvironmentMode,
+    );
+    if (workspaceSubmission == null) {
+      logger.warn('[useChatFunctions] Refusing to send without an available code workspace');
+      return false;
+    }
+    const { codeEnvironmentMode, codeWorkspaces } = workspaceSubmission;
 
     const endpoint = conversation?.endpoint;
     if (endpoint === null) {
@@ -385,7 +426,7 @@ export default function useChatFunctions({
     let manualSkills = overrideManualSkills;
     if (manualSkills == null) {
       manualSkills =
-        isRegenerate || isContinued || isEdited
+        regenerateShaped || isContinued || isEdited
           ? []
           : drainPendingManualSkills(conversationId ?? Constants.NEW_CONVO);
     }
@@ -406,7 +447,7 @@ export default function useChatFunctions({
     if (quotesSupported) {
       if (overrideQuotes != null) {
         quotes = overrideQuotes;
-      } else if (!isRegenerate && !isContinued && !isEdited) {
+      } else if (!regenerateShaped && !isContinued && !isEdited) {
         quotes = drainPendingQuotes(conversationId ?? Constants.NEW_CONVO);
       }
     }
@@ -458,7 +499,7 @@ export default function useChatFunctions({
       navigate(`/c/new${projectSearch}`);
     }
 
-    const targetParentMessageId = isRegenerate ? messageId : latestMessage?.parentMessageId;
+    const targetParentMessageId = regenerateShaped ? messageId : latestMessage?.parentMessageId;
     /**
      * If the user regenerated or resubmitted the message, the current parent is technically
      * the latest user message, which is passed into `ask`; otherwise, we can rely on the
@@ -501,7 +542,11 @@ export default function useChatFunctions({
         endpoint,
         endpointType,
         overrideConvoId,
-        overrideUserMessageId,
+        overrideUserMessageId:
+          overrideUserMessageId ??
+          (endpoint === EModelEndpoint.agents && !regenerateShaped && !isContinued
+            ? `${intermediateId}${Constants.COMMON_DIVIDER}0`
+            : undefined),
       },
       convo,
       chatProjectId ? { chatProjectId } : {},
@@ -522,7 +567,9 @@ export default function useChatFunctions({
       isCreatedByUser: true,
       parentMessageId,
       conversationId,
-      messageId: isContinued && messageId != null && messageId ? messageId : intermediateId,
+      /** A compaction's "user message" is the leaf itself, so an error lands under it. */
+      messageId:
+        (isContinued || compact) && messageId != null && messageId ? messageId : intermediateId,
       thread_id,
       error: false,
       /**
@@ -541,7 +588,8 @@ export default function useChatFunctions({
       quotes: quotes.length > 0 ? quotes : undefined,
     };
 
-    const submissionFiles = overrideFiles ?? targetParentMessage?.files;
+    /** The leaf's files already sit in history; a compaction re-attaches nothing. */
+    const submissionFiles = compact ? undefined : (overrideFiles ?? targetParentMessage?.files);
     const reuseFiles =
       (isRegenerate || (overrideFiles != null && overrideFiles.length)) &&
       submissionFiles &&
@@ -562,7 +610,9 @@ export default function useChatFunctions({
         setFiles(new Map());
         setFilesToDelete({});
       }
-    } else if (setFiles && files && files.size > 0 && overrideFiles == null) {
+    } else if (!compact && setFiles && files && files.size > 0 && overrideFiles == null) {
+      /** A compaction attaches nothing and must not consume files the user
+       *  staged in the composer for their next message. */
       // `overrideFiles` (even empty) is authoritative for the submission:
       // auto-drained queued messages must never vacuum up attachments the
       // user has staged in the composer for their NEXT message.
@@ -571,6 +621,7 @@ export default function useChatFunctions({
         filepath: file.filepath,
         filename: file.filename,
         type: file.type ?? '', // Ensure type is not undefined
+        llmDeliveryPath: file.llmDeliveryPath,
         height: file.height,
         width: file.width,
       }));
@@ -596,13 +647,14 @@ export default function useChatFunctions({
     /** Set only for edited resubmissions; see `TSubmission.editPrefixLength`. */
     let editPrefixLength: number | undefined;
     const initialResponseId =
-      responseMessageId ?? `${isRegenerate ? messageId : intermediateId}`.replace(/_+$/, '') + '_';
+      responseMessageId ??
+      `${regenerateShaped ? messageId : intermediateId}`.replace(/_+$/, '') + '_';
 
     const initialResponse: TMessage = {
       sender: responseSender,
       text: '',
       endpoint: endpoint ?? '',
-      parentMessageId: isRegenerate ? messageId : intermediateId,
+      parentMessageId: regenerateShaped ? messageId : intermediateId,
       messageId: initialResponseId,
       thread_id,
       conversationId,
@@ -611,6 +663,7 @@ export default function useChatFunctions({
       model: convo?.model,
       error: false,
       iconURL,
+      clientQueueParentMessageId: regenerateShaped ? (messageId ?? undefined) : intermediateId,
       /**
        * Seed the assistant placeholder with the turn's manually-invoked
        * skill names so `ContentParts` can render interim `SkillCall` cards
@@ -684,20 +737,21 @@ export default function useChatFunctions({
       currentMessages = currentMessages.filter((msg) => msg.messageId !== responseMessageId);
     }
 
-    const submissionMessages = isRegenerate
+    const submissionMessages = regenerateShaped
       ? getRegenerateSubmissionMessages({
           messages: currentMessages,
           targetResponseMessage,
           initialResponseId: initialResponse.messageId,
         })
       : currentMessages;
-    const regenerateMessages = isRegenerate ? [...currentMessages] : undefined;
+    const regenerateMessages = regenerateShaped ? [...currentMessages] : undefined;
 
     logger.log('message_state', initialResponse);
     const submission: TSubmission = {
       conversation: {
         ...conversation,
         ...(chatProjectId ? { chatProjectId } : {}),
+        ...(latestCodeApprovalMode != null ? { codeApprovalMode: latestCodeApprovalMode } : {}),
         conversationId,
       },
       endpointOption,
@@ -710,7 +764,8 @@ export default function useChatFunctions({
       regenerateMessages,
       isEdited: isEditOrContinue,
       isContinued,
-      isRegenerate,
+      isRegenerate: regenerateShaped,
+      ...(compact && { compact: true }),
       initialResponse,
       isTemporary,
       ephemeralAgent,
@@ -718,19 +773,30 @@ export default function useChatFunctions({
       editPrefixLength,
       addedConvo,
       manualSkills: manualSkills.length > 0 ? manualSkills : undefined,
+      codeApprovalMode,
+      codeEnvironmentMode,
+      codeWorkspaces,
       clientRequestId,
       recoverySteerId: overrideRecoverySteerId,
       expectedPredecessorCreatedAt: overrideExpectedPredecessorCreatedAt,
       queuedMessageOrigin: overrideQueuedMessageOrigin,
     };
 
-    if (isRegenerate) {
+    if (regenerateShaped) {
       setMessages([...submissionMessages, initialResponse]);
       focusRegeneratedResponse(initialResponse.parentMessageId);
     } else {
       setMessages([...submissionMessages, currentMsg, initialResponse]);
     }
 
+    /** Carry the submitted choice through the first saved-chat event instead of re-deriving it
+     *  from agent defaults. This is optimistic: the SSE error path reconciles an existing chat
+     *  with its authoritative server decision if admission fails. */
+    setConversation((current) =>
+      current == null || current.conversationId !== conversation?.conversationId
+        ? current
+        : withSubmittedCodeDecision(current, workspaceSubmission),
+    );
     setSubmissionStart(Date.now());
     setSubmission(submission);
     logger.dir('message_stream', submission, { depth: null });

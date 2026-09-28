@@ -60,6 +60,37 @@ describe('LogLink download routing', () => {
     expect(mockDownloadFromApi).not.toHaveBeenCalled();
   });
 
+  it('reports a thrown fetch to the user instead of failing silently', async () => {
+    /* A caller gates its own success feedback on the returned `false`, so
+     * this layer owns the visible notification for every failure — the
+     * empty-response one and the thrown one alike. Otherwise a network
+     * error leaves the press with no feedback at all. */
+    const filename = 'file.pdf';
+    mockDownloadFromApi.mockRejectedValue(new Error('network down'));
+
+    render(
+      <LogLink
+        user="user-1"
+        file_id="file-1"
+        filename={filename}
+        source={FileSources.cloudfront}
+        href="https://cdn.example.com/uploads/file.pdf"
+      >
+        {filename}
+      </LogLink>,
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: filename }));
+
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith({
+        status: 'error',
+        message: 'Error downloading file. The file may have been deleted.',
+      }),
+    );
+    expect(mockTriggerDownload).not.toHaveBeenCalled();
+  });
+
   it('uses the authorized file download route when stored metadata is available', async () => {
     const filename = 'file.pdf';
     mockDownloadFromApi.mockResolvedValue({ data: 'https://cdn.example.com/signed/file.pdf' });

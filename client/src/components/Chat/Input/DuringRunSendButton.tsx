@@ -1,8 +1,8 @@
 import React, { forwardRef, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
-import { SendActions, SendIcon } from '@librechat/client';
 import { Zap, Clock, OctagonPause, ZapOff } from 'lucide-react';
+import { composerSubmitClasses, SendActions, SendIcon } from '@librechat/client';
 import type { SendAction } from '@librechat/client';
 import type { Control } from 'react-hook-form';
 import type { ComposerKeyContext, KeyChordSource } from '~/utils/shortcuts';
@@ -10,7 +10,6 @@ import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 import store from '~/store';
 
 /** The rows, the popover and the chord chips are shared with every other chat
@@ -175,9 +174,7 @@ const DuringRunSendButton = React.memo(
             aria-label={label}
             id="during-run-send-button"
             disabled={!content || props.disabled === true}
-            className={cn(
-              'size-theme-control rounded-theme-control-round bg-text-primary p-theme-compact text-text-primary outline-offset-4 transition-all duration-theme-normal disabled:cursor-not-allowed disabled:text-text-secondary disabled:opacity-10',
-            )}
+            className={composerSubmitClasses()}
             data-testid="during-run-send-button"
             data-during-run-action={primary}
             type="submit"

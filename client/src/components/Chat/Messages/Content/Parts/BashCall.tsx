@@ -1,12 +1,13 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
-import { useRecoilValue } from 'recoil';
+import { useAtomValue } from 'jotai';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import parseJsonField, { areToolCallArgsComplete } from './parseJsonField';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
+import { toolPanelSpacingClassName } from '../disclosure';
 import { sandboxStartingByToolCallId } from '~/store';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
@@ -14,6 +15,7 @@ import useFollowScroll from './useFollowScroll';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
+import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -23,6 +25,7 @@ export default function BashCall({
   runStepStatus,
   runStepDurationMs,
   backgrounded,
+  backgroundCancelled = false,
   initialProgress = 0.1,
   args,
   output = '',
@@ -37,6 +40,7 @@ export default function BashCall({
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
   backgrounded?: PartMetadata['backgrounded'];
+  backgroundCancelled?: boolean;
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
@@ -48,7 +52,7 @@ export default function BashCall({
   const localize = useLocalize();
   const command = useMemo(() => parseJsonField(args, commandField), [args, commandField]);
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
-  const sandboxStarting = useRecoilValue(sandboxStartingByToolCallId(toolCallId ?? ''));
+  const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
 
   const outputHasError = useMemo(() => ERROR_PATTERNS.test(output), [output]);
   /** A backgrounded call's persisted output stays the dispatch handle until
@@ -65,6 +69,8 @@ export default function BashCall({
     [attachments, toolCallId],
   );
   const backgroundFailed = backgroundHandle != null && backgroundStatus === 'error';
+  const cancelledInBackground =
+    backgroundCancelled || (backgroundHandle != null && backgroundStatus === 'cancelled');
   const backgroundFinishedText = backgroundHandle
     ? localize(
         backgroundStatus != null || (fileAttachments?.length ?? 0) > 0
@@ -81,9 +87,10 @@ export default function BashCall({
     onExpand,
     runStepStatus,
     extraError: backgroundFailed,
+    extraCancelled: cancelledInBackground,
   });
 
-  const highlighted = useLazyHighlight(command || undefined, 'bash');
+  const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
   const { ref: commandPaneRef, onScroll: onCommandPaneScroll } = useFollowScroll<HTMLDivElement>(
     highlighted ?? command,
     phase === 'running',
@@ -121,7 +128,7 @@ export default function BashCall({
 
   return (
     <>
-      <div className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5">
+      <div className={TOOL_ROW_CLASSES}>
         <ProgressText
           phase={phase}
           onClick={toggleCode}
@@ -155,26 +162,33 @@ export default function BashCall({
       </div>
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
-          <div className="my-2 overflow-hidden rounded-lg border border-border-light">
+          <div
+            className={cn(
+              toolPanelSpacingClassName,
+              'overflow-hidden rounded-lg border border-border-light',
+            )}
+          >
             {command && (
-              <div
-                ref={commandPaneRef}
-                onScroll={onCommandPaneScroll}
-                className="relative max-h-[300px] overflow-auto bg-surface-tertiary dark:bg-gray-950"
-              >
+              <div className="relative bg-surface-tertiary dark:bg-gray-950">
                 <CopyButton
                   iconOnly
                   isCopied={isCopied}
                   onClick={handleCopy}
-                  className="sticky right-0 top-1 float-right mr-1.5 mt-1"
+                  className="absolute right-1.5 top-1"
                   label={localize('com_ui_copy_code')}
                 />
-                <pre className="whitespace-pre-wrap break-words px-3 py-2.5 pr-10 font-mono text-xs">
-                  <span className="select-none text-text-tertiary" aria-hidden="true">
-                    {'$ '}
-                  </span>
-                  <code className="hljs language-bash">{highlighted ?? command}</code>
-                </pre>
+                <div
+                  ref={commandPaneRef}
+                  onScroll={onCommandPaneScroll}
+                  className="max-h-[300px] overflow-auto"
+                >
+                  <pre className="whitespace-pre-wrap break-words px-3 py-2.5 pr-10 font-mono text-xs">
+                    <span className="select-none text-text-tertiary" aria-hidden="true">
+                      {'$ '}
+                    </span>
+                    <code className="hljs language-bash">{highlighted ?? command}</code>
+                  </pre>
+                </div>
               </div>
             )}
             <PtcToolTrace

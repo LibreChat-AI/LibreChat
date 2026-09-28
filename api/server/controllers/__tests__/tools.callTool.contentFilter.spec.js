@@ -25,7 +25,7 @@ jest.mock('~/models', () => ({
   createToolCall: mockCreateToolCall,
   getRoleByName: jest.fn(),
   getToolCallsByConvo: jest.fn(),
-  getMessage: jest.fn(async () => ({ messageId: 'message-id' })),
+  getMessage: jest.fn(async () => ({ messageId: 'message-id', conversationId: 'conversation-id' })),
 }));
 
 jest.mock('~/server/services/Files/process', () => ({
@@ -110,6 +110,65 @@ describe('callTool generated-content protection', () => {
     mockProcessCodeOutput.mockResolvedValue({
       file: { file_id: 'persisted-file', filename: 'safe.txt' },
     });
+  });
+
+  it('starts retention before tool invocation using the authenticated message conversation', async () => {
+    const { getRetentionExpiry } = require('~/server/services/Files/retention');
+    const { getMessage } = require('~/models');
+    let resolveRetention;
+    const expiredAt = new Date('2030-01-01T00:00:00.000Z');
+    getMessage.mockResolvedValueOnce({
+      messageId: 'message-id',
+      conversationId: 'conversation-id',
+      isTemporary: true,
+      expiredAt,
+    });
+    getRetentionExpiry.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRetention = resolve;
+        }),
+    );
+    mockInvoke.mockImplementationOnce(async () => {
+      expect(getRetentionExpiry).toHaveBeenCalledTimes(1);
+      resolveRetention({ expiredAt });
+      return { content: 'safe output' };
+    });
+    const req = createRequest(undefined);
+    req.body.conversationId = 'forged-conversation';
+    const res = createResponse();
+    await callTool(req, res);
+    expect(req.body.conversationId).toBe('conversation-id');
+    expect(req.fileRetentionSource).toEqual({ isTemporary: true, expiredAt });
+    expect(mockCreateToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation-id',
+        expiredAt,
+      }),
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('rejects an expired source message before loading or invoking a tool', async () => {
+    const { getMessage } = require('~/models');
+    const { loadTools } = require('~/app/clients/tools/util');
+    const { getRetentionExpiry } = require('~/server/services/Files/retention');
+    getMessage.mockResolvedValueOnce({
+      messageId: 'message-id',
+      conversationId: 'conversation-id',
+      isTemporary: true,
+      expiredAt: new Date(Date.now() - 1000),
+    });
+    const req = createRequest(undefined);
+    req.body.isTemporary = false;
+    const res = createResponse();
+    await callTool(req, res);
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(loadTools).not.toHaveBeenCalled();
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(getRetentionExpiry).not.toHaveBeenCalled();
+    expect(mockCreateToolCall).not.toHaveBeenCalled();
+    expect(mockProcessCodeOutput).not.toHaveBeenCalled();
   });
 
   it('blocks a configured tool output before tool-call persistence', async () => {
@@ -523,8 +582,12 @@ describe('callTool generated-content protection', () => {
     expect(mockProcessCodeOutput).toHaveBeenCalledWith(
       expect.objectContaining({ downloadFallback: true, preparedBuffer: undefined }),
     );
+    /* The cause rides the warning so the failure is diagnosable at all, but
+     * only through `getSafeErrorMetadata` — the upstream message here is
+     * `PRIVATE-DOWNLOAD-ERROR`, and that is precisely what must not appear. */
     expect(mockLogger.warn).toHaveBeenCalledWith(
       '[preflightCodeOutputBatch] Generated artifact 1 could not be inspected',
+      { type: 'Error' },
     );
     expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain('PRIVATE-');
     expect(res.status).toHaveBeenCalledWith(200);

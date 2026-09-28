@@ -17,7 +17,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('~/models', () => ({
-  recordMessage: jest.fn(),
+  saveMessage: jest.fn(),
   getMessages: jest.fn(),
   saveConvo: jest.fn(),
   spendTokens: (...args) => mockSpendTokens(...args),

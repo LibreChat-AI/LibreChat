@@ -172,6 +172,19 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       ],
       default: [],
     },
+    /** Display order for the sidebar's Pinned section: favorite and pinned-chat
+     *  entry keys interleaved (`agent:`, `spec:`, `model:`, `convo:` prefixes).
+     *  Keys whose item no longer exists are ignored; unlisted items keep their
+     *  natural order after the listed ones. */
+    pinnedOrder: {
+      type: [String],
+      default: [],
+      /** Display-only, and allowed to grow large. Every authentication request
+       *  loads the user document, so leaving this selected would put hundreds
+       *  of kilobytes on paths that never read it. The pinned-order handler
+       *  asks for it explicitly with `+pinnedOrder`. */
+      select: false,
+    },
     skillStates: {
       type: Map,
       of: Boolean,

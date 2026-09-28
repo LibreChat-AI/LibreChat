@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Tools, EToolResources } from 'librechat-data-provider';
-import type { TEphemeralAgent } from 'librechat-data-provider';
+import type { Agent, TEphemeralAgent } from 'librechat-data-provider';
 import { useGetAgentByIdQuery } from '~/data-provider';
 import { useAgentsMapContext } from '~/Providers';
 import { isEphemeralAgent } from '~/common';
@@ -8,8 +8,11 @@ import { isEphemeralAgent } from '~/common';
 interface AgentToolPermissionsResult {
   fileSearchAllowedByAgent: boolean;
   codeAllowedByAgent: boolean;
+  statefulCodeSessionsAllowedByAgent: boolean;
   tools: string[] | undefined;
   provider?: string;
+  codeEnvironmentId?: string | null;
+  agent?: Agent;
 }
 
 /**
@@ -42,6 +45,16 @@ export default function useAgentToolPermissions(
     [agentData?.provider, selectedAgent?.provider],
   );
 
+  const codeEnvironmentId = useMemo(
+    () => agentData?.code_environment_id ?? selectedAgent?.code_environment_id,
+    [agentData?.code_environment_id, selectedAgent?.code_environment_id],
+  );
+
+  const statefulCodeSessionsAllowedByAgent = useMemo(
+    () => agentData?.stateful_code_sessions ?? selectedAgent?.stateful_code_sessions ?? false,
+    [agentData?.stateful_code_sessions, selectedAgent?.stateful_code_sessions],
+  );
+
   const fileSearchAllowedByAgent = useMemo(() => {
     // Check ephemeral agent settings
     if (isEphemeralAgent(agentId)) {
@@ -64,9 +77,18 @@ export default function useAgentToolPermissions(
     return tools?.includes(Tools.execute_code) ?? false;
   }, [agentId, selectedAgent, tools, ephemeralAgent]);
 
+  const agent = useMemo(() => {
+    if (selectedAgent == null) return agentData;
+    if (agentData == null) return selectedAgent;
+    return { ...selectedAgent, ...agentData };
+  }, [agentData, selectedAgent]);
+
   return {
     fileSearchAllowedByAgent,
     codeAllowedByAgent,
+    statefulCodeSessionsAllowedByAgent,
+    codeEnvironmentId,
+    agent,
     provider,
     tools,
   };

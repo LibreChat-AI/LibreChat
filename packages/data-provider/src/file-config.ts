@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
+import type { ResponsesApiRouting } from './types';
 import { EModelEndpoint, isAgentsEndpoint, isDocumentSupportedProvider } from './schemas';
 import { normalizeEndpointName } from './utils';
+
+/** Parallel storage deletions during rollback of a failed skill archive import. */
+export const DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY = 8;
 
 export const supportsFiles = {
   [EModelEndpoint.openAI]: true,
@@ -175,6 +179,96 @@ export const bedrockDocumentFormats: Record<string, BedrockDocumentFormat> = {
   'text/html': 'html',
   'text/plain': 'txt',
   'text/markdown': 'md',
+};
+
+/**
+ * Whether an upload belongs to the conversation rather than to the agent. The value
+ * arrives from multipart form data, so it can be the string "false", which is truthy.
+ * Shared so the route, the authorization check and processing cannot disagree about it.
+ */
+export const isMessageFileUpload = (value?: boolean | string | null): boolean =>
+  value === true || value === 'true';
+
+/**
+ * Whether the upload's conversation uses the Responses API, which decides whether Azure
+ * can carry a document natively. Multipart form data has no booleans, so it arrives as
+ * the string "true".
+ */
+export const isResponsesApiUpload = (value?: boolean | string | null): boolean =>
+  value === true || value === 'true';
+
+/**
+ * The name a file carries inside the code sandbox.
+ *
+ * Image uploads are converted to the configured output type while the record keeps the
+ * original filename, so the extension has to follow the stored bytes or the sandbox
+ * decoder is handed a mismatch. Provisioning and priming both resolve the mount path
+ * from here: deriving it twice under different rules leaves a later turn advertising a
+ * path that does not exist in the sandbox.
+ */
+export const resolveSandboxFilename = (filename: string, mimeType?: string | null): string => {
+  if (!mimeType?.startsWith('image/')) {
+    return filename;
+  }
+  const subtype = mimeType.slice('image/'.length);
+  if (!['webp', 'png', 'jpeg', 'gif'].includes(subtype)) {
+    return filename;
+  }
+  const accepted = subtype === 'jpeg' ? ['.jpg', '.jpeg'] : [`.${subtype}`];
+  const lastDot = filename.lastIndexOf('.');
+  const currentExt = lastDot > 0 ? filename.slice(lastDot).toLowerCase() : '';
+  if (accepted.includes(currentExt)) {
+    return filename;
+  }
+  const base = lastDot > 0 ? filename.slice(0, lastDot) : filename;
+  return `${base}${accepted[0]}`;
+};
+
+/**
+ * The Responses setting a turn actually runs on. A saved agent's own record wins, since
+ * execution reads its model parameters; a conversation only answers for itself. Upload
+ * and delivery must agree here, or a document is stored as raw provider content and then
+ * re-resolved to text it has no extraction for.
+ */
+export const resolveUseResponsesApi = (
+  agentValue?: boolean | null,
+  conversationValue?: boolean | null,
+): boolean | undefined => agentValue ?? conversationValue ?? undefined;
+
+/** Models whose native OpenAI and Azure execution defaults to Responses. Keep
+ * this shared with client upload routing so documents follow the API that the
+ * backend will actually invoke. Explicit false remains an opt-out. */
+export const prefersResponsesApiByModel = (model?: string | null): boolean =>
+  typeof model === 'string' && /^gpt-6-(?:astra|sol|luna)(?:-|$)/i.test(model);
+
+/** The server has transport and administrator settings the browser cannot see.
+ * Missing policy never enables model-based uploads (including during upgrades). */
+export const resolveEffectiveUseResponsesApi = ({
+  value,
+  endpoint,
+  model,
+  routing,
+  webSearch,
+}: {
+  value?: boolean | null;
+  endpoint?: string | null;
+  model?: string | null;
+  routing?: ResponsesApiRouting;
+  webSearch?: boolean | null;
+}): boolean | undefined => {
+  if (endpoint !== EModelEndpoint.openAI && endpoint !== EModelEndpoint.azureOpenAI) {
+    return value ?? undefined;
+  }
+  let policy = model ? routing?.[model] : undefined;
+  if (!policy && model && prefersResponsesApiByModel(model)) {
+    const family = /^gpt-6-(?:astra|sol|luna)(?=-|$)/i.exec(model)?.[0].toLowerCase();
+    policy = family ? routing?.[`${family}-*`] : undefined;
+  }
+  policy ??= routing?.['*'];
+  if (!policy) return value ?? undefined;
+  if (webSearch && policy.withWebSearch) policy = policy.withWebSearch;
+  if (value == null) return policy.default;
+  return value ? policy.on : policy.off;
 };
 
 export const isBedrockDocumentType = (mimeType?: string): boolean =>
@@ -450,6 +544,8 @@ export const mbToBytes = (mb: number): number => mb * megabyte;
 const defaultSizeLimit = mbToBytes(512);
 const defaultSkillImportSizeLimit = mbToBytes(50);
 const defaultTokenLimit = 100000;
+const defaultContextSizeLimit = mbToBytes(128);
+const defaultContextCharLimit = 1_000_000;
 const assistantsFileConfig = {
   fileLimit: 10,
   fileSizeLimit: defaultSizeLimit,
@@ -480,10 +576,13 @@ export const fileConfig = {
   },
   skills: {
     fileSizeLimit: defaultSkillImportSizeLimit,
+    importCleanupConcurrency: DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY,
   },
   serverFileSizeLimit: defaultSizeLimit,
   avatarSizeLimit: mbToBytes(2),
   fileTokenLimit: defaultTokenLimit,
+  fileContextSizeLimit: defaultContextSizeLimit,
+  fileContextCharLimit: defaultContextCharLimit,
   clientImageResize: {
     enabled: false,
     maxWidth: 1900,
@@ -505,7 +604,30 @@ export const fileConfig = {
   },
 };
 
-const supportedMimeTypesSchema = z.array(z.string()).optional();
+const supportedMimeTypesSchema = z
+  .array(
+    z.string().superRefine((pattern, context) => {
+      try {
+        compileMimeRegex(pattern);
+      } catch {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid MIME type regex: not supported by the configured regex engine',
+        });
+      }
+    }),
+  )
+  .optional();
+
+export const DefaultLLMDeliveryPath = z.enum(['provider', 'text', 'none']);
+export type TDefaultLLMDeliveryPath = z.infer<typeof DefaultLLMDeliveryPath>;
+
+export const defaultLLMDeliveryPathSchema = z.object({
+  fallback: DefaultLLMDeliveryPath.optional(),
+  overrides: z.record(DefaultLLMDeliveryPath).optional(),
+});
+export type TDefaultLLMDeliveryPathConfig = z.infer<typeof defaultLLMDeliveryPathSchema>;
+type TDeliveryPathOverrides = NonNullable<TDefaultLLMDeliveryPathConfig['overrides']>;
 
 export const endpointFileConfigSchema = z.object({
   disabled: z.boolean().optional(),
@@ -513,10 +635,14 @@ export const endpointFileConfigSchema = z.object({
   fileSizeLimit: z.number().min(0).optional(),
   totalSizeLimit: z.number().min(0).optional(),
   supportedMimeTypes: supportedMimeTypesSchema.optional(),
+  defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
+  legacyFileUploadUX: z.boolean().optional(),
+  textFallbackWithoutTools: z.boolean().optional(),
 });
 
 const skillFileConfigSchema = z.object({
   fileSizeLimit: z.number().min(0).optional(),
+  importCleanupConcurrency: z.number().int().positive().optional(),
 });
 
 export const fileConfigSchema = z.object({
@@ -525,6 +651,9 @@ export const fileConfigSchema = z.object({
   serverFileSizeLimit: z.number().min(0).optional(),
   avatarSizeLimit: z.number().min(0).optional(),
   fileTokenLimit: z.number().min(0).optional(),
+  fileContextSizeLimit: z.number().min(0).optional(),
+  fileContextCharLimit: z.number().min(0).optional(),
+  codeEnvLivenessSafeWindowMs: z.number().min(0).optional(),
   imageGeneration: z
     .object({
       percentage: z.number().min(0).max(100).optional(),
@@ -549,6 +678,9 @@ export const fileConfigSchema = z.object({
       supportedMimeTypes: supportedMimeTypesSchema.optional(),
     })
     .optional(),
+  defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
+  legacyFileUploadUX: z.boolean().optional(),
+  textFallbackWithoutTools: z.boolean().optional(),
 });
 
 export type TFileConfig = z.infer<typeof fileConfigSchema>;
@@ -597,6 +729,18 @@ export const isPermissiveMimeConfig = (types?: RegexLike[]): boolean => {
     return false;
   }
   return types.some((regex) => regex.test('x-librechat/x-probe'));
+};
+
+/**
+ * Detects whether an endpoint's `supportedMimeTypes` were set by the admin rather than inherited
+ * from the built-in default list. Inheritance is signaled by referential identity with
+ * `supportedMimeTypes`, which `mergeWithDefault` preserves for unconfigured endpoints.
+ */
+export const isExplicitMimeConfig = (types?: RegexLike[]): types is RegexLike[] => {
+  if (!types || types.length === 0) {
+    return false;
+  }
+  return types !== supportedMimeTypes;
 };
 
 /** The kind of content a provider upload path can actually send to the model. */
@@ -715,6 +859,13 @@ const documentMimeExtensions: ReadonlyArray<readonly [string, readonly string[]]
   ['text/calendar', ['.ics']],
   ['message/rfc822', ['.eml']],
 ];
+
+/** Preferred extension for a known document MIME type, including its leading dot. */
+export function getDocumentFileExtension(mimeType?: string): string | undefined {
+  const normalized = mimeType?.split(';', 1)[0].trim().toLowerCase();
+  const canonical = normalized === 'text/comma-separated-values' ? 'text/csv' : normalized;
+  return documentMimeExtensions.find(([type]) => type === canonical)?.[1][0];
+}
 
 const documentMimeSet = new Set(documentMimeExtensions.map(([mimeType]) => mimeType));
 
@@ -871,7 +1022,81 @@ function mergeWithDefault(
     fileSizeLimit: endpointConfig.fileSizeLimit ?? defaultConfig.fileSizeLimit,
     totalSizeLimit: endpointConfig.totalSizeLimit ?? defaultConfig.totalSizeLimit,
     supportedMimeTypes: endpointConfig.supportedMimeTypes ?? defaultMimeTypes,
+    defaultLLMDeliveryPath: mergeDeliveryPathConfig(
+      endpointConfig.defaultLLMDeliveryPath,
+      defaultConfig.defaultLLMDeliveryPath,
+    ),
+    legacyFileUploadUX: endpointConfig.legacyFileUploadUX ?? defaultConfig.legacyFileUploadUX,
+    textFallbackWithoutTools:
+      endpointConfig.textFallbackWithoutTools ?? defaultConfig.textFallbackWithoutTools,
   };
+}
+
+/**
+ * Deep-merges delivery-path config so an endpoint that supplies only one override
+ * still inherits the default's fallback and shared overrides. Whole-object
+ * replacement would silently drop the inherited routing.
+ */
+function mergeDeliveryPathConfig(
+  endpointValue?: TDefaultLLMDeliveryPathConfig,
+  defaultValue?: TDefaultLLMDeliveryPathConfig,
+): TDefaultLLMDeliveryPathConfig | undefined {
+  if (!endpointValue) {
+    return defaultValue;
+  }
+  if (!defaultValue) {
+    return endpointValue;
+  }
+  /* An endpoint fallback terminates resolution after that endpoint's own overrides,
+   * so inheriting the lower layer's overrides would promote them above it. Only when
+   * the endpoint declares no fallback does resolution continue downward, and then the
+   * merged map reproduces the chain exactly: endpoint overrides, default overrides,
+   * default fallback. */
+  if (endpointValue.fallback != null) {
+    return endpointValue;
+  }
+  const hasOverrides = endpointValue.overrides != null || defaultValue.overrides != null;
+  return {
+    ...(defaultValue.fallback != null ? { fallback: defaultValue.fallback } : {}),
+    ...(hasOverrides
+      ? { overrides: { ...shadowByWildcard(defaultValue.overrides, endpointValue.overrides) } }
+      : {}),
+  };
+}
+
+/**
+ * Flattens two override layers into one map that still resolves like the layered chain.
+ * Resolution reads exact keys before wildcards, so a plain spread would let a lower
+ * layer's `image/png` outrank the upper layer's `image/*`. Dropping the entries an
+ * upper wildcard covers restores precedence without changing how lookups work.
+ */
+function shadowByWildcard(
+  lower?: TDeliveryPathOverrides,
+  upper?: TDeliveryPathOverrides,
+): TDeliveryPathOverrides {
+  if (!lower) {
+    return { ...upper };
+  }
+  const upperWildcards = new Set<string>();
+  for (const key in upper) {
+    if (key.endsWith('/*')) {
+      upperWildcards.add(key.slice(0, -1));
+    }
+  }
+  if (upperWildcards.size === 0) {
+    return { ...lower, ...upper };
+  }
+  const retained: TDeliveryPathOverrides = {};
+  for (const key in lower) {
+    const isShadowed =
+      !key.endsWith('/*') &&
+      upperWildcards.has(key.slice(0, key.indexOf('/') + 1)) &&
+      upper?.[key] == null;
+    if (!isShadowed) {
+      retained[key] = lower[key];
+    }
+  }
+  return { ...retained, ...upper };
 }
 
 export function getEndpointFileConfig(params: {
@@ -886,11 +1111,21 @@ export function getEndpointFileConfig(params: {
   }
 
   /** Compute an effective default by merging user-configured default over the base default */
-  const baseDefaultConfig = fileConfig.endpoints.default;
+  const baseDefaultConfig: EndpointFileConfig = fileConfig.endpoints.default;
+  const globalDefaultConfig: EndpointFileConfig = {
+    ...baseDefaultConfig,
+    defaultLLMDeliveryPath: mergeDeliveryPathConfig(
+      mergedFileConfig.defaultLLMDeliveryPath,
+      baseDefaultConfig.defaultLLMDeliveryPath,
+    ),
+    legacyFileUploadUX: mergedFileConfig.legacyFileUploadUX ?? baseDefaultConfig.legacyFileUploadUX,
+    textFallbackWithoutTools:
+      mergedFileConfig.textFallbackWithoutTools ?? baseDefaultConfig.textFallbackWithoutTools,
+  };
   const userDefaultConfig = mergedFileConfig.endpoints.default;
   const defaultConfig = userDefaultConfig
-    ? mergeWithDefault(userDefaultConfig, baseDefaultConfig, 'default')
-    : baseDefaultConfig;
+    ? mergeWithDefault(userDefaultConfig, globalDefaultConfig, 'default')
+    : globalDefaultConfig;
 
   const normalizedEndpoint = normalizeEndpointName(endpoint ?? '');
   const standardEndpoints = new Set([
@@ -1002,6 +1237,18 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
     return mergedConfig;
   }
 
+  if (dynamic.defaultLLMDeliveryPath !== undefined) {
+    mergedConfig.defaultLLMDeliveryPath = dynamic.defaultLLMDeliveryPath;
+  }
+
+  if (dynamic.legacyFileUploadUX !== undefined) {
+    mergedConfig.legacyFileUploadUX = dynamic.legacyFileUploadUX;
+  }
+
+  if (dynamic.textFallbackWithoutTools !== undefined) {
+    mergedConfig.textFallbackWithoutTools = dynamic.textFallbackWithoutTools;
+  }
+
   if (dynamic.serverFileSizeLimit !== undefined) {
     mergedConfig.serverFileSizeLimit = mbToBytes(dynamic.serverFileSizeLimit);
   }
@@ -1012,6 +1259,21 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
 
   if (dynamic.fileTokenLimit !== undefined) {
     mergedConfig.fileTokenLimit = dynamic.fileTokenLimit;
+  }
+
+  if (dynamic.fileContextSizeLimit !== undefined) {
+    mergedConfig.fileContextSizeLimit = mbToBytes(dynamic.fileContextSizeLimit);
+  }
+
+  if (dynamic.fileContextCharLimit !== undefined) {
+    mergedConfig.fileContextCharLimit = dynamic.fileContextCharLimit;
+  }
+
+  if (dynamic.skills?.importCleanupConcurrency !== undefined) {
+    mergedConfig.skills = {
+      ...mergedConfig.skills,
+      importCleanupConcurrency: dynamic.skills.importCleanupConcurrency,
+    };
   }
 
   if (dynamic.skills?.fileSizeLimit !== undefined) {
@@ -1100,6 +1362,18 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
       mergedEndpoint.supportedMimeTypes = convertStringsToRegex(
         dynamicEndpoint.supportedMimeTypes as unknown as string[],
       );
+    }
+
+    if (dynamicEndpoint.defaultLLMDeliveryPath !== undefined) {
+      mergedEndpoint.defaultLLMDeliveryPath = dynamicEndpoint.defaultLLMDeliveryPath;
+    }
+
+    if (dynamicEndpoint.legacyFileUploadUX !== undefined) {
+      mergedEndpoint.legacyFileUploadUX = dynamicEndpoint.legacyFileUploadUX;
+    }
+
+    if (dynamicEndpoint.textFallbackWithoutTools !== undefined) {
+      mergedEndpoint.textFallbackWithoutTools = dynamicEndpoint.textFallbackWithoutTools;
     }
   }
 

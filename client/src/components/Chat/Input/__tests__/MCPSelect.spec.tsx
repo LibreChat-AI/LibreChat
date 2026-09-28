@@ -14,6 +14,7 @@ const defaultMcpServerManager = {
     { serverName: 'server-a', config: { title: 'Server A' } },
     { serverName: 'server-b', config: { title: 'Server B' } },
   ],
+  availableMCPServers: [{ serverName: 'server-a' }, { serverName: 'server-b' }],
   connectionStatus: {},
   isInitializing: () => false,
   getConfigDialogProps: () => null,
@@ -23,6 +24,12 @@ const defaultMcpServerManager = {
 
 let mockCanUseMcp = true;
 let mockMcpServerManager = { ...defaultMcpServerManager };
+
+const mockMCPRefresh = jest.fn();
+
+jest.mock('~/hooks/MCP/useMCPRefresh', () => ({
+  useMCPRefresh: (options: { enabled: boolean; tools?: boolean }) => mockMCPRefresh(options),
+}));
 
 jest.mock('~/Providers', () => ({
   useBadgeRowContext: () => ({
@@ -41,6 +48,8 @@ jest.mock('@librechat/client', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const R = require('react');
   return {
+    /** The real recipe, so the geometry assertions below cover shipped classes. */
+    composerControlClasses: jest.requireActual('@librechat/client').composerControlClasses,
     TooltipAnchor: ({
       children,
       render,
@@ -67,6 +76,7 @@ describe('MCPSelect', () => {
 
   it('renders the menu button', () => {
     render(<MCPSelect />);
+    expect(mockMCPRefresh).toHaveBeenLastCalledWith({ enabled: false });
     expect(screen.getByRole('button', { name: /MCP Servers/i })).toHaveClass(
       'h-theme-control',
       'min-w-theme-control',
@@ -81,6 +91,7 @@ describe('MCPSelect', () => {
 
     await user.click(screen.getByRole('button', { name: /MCP Servers/i }));
 
+    expect(mockMCPRefresh).toHaveBeenLastCalledWith({ enabled: true });
     const menu = screen.getByRole('menu', { name: /com_ui_mcp_servers/i });
     expect(menu).toBeVisible();
     expect(within(menu).getByRole('menuitemcheckbox', { name: /Server A/i })).toBeInTheDocument();

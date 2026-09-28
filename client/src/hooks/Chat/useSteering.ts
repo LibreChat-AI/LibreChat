@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { v4 } from 'uuid';
+import { useAtomValue, useStore } from 'jotai';
 import { useToastContext } from '@librechat/client';
 import { useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
 import {
@@ -37,14 +38,22 @@ import {
 import {
   appendAppliedSteerIds,
   carriedSteerContext,
-  clearAllDrafts,
-  getPendingDraftId,
   insertQueuedOrigin,
+  hydrateFileDeliveryMetadata,
   mergeRestagedQuotes,
 } from '~/utils';
+import {
+  recoveryDispositionsFamily,
+  recoveryDisposition,
+  canRestoreRecovery,
+  blockRecovery,
+} from '~/components/Chat/Steering/recovery';
+import useCodeApprovalMode from '../Agents/useCodeApprovalMode';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import { useLatestMessage } from '~/hooks/Messages';
 import { useSetFilesToDelete } from '~/hooks/Files';
+import { useFileMapContext } from '~/Providers';
 import useLocalize from '~/hooks/useLocalize';
 import store from '~/store';
 
@@ -147,10 +156,10 @@ interface LiveMessageState {
 }
 
 function selectLiveMessageState(message: TMessage | null): LiveMessageState {
-  const parentMessageId =
-    message?.isCreatedByUser === false && typeof message.messageId === 'string'
-      ? message.messageId
-      : undefined;
+  let parentMessageId: string | undefined;
+  if (message?.isCreatedByUser === false && typeof message.messageId === 'string') {
+    parentMessageId = message.clientQueueParentMessageId ?? message.messageId;
+  }
   return { approval: hasLiveToolApproval(message), parentMessageId };
 }
 
@@ -259,6 +268,7 @@ function toQueuedTurnFileRefs(files: TMessage['files']): TAgentQueuedTurnFileRef
         ...(file.type != null && { type: file.type }),
         ...(file.filepath != null && { filepath: file.filepath }),
         ...(file.filename != null && { filename: file.filename }),
+        ...(file.llmDeliveryPath != null && { llmDeliveryPath: file.llmDeliveryPath }),
         ...(file.height != null && { height: file.height }),
         ...(file.width != null && { width: file.width }),
         ...(file.bytes != null && { bytes: file.bytes }),
@@ -268,11 +278,14 @@ function toQueuedTurnFileRefs(files: TMessage['files']): TAgentQueuedTurnFileRef
   return refs.length > 0 ? refs : undefined;
 }
 
+export { hydrateFileDeliveryMetadata as mergeQueuedTurnFileMetadata } from '~/utils/files';
+
 function reconcileServerQueuedTurns(
   previous: QueuedMessage[],
   receipts: AgentQueuedTurnReceipt[],
   settledByRequestId: ReadonlyMap<string, SettledQueuedTurnReceipt>,
   authoritativeSnapshot = true,
+  storedFiles?: Parameters<typeof hydrateFileDeliveryMetadata>[2],
 ): QueuedMessage[] {
   const previousByClientRequestId = new Map(
     previous.flatMap((item) =>
@@ -305,6 +318,7 @@ function reconcileServerQueuedTurns(
     } else if (receipt.status === 'queued' || receipt.status === 'claimed') {
       status = receipt.status;
     }
+    const files = hydrateFileDeliveryMetadata(receipt.files, optimistic?.files, storedFiles);
     return [
       {
         id: optimistic?.id ?? receipt.clientRequestId,
@@ -315,7 +329,7 @@ function reconcileServerQueuedTurns(
         ...(receipt.expectedPredecessorCreatedAt != null && {
           expectedPredecessorCreatedAt: receipt.expectedPredecessorCreatedAt,
         }),
-        ...(receipt.files != null && receipt.files.length > 0 && { files: receipt.files }),
+        ...(files != null && files.length > 0 && { files }),
         ...(receipt.quotes != null && receipt.quotes.length > 0 && { quotes: receipt.quotes }),
         ...(receipt.manualSkills != null &&
           receipt.manualSkills.length > 0 && {
@@ -365,9 +379,12 @@ function reconcileServerQueuedTurns(
 }
 
 export interface UseSteeringParams {
+  /** Consume the actual storage key selected by the composer’s autosave owner. */
+  consumeDraft: () => void;
   index: number;
   conversationId: string;
   conversation: TConversation | null;
+  addedConversation?: TConversation | null;
   isSubmitting: boolean;
   answerModeActive: boolean;
   /** Composer attachments — consumed into queued items (steering is text-only). */
@@ -398,9 +415,11 @@ export interface UseSteeringParams {
  * (abort, then auto-send via the one-shot drain override).
  */
 export default function useSteering({
+  consumeDraft: takeComposerDraft,
   index,
   conversationId,
   conversation,
+  addedConversation,
   isSubmitting,
   answerModeActive,
   files,
@@ -411,6 +430,8 @@ export default function useSteering({
 }: UseSteeringParams) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
+  const jotaiStore = useStore();
+  const fileMap = useFileMapContext();
   const setFilesToDelete = useSetFilesToDelete();
   const convertSteersToQueued = useSteerConvert();
   /** `mutate` is a stable callback; the mutation result objects are fresh
@@ -424,6 +445,7 @@ export default function useSteering({
   const setDefaultAction = useSetRecoilState(store.duringRunDefaultAction);
   const steerInterruptsByDefault = useRecoilValue(store.steerInterruptsByDefault);
 
+  const { selected: codeApprovalMode } = useCodeApprovalMode(conversation, addedConversation);
   const endpoint = conversation?.endpointType ?? conversation?.endpoint;
   const steerable = !isAssistantsEndpoint(endpoint);
   const hasRealConvoId =
@@ -463,12 +485,31 @@ export default function useSteering({
     const expiry = item.server.uncertainSince + QUEUED_TURN_RECONCILIATION_MS;
     return earliest == null ? expiry : Math.min(earliest, expiry);
   }, undefined);
+  /** An expired uncertain row is held for manual recovery only; nothing the
+   *  projection can say about it is still expected. */
+  const expectsReceipts = useMemo(
+    () =>
+      queuedMessages.some(
+        (item) =>
+          item.server != null &&
+          (item.server.status === 'sending' ||
+            item.server.status === 'queued' ||
+            item.server.status === 'claimed' ||
+            (item.server.status === 'uncertain' && item.server.reconciliationExpired !== true)),
+      ),
+    [queuedMessages],
+  );
   const { data: serverQueuedTurns } = useAgentQueuedTurns(
     conversationId,
     serverQueueEnabled,
     knownClientRequestIds,
     reconciliationUntil,
+    expectsReceipts,
   );
+  /** Retain admission ownership through history hydration and stream attach;
+   * ordinary sends must not overtake the server-owned successor. */
+  const pendingReveal = useAtomValue(revealedQueuedTurnFamily(queueKey));
+  const revealPending = pendingReveal != null;
   const activeGenerationCreatedAt = useRecoilValue(
     store.activeGenerationCreatedAtByConvoId(queueKey),
   );
@@ -525,11 +566,12 @@ export default function useSteering({
               receipts,
               terminalForReconciliation,
               source === 'snapshot',
+              fileMap,
             ),
           );
         }
       },
-    [queueKey],
+    [fileMap, queueKey],
   );
 
   const finishQueuedTurnEnqueue = useRecoilCallback(
@@ -594,7 +636,7 @@ export default function useSteering({
    * `isSubmitting` flips earlier so the user can keep typing; during that
    * bounded interval submits degrade to the local queue and Stop/steer refuse. */
   const canControlGeneration = activeGenerationCreatedAt != null;
-  const duringRunActive = enabled && isSubmitting && !answerModeActive;
+  const duringRunActive = enabled && (isSubmitting || revealPending) && !answerModeActive;
   /** Queue rows can be sent concurrently. Keep their captured origins while
    *  absent so a later capture still sees the complete logical queue. Origins
    *  are isolated per conversation because this hook survives navigation. */
@@ -695,8 +737,9 @@ export default function useSteering({
     }
   }, [pendingSteers, queueKey]);
 
-  /** The exact visible assistant tail is captured into a server queued turn,
-   * while the approval bit keeps the steering controls honest. */
+  /** Capture a durable branch anchor into a server queued turn. Optimistic
+   * assistant placeholders are siblings of their eventual persisted response,
+   * so they anchor through their stable user parent. */
   const latestMessage = useLatestMessage(index, hasRealConvoId ? conversationId : null);
   const liveMessageState = useMemo(() => selectLiveMessageState(latestMessage), [latestMessage]);
   /** Both approval cards and `ask_user_question` suspend the current
@@ -714,7 +757,7 @@ export default function useSteering({
   /** Whether a queued row has a real immediate-send path. Answer mode keeps
    * `isSubmitting` true while hiding during-run steering, so presenting Send
    * now there would be an enabled no-op. */
-  const canSendQueuedNow = !isSubmitting || (duringRunActive && canSteer);
+  const canSendQueuedNow = (!isSubmitting && !revealPending) || (duringRunActive && canSteer);
   /** Steering needs a live server-side job; degrade to queue otherwise. */
   const effectiveAction: DuringRunAction = canSteer ? defaultAction : 'queue';
 
@@ -952,12 +995,20 @@ export default function useSteering({
         if (trimmed.length === 0) {
           return;
         }
-        const parentMessageId = liveMessageState?.parentMessageId;
-        /** The active epoch is the authority-transfer fence. During startup an
-         * existing branch tail may already be visible while no generation owns
-         * it yet, so keep those turns local until the epoch is concrete. */
+        const parentMessageId =
+          pendingReveal != null
+            ? pendingReveal.queueParentMessageId
+            : liveMessageState?.parentMessageId;
+        const predecessorCreatedAt =
+          pendingReveal != null
+            ? pendingReveal.queuePredecessorCreatedAt
+            : activeGenerationCreatedAt;
+        /** FINAL clears the active epoch before attachment. The revealed
+         * intent retains the queue's original parent/epoch pair. Its display
+         * parent and advancing completion boundary are not queue lineage.
+         * Without an authoritative pair, retain the follow-up locally. */
         const serverOwned =
-          serverQueueEnabled && parentMessageId != null && activeGenerationCreatedAt != null;
+          serverQueueEnabled && parentMessageId != null && predecessorCreatedAt != null;
         const generatedClientRequestId = options?.clientRequestId == null;
         const clientRequestId = options?.clientRequestId ?? (serverOwned ? v4() : undefined);
         const item: QueuedMessage = {
@@ -969,9 +1020,9 @@ export default function useSteering({
             parentMessageId,
             server: { status: 'sending' },
           }),
-          ...((options?.expectedPredecessorCreatedAt ?? activeGenerationCreatedAt) != null && {
+          ...((options?.expectedPredecessorCreatedAt ?? predecessorCreatedAt) != null && {
             expectedPredecessorCreatedAt:
-              options?.expectedPredecessorCreatedAt ?? activeGenerationCreatedAt ?? undefined,
+              options?.expectedPredecessorCreatedAt ?? predecessorCreatedAt ?? undefined,
           }),
           ...(options?.files && options.files.length > 0 && { files: options.files }),
           ...(options?.quotes && options.quotes.length > 0 && { quotes: options.quotes }),
@@ -1010,6 +1061,7 @@ export default function useSteering({
                 item.manualSkills.length > 0 && {
                   manualSkills: item.manualSkills,
                 }),
+              ...(codeApprovalMode != null && { codeApprovalMode }),
               ...(item.priority === true && { priority: true }),
               ...(item.expectedPredecessorCreatedAt != null && {
                 expectedPredecessorCreatedAt: item.expectedPredecessorCreatedAt,
@@ -1067,7 +1119,9 @@ export default function useSteering({
       queueKey,
       conversationId,
       serverQueueEnabled,
+      codeApprovalMode,
       liveMessageState?.parentMessageId,
+      pendingReveal,
       markQueuedFilesUsage,
       activeGenerationCreatedAt,
       enqueueAgentQueuedTurn,
@@ -1094,6 +1148,7 @@ export default function useSteering({
       // the attachment into the composer with its real name and size.
       filename: file.filename,
       bytes: file.size,
+      llmDeliveryPath: file.llmDeliveryPath,
     }));
     setFiles(new Map());
     setFilesToDelete({});
@@ -1192,19 +1247,6 @@ export default function useSteering({
     [],
   );
 
-  /** Consumes the composer's autosaved draft once its text has been taken into
-   *  a steer or queued item. The composer clears via the form's `reset()`,
-   *  which is programmatic and never fires the `input` event `useAutoSave`
-   *  listens on — so the draft would outlive the submit. It is keyed under
-   *  this pane's pending draft key here (every caller is gated on
-   *  `duringRunActive`, which requires `isSubmitting` and rules out the
-   *  answer-mode draft key), and run end migrates a surviving pending draft
-   *  onto the conversation and restores it: resurfacing text the user already
-   *  sent. */
-  const takeComposerDraft = useCallback(() => {
-    clearAllDrafts(getPendingDraftId(index));
-  }, [index]);
-
   const removeQueued = useRecoilCallback(
     ({ set }) =>
       (id: string) => {
@@ -1227,36 +1269,6 @@ export default function useSteering({
           found = true;
           const { server: _server, parentMessageId: _parentMessageId, ...local } = item;
           return local;
-        });
-        if (found) {
-          set(store.queuedMessagesByConvoId(queueKey), next);
-        }
-        return found;
-      },
-    [queueKey],
-  );
-
-  /** Once a parked source is discarded it must never be retried as a recovery
-   * attempt. Downgrade the row in place so a guarded Edit that finds a newer
-   * draft can leave the same words, context, identity, and queue position as
-   * an ordinary local follow-up. */
-  const downgradeQueuedRecovery = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (id: string): boolean => {
-        const queue = snapshot.getLoadable(store.queuedMessagesByConvoId(queueKey)).getValue();
-        let found = false;
-        const next = queue.map((item) => {
-          if (item.id !== id) {
-            return item;
-          }
-          found = true;
-          const {
-            clientRequestId: _clientRequestId,
-            recoverySteerId: _recoverySteerId,
-            recoveryClientSteerId: _recoveryClientSteerId,
-            ...ordinary
-          } = item;
-          return ordinary;
         });
         if (found) {
           set(store.queuedMessagesByConvoId(queueKey), next);
@@ -1298,6 +1310,12 @@ export default function useSteering({
             return false;
           }
           applyQueuedTurnReceipts([receipt], 'direct');
+          /** The turn was shown as next; the confirmed cancellation ends that
+           *  at once rather than on the next receipt refetch. */
+          const revealFamily = revealedQueuedTurnFamily(queueKey);
+          if (jotaiStore.get(revealFamily)?.clientRequestId === item.clientRequestId) {
+            jotaiStore.set(revealFamily, null);
+          }
           return downgradeServerQueuedTurn(item.id);
         } catch {
           showToast({
@@ -1311,16 +1329,32 @@ export default function useSteering({
         return true;
       }
       if (item.recoveryClientSteerId == null || !hasRealConvoId) {
+        jotaiStore.set(recoveryDispositionsFamily(queueKey), (previous) =>
+          blockRecovery(previous, item.recoverySteerId!),
+        );
         showToast({
           message: localize('com_ui_steer_cancel_failed'),
           status: 'error',
         });
         return false;
       }
+      const dispositions = recoveryDispositionsFamily(queueKey);
+      const disposition = recoveryDisposition(jotaiStore.get(dispositions), item);
+      if (disposition === 'cancelled') {
+        return true;
+      }
+      if (disposition === 'cancelling') {
+        return false;
+      }
+      if (!canRestoreRecovery(jotaiStore.get(dispositions), item)) {
+        return false;
+      }
+      const steerId = item.recoverySteerId;
+      jotaiStore.set(dispositions, (previous) => ({ ...previous, [steerId]: 'cancelling' }));
       try {
         const { removed } = await cancelSteer({
           conversationId,
-          steerId: item.recoverySteerId,
+          steerId,
           clientSteerId: item.recoveryClientSteerId,
         });
         if (removed !== true) {
@@ -1330,13 +1364,20 @@ export default function useSteering({
           });
           return false;
         }
-        return downgradeQueuedRecovery(item.id);
+        jotaiStore.set(dispositions, (previous) => ({ ...previous, [steerId]: 'cancelled' }));
+        // Keep the binding held until the caller's guarded Edit/Remove succeeds.
+        // A newer composer draft must not turn cancelled words into an auto-send.
+        return true;
       } catch {
         showToast({
           message: localize('com_ui_steer_cancel_failed'),
           status: 'error',
         });
         return false;
+      } finally {
+        jotaiStore.set(dispositions, (previous) =>
+          previous[steerId] === 'cancelling' ? { ...previous, [steerId]: 'blocked' } : previous,
+        );
       }
     },
     [
@@ -1344,12 +1385,31 @@ export default function useSteering({
       cancelAgentQueuedTurn,
       applyQueuedTurnReceipts,
       conversationId,
-      downgradeQueuedRecovery,
       downgradeServerQueuedTurn,
       hasRealConvoId,
       localize,
       showToast,
+      jotaiStore,
+      queueKey,
     ],
+  );
+
+  const dismissRecovery = useCallback(
+    (item: QueuedMessage) => {
+      const dispositions = recoveryDispositionsFamily(queueKey);
+      if (
+        item.recoverySteerId == null ||
+        !['blocked', 'cancelled'].includes(
+          recoveryDisposition(jotaiStore.get(dispositions), item) ?? '',
+        )
+      ) {
+        return;
+      }
+      const steerId = item.recoverySteerId;
+      jotaiStore.set(dispositions, (previous) => ({ ...previous, [steerId]: 'dismissed' }));
+      removeQueued(item.id);
+    },
+    [jotaiStore, queueKey, removeQueued],
   );
 
   /** Capture-then-remove, including the item's neighbours, so any refused send
@@ -1418,9 +1478,13 @@ export default function useSteering({
     ({ set }) =>
       (origin: QueuedMessageOrigin) => {
         releaseQueuedOrigin(origin);
-        set(store.queuedMessagesByConvoId(queueKey), (prev) => insertQueuedOrigin(prev, origin));
+        set(store.queuedMessagesByConvoId(queueKey), (prev) =>
+          canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(queueKey)), origin.item)
+            ? insertQueuedOrigin(prev, origin)
+            : prev,
+        );
       },
-    [queueKey, releaseQueuedOrigin],
+    [queueKey, releaseQueuedOrigin, jotaiStore],
   );
 
   /**
@@ -1965,6 +2029,9 @@ export default function useSteering({
    *  boundary; it only means something on the live-run path. */
   const sendLocalQueuedNow = useCallback(
     (item: QueuedMessage, opts?: { preempt?: boolean }) => {
+      if (recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(queueKey)), item) != null) {
+        return;
+      }
       /** In answer mode (and any other submission-owned non-steerable state)
        * there is no immediate path. Refuse before touching queue state so a
        * stale/direct caller cannot perform the old remove-and-restore no-op. */
@@ -2033,6 +2100,8 @@ export default function useSteering({
     },
     [
       takeQueued,
+      jotaiStore,
+      queueKey,
       duringRunActive,
       canSteer,
       submitSteer,
@@ -2193,6 +2262,7 @@ export default function useSteering({
       enqueue,
       removeQueued,
       discardQueued,
+      dismissRecovery,
       sendQueuedNow,
       interruptAndSend,
       interruptSteer,
@@ -2219,6 +2289,7 @@ export default function useSteering({
       enqueue,
       removeQueued,
       discardQueued,
+      dismissRecovery,
       sendQueuedNow,
       interruptAndSend,
       interruptSteer,

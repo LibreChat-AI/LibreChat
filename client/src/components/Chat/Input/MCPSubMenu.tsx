@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react';
 import { MCPIcon, PinIcon } from '@librechat/client';
 import MCPServerMenuItem from '~/components/MCP/MCPServerMenuItem';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
+import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
 import { useBadgeRowContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -22,6 +23,13 @@ const MCPSubMenu = React.forwardRef<HTMLButtonElement, MCPSubMenuProps>(
       focusLoop: true,
       showTimeout: 100,
       placement: 'right',
+    });
+
+    const isOpen = menuStore.useState('open');
+    const configDialogOpen = mcpServerManager?.getConfigDialogProps()?.isOpen === true;
+    useMCPRefresh({
+      enabled:
+        (isOpen || configDialogOpen) && (mcpServerManager?.selectableServers.length ?? 0) > 0,
     });
 
     if (!mcpServerManager) {

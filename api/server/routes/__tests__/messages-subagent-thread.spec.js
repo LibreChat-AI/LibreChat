@@ -6,6 +6,7 @@ const mockIsSubagentThreadWriteBlocked = jest.fn();
 jest.mock('@librechat/agents', () => ({ sleep: jest.fn() }));
 
 jest.mock('@librechat/api', () => ({
+  withoutTraceRefs: jest.fn((message) => message),
   createContentFilter: jest.fn(() => (_req, _res, next) => next()),
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(1),
@@ -127,7 +128,7 @@ describe('message mutation policy for durable subagent threads', () => {
     }
     expect(mockIsSubagentThreadWriteBlocked).toHaveBeenCalledTimes(5);
     expect(mockIsSubagentThreadWriteBlocked).toHaveBeenCalledWith(
-      expect.objectContaining({ getConvo: db.getConvo }),
+      expect.objectContaining({ getConvo: expect.any(Function) }),
       {
         userId: 'owner-user',
         conversationId: 'child-conversation',

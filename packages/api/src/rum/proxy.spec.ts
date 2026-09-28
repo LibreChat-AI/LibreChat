@@ -2,6 +2,11 @@ jest.mock('~/app/metrics', () => ({
   recordRumProxyRequest: jest.fn(),
 }));
 
+import express from 'express';
+import request from 'supertest';
+import { createServer } from 'node:http';
+import { logger } from '@librechat/data-schemas';
+import type { Server } from 'node:http';
 import { recordRumProxyRequest } from '~/app/metrics';
 import {
   getRumProxyBodyLimit,
@@ -110,6 +115,7 @@ describe('RUM proxy configuration', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('http://otel-collector:4318/v1/traces', {
       method: 'POST',
+      redirect: 'follow',
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
@@ -179,4 +185,149 @@ describe('RUM proxy configuration', () => {
     expect(recordRumProxyRequest).toHaveBeenCalledWith('logs', 'collector_5xx');
     fetchMock.mockRestore();
   });
+});
+
+describe('RUM proxy upstream HTTP contract', () => {
+  const originalEnv = process.env;
+  let collector: Server;
+  let collectorUrl: string;
+
+  beforeEach(async () => {
+    process.env = { ...originalEnv };
+    jest.mocked(recordRumProxyRequest).mockClear();
+    collector = createServer();
+    await new Promise<void>((resolve) => collector.listen(0, '127.0.0.1', resolve));
+    const address = collector.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected a TCP collector address');
+    }
+    collectorUrl = `http://127.0.0.1:${address.port}`;
+    process.env.RUM_PROXY_TARGET_URL = collectorUrl;
+  });
+
+  afterEach(async () => {
+    process.env = originalEnv;
+    collector.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      collector.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+
+  function createProxy(authorization?: string) {
+    const app = express();
+    app.use(express.raw({ type: '*/*' }));
+    app.post('/v1/:signal', (req, res) => proxyRumRequest(req, res, authorization));
+    return app;
+  }
+
+  it.each(['traces', 'logs'])(
+    'sends only server credentials and intact %s payloads',
+    async (signal) => {
+      const payload = Buffer.from([0x0a, 0x02, 0x00, 0xff]);
+      const received: {
+        authorization?: string;
+        cookie?: string;
+        apiKey?: string;
+        path?: string;
+        body: Buffer;
+      } = {
+        body: Buffer.alloc(0),
+      };
+      collector.on('request', (req, res) => {
+        received.authorization = req.headers.authorization;
+        received.cookie = req.headers.cookie;
+        received.apiKey = req.headers['x-api-key']?.toString();
+        received.path = req.url;
+        req.on('data', (chunk: Buffer) => {
+          received.body = Buffer.concat([received.body, chunk]);
+        });
+        req.on('end', () => {
+          res.writeHead(202, { 'content-type': 'application/x-protobuf' });
+          res.end(Buffer.from([0x00]));
+        });
+      });
+
+      const response = await request(createProxy('  clickstack-ingestion-key  '))
+        .post(`/v1/${signal}`)
+        .set('Content-Type', 'application/x-protobuf')
+        .set('Authorization', 'Bearer librechat-session-token')
+        .set('Cookie', 'refreshToken=private-cookie')
+        .set('X-Api-Key', 'browser-supplied-key')
+        .send(payload);
+
+      expect(response.status).toBe(202);
+      expect(received).toEqual({
+        authorization: 'clickstack-ingestion-key',
+        cookie: undefined,
+        apiKey: undefined,
+        path: `/v1/${signal}`,
+        body: payload,
+      });
+      expect(recordRumProxyRequest).toHaveBeenCalledWith(signal, 'success');
+    },
+  );
+
+  it.each([undefined, '', '   '])(
+    'preserves unauthenticated collectors with authorization %p',
+    async (authorization) => {
+      let receivedAuthorization: string | undefined;
+      collector.on('request', (req, res) => {
+        receivedAuthorization = req.headers.authorization;
+        req.resume();
+        res.writeHead(200);
+        res.end('{}');
+      });
+      const response = await request(createProxy(authorization))
+        .post('/v1/logs')
+        .set('Authorization', 'Bearer app-token')
+        .set('Content-Type', 'application/json')
+        .send('{}');
+
+      expect(response.status).toBe(200);
+      expect(receivedAuthorization).toBeUndefined();
+    },
+  );
+
+  it.each([301, 302, 303, 307, 308])(
+    'does not follow a credentialed %s redirect, even on the same origin',
+    async (status) => {
+      const paths: string[] = [];
+      collector.on('request', (req, res) => {
+        paths.push(req.url ?? '');
+        req.resume();
+        res.writeHead(status, { location: `${collectorUrl}/redirect-target` });
+        res.end();
+      });
+      const response = await request(createProxy('clickstack-ingestion-key'))
+        .post('/v1/traces')
+        .set('Content-Type', 'application/json')
+        .send('{}');
+
+      expect(response.status).toBe(502);
+      expect(paths).toEqual(['/v1/traces']);
+      expect(response.headers.location).toBeUndefined();
+      expect(recordRumProxyRequest).toHaveBeenCalledWith('traces', 'collector_error');
+    },
+  );
+
+  it.each(['private-key\r\ninjected: value', 'private-key-😀'])(
+    'rejects invalid credentials without leaking them',
+    async (authorization) => {
+      const fetchSpy = jest.spyOn(global, 'fetch');
+      const logSpy = jest.spyOn(logger, 'warn');
+      const response = await request(createProxy(authorization))
+        .post('/v1/traces')
+        .set('Content-Type', 'application/json')
+        .send('{}');
+
+      expect(response.status).toBe(502);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('[rumProxy] Failed to proxy RUM telemetry', {
+        error: 'Invalid RUM proxy authorization header',
+        target: `${collectorUrl}/v1/traces`,
+      });
+      expect(response.text).not.toContain('private-key');
+      expect(JSON.stringify(logSpy.mock.calls)).not.toContain('private-key');
+    },
+  );
 });

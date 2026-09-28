@@ -158,6 +158,11 @@ export function applySteerPart(message: TMessage, event: TSteerAppliedEvent): TM
   const content = Array.isArray(message.content) ? message.content : [];
   const existing = getSteerPart(content[index] as TMessageContentParts | undefined);
   if (existing != null && existing.steerId === part.steerId) {
+    if (existing.files?.length && !part.files?.length) {
+      const nextContent = [...content] as TMessageContentParts[];
+      nextContent[index] = part as TMessageContentParts;
+      return { ...message, content: nextContent };
+    }
     return message;
   }
   const nextContent = [...content] as TMessageContentParts[];
@@ -316,23 +321,66 @@ export function dedupeSteersById(...lists: Array<TPendingSteer[] | undefined>): 
 }
 
 /**
- * Resolves the assistant response message a steer event targets. Exact-id
- * assistant match when `responseMessageId` is present (a miss returns -1 so
- * the caller retries next frame — same rationale as
- * `findPendingActionMessageIndex`); best-effort last assistant otherwise.
+ * Resolves the assistant row a server event addresses by `responseMessageId`.
+ *
+ * The server stamps steer and activity-label events with the response id it
+ * pre-allocated at job creation, but the pane renders under `${userMessageId}_`
+ * until the FIRST run step renames the row — the `created` event carries only
+ * the user message. An event injected before any step (an interrupt before the
+ * model has said a word lands its steer at content index 0) therefore names a
+ * row that does not exist locally yet, and would otherwise be retried until the
+ * frame budget ran out and then dropped from the live view while the persisted
+ * message kept it.
+ *
+ * `fallbackMessageIds` are the pane's OWN placeholder identities, supplied by
+ * the caller from its submission in priority order. They are an explicit
+ * identity, never a guess by position: a regenerate targets an older branch
+ * while the visible history still ends at a later assistant, so the last
+ * assistant row is never taken when the event carries an id — a miss returns
+ * -1 and the caller retries next frame, same rationale as
+ * `findPendingActionMessageIndex`. The rename copies the placeholder's content
+ * forward, so a part placed here rides into the renamed row. Without an id the
+ * best-effort last assistant row is used.
  */
-export function findSteerMessageIndex(messages: TMessage[], event: TSteerAppliedEvent): number {
+export function findResponseMessageIndex(
+  messages: TMessage[],
+  responseMessageId: string | null | undefined,
+  fallbackMessageIds: readonly (string | null | undefined)[] = [],
+): number {
   const isAssistant = (message: TMessage | undefined) => message?.isCreatedByUser === false;
-  const { responseMessageId } = event;
-  if (responseMessageId) {
-    return messages.findIndex(
-      (message) => message.messageId === responseMessageId && isAssistant(message),
-    );
+  if (!responseMessageId) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (isAssistant(messages[i])) {
+        return i;
+      }
+    }
+    return -1;
   }
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (isAssistant(messages[i])) {
+  const placeholderIds = fallbackMessageIds.filter((id): id is string => Boolean(id));
+  let placeholder = -1;
+  let placeholderRank = placeholderIds.length;
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+    if (!isAssistant(message)) {
+      continue;
+    }
+    if (message.messageId === responseMessageId) {
       return i;
     }
+    const rank = placeholderIds.indexOf(message.messageId);
+    if (rank >= 0 && rank < placeholderRank) {
+      placeholder = i;
+      placeholderRank = rank;
+    }
   }
-  return -1;
+  return placeholder;
+}
+
+/** Resolves the assistant row an applied steer targets; see `findResponseMessageIndex`. */
+export function findSteerMessageIndex(
+  messages: TMessage[],
+  event: TSteerAppliedEvent,
+  fallbackMessageIds: readonly (string | null | undefined)[] = [],
+): number {
+  return findResponseMessageIndex(messages, event.responseMessageId, fallbackMessageIds);
 }

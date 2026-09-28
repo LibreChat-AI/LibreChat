@@ -9,7 +9,10 @@ const LIMITS: ScheduleLimits = {
   maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
+  admissionConcurrency: 20,
   fireConcurrency: 5,
+  mcpPreflightConcurrency: 3,
+  mcpPreflightTimeoutMs: 300_000,
   requireProject: false,
 };
 
@@ -78,6 +81,7 @@ function makeDeps(
     getLimits: async () => LIMITS,
     getUserContext: async () => OWNER,
     isOutOfBalance: async () => false,
+    preflightMCP: jest.fn().mockResolvedValue([]),
     agentAccess: async () => 'ok',
     hasScheduleAccess: async () => true,
     resolveFiles: async () => [],
@@ -175,6 +179,71 @@ describe('runTick misfire skip-forward', () => {
 });
 
 describe('runTick error handling', () => {
+  it('uses readiness admission capacity independently of generation capacity', async () => {
+    const schedules = Array.from({ length: 6 }, (_, index) =>
+      makeClaimedSchedule({
+        id: `sched-${index}`,
+        user: `user-${index}` as never,
+        claimToken: `ct-${index}`,
+        leaseBy: `inst-${index}`,
+      }),
+    );
+    const methods = makeMethods(schedules[0]);
+    const claims: Array<FireableSchedule | null> = [...schedules, null];
+    methods.claimDueSchedule.mockImplementation(async () => claims.shift() ?? null);
+    methods.countActiveRuns.mockResolvedValue(5);
+    const getUserContext = jest.fn(async () => null);
+
+    await tickOnce(
+      makeDeps(methods, {
+        getLimits: async () => ({ ...LIMITS, admissionConcurrency: 6, fireConcurrency: 1 }),
+        getUserContext,
+      }),
+    );
+
+    expect(getUserContext).toHaveBeenCalledTimes(6);
+    expect(methods.countActiveRuns).not.toHaveBeenCalled();
+  });
+
+  it('starts later admissions while an earlier schedule is still in preflight', async () => {
+    const first = makeClaimedSchedule();
+    const second = makeClaimedSchedule({
+      id: 'sched-2',
+      user: 'user-2' as never,
+      claimToken: 'ct-2',
+      leaseBy: 'inst-2',
+    });
+    const methods = makeMethods(first);
+    const claims = [first, second, null];
+    methods.claimDueSchedule.mockImplementation(async () => claims.shift() ?? null);
+    let releaseFirst!: () => void;
+    const firstPreflight = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markSecondStarted!: () => void;
+    const secondStarted = new Promise<void>((resolve) => {
+      markSecondStarted = resolve;
+    });
+    const getUserContext = jest.fn(
+      async (userId: Parameters<ScheduleEngineDeps['getUserContext']>[0]) => {
+        if (String(userId) === 'user-1') {
+          await firstPreflight;
+        } else {
+          markSecondStarted();
+        }
+        return null;
+      },
+    );
+    const engine = startScheduleEngine(makeDeps(methods, { getUserContext }));
+
+    const tick = engine.runTick();
+    await secondStarted;
+    expect(getUserContext).toHaveBeenCalledWith('user-2');
+    releaseFirst();
+    await expect(tick).resolves.toBe(0);
+    engine.stop();
+  });
+
   it('retains the due occurrence when a preflight query throws', async () => {
     const schedule = makeClaimedSchedule();
     const methods = makeMethods(schedule);
@@ -268,6 +337,46 @@ describe('reconciliation consults the durable trigger delivery', () => {
     }));
     expect(methods.recordRunOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ scheduleId: 's1', status: 'error', error: 'rate limited' }),
+    );
+  });
+
+  it('replays admission-only MCP evidence without consulting a generation job', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([
+      {
+        ...joblessRun(YOUNG()),
+        admissionOnly: true,
+        error: 'mcp_configuration_missing',
+        mcp: [
+          {
+            server: 'Notion',
+            agentId: 'research-agent',
+            status: 'mcp_configuration_missing',
+          },
+        ],
+      },
+    ]);
+    const getJobStatus = jest.fn(async () => {
+      throw new Error('admission-only rows have no job');
+    });
+
+    await tickOnce(makeDeps(methods, { getJobStatus }));
+
+    expect(getJobStatus).not.toHaveBeenCalled();
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduleId: 's1',
+        status: 'error',
+        error: 'mcp_configuration_missing',
+        clearConversationId: true,
+        mcp: [
+          {
+            server: 'Notion',
+            agentId: 'research-agent',
+            status: 'mcp_configuration_missing',
+          },
+        ],
+      }),
     );
   });
 
@@ -424,6 +533,7 @@ describe('bookkeeping replay rotation', () => {
       user: 'u1',
       status: 'success',
       conversationId: 'convo-crashed',
+      mcp: [{ server: 'Notion', agentId: 'research-agent', status: 'ready' }],
     };
     (methods.getUnbookkeptRuns as jest.Mock).mockResolvedValue([unbookkept]);
     const clearReconciledJob = jest.fn(async () => undefined);
@@ -431,7 +541,10 @@ describe('bookkeeping replay rotation', () => {
     await reconcileOnce(makeDeps(methods, { clearReconciledJob }));
 
     expect(methods.finalizeBookkeeping).toHaveBeenCalledWith(
-      expect.objectContaining({ scheduleId: 'sched-crashed' }),
+      expect.objectContaining({
+        scheduleId: 'sched-crashed',
+        mcp: [{ server: 'Notion', agentId: 'research-agent', status: 'ready' }],
+      }),
     );
     expect(clearReconciledJob).toHaveBeenCalledWith('convo-crashed', {
       scheduleId: 'sched-crashed',

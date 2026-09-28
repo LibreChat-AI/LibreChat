@@ -7,6 +7,7 @@ import type { RedisClientType, RedisClusterType } from '@redis/client';
 import type { Redis, Cluster } from 'ioredis';
 import type { ReadonlyRecoveryHandler } from './recovery';
 import { createReadonlyRecovery, isReadonlyReplicaError } from './recovery';
+import { startRedisHeartbeat } from './heartbeat';
 import { cacheConfig } from './cacheConfig';
 
 const urls = cacheConfig.REDIS_URI?.split(',').map((uri) => new URL(uri)) || [];
@@ -73,6 +74,7 @@ if (cacheConfig.USE_REDIS) {
     enableOfflineQueue: cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
     connectTimeout: cacheConfig.REDIS_CONNECT_TIMEOUT,
     maxRetriesPerRequest: 3,
+    keepAlive: cacheConfig.REDIS_KEEP_ALIVE,
   };
 
   ioredisClient = !isRedisCluster
@@ -129,25 +131,14 @@ if (cacheConfig.USE_REDIS) {
     logger.warn('ioredis client connection closed');
   });
 
-  /** Ping Interval to keep the Redis server connection alive (if enabled) */
-  let pingInterval: NodeJS.Timeout | null = null;
-  const clearPingInterval = () => {
-    if (pingInterval) {
-      clearInterval(pingInterval);
-      pingInterval = null;
-    }
-  };
-
+  /** Deadline-bounded keepalive PINGs; an unanswered probe forces a reconnect. */
   if (cacheConfig.REDIS_PING_INTERVAL > 0) {
-    pingInterval = setInterval(() => {
-      if (ioredisClient && ioredisClient.status === 'ready') {
-        ioredisClient.ping().catch((err) => {
-          logger.error('ioredis ping failed:', err);
-        });
-      }
-    }, cacheConfig.REDIS_PING_INTERVAL * 1000);
-    ioredisClient.on('close', clearPingInterval);
-    ioredisClient.on('end', clearPingInterval);
+    startRedisHeartbeat({
+      client: ioredisClient,
+      intervalMs: cacheConfig.REDIS_PING_INTERVAL * 1000,
+      timeoutMs: cacheConfig.REDIS_PING_TIMEOUT,
+      label: 'ioredis client',
+    });
   }
 }
 

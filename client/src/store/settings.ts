@@ -97,6 +97,12 @@ const localStorageAtoms = {
   saveBadgesState: atomWithLocalStorage('saveBadgesState', false),
   /** User preference for downscaling images before upload; ignored when the admin config sets it */
   clientImageResize: atomWithLocalStorage('clientImageResize', false),
+  /**
+   * Whether copying a message also puts a rendered HTML version on the
+   * clipboard, so apps that ignore Markdown (Teams, Outlook, Word) paste the
+   * formatting instead of the raw syntax.
+   */
+  copyRichText: atomWithLocalStorage('copyRichText', false),
 
   // Beta features settings
   modularChat: atomWithLocalStorage('modularChat', true),

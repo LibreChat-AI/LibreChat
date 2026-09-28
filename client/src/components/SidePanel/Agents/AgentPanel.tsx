@@ -19,6 +19,7 @@ import {
 import type { Agent, AgentUpdateParams } from 'librechat-data-provider';
 import type { FieldNamesMarkedBoolean } from 'react-hook-form';
 import type { TranslationKeys } from '~/hooks/useLocalize';
+import type { AgentParameterConfig } from './parameters';
 import type { AgentForm, StringOption } from '~/common';
 import {
   useCreateAgentMutation,
@@ -32,6 +33,7 @@ import {
   getAvailableAgentSelection,
   getDefaultAgentFormValues,
 } from '~/utils';
+import { pruneAgentModelParameters, resolveAgentParameterSettings } from './parameters';
 import { useResourcePermissions } from '~/hooks/useResourcePermissions';
 import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
@@ -68,14 +70,18 @@ function getUpdateToastMessage(
  * @param {string | null} [agent_id] - Agent identifier, if the agent already exists.
  * @returns {{ payload: Partial<AgentForm>; provider: string; model: string }} Payload metadata.
  */
-export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | null) {
+export function composeAgentUpdatePayload(
+  data: AgentForm,
+  agent_id?: string | null,
+  parameterConfig?: AgentParameterConfig,
+) {
   const {
     name,
     artifacts,
     description,
     instructions,
     model: _model,
-    model_parameters,
+    model_parameters: currentModelParameters,
     provider: _provider,
     agent_ids,
     edges,
@@ -85,6 +91,9 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
     stateful_code_sessions,
     stateful_code_environment,
     code_environment_id,
+    repositoryInstructions,
+    code_workspace_id,
+    git_identity,
     recursion_limit,
     category,
     support_contact,
@@ -110,6 +119,32 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
   const model = _model ?? '';
   const provider =
     (typeof _provider === 'string' ? _provider : (_provider as StringOption).value) ?? '';
+  /** Pruning reads the complete schema, not the rendered subset, so a role-gated
+   *  parameter is preserved rather than deleted when someone without the
+   *  permission saves an unrelated edit. `webSearchAllowed` narrows only
+   *  `visibleParameters`, which this path does not use. */
+  const modelParameterSettings = parameterConfig
+    ? resolveAgentParameterSettings({
+        ...parameterConfig,
+        model,
+        provider,
+        webSearchAllowed: true,
+      })
+    : undefined;
+  const model_parameters = modelParameterSettings
+    ? pruneAgentModelParameters(currentModelParameters, modelParameterSettings)
+    : currentModelParameters;
+  let normalizedGitIdentity: AgentUpdateParams['git_identity'];
+  const gitIdentityName = git_identity?.name?.trim() ?? '';
+  const gitIdentityEmail = git_identity?.email?.trim() ?? '';
+  if (gitIdentityName || gitIdentityEmail) {
+    normalizedGitIdentity = {
+      name: gitIdentityName,
+      email: gitIdentityEmail,
+    };
+  } else if (agent_id && git_identity != null) {
+    normalizedGitIdentity = null;
+  }
 
   return {
     payload: {
@@ -128,6 +163,9 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
       stateful_code_sessions: normalizedStatefulCodeSessions,
       stateful_code_environment: normalizedStatefulCodeEnvironment,
       code_environment_id: agent_id ? code_environment_id : (code_environment_id ?? undefined),
+      repositoryInstructions,
+      code_workspace_id,
+      git_identity: normalizedGitIdentity,
       recursion_limit,
       category,
       support_contact,
@@ -297,6 +335,7 @@ export default function AgentPanel() {
   const {
     activePanel,
     agentsConfig,
+    startupConfig,
     setActivePanel,
     endpointsConfig,
     setCurrentAgentId,
@@ -570,7 +609,14 @@ export default function AgentPanel() {
     async (data: AgentForm) => {
       const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
-      const { payload: basePayload, provider, model } = composeAgentUpdatePayload(data, agent_id);
+      const {
+        payload: basePayload,
+        provider,
+        model,
+      } = composeAgentUpdatePayload(data, agent_id, {
+        endpointsConfig,
+        startupConfig,
+      });
 
       if (agent_id) {
         if (data.avatar_action === 'upload' && isAvatarUploadOnlyDirty(dirtyFields)) {
@@ -620,18 +666,27 @@ export default function AgentPanel() {
         });
       }
 
-      create.mutate({ ...basePayload, model, tools, provider });
+      create.mutate({
+        ...basePayload,
+        git_identity: basePayload.git_identity ?? undefined,
+        repositoryInstructions: basePayload.repositoryInstructions,
+        model,
+        tools,
+        provider,
+      });
     },
     [
       agent_id,
       create,
       dirtyFields,
+      endpointsConfig,
       handleAvatarUpload,
       models,
       modelsError,
       modelsReady,
       update,
       showToast,
+      startupConfig,
       localize,
     ],
   );

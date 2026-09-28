@@ -41,3 +41,32 @@ REACT_SCAN_PATH=/tmp/librechat-react-scan/package/dist/auto.global.js \
 
 JSON snapshots are attached to the Playwright results under
 `e2e/benchmarks/.test-results/mobile-chat`.
+
+## Deterministic regression guards
+
+The normal mock E2E suite includes `idle-animations.spec.ts`. It renders six settled
+messages, including three code blocks, in desktop and narrow layouts and asserts
+that the transcript has **no running infinite animations**. The check uses the
+browser's animation API, so it catches opacity-hidden spinners and other perpetual
+CSS animations. It explicitly enables motion, waits for every code control to
+mount, permits finite entrance transitions, and reports the offending animation
+and element when it fails. It needs neither a large transcript nor a CPU/time
+threshold to catch work that would multiply across a long chat.
+
+After preparing the production client, run it with:
+
+```bash
+npx playwright test --config=e2e/playwright.config.mock.ts idle-animations.spec.ts
+```
+
+The component tests cover the complementary invariants: `RunCode.test.tsx`
+checks that the spinner exists only during execution, including success, failure,
+and retry, with fake timers and controlled HTTP completion. `QuoteButton.test.tsx`
+uses a React Profiler to assert zero commits for selection and positioning events.
+
+Keep the browser timing measurements above as diagnostic evidence rather than a
+single-run merge gate. When a benchmark identifies a regression, add a focused
+invariant test at the cause—such as no idle animations, no unrelated renders, or
+bounded request counts—where possible. Timing and memory totals vary with the
+runner, garbage collection, and browser version; these structural checks do not
+require those numbers to stay below an arbitrary threshold.

@@ -1,4 +1,4 @@
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import {
   megabyte,
   Constants,
@@ -17,6 +17,7 @@ type MockUploadMutationOptions = {
       filename: string;
       source: string;
       embedded: boolean;
+      llmDeliveryPath?: string;
       height?: number;
       width?: number;
     },
@@ -62,11 +63,18 @@ const makeSizedFile = (name: string, type: string, size: number): File => {
   return file;
 };
 
-let mockConversation: Record<string, string | null | undefined> = {};
+let mockConversation: Record<string, string | boolean | null | undefined> = {};
 let mockFileConfig: ReturnType<typeof mergeFileConfig> | null = null;
 let mockIsConfigPending = false;
 let mockIsTemporary = false;
 let mockUploadOptions: MockUploadMutationOptions = {};
+
+let mockAgentsMap: Record<string, unknown> = {};
+let mockEndpointsConfig: Record<string, unknown> | undefined = undefined;
+let mockAgentQueryData: Record<string, unknown> | undefined = undefined;
+jest.mock('~/Providers/AgentsMapContext', () => ({
+  useAgentsMapContext: () => mockAgentsMap,
+}));
 
 jest.mock('~/Providers/ChatContext', () => ({
   useChatContext: jest.fn(() => ({
@@ -104,6 +112,8 @@ jest.mock('@tanstack/react-query', () => ({
 
 jest.mock('~/data-provider', () => ({
   useGetFileConfig: jest.fn(() => ({ data: mockFileConfig })),
+  useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsConfig })),
+  useGetAgentByIdQuery: jest.fn(() => ({ data: mockAgentQueryData })),
   useUploadFileMutation: jest.fn((opts: MockUploadMutationOptions) => {
     mockUploadOptions = opts;
     return { mutate: mockMutate };
@@ -189,6 +199,9 @@ describe('useFileHandling', () => {
     mockResizeImageIfNeeded.mockImplementation(async (file: File) => ({ file, resized: false }));
     mockWaitForConfig.mockResolvedValue(undefined);
     mockConversation = {};
+    mockAgentsMap = {};
+    mockEndpointsConfig = undefined;
+    mockAgentQueryData = undefined;
     mockFileConfig = null;
     mockIsConfigPending = false;
     mockIsTemporary = false;
@@ -197,6 +210,40 @@ describe('useFileHandling', () => {
   });
 
   const loadHook = async () => (await import('../useFileHandling')).default;
+
+  it('removes rejected provider audio and localizes the upload error before retry', async () => {
+    const consoleLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const useFileHandling = await loadHook();
+    const { result } = renderHook(() => useFileHandling());
+    const recovery = jest.fn();
+    await act(async () => {
+      await result.current.handleFiles(
+        [new File(['audio'], 'clip.wma', { type: 'audio/wma' })],
+        undefined,
+        { onError: recovery },
+      );
+    });
+    const body = mockMutate.mock.calls[0][0] as FormData;
+    const fileId = body.get('file_id');
+    act(() =>
+      mockUploadOptions.onError?.(
+        {
+          response: { status: 415, data: { message: 'com_error_files_provider_audio_format' } },
+        },
+        body,
+      ),
+    );
+    expect(mockDeleteFileById).toHaveBeenCalledWith(fileId);
+    await waitFor(() =>
+      expect(mockLocalize).toHaveBeenCalledWith('com_error_files_provider_audio_format'),
+    );
+    expect(recovery).toHaveBeenCalledWith(fileId);
+    await act(async () => {
+      await result.current.handleFiles([new File(['audio'], 'clip.wav', { type: 'audio/wav' })]);
+    });
+    expect(mockMutate).toHaveBeenCalledTimes(2);
+    consoleLog.mockRestore();
+  });
 
   describe('endpointOverride', () => {
     it('clears the loading state when file validation throws', async () => {
@@ -1067,6 +1114,190 @@ describe('useFileHandling', () => {
       expect(formData.get('conversationId')).toBeNull();
     });
 
+    it('validates against the agent provider policy, not the agents entry', async () => {
+      /* The server validates a saved agent's upload under its provider, so preflighting the
+       * `agents` entry rejects provider-supported files that the request would have accepted. */
+      mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+      mockAgentsMap = { agent_a1: { provider: 'Custom Provider' } };
+      mockFileConfig = mergeFileConfig({
+        endpoints: {
+          agents: { fileSizeLimit: 5 },
+          'Custom Provider': { fileSizeLimit: 20 },
+        },
+      });
+
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+
+      await act(async () => {
+        await result.current.handleFiles([makeSizedFile('notes.txt', 'text/plain', megabyte)]);
+      });
+
+      expect(mockValidateFiles).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpointFileConfig: expect.objectContaining({
+            fileSizeLimit: mockFileConfig.endpoints['Custom Provider']?.fileSizeLimit,
+          }),
+        }),
+      );
+      expect(mockFileConfig.endpoints['Custom Provider']?.fileSizeLimit).not.toEqual(
+        mockFileConfig.endpoints.agents?.fileSizeLimit,
+      );
+    });
+
+    it.each([true, false])(
+      'sends server-effective Responses %s rather than guessing from the Azure model',
+      async (effective) => {
+        mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+        mockAgentsMap = {
+          agent_a1: {
+            provider: EModelEndpoint.azureOpenAI,
+            model: 'gpt-6-sol',
+            model_parameters: {},
+          },
+        };
+        mockEndpointsConfig = {
+          [EModelEndpoint.azureOpenAI]: {
+            order: 0,
+            responsesApiRouting: {
+              'gpt-6-sol': { default: effective, on: effective, off: false },
+            },
+          },
+        };
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        await act(async () => {
+          await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+        });
+        const formData: FormData = mockMutate.mock.calls[0][0];
+        expect(formData.get('useResponsesApi')).toBe(effective ? 'true' : null);
+      },
+    );
+
+    it.each([false, true])(
+      'uploads a snapshot with server policy and provider web search=%s',
+      async (webSearch) => {
+        mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+        mockAgentsMap = {
+          agent_a1: {
+            provider: EModelEndpoint.azureOpenAI,
+            model: 'gpt-6-sol-2026-09-22',
+            model_parameters: { web_search: webSearch },
+          },
+        };
+        mockEndpointsConfig = {
+          [EModelEndpoint.azureOpenAI]: {
+            order: 0,
+            responsesApiRouting: {
+              'gpt-6-sol-*': {
+                default: false,
+                on: true,
+                off: false,
+                withWebSearch: { default: true, on: true, off: true },
+              },
+            },
+          },
+        };
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        await act(async () => {
+          await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+        });
+        const formData: FormData = mockMutate.mock.calls[0][0];
+        expect(formData.get('useResponsesApi')).toBe(webSearch ? 'true' : null);
+      },
+    );
+
+    it('sends the Responses flag a saved agent holds on its own record', async () => {
+      /* A saved Azure agent keeps the setting in model_parameters, and without it the
+       * server routes a natively supported PDF to extracted text. */
+      mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+      mockAgentsMap = { agent_a1: { model_parameters: { useResponsesApi: true } } };
+
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+
+      await act(async () => {
+        await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+      });
+
+      const formData: FormData = mockMutate.mock.calls[0][0];
+      expect(formData.get('useResponsesApi')).toBe('true');
+    });
+
+    it('resolves the provider and Responses flag from a fetched agent on a cache miss', async () => {
+      /* A direct-link load has no entry for the agent in the map. The record is fetched
+       * for the controls, so preflight has to read the same one or the upload is measured
+       * against the generic agents limits and loses the Responses flag. */
+      mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+      mockAgentsMap = {};
+      mockAgentQueryData = {
+        provider: 'Custom Provider',
+        model_parameters: { useResponsesApi: true },
+      };
+      mockFileConfig = mergeFileConfig({
+        endpoints: {
+          agents: { fileSizeLimit: 5 },
+          'Custom Provider': { fileSizeLimit: 20 },
+        },
+      });
+
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+
+      await act(async () => {
+        await result.current.handleFiles([makeSizedFile('notes.txt', 'text/plain', megabyte)]);
+      });
+
+      expect(mockValidateFiles).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpointFileConfig: expect.objectContaining({
+            fileSizeLimit: mockFileConfig.endpoints['Custom Provider']?.fileSizeLimit,
+          }),
+        }),
+      );
+      const formData: FormData = mockMutate.mock.calls[0][0];
+      expect(formData.get('useResponsesApi')).toBe('true');
+    });
+
+    it('lets a saved agent override the conversation Responses flag', async () => {
+      /* Execution runs on the agent's own model parameters, so an upload that trusted
+       * the conversation would store a raw provider document the turn then re-resolves
+       * to text it has no extraction for. */
+      mockConversation = {
+        conversationId: 'convo-1',
+        endpoint: 'agents',
+        agent_id: 'agent_a1',
+        useResponsesApi: true,
+      };
+      mockAgentsMap = { agent_a1: { model_parameters: { useResponsesApi: false } } };
+
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+
+      await act(async () => {
+        await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+      });
+
+      const formData: FormData = mockMutate.mock.calls[0][0];
+      expect(formData.get('useResponsesApi')).toBeNull();
+    });
+
+    it('omits the flag when neither the conversation nor the agent sets it', async () => {
+      mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+      mockAgentsMap = { agent_a1: { model_parameters: {} } };
+
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+
+      await act(async () => {
+        await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+      });
+
+      const formData: FormData = mockMutate.mock.calls[0][0];
+      expect(formData.get('useResponsesApi')).toBeNull();
+    });
+
     it('does not enter assistants upload path when override is agents', async () => {
       mockConversation = {
         conversationId: 'convo-1',
@@ -1396,6 +1627,45 @@ describe('useFileHandling', () => {
       });
 
       expect(onSuccess).toHaveBeenCalledWith(fileId);
+    });
+
+    it('keeps the upload delivery path on the completed attachment', async () => {
+      jest.useFakeTimers();
+      const useFileHandling = await loadHook();
+      const { result } = renderHook(() => useFileHandling());
+
+      await act(async () => {
+        await result.current.handleFiles([
+          new File(['hello'], 'notes.docx', {
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          }),
+        ]);
+      });
+
+      const uploadBody = mockMutate.mock.calls[0][0] as FormData;
+      act(() => {
+        mockUploadOptions.onSuccess?.(
+          {
+            temp_file_id: uploadBody.get('file_id') as string,
+            file_id: 'saved-file-id',
+            filepath: '/files/notes.docx',
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            filename: 'notes.docx',
+            source: 'local',
+            embedded: false,
+            llmDeliveryPath: 'text',
+          },
+          uploadBody,
+        );
+        jest.runAllTimers();
+      });
+      jest.useRealTimers();
+
+      const [, completion] = mockUpdateFileById.mock.calls.at(-1) as [
+        string,
+        { llmDeliveryPath?: string },
+      ];
+      expect(completion.llmDeliveryPath).toBe('text');
     });
 
     it('resolves false when every file fails preprocessing', async () => {

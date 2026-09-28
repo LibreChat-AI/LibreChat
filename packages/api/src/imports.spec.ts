@@ -33,6 +33,35 @@ function deepValue(depth = 30): string | { nested: ReturnType<typeof deepValue> 
 }
 
 describe('conversation import protection', () => {
+  it('reports incomplete locator hydration through the import context', async () => {
+    const onTraversalFailure = jest.fn();
+    await assertConversationImportContentAllowed(
+      { files: { pii: { fields: ['name'], starterPatterns: ['sk_prefix'] } } },
+      {
+        conversations: [],
+        messages: [
+          {
+            files: [{ file_id: 'owned' }],
+            content: Array.from({ length: 4200 }, () => ({ type: 'text', text: 'safe' })),
+          },
+        ],
+      },
+      {
+        user: { id: 'user-1' },
+        onTraversalFailure,
+        getFiles: jest.fn().mockResolvedValue([{ file_id: 'owned', filename: 'safe.txt' }]),
+      },
+    );
+    expect(onTraversalFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'omit_resolved_file_locators',
+        reason: 'array_length',
+        messageCount: 1,
+        resolvedFileCount: 1,
+      }),
+    );
+  });
+
   it('returns without resolving or revalidating when protection is disabled', async () => {
     const getFiles = jest.fn<
       ReturnType<GetCanonicalFilesForInspection>,

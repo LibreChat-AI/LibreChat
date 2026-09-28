@@ -15,7 +15,7 @@ export interface ExecuteAgentRunParams<Result> {
   connection?: AgentExecutionConnection;
   isPrincipalActive: (userId: string) => Promise<boolean>;
   execute: (execution: AgentExecutionEnrollment) => Promise<Result>;
-  handleExecutionError?: (error: unknown) => Result | Promise<Result>;
+  handleExecutionError?: (error: unknown, signal?: AbortSignal) => Result | Promise<Result>;
   beforeSettle?: (
     execution: AgentExecutionEnrollment,
     executionError: unknown,
@@ -66,7 +66,7 @@ export async function executeAgentRun<Result>({
   } catch (error) {
     executionError = error;
     if (handleExecutionError != null) {
-      return await handleExecutionError(error);
+      return await handleExecutionError(error, execution?.signal);
     }
     throw error;
   } finally {

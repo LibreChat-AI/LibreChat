@@ -24,6 +24,7 @@ jest.mock('react-virtualized', () => ({
     rowCount,
     rowRenderer,
     onRowsRendered,
+    className,
   }: {
     rowCount: number;
     rowRenderer: (p: {
@@ -33,12 +34,13 @@ jest.mock('react-virtualized', () => ({
       style: object;
     }) => React.ReactNode;
     onRowsRendered?: (p: { startIndex: number; stopIndex: number }) => void;
+    className?: string;
   }) => {
     // expose the near-bottom trigger for the pagination test
     (globalThis as Record<string, unknown>).__triggerRowsRendered = () =>
       onRowsRendered?.({ startIndex: 0, stopIndex: rowCount - 1 });
     return (
-      <div data-testid="virtual-list">
+      <div data-testid="virtual-list" className={className}>
         {Array.from({ length: rowCount }, (_, i) =>
           rowRenderer({ index: i, key: String(i), parent: {}, style: {} }),
         )}
@@ -99,9 +101,15 @@ describe('Search route', () => {
   it('renders result rows when data is present', () => {
     mockUseRecoilValue.mockReturnValue(searchState());
     mockUseQuery.mockReturnValue(queryResult());
-    render(<Search />);
+    const { container } = render(<Search />);
     expect(screen.getByText('row one')).toBeInTheDocument();
     expect(screen.queryByTestId('spinner')).not.toBeInTheDocument();
+    expect(screen.getByTestId('virtual-list')).toHaveClass(
+      'focus-visible:ring-2',
+      'focus-visible:ring-ring-primary',
+    );
+    expect(container.firstElementChild).toHaveClass('bg-presentation');
+    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-presentation');
   });
 
   it('keeps results mounted while typing (does NOT flash the full spinner)', () => {

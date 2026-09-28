@@ -1,17 +1,17 @@
 import type { AnyBulkWriteOperation, Model, MongooseBulkWriteOptions } from 'mongoose';
 import type { BulkWriteResult } from 'mongodb';
-import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import type { TenantScope, TenantUpdate } from '~/tenant/policy';
+import {
+  resolveTenantScope,
+  resetTenantStrictCache,
+  sanitizeTenantMutation,
+  isTenantIsolationStrict,
+} from '~/tenant/policy';
 import logger from '~/config/winston';
-
-let _strictMode: boolean | undefined;
-
-function isStrict(): boolean {
-  return (_strictMode ??= process.env.TENANT_ISOLATION_STRICT === 'true');
-}
 
 /** Resets the cached strict-mode flag. Exposed for test teardown only. */
 export function _resetBulkWriteStrictCache(): void {
-  _strictMode = undefined;
+  resetTenantStrictCache();
 }
 
 /**
@@ -25,10 +25,10 @@ export function _resetBulkWriteStrictCache(): void {
  * 2. **Injects** `tenantId` into operation filters and insert documents when a
  *    tenant context is active.
  *
- * Unlike the Mongoose middleware guard (`sanitizeTenantIdMutation`), which throws
- * on cross-tenant values, this wrapper strips silently. Throwing mid-batch would
- * abort the entire write for one bad field; the filter injection already scopes
- * every operation to the correct tenant.
+ * Unlike the query middleware, which throws on cross-tenant values, this wrapper
+ * strips silently (`strip` mode). Throwing mid-batch would abort the entire write
+ * for one bad field; the filter injection already scopes every operation to the
+ * correct tenant.
  *
  * Behavior:
  * - **tenantId present** (normal request): sanitize + inject into filters/documents.
@@ -41,27 +41,18 @@ export async function tenantSafeBulkWrite<T>(
   ops: AnyBulkWriteOperation[],
   options?: MongooseBulkWriteOptions,
 ): Promise<BulkWriteResult> {
-  const tenantId = getTenantId();
+  const scope = resolveTenantScope(`bulkWrite on ${model.modelName}`);
 
   // Strip tenantId from update documents unconditionally — application code
   // must never control tenantId via update payloads regardless of context.
-  const sanitized = ops.map(sanitizeBulkOp).filter((op): op is AnyBulkWriteOperation => op != null);
+  const sanitized = ops
+    .map((op) => sanitizeBulkOp(op, scope))
+    .filter((op): op is AnyBulkWriteOperation => op != null);
 
-  if (!tenantId) {
-    if (isStrict()) {
-      throw new Error(
-        `[TenantIsolation] bulkWrite on ${model.modelName} attempted without tenant context in strict mode`,
-      );
-    }
-    return sanitized.length > 0 ? model.bulkWrite(sanitized, options) : EMPTY_BULK_RESULT;
-  }
+  const prepared =
+    scope.kind === 'scoped' ? sanitized.map((op) => injectTenantId(op, scope.tenantId)) : sanitized;
 
-  if (tenantId === SYSTEM_TENANT_ID) {
-    return sanitized.length > 0 ? model.bulkWrite(sanitized, options) : EMPTY_BULK_RESULT;
-  }
-
-  const injected = sanitized.map((op) => injectTenantId(op, tenantId));
-  return injected.length > 0 ? model.bulkWrite(injected, options) : EMPTY_BULK_RESULT;
+  return prepared.length > 0 ? model.bulkWrite(prepared, options) : EMPTY_BULK_RESULT;
 }
 
 /** Returned when all ops are dropped after sanitization. Single shared instance. */
@@ -76,19 +67,20 @@ const EMPTY_BULK_RESULT = Object.freeze({
 }) as unknown as BulkWriteResult;
 
 /** Strips tenantId from update documents. Returns null if the op becomes empty. */
-function sanitizeBulkOp(op: AnyBulkWriteOperation): AnyBulkWriteOperation | null {
+function sanitizeBulkOp(
+  op: AnyBulkWriteOperation,
+  scope: TenantScope,
+): AnyBulkWriteOperation | null {
   if ('updateOne' in op) {
     const { update, ...rest } = op.updateOne;
-    const stripped = stripTenantIdFromUpdate(update as Record<string, unknown>);
-    return Object.keys(stripped).length === 0 ? null : { updateOne: { ...rest, update: stripped } };
+    const result = sanitizeTenantMutation(scope, update as TenantUpdate, 'strip');
+    return result.emptied ? null : { updateOne: { ...rest, update: result.update } };
   }
 
   if ('updateMany' in op) {
     const { update, ...rest } = op.updateMany;
-    const stripped = stripTenantIdFromUpdate(update as Record<string, unknown>);
-    return Object.keys(stripped).length === 0
-      ? null
-      : { updateMany: { ...rest, update: stripped } };
+    const result = sanitizeTenantMutation(scope, update as TenantUpdate, 'strip');
+    return result.emptied ? null : { updateMany: { ...rest, update: result.update } };
   }
 
   return op;
@@ -135,7 +127,7 @@ function injectTenantId(op: AnyBulkWriteOperation, tenantId: string): AnyBulkWri
     };
   }
 
-  if (isStrict()) {
+  if (isTenantIsolationStrict()) {
     throw new Error(
       '[TenantIsolation] Unknown bulkWrite operation type in strict mode — refusing to pass through without tenant injection',
     );
@@ -144,37 +136,4 @@ function injectTenantId(op: AnyBulkWriteOperation, tenantId: string): AnyBulkWri
     '[tenantSafeBulkWrite] Unknown bulk op type, passing through without tenant injection',
   );
   return op;
-}
-
-const MUTATION_OPS = ['$set', '$unset', '$setOnInsert', '$rename'] as const;
-
-/**
- * Strips `tenantId` from a bulk-write update document — both top-level
- * and inside mutation operators. Allocates only when stripping is needed.
- */
-function stripTenantIdFromUpdate(update: Record<string, unknown>): Record<string, unknown> {
-  let result: Record<string, unknown> | null = null;
-
-  if ('tenantId' in update) {
-    const { tenantId: _tenantId, ...rest } = update;
-    result = rest;
-  }
-
-  for (const op of MUTATION_OPS) {
-    const source = result ?? update;
-    const payload = source[op] as Record<string, unknown> | undefined;
-    if (payload && 'tenantId' in payload) {
-      if (!result) {
-        result = { ...update };
-      }
-      const { tenantId: _tenantId, ...rest } = payload;
-      if (Object.keys(rest).length > 0) {
-        result[op] = rest;
-      } else {
-        delete result[op];
-      }
-    }
-  }
-
-  return result ?? update;
 }

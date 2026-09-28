@@ -15,6 +15,7 @@ import type {
   Response as ServerResponse,
 } from 'express';
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
+import type { LocatorTraversalReporter } from '../protection/diagnostics';
 import type { TextContentFragment } from '../protection/types';
 import {
   contentFilterUninspectableResponse,
@@ -142,6 +143,7 @@ export function findPiiMatchInMessages(
 }
 
 export interface CreateMessageFilterPiiOptions {
+  readonly onTraversalFailure?: LocatorTraversalReporter;
   getConfig: (req: ServerRequest) => MessageFilterPiiConfig | undefined;
   getFilters?: (req: ServerRequest) => FiltersConfig | undefined;
   getFiles?: GetCanonicalFilesForInspection;
@@ -172,6 +174,8 @@ export function createMessageFilterPii(options: CreateMessageFilterPiiOptions): 
     if (options.getFiles != null && hasActiveFilePolicy(filters)) {
       try {
         const fileInspection = await resolveCanonicalFileReferences({
+          messageCount: 1,
+          onTraversalFailure: options.onTraversalFailure,
           filters,
           input: req.body,
           user: (

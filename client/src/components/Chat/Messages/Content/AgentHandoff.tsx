@@ -1,8 +1,14 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState, useCallback } from 'react';
+import copy from 'copy-to-clipboard';
 import { ChevronDown } from 'lucide-react';
+import { Button } from '@librechat/client';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
+import CopyButton from '~/components/Messages/Content/CopyButton';
+import { unescapeJsonString } from './Parts/parseJsonField';
 import MessageIcon from '~/components/Share/MessageIcon';
+import { toolPanelSpacingClassName } from './disclosure';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import { useAgentsMapContext } from '~/Providers';
 import { cn } from '~/utils';
@@ -12,11 +18,102 @@ interface AgentHandoffProps {
   args: string | Record<string, unknown>;
 }
 
+interface HandoffField {
+  key?: string;
+  value: string;
+}
+
+const PARTIAL_STRING_FIELD = /^\s*\{\s*"([^"\\]+)"\s*:\s*"((?:[^"\\]|\\.)*)/s;
+
+function formatValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (value == null) {
+    return '';
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return '';
+  }
+}
+
+function fieldsFromRecord(record: Record<string, unknown>): HandoffField[] {
+  return Object.entries(record).reduce<HandoffField[]>((fields, [key, rawValue]) => {
+    const value = formatValue(rawValue);
+    if (value) {
+      fields.push({ key, value });
+    }
+    return fields;
+  }, []);
+}
+
+function parseHandoffFields(args: string | Record<string, unknown>): HandoffField[] {
+  if (typeof args !== 'string') {
+    return fieldsFromRecord(args);
+  }
+
+  const trimmed = args.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return fieldsFromRecord(parsed as Record<string, unknown>);
+    }
+    const value = formatValue(parsed);
+    return value ? [{ value }] : [];
+  } catch {
+    const partialField = trimmed.match(PARTIAL_STRING_FIELD);
+    if (partialField) {
+      const value = unescapeJsonString(partialField[2]);
+      return value ? [{ key: partialField[1], value }] : [];
+    }
+    return trimmed.startsWith('{') ? [] : [{ value: trimmed }];
+  }
+}
+
+/**
+ * The SDK's own prompt keys, which are the ones that carry product meaning.
+ * Any other key is an admin-authored `promptKey` from the agent graph (see
+ * `handoffPromptKeyCompatibility`), so it is author content with no
+ * localization key to map to and is left as written, like an agent's own name.
+ */
+const HANDOFF_FIELD_LABELS: Record<string, TranslationKeys> = {
+  instruction: 'com_ui_handoff_field_instructions',
+  instructions: 'com_ui_handoff_field_instructions',
+  context: 'com_ui_handoff_field_context',
+};
+
+function fieldLabel(key: string, localize: (translationKey: TranslationKeys) => string): string {
+  const known = HANDOFF_FIELD_LABELS[key.toLowerCase()];
+  if (known) {
+    return localize(known);
+  }
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+}
+
 const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) => {
   const localize = useLocalize();
   const agentsMap = useAgentsMapContext();
   const [showInfo, setShowInfo] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const contentId = useId();
+  const headingId = `${contentId}-heading`;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+
+  useEffect(() => () => clearTimeout(copiedTimerRef.current), []);
 
   const targetAgentId = useMemo(() => {
     if (typeof name !== 'string' || !name.startsWith(Constants.LC_TRANSFER_TO_)) {
@@ -32,35 +129,48 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
     return agentsMap[targetAgentId];
   }, [agentsMap, targetAgentId]);
 
-  const args = useMemo(() => {
-    if (typeof _args === 'string') {
-      return _args;
-    }
-    try {
-      return JSON.stringify(_args, null, 2);
-    } catch {
-      return '';
-    }
-  }, [_args]) as string;
+  const fields = useMemo(() => parseHandoffFields(_args), [_args]);
+  const copyText = useMemo(
+    () =>
+      fields.length === 1
+        ? fields[0].value
+        : fields
+            .map(({ key, value }) => `${key ? `${fieldLabel(key, localize)}\n` : ''}${value}`)
+            .join('\n\n'),
+    [fields, localize],
+  );
+  const hasInfo = fields.length > 0;
+  const agentName = targetAgent?.name || localize('com_ui_agent');
 
-  const hasInfo = useMemo(() => (args?.trim()?.length ?? 0) > 2, [args]);
+  /** `copy-to-clipboard` rather than `navigator.clipboard`, matching the other
+   *  message-content copy controls: the async API is undefined on a
+   *  non-secure origin (a LAN deployment served over http), where
+   *  dereferencing it throws before any rejection handler can run and the
+   *  button silently does nothing. */
+  const handleCopy = useCallback(() => {
+    if (!copy(copyText, { format: 'text/plain' })) {
+      return;
+    }
+    clearTimeout(copiedTimerRef.current);
+    setIsCopied(true);
+    copiedTimerRef.current = setTimeout(() => setIsCopied(false), 2000);
+  }, [copyText]);
 
   return (
-    <div className="my-1">
-      <button
-        type="button"
+    <div className="my-2">
+      <Button
+        variant="ghost"
         className={cn(
-          'tool-status-text flex appearance-none items-center gap-2.5 bg-transparent text-text-secondary',
-          hasInfo
-            ? 'transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy'
-            : 'pointer-events-none',
+          'tool-status-text h-auto justify-start gap-2 rounded-none p-0 font-normal text-text-secondary hover:bg-transparent hover:text-text-primary',
+          !hasInfo && 'pointer-events-none disabled:opacity-100',
         )}
         disabled={!hasInfo}
         onClick={hasInfo ? () => setShowInfo(!showInfo) : undefined}
         aria-expanded={hasInfo ? showInfo : undefined}
-        aria-label={`${localize('com_ui_transferred_to')} ${targetAgent?.name || localize('com_ui_agent')}`}
+        aria-controls={hasInfo ? contentId : undefined}
+        aria-label={`${localize('com_ui_transferred_to')} ${agentName}`}
       >
-        <div className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full ring-1 ring-border-light">
+        <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full ring-1 ring-border-light">
           <MessageIcon
             message={
               {
@@ -72,25 +182,67 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
           />
         </div>
         <span className="select-none">{localize('com_ui_transferred_to')}</span>
-        <span className="select-none font-medium text-text-primary">
-          {targetAgent?.name || localize('com_ui_agent')}
-        </span>
+        <span className="select-none font-medium text-text-primary">{agentName}</span>
         {hasInfo && (
           <ChevronDown
-            className={cn('ml-1 h-3 w-3 transition-transform', showInfo && 'rotate-180')}
+            className={cn(
+              'size-4 shrink-0 translate-y-[1px] text-text-secondary transition-transform duration-200 ease-out',
+              showInfo && 'rotate-180',
+            )}
             aria-hidden="true"
           />
         )}
-      </button>
-      <div style={expandStyle}>
+      </Button>
+      <div id={contentId} style={expandStyle} aria-hidden={!showInfo || undefined}>
         <div className="overflow-hidden" ref={expandRef}>
           {hasInfo && (
-            <div className="ml-8 mt-2 rounded-lg border border-border-light bg-surface-secondary p-3 text-xs">
-              <div className="mb-1 font-medium text-text-secondary">
-                {localize('com_ui_handoff_instructions')}:
+            <section
+              aria-labelledby={headingId}
+              className={cn(
+                toolPanelSpacingClassName,
+                'group/handoff ml-8 max-w-3xl border-l-2 border-border-medium py-1 pl-4 pr-1',
+              )}
+            >
+              <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
+                <span
+                  id={headingId}
+                  className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary"
+                >
+                  {localize('com_ui_handoff_instructions')}
+                </span>
+                <CopyButton
+                  isCopied={isCopied}
+                  iconOnly
+                  onClick={handleCopy}
+                  label={localize('com_ui_copy_to_clipboard')}
+                  copiedLabel={localize('com_ui_copied_to_clipboard')}
+                  /** Only the reveal-on-hover behavior is local; the icon
+                   *  crossfade, tooltip, hover and focus ring come from the
+                   *  shared primitive. */
+                  className="shrink-0 opacity-60 focus-visible:opacity-100 group-focus-within/handoff:opacity-100 group-hover/handoff:opacity-100"
+                />
               </div>
-              <pre className="overflow-x-auto whitespace-pre-wrap text-text-primary">{args}</pre>
-            </div>
+              {fields.length === 1 ? (
+                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+                  {fields[0].value}
+                </p>
+              ) : (
+                <dl className="space-y-3">
+                  {fields.map(({ key, value }, index) => (
+                    <div key={`${key ?? 'field'}-${index}`}>
+                      {key && (
+                        <dt className="mb-0.5 text-xs font-medium text-text-secondary">
+                          {fieldLabel(key, localize)}
+                        </dt>
+                      )}
+                      <dd className="whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+                        {value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </section>
           )}
         </div>
       </div>

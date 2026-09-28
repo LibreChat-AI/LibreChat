@@ -34,7 +34,7 @@ const level = (): string => {
   return env === 'development' ? 'debug' : 'warn';
 };
 
-const fileFormat = winston.format.combine(
+export const baseLogFormat: winston.Logform.Format = winston.format.combine(
   redactFormat(),
   winston.format.timestamp({ format: () => new Date().toISOString() }),
   winston.format.errors({ stack: true }),
@@ -56,7 +56,7 @@ if (useFileLogging) {
       zippedArchive: true,
       maxSize: '20m',
       maxFiles: '14d',
-      format: winston.format.combine(fileFormat, winston.format.json()),
+      format: winston.format.combine(baseLogFormat, winston.format.json()),
     }),
   );
 
@@ -69,7 +69,7 @@ if (useFileLogging) {
         zippedArchive: true,
         maxSize: '20m',
         maxFiles: '14d',
-        format: winston.format.combine(fileFormat, debugTraverse),
+        format: winston.format.combine(baseLogFormat, debugTraverse),
       }),
     );
   }
@@ -100,8 +100,8 @@ if (useDebugConsole) {
       level: consoleLogLevel,
       silent: consoleSilent,
       format: useConsoleJson
-        ? winston.format.combine(fileFormat, jsonTruncateFormat(), winston.format.json())
-        : winston.format.combine(fileFormat, debugTraverse),
+        ? winston.format.combine(baseLogFormat, jsonTruncateFormat(), winston.format.json())
+        : winston.format.combine(baseLogFormat, debugTraverse),
     }),
   );
 } else if (useConsoleJson) {
@@ -109,7 +109,7 @@ if (useDebugConsole) {
     new winston.transports.Console({
       level: consoleLogLevel,
       silent: consoleSilent,
-      format: winston.format.combine(fileFormat, jsonTruncateFormat(), winston.format.json()),
+      format: winston.format.combine(baseLogFormat, jsonTruncateFormat(), winston.format.json()),
     }),
   );
 } else {

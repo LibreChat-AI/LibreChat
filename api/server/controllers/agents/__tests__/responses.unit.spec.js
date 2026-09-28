@@ -187,6 +187,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
   Callback: { TOOL_ERROR: 'TOOL_ERROR' },
   ToolEndHandler: jest.fn(),
   formatAgentMessages: jest.fn().mockReturnValue({
@@ -196,13 +197,29 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getAgentErrorMetadata: (...args) =>
+    jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  /* Provisioning moved into this package; the controllers build the callback from it. */
+  createProvisionFilesCallback: () => async () => {},
   createAgentExecutionContext: (context) => context,
+  /** Grants both by default; the capability set is what these specs vary. */
+  resolveToolRoleGrants: jest.fn(async () => ({
+    runCode: true,
+    fileSearch: true,
+    webSearch: true,
+  })),
   SAFE_CONVERSATION_TITLE: 'New Chat',
   resolveConversationTitle: (...args) => mockResolveConversationTitle(...args),
   /** Pass-through: the controller strips UI-only activity-label parts
    *  before SDK formatting; the mock must expose it like any other used
    *  export or the call throws before the assertions run. */
   stripActivityLabelParts: jest.fn((payload) => payload),
+  /** Pass-through by default; the history-strip test swaps in its own result
+   *  to prove the formatter receives what this returns. */
+  stripUnusableSummaryParts: jest.fn((payload) => payload),
+  createOwnedToolEndHandler: jest.fn(
+    (...args) => new (require('@librechat/agents').ToolEndHandler)(...args),
+  ),
   collectReachableAgents: (roots) => {
     const agents = [];
     const pending = [...roots];
@@ -221,14 +238,36 @@ jest.mock('@librechat/api', () => ({
   createRun: jest.fn().mockResolvedValue({
     processStream: jest.fn().mockResolvedValue(undefined),
   }),
+  createTerminalRunErrorObserver: (...args) =>
+    jest.requireActual('@librechat/api').createTerminalRunErrorObserver(...args),
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
   buildRunToolSet: jest.fn().mockReturnValue(new Set()),
+  /** No fixture declares a caller-executed tool, so the handoff stays inert. */
+  createClientToolHandoff: jest.fn(({ agentDefinitions }) => ({
+    toolDefinitions: agentDefinitions,
+    appliedTools: [],
+    wrapRunStep: (delegate) => delegate,
+    wrapToolExecute: (delegate) => delegate,
+  })),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
-  createMCPRuntimeRequestBody: ({ messageId, conversationId, parentMessageId }) => ({
+  resolveAdmittedCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
+  resolvePersistableCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
+  getCodeWorkspaceSelections: jest.fn(),
+  createMCPRuntimeRequestBody: ({
     messageId,
     conversationId,
+    parentMessageId,
+    codeEnvironmentMode,
+    codeWorkspaces,
+  }) => ({
+    messageId,
+    conversationId,
+    ...(codeEnvironmentMode !== undefined && { codeEnvironmentMode }),
+    ...(codeWorkspaces !== undefined && { codeWorkspaces }),
     ...(parentMessageId !== undefined && {
       parentMessageId: parentMessageId ?? '00000000-0000-0000-0000-000000000000',
     }),
@@ -403,7 +442,7 @@ jest.mock('@librechat/api', () => ({
       return await execute(execution);
     } catch (error) {
       executionError = error;
-      if (handleExecutionError) return await handleExecutionError(error);
+      if (handleExecutionError) return await handleExecutionError(error, execution?.signal);
       throw error;
     } finally {
       removeCloseListener();
@@ -423,8 +462,9 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn().mockResolvedValue([]),
   loadToolsForExecution: jest.fn().mockResolvedValue([]),
-  isFatalAgentInitializationError: (error) =>
+  isFatalAgentInitializationError: jest.fn((error) =>
     ['AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE', 'resource_recovery_required'].includes(error?.code),
+  ),
 }));
 
 const mockGetMultiplier = jest.fn().mockReturnValue(1);
@@ -519,6 +559,7 @@ jest.mock('~/models', () => ({
   getFormattedMemories: jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' }),
   saveConvo: jest.fn().mockResolvedValue({}),
   getConvo: jest.fn().mockResolvedValue(null),
+  readAdmittedConvoCodeEnvironmentDecision: jest.fn().mockResolvedValue(null),
   isSubagentOwnerAdmissible: jest.fn().mockResolvedValue(true),
 }));
 
@@ -563,6 +604,145 @@ describe('createResponse controller', () => {
       once: jest.fn(),
       off: jest.fn(),
     };
+  });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'passes explicit or owner-loaded workspace selections to runtime: continuation=%s moves=%s',
+    async (continuation, movesEnabled) => {
+      const api = require('@librechat/api');
+      const selections = [{ environmentId: 'machine', workspaceId: 'project' }];
+      req.config.endpoints.agents.statefulCodeSessions = {
+        conversationMoves: { enabled: movesEnabled },
+      };
+      const request = {
+        model: 'agent-123',
+        input: 'Hello',
+        stream: false,
+        ...(continuation ? { previous_response_id: 'previous' } : { code_workspaces: selections }),
+      };
+      api.validateResponseRequest.mockReturnValueOnce({ request });
+      if (continuation)
+        require('~/models').getConvo.mockResolvedValueOnce({
+          conversationId: 'previous',
+          codeWorkspaces: selections,
+        });
+      if (continuation && movesEnabled)
+        require('~/models').readAdmittedConvoCodeEnvironmentDecision.mockResolvedValueOnce({
+          conversationId: 'previous',
+          codeWorkspaces: selections,
+        });
+      await createResponse(req, res);
+      const fencedRead = require('~/models').readAdmittedConvoCodeEnvironmentDecision;
+      if (movesEnabled) expect(fencedRead).toHaveBeenCalledTimes(1);
+      else expect(fencedRead).not.toHaveBeenCalled();
+      expect(api.initializeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestBody: expect.objectContaining({ codeWorkspaces: selections }),
+        }),
+        expect.anything(),
+      );
+      if (continuation)
+        expect(require('~/models').getConvo).toHaveBeenCalledWith('user-123', 'previous');
+    },
+  );
+
+  /** The SDK formatter takes the last summary part carrying text as the history
+   *  boundary, so a stored summary whose round failed would replace the turns it
+   *  never finished summarizing. The formatter must see the stripped history. */
+  it('formats continued history only after unusable summaries are stripped', async () => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    const { formatAgentMessages } = require('@librechat/agents');
+    const storedContent = [
+      { type: 'text', text: 'Earlier answer' },
+      { type: 'summary', content: [{ type: 'text', text: 'Partial summ' }], failed: true },
+    ];
+    const stripped = [{ role: 'assistant', content: [{ type: 'text', text: 'Earlier answer' }] }];
+    api.validateResponseRequest.mockReturnValueOnce({
+      request: {
+        model: 'agent-123',
+        input: 'Hello',
+        stream: false,
+        previous_response_id: 'previous',
+      },
+    });
+    db.getConvo.mockResolvedValueOnce({ conversationId: 'previous', user: 'user-123' });
+    db.getMessages.mockResolvedValueOnce([
+      { messageId: 'stored-assistant', isCreatedByUser: false, content: storedContent },
+    ]);
+    api.stripUnusableSummaryParts.mockReturnValueOnce(stripped);
+
+    await createResponse(req, res);
+
+    expect(api.stripUnusableSummaryParts).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: 'stored-assistant', content: storedContent }),
+      ]),
+    );
+    expect(formatAgentMessages).toHaveBeenCalledWith(stripped, {}, expect.anything());
+  });
+
+  it.each([false, true])(
+    'persists the normalized no-attached decision atomically: stream=%s',
+    async (stream) => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      api.getCodeWorkspaceSelections.mockReturnValueOnce([
+        { environmentId: 'machine', workspaceId: 'stale-project' },
+      ]);
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Hello',
+          stream,
+          store: true,
+          code_environment_mode: 'without_attached',
+        },
+      });
+
+      await createResponse(req, res);
+
+      expect(db.saveConvo).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          codeEnvironmentMode: 'without_attached',
+        }),
+        expect.anything(),
+      );
+      expect(db.saveConvo.mock.calls.at(-1)[1]).not.toHaveProperty('codeWorkspaces');
+      expect(api.getCodeWorkspaceSelections).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the stored decision when a continued conversation is saved', async () => {
+    const api = require('@librechat/api');
+    const db = require('~/models');
+    api.validateResponseRequest.mockReturnValueOnce({
+      request: {
+        model: 'agent-123',
+        input: 'Hello',
+        stream: false,
+        store: true,
+        previous_response_id: 'previous',
+      },
+    });
+    db.getConvo.mockResolvedValueOnce({
+      conversationId: 'previous',
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [{ environmentId: 'vm', workspaceId: 'projects' }],
+    });
+
+    await createResponse(req, res);
+
+    const saved = db.saveConvo.mock.calls.at(-1)[1];
+    expect(saved).toEqual(expect.objectContaining({ conversationId: 'previous' }));
+    expect(saved).not.toHaveProperty('codeEnvironmentMode');
+    expect(saved).not.toHaveProperty('codeWorkspaces');
   });
 
   it('enrolls, starts, and settles the remote execution lifecycle', async () => {
@@ -643,6 +823,34 @@ describe('createResponse controller', () => {
     expect(mockExecution.beginProviderExecution).toHaveBeenCalledTimes(1);
   });
 
+  it('includes persistent-memory guidance in an inline agent with no saved memories', async () => {
+    const api = require('@librechat/api');
+    const { memoryInstructions, buildInlineMemoryContext } = jest.requireActual('@librechat/api');
+    const agent = {
+      id: 'agent-123',
+      model: 'claude-3',
+      model_parameters: {},
+      toolRegistry: {},
+      edges: [],
+      memoryToolsRegistered: true,
+    };
+    api.initializeAgent.mockResolvedValueOnce(agent);
+    mockBuildInlineMemoryContext.mockImplementationOnce(buildInlineMemoryContext);
+
+    await createResponse(req, res);
+
+    expect(mockApplyContextToAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        sharedRunContext: expect.stringContaining(memoryInstructions),
+      }),
+    );
+    expect(require('~/models').getFormattedMemories).toHaveBeenCalledWith({
+      userId: 'user-123',
+      agentId: undefined,
+    });
+  });
+
   it('resolves saved graph subagents for remote Responses API runs', async () => {
     const { initializeAgent, resolveSubagentGraphs } = require('@librechat/api');
     const primaryConfig = {
@@ -678,6 +886,7 @@ describe('createResponse controller', () => {
       expect.objectContaining({
         primaryConfig,
         rootConfigs: [primaryConfig],
+        signal: mockExecution.signal,
         resourceType: ResourceType.REMOTE_AGENT,
         memoryAvailable: true,
       }),
@@ -706,9 +915,35 @@ describe('createResponse controller', () => {
     );
     const { createRun } = require('@librechat/api');
     expect(createRun).toHaveBeenCalledWith(
-      expect.objectContaining({ initialSessions: mockInitialSessions }),
+      expect.objectContaining({
+        initialSessions: mockInitialSessions,
+        user: expect.objectContaining({ id: 'user-123' }),
+        traceContext: { endpoint: 'agents' },
+      }),
     );
   });
+
+  it.each([false, true])(
+    'excludes caller-executed tools from eager execution: stream=%s',
+    async (stream) => {
+      const api = require('@librechat/api');
+      const clientToolNames = new Set(['submit_sql']);
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream },
+      });
+      api.createClientToolHandoff.mockImplementationOnce(({ agentDefinitions }) => ({
+        toolDefinitions: agentDefinitions,
+        appliedTools: [],
+        clientToolNames,
+        wrapRunStep: (delegate) => delegate,
+        wrapToolExecute: (delegate) => delegate,
+      }));
+
+      await createResponse(req, res);
+
+      expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({ clientToolNames }));
+    },
+  );
 
   it('invokes the graph with the resolved recursion limit rather than the SDK default', async () => {
     const api = require('@librechat/api');
@@ -754,6 +989,9 @@ describe('createResponse controller', () => {
       'server_error',
       'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
     );
+    expect(
+      require('~/server/services/ToolService').isFatalAgentInitializationError,
+    ).toHaveBeenCalledWith(toolError, { signal: loadAgentTools.mock.calls.at(-1)[0].signal });
   });
 
   it('returns the resource recovery status and code before model invocation', async () => {
@@ -855,6 +1093,7 @@ describe('createResponse controller', () => {
           requestBody: {
             messageId: 'resp_mock-123',
             conversationId: expect.any(String),
+            codeEnvironmentMode: 'without_attached',
           },
         }),
         expect.anything(),
@@ -1591,6 +1830,76 @@ describe('createResponse controller', () => {
   });
 
   describe('safe error logging', () => {
+    const credentialCases = () => {
+      const {
+        OpenIDReauthRequiredError,
+        MCPAuthenticationRejectedError,
+        MCPAuthenticationRefreshError,
+        OboTokenResolutionError,
+      } = jest.requireActual('@librechat/api');
+      return [
+        [new OpenIDReauthRequiredError('Please sign in again'), 401, undefined],
+        [
+          new MCPAuthenticationRejectedError('private-mcp', false),
+          403,
+          'MCP_AUTHENTICATION_REJECTED',
+        ],
+        [
+          new MCPAuthenticationRefreshError(new Error('temporary failure')),
+          503,
+          'MCP_AUTHENTICATION_REFRESH_FAILED',
+        ],
+        [
+          new OboTokenResolutionError('session_refresh_failed', 'Please sign in again', false),
+          403,
+          'MCP_AUTHENTICATION_REJECTED',
+        ],
+        [
+          new OboTokenResolutionError('exchange_failed', 'Temporary exchange failure', true),
+          503,
+          'MCP_AUTHENTICATION_REFRESH_FAILED',
+        ],
+      ];
+    };
+    it.each(credentialCases())(
+      'preserves remote Responses credential metadata: %s',
+      async (error, status, code) => {
+        const api = require('@librechat/api');
+        api.initializeAgent.mockRejectedValueOnce(error);
+        await createResponse(req, res);
+        expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+          res,
+          status,
+          error.message,
+          status < 500 ? 'invalid_request' : 'server_error',
+          ...(code ? [code] : []),
+        );
+      },
+    );
+
+    it('does not classify a client disconnect as an upstream model error', async () => {
+      const api = require('@librechat/api');
+      const { logger } = require('@librechat/data-schemas');
+      const abortError = Object.assign(new Error('request aborted'), { name: 'AbortError' });
+      api.createRun.mockImplementationOnce(async (options) => ({
+        processStream: jest.fn(async () => {
+          options.modelCallbacks
+            .find(({ name }) => name === 'librechat-upstream-model-error-tracker')
+            .handleLLMError(abortError);
+          res.once.mock.calls.find(([event]) => event === 'close')[1]();
+          throw abortError;
+        }),
+      }));
+
+      await createResponse(req, res);
+
+      expect(mockExecution.signal.aborted).toBe(true);
+      expect(logger.error).not.toHaveBeenCalledWith(
+        '[Responses API] Upstream model error',
+        expect.anything(),
+      );
+    });
+
     it('logs bounded metadata and returns a raw-free provider error', async () => {
       const api = require('@librechat/api');
       const { logger } = require('@librechat/data-schemas');
@@ -1608,7 +1917,6 @@ describe('createResponse controller', () => {
 
       await createResponse(req, res);
 
-      expect(mockGetSafeErrorMetadata).toHaveBeenCalledWith(providerError);
       const errorLog = logger.error.mock.calls.find(
         ([message]) => message === '[Responses API] Error:',
       );
@@ -1622,6 +1930,50 @@ describe('createResponse controller', () => {
       );
       expect(JSON.stringify(api.sendResponsesErrorResponse.mock.calls)).not.toContain(rawValue);
     });
+
+    it.each([false, true])(
+      'classifies a terminal model callback failure and correlates its trace: stream=%s',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const { logger } = require('@librechat/data-schemas');
+        const rawValue = 'PRIVATE-RESPONSES-UPSTREAM-PAYLOAD';
+        const providerError = Object.assign(new Error(`Provider echoed ${rawValue}`), {
+          code: 'ERR_REMOTE',
+          response: { status: 503, data: { prompt: rawValue } },
+        });
+        req.config.filters = { messages: { pii: {} } };
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream },
+        });
+        api.createRun.mockImplementationOnce(async (options) => ({
+          processStream: jest.fn(async () => {
+            options.modelCallbacks
+              .find(({ name }) => name === 'librechat-upstream-model-error-tracker')
+              .handleLLMError(providerError);
+            throw new Error('graph failed', { cause: providerError });
+          }),
+        }));
+
+        await createResponse(req, res);
+
+        const errorLog = logger.error.mock.calls.find(
+          ([message]) => message === '[Responses API] Upstream model error',
+        );
+        expect(errorLog).toEqual([
+          '[Responses API] Upstream model error',
+          {
+            type: 'Error',
+            status: 503,
+            errorCode: 'UPSTREAM_MODEL_ERROR',
+            errorOrigin: 'model_provider',
+            errorType: '503',
+            traceId: 'da34f2d846b1b1b770afe89e670770d5',
+          },
+        ]);
+        expect(JSON.stringify(errorLog)).not.toContain(rawValue);
+        expect(JSON.stringify(errorLog)).not.toContain('ERR_REMOTE');
+      },
+    );
 
     it('preserves the legacy provider error when protection is inactive', async () => {
       const api = require('@librechat/api');
@@ -1820,46 +2172,77 @@ describe('createResponse controller', () => {
   });
 
   describe('remote-agent file authorization', () => {
-    it('threads the remote-agent permission boundary through initialization and tool loading', async () => {
-      const { initializeAgent, createToolExecuteHandler } = require('@librechat/api');
-      const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
-      const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
+    it.each([false, true])(
+      'threads the remote-agent permission boundary through initialization and tool loading (stream=%s)',
+      async (stream) => {
+        const { initializeAgent, createToolExecuteHandler } = require('@librechat/api');
+        const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
+        const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 
-      await createResponse(req, res);
+        req.config.endpoints.agents.backgroundTasks = {
+          ordinaryToolCancellation: true,
+          completionResultMaxChars: 4096,
+        };
+        req.body.stream = stream;
+        await createResponse(req, res);
 
-      const [initializeParams, dbMethods] = initializeAgent.mock.calls.at(-1);
-      const filterParams = {
-        files: [{ file_id: 'owner-file', user: 'agent-owner' }],
-        userId: 'user-123',
-        role: 'USER',
-        agentId: 'agent-123',
-      };
-      await dbMethods.filterFilesByAgentAccess(filterParams);
-      expect(filterFilesByAgentAccess).toHaveBeenLastCalledWith({
-        ...filterParams,
-        resourceType: ResourceType.REMOTE_AGENT,
-      });
+        const [initializeParams, dbMethods] = initializeAgent.mock.calls.at(-1);
+        const filterParams = {
+          files: [{ file_id: 'owner-file', user: 'agent-owner' }],
+          userId: 'user-123',
+          role: 'USER',
+          agentId: 'agent-123',
+        };
+        await dbMethods.filterFilesByAgentAccess(filterParams);
+        expect(filterFilesByAgentAccess).toHaveBeenLastCalledWith({
+          ...filterParams,
+          resourceType: ResourceType.REMOTE_AGENT,
+        });
 
-      await initializeParams.loadTools({
-        agentId: 'agent-123',
-        tools: ['file_search'],
-        provider: 'anthropic',
-        model: 'claude-3',
-        tool_resources: { file_search: { file_ids: ['owner-file'] } },
-      });
-      expect(loadAgentTools).toHaveBeenLastCalledWith(
-        expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT }),
-      );
+        await initializeParams.loadTools({
+          agentId: 'agent-123',
+          tools: ['file_search'],
+          provider: 'anthropic',
+          model: 'claude-3',
+          tool_resources: { file_search: { file_ids: ['owner-file'] } },
+        });
+        expect(loadAgentTools).toHaveBeenLastCalledWith(
+          expect.objectContaining({ agentResourceType: ResourceType.REMOTE_AGENT }),
+        );
 
-      const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
-      await toolExecuteOptions.loadTools(['file_search'], 'agent-123');
-      expect(loadToolsForExecution).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          agentResourceType: ResourceType.REMOTE_AGENT,
-          requestBody: initializeParams.requestBody,
-        }),
-      );
-    });
+        const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
+        expect(toolExecuteOptions.ordinaryToolCancellation).toBe(true);
+        expect(toolExecuteOptions.backgroundCompletionResultMaxChars).toBe(4096);
+        expect(toolExecuteOptions.runSignal).toBe(mockExecution.signal);
+        expect(toolExecuteOptions.foregroundRunId).toBe(initializeParams.requestBody.messageId);
+        const effectiveSignal = new AbortController().signal;
+        await toolExecuteOptions.loadTools(
+          ['file_search'],
+          'agent-123',
+          undefined,
+          undefined,
+          effectiveSignal,
+        );
+        expect(loadToolsForExecution).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            agentResourceType: ResourceType.REMOTE_AGENT,
+            requestBody: initializeParams.requestBody,
+            signal: effectiveSignal,
+          }),
+        );
+        mockExecution.abort();
+        await toolExecuteOptions.loadTools(
+          ['file_search'],
+          'agent-123',
+          undefined,
+          undefined,
+          undefined,
+        );
+        expect(loadToolsForExecution).toHaveBeenLastCalledWith(
+          expect.objectContaining({ signal: undefined }),
+        );
+      },
+    );
   });
 
   describe('token usage recording - non-streaming', () => {
@@ -2187,6 +2570,109 @@ describe('createResponse controller', () => {
           fileAuthoringToolNames: ['create_file', 'edit_file'],
         },
       });
+    });
+  });
+
+  describe('file search role gating', () => {
+    const setCapabilities = (capabilities) => {
+      req.config.endpoints.agents.capabilities = capabilities;
+    };
+
+    it('reports file search available when the capability and the grant agree', async () => {
+      const { initializeAgent } = require('@librechat/api');
+      setCapabilities(['file_search']);
+
+      await createResponse(req, res);
+
+      expect(initializeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ fileSearchAvailable: true }),
+        expect.anything(),
+      );
+    });
+
+    /** `initializeAgent` re-hydrates prior-turn `file_search` files from this
+     *  flag, so a denied role must reach it — dropping the tool downstream still
+     *  leaves the files read, their usage bumped and their resources primed. */
+    it('withholds it when the role is denied FILE_SEARCH', async () => {
+      const { initializeAgent, resolveToolRoleGrants } = require('@librechat/api');
+      resolveToolRoleGrants.mockResolvedValueOnce({ runCode: true, fileSearch: false });
+      setCapabilities(['file_search']);
+
+      await createResponse(req, res);
+
+      expect(initializeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ fileSearchAvailable: false }),
+        expect.anything(),
+      );
+    });
+
+    /** Both flags are false without their capability, so the role read would be
+     *  pure load on every request. */
+    it('reads no role at all when neither capability is enabled', async () => {
+      const { initializeAgent, resolveToolRoleGrants } = require('@librechat/api');
+      setCapabilities([]);
+
+      await createResponse(req, res);
+
+      expect(resolveToolRoleGrants).not.toHaveBeenCalled();
+      expect(initializeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ fileSearchAvailable: false, codeEnvAvailable: false }),
+        expect.anything(),
+      );
+    });
+
+    /** One lookup answers both grants, so enabling either capability pays for
+     *  the other's pairing too. */
+    it('pairs both flags from a single role read', async () => {
+      const { initializeAgent, resolveToolRoleGrants } = require('@librechat/api');
+      setCapabilities(['file_search', 'execute_code']);
+
+      await createResponse(req, res);
+
+      expect(resolveToolRoleGrants).toHaveBeenCalledTimes(1);
+      expect(initializeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ fileSearchAvailable: true, codeEnvAvailable: true }),
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('web search role gating', () => {
+    const setCapabilities = (capabilities) => {
+      req.config.endpoints.agents.capabilities = capabilities;
+    };
+
+    const passedResolver = () => {
+      const { initializeAgent } = require('@librechat/api');
+      return initializeAgent.mock.calls[0][0].resolveWebSearchGrant;
+    };
+
+    /** Provider-native search is a model parameter with no capability of its own,
+     *  so the resolver is handed over whatever the capabilities — but it reads
+     *  nothing until the initializer finds native search in the built config. */
+    it('hands initializeAgent a grant resolver without reading the role', async () => {
+      const { resolveToolRoleGrants } = require('@librechat/api');
+      setCapabilities([]);
+
+      await createResponse(req, res);
+
+      expect(passedResolver()).toEqual(expect.any(Function));
+      expect(resolveToolRoleGrants).not.toHaveBeenCalled();
+    });
+
+    it('resolves the WEB_SEARCH grant against this request when called', async () => {
+      const { resolveToolRoleGrants } = require('@librechat/api');
+      resolveToolRoleGrants.mockResolvedValueOnce({
+        runCode: true,
+        fileSearch: true,
+        webSearch: false,
+      });
+      setCapabilities([]);
+
+      await createResponse(req, res);
+
+      await expect(passedResolver()()).resolves.toBe(false);
+      expect(resolveToolRoleGrants).toHaveBeenCalledWith(expect.objectContaining({ req }));
     });
   });
 });

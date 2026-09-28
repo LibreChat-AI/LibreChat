@@ -63,7 +63,15 @@ export const registry: SettingEntry[] = [
     tab: GENERAL,
     section: 'appearance',
     labelKey: 'com_nav_theme',
-    keywords: ['dark', 'light', 'appearance', 'color'],
+    keywords: [
+      'dark',
+      'light',
+      'appearance',
+      'color',
+      'contrast',
+      'high contrast',
+      'accessibility',
+    ],
     Component: ThemeSetting,
   },
   {
@@ -367,6 +375,19 @@ export const registry: SettingEntry[] = [
       localizationKey: 'com_nav_smooth_streaming',
       switchId: 'smoothStreaming',
       hoverCardText: 'com_nav_info_smooth_streaming',
+    }),
+  },
+  {
+    id: 'copyRichText',
+    tab: CHAT,
+    section: 'messages',
+    labelKey: 'com_nav_copy_rich_text',
+    keywords: ['copy', 'clipboard', 'rich', 'html', 'format', 'markdown', 'paste'],
+    Component: toggleControl({
+      stateAtom: store.copyRichText,
+      localizationKey: 'com_nav_copy_rich_text',
+      switchId: 'copyRichText',
+      hoverCardText: 'com_nav_info_copy_rich_text',
     }),
   },
   {

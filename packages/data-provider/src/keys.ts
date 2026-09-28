@@ -11,6 +11,9 @@ export enum QueryKeys {
   searchEnabled = 'searchEnabled',
   langfuseConnection = 'langfuseConnection',
   langfuseSessionLink = 'langfuseSessionLink',
+  conversationTraceAvailability = 'conversationTraceAvailability',
+  conversationTraceRecords = 'conversationTraceRecords',
+  conversationTraceRecord = 'conversationTraceRecord',
   user = 'user',
   name = 'name', // user key name
   models = 'models',
@@ -95,19 +98,29 @@ export enum QueryKeys {
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
+  backgroundTasks = 'backgroundTasks',
   codeEnvironments = 'codeEnvironments',
   agentQueuedTurns = 'agentQueuedTurns',
+  /* Combined Pinned-section display order (favorites + pinned chats) */
+  pinnedOrder = 'pinnedOrder',
 }
 
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
+  codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
 export enum MutationKeys {
   subagentControl = 'subagentControl',
+  cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
   cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',
+  /** Whole-array favorites write, keyed so every hook instance's write is
+   *  visible to the others through the query client. */
+  updateFavorites = 'updateFavorites',
+  /** Pinned-section display order write, keyed for the same reason. */
+  updatePinnedOrder = 'updatePinnedOrder',
   updateLangfuseConnection = 'updateLangfuseConnection',
   testLangfuseConnection = 'testLangfuseConnection',
   createAgentApiKey = 'createAgentApiKey',
@@ -155,4 +168,5 @@ export enum MutationKeys {
   pairCodeEnvironment = 'pairCodeEnvironment',
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',
+  moveConversationCodeEnvironment = 'moveConversationCodeEnvironment',
 }

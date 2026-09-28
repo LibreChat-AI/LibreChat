@@ -510,6 +510,8 @@ export type RunEnd = {
   endedAt: number;
   /** Exact terminal epoch whose idle transition may release one queued start. */
   generationCreatedAt?: number;
+  /** The completed run's response, which a revealed queued follow-up parents to. */
+  responseMessageId?: string;
   /** Armed "Interrupt & send" flag traveling with a PARKED signal, so
    *  another run on the same pane can neither consume nor clear it. */
   interruptArmed?: boolean;
@@ -676,11 +678,6 @@ const audioRunFamily = atomFamily<string | null, string | number | null>({
   default: null,
 });
 
-const messagesSiblingIdxFamily = atomFamily<number, string | null | undefined>({
-  key: 'messagesSiblingIdx',
-  default: 0,
-});
-
 /** Setter-only access to the conversation atom: registers the key like
  * `useCreateConversationAtom` but never subscribes to the value, so callers
  * that only write (navigation, per-row actions) don't re-render on every
@@ -796,7 +793,6 @@ export default {
   isSubmittingFamily,
   optionSettingsFamily,
   showPopoverFamily,
-  messagesSiblingIdxFamily,
   anySubmittingSelector,
   allConversationsSelector,
   conversationIdByIndex,

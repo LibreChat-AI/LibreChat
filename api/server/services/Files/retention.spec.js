@@ -7,7 +7,7 @@ jest.mock('@librechat/api', () => ({
 }));
 jest.mock('@librechat/data-schemas', () => ({
   logger: {},
-  createTempChatExpirationDate: jest.fn(),
+  createChatExpirationDate: jest.fn(),
 }));
 jest.mock('~/models', () => ({ getConvo: jest.fn() }));
 

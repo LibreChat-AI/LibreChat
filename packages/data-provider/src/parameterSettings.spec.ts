@@ -1,6 +1,10 @@
 import type { SettingDefinition } from './generate';
-import { applyModelAwareDefaults, paramSettings } from './parameterSettings';
-import { EModelEndpoint } from './types';
+import {
+  applyModelAwareDefaults,
+  resolveDropParamsUIKeys,
+  paramSettings,
+} from './parameterSettings';
+import { EModelEndpoint, Providers } from './types';
 
 const googleParams = paramSettings[EModelEndpoint.google] as SettingDefinition[];
 const anthropicParams = paramSettings[EModelEndpoint.anthropic] as SettingDefinition[];
@@ -58,6 +62,21 @@ describe('applyModelAwareDefaults', () => {
     expect(hasSetting(result, 'promptCache')).toBe(false);
     expect(hasSetting(result, 'promptCacheTtl')).toBe(false);
     expect(hasSetting(result, 'temperature')).toBe(true);
+  });
+
+  it('hides unsupported thinking and sampling controls for Opus 5.5', () => {
+    const result = applyModelAwareDefaults(
+      anthropicParams,
+      EModelEndpoint.anthropic,
+      'claude-opus-5-5',
+    );
+
+    expect(hasSetting(result, 'thinking')).toBe(false);
+    expect(hasSetting(result, 'thinkingBudget')).toBe(false);
+    expect(hasSetting(result, 'temperature')).toBe(false);
+    expect(hasSetting(result, 'topP')).toBe(false);
+    expect(hasSetting(result, 'topK')).toBe(false);
+    expect(hasSetting(result, 'effort')).toBe(true);
   });
 
   it('returns settings unchanged when no model is provided', () => {
@@ -129,5 +148,40 @@ describe('maxContextTokens bounds', () => {
       .map(([endpoint]) => endpoint);
 
     expect(bounded).toEqual([]);
+  });
+});
+
+describe('resolveDropParamsUIKeys', () => {
+  it('aliases backend param names to their UI keys for OpenAI-compatible endpoints', () => {
+    expect(
+      resolveDropParamsUIKeys(
+        ['maxTokens', 'topP', 'frequencyPenalty', 'presencePenalty'],
+        EModelEndpoint.openAI,
+      ),
+    ).toEqual(new Set(['max_tokens', 'top_p', 'frequency_penalty', 'presence_penalty']));
+  });
+
+  it('aliases backend param names for azureOpenAI, custom, and openRouter endpoints', () => {
+    expect(resolveDropParamsUIKeys(['maxTokens'], EModelEndpoint.azureOpenAI)).toEqual(
+      new Set(['max_tokens']),
+    );
+    expect(resolveDropParamsUIKeys(['topP'], EModelEndpoint.custom)).toEqual(new Set(['top_p']));
+    expect(resolveDropParamsUIKeys(['topP'], Providers.OPENROUTER)).toEqual(new Set(['top_p']));
+  });
+
+  it('preserves native keys for a custom endpoint overridden to anthropic/google, since their UI key already matches the backend name', () => {
+    expect(resolveDropParamsUIKeys(['topP'], EModelEndpoint.anthropic)).toEqual(new Set(['topP']));
+    expect(resolveDropParamsUIKeys(['topP'], EModelEndpoint.google)).toEqual(new Set(['topP']));
+  });
+
+  it('preserves native keys for bedrock endpoints', () => {
+    expect(
+      resolveDropParamsUIKeys(['maxTokens', 'topP'], `${EModelEndpoint.bedrock}-anthropic`),
+    ).toEqual(new Set(['maxTokens', 'topP']));
+  });
+
+  it('returns an empty set when dropParams is undefined or empty', () => {
+    expect(resolveDropParamsUIKeys(undefined, EModelEndpoint.openAI)).toEqual(new Set());
+    expect(resolveDropParamsUIKeys([], EModelEndpoint.openAI)).toEqual(new Set());
   });
 });

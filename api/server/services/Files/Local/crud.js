@@ -3,6 +3,7 @@ const path = require('path');
 const axios = require('axios');
 const {
   deleteRagFile,
+  stripCacheBust,
   assertRemoteFileURL,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
@@ -207,11 +208,21 @@ const isValidPath = (req, base, subfolder, filepath) => {
 /**
  * @param {string} filepath
  */
+/**
+ * A file whose bytes are still on disk must not be reported as deleted: callers use the resolved
+ * promise to decide that a record may lose its metadata and its agent references. Storage that was
+ * already gone is the one benign case, and `processDeleteRequest` treats it as deleted by design.
+ */
 const unlinkFile = async (filepath) => {
   try {
     await fs.promises.unlink(filepath);
   } catch (error) {
+    if (error?.code === 'ENOENT') {
+      logger.warn('Local file was already missing during delete:', error);
+      return;
+    }
     logger.error('Error deleting file:', error);
+    throw error;
   }
 };
 
@@ -231,8 +242,8 @@ const deleteLocalFile = async (req, file) => {
   const appConfig = req.config;
   const { publicPath, uploads } = appConfig.paths;
 
-  /** Filepath stripped of query parameters (e.g., ?manual=true) */
-  const cleanFilepath = file.filepath.split('?')[0];
+  /** Filepath stripped of query parameters (e.g., ?manual=true, ?v=<timestamp>) */
+  const cleanFilepath = stripCacheBust(file.filepath);
 
   await deleteRagFile({ userId: req.user.id, file });
 
@@ -321,12 +332,14 @@ async function uploadLocalFile({ req, file, file_id }) {
  * Retrieves a readable stream for a file from local storage.
  *
  * @param {ServerRequest} req - The request object from Express
- * @param {string} filepath - The filepath.
+ * @param {string} requestedFilepath - The filepath, which may carry a cache-busting query string.
  * @returns {ReadableStream} A readable stream of the file.
  */
-async function getLocalFileStream(req, filepath) {
+async function getLocalFileStream(req, requestedFilepath) {
   try {
     const appConfig = req.config;
+    /** Reused code outputs persist a `?v=<timestamp>` suffix that no file on disk carries */
+    const filepath = stripCacheBust(requestedFilepath);
     if (filepath.includes('/uploads/')) {
       const basePath = filepath.split('/uploads/')[1];
 

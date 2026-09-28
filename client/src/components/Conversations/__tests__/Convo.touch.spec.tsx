@@ -1,3 +1,5 @@
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
@@ -23,6 +25,7 @@ jest.mock('~/hooks', () => ({
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false } }),
   useUpdateConversationMutation: () => ({ mutateAsync: jest.fn() }),
+  usePinConversationMutation: () => ({ mutate: jest.fn() }),
 }));
 
 jest.mock('react-router-dom', () => ({
@@ -74,7 +77,11 @@ const conversation = {
 } as TConversation;
 
 const renderRow = () =>
-  render(<Conversation conversation={conversation} retainView={jest.fn()} toggleNav={jest.fn()} />);
+  render(
+    <DndProvider backend={HTML5Backend}>
+      <Conversation conversation={conversation} retainView={jest.fn()} toggleNav={jest.fn()} />
+    </DndProvider>,
+  );
 
 describe('Conversation row on touch', () => {
   beforeEach(() => {

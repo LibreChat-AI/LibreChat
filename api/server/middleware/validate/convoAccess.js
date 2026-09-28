@@ -37,6 +37,7 @@ const validateConvoAccess = async (req, res, next) => {
   const conversationId = getConversationId(req.body);
 
   if (!conversationId || conversationId === Constants.NEW_CONVO) {
+    req.resolvedConversation = null;
     return next();
   }
 
@@ -47,7 +48,12 @@ const validateConvoAccess = async (req, res, next) => {
   try {
     if (cache) {
       const cachedAccess = await cache.get(key);
-      if (cachedAccess === 'authorized') {
+      // An access marker contains no retention policy. Resolve it once at admission
+      // when independent deadlines are active, then reuse the document downstream.
+      const needsRetention =
+        req.config?.interfaceConfig?.retentionMode === 'all' &&
+        req.config.interfaceConfig.generalChatRetention !== undefined;
+      if (cachedAccess === 'authorized' && !needsRetention) {
         return next();
       }
     }

@@ -113,6 +113,7 @@ describe('GenerationJobManager startup telemetry', () => {
         model: 'test-model',
         agent_id: 'agent-1',
         isTemporary: false,
+        retentionExpiresAt: '2030-01-01T00:00:00.000Z',
         promptTokens: 0,
         discoveredTools: [],
         pendingAction: {
@@ -131,7 +132,7 @@ describe('GenerationJobManager startup telemetry', () => {
     expect(job.metadata).toMatchObject({
       userId: 'user-1',
       conversationId: 'conversation-1',
-      checkpointNamespace: String(job.createdAt),
+      checkpointNamespace: expect.stringMatching(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/),
       userMessage: {
         messageId: 'message-1',
         parentMessageId: 'parent-1',
@@ -149,6 +150,7 @@ describe('GenerationJobManager startup telemetry', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
+      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
       promptTokens: 0,
       discoveredTools: [],
       providerExecutionId: expect.any(String),
@@ -675,6 +677,12 @@ describe('GenerationJobManager startup telemetry', () => {
     const predecessor = await manager.createJob(streamId, 'user-1', streamId);
     const onDone = jest.fn();
     const subscription = await manager.subscribe(streamId, () => undefined, onDone);
+    const predecessorRuntime = (
+      manager as unknown as {
+        runtimeState: Map<string, { subscriberLeaseTimer?: ReturnType<typeof setInterval> }>;
+      }
+    ).runtimeState.get(streamId)!;
+    expect(predecessorRuntime.subscriberLeaseTimer).toBeDefined();
 
     const replacement = await manager.createJob(streamId, 'user-1', streamId);
 
@@ -687,6 +695,7 @@ describe('GenerationJobManager startup telemetry', () => {
       conversation: { conversationId: streamId },
     });
     expect(predecessor.abortController.signal.aborted).toBe(true);
+    expect(predecessorRuntime.subscriberLeaseTimer).toBeUndefined();
     expect(replacement.abortController.signal.aborted).toBe(false);
     expect(eventTransport.getSubscriberCount(streamId)).toBe(0);
     subscription?.unsubscribe();
@@ -1404,7 +1413,7 @@ describe('GenerationJobManager startup telemetry', () => {
       expect(getJob).toHaveBeenCalledTimes(1);
       expect(onError).not.toHaveBeenCalled();
       expect(onAllSubscribersLeft).not.toHaveBeenCalled();
-      expect(jest.getTimerCount()).toBe(timerCountBeforeFence);
+      expect(jest.getTimerCount()).toBe(timerCountBeforeFence - 1);
 
       releaseLookup?.();
       await jest.advanceTimersByTimeAsync(0);
@@ -4116,6 +4125,224 @@ describe('GenerationJobManager startup telemetry', () => {
       status: 'error',
       error: 'Generation interrupted because its server shut down',
     });
+  });
+
+  const configureShutdownManager = () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    jest.spyOn(jobStore, 'destroy').mockResolvedValue();
+    const eventTransport = new InMemoryEventTransport();
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false });
+    manager.initialize();
+    return { manager, jobStore, eventTransport };
+  };
+
+  it('waits for a begun provider execution to record its drain before shutdown completes', async () => {
+    const { manager, eventTransport } = configureShutdownManager();
+    const streamId = 'stream-shutdown-open-execution';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    await expect(
+      manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId),
+    ).resolves.toBe(true);
+    const recordProviderDrain = jest.spyOn(eventTransport, 'recordProviderDrain');
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(false);
+
+    /** The execution records its own drain — from the controller's `.finally`, after its
+     *  trailing writes — and that is what releases shutdown. No registration involved. */
+    await manager.markProviderExecutionDrained(streamId, job.createdAt, providerExecutionId);
+    await destroying;
+
+    expect(destroyed).toBe(true);
+    expect(recordProviderDrain).toHaveBeenCalledWith(streamId, job.createdAt, providerExecutionId);
+  });
+
+  it('keeps waiting for every execution begun before shutdown, not only the first to drain', async () => {
+    const { manager } = configureShutdownManager();
+    const first = await manager.createJob('stream-shutdown-first', 'user-1');
+    const second = await manager.createJob('stream-shutdown-second', 'user-1');
+    const firstExecution = first.metadata.providerExecutionId!;
+    const secondExecution = second.metadata.providerExecutionId!;
+    await manager.beginProviderExecution('stream-shutdown-first', first.createdAt, firstExecution);
+    await manager.beginProviderExecution(
+      'stream-shutdown-second',
+      second.createdAt,
+      secondExecution,
+    );
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    /** The first draining must not release shutdown while the second is still open. */
+    await manager.markProviderExecutionDrained(
+      'stream-shutdown-first',
+      first.createdAt,
+      firstExecution,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(false);
+
+    await manager.markProviderExecutionDrained(
+      'stream-shutdown-second',
+      second.createdAt,
+      secondExecution,
+    );
+    await destroying;
+    expect(destroyed).toBe(true);
+  });
+
+  it('does not delay shutdown for a provider execution that already drained', async () => {
+    const { manager } = configureShutdownManager();
+    const streamId = 'stream-shutdown-drained';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    await manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId);
+    await manager.markProviderExecutionDrained(streamId, job.createdAt, providerExecutionId);
+
+    manager.prepareForShutdown();
+    await expect(manager.destroy({ settlementBudgetMs: 5_000 })).resolves.toBeUndefined();
+  });
+
+  it('keeps waiting when the provider-begin reply is lost after the store may have committed', async () => {
+    const { manager, jobStore } = configureShutdownManager();
+    const streamId = 'stream-shutdown-ambiguous-begin';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    jest
+      .spyOn(jobStore, 'beginProviderExecution')
+      .mockRejectedValueOnce(new Error('reply lost after commit'));
+    await expect(
+      manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId),
+    ).rejects.toThrow('reply lost after commit');
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    /** The caller treats the rejection as possibly-started and still records the drain from
+     *  its cleanup; shutdown has to wait for that rather than assume nothing began. */
+    expect(destroyed).toBe(false);
+
+    await manager.markProviderExecutionDrained(streamId, job.createdAt, providerExecutionId);
+    await destroying;
+    expect(destroyed).toBe(true);
+  });
+
+  it('does not carry undrained executions into a re-initialized manager', async () => {
+    const { manager } = configureShutdownManager();
+    const streamId = 'stream-shutdown-stale-execution';
+    const job = await manager.createJob(streamId, 'user-1');
+    await manager.beginProviderExecution(
+      streamId,
+      job.createdAt,
+      job.metadata.providerExecutionId!,
+    );
+
+    /** A bare reset: zero budget, so the execution is still open when teardown runs. */
+    manager.prepareForShutdown();
+    await manager.destroy();
+
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    jest.spyOn(jobStore, 'destroy').mockResolvedValue();
+    manager.configure({ jobStore, eventTransport: new InMemoryEventTransport(), isRedis: false });
+    manager.initialize();
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    /** Resolved without consuming the budget: nothing from the previous store is left to wait
+     *  on. Asserted before awaiting, or a 5s stale wait would pass this test too. */
+    expect(destroyed).toBe(true);
+    await destroying;
+  });
+
+  it('does not carry undrained executions across a reconfigure', async () => {
+    const { manager } = configureShutdownManager();
+    const streamId = 'stream-shutdown-reconfigure';
+    const job = await manager.createJob(streamId, 'user-1');
+    await manager.beginProviderExecution(
+      streamId,
+      job.createdAt,
+      job.metadata.providerExecutionId!,
+    );
+
+    /** Reconfiguring after initialization replaces the store and transport the open
+     *  execution belongs to; its tracker must go with them. */
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    jest.spyOn(jobStore, 'destroy').mockResolvedValue();
+    manager.configure({ jobStore, eventTransport: new InMemoryEventTransport(), isRedis: false });
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(true);
+    await destroying;
+  });
+
+  it('releases an abandoned provider execution without recording a drain', async () => {
+    const { manager, eventTransport } = configureShutdownManager();
+    const streamId = 'stream-shutdown-abandoned';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    await manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId);
+    const recordProviderDrain = jest.spyOn(eventTransport, 'recordProviderDrain');
+
+    /** A remote run that settled its provider work but failed terminalization twice
+     *  deliberately publishes no drain marker; it must still stop shutdown waiting on it. */
+    manager.abandonProviderExecution(streamId, job.createdAt, providerExecutionId);
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(true);
+    await destroying;
+    expect(recordProviderDrain).not.toHaveBeenCalled();
+  });
+
+  it('refuses to begin a provider execution once shutdown has started', async () => {
+    const { manager, jobStore } = configureShutdownManager();
+    const streamId = 'stream-shutdown-late-begin';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    const storeBegin = jest.spyOn(jobStore, 'beginProviderExecution');
+
+    manager.prepareForShutdown();
+    /** Began after the settlement wait could have observed it: must not start, must not
+     *  commit `providerDrained: false`, and must leave nothing for shutdown to wait on. */
+    await expect(
+      manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId),
+    ).resolves.toBe(false);
+    expect(storeBegin).not.toHaveBeenCalled();
+
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(true);
+    await destroying;
   });
 
   it('does not let late success overwrite or delete a shutdown error', async () => {

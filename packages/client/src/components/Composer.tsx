@@ -7,7 +7,11 @@ import type {
   RefAttributes,
 } from 'react';
 import type { SendAction } from './SendActions';
-import { composerSurfaceClasses, composerSurfaceShadow } from '~/utils/composer';
+import {
+  composerSubmitClasses,
+  composerSurfaceClasses,
+  composerSurfaceShadow,
+} from '~/utils/composer';
 import { TextareaAutosize } from './TextareaAutosize';
 import { SendActions } from './SendActions';
 import { TooltipAnchor } from './Tooltip';
@@ -82,8 +86,7 @@ export type ComposerStopProps =
 export type ComposerPropsWithStop = ComposerProps & ComposerStopProps;
 
 /** Main chat's send/stop button shape, shared by both states of the slot. */
-const CONTROL_CLASS =
-  'size-theme-control rounded-theme-control-round bg-text-primary p-theme-compact text-text-primary outline-offset-4 transition-all duration-theme-normal disabled:cursor-not-allowed disabled:text-text-secondary disabled:opacity-10';
+const CONTROL_CLASS = composerSubmitClasses();
 
 /**
  * The chat composer at panel scale: one persistent surface with a text field, a

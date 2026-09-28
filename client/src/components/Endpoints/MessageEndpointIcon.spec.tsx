@@ -84,7 +84,7 @@ describe('MessageEndpointIcon', () => {
       />,
     );
 
-    const badge = container.querySelector('[title="OpenAI"] > .bg-status-error');
+    const badge = container.querySelector('[title="OpenAI"] > .bg-status-error-strong');
     expect(badge).toHaveTextContent('!');
   });
 

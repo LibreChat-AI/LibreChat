@@ -65,6 +65,7 @@ describe('useDeleteAgentMutation', () => {
     const affectedQueryKey = [QueryKeys.agent, affectedId, 'expanded'];
     const affectedSourceQueryKey = [QueryKeys.agent, affectedSourceId, 'expanded'];
     const unrelatedQueryKey = [QueryKeys.agent, unrelatedId, 'expanded'];
+    const viewListKey = [QueryKeys.agents, { requiredPermission: PermissionBits.VIEW }];
     const staleAffectedAgent = createAgent(affectedId, [
       { from: affectedId, to: targetId, edgeType: 'handoff' },
     ]);
@@ -78,6 +79,9 @@ describe('useDeleteAgentMutation', () => {
     ]);
     const refreshedAffectedSourceAgent = createAgent(affectedSourceId, [
       { from: 'agent_surviving_source', to: affectedSourceId, edgeType: 'handoff' },
+    ]);
+    const locallyPrunedAffectedSourceAgent = createAgent(affectedSourceId, [
+      { from: ['agent_surviving_source'], to: affectedSourceId, edgeType: 'handoff' },
     ]);
     const unrelatedAgent = createAgent(unrelatedId, [
       { from: unrelatedId, to: 'agent_other', edgeType: 'handoff' },
@@ -95,6 +99,13 @@ describe('useDeleteAgentMutation', () => {
     await queryClient.prefetchQuery(affectedQueryKey, affectedFetch);
     await queryClient.prefetchQuery(affectedSourceQueryKey, affectedSourceFetch);
     await queryClient.prefetchQuery(unrelatedQueryKey, unrelatedFetch);
+    queryClient.setQueryData<AgentListResponse>(viewListKey, {
+      object: 'list',
+      data: [staleAffectedAgent, staleAffectedSourceAgent, unrelatedAgent, createAgent(targetId)],
+      first_id: affectedId,
+      last_id: targetId,
+      has_more: false,
+    });
     queryClient.setQueryData([QueryKeys.agent, targetId], createAgent(targetId));
     queryClient.setQueryData([QueryKeys.agent, targetId, 'expanded'], createAgent(targetId));
 
@@ -114,6 +125,11 @@ describe('useDeleteAgentMutation', () => {
     expect(queryClient.getQueryData(affectedSourceQueryKey)).toEqual(refreshedAffectedSourceAgent);
     expect(unrelatedFetch).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryData(unrelatedQueryKey)).toEqual(unrelatedAgent);
+    expect(queryClient.getQueryData<AgentListResponse>(viewListKey)?.data).toEqual([
+      refreshedAffectedAgent,
+      locallyPrunedAffectedSourceAgent,
+      unrelatedAgent,
+    ]);
     expect(queryClient.getQueryData([QueryKeys.agent, targetId])).toBeUndefined();
     expect(queryClient.getQueryData([QueryKeys.agent, targetId, 'expanded'])).toBeUndefined();
   });

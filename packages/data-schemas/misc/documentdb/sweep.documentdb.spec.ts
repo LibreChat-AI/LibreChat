@@ -260,6 +260,16 @@ const ARRAY_PARAMS =
 function valueFor(name: string): unknown {
   if (name === 'mongoose') return mongoose;
   if (name === 'kind') return 'manual';
+  /** Typed-criteria parameters (`utils/criteria.ts`) are validated key by key
+   * and fail closed, so a synthesized string is read as a criteria object and
+   * rejected at index '0'. An empty criteria object is valid, builds an empty
+   * filter, and still reaches the engine. `searchMessages` is the sole method
+   * whose `query` parameter is a genuine string (verified across
+   * `src/methods`); it carries an `ARG_OVERRIDES` entry so it keeps one. A
+   * future string-valued `query`/`criteria`/`filter` parameter would need the
+   * same treatment — the symptom is a method reporting `threw` on a type
+   * error rather than reaching the database. */
+  if (/^(query|criteria|filter)$/.test(name)) return {};
   if (/pipeline/i.test(name)) return [{ $match: { _id: objectId() } }];
   if (OBJECT_ID_PARAMS.test(name)) return objectId();
   if (ARRAY_PARAMS.test(name)) return [`sweep-${name}-${runId}`];
@@ -289,7 +299,7 @@ function replaceValue(node: unknown, target: string, replacement: unknown): unkn
 /** Repairs synthesized arguments from a validation error's own message, so the
  * retry reaches the database instead of being reported `not-driven`. Returns
  * the repaired arguments, or null when the error is not machine-repairable. */
-function adaptArgs(args: unknown[], error: unknown): unknown[] | null {
+function adaptArgs(args: unknown[], error: unknown, paramNames: string[] = []): unknown[] | null {
   const message = String((error as { message?: string })?.message ?? '');
   let match = /Cast to (?:\[)?ObjectId(?:\])? failed for value "+?\[?'?"?([^"'\]]+)/.exec(message);
   if (match != null) {
@@ -349,6 +359,11 @@ const ARG_OVERRIDES: Record<string, () => SweepCase | Promise<SweepCase>> = {
   /** Positional (searchParameter, id): a synthesized string for the first
    * parameter lands inside a `$match` and malforms it on both engines. */
   getAgentWithVersionCount: () => ({ args: [{ id: `agent-sweep-${runId}` }] }),
+  /** Takes a genuine search string, not typed criteria: the criteria-shaped
+   * synthesis above would hand it an object, which a Meili-enabled deployment
+   * forwards verbatim into `meiliSearch` and adjudicates a harness-generated
+   * request instead of the method's real behavior. */
+  searchMessages: () => ({ args: [`sweep-search-${runId}`, { page: 1, limit: 2 }, false] }),
   /** The bounded authority snapshot is the one production path that COMMITS a
    * transaction; generic synthesis dies on target validation before a session
    * ever starts, which would leave the session instrumentation exercising

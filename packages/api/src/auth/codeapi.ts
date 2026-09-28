@@ -116,11 +116,24 @@ function parseCappedSeconds(value: string | undefined, fallback: number, max: nu
   return Math.min(Math.floor(parsed), max);
 }
 
+/**
+ * A parse failure here must not propagate verbatim. Node's JSON `SyntaxError`
+ * quotes an excerpt of the source around the offending token, so a malformed
+ * private JWK puts signing material into a message that callers log; the
+ * message redaction patterns do not recognize a bare base64 fragment. Callers
+ * get the failure and its key format, never the key.
+ */
 function createSigningKey(rawKey: string): KeyObject {
-  if (rawKey.startsWith('{')) {
-    return createPrivateKey({ key: JSON.parse(rawKey) as JsonWebKey, format: 'jwk' });
+  const isJwk = rawKey.startsWith('{');
+  try {
+    return isJwk
+      ? createPrivateKey({ key: JSON.parse(rawKey) as JsonWebKey, format: 'jwk' })
+      : createPrivateKey(rawKey);
+  } catch {
+    throw new Error(
+      `Code API JWT signing key could not be loaded (${isJwk ? 'JWK' : 'PEM'} format)`,
+    );
   }
-  return createPrivateKey(rawKey);
 }
 
 function getSigningConfig(): SigningConfig {

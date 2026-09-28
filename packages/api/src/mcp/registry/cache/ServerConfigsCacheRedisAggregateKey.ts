@@ -43,6 +43,11 @@ if not envelope.value then envelope.value = {} end
 local existing = envelope.value[serverName]
 if operation == 'add' and existing then return -1 end
 if (operation == 'update' or operation == 'remove') and not existing then return 0 end
+if operation == 'replaceStub' then
+  if not existing or existing.inspectionFailed ~= true then return 0 end
+  if ARGV[5] == '' and existing.updatedAt ~= nil then return 0 end
+  if ARGV[5] ~= '' and tonumber(ARGV[5]) ~= existing.updatedAt then return 0 end
+end
 local ttl = redis.call('PTTL', KEYS[1])
 if operation == 'remove' then
   envelope.value[serverName] = nil
@@ -131,10 +136,11 @@ export class ServerConfigsCacheRedisAggregateKey
   }
 
   private async mutateRedisEntry(
-    operation: 'add' | 'update' | 'upsert' | 'remove',
+    operation: 'add' | 'update' | 'upsert' | 'remove' | 'replaceStub',
     serverName: string,
     config?: ParsedServerConfig,
     updatedAt?: number,
+    stubUpdatedAt?: number,
   ): Promise<number> {
     const result = await evalKeyvRedisScript(MUTATE_AGGREGATE_ENTRY, {
       keys: [this.aggregateRedisKey()],
@@ -143,6 +149,7 @@ export class ServerConfigsCacheRedisAggregateKey
         serverName,
         config ? JSON.stringify(config) : '',
         updatedAt != null ? String(updatedAt) : '',
+        stubUpdatedAt != null ? String(stubUpdatedAt) : '',
       ],
     });
     return typeof result === 'number' ? result : 0;
@@ -190,6 +197,13 @@ export class ServerConfigsCacheRedisAggregateKey
   }
 
   public async get(serverName: string): Promise<ParsedServerConfig | undefined> {
+    const all = await this.getAll();
+    return all[serverName];
+  }
+
+  /** Reads past the local snapshot, which can lag another replica's write by up to its TTL. */
+  public async getCurrent(serverName: string): Promise<ParsedServerConfig | undefined> {
+    this.invalidateLocalSnapshot();
     const all = await this.getAll();
     return all[serverName];
   }
@@ -310,6 +324,39 @@ export class ServerConfigsCacheRedisAggregateKey
       const success = await this.cache.set(AGGREGATE_KEY, newAll);
       this.successCheck(`patch ${this.namespace} server "${serverName}"`, success);
       return true;
+    });
+  }
+
+  /** Replaces a failed-inspection stub only while it is still that stub — see the interface doc.
+   * The Redis-side check and write are one script, so replicas racing the same recovery cannot
+   * both land. */
+  public async replaceStub(
+    serverName: string,
+    config: ParsedServerConfig,
+    stubUpdatedAt: number | undefined,
+  ): Promise<ParsedServerConfig | undefined> {
+    if (this.leaderOnly) await this.leaderCheck('replace MCP server stubs');
+    return this.withWriteLock(async () => {
+      const storedConfig = { ...config, updatedAt: Date.now() };
+      if (this.usesRedisStore()) {
+        const result = await this.mutateRedisEntry(
+          'replaceStub',
+          serverName,
+          storedConfig,
+          storedConfig.updatedAt,
+          stubUpdatedAt,
+        );
+        return result === 1 ? storedConfig : undefined;
+      }
+      this.invalidateLocalSnapshot(); // Force fresh Redis read (see add() comment)
+      const all = await this.getAll();
+      const existing = all[serverName];
+      if (existing?.inspectionFailed !== true || existing.updatedAt !== stubUpdatedAt) {
+        return undefined;
+      }
+      const success = await this.cache.set(AGGREGATE_KEY, { ...all, [serverName]: storedConfig });
+      this.successCheck(`replace ${this.namespace} server stub "${serverName}"`, success);
+      return storedConfig;
     });
   }
 

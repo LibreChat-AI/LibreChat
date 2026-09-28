@@ -1,10 +1,14 @@
 import { z } from 'zod';
-import type { TMessageContentParts, AgentSubagentGraph, FunctionTool } from './types/assistants';
+import type { TMessageContentParts } from './types/content';
+import type { AgentSubagentGraph } from './types/agents';
 import type { SearchResultData } from './types/web';
+import type { FunctionTool } from './types/tools';
 import type { TFile } from './types/files';
+import { CODE_ENVIRONMENT_MODES, CODE_WORKSPACE_ID_PATTERN } from './code/workspace';
 import { userSubmittedMessageFieldPathSchema } from './filters';
 import { TFeedback, feedbackSchema } from './feedback';
-import { Tools } from './types/assistants';
+import { CODE_APPROVAL_MODES } from './code/approval';
+import { Tools } from './types/tools';
 
 export const isUUID = z.string().uuid();
 
@@ -108,7 +112,41 @@ export const inputTokensIncludesCache = (provider?: string | null): boolean => {
 };
 
 export const isDocumentSupportedProvider = (provider?: string | null): boolean => {
-  return documentSupportedProviders.has(provider ?? '');
+  const normalized = provider?.toLowerCase() ?? '';
+  return Array.from(documentSupportedProviders).some(
+    (candidate) => candidate.toLowerCase() === normalized,
+  );
+};
+
+/**
+ * Endpoints whose encoders actually build native audio/video payloads. Narrower than
+ * `documentSupportedProviders`: a provider can accept PDFs and still emit nothing for
+ * media, in which case the upload has to fall back to text/STT.
+ */
+export const mediaSupportedProviders = new Set<string>([
+  EModelEndpoint.google,
+  Providers.VERTEXAI,
+  Providers.OPENROUTER,
+]);
+
+export const isMediaSupportedProvider = (provider?: string | null): boolean => {
+  return mediaSupportedProviders.has(provider?.toLowerCase() ?? '');
+};
+
+/**
+ * Built-in endpoint and provider identifiers. A name outside this set is a custom
+ * endpoint whose real provider is resolved at request time, so its capabilities
+ * cannot be judged from the name alone.
+ */
+const knownProviderIdentifiers = new Set<string>([
+  ...Object.values(EModelEndpoint),
+  ...Object.values(Providers),
+  ...Object.values(EModelEndpoint).map((provider) => provider.toLowerCase()),
+  ...Object.values(Providers).map((provider) => provider.toLowerCase()),
+]);
+
+export const isKnownProviderIdentifier = (provider?: string | null): boolean => {
+  return knownProviderIdentifiers.has(provider?.toLowerCase() ?? '');
 };
 
 export const paramEndpoints = new Set<EModelEndpoint | string>([
@@ -350,6 +388,8 @@ export const defaultAgentFormValues = {
   [Tools.memory]: false,
   stateful_code_environment: 'user' as const,
   code_environment_id: undefined as string | null | undefined,
+  code_workspace_id: undefined as string | undefined,
+  repositoryInstructions: undefined as 'prefer' | 'defer' | 'off' | undefined,
   category: 'general',
   support_contact: {
     name: '',
@@ -837,7 +877,7 @@ export type TExample = z.infer<typeof tExampleSchema>;
 
 /** Compact context-fading tier persisted beside a message's calibration ratio. */
 const agentFadingTierSchema = z.object({
-  v: z.literal(1),
+  v: z.union([z.literal(1), z.literal(2)]),
   budgetTokens: z.number().positive(),
   masked: z.boolean(),
 });
@@ -1028,6 +1068,8 @@ export type TMessage = z.input<typeof tMessageSchema> & {
   siblingIndex?: number;
   attachments?: TAttachment[];
   clientTimestamp?: string;
+  /** Client-only durable branch anchor while this message is an optimistic response. */
+  clientQueueParentMessageId?: string;
   feedback?: TFeedback;
 };
 
@@ -1080,6 +1122,18 @@ export const tConversationSchema = z.object({
   pinned: z.boolean().optional(),
   /** Server-derived: an active shared link exists for this conversation. Not persisted. */
   isShared: z.boolean().optional(),
+  codeApprovalMode: z.enum(CODE_APPROVAL_MODES).optional(),
+  codeEnvironmentMode: z.enum(CODE_ENVIRONMENT_MODES).optional(),
+  codeWorkspaces: z
+    .array(
+      z
+        .object({
+          environmentId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+          workspaceId: z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+        })
+        .strict(),
+    )
+    .optional(),
   title: z.string().nullable().or(z.literal('New Chat')).default('New Chat'),
   user: z.string().optional(),
   messages: z.array(z.string()).optional(),

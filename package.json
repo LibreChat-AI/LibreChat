@@ -1,8 +1,11 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.8-rc2",
+  "version": "v0.8.8-rc4",
   "description": "",
   "packageManager": "npm@11.13.0",
+  "scarfSettings": {
+    "enabled": false
+  },
   "workspaces": [
     "api",
     "client",
@@ -36,6 +39,7 @@
     "ban-user": "node config/ban-user.js",
     "delete-user": "node config/delete-user.js",
     "reset-meili-sync": "node config/reset-meili-sync.js",
+    "create-error-convo": "node config/create-error-convo.js",
     "update-banner": "node config/update-banner.js",
     "delete-banner": "node config/delete-banner.js",
     "backend": "cross-env NODE_ENV=production node api/server/index.js",
@@ -62,6 +66,7 @@
     "frontend:ci": "npm run build:data-provider && npm run build:client-package && cd client && npm run build:ci",
     "frontend:dev": "cd client && npm run dev",
     "e2e:prepare": "npm run frontend",
+    "test:client-build": "node --test e2e/client-build.test.mjs",
     "e2e": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.local.ts",
     "e2e:headed": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.local.ts --headed",
     "e2e:a11y": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.a11y.ts --headed",
@@ -87,6 +92,8 @@
     "e2e:bombadil:steering:run": "cross-env BOMBADIL_SPECIFICATION=steering-lifecycle.specification.ts BOMBADIL_TIME_LIMIT=75s playwright test --config=e2e/playwright.config.bombadil.ts",
     "e2e:mock:enforce": "npm run e2e:prepare && cross-env E2E_MODEL_SPECS_ENFORCE=true playwright test --config=e2e/playwright.config.mock.ts enforced-model-specs.spec.ts",
     "e2e:mock:ci": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.mock.ts",
+    "e2e:deployed": "playwright test --config=e2e/playwright.config.deployed.ts",
+    "e2e:deployed:headed": "cross-env E2E_HEADED=true playwright test --config=e2e/playwright.config.deployed.ts",
     "e2e:debug": "npm run e2e:prepare && cross-env PWDEBUG=1 playwright test --config=e2e/playwright.config.local.ts",
     "e2e:record": "npm run e2e:prepare && cross-env E2E_BASE_URL=http://localhost:3333 node e2e/setup/record.js",
     "e2e:record:local": "npm run e2e:prepare && node e2e/setup/record.js --profile=local",
@@ -124,6 +131,8 @@
     "b:balance": "bun config/add-balance.js",
     "b:list-balances": "bun config/list-balances.js",
     "reset-terms": "node config/reset-terms.js",
+    "migrate:tenant-indexes": "node config/migrate-tenant-indexes.js",
+    "migrate:tenant-indexes:dry-run": "node config/migrate-tenant-indexes.js --dry-run",
     "migrate:terms-timestamp": "node config/migrate-terms-timestamp.js",
     "flush-cache": "node config/flush-cache.js",
     "migrate:agent-permissions:dry-run": "node config/migrate-agent-permissions.js --dry-run",
@@ -140,16 +149,19 @@
     "migrate:orphaned-agent-files:batch": "node config/migrate-orphaned-agent-files.js --batch-size=50",
     "migrate:code-file-duplicates:dry-run": "node config/migrate-code-file-duplicates.js --dry-run",
     "migrate:code-file-duplicates": "node config/migrate-code-file-duplicates.js",
-    "migrate:code-file-duplicates:batch": "node config/migrate-code-file-duplicates.js --batch-size=50"
+    "migrate:code-file-duplicates:batch": "node config/migrate-code-file-duplicates.js --batch-size=50",
+    "lighthouse": "npm run e2e:prepare && npm run lighthouse:run",
+    "lighthouse:run": "playwright test --config=e2e/playwright.config.lighthouse.ts",
+    "lighthouse:regression": "cross-env LIGHTHOUSE_REGRESSION=serial-reads npm run lighthouse:run"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danny-avila/LibreChat.git"
+    "url": "git+https://github.com/LibreChat-AI/LibreChat.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai/",
   "devDependencies": {
@@ -178,6 +190,7 @@
     "globals": "^15.14.0",
     "husky": "^9.1.7",
     "jest": "^30.2.0",
+    "lighthouse": "13.4.1",
     "lint-staged": "^15.4.3",
     "prettier": "^3.5.0",
     "prettier-plugin-tailwindcss": "^0.6.11",
@@ -233,13 +246,13 @@
       "ajv": "6.14.0"
     },
     "underscore": "1.13.8",
-    "hono": "^4.12.25",
-    "@hono/node-server": "^2.0.11",
+    "hono": "^4.13.7",
+    "@hono/node-server": "^2.1.1",
     "monaco-editor": {
       "dompurify": "3.4.14"
     },
     "test-exclude": "^8.0.0",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^4.3.2",
     "ws": "^8.21.0",
     "@opentelemetry/core": "^2.9.0",
     "@opentelemetry/propagator-jaeger": "^2.10.0",

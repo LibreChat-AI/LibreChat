@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const { promisify } = require('util');
+const express = require('express');
 const request = require('supertest');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const mongoose = require('mongoose');
@@ -76,6 +78,7 @@ describe('Content Security Policy', () => {
 
   let mongoServer;
   let app;
+  let server;
 
   const originalReadFileSync = fs.readFileSync;
 
@@ -105,8 +108,12 @@ describe('Content Security Policy', () => {
     /* A cacheable override that CSP must refuse for the shell. */
     process.env.INDEX_CACHE_CONTROL = 'public, max-age=3600';
 
+    /* index.js listens at module scope and exports only the app, so capture the server to close it. */
+    const listenSpy = jest.spyOn(express.application, 'listen');
     app = require('~/server');
     await healthCheckPoll(app);
+    server = listenSpy.mock.results[0].value;
+    listenSpy.mockRestore();
   });
 
   afterAll(async () => {
@@ -115,6 +122,7 @@ describe('Content Security Policy', () => {
     delete process.env.CSP_REPORT_ONLY;
     delete process.env.CSP_CONNECT_SRC_EXTRA;
     delete process.env.INDEX_CACHE_CONTROL;
+    await promisify(server.close).call(server);
     await mongoServer.stop();
     await mongoose.disconnect();
   });

@@ -18,8 +18,8 @@ import ConversationEndpointIcon from '~/components/Conversations/ConversationEnd
 import { areConversationListItemFieldsEqual } from '~/components/Conversations/utils';
 import { useLocalize, useNavigateToConvo, useClockFormat } from '~/hooks';
 import { DateLabel } from '~/components/Conversations/Conversations';
-import { cn, groupConversationsByDate } from '~/utils';
 import ProjectChatOptions from './ProjectChatOptions';
+import { cn, groupConversations } from '~/utils';
 import { useActiveJobs } from '~/data-provider';
 
 type ChatSortField = 'updatedAt' | 'createdAt';
@@ -159,7 +159,7 @@ const ProjectChatList = ({
     }
 
     const items: FlattenedItem[] = [];
-    groupConversationsByDate(conversations, sortBy).forEach(([groupName, convos]) => {
+    groupConversations(conversations, { field: sortBy }).forEach(([groupName, convos]) => {
       items.push({ type: 'date', groupName });
       convos.forEach((convo) => items.push({ type: 'convo', convo }));
     });

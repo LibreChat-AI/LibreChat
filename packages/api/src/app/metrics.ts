@@ -5,6 +5,7 @@ import { logger, setAgentEventActorReceiptMetricObserver } from '@librechat/data
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { Mongoose } from 'mongoose';
 import type { AgentStartupMilestone, AgentStartupResult } from '~/agents/phases';
+import type { LocatorTraversalFailure } from '../protection/diagnostics';
 import { agentStartupMilestones, agentStartupResults } from '~/agents/phases';
 
 const PATH_NORMALIZATIONS: [RegExp, string][] = [
@@ -157,6 +158,13 @@ export type GenerationStreamSubscriptionResult =
   | 'error'
   | 'found'
   | 'missing';
+export type GenerationStreamRecoveryMethod = 'redis' | 'snapshot';
+export type GenerationStreamRecoveryOutcome = 'success' | 'failed' | 'not_required';
+export type GenerationStreamAttachmentOutcome =
+  | 'attached'
+  | 'bootstrap_slow'
+  | 'disconnected'
+  | 'never_attached';
 export type RumProxyEndpoint = 'traces' | 'logs' | 'unknown';
 export type RumProxyResult =
   | 'success'
@@ -206,6 +214,19 @@ type GenerationJobMetrics = {
   ) => void;
   recordResumePendingEvents: (store: GenerationJobStore, count: number) => void;
   recordEarlyBufferOverflow: (store: GenerationJobStore) => void;
+  recordRecovery: (
+    store: GenerationJobStore,
+    method: GenerationStreamRecoveryMethod,
+    outcome: GenerationStreamRecoveryOutcome,
+    durationSeconds: number,
+    reconstructedEvents: number,
+    reconstructedContent: number,
+  ) => void;
+  recordAttachment: (
+    store: GenerationJobStore,
+    outcome: GenerationStreamAttachmentOutcome,
+    delaySeconds?: number,
+  ) => void;
 };
 
 let generationJobMetrics: GenerationJobMetrics = {
@@ -214,6 +235,8 @@ let generationJobMetrics: GenerationJobMetrics = {
   recordSubscription: () => undefined,
   recordResumePendingEvents: () => undefined,
   recordEarlyBufferOverflow: () => undefined,
+  recordRecovery: () => undefined,
+  recordAttachment: () => undefined,
 };
 
 type AgentStartupMetrics = {
@@ -259,7 +282,16 @@ let redisOperationMetrics: RedisOperationMetrics = {
   recordOperation: () => undefined,
 };
 
+let observeLocatorTraversal: (failure: LocatorTraversalFailure) => void = () => undefined;
+
+/** Application sink supplied explicitly to content inspection callers. */
+export function reportLocatorTraversalFailure(failure: LocatorTraversalFailure): void {
+  logger.warn(`[content-filter] Locator traversal incomplete ${JSON.stringify(failure)}`, failure);
+  observeLocatorTraversal(failure);
+}
+
 const resetMetricRecorders = (): void => {
+  observeLocatorTraversal = () => undefined;
   openIDUserLookupMetrics = {
     recordLookup: () => undefined,
   };
@@ -272,6 +304,8 @@ const resetMetricRecorders = (): void => {
     recordSubscription: () => undefined,
     recordResumePendingEvents: () => undefined,
     recordEarlyBufferOverflow: () => undefined,
+    recordRecovery: () => undefined,
+    recordAttachment: () => undefined,
   };
   agentStartupMetrics = {
     recordMilestone: () => undefined,
@@ -314,6 +348,32 @@ export function recordGenerationStreamResumePendingEvents(
 
 export function recordGenerationStreamEarlyBufferOverflow(store: GenerationJobStore): void {
   generationJobMetrics.recordEarlyBufferOverflow(store);
+}
+
+export function recordGenerationStreamRecovery(
+  store: GenerationJobStore,
+  method: GenerationStreamRecoveryMethod,
+  outcome: GenerationStreamRecoveryOutcome,
+  durationSeconds: number,
+  reconstructedEvents: number,
+  reconstructedContent: number,
+): void {
+  generationJobMetrics.recordRecovery(
+    store,
+    method,
+    outcome,
+    durationSeconds,
+    reconstructedEvents,
+    reconstructedContent,
+  );
+}
+
+export function recordGenerationStreamAttachment(
+  store: GenerationJobStore,
+  outcome: GenerationStreamAttachmentOutcome,
+  delaySeconds?: number,
+): void {
+  generationJobMetrics.recordAttachment(store, outcome, delaySeconds);
 }
 
 export function recordAgentStartupMilestone(
@@ -480,6 +540,33 @@ export function createMetrics(options: MetricsOptions = {}): PrometheusMetrics {
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
 
+  observeLocatorTraversal = () => undefined;
+  const locatorTraversalFailuresTotal = new Counter({
+    name: 'content_filter_locator_traversal_failures_total',
+    help: 'Incomplete resolved file locator traversals',
+    labelNames: ['operation', 'reason'] as const,
+    registers: [registry],
+  });
+  const locatorTraversalSize = new Histogram({
+    name: 'content_filter_locator_traversal_size',
+    help: 'Structural counts at an incomplete resolved file locator traversal',
+    labelNames: ['operation', 'reason', 'dimension'] as const,
+    buckets: [0, 1, 8, 24, 64, 256, 1024, 4096, 16384],
+    registers: [registry],
+  });
+  observeLocatorTraversal = (failure: LocatorTraversalFailure): void => {
+    const labels = { operation: failure.operation, reason: failure.reason };
+    locatorTraversalFailuresTotal.inc(labels);
+    for (const dimension of [
+      'visitedNodes',
+      'depth',
+      'messageCount',
+      'resolvedFileCount',
+    ] as const) {
+      locatorTraversalSize.observe({ ...labels, dimension }, failure[dimension]);
+    }
+  };
+
   const httpRequests = new Counter({
     name: 'http_requests_total',
     help: 'Total HTTP requests',
@@ -641,6 +728,52 @@ export function createMetrics(options: MetricsOptions = {}): PrometheusMetrics {
     registers: [registry],
   });
 
+  const generationStreamRecoveries = new Counter({
+    name: 'generation_stream_recoveries_total',
+    help: 'Early buffer recovery attempts by backing store, source, and outcome',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    registers: [registry],
+  });
+
+  const generationStreamRecoveryDuration = new Histogram({
+    name: 'generation_stream_recovery_duration_seconds',
+    help: 'Time spent reconstructing an overflowed early generation stream',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [registry],
+  });
+
+  const generationStreamRecoveryEvents = new Histogram({
+    name: 'generation_stream_recovery_events',
+    help: 'Event count reconstructed during early buffer recovery',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    buckets: [1, 10, 100, 1_000, 5_000, 10_000, 50_000],
+    registers: [registry],
+  });
+
+  const generationStreamRecoveryContent = new Histogram({
+    name: 'generation_stream_recovery_content_parts',
+    help: 'Content part count reconstructed during early buffer recovery',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    buckets: [1, 5, 10, 25, 50, 100, 500, 1_000],
+    registers: [registry],
+  });
+
+  const generationStreamAttachments = new Counter({
+    name: 'generation_stream_attachment_outcomes_total',
+    help: 'Generation stream attachment lifecycle outcomes',
+    labelNames: ['store', 'outcome'] as const,
+    registers: [registry],
+  });
+
+  const generationStreamFirstAttachmentDelay = new Histogram({
+    name: 'generation_stream_first_attachment_delay_seconds',
+    help: 'Time from generation creation to its first subscriber attachment',
+    labelNames: ['store'] as const,
+    buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300],
+    registers: [registry],
+  });
+
   const agentStartupMilestoneDuration = new Histogram({
     name: 'agent_startup_milestone_duration_seconds',
     help: 'Cumulative agent chat startup latency from request ingress to each milestone',
@@ -765,6 +898,26 @@ export function createMetrics(options: MetricsOptions = {}): PrometheusMetrics {
     recordResumePendingEvents: (store, count) =>
       generationStreamResumePendingEvents.inc({ store }, count),
     recordEarlyBufferOverflow: (store) => generationStreamEarlyBufferOverflows.inc({ store }),
+    recordRecovery: (
+      store,
+      method,
+      outcome,
+      durationSeconds,
+      reconstructedEvents,
+      reconstructedContent,
+    ) => {
+      const labels = { store, method, outcome };
+      generationStreamRecoveries.inc(labels);
+      generationStreamRecoveryDuration.observe(labels, durationSeconds);
+      generationStreamRecoveryEvents.observe(labels, reconstructedEvents);
+      generationStreamRecoveryContent.observe(labels, reconstructedContent);
+    },
+    recordAttachment: (store, outcome, delaySeconds) => {
+      generationStreamAttachments.inc({ store, outcome });
+      if (outcome === 'attached' && delaySeconds != null) {
+        generationStreamFirstAttachmentDelay.observe({ store }, delaySeconds);
+      }
+    },
   };
 
   agentStartupMetrics = {
@@ -841,7 +994,10 @@ export function createMetrics(options: MetricsOptions = {}): PrometheusMetrics {
       if (completed) return;
       completed = true;
 
-      const requestLabels = { ...labels, status: completedBy === 'close' ? 499 : res.statusCode };
+      const requestLabels = {
+        ...labels,
+        status: completedBy === 'close' ? 499 : res.statusCode,
+      };
       httpRequests.inc(requestLabels);
       end(requestLabels);
       httpRequestsInFlight.dec(labels);

@@ -1,8 +1,9 @@
 import { memo, useState, useCallback, useContext } from 'react';
 import Cookies from 'js-cookie';
+import { useStore } from 'jotai';
 import { buildTree } from 'librechat-data-provider';
+import { useRecoilState, useRecoilValue } from 'recoil';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import { useGetSharedMessages } from 'librechat-data-provider/react-query';
 import { CalendarDays, ExternalLink, RefreshCw, Settings, MessageSquarePlus } from 'lucide-react';
 import {
@@ -19,8 +20,13 @@ import {
   TooltipAnchor,
   useToastContext,
 } from '@librechat/client';
+import {
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
 import SharedSubagentActivityDialog from '~/components/Chat/Subagents/SharedSubagentActivityDialog';
 import { cn, DEFAULT_APP_TITLE, getResponseStatus, selectActiveBranchTail } from '~/utils';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { useLocalize, useDocumentTitle, useAuthContext } from '~/hooks';
 import { ThemeSelector, LangSelector } from '~/components/Appearance';
 import { ShareMessagesProvider } from './ShareMessagesProvider';
@@ -43,6 +49,7 @@ function SharedView() {
   const { isAuthReady } = useAuthContext();
   const { theme, setTheme } = useContext(ThemeContext);
   const { shareId } = useParams();
+  const jotaiStore = useStore();
   const { data: config } = useGetSharedStartupConfig(shareId, { enabled: isAuthReady });
   const { data, isLoading, isFetching, refetch } = useGetSharedMessages(shareId ?? '', {
     enabled: isAuthReady,
@@ -89,26 +96,20 @@ function SharedView() {
    *  the root on SHARED_CONVO_KEY. An index is sent (not id or createdAt) because
    *  shared ids are re-anonymized per request and createdAt can collide, while
    *  the payload order is stable across requests. */
-  const getActiveTargetIndex = useRecoilCallback(
-    ({ snapshot }) =>
-      () => {
-        const messages = data?.messages;
-        if (messages == null || messages.length === 0) {
-          return undefined;
-        }
-        const getSiblingIndex = (parentMessageId: string | null | undefined) =>
-          snapshot
-            .getLoadable(store.messagesSiblingIdxFamily(parentMessageId ?? SHARED_CONVO_KEY))
-            .getValue() ?? 0;
-        const tail = selectActiveBranchTail(messages, SHARED_CONVO_KEY, getSiblingIndex);
-        if (tail == null) {
-          return undefined;
-        }
-        const index = messages.findIndex((message) => message.messageId === tail.messageId);
-        return index >= 0 ? index : undefined;
-      },
-    [data?.messages],
-  );
+  const getActiveTargetIndex = useCallback(() => {
+    const messages = data?.messages;
+    if (messages == null || messages.length === 0) {
+      return undefined;
+    }
+    const getSiblingIndex = (parentMessageId: string | null | undefined) =>
+      jotaiStore.get(siblingIdxFamily(siblingKey(parentMessageId ?? SHARED_CONVO_KEY)));
+    const tail = selectActiveBranchTail(messages, SHARED_CONVO_KEY, getSiblingIndex);
+    if (tail == null) {
+      return undefined;
+    }
+    const index = messages.findIndex((message) => message.messageId === tail.messageId);
+    return index >= 0 ? index : undefined;
+  }, [data?.messages, jotaiStore]);
 
   const { mutate: forkSharedConvo } = forkShare;
   const handleContinue = useCallback(() => {
@@ -243,16 +244,22 @@ function SharedView() {
     );
 
   return (
-    <ShareContext.Provider value={{ isSharedConvo: true, shareId }}>
-      <AppChatSurface>
-        <div className="relative flex h-screen w-full overflow-hidden dark:bg-surface-secondary">
-          <main className="relative flex w-full grow overflow-hidden dark:bg-surface-secondary">
-            {artifactsContainer}
-          </main>
-        </div>
-        <SharedSubagentActivityDialog shareId={shareId} />
-      </AppChatSurface>
-    </ShareContext.Provider>
+    <CodeHighlightThrottleContext.Provider
+      value={normalizeCodeHighlightThrottleMs(config?.interface?.codeHighlightThrottleMs)}
+    >
+      <ShareContext.Provider
+        value={{ isSharedConvo: true, shareId, hasConfiguredSender: data?.hasConfiguredSender }}
+      >
+        <AppChatSurface>
+          <div className="relative flex h-screen w-full overflow-hidden dark:bg-surface-secondary">
+            <main className="relative flex w-full grow overflow-hidden dark:bg-surface-secondary">
+              {artifactsContainer}
+            </main>
+          </div>
+          <SharedSubagentActivityDialog shareId={shareId} />
+        </AppChatSurface>
+      </ShareContext.Provider>
+    </CodeHighlightThrottleContext.Provider>
   );
 }
 

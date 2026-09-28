@@ -1,6 +1,13 @@
 import '@testing-library/jest-dom';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { ThemeProvider, useTheme } from './ThemeProvider';
+import {
+  ThemeProvider,
+  isDark,
+  isHighContrast,
+  resolvesToHighContrast,
+  useTheme,
+} from './ThemeProvider';
+import { highContrastDarkTheme, highContrastLightTheme } from '../themes/highContrast';
 
 const matchMedia = (matches: boolean): MediaQueryList =>
   ({
@@ -15,12 +22,25 @@ const matchMedia = (matches: boolean): MediaQueryList =>
   }) as MediaQueryList;
 
 function Controls() {
-  const { resetTheme, setTheme, setThemeDefinition, setThemeName, setThemeRGB, themeName } =
-    useTheme();
+  const {
+    resetTheme,
+    setTheme,
+    setThemeDefinition,
+    setThemeName,
+    setThemeRGB,
+    themeName,
+    highContrast,
+    resolvedMode,
+  } = useTheme();
   return (
     <>
       <output>{themeName}</output>
+      <output data-testid="high-contrast">{String(highContrast)}</output>
+      <output data-testid="resolved-mode">{resolvedMode}</output>
       <button onClick={() => setTheme('dark')}>Dark</button>
+      <button onClick={() => setTheme('light')}>Light</button>
+      <button onClick={() => setTheme('high-contrast-light')}>HC light</button>
+      <button onClick={() => setTheme('high-contrast-dark')}>HC dark</button>
       <button onClick={() => setThemeName('renamed')}>Rename</button>
       <button onClick={() => setThemeName(undefined)}>Clear name</button>
       <button onClick={() => setThemeRGB({ 'rgb-accent-primary': '4 5 6' })}>Set legacy</button>
@@ -722,5 +742,293 @@ describe('ThemeProvider', () => {
     expect(localStorage.getItem('theme-definition')).toBeNull();
     expect(localStorage.getItem('theme-colors')).toBeNull();
     expect(localStorage.getItem('theme-source')).toBeNull();
+  });
+
+  it('applies the high contrast light palette and marks the root element', async () => {
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    act(() => screen.getByRole('button', { name: 'HC light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('high-contrast');
+    });
+    const root = document.documentElement;
+    expect(root).toHaveClass('high-contrast', 'light');
+    expect(root).not.toHaveClass('dark');
+    expect(root.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastLightTheme['rgb-surface-primary'],
+    );
+    expect(root.style.getPropertyValue('--text-primary')).toBe(
+      highContrastLightTheme['rgb-text-primary'],
+    );
+    expect(root.style.getPropertyValue('color-scheme')).toBe('light');
+    expect(localStorage.getItem('color-theme')).toBe('high-contrast-light');
+  });
+
+  it('treats high contrast dark as a dark colour scheme', async () => {
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    act(() => screen.getByRole('button', { name: 'HC dark' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('dark');
+    });
+    const root = document.documentElement;
+    expect(root).toHaveClass('high-contrast');
+    expect(root).not.toHaveClass('light');
+    expect(root.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastDarkTheme['rgb-surface-primary'],
+    );
+    expect(root.style.getPropertyValue('color-scheme')).toBe('dark');
+    expect(isDark('high-contrast-dark')).toBe(true);
+    expect(isDark('high-contrast-light')).toBe(false);
+    expect(isHighContrast('high-contrast-dark')).toBe(true);
+    expect(isHighContrast('dark')).toBe(false);
+  });
+
+  it('restores the standard palette when leaving high contrast', async () => {
+    const root = document.documentElement;
+    root.style.setProperty('color-scheme', 'only light', 'important');
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    act(() => screen.getByRole('button', { name: 'HC dark' }).click());
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    expect(root.style.getPropertyValue('color-scheme')).toBe('dark');
+    expect(root.style.getPropertyPriority('color-scheme')).toBe('');
+
+    act(() => screen.getByRole('button', { name: 'Light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement).not.toHaveClass('high-contrast');
+    });
+    expect(root.style.getPropertyValue('--surface-primary')).toBe('');
+    expect(root.style.getPropertyValue('--text-primary')).toBe('');
+    expect(root.style.getPropertyValue('color-scheme')).toBe('only light');
+    expect(root.style.getPropertyPriority('color-scheme')).toBe('important');
+    expect(root.hasAttribute('data-theme')).toBe(false);
+  });
+
+  it('outranks a deployment custom theme, because contrast is an accessibility need', async () => {
+    render(
+      <ThemeProvider
+        initialTheme="light"
+        themeName="brand"
+        themeRGB={{ 'rgb-surface-primary': '1 2 3' }}
+      >
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement.style.getPropertyValue('--surface-primary')).toBe('1 2 3');
+    });
+
+    act(() => screen.getByRole('button', { name: 'HC light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('high-contrast');
+    });
+    expect(document.documentElement.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastLightTheme['rgb-surface-primary'],
+    );
+
+    act(() => screen.getByRole('button', { name: 'Light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('brand');
+    });
+    expect(document.documentElement.style.getPropertyValue('--surface-primary')).toBe('1 2 3');
+  });
+
+  it('follows the OS contrast preference under the system mode', async () => {
+    window.matchMedia = jest.fn((query: string) => matchMedia(query.includes('contrast')));
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    const root = document.documentElement;
+    expect(root).toHaveClass('light');
+    expect(root.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastLightTheme['rgb-surface-primary'],
+    );
+    expect(resolvesToHighContrast('system')).toBe(true);
+    /** The stored mode stays `system`; contrast is resolved, not chosen. */
+    expect(isHighContrast('system')).toBe(false);
+    expect(localStorage.getItem('color-theme')).toBe('system');
+  });
+
+  it('leaves an explicit colour scheme alone when the OS asks for more contrast', async () => {
+    window.matchMedia = jest.fn((query: string) => matchMedia(query.includes('contrast')));
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('light');
+    });
+    expect(document.documentElement).not.toHaveClass('high-contrast');
+    expect(resolvesToHighContrast('light')).toBe(false);
+  });
+
+  it('reacts when the OS contrast preference changes under the system mode', async () => {
+    const listeners: Array<() => void> = [];
+    let prefersContrast = false;
+    window.matchMedia = jest.fn((query: string) => {
+      const isContrastQuery = query.includes('contrast');
+      return {
+        ...matchMedia(isContrastQuery && prefersContrast),
+        addEventListener: (_event: string, listener: () => void) => {
+          if (isContrastQuery) {
+            listeners.push(listener);
+          }
+        },
+        removeEventListener: jest.fn(),
+      } as unknown as MediaQueryList;
+    });
+
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(document.documentElement).not.toHaveClass('high-contrast');
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('false');
+
+    prefersContrast = true;
+    act(() => listeners.forEach((listener) => listener()));
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    expect(document.documentElement.dataset.theme).toBe('high-contrast');
+    /** The DOM alone is not enough: a consumer keying off the resolved contrast,
+     *  such as the Mermaid cache, only recomputes if the context value moves. */
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+  });
+
+  /** Windows Contrast Themes reach the browser as `forced-colors: active` with
+   *  `prefers-contrast: custom`; `more` never matches, so resolving contrast
+   *  from `more` alone left the palette off on the platform the README names. */
+  it('treats a forced-colors palette as an OS contrast request', async () => {
+    window.matchMedia = jest.fn((query: string) => matchMedia(query === '(forced-colors: active)'));
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+    expect(resolvesToHighContrast('system')).toBe(true);
+  });
+
+  /** The same staleness for the scheme: with contrast already on, flipping the
+   *  OS colour scheme leaves `theme` at `system` and `setHighContrast` a no-op,
+   *  so nothing rerendered until the resolved mode was published too. */
+  it('reacts when the OS colour scheme changes under the system mode', async () => {
+    const listeners: Array<() => void> = [];
+    let prefersDark = false;
+    window.matchMedia = jest.fn((query: string) => {
+      const isSchemeQuery = query.includes('color-scheme');
+      return {
+        ...matchMedia(isSchemeQuery ? prefersDark : true),
+        addEventListener: (_event: string, listener: () => void) => {
+          if (isSchemeQuery) {
+            listeners.push(listener);
+          }
+        },
+        removeEventListener: jest.fn(),
+      } as unknown as MediaQueryList;
+    });
+
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('resolved-mode')).toHaveTextContent('light');
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+
+    prefersDark = true;
+    act(() => listeners.forEach((listener) => listener()));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
+    });
+    expect(document.documentElement).toHaveClass('dark', 'high-contrast');
+  });
+
+  /** The provider reads both media queries during render now, so it has to
+   *  tolerate the absence of a window the way the storage helpers already do. */
+  it('renders without a window, as under server rendering', () => {
+    const restore = window.matchMedia;
+    /** jsdom's property is non-configurable, so assign rather than redefine. */
+    window.matchMedia = undefined as unknown as typeof window.matchMedia;
+
+    try {
+      expect(() =>
+        render(
+          <ThemeProvider initialTheme="system">
+            <Controls />
+          </ThemeProvider>,
+        ),
+      ).not.toThrow();
+      expect(screen.getByTestId('resolved-mode')).toHaveTextContent('light');
+      expect(screen.getByTestId('high-contrast')).toHaveTextContent('false');
+    } finally {
+      window.matchMedia = restore;
+    }
+  });
+
+  /** A media query read during render would make the server's markup and the
+   *  first client render disagree, so the seed comes from the mode string only
+   *  and the OS-resolved values arrive from the effect. */
+  it('seeds the published values from the mode alone, not from a media query', () => {
+    const matchMediaSpy = jest.fn(() => matchMedia(true));
+    window.matchMedia = matchMediaSpy;
+
+    /** An explicit mode needs no query to resolve, so it is published at once. */
+    const explicit = render(
+      <ThemeProvider initialTheme="high-contrast-dark">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+    explicit.unmount();
+
+    /** `system` cannot resolve without a query, so it seeds light with no
+     *  contrast and the effect corrects it, which is what keeps hydration
+     *  deterministic even though this environment reports dark and more. */
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
+    expect(matchMediaSpy).toHaveBeenCalled();
   });
 });

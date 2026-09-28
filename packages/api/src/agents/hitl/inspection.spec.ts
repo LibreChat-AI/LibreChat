@@ -55,6 +55,30 @@ function buildInput(trustLiveFileContent?: boolean) {
 }
 
 describe('resume file inspection trust boundary', () => {
+  it('resumes a long persisted branch with one batched owner-file lookup', async () => {
+    const input = buildInput();
+    const history = Array.from({ length: 58 }, (_, index) => ({
+      messageId: `history-${index}`,
+      parentMessageId: index === 0 ? String(Constants.NO_PARENT) : `history-${index - 1}`,
+      conversationId: 'conversation-1',
+      isCreatedByUser: true,
+      content: Array.from({ length: 80 }, () => ({ type: 'text', text: 'safe history' })),
+      files: index === 57 ? [{ file_id: 'owned-file' }] : [],
+    }));
+    input.getMessages.mockResolvedValue(history);
+    input.getFiles.mockResolvedValue([{ file_id: 'owned-file', text: 'safe extraction' }]);
+    const result = await getResumeContentInspection({
+      ...input,
+      targetMessageId: 'history-57',
+      supplementalMessages: [],
+      fileReferenceInputs: history,
+    });
+    expect(result.storedMessages).toHaveLength(58);
+    expect(result.originalStoredMessages).toEqual(history);
+    expect(result.hydratedFiles).toEqual([{ file_id: 'owned-file', text: 'safe extraction' }]);
+    expect(input.getFiles).toHaveBeenCalledTimes(1);
+  });
+
   it('does not accept request/job file metadata as extraction coverage', async () => {
     await expect(getResumeContentInspection(buildInput())).rejects.toMatchObject({
       code: 'content_filter_uninspectable',

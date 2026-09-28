@@ -1,8 +1,10 @@
 import {
   agentContextFingerprintsMatch,
   createAgentContextFingerprint,
+  createAgentEventActorSummary,
   createInitializedAgentContextFingerprint,
   normalizeAgentEventActorDiscoveredTools,
+  normalizeAgentEventActorSummary,
   type AgentTurnSemanticContext,
 } from './compatibility';
 
@@ -210,5 +212,79 @@ describe('agent context compatibility', () => {
       });
 
     expect(fingerprint('First schema').digest).not.toBe(fingerprint('Updated schema').digest);
+  });
+});
+
+describe('event actor summary state', () => {
+  it('stamps the provenance version on a summary a run records', () => {
+    expect(
+      createAgentEventActorSummary({ text: 'Earlier turns, compacted.', tokenCount: 12 }),
+    ).toEqual({ text: 'Earlier turns, compacted.', tokenCount: 12, version: 1 });
+  });
+
+  it.each([
+    ['nothing to stamp', undefined],
+    ['a null summary', null],
+  ])('records %s as no state at all', (_label, summary) => {
+    expect(createAgentEventActorSummary(summary)).toBeUndefined();
+  });
+
+  /** A summary the formatter reconstructed from durable history arrives in the
+   *  SDK's shape; stamping it is what keeps the next event on the warm path. */
+  it('stamps a summary inherited in the SDK shape', () => {
+    expect(createAgentEventActorSummary({ text: 'Reconstructed.', tokenCount: 9 })).toMatchObject({
+      version: 1,
+    });
+  });
+  it('restores a versioned summary for a warm continuation', () => {
+    const stored = { text: 'Earlier turns, compacted.', tokenCount: 12, version: 1 };
+
+    expect(normalizeAgentEventActorSummary(stored)).toEqual(stored);
+  });
+
+  it('treats an absent summary as nothing to carry forward', () => {
+    expect(normalizeAgentEventActorSummary(undefined)).toBeUndefined();
+  });
+
+  /** A state written before the version kept only `{ text, tokenCount }`, so a
+   *  round that failed reads exactly like a checkpoint. Refusing it sends the
+   *  run down the cold path, which rebuilds from durable history. */
+  it.each([
+    ['no version, as written before it existed', { text: 'Half a checkpoint', tokenCount: 4 }],
+    [
+      'a version this build does not know',
+      { text: 'Half a checkpoint', tokenCount: 4, version: 2 },
+    ],
+    ['empty text', { text: '', tokenCount: 4, version: 1 }],
+    ['a negative token count', { text: 'Checkpoint', tokenCount: -1, version: 1 }],
+  ])('refuses a stored summary with %s', (_label, stored) => {
+    expect(() => normalizeAgentEventActorSummary(stored)).toThrow(
+      'Event actor summary state is invalid',
+    );
+  });
+});
+
+describe('retained-answer checkpoint compatibility', () => {
+  it('rebuilds warm state after enabling, disabling, changing the budget, or upgrading legacy context', () => {
+    const base = { agents: [{ id: 'agent-1' }] };
+    const enabled = createInitializedAgentContextFingerprint({
+      ...base,
+      retainedAnswers: { enabled: true, maxTokens: 4096 },
+    });
+    for (const retainedAnswers of [
+      undefined,
+      { enabled: false, maxTokens: 4096 },
+      { enabled: true, maxTokens: 1024 },
+    ]) {
+      expect(
+        createInitializedAgentContextFingerprint({ ...base, retainedAnswers }).digest,
+      ).not.toBe(enabled.digest);
+    }
+    expect(
+      createInitializedAgentContextFingerprint({
+        ...base,
+        retainedAnswers: { enabled: true, maxTokens: 4096 },
+      }).digest,
+    ).toBe(enabled.digest);
   });
 });

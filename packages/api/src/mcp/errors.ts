@@ -1,12 +1,32 @@
 /**
  * MCP-specific error classes
  */
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import { SseError } from '@modelcontextprotocol/sdk/client/sse.js';
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { OpenIDReauthRequiredError } from '~/utils/oidc';
+import { OboTokenResolutionError } from './oauth/obo';
+import { isOwnedAbortError } from '~/utils/errors';
+
+/** These outcomes must reach the owning run instead of hiding a tool during discovery. */
+export function isMCPInitializationError(error: unknown, signal?: AbortSignal): boolean {
+  return (
+    isOwnedAbortError(error, signal) ||
+    error instanceof MCPAuthenticationRejectedError ||
+    error instanceof MCPAuthenticationRefreshError ||
+    error instanceof OboTokenResolutionError ||
+    error instanceof OpenIDReauthRequiredError
+  );
+}
 
 export const MCPErrorCodes = {
   DOMAIN_NOT_ALLOWED: 'MCP_DOMAIN_NOT_ALLOWED',
   INSPECTION_FAILED: 'MCP_INSPECTION_FAILED',
   OAUTH_SECRET_REENTRY_REQUIRED: 'MCP_OAUTH_SECRET_REENTRY_REQUIRED',
+  API_KEY_REENTRY_REQUIRED: 'MCP_API_KEY_REENTRY_REQUIRED',
+  AUTHENTICATION_REJECTED: 'MCP_AUTHENTICATION_REJECTED',
+  AUTHENTICATION_REFRESH_FAILED: 'MCP_AUTHENTICATION_REFRESH_FAILED',
 } as const;
 
 export type MCPErrorCode = (typeof MCPErrorCodes)[keyof typeof MCPErrorCodes];
@@ -16,6 +36,33 @@ interface OAuthErrorLike {
   status?: number;
   statusCode?: number;
   message?: string;
+}
+
+/** A JSON-RPC tool error is never evidence that the MCP transport rejected its bearer. */
+export function isMCPTransportAuthenticationError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || error instanceof McpError) {
+    return false;
+  }
+  if (error instanceof UnauthorizedError) {
+    return true;
+  }
+  const candidate = error as OAuthErrorLike;
+  const status = candidate.status ?? candidate.statusCode;
+  if (status === 401 || status === 403) {
+    return true;
+  }
+  return (
+    (error instanceof StreamableHTTPError || error instanceof SseError) &&
+    (error.code === 401 || error.code === 403)
+  );
+}
+
+/** Preserves the actual HTTP status before legacy SSE reduces a failed POST to plain text. */
+export class MCPTransportAuthenticationError extends Error {
+  constructor(public readonly status: 401 | 403) {
+    super(`MCP transport rejected authentication (HTTP ${status})`);
+    this.name = 'MCPTransportAuthenticationError';
+  }
 }
 
 const OAUTH_HTTP_STATUS_PATTERN =
@@ -281,6 +328,66 @@ export class MCPOAuthSecretReentryRequiredError extends Error {
   }
 }
 
+/** Raised when an update would move a retained admin API key across request boundaries. */
+export class MCPApiKeyReentryRequiredError extends Error {
+  public readonly code: 'MCP_API_KEY_REENTRY_REQUIRED' = MCPErrorCodes.API_KEY_REENTRY_REQUIRED;
+
+  public readonly statusCode = 400;
+  public readonly changedFields: readonly string[];
+
+  constructor(changedFields: readonly string[]) {
+    super(
+      `Re-enter apiKey.key when changing API key credential binding fields: ${changedFields.join(', ')}`,
+    );
+    this.name = 'MCPApiKeyReentryRequiredError';
+    this.changedFields = changedFields;
+    Object.setPrototypeOf(this, MCPApiKeyReentryRequiredError.prototype);
+  }
+}
+
+/**
+ * A tool invocation was rejected before LibreChat could know whether the MCP
+ * server executed it. Recovery may prepare a later deliberate retry, but this
+ * outcome never authorizes an automatic replay of the original call.
+ */
+export class MCPAuthenticationRejectedError extends Error {
+  public readonly code: 'MCP_AUTHENTICATION_REJECTED' = MCPErrorCodes.AUTHENTICATION_REJECTED;
+  public readonly statusCode = 403;
+  public readonly retryable: boolean;
+
+  constructor(
+    public readonly serverName: string,
+    public readonly connectionRefreshed: boolean,
+    cause?: unknown,
+  ) {
+    super(
+      connectionRefreshed
+        ? `MCP server "${serverName}" rejected the bearer credential. The connection was refreshed; retry the tool deliberately.`
+        : `MCP server "${serverName}" rejected the bearer credential. Please sign in again.`,
+    );
+    this.name = 'MCPAuthenticationRejectedError';
+    this.retryable = connectionRefreshed;
+    this.cause = cause;
+    Object.setPrototypeOf(this, MCPAuthenticationRejectedError.prototype);
+  }
+}
+
+/** A temporary upstream-session refresh failure, distinct from expired login state. */
+export class MCPAuthenticationRefreshError extends Error {
+  public readonly code: 'MCP_AUTHENTICATION_REFRESH_FAILED' =
+    MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED;
+
+  public readonly statusCode = 503;
+  public readonly retryable = true;
+
+  constructor(cause?: unknown) {
+    super('The OpenID session could not refresh the MCP bearer credential temporarily.');
+    this.name = 'MCPAuthenticationRefreshError';
+    this.cause = cause;
+    Object.setPrototypeOf(this, MCPAuthenticationRefreshError.prototype);
+  }
+}
+
 /**
  * Type guard to check if an error is an MCPDomainNotAllowedError
  */
@@ -300,4 +407,71 @@ export function isMCPOAuthSecretReentryRequiredError(
   error: unknown,
 ): error is MCPOAuthSecretReentryRequiredError {
   return error instanceof MCPOAuthSecretReentryRequiredError;
+}
+
+/** Type guard for admin API-key binding violations. */
+export function isMCPApiKeyReentryRequiredError(
+  error: unknown,
+): error is MCPApiKeyReentryRequiredError {
+  return error instanceof MCPApiKeyReentryRequiredError;
+}
+
+export type MCPErrorResponse = {
+  statusCode: number;
+  body: {
+    error: MCPErrorCode;
+    message: string;
+  };
+};
+
+/** Maps MCP errors to their public HTTP response without exposing attached causes or secrets. */
+export function getMCPErrorResponse(error: unknown): MCPErrorResponse | null {
+  if (
+    isMCPDomainNotAllowedError(error) ||
+    isMCPInspectionFailedError(error) ||
+    isMCPOAuthSecretReentryRequiredError(error) ||
+    isMCPApiKeyReentryRequiredError(error)
+  ) {
+    return {
+      statusCode: error.statusCode,
+      body: { error: error.code, message: error.message },
+    };
+  }
+
+  const message =
+    typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+      ? error.message
+      : undefined;
+  if (!message) {
+    return null;
+  }
+
+  if (message.startsWith(MCPErrorCodes.DOMAIN_NOT_ALLOWED)) {
+    return {
+      statusCode: 403,
+      body: {
+        error: MCPErrorCodes.DOMAIN_NOT_ALLOWED,
+        message: message.replace(/^MCP_DOMAIN_NOT_ALLOWED\s*:\s*/i, ''),
+      },
+    };
+  }
+
+  if (message.startsWith(MCPErrorCodes.INSPECTION_FAILED)) {
+    return {
+      statusCode: 400,
+      body: { error: MCPErrorCodes.INSPECTION_FAILED, message },
+    };
+  }
+
+  if (message.startsWith(MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED)) {
+    return {
+      statusCode: 400,
+      body: { error: MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED, message },
+    };
+  }
+
+  return null;
 }

@@ -6,22 +6,23 @@
  * @import { MCPServerDocument } from 'librechat-data-provider'
  */
 const { randomUUID } = require('crypto');
+const mongoose = require('mongoose');
 const { logger, getTenantId, SystemCapabilities } = require('@librechat/data-schemas');
 const {
   checkAccess,
   isUserSourced,
   createAuthIdentityContext,
   MCPConnection,
-  MCPErrorCodes,
   MCPCatalogCapacityError,
   splitMCPToolKey,
   normalizeServerName,
   findShadowedServerNames,
   redactServerSecrets,
+  sanitizeMcpIconPath,
   redactAllServerSecrets,
-  isMCPDomainNotAllowedError,
-  isMCPInspectionFailedError,
-  isMCPOAuthSecretReentryRequiredError,
+  getMCPErrorResponse,
+  prepareMCPServerOAuthDeletion,
+  cleanupDeletedMCPServerOAuthUsers,
 } = require('@librechat/api');
 const {
   Constants,
@@ -57,50 +58,8 @@ const db = require('~/models');
  * @returns {import('express').Response | null} Response if handled, null if not an MCP error
  */
 function handleMCPError(error, res) {
-  if (isMCPDomainNotAllowedError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  if (isMCPInspectionFailedError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  if (isMCPOAuthSecretReentryRequiredError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  // Fallback for legacy string-based error handling (backwards compatibility)
-  if (error.message?.startsWith(MCPErrorCodes.DOMAIN_NOT_ALLOWED)) {
-    return res.status(403).json({
-      error: MCPErrorCodes.DOMAIN_NOT_ALLOWED,
-      message: error.message.replace(/^MCP_DOMAIN_NOT_ALLOWED\s*:\s*/i, ''),
-    });
-  }
-
-  if (error.message?.startsWith(MCPErrorCodes.INSPECTION_FAILED)) {
-    return res.status(400).json({
-      error: MCPErrorCodes.INSPECTION_FAILED,
-      message: error.message,
-    });
-  }
-
-  if (error.message?.startsWith(MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED)) {
-    return res.status(400).json({
-      error: MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED,
-      message: error.message,
-    });
-  }
-
-  return null;
+  const response = getMCPErrorResponse(error);
+  return response ? res.status(response.statusCode).json(response.body) : null;
 }
 
 /** Disposes a stale local connection after its DB-backed config has changed. */
@@ -226,11 +185,14 @@ const getMCPTools = async (req, res) => {
         }),
         oboIdentityContext,
         signal: catalogAbortController.signal,
+        recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
       });
     } finally {
       res.off('close', abortCatalogLoad);
     }
     const { serverTools: serverToolsMap, serversWithoutTools } = catalogResult;
+    const reauthRequiredServers = catalogResult.reauthRequiredServers ?? new Set();
+    const reauthRequiredGenerations = catalogResult.reauthRequiredGenerations ?? new Map();
     if (serversWithoutTools.length > 0) {
       logger.debug(
         `[getMCPTools] No tools (${serversWithoutTools.length}): ${serversWithoutTools.join(', ')}`,
@@ -247,7 +209,11 @@ const getMCPTools = async (req, res) => {
         const server = {
           name: serverName,
           icon: serverConfig?.iconPath || '',
-          authenticated: true,
+          authenticated: !reauthRequiredServers.has(serverName),
+          ...(reauthRequiredServers.has(serverName) && {
+            authorizationState: 'reauth_required',
+            authorizationGeneration: reauthRequiredGenerations.get(serverName),
+          }),
           authConfig: [],
           tools: [],
         };
@@ -460,6 +426,9 @@ const createMCPServerController = async (req, res) => {
         errors: validation.error.errors,
       });
     }
+    if (validation.data.iconPath) {
+      validation.data.iconPath = sanitizeMcpIconPath(validation.data.iconPath);
+    }
     if (configHasObo(validation.data) && !(await callerCanConfigureObo(req))) {
       logger.warn(
         `[createMCPServer] User ${userId} attempted to configure OBO without ${Permissions.CONFIGURE_OBO} permission`,
@@ -549,6 +518,9 @@ const updateMCPServerController = async (req, res) => {
         errors: validation.error.errors,
       });
     }
+    if (validation.data.iconPath) {
+      validation.data.iconPath = sanitizeMcpIconPath(validation.data.iconPath);
+    }
 
     /**
      * On an existing OBO server, lock down every user-input field except the
@@ -619,13 +591,33 @@ const updateMCPServerController = async (req, res) => {
  * Delete MCP server
  * @route DELETE /api/mcp/servers/:serverName
  */
-const deleteMCPServerController = async (req, res) => {
+const deleteMCPServerController = async (req, res, uninstallOAuthMCP) => {
   try {
     const userId = req.user?.id;
     const { serverName } = req.params;
     const registry = getMCPServersRegistry();
     const existingConfig = await registry.getServerConfig(serverName, userId);
-    const retainedTools = await getMCPServerTools(userId, serverName, existingConfig);
+    const tokenIdentifier = `mcp:${serverName}`;
+    const getTokenUserIds = () =>
+      mongoose.models.Token
+        ? mongoose.models.Token.distinct('userId', {
+            identifier: {
+              $in: [tokenIdentifier, `${tokenIdentifier}:client`, `${tokenIdentifier}:refresh`],
+            },
+          })
+        : Promise.resolve([]);
+    const getAclEntries = () =>
+      existingConfig?.dbId && mongoose.models.AclEntry
+        ? mongoose.models.AclEntry.find({
+            resourceType: ResourceType.MCPSERVER,
+            resourceId: existingConfig.dbId,
+            permBits: { $bitsAnySet: PermissionBits.VIEW },
+          }).lean()
+        : Promise.resolve([]);
+    const [oauthDeletionSnapshot, retainedTools] = await Promise.all([
+      prepareMCPServerOAuthDeletion({ getTokenUserIds, getAclEntries }),
+      getMCPServerTools(userId, serverName, existingConfig),
+    ]);
     await invalidateCachedTools({ userId, serverName });
     try {
       await registry.removeServer(serverName, 'DB', userId);
@@ -641,6 +633,32 @@ const deleteMCPServerController = async (req, res) => {
     /** Fence connections another replica could have created before deletion committed. */
     await fenceCommittedMCPMutation({ userId, serverName });
     await disconnectLocalMCPServer(userId, serverName);
+    try {
+      await cleanupDeletedMCPServerOAuthUsers({
+        ownerUserId: userId,
+        serverName,
+        serverConfig: existingConfig,
+        snapshot: oauthDeletionSnapshot,
+        getTokenUserIds,
+        getUserPrincipals: (candidateUserId) => db.getUserPrincipals({ userId: candidateUserId }),
+        resolveAllowlists: (candidateUserId) =>
+          registry.resolveAllowlists({ userId: candidateUserId }),
+        fenceAndDisconnectUser: async (candidateUserId) => {
+          if (candidateUserId === userId) {
+            return;
+          }
+          await fenceCommittedMCPMutation({ userId: candidateUserId, serverName });
+          await disconnectLocalMCPServer(candidateUserId, serverName);
+        },
+        uninstallOAuthMCP,
+      });
+    } catch (error) {
+      logger.warn(
+        `[deleteMCPServer] Server ${serverName} was deleted, but OAuth cleanup failed for user ${userId}:`,
+        error,
+      );
+      throw error;
+    }
     res.status(200).json({ message: 'MCP server deleted successfully' });
   } catch (error) {
     logger.error('[deleteMCPServer]', error);

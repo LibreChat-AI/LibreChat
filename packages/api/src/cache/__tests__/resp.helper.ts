@@ -14,6 +14,8 @@ export type RespServer = {
   connections: number;
   /** When true, write commands are rejected with the READONLY reply. */
   readonly: boolean;
+  /** When true, frames are recorded but never answered: a peer that has silently gone away. */
+  silent: boolean;
   commands: string[][];
   close(): Promise<void>;
 };
@@ -83,7 +85,7 @@ function parseFrames(buffer: Buffer): { frames: string[][]; rest: Buffer } {
 export async function startRespServer(port = 0): Promise<RespServer> {
   const store = new Map<string, string>();
   const sockets = new Set<Socket>();
-  const state = { connections: 0, readonly: false, commands: [] as string[][] };
+  const state = { connections: 0, readonly: false, silent: false, commands: [] as string[][] };
 
   const reply = (args: string[]): string => {
     const command = args[0]?.toUpperCase() ?? '';
@@ -93,6 +95,8 @@ export async function startRespServer(port = 0): Promise<RespServer> {
     switch (command) {
       case 'PING':
         return '+PONG\r\n';
+      case 'SUBSCRIBE':
+        return `*3\r\n$9\r\nsubscribe\r\n${encodeBulk(args[1])}:1\r\n`;
       case 'INFO':
         return encodeBulk('# Server\r\nredis_version:7.2.4\r\nloading:0\r\n');
       case 'GET':
@@ -122,7 +126,9 @@ export async function startRespServer(port = 0): Promise<RespServer> {
       pending = rest;
       for (const frame of frames) {
         state.commands.push(frame);
-        socket.write(reply(frame));
+        if (!state.silent) {
+          socket.write(reply(frame));
+        }
       }
     });
     socket.on('close', () => sockets.delete(socket));
@@ -143,6 +149,12 @@ export async function startRespServer(port = 0): Promise<RespServer> {
     },
     set readonly(value: boolean) {
       state.readonly = value;
+    },
+    get silent() {
+      return state.silent;
+    },
+    set silent(value: boolean) {
+      state.silent = value;
     },
     commands: state.commands,
     close: () =>

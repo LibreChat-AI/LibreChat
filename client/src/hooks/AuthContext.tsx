@@ -8,10 +8,12 @@ import {
   createContext,
 } from 'react';
 import { debounce } from 'lodash';
+import { getDefaultStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useRecoilState, useSetRecoilState } from 'recoil';
 import {
   apiBaseUrl,
+  ErrorTypes,
   SystemRoles,
   setTokenHeader,
   isSystemRoleName,
@@ -34,6 +36,7 @@ import {
   useLogoutUserMutation,
   useRefreshTokenMutation,
 } from '~/data-provider';
+import { resetChatFilterSessionAtom } from '~/components/Conversations/chatFilters';
 import { TAuthConfig, TUserContext, TAuthContext, TResError } from '~/common';
 import useTimeout from './useTimeout';
 import store from '~/store';
@@ -51,6 +54,7 @@ if (import.meta.hot) {
  * that reliably sees the transition. Both are cleared together so neither can be added to an exit
  * path the other was wired into. */
 const endSessionClientState = (): void => {
+  getDefaultStore().set(resetChatFilterSessionAtom);
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
 };
@@ -143,7 +147,8 @@ const AuthContextProvider = ({
     },
     onError: (error: TResError | unknown) => {
       const resError = error as TResError;
-      doSetError(resError.message);
+      const code = resError.response?.data?.code;
+      doSetError(code === ErrorTypes.AUTH_CROSS_ORIGIN ? code : resError.message);
       // Preserve a valid redirect_to across login failures so the deep link survives retries.
       // Cannot use buildLoginRedirectUrl() here — it reads the current pathname (already /login)
       // and would return plain /login, dropping the redirect_to destination.

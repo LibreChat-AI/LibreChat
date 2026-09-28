@@ -1,9 +1,26 @@
-import { HookRegistry, createToolPolicyHook } from '@librechat/agents';
+import {
+  HookRegistry,
+  createToolPolicyHook,
+  TOOL_APPROVAL_EXECUTION_SCOPE_CONFIG_KEY,
+} from '@librechat/agents';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { ResolvedToolApprovalHook, ToolApprovalHookContext } from './hooks';
 import type { MCPToolAlias } from '~/tools/classification';
 import { isHITLEnabled, mapToolApprovalPolicy } from './policy';
 import { buildToolApprovalHooks } from './hooks';
+
+/** Stable across resumes; the job epoch separates edits that reuse a response id. */
+export function buildToolApprovalExecutionConfig(
+  responseMessageId: string,
+  jobCreatedAt?: number,
+): { [TOOL_APPROVAL_EXECUTION_SCOPE_CONFIG_KEY]: string } {
+  return {
+    [TOOL_APPROVAL_EXECUTION_SCOPE_CONFIG_KEY]: JSON.stringify([
+      responseMessageId,
+      jobCreatedAt ?? null,
+    ]),
+  };
+}
 
 /**
  * The HITL fragment spread onto a `RunConfig` when tool approval is enabled.

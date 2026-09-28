@@ -443,7 +443,10 @@ const registerUser = async (user, additionalData = {}) => {
       await updateUser(newUserId, { emailVerified: true });
     }
 
-    return { status: 200, message: genericVerificationMessage };
+    /** `userCreated` separates this from the identical 200 returned when the email is
+     * already in use, so a caller can act on an account having actually been created
+     * without the response body revealing which of the two happened. */
+    return { status: 200, message: genericVerificationMessage, userCreated: true };
   } catch (err) {
     logger.error('[registerUser] Error in registering user:', err);
     if (newUserId) {
@@ -1002,8 +1005,8 @@ const resendVerificationEmail = async (req) => {
   } catch (error) {
     logger.error(`[resendVerificationEmail] Error resending verification email: ${error.message}`);
     return {
-      status: 500,
-      message: 'Something went wrong.',
+      status: 200,
+      message: genericVerificationMessage,
     };
   }
 };

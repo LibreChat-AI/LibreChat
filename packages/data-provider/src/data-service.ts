@@ -1,6 +1,14 @@
 import type { AxiosResponse } from 'axios';
+import type {
+  TTracePage,
+  TTracePageParams,
+  TTraceAvailability,
+  TTraceRecordParams,
+  TTraceRecordDetail,
+} from './types/traces';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { TFileConfig } from './file-config';
+import type * as tl from './types/tools';
 import type * as t from './types';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
@@ -22,7 +30,9 @@ import * as r from './roles';
 export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResponse> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== '') {
+    if (Array.isArray(value)) {
+      value.forEach((item) => query.append(key, String(item)));
+    } else if (value !== undefined && value !== null && value !== '') {
       query.set(key, String(value));
     }
   }
@@ -32,6 +42,32 @@ export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResp
 
 export function getInsightsAccess(): Promise<TInsightsAccessResponse> {
   return request.get(endpoints.insightsAccess());
+}
+
+export function getConversationTraceAvailability(
+  conversationId: string,
+): Promise<TTraceAvailability> {
+  return request.get(endpoints.conversationTraceAvailability(conversationId));
+}
+
+export function getConversationTraceRecords(
+  { conversationId, cursor }: TTracePageParams,
+  signal?: AbortSignal,
+): Promise<TTracePage> {
+  return request.get(
+    endpoints.conversationTraceRecords(conversationId, cursor),
+    signal ? { signal } : undefined,
+  );
+}
+
+export function getConversationTraceRecord(
+  { conversationId, recordId, messageId, sourceId }: TTraceRecordParams,
+  signal?: AbortSignal,
+): Promise<TTraceRecordDetail> {
+  return request.get(
+    endpoints.conversationTraceRecord(conversationId, recordId, messageId, sourceId),
+    signal ? { signal } : undefined,
+  );
 }
 
 export function getLangfuseConnection(): Promise<t.TLangfuseConnectionStatus> {
@@ -72,6 +108,21 @@ export function getCodeEnvironments(): Promise<t.TCodeEnvironmentsResponse> {
   return request.get(endpoints.codeEnvironments());
 }
 
+export function getCodeEnvironmentStatus(id: string): Promise<t.TCodeEnvironmentStatusResponse> {
+  return request.get(endpoints.codeEnvironmentStatus(id));
+}
+
+export function moveConversationCodeEnvironment({
+  conversationId,
+  from,
+  to,
+}: t.TCodeEnvironmentMoveRequest): Promise<t.TCodeEnvironmentMoveResponse> {
+  return request.patch(endpoints.codeEnvironmentConversationDecision(conversationId), {
+    from,
+    to,
+  });
+}
+
 export function pairCodeEnvironment(payload: {
   name: string;
   controlPlaneId: string;
@@ -103,6 +154,15 @@ export function updateFavorites(favorites: q.TUserFavorite[]): Promise<q.TUserFa
   return request.post(`${endpoints.apiBaseUrl()}/api/user/settings/favorites`, {
     favorites,
   });
+}
+
+/** Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
+export function getPinnedOrder(): Promise<string[]> {
+  return request.get(endpoints.pinnedOrder());
+}
+
+export function updatePinnedOrder(pinnedOrder: string[]): Promise<string[]> {
+  return request.post(endpoints.pinnedOrder(), { pinnedOrder });
 }
 
 /** Tool favorites — starred marketplace items (builtins, tools, MCP servers, skills). */
@@ -608,11 +668,11 @@ export const deleteAction = async ({
  * Agents
  */
 
-export const createAgent = ({ ...data }: a.AgentCreateParams): Promise<a.Agent> => {
+export const createAgent = ({ ...data }: ag.AgentCreateParams): Promise<ag.Agent> => {
   return request.post(endpoints.agents({}), data);
 };
 
-export const getAgentById = ({ agent_id }: { agent_id: string }): Promise<a.Agent> => {
+export const getAgentById = ({ agent_id }: { agent_id: string }): Promise<ag.Agent> => {
   return request.get(
     endpoints.agents({
       path: agent_id,
@@ -620,7 +680,7 @@ export const getAgentById = ({ agent_id }: { agent_id: string }): Promise<a.Agen
   );
 };
 
-export const getExpandedAgentById = ({ agent_id }: { agent_id: string }): Promise<a.Agent> => {
+export const getExpandedAgentById = ({ agent_id }: { agent_id: string }): Promise<ag.Agent> => {
   return request.get(
     endpoints.agents({
       path: `${agent_id}/expanded`,
@@ -628,7 +688,7 @@ export const getExpandedAgentById = ({ agent_id }: { agent_id: string }): Promis
   );
 };
 
-export const getAgentVersions = ({ agent_id }: { agent_id: string }): Promise<a.Agent[]> => {
+export const getAgentVersions = ({ agent_id }: { agent_id: string }): Promise<ag.Agent[]> => {
   return request.get(
     endpoints.agents({
       path: `${agent_id}/versions`,
@@ -641,8 +701,8 @@ export const updateAgent = ({
   data,
 }: {
   agent_id: string;
-  data: a.AgentUpdateParams;
-}): Promise<a.Agent> => {
+  data: ag.AgentUpdateParams;
+}): Promise<ag.Agent> => {
   return request.patch(
     endpoints.agents({
       path: agent_id,
@@ -653,7 +713,7 @@ export const updateAgent = ({
 
 export const duplicateAgent = ({
   agent_id,
-}: m.DuplicateAgentBody): Promise<{ agent: a.Agent; actions: ag.Action[] }> => {
+}: m.DuplicateAgentBody): Promise<{ agent: ag.Agent; actions: ag.Action[] }> => {
   return request.post(
     endpoints.agents({
       path: `${agent_id}/duplicate`,
@@ -669,7 +729,7 @@ export const deleteAgent = ({ agent_id }: m.DeleteAgentBody): Promise<void> => {
   );
 };
 
-export const listAgents = (params: a.AgentListParams): Promise<a.AgentListResponse> => {
+export const listAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
       options: params,
@@ -683,7 +743,7 @@ export const revertAgentVersion = ({
 }: {
   agent_id: string;
   version_index: number;
-}): Promise<a.Agent> => request.post(endpoints.revertAgentVersion(agent_id), { version_index });
+}): Promise<ag.Agent> => request.post(endpoints.revertAgentVersion(agent_id), { version_index });
 
 /* Marketplace */
 
@@ -704,7 +764,7 @@ export const getMarketplaceAgents = (params: {
   limit?: number;
   cursor?: string;
   promoted?: 0 | 1;
-}): Promise<a.AgentListResponse> => {
+}): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
       // path: 'marketplace',
@@ -818,7 +878,7 @@ export const uploadAssistantAvatar = (data: m.AssistantAvatarVariables): Promise
   );
 };
 
-export const uploadAgentAvatar = (data: m.AgentAvatarVariables): Promise<a.Agent> => {
+export const uploadAgentAvatar = (data: m.AgentAvatarVariables): Promise<ag.Agent> => {
   return request.postMultiPart(
     `${endpoints.images()}/agents/${data.agent_id}/avatar`,
     data.formData,
@@ -867,7 +927,7 @@ export const deleteFiles = async (payload: {
   files: f.BatchFile[];
   agent_id?: string;
   assistant_id?: string;
-  tool_resource?: a.EToolResources;
+  tool_resource?: tl.EToolResources;
 }): Promise<f.DeleteFilesResponse> =>
   request.deleteWithOptions(endpoints.files(), {
     data: payload,
@@ -1069,6 +1129,17 @@ export function controlSubagentTask(
   return request.post(endpoints.subagentControl(parentConversationId, threadId), body);
 }
 
+export function getBackgroundTasks(conversationId: string): Promise<t.BackgroundTaskIndex> {
+  return request.get(endpoints.backgroundTasks(conversationId));
+}
+
+export function cancelBackgroundTasks(
+  conversationId: string,
+  body: t.BackgroundTaskCancelRequest,
+): Promise<t.BackgroundTaskCancelResponse> {
+  return request.post(endpoints.backgroundTasksCancel(conversationId), body);
+}
+
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
   return request.get(endpoints.getPrompt(id));
 }
@@ -1150,10 +1221,30 @@ export function getSchedules(): Promise<sch.TSchedulesResponse> {
   return request.get(endpoints.schedules());
 }
 
-export function enqueueAgentQueuedTurn(
+export async function enqueueAgentQueuedTurn(
   payload: qt.TEnqueueAgentQueuedTurnRequest,
 ): Promise<qt.TEnqueueAgentQueuedTurnResponse> {
-  return request.post(endpoints.agentQueuedTurns(), payload);
+  if (payload.codeApprovalMode == null) {
+    return request.post(endpoints.agentQueuedTurns(), payload);
+  }
+  const unsupported = () =>
+    Object.assign(new Error('Queued approval snapshots require protocol v2'), {
+      response: { status: 409, data: { code: 'QUEUED_TURN_PROTOCOL_REQUIRED' } },
+    });
+  try {
+    // The versioned URL is the capability gate. Do not preflight with a list:
+    // retries must reach receipt lookup even when mutable access has changed.
+    return await request.post(endpoints.agentQueuedTurns(2), payload);
+  } catch (error) {
+    const response = (error as { response?: { status?: number; data?: { code?: unknown } } })
+      ?.response;
+    const status = response?.status;
+    // Structured origin responses (notably priority fallback) are authoritative.
+    if ((status === 404 || status === 501) && typeof response?.data?.code !== 'string') {
+      throw unsupported();
+    }
+    throw error;
+  }
 }
 
 export function listAgentQueuedTurns(
@@ -1213,6 +1304,12 @@ export function listSkillFiles(skillId: string): Promise<sk.TListSkillFilesRespo
 }
 
 export function uploadSkillFile(skillId: string, formData: FormData): Promise<sk.TSkillFile> {
+  const relativePath = formData.get('relativePath');
+  // Conditional edits use a new route: older servers must reject the request,
+  // not silently ignore expectedFileId and perform an unconditional replacement.
+  if (formData.has('expectedFileId') && typeof relativePath === 'string') {
+    return request.postMultiPart(endpoints.skillFile(skillId, relativePath), formData);
+  }
   return request.postMultiPart(endpoints.skillFiles(skillId), formData);
 }
 

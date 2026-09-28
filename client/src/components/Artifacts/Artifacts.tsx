@@ -207,11 +207,23 @@ export default function Artifacts() {
     }
     return [filename ? { ...tab, label: filename } : tab];
   }, [allTabOptions, constrainedTab, currentArtifact?.title]);
+  /* The panel keeps one `activeTab`, but a trigger row promises what
+   * opening *that* artifact does. Writing a constrained tab back into the
+   * shared state leaked it to the next artifact — after a `.py` (code-only)
+   * every preview-capable row opened on Code while announcing a rendered
+   * preview — so the tab is reset per artifact instead, and a manual choice
+   * survives only while that artifact stays open. */
+  const openedArtifactRef = useRef<string | null>(null);
   useEffect(() => {
-    if (constrainedTab != null && activeTab !== constrainedTab) {
-      setActiveTab(constrainedTab);
+    const openedId = currentArtifact?.id ?? null;
+    if (openedId === openedArtifactRef.current) {
+      return;
     }
-  }, [constrainedTab, activeTab, setActiveTab]);
+    openedArtifactRef.current = openedId;
+    if (openedId != null && constrainedTab == null && activeTab !== 'preview') {
+      setActiveTab('preview');
+    }
+  }, [activeTab, constrainedTab, currentArtifact?.id, setActiveTab]);
 
   const handleCopyArtifact = useCallback(() => {
     const content = currentArtifact?.content ?? '';
@@ -382,7 +394,7 @@ export default function Artifacts() {
               onPointerCancel={handleDragEnd}
               onKeyDown={handleDragKeyDown}
             >
-              <div className="h-1 w-12 rounded-full bg-border-xheavy opacity-40 transition-all duration-200 active:opacity-60 motion-reduce:transition-none" />
+              <div className="h-1 w-12 rounded-full bg-border-xheavy opacity-40 transition-all duration-200 active:opacity-60 high-contrast:opacity-100 motion-reduce:transition-none" />
             </div>
           )}
 
@@ -481,14 +493,18 @@ export default function Artifacts() {
                 portalElement={isFullscreen ? fullscreenPortalRef.current : undefined}
                 onClick={handleCopyArtifact}
               />
-              {isMermaidArtifact && displayedTab === 'preview' && (
+              {/* Mermaid diagrams route every download through the export
+                  menu — SVG, PNG and the source — so the generic button does
+                  not sit beside it offering a fourth, unlabelled option. */}
+              {isMermaidArtifact ? (
                 <MermaidExport
                   artifact={currentArtifact}
                   exportData={mermaidExportData}
                   portalElement={isFullscreen ? fullscreenPortalRef.current : undefined}
                 />
+              ) : (
+                <DownloadArtifact artifact={currentArtifact} />
               )}
-              <DownloadArtifact artifact={currentArtifact} />
               <Button
                 size="icon"
                 variant="ghost"

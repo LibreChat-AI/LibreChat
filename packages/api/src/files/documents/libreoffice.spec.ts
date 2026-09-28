@@ -1,6 +1,6 @@
-import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import {
   _resetLibreOfficeProbeCache,
   buildPdfEmbedDocument,
@@ -231,11 +231,10 @@ describe('libreoffice (env gating + wrapper)', () => {
     });
 
     it('never throws — falls through to null on any conversion failure', async () => {
-      /* Even if the binary IS available, a malformed buffer should
-       * cause `convertOfficeToPdf` to throw and `tryLibreOfficePreview`
-       * to swallow it. The dispatcher pipeline takes over from there. */
+      /* Truncate a real OOXML archive: LibreOffice can successfully
+       * autodetect plain text despite a .docx extension. */
       process.env.OFFICE_PREVIEW_LIBREOFFICE = 'true';
-      const garbage = Buffer.from('this-is-definitely-not-a-docx');
+      const garbage = readFixture('sample.docx').subarray(0, 64);
       let threw = false;
       try {
         const out = await tryLibreOfficePreview(garbage, 'docx', 512 * 1024);

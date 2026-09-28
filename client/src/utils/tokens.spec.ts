@@ -11,9 +11,12 @@ import {
   setEntryUsage,
   sumTotalUsage,
   prunedBranchTokens,
+  collectAnchorSeries,
+  latestExchangeTokens,
   findBranchSnapshotAnchor,
   estimateTokens,
   normalizeUsageUnits,
+  formatTokens,
   formatCost,
   groupToolTokens,
   countTrailingOutputChars,
@@ -219,6 +222,69 @@ describe('token index', () => {
     expect(totals.tailEstTokens).toBe(5);
   });
 
+  it('splits the tool-call share out of counted and count-less messages', () => {
+    buildIndex(CONVO, [
+      /** Counted assistant turn: text 80 + tool payload (3+2+38=43 chars).
+       *  Tool share 43/4 = 11, clamped to the entry's 30-token count → 11. */
+      {
+        messageId: 'a1',
+        parentMessageId: Constants.NO_PARENT,
+        isCreatedByUser: false,
+        conversationId: CONVO,
+        tokenCount: 30,
+        content: [
+          { type: 'text', text: 't'.repeat(80) },
+          { type: 'tool_call', tool_call: { name: 'run', args: 'aa', output: 'o'.repeat(38) } },
+        ],
+      } as unknown as TMessage,
+      /** Counted user turn with no tool parts: contributes nothing. */
+      msg('u1', 'a1', true, 12),
+      /** Count-less assistant turn: tool chars 3+2+7=12 → 3 (≤ its est 8). */
+      {
+        messageId: 'a2',
+        parentMessageId: 'u1',
+        isCreatedByUser: false,
+        conversationId: CONVO,
+        text: 'z'.repeat(20),
+        content: [
+          { type: 'tool_call', tool_call: { name: 'sub', args: 'aa', output: 'o'.repeat(7) } },
+        ],
+      } as unknown as TMessage,
+    ]);
+
+    const totals = sumBranch(CONVO, 'a2');
+    expect(totals.estToolTokens).toBe(14);
+    /** a2 is the tail */
+    expect(totals.tailEstToolTokens).toBe(3);
+  });
+
+  it('keeps a counted tail out of both tail estimates', () => {
+    /** A resumed partial response that already carries a `tokenCount` stays in
+     *  `output`, so the estimate path may drop neither its estimate nor its tool
+     *  share — dropping the share alone left the message total holding tokens
+     *  whose tool traffic had been removed from the split. */
+    buildIndex(CONVO, [
+      msg('u1', Constants.NO_PARENT, true, 12),
+      {
+        messageId: 'a1',
+        parentMessageId: 'u1',
+        isCreatedByUser: false,
+        conversationId: CONVO,
+        tokenCount: 40,
+        content: [
+          { type: 'text', text: 't'.repeat(60) },
+          { type: 'tool_call', tool_call: { name: 'run', args: 'aa', output: 'o'.repeat(38) } },
+        ],
+      } as unknown as TMessage,
+    ]);
+
+    const totals = sumBranch(CONVO, 'a1');
+    expect(totals.output).toBe(40);
+    expect(totals.estToolTokens).toBe(11);
+    expect(totals.tailEstTokens).toBe(0);
+    expect(totals.tailEstToolTokens).toBe(0);
+  });
+
   describe('prunedBranchTokens (over-window mirror of getMessagesWithinTokenLimit)', () => {
     /** u1 ← a1(huge, old) ← u2 ← a2(tail). */
     const buildChain = () =>
@@ -232,18 +298,47 @@ describe('token index', () => {
     it('keeps the newest messages that fit and stops at the first overflow', () => {
       buildChain();
       /** Budget 8: a2(2)+u2(2)=4 fit; a1(10) would overflow → pruned. */
-      expect(prunedBranchTokens(CONVO, 'a2', 8, false)).toBe(4);
+      expect(prunedBranchTokens(CONVO, 'a2', 8, false)).toEqual({ tokens: 4, toolTokens: 0 });
     });
 
     it('returns the full branch sum when it fits the budget', () => {
       buildChain();
-      expect(prunedBranchTokens(CONVO, 'a2', 100, false)).toBe(16);
+      expect(prunedBranchTokens(CONVO, 'a2', 100, false)).toEqual({
+        tokens: 16,
+        toolTokens: 0,
+      });
     });
 
     it('skips the in-flight tail when excludeTail is set', () => {
       buildChain();
       /** Skip a2; a1(10)+u2(2)+u1(2)=14 all fit under 100. */
-      expect(prunedBranchTokens(CONVO, 'a2', 100, true)).toBe(14);
+      expect(prunedBranchTokens(CONVO, 'a2', 100, true)).toEqual({
+        tokens: 14,
+        toolTokens: 0,
+      });
+    });
+
+    it('returns the tool-call share of the kept messages', () => {
+      /** u1(counted, 4) ← a2(tail): content-only estimate 11/4 = 3, tool chars
+       *  3+2+6=11 → 3. Kept total 7, tool share 3. */
+      buildIndex(CONVO, [
+        msg('u1', Constants.NO_PARENT, true, 4),
+        {
+          messageId: 'a2',
+          parentMessageId: 'u1',
+          isCreatedByUser: false,
+          conversationId: CONVO,
+          text: 'z'.repeat(4),
+          content: [
+            { type: 'tool_call', tool_call: { name: 'sub', args: 'aa', output: 'o'.repeat(6) } },
+          ],
+        } as unknown as TMessage,
+      ]);
+
+      expect(prunedBranchTokens(CONVO, 'a2', 100, false)).toEqual({
+        tokens: 7,
+        toolTokens: 3,
+      });
     });
   });
 
@@ -438,6 +533,12 @@ describe('estimateTokens', () => {
     expect(estimateTokens(0)).toBe(0);
     expect(estimateTokens(100, 0)).toBe(25);
   });
+
+  it('renders malformed token counts as a bounded zero', () => {
+    expect(formatTokens(Number.NaN)).toBe('0');
+    expect(formatTokens(Number.POSITIVE_INFINITY)).toBe('0');
+    expect(formatTokens(-10)).toBe('0');
+  });
 });
 
 describe('normalizeUsageUnits', () => {
@@ -615,6 +716,19 @@ describe('groupToolTokens', () => {
     expect(groupToolTokens(undefined)).toBe(EMPTY_TOOL_GROUPS);
     expect(groupToolTokens({ execute_code: 0 })).toEqual(EMPTY_TOOL_GROUPS);
   });
+
+  it('handles prototype-sensitive names and malformed tool counts safely', () => {
+    const counts = Object.fromEntries([
+      ['__proto__', 7],
+      ['constructor', 5],
+      ['web_search', Number.NaN],
+    ]);
+
+    expect(groupToolTokens(counts)).toEqual({
+      ...EMPTY_TOOL_GROUPS,
+      system: 12,
+    });
+  });
 });
 
 describe('countTrailingOutputChars', () => {
@@ -700,6 +814,28 @@ describe('per-message usage index (branch + total)', () => {
     expect(usage.costKnown).toBe(false);
     expect(usage.cost).toBe(0);
     expect(usage.input).toBe(100);
+  });
+
+  it('ignores malformed persisted usage values instead of poisoning totals', () => {
+    buildIndex(CONVO, [
+      msg('u1', Constants.NO_PARENT, true, 10),
+      responseMsg('a1', 'u1', 50, {
+        input: Number.NaN,
+        output: Number.POSITIVE_INFINITY,
+        cacheWrite: -2,
+        cacheRead: 4.8,
+        cost: Number.NaN,
+      }),
+    ]);
+
+    expect(sumBranch(CONVO, 'a1').usage).toEqual({
+      input: 0,
+      output: 0,
+      cacheWrite: 0,
+      cacheRead: 4,
+      cost: 0,
+      costKnown: false,
+    });
   });
 
   it('messages without metadata.usage contribute zero (backward compat)', () => {
@@ -834,5 +970,125 @@ describe('per-message usage index (branch + total)', () => {
   it('EMPTY_BRANCH carries an empty usage record', () => {
     expect(sumBranch('missing-convo', 'x')).toBe(EMPTY_BRANCH);
     expect(EMPTY_BRANCH.usage).toEqual(EMPTY_USAGE);
+  });
+
+  it('collectAnchorSeries reads used tokens per anchor, oldest → newest', () => {
+    buildIndex(CONVO, [
+      msg('u1', Constants.NO_PARENT, true, 4),
+      msg('a1', 'u1', false, 10),
+      msg('u2', 'a1', true, 4),
+      msg('a2', 'u2', false, 20),
+      msg('u3', 'a2', true, 4),
+      msg('a3', 'u3', false, 30),
+    ]);
+    const snap = (remaining: number) => ({
+      contextBudget: 1000,
+      remainingContextTokens: remaining,
+      breakdown: { maxContextTokens: 1000 },
+    });
+    const anchors = new Map([
+      ['a1', snap(960)],
+      ['a2', snap(920)],
+      ['a3', snap(860)],
+    ]);
+
+    const series = collectAnchorSeries(CONVO, 'a3', anchors);
+    /** used = budget − remaining: 40 → 80 → 140, oldest first */
+    expect(series).toEqual([
+      { used: 40, basis: 'remaining' },
+      { used: 80, basis: 'remaining' },
+      { used: 140, basis: 'remaining' },
+    ]);
+    expect(collectAnchorSeries(CONVO, 'a3', new Map())).toEqual([]);
+  });
+
+  it('collectAnchorSeries derives a snapshot saved without remaining headroom', () => {
+    buildIndex(CONVO, [
+      msg('u1', Constants.NO_PARENT, true, 4),
+      msg('a1', 'u1', false, 10),
+      msg('u2', 'a1', true, 4),
+      msg('a2', 'u2', false, 20),
+    ]);
+    const anchors = new Map<string, unknown>([
+      /** The older shape: a budget and a breakdown, no remaining count. Read as
+       *  zero remaining it would claim the whole 1000-token window was spent. */
+      [
+        'a1',
+        {
+          contextBudget: 1000,
+          breakdown: {
+            maxContextTokens: 1000,
+            instructionTokens: 100,
+            summaryTokens: 25,
+            messageTokens: 60,
+          },
+        },
+      ],
+      /** Nothing to read at all — skipped rather than counted as a full window. */
+      ['a2', { contextBudget: 1000, breakdown: { maxContextTokens: 1000 } }],
+    ]);
+
+    expect(collectAnchorSeries(CONVO, 'a2', anchors)).toEqual([{ used: 185, basis: 'breakdown' }]);
+  });
+
+  it('latestExchangeTokens sums the tail response and its user turn', () => {
+    buildIndex(CONVO, [
+      msg('u1', Constants.NO_PARENT, true, 12),
+      msg('a1', 'u1', false, 40),
+      msg('u2', 'a1', true, 9),
+      msg('a2', 'u2', false, 50),
+    ]);
+
+    expect(latestExchangeTokens(CONVO, 'a2', false)).toBe(59);
+    /** In-flight tail rides liveTokens — only the user turn remains */
+    expect(latestExchangeTokens(CONVO, 'a2', true)).toBe(9);
+  });
+
+  it('keeps tool results outside model completion counts in the latest exchange', () => {
+    const response = {
+      messageId: 'a1',
+      parentMessageId: 'u1',
+      conversationId: CONVO,
+      isCreatedByUser: false,
+      tokenCount: 40,
+      content: [
+        {
+          type: 'tool_call',
+          tool_call: {
+            name: 'read_file',
+            args: 'a'.repeat(80),
+            output: 'r'.repeat(2000),
+          },
+        },
+      ],
+    } as TMessage;
+    buildIndex(CONVO, [msg('u1', Constants.NO_PARENT, true, 10), response]);
+    expect(latestExchangeTokens(CONVO, 'a1', false)).toBe(550);
+    expect(latestExchangeTokens(CONVO, 'a1', true)).toBe(10);
+    buildIndex(CONVO, [msg('u1', Constants.NO_PARENT, true, 10), { ...response, tokenCount: 0 }]);
+    expect(latestExchangeTokens(CONVO, 'a1', false)).toBe(532);
+  });
+
+  it('latestExchangeTokens drops a summarizing turn’s summary completion', () => {
+    /** The backend folds the summarization pass into the response's
+     *  `tokenCount`, while the snapshot holds those tokens in `summaryTokens`
+     *  instead of `messageTokens`. Subtracting the whole tail would remove a
+     *  summary the message total never carried. */
+    buildIndex(CONVO, [
+      msg('u1', Constants.NO_PARENT, true, 9),
+      {
+        messageId: 'a1',
+        parentMessageId: 'u1',
+        isCreatedByUser: false,
+        conversationId: CONVO,
+        tokenCount: 500,
+        text: 'answer',
+        metadata: { summaryUsedTokens: 4000 },
+      } as unknown as TMessage,
+    ]);
+
+    expect(latestExchangeTokens(CONVO, 'a1', false, 300)).toBe(209);
+    /** A turn that did not summarize keeps its whole response. */
+    expect(latestExchangeTokens(CONVO, 'a1', false)).toBe(509);
   });
 });

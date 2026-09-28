@@ -166,9 +166,8 @@ test.describe('escalating waiting messages to an interrupt', () => {
     expect(armResponse.status()).toBe(200);
     expect(((await armResponse.json()) as { armed?: boolean }).armed).toBe(true);
 
-    // Relabelled IN PLACE: still exactly one bubble with the same text, and
-    // an interrupting steer no longer offers its escalation control.
-    await expect(inFlightSteers(page)).toHaveCount(1);
+    // The stream can consume the armed steer before the HTTP response arrives.
+    // Whether waiting or already applied, it must no longer offer escalation.
     await expect(bubble.getByTestId('steer-escalate-now')).toHaveCount(0);
 
     // The armed steer seals mid-stream and injects with no tool boundary.

@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
 import {
+  AGENT_EVENT_ACTOR_SUMMARY_VERSION,
   MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS,
+  MAX_AGENT_EVENT_ACTOR_SUMMARY_LENGTH,
   MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH,
 } from '@librechat/data-schemas';
+import type { IAgentEventActorSummary } from '@librechat/data-schemas';
 
 export const AGENT_CONTEXT_FINGERPRINT_VERSION = 1;
 export const AGENT_GRAPH_SCHEMA_VERSION = 1;
@@ -45,6 +48,7 @@ export interface AgentContextDefinition {
 export interface AgentTurnSemanticContext {
   agents: readonly AgentContextDefinition[];
   approvalPolicy?: object;
+  retainedAnswers?: { enabled: boolean; maxTokens: number };
   memory?: readonly AgentContextMemorySnapshot[];
   checkpointerType?: string;
   discoveredToolNames?: readonly string[];
@@ -103,6 +107,55 @@ export function normalizeAgentEventActorDiscoveredTools(
     );
   }
   return [...normalized].sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * The summary a run records as event-actor state, stamped with the provenance
+ * version. The version records the writer, not a judgement about this summary:
+ * a build that reaches here has already filtered unusable summaries out of
+ * every source it reads — the turn's own content parts, a validated restore,
+ * or the formatter over the stripped payload. Stamping at the point state is
+ * assembled is what keeps an inherited `{ text, tokenCount }` from the SDK
+ * from being refused by the next event and forcing a cold reload.
+ */
+export function createAgentEventActorSummary(
+  summary: { text: string; tokenCount: number } | null | undefined,
+): IAgentEventActorSummary | undefined {
+  if (summary == null) {
+    return undefined;
+  }
+  return {
+    text: summary.text,
+    tokenCount: summary.tokenCount,
+    version: AGENT_EVENT_ACTOR_SUMMARY_VERSION,
+  };
+}
+
+/**
+ * A stored event-actor summary a warm continuation may carry forward. Throws
+ * for anything it cannot vouch for, including a state written before the
+ * version existed: those kept only `{ text, tokenCount }`, so a round that
+ * failed or never finished reads exactly like a checkpoint, and a warm run
+ * would continue from a truncated prefix. Refusing one costs a cold
+ * continuation, which rebuilds context from durable history.
+ */
+export function normalizeAgentEventActorSummary(
+  summary: IAgentEventActorSummary | null | undefined,
+): IAgentEventActorSummary | undefined {
+  if (summary == null) {
+    return undefined;
+  }
+  if (
+    typeof summary.text !== 'string' ||
+    summary.text.length === 0 ||
+    summary.text.length > MAX_AGENT_EVENT_ACTOR_SUMMARY_LENGTH ||
+    !Number.isFinite(summary.tokenCount) ||
+    summary.tokenCount < 0 ||
+    summary.version !== AGENT_EVENT_ACTOR_SUMMARY_VERSION
+  ) {
+    throw new RangeError('Event actor summary state is invalid');
+  }
+  return createAgentEventActorSummary(summary);
 }
 
 export function createSkillContentDigest(body: string): string {
@@ -199,6 +252,7 @@ export function createAgentContextFingerprint(
     checkpointerType: input.checkpointerType,
     discoveredToolNames: normalizeAgentEventActorDiscoveredTools(input.discoveredToolNames),
     approvalPolicy: input.approvalPolicy,
+    retainedAnswers: input.retainedAnswers,
     agents: input.agents.map((agent) => ({
       ...agent,
       modelParameters: redactModelParameterCredentials(agent.modelParameters),
@@ -248,6 +302,7 @@ export function createInitializedAgentContextFingerprint(input: {
   agents: readonly InitializedAgentContextSource[];
   invokedSkills?: readonly AgentContextSkillIdentity[];
   approvalPolicy?: object;
+  retainedAnswers?: { enabled: boolean; maxTokens: number };
   memory?: readonly AgentContextMemorySnapshot[];
   checkpointerType?: string;
   discoveredToolNames?: readonly string[];
@@ -255,6 +310,7 @@ export function createInitializedAgentContextFingerprint(input: {
   return createAgentContextFingerprint({
     checkpointerType: input.checkpointerType,
     approvalPolicy: input.approvalPolicy,
+    retainedAnswers: input.retainedAnswers,
     memory: input.memory,
     discoveredToolNames: input.discoveredToolNames,
     agents: input.agents.map((agent, index) => ({

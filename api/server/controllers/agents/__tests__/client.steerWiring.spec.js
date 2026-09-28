@@ -1,5 +1,6 @@
 const AgentClient = require('../client');
 const {
+  GenerationJobManager,
   isSteeringSupported,
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
@@ -92,5 +93,48 @@ describe('AgentClient.buildSteerWiring — preempt capability gating', () => {
 
     expect(wiring.hook).not.toBe(wiring.preemptHook);
     expect(applySteerPart).not.toHaveBeenCalled();
+  });
+
+  it('durably corrects an applied steer after media encoding rejects its files', async () => {
+    const part = {
+      type: 'steer',
+      steer: 'keep the text',
+      steerId: 'steer-1',
+      files: [{ file_id: 'rejected-file' }],
+    };
+    const turnAttachments = [part.files[0]];
+    const telemetryAttachments = [part.files[0]];
+    const self = {
+      appliedSteerParts: new Map([['steer-1', { index: 2, part }]]),
+      admittedSteerAttachments: new Map([['steer-1', [part.files[0]]]]),
+      turnSharedAttachmentFiles: turnAttachments,
+      attachmentMemoryContext: { attachments: telemetryAttachments },
+      contentParts: [undefined, undefined, part],
+      responseMessageId: 'response-1',
+      conversationId: 'conversation-1',
+      jobCreatedAt: 1700000000000,
+      rollbackSteerAttachmentAdmission: AgentClient.prototype.rollbackSteerAttachmentAdmission,
+    };
+    const emitChunk = jest.spyOn(GenerationJobManager, 'emitChunk').mockResolvedValue();
+
+    await AgentClient.prototype.stripSteerAttachmentRefs.call(self, 'stream-1', {
+      steerId: 'steer-1',
+    });
+
+    expect(self.contentParts[2]).not.toHaveProperty('files');
+    expect(self.turnSharedAttachmentFiles).toBe(turnAttachments);
+    expect(self.turnSharedAttachmentFiles).toEqual([]);
+    expect(self.attachmentMemoryContext.attachments).toBe(telemetryAttachments);
+    expect(self.attachmentMemoryContext.attachments).toEqual([]);
+    expect(self.admittedSteerAttachments).toEqual(new Map());
+    expect(emitChunk).toHaveBeenCalledWith(
+      'stream-1',
+      expect.objectContaining({
+        event: 'on_steer_applied',
+        data: expect.objectContaining({ index: 2, part: self.contentParts[2] }),
+      }),
+      { durable: true, expectedCreatedAt: 1700000000000 },
+    );
+    emitChunk.mockRestore();
   });
 });
