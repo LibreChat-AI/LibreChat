@@ -43,6 +43,21 @@ test.use({ storageState: { cookies: [], origins: [] }, serviceWorkers: 'block' }
 async function mockChallengeAuth(page: Page) {
   let sessionLive = false;
 
+  /** Registered first, so every specific mock below takes precedence. The shell's
+   *  authenticated queries are answered empty: letting them 401 against the real backend
+   *  (the bearer is a stand-in for the cookie the real verify controller sets) would spin
+   *  the auth-recovery interceptor, whose login bounce carries the current URL as
+   *  redirect_to — re-declaring a destination mid-test and re-persisting it at the login
+   *  screen. Only /api/config stays real: the login screen renders from it. */
+  await page.route('**/api/**', async (route) => {
+    const url = route.request().url();
+    if (/\/api\/config(\?|$)/.test(url)) {
+      const response = await route.fetch();
+      await route.fulfill({ response });
+      return;
+    }
+    await json(route, {});
+  });
   await page.route('**/api/auth/login', (route) =>
     json(route, { twoFAPending: true, tempToken: 'temp-token' }),
   );
