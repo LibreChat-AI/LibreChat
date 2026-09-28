@@ -2465,17 +2465,18 @@ html[data-input-modality='keyboard']
   outline-offset: 2px !important;
 }
 
-/* Black and white are the default theme's focus outline. A theme definition
- * (`data-theme` on the root) draws it in its own `ring-primary` instead, at the
- * same specificity and layer as the rule it recolours, so every utility that
- * beat the outline before still does. The contrast modes keep their own rule. */
+/* Black and white are the default theme's focus outline. A theme that names its
+ * own `ring-primary` (`data-theme-ring` on the root) draws the outline in it,
+ * at the same specificity and layer as the rule it recolours, so every utility
+ * that beat the outline before still does. A theme that leaves the ring to the
+ * default keeps black and white, and the contrast modes keep their own rule. */
 @layer base {
   :focus-visible {
     outline: 2px solid #000;
     outline-offset: 2px;
   }
 
-  :where(html[data-theme]:not(.high-contrast)) :focus-visible {
+  :where(html[data-theme-ring]:not(.high-contrast)) :focus-visible {
     outline-color: rgb(var(--ring-primary));
   }
 }
@@ -2485,7 +2486,7 @@ html[data-input-modality='keyboard']
   outline-offset: 2px;
 }
 
-.dark:where([data-theme]:not(.high-contrast)) :focus-visible {
+.dark:where([data-theme-ring]:not(.high-contrast)) :focus-visible {
   outline-color: rgb(var(--ring-primary));
 }
 

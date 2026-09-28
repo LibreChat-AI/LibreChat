@@ -104,9 +104,17 @@ function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
   ]);
 }
 
+/**
+ * Marks a root whose applied theme names its own `rgb-ring-primary`. The app's global focus
+ * outline follows the ring only then: a theme that leaves the ring to the default resolves it to a
+ * mid gray that a dark surface cannot carry at 3:1, so it keeps the default outline instead.
+ */
+export const THEME_RING_ATTRIBUTE = 'data-theme-ring';
+
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
+  root.removeAttribute(THEME_RING_ATTRIBUTE);
 }
 
 export function applyResolvedTheme(

@@ -71,6 +71,7 @@ beforeEach(() => {
   document.documentElement.removeAttribute('class');
   document.documentElement.removeAttribute('style');
   document.documentElement.removeAttribute('data-theme');
+  document.documentElement.removeAttribute('data-theme-ring');
   window.matchMedia = jest.fn(() => matchMedia(false));
 });
 
@@ -1136,5 +1137,71 @@ describe('ThemeProvider', () => {
     );
     expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
     expect(matchMediaSpy).toHaveBeenCalled();
+  });
+  describe('the ring mark the global focus outline follows', () => {
+    it('marks only the modes whose definition names its ring, and clears it on unmount', async () => {
+      const { unmount } = render(
+        <ThemeProvider
+          initialTheme="light"
+          themeDefinition={{
+            version: 1,
+            name: 'ringed',
+            modes: {
+              light: { colors: { 'rgb-ring-primary': '10 20 30' } },
+              dark: { colors: { 'rgb-accent-primary': '1 2 3' } },
+            },
+          }}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.documentElement).toHaveAttribute('data-theme-ring');
+      });
+
+      act(() => screen.getByRole('button', { name: 'Dark' }).click());
+
+      await waitFor(() => {
+        expect(document.documentElement).toHaveClass('dark');
+      });
+      expect(document.documentElement.dataset.theme).toBe('ringed');
+      expect(document.documentElement).not.toHaveAttribute('data-theme-ring');
+
+      unmount();
+
+      expect(document.documentElement).not.toHaveAttribute('data-theme-ring');
+    });
+
+    it('marks legacy RGB props only when they carry a ring', async () => {
+      const { rerender } = render(
+        <ThemeProvider
+          initialTheme="dark"
+          themeName="legacy"
+          themeRGB={{ 'rgb-ring-primary': '1 2 3' }}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.documentElement).toHaveAttribute('data-theme-ring');
+      });
+
+      rerender(
+        <ThemeProvider
+          initialTheme="dark"
+          themeName="legacy"
+          themeRGB={{ 'rgb-accent-primary': '1 2 3' }}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.documentElement).not.toHaveAttribute('data-theme-ring');
+      });
+      expect(document.documentElement.dataset.theme).toBe('legacy');
+    });
   });
 });

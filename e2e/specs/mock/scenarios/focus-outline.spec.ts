@@ -5,8 +5,9 @@ import { NEW_CHAT_PATH } from '../helpers';
 
 /**
  * The app-wide keyboard focus outline. The default light and dark themes draw it in black and
- * white, a theme definition draws it in its own `ring-primary`, and the contrast modes keep their
- * heavier text-colored outline. The probe is a bare button reached with Tab, so nothing but the
+ * white, a theme definition that names its own `ring-primary` draws it in that ring, one that
+ * leaves the ring to the default keeps black and white, and the contrast modes keep their heavier
+ * text-colored outline. The probe is a bare button reached with Tab, so nothing but the
  * global rule styles its outline.
  */
 
@@ -21,6 +22,16 @@ const CUSTOM_RING_THEME = {
   modes: {
     light: { colors: { 'rgb-ring-primary': '10 20 30' } },
     dark: { colors: { 'rgb-ring-primary': '200 210 220' } },
+  },
+} as const;
+
+/** Leaves `rgb-ring-primary` to the default, which resolves to a gray too dim for a dark surface. */
+const RINGLESS_THEME = {
+  version: 1,
+  name: 'e2e-ringless',
+  modes: {
+    light: { colors: { 'rgb-accent-primary': '10 20 30' } },
+    dark: { colors: { 'rgb-accent-primary': '200 210 220' } },
   },
 } as const;
 
@@ -132,6 +143,13 @@ const CASES: Array<{
   },
   {
     title:
+      'a dark theme that leaves the ring to the default keeps the white focus outline @scenario:focus-outline-ringless-theme-keeps-default',
+    appearance: 'dark',
+    definition: RINGLESS_THEME,
+    expected: outline('rgb(255, 255, 255)'),
+  },
+  {
+    title:
       'high contrast light keeps its heavy text-colored focus outline @scenario:focus-outline-high-contrast-light-unchanged',
     appearance: 'high-contrast-light',
     definition: clickHouseTheme,
@@ -162,11 +180,12 @@ test.describe('keyboard focus outline', () => {
       light: 'rgb(10, 20, 30)',
       dark: 'rgb(200, 210, 220)',
     };
-    /** Init scripts run in the order they were added, so the second visit resolves dark. */
+    /** One page per mode: a page's init scripts accumulate, and their order is not guaranteed. */
     for (const mode of ['light', 'dark'] as const) {
-      await openChat(page, mode, CUSTOM_RING_THEME);
+      const modePage = mode === 'light' ? page : await page.context().newPage();
+      await openChat(modePage, mode, CUSTOM_RING_THEME);
 
-      expect(await keyboardFocusOutline(page)).toEqual(outline(rings[mode]));
+      expect(await keyboardFocusOutline(modePage)).toEqual(outline(rings[mode]));
     }
   });
 });
