@@ -36,7 +36,12 @@
 import { logger } from '@librechat/data-schemas';
 import { createHash, randomUUID } from 'node:crypto';
 import { Constants as AgentConstants } from '@librechat/agents';
-import { Tools, Constants, imageGenTools } from 'librechat-data-provider';
+import {
+  Tools,
+  Constants,
+  imageGenTools,
+  AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT,
+} from 'librechat-data-provider';
 import type {
   LCTool,
   LCToolRegistry,
@@ -52,11 +57,14 @@ import type {
   BackgroundToolResultClaim,
   BackgroundToolResultRecord,
 } from '@librechat/data-schemas';
-import type { AgentToolOptions } from 'librechat-data-provider';
+import type { AgentToolOptions, BackgroundTaskDelivery } from 'librechat-data-provider';
 import type { BackgroundToolResultState } from './harvest';
 import type { CapabilityToolNames } from './selection';
 import {
   BACKGROUND_TASK_TIMEOUT_MS,
+  BACKGROUND_TASK_SHUTDOWN_MESSAGE,
+  BACKGROUND_SHUTDOWN_FLUSH_RESERVE_MS,
+  BACKGROUND_SHUTDOWN_TEARDOWN_RESERVE_MS,
   type PendingBackgroundCompletion,
   type BackgroundToolDeadClaimRecovery,
   type BackgroundToolWakeupAdmission,
@@ -75,6 +83,7 @@ import {
   synthesizeSelectionToolOptions,
 } from './selection';
 import { SUBAGENT_WAKEUP_GUIDANCE, agentUsesSubagentCompletionWakeups } from './subagentDelivery';
+import { registerShutdownTask, getRemainingShutdownMs } from '~/app/shutdown';
 import { SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from './memory';
 import { ASK_USER_QUESTION_TOOL_NAME } from './hitl/askUserQuestionTool';
@@ -711,12 +720,52 @@ export type BackgroundTaskCapacityScope =
   | 'user_running'
   | 'user_retention'
   | 'global_running'
-  | 'global_retention';
+  | 'global_retention'
+  | 'shutting_down';
 
 type BackgroundTaskCapacityRejection = {
   atCapacity: true;
   scope: BackgroundTaskCapacityScope;
 };
+
+/** Process-local controls a running task registers so graceful shutdown can settle it. */
+export interface BackgroundTaskShutdownHandle {
+  /** Resolves once the task's result is durable, or once the task finished when it has
+   * no durable delivery. Never rejects. */
+  settled: Promise<void>;
+  /** Aborts the live invocation because the server is shutting down. */
+  interrupt: (reason: string) => void;
+  /** Stores the best result available now: the task's own result when it has settled,
+   * otherwise an interrupted failure. */
+  flush: (reason: string) => Promise<void>;
+}
+
+export interface BackgroundTaskDrainSummary {
+  /** Tasks with an unsettled result when the drain began. */
+  tracked: number;
+  /** Tasks still running when the drain aborted them. */
+  interrupted: number;
+  /** Tasks whose result was still not durable, so the drain stored one. */
+  flushed: number;
+  /** Tasks whose durable result was still unconfirmed at the deadline. */
+  unsettled: number;
+}
+
+/** Resolves when `promise` settles or at `deadlineAt`, whichever comes first. */
+function waitUntil(promise: Promise<unknown>, deadlineAt: number): Promise<void> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, remainingMs);
+    const finish = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(finish, finish);
+  });
+}
 
 const COMPLETED_TASK_TTL_MS = 60 * 60 * 1000;
 const IDLE_BUCKET_TTL_MS = 6 * 60 * 60 * 1000;
@@ -829,10 +878,19 @@ export class BackgroundTaskRegistryClass {
   /** Live invocation controls are intentionally process-local and are never
    * exposed through task snapshots or durable receipts. */
   private readonly cancellationRequests = new WeakMap<BackgroundTask, () => boolean | void>();
+  /** Tasks whose result is not yet durable, for the graceful-shutdown drain. */
+  private readonly shutdownHandles = new Map<BackgroundTask, BackgroundTaskShutdownHandle>();
+  private admissionClosed = false;
   private lastGlobalSweepAt = 0;
 
   private key(userId: string, conversationId: string): string {
     return `${userId}::${conversationId}`;
+  }
+
+  private releaseEvictedShutdownHandle(task: BackgroundTask): void {
+    if (this.shutdownHandles.delete(task)) {
+      logger.warn(`[background] Unconfirmed shutdown result for evicted task ${task.id}.`);
+    }
   }
 
   private sweepBucketTasks(bucket: TaskBucket, now: number): void {
@@ -843,6 +901,7 @@ export class BackgroundTaskRegistryClass {
         now - task.updatedAt > COMPLETED_TASK_TTL_MS
       ) {
         bucket.tasks.delete(taskId);
+        this.releaseEvictedShutdownHandle(task);
       }
     }
     /** Drop dedupe mappings whose task was evicted (keys are
@@ -873,6 +932,9 @@ export class BackgroundTaskRegistryClass {
           (task) => task.status === 'running' || task.completionPersistencePending === true,
         )
       ) {
+        for (const task of bucket.tasks.values()) {
+          this.releaseEvictedShutdownHandle(task);
+        }
         this.buckets.delete(bucketKey);
         continue;
       }
@@ -1027,6 +1089,7 @@ export class BackgroundTaskRegistryClass {
     const touched = new Set<TaskBucket>();
     for (const [task, bucket] of selected) {
       bucket.tasks.delete(task.id);
+      this.releaseEvictedShutdownHandle(task);
       touched.add(bucket);
     }
     const now = Date.now();
@@ -1171,6 +1234,9 @@ export class BackgroundTaskRegistryClass {
     if (existing != null) {
       return { task: existing, isNew: false };
     }
+    if (this.admissionClosed) {
+      return { atCapacity: true, scope: 'shutting_down' };
+    }
     if (
       existingBucket != null &&
       this.runningCount(existingBucket) + existingBucket.capacityPermits.size >=
@@ -1261,6 +1327,11 @@ export class BackgroundTaskRegistryClass {
       }
     }
 
+    /** A permit already reserved launch authority before shutdown began, so it may still land. */
+    if (this.admissionClosed && params.capacityPermit == null) {
+      return { atCapacity: true, scope: 'shutting_down' };
+    }
+
     if (params.capacityPermit != null) {
       if (existingBucket == null) {
         throw new Error('Background task capacity permit is stale');
@@ -1346,6 +1417,85 @@ export class BackgroundTaskRegistryClass {
     task.cancellationRequestedAt = Date.now();
     task.updatedAt = task.cancellationRequestedAt;
     return { status: 'requested', task };
+  }
+
+  /** Refuses new background tasks; the server is shutting down. Replays still resolve. */
+  closeAdmission(): void {
+    this.admissionClosed = true;
+  }
+
+  isAdmissionClosed(): boolean {
+    return this.admissionClosed;
+  }
+
+  /** Registers a new task's shutdown controls until its result is durable. */
+  trackShutdown(task: BackgroundTask, handle: BackgroundTaskShutdownHandle): void {
+    this.shutdownHandles.set(task, handle);
+    const release = (): void => {
+      if (this.shutdownHandles.get(task) === handle) {
+        this.shutdownHandles.delete(task);
+      }
+    };
+    handle.settled.then(release, release);
+  }
+
+  /**
+   * Settles every tracked task before the process exits. Tasks first get whatever time
+   * is left before `interruptGraceMs` and the flush reserve; tasks still running are then
+   * aborted and get `interruptGraceMs` to settle on their own; the rest have a durable
+   * result written for them. Without this, a restart abandons them and their automatic
+   * deliveries dead-letter once the producer lease expires.
+   */
+  async drainForShutdown(options: {
+    deadlineAt: number;
+    interruptGraceMs: number;
+    flushReserveMs: number;
+    reason: string;
+  }): Promise<BackgroundTaskDrainSummary> {
+    this.closeAdmission();
+    const tracked = this.shutdownHandles.size;
+    if (tracked === 0) {
+      return { tracked: 0, interrupted: 0, flushed: 0, unsettled: 0 };
+    }
+    const flushAt = options.deadlineAt - options.flushReserveMs;
+    const interruptAt = flushAt - options.interruptGraceMs;
+
+    await this.waitForShutdownHandles(interruptAt);
+    let interrupted = 0;
+    for (const [task, handle] of this.shutdownHandles) {
+      if (task.status === 'running') {
+        interrupted++;
+        handle.interrupt(options.reason);
+      }
+    }
+
+    await this.waitForShutdownHandles(flushAt);
+    const remaining = [...this.shutdownHandles.values()];
+    let durable = 0;
+    await waitUntil(
+      Promise.allSettled(
+        remaining.map((handle) =>
+          handle.flush(options.reason).then(() => {
+            durable++;
+          }),
+        ),
+      ),
+      options.deadlineAt,
+    );
+    return {
+      tracked,
+      interrupted,
+      flushed: remaining.length,
+      unsettled: remaining.length - durable,
+    };
+  }
+
+  private waitForShutdownHandles(deadlineAt: number): Promise<void> {
+    const pending = [...this.shutdownHandles.values()].map((handle) => handle.settled);
+    if (pending.length === 0) {
+      return Promise.resolve();
+    }
+    return waitUntil(Promise.all(pending), deadlineAt);
   }
 
   private update(
@@ -1795,6 +1945,57 @@ export class BackgroundTaskRegistryClass {
 export const backgroundTaskRegistry: BackgroundTaskRegistryClass =
   new BackgroundTaskRegistryClass();
 
+export interface BackgroundTaskShutdownOptions {
+  /** `endpoints.agents.backgroundTasks.shutdownInterruptGraceMs`. */
+  interruptGraceMs?: number;
+  /** Shutdown time left for the drain; defaults to the local coordinator's remaining budget.
+   * A clustered worker passes its primary's tighter deadline. */
+  getBudgetMs?: () => number | null;
+  registry?: BackgroundTaskRegistryClass;
+}
+
+/**
+ * Registers the graceful-shutdown steps for background tools: stop admitting new tasks
+ * while the HTTP server drains, then, after generations are finalized, settle every task
+ * whose result is not yet durable.
+ */
+export function registerBackgroundTaskShutdown(options: BackgroundTaskShutdownOptions = {}): void {
+  const registry = options.registry ?? backgroundTaskRegistry;
+  const getBudgetMs = options.getBudgetMs ?? getRemainingShutdownMs;
+  registerShutdownTask('background task admission', () => registry.closeAdmission(), {
+    phase: 'pre-drain',
+    priority: 110,
+  });
+  registerShutdownTask(
+    'background tasks',
+    async () => {
+      const budgetMs = getBudgetMs();
+      if (budgetMs == null) {
+        registry.closeAdmission();
+        return;
+      }
+      const summary = await registry.drainForShutdown({
+        deadlineAt: Date.now() + Math.max(0, budgetMs - BACKGROUND_SHUTDOWN_TEARDOWN_RESERVE_MS),
+        interruptGraceMs:
+          options.interruptGraceMs ?? AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT,
+        flushReserveMs: BACKGROUND_SHUTDOWN_FLUSH_RESERVE_MS,
+        reason: BACKGROUND_TASK_SHUTDOWN_MESSAGE,
+      });
+      if (summary.tracked === 0) {
+        return;
+      }
+      if (summary.unsettled > 0) {
+        logger.warn('[background] Shutdown left background task results unconfirmed', summary);
+        return;
+      }
+      logger.info('[background] Drained background tasks for shutdown', summary);
+    },
+    /** After the generation job manager (100) finalizes interrupted turns, so completion
+     * deliveries anchored to them can resolve; before the subagent task store (90). */
+    { priority: 95 },
+  );
+}
+
 /** Content for the synthetic ToolMessage returned when a call is backgrounded. */
 export function buildBackgroundHandleContent(
   task: Pick<BackgroundTask, 'id' | 'toolName' | 'status'>,
@@ -1830,6 +2031,9 @@ export function buildBackgroundCapacityContent(
     message = `The server-wide background task registry is at capacity (running limit ${MAX_RUNNING_GLOBAL}). Retry later, or run this call in the foreground.`;
   } else if (scope === 'global_retention') {
     message = `The server-wide background task registry is retaining its maximum number of tasks (${MAX_TASKS_GLOBAL}), and pending result processing prevents safe eviction. Retry later, or run this call in the foreground.`;
+  } else if (scope === 'shutting_down') {
+    message =
+      'This server is shutting down and is not starting new background tasks. Run this call in the foreground, or dispatch it again after the server restarts.';
   } else if (scope === 'conversation_retention') {
     message = `This conversation is retaining the maximum number of background tasks (${MAX_TASKS_PER_BUCKET}), and pending result processing prevents safe eviction. Wait for background result processing to finish, or run this call in the foreground.`;
   } else {
@@ -1868,7 +2072,7 @@ interface SerializedBackgroundTask {
   /** Whether the result has reached the conversation. `pending` results still
    * arrive as a new turn unless polled or cancelled first. Absent when the task
    * has no automatic delivery, so only a poll ever surfaces its result. */
-  delivery?: 'pending' | 'delivered' | 'failed';
+  delivery?: BackgroundTaskDelivery;
   note?: string;
   error?: string;
 }
@@ -1969,24 +2173,55 @@ function serializePendingCompletion(
   };
 }
 
+/** One conversation's durable delivery evidence, split from what this process holds. */
+export interface DurableCompletionView {
+  /** Undelivered completions this process does not hold. */
+  pending: PendingBackgroundCompletion[];
+  /** Dead-lettered completions this process does not hold; only a poll recovers them. */
+  dead: PendingBackgroundCompletion[];
+  /** Every undelivered task id, present only when the listing was complete: a local
+   * task absent from it was delivered on this or another replica. */
+  pendingTaskIds?: ReadonlySet<string>;
+  deadTaskIds: ReadonlySet<string>;
+}
+
+/** Reads the durable delivery store, which outlives the process-local registry.
+ * Rejects when the store is unreachable; callers keep their local view then. */
+export async function readDurableCompletions(
+  controls: Pick<PendingBackgroundCompletionControls, 'list'>,
+  input: { userId: string; conversationId: string },
+  localTaskIds: ReadonlySet<string>,
+): Promise<DurableCompletionView> {
+  const durable = await controls.list(input);
+  const remote = (completion: PendingBackgroundCompletion) => !localTaskIds.has(completion.taskId);
+  return {
+    pending: durable.completions.filter(remote),
+    dead: durable.dead.filter(remote),
+    ...(durable.complete && {
+      pendingTaskIds: new Set(durable.completions.map(({ taskId }) => taskId)),
+    }),
+    deadTaskIds: new Set(durable.dead.map(({ taskId }) => taskId)),
+  };
+}
+
 /** A local task whose durable delivery settled elsewhere (an automatic wake-up
  * on any replica) no longer holds a local claim; the complete durable listing is
  * the evidence. An incomplete listing proves nothing, so the local view stands. */
-function reconcileDelivery(
-  task: SerializedBackgroundTask,
-  durablePendingTaskIds: ReadonlySet<string> | undefined,
-  deadTaskIds: ReadonlySet<string>,
-): SerializedBackgroundTask {
-  if (task.delivery !== 'pending' || task.status === 'running') {
-    return task;
+export function resolveTaskDelivery(
+  task: BackgroundTask,
+  durable?: Pick<DurableCompletionView, 'pendingTaskIds' | 'deadTaskIds'>,
+): BackgroundTaskDelivery | undefined {
+  const local = taskDelivery(task).delivery;
+  if (local !== 'pending' || task.status === 'running' || durable == null) {
+    return local;
   }
-  if (deadTaskIds.has(task.background_task_id)) {
-    return { ...task, delivery: 'failed' };
+  if (durable.deadTaskIds.has(task.id)) {
+    return 'failed';
   }
-  if (durablePendingTaskIds == null || durablePendingTaskIds.has(task.background_task_id)) {
-    return task;
+  if (durable.pendingTaskIds == null || durable.pendingTaskIds.has(task.id)) {
+    return local;
   }
-  return { ...task, delivery: 'delivered' };
+  return 'delivered';
 }
 
 /** A completion whose automatic delivery dead-lettered and that this process no
@@ -2766,27 +3001,17 @@ export async function runCheckBackgroundTask(params: {
   const tasks = backgroundTaskRegistry.list(userId, conversationId);
   let subagentTasks: SerializedSubagentTask[] = [];
   const listWarnings: string[] = [];
-  let pendingCompletions: PendingBackgroundCompletion[] = [];
-  /** Undelivered task ids from the durable store, when the listing was complete:
-   * a local task absent from it was delivered on this or another replica. */
-  let durablePendingTaskIds: ReadonlySet<string> | undefined;
-  let deadTaskIds: ReadonlySet<string> = new Set();
-  let deadCompletions: PendingBackgroundCompletion[] = [];
+  let durable: DurableCompletionView | undefined;
   if (params.pendingCompletions != null) {
     try {
-      const localTaskIds = new Set(tasks.map((task) => task.id));
-      const durable = await params.pendingCompletions.list({ userId, conversationId });
-      deadTaskIds = new Set(durable.dead.map(({ taskId }) => taskId));
-      /** A dead letter this process no longer holds is still recoverable by a poll. */
-      deadCompletions = durable.dead.filter((completion) => !localTaskIds.has(completion.taskId));
-      pendingCompletions = durable.completions.filter(
-        (completion) => !localTaskIds.has(completion.taskId),
+      durable = await readDurableCompletions(
+        params.pendingCompletions,
+        { userId, conversationId },
+        new Set(tasks.map((task) => task.id)),
       );
-      if (durable.complete) {
-        durablePendingTaskIds = new Set(durable.completions.map(({ taskId }) => taskId));
-      } else {
+      if (durable.pendingTaskIds == null) {
         listWarnings.push(
-          'More undelivered results exist than could be listed; some not shown may still arrive as new turns.',
+          'The undelivered or failed result list may be incomplete; pending results not shown may still arrive as new turns.',
         );
       }
     } catch (error) {
@@ -2823,15 +3048,13 @@ export async function runCheckBackgroundTask(params: {
     }
   }
   const ordinaryTasks = [
-    ...tasks.map((task) =>
-      reconcileDelivery(
-        serializeTask(task, { includeResult: false }),
-        durablePendingTaskIds,
-        deadTaskIds,
-      ),
-    ),
-    ...pendingCompletions.map(serializePendingCompletion),
-    ...deadCompletions.map(serializeDeadCompletion),
+    ...tasks.map((task) => {
+      const serialized = serializeTask(task, { includeResult: false });
+      const delivery = resolveTaskDelivery(task, durable);
+      return delivery == null ? serialized : { ...serialized, delivery };
+    }),
+    ...(durable?.pending ?? []).map(serializePendingCompletion),
+    ...(durable?.dead ?? []).map(serializeDeadCompletion),
   ];
   /** Pending only with durable evidence: whether a subagent's wake-up exists depends on
    * the policy when it was admitted, not on this request's configuration. */

@@ -292,6 +292,39 @@ describe('durable agent trigger service', () => {
       await service.stop();
     });
 
+    it('keeps background producer writes available after the delivery engine stops for shutdown', async () => {
+      const methods = deliveryMethods({
+        persistAgentBackgroundToolResult: jest.fn(async () => true),
+        renewAgentTriggerDeliveryProducerLease: jest.fn(async () => true),
+        expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 1, held: 0 })),
+      });
+      const service = createAgentTriggerService({ methods });
+      await service.initialize({ address });
+      await service.stop();
+
+      await expect(
+        service.renewProducerLease(
+          'trigger_background',
+          'background-tool-completion',
+          new Date(START.getTime() + 30_000),
+        ),
+      ).resolves.toBe(true);
+      await expect(
+        service.persistBackgroundToolResult({
+          deliveryKey: 'trigger_background',
+          sourceId: 'background-tool-completion',
+          result,
+        }),
+      ).resolves.toBe(true);
+      await flush();
+
+      expect(methods.persistAgentBackgroundToolResult).toHaveBeenCalledTimes(1);
+      expect(methods.expediteAgentTriggerDeliveries).not.toHaveBeenCalled();
+      await expect(service.enqueue(envelope())).rejects.toBeInstanceOf(
+        AgentTriggerServiceUnavailableError,
+      );
+    });
+
     it("expedites a principal's completion deliveries when one of its generations settles", async () => {
       const methods = deliveryMethods({
         expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 2, held: 0 })),

@@ -3224,7 +3224,7 @@ describe('MCPManager', () => {
           /** upstreamTokenProvider intentionally omitted */
         }),
       ).rejects.toMatchObject({
-        message: expect.stringContaining('upstreamTokenProvider not plumbed'),
+        cause: expect.objectContaining({ reason: 'missing_upstream_provider', retryable: false }),
       });
       expect(mockResolveOboToken).not.toHaveBeenCalled();
     });

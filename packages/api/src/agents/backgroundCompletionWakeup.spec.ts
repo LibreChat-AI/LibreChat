@@ -919,6 +919,7 @@ describe('pending background completions', () => {
       dead: [
         {
           taskId: 'task-dead',
+          toolCallId: 'call-1',
           toolName: 'slow_tool',
           dispatchedAt,
           claimedByWakeup: false,
@@ -927,6 +928,7 @@ describe('pending background completions', () => {
       completions: [
         {
           taskId: 'task-1',
+          toolCallId: 'call-1',
           toolName: 'slow_tool',
           dispatchedAt,
           result: settled,

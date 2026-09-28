@@ -923,8 +923,126 @@ describe('agent trigger delivery methods', () => {
         sourceId: background.id,
         limit: 1,
       });
-      expect(page.completions.map((entry) => entry.taskId)).toEqual(['task-first']);
+      expect(page.completions.map((entry) => entry.taskId)).toEqual(['task-second']);
       expect(page.truncated).toBe(true);
+    });
+
+    it('does not let 201 retained dead letters hide a new result or a late delivery failure', async () => {
+      const user = new mongoose.Types.ObjectId();
+      await Delivery.insertMany(
+        Array.from({ length: 201 }, (_, index) => ({
+          deliveryKey: `background-dead-${index}`,
+          fingerprint: `background-dead-${index}`,
+          orderingKey: `background-dead-${index}`,
+          laneSequence: 1,
+          envelope: {
+            event: {
+              source: background,
+              payload: {
+                taskId: `old-dead-${index}`,
+                toolCallId: `call-old-dead-${index}`,
+                toolName: 'slow_task',
+              },
+            },
+            target: { conversationId: 'conversation-1' },
+          },
+          user,
+          status: 'dead',
+          requiredWorkerCapability:
+            AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          attempts: 1,
+          availableAt: START,
+          createdAt: new Date(START.getTime() + index * 1_000),
+          updatedAt: new Date(START.getTime() + index * 1_000),
+          backgroundToolResult: { status: 'completed', output: 'private output', settledAt: START },
+        })),
+      );
+      const waiting = await completion(user, 'new-pending');
+      await methods.persistAgentBackgroundToolResult({
+        deliveryKey: waiting.delivery.deliveryKey,
+        sourceId: background.id,
+        result: { status: 'completed', output: 'private pending result', settledAt: START },
+      });
+      const late = await completion(user, 'late-failure');
+      await methods.persistAgentBackgroundToolResult({
+        deliveryKey: late.delivery.deliveryKey,
+        sourceId: background.id,
+        result: { status: 'completed', output: 'private late result', settledAt: START },
+      });
+      await Delivery.collection.updateOne(
+        { _id: new mongoose.Types.ObjectId(late.delivery.id) },
+        { $set: { createdAt: new Date(START.getTime() - 60_000) } },
+      );
+      await Delivery.updateOne({ _id: late.delivery.id }, { $set: { status: 'dead' } });
+
+      const listed = await methods.listPendingAgentBackgroundToolCompletions({
+        user,
+        conversationId: 'conversation-1',
+        sourceId: background.id,
+      });
+      expect(listed.completions.map(({ taskId }) => taskId)).toEqual(['new-pending']);
+      expect(listed.dead).toHaveLength(200);
+      expect(listed.dead[0].taskId).toBe('late-failure');
+      expect(listed.dead.some(({ taskId }) => taskId === 'old-dead-0')).toBe(false);
+      expect(listed.truncated).toBe(true);
+      expect(JSON.stringify(listed)).not.toContain('private');
+    });
+
+    it('uses a scoped index even when other conversations have waiting deliveries', async () => {
+      const user = new mongoose.Types.ObjectId();
+      await completion(user, 'current');
+      await Delivery.insertMany(
+        Array.from({ length: 80 }, (_, index) => ({
+          ...enqueueInput({
+            user,
+            orderingKey: `unrelated-background-${index}`,
+            envelope: {
+              event: {
+                source: background,
+                payload: {
+                  taskId: `unrelated-${index}`,
+                  toolCallId: `call-unrelated-${index}`,
+                  toolName: 'slow_task',
+                },
+              },
+              target: { conversationId: 'another-conversation' },
+            },
+          }),
+          requiredWorkerCapability:
+            AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          laneSequence: 1,
+          status: 'pending',
+          attempts: 0,
+        })),
+      );
+      const indexes = await Delivery.collection.indexes();
+      const scopeIndex = indexes.find(
+        ({ key }) =>
+          key.user === 1 &&
+          key['envelope.event.source.id'] === 1 &&
+          key['envelope.target.conversationId'] === 1 &&
+          key.requiredWorkerCapability === 1 &&
+          key.status === 1 &&
+          key.updatedAt === -1,
+      );
+      if (scopeIndex == null) throw new Error('Conversation-scoped delivery index is missing');
+      const plan = await Delivery.collection
+        .find({
+          user,
+          'envelope.event.source.type': 'internal',
+          'envelope.event.source.id': background.id,
+          'envelope.target.conversationId': 'conversation-1',
+          requiredWorkerCapability:
+            AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+          status: { $in: ['pending', 'leased', 'capability_pending'] },
+          capabilityStatus: { $ne: 'dead' },
+        })
+        .sort({ updatedAt: -1, _id: -1 })
+        .limit(1)
+        .hint(scopeIndex.key)
+        .explain('executionStats');
+      expect(JSON.stringify(plan.queryPlanner.winningPlan)).toContain(scopeIndex.name);
+      expect(plan.executionStats.totalDocsExamined).toBeLessThanOrEqual(1);
     });
 
     it('omits legacy rows whose results live only on the parent message', async () => {

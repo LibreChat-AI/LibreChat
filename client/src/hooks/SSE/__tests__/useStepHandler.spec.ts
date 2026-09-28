@@ -50,6 +50,7 @@ type TSubmissionForTest = {
   isTemporary: boolean;
   messages: TMessage[];
   isRegenerate?: boolean;
+  compact?: boolean;
   conversation: Partial<TConversation>;
   endpointOption: TEndpointOption;
   initialResponse: TMessage;
@@ -210,6 +211,40 @@ describe('useStepHandler', () => {
       expect(setMessagesCall).toContainEqual(
         expect.objectContaining({ messageId: 'response-msg-1' }),
       );
+    });
+
+    it('keeps an assistant compaction anchor when the response receives its durable ID', () => {
+      const userMessage = createUserMessage();
+      const anchor = createResponseMessage({ messageId: 'anchor-response' });
+      const initialResponse = createResponseMessage({
+        messageId: 'anchor-response_',
+        parentMessageId: anchor.messageId,
+      });
+      const submission = createSubmission({
+        userMessage: { ...anchor, text: '' },
+        messages: [userMessage, anchor],
+        initialResponse,
+        isRegenerate: true,
+        compact: true,
+      });
+      const runStep = createRunStep({ runId: 'summary-response' });
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      act(() => {
+        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP, data: runStep }, submission);
+      });
+
+      const messages = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      expect(messages.map(({ messageId }) => messageId)).toEqual([
+        userMessage.messageId,
+        anchor.messageId,
+        'summary-response',
+      ]);
+      expect(messages[1]).toBe(anchor);
+      expect(messages[2]).toMatchObject({
+        messageId: 'summary-response',
+        parentMessageId: anchor.messageId,
+      });
     });
 
     it('should warn and return early when no responseMessageId', () => {

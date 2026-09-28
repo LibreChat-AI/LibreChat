@@ -55,6 +55,9 @@ jest.mock('~/server/services/Endpoints/assistants', () => require(MOCKS).assista
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () =>
   require(MOCKS).subagentThreadStore(),
 );
+jest.mock('~/server/services/Endpoints/agents/backgroundCompletion', () => ({
+  pendingBackgroundToolCompletions: { list: jest.fn() },
+}));
 
 describe('Convos Routes', () => {
   let app;

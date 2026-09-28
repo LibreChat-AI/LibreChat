@@ -242,6 +242,37 @@ describe('workspace admission feedback', () => {
     },
   );
 
+  test('cancels a stalled credential refresh without opening a workspace admission window', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('Chat stopped', 'AbortError');
+    const fetchImpl = jest.fn();
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const operation = executeWorkspaceTool({
+      baseURL: 'https://code.example.com/v1',
+      authHeaders: async () => {
+        entered();
+        return new Promise<Record<string, string>>(() => {});
+      },
+      request: {
+        protocolVersion: 1,
+        operation: 'edit_file',
+        workspaceId: 'primary',
+        path: 'src/app.ts',
+        edits: [{ oldText: 'a', newText: 'b' }],
+      },
+      signal: controller.signal,
+      maxRequestTimeoutMs: 125_000,
+      fetchImpl,
+    });
+    await started;
+    controller.abort(reason);
+    await expect(operation).rejects.toBe(reason);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test('does not dispatch a retry if credential refresh spends the remaining queue budget', async () => {
     const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
     const authHeaders = jest
@@ -438,6 +469,287 @@ describe('executeWorkspaceTool', () => {
     ).rejects.toMatchObject({ upstreamStatus: 504 });
     expect(timeout).toHaveBeenCalledWith(budget);
     expect(fetchImpl.mock.calls[0][1].body).toBe(JSON.stringify(request));
+    const admissionMs = Number(
+      fetchImpl.mock.calls[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'],
+    );
+    expect(admissionMs).toBeGreaterThan(0);
+    expect(admissionMs).toBeLessThanOrEqual(30_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test.each<[WorkspaceToolRequest, number, number]>([
+    [
+      { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'README.md' },
+      125_000,
+      90_000,
+    ],
+    [
+      { protocolVersion: 1, operation: 'execute_command', workspaceId: 'primary', command: 'pwd' },
+      125_000,
+      85_000,
+    ],
+    [
+      {
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        command: 'pwd',
+        timeoutMs: 90_000,
+      },
+      125_000,
+      25_000,
+    ],
+    [
+      { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'README.md' },
+      60_000,
+      25_000,
+    ],
+    [
+      { protocolVersion: 1, operation: 'execute_command', workspaceId: 'primary', command: 'pwd' },
+      60_000,
+      20_000,
+    ],
+    [
+      {
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        command: 'pwd',
+        timeoutMs: 300_000,
+      },
+      610_000,
+      300_000,
+    ],
+  ])(
+    'advertises only the remaining queue time for %j under a %i ms limit',
+    async (request, maxRequestTimeoutMs, allowanceMs) => {
+      jest.spyOn(Date, 'now').mockReturnValue(1_000);
+      const timeout = jest.spyOn(AbortSignal, 'timeout');
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ code: 'ASSIGNMENT_EXPIRED' }), { status: 504 }),
+        );
+      await expect(
+        executeWorkspaceTool({
+          baseURL: 'https://code.example.com/v1',
+          authHeaders: {},
+          request,
+          maxRequestTimeoutMs,
+          fetchImpl,
+        }),
+      ).rejects.toMatchObject({ upstreamStatus: 504 });
+      expect(timeout).toHaveBeenCalledWith(maxRequestTimeoutMs);
+      expect(fetchImpl.mock.calls[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe(
+        String(allowanceMs),
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test('accepts a result after 31 simulated seconds of admission with an explicit longer budget', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const fetchImpl: CodeBridgeFetch = jest.fn(async (_url, init) => {
+      expect((init?.headers as Record<string, string>)['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe(
+        '90000',
+      );
+      now.mockReturnValue(32_000);
+      expect(init?.signal?.aborted).toBe(false);
+      return Response.json({
+        protocolVersion: 1,
+        operation: 'read_file',
+        workspaceId: 'primary',
+        path: 'README.md',
+        content: 'ready',
+        startLine: 1,
+        endLine: 1,
+        truncated: false,
+      });
+    });
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'read_file',
+          workspaceId: 'primary',
+          path: 'README.md',
+        },
+        maxRequestTimeoutMs: 125_000,
+        fetchImpl,
+      }),
+    ).resolves.toMatchObject({ content: 'ready' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('uses the earlier caller deadline rather than assuming the abort signal reveals it', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('{}', { status: 504 }));
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'read_file',
+          workspaceId: 'primary',
+          path: 'README.md',
+        },
+        maxRequestTimeoutMs: 125_000,
+        deadlineAtMs: 61_000,
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ upstreamStatus: 504 });
+    expect(timeout).toHaveBeenCalledWith(60_000);
+    expect(fetchImpl.mock.calls[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('25000');
+  });
+
+  test('subtracts credential acquisition from the allowance before dispatching', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('{}', { status: 504 }));
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: async () => {
+          now.mockReturnValue(20_000);
+          return {};
+        },
+        request: {
+          protocolVersion: 1,
+          operation: 'read_file',
+          workspaceId: 'primary',
+          path: 'README.md',
+        },
+        maxRequestTimeoutMs: 125_000,
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ upstreamStatus: 504 });
+    expect(fetchImpl.mock.calls[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('71000');
+  });
+
+  test.each<[WorkspaceToolRequest, number]>([
+    [
+      {
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        command: 'pwd',
+        timeoutMs: 300_000,
+      },
+      125_000,
+    ],
+    [
+      {
+        protocolVersion: 1,
+        operation: 'execute_command',
+        workspaceId: 'primary',
+        command: 'pwd',
+        timeoutMs: 90_000,
+      },
+      60_000,
+    ],
+  ])(
+    'does not dispatch when %j cannot fit within the %i ms ingress limit',
+    async (request, maxRequestTimeoutMs) => {
+      const fetchImpl = jest.fn();
+      await expect(
+        executeWorkspaceTool({
+          baseURL: 'https://code.example.com/v1',
+          authHeaders: {},
+          request,
+          maxRequestTimeoutMs,
+          fetchImpl,
+        }),
+      ).rejects.toMatchObject({
+        reason: 'insufficient_time',
+        message: expect.stringContaining('not started'),
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test('keeps the retry horizon separate from one longer admission attempt', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ code: 'WORKSPACE_QUEUE_TIMEOUT' }), { status: 503 }),
+      );
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'read_file',
+          workspaceId: 'primary',
+          path: 'README.md',
+        },
+        maxRequestTimeoutMs: 125_000,
+        maxQueueWaitMs: 0,
+        fetchImpl,
+      }),
+    ).rejects.toThrow('The operation was not started');
+    expect(fetchImpl.mock.calls[0][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('90000');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps Retry-After capped at 30 seconds even when one admission may wait longer', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ code: 'WORKSPACE_QUEUE_TIMEOUT' }), {
+            status: 503,
+            headers: { 'Retry-After': '300' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'read_file',
+          workspaceId: 'primary',
+          path: 'README.md',
+        },
+        maxRequestTimeoutMs: 125_000,
+        fetchImpl,
+      }).catch((error: WorkspaceToolHttpError) => error);
+      await jest.advanceTimersByTimeAsync(29_999);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
+      expect(fetchImpl.mock.calls[1][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe(
+        '60000',
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('never retries a post-dispatch timeout with an unknown mutation outcome', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockRejectedValue(new DOMException('response deadline', 'TimeoutError'));
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request: {
+          protocolVersion: 1,
+          operation: 'execute_command',
+          workspaceId: 'primary',
+          command: 'touch marker',
+        },
+        maxRequestTimeoutMs: 125_000,
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ reason: 'timeout' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

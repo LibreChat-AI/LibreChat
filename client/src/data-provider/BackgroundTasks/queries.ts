@@ -9,6 +9,8 @@ import type {
 import type { UseQueryOptions } from '@tanstack/react-query';
 
 const RUNNING_REFRESH_MS = 2_000;
+/** Undelivered results wait on the agent's turn, so they change slowly. */
+const AWAITING_DELIVERY_REFRESH_MS = 10_000;
 const SUBMITTING_REFRESH_MS = 5_000;
 const POST_SUBMIT_DISCOVERY_MS = 10_000;
 const QUIET_REFRESH_MS = 60_000;
@@ -24,7 +26,11 @@ export const backgroundTasksRefetchInterval = (
     return RUNNING_REFRESH_MS;
   }
   if (now < discoveryDeadline) return RUNNING_REFRESH_MS;
-  return isSubmitting ? SUBMITTING_REFRESH_MS : QUIET_REFRESH_MS;
+  if (isSubmitting) return SUBMITTING_REFRESH_MS;
+  if (index?.tasks.some((task) => task.delivery === 'pending') === true) {
+    return AWAITING_DELIVERY_REFRESH_MS;
+  }
+  return QUIET_REFRESH_MS;
 };
 
 export const useBackgroundTasksQuery = (

@@ -309,6 +309,80 @@ describe('live fold parity with the cards it hides', () => {
     expect(screen.queryByTestId('activity-phase-card')).toBeNull();
   });
 
+  it('describes repeated background-task polls as checks in the live fold', () => {
+    jest.useFakeTimers();
+    const poll = (id: string, output: string) =>
+      toPart(
+        {
+          name: Constants.CHECK_BACKGROUND_TASK,
+          args: { background_task_id: 'same-task' },
+          output,
+        },
+        id,
+      );
+    const completed = JSON.stringify({
+      background_task_id: 'same-task',
+      tool: Tools.bash_tool,
+      status: 'running',
+    });
+    const view = mount(
+      [poll('first', completed), poll('second', completed), poll('third', completed)],
+      undefined,
+      true,
+    );
+    const header = within(screen.getByTestId('activity-phase-card')).getByRole('button');
+
+    expect(header).toHaveAccessibleName('Checked background tasks · 3 checks');
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('· 3 checks');
+    expect(header).not.toHaveTextContent('check_background_task');
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot>
+          <ContentParts
+            content={[
+              poll('first', completed),
+              poll('second', completed),
+              poll('third', completed),
+              poll('fourth', ''),
+            ]}
+            messageId="m1"
+            conversationId="c1"
+            isCreatedByUser={false}
+            isLast
+            isLatestMessage
+            isSubmitting
+            showThinking={false}
+          />
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Checking background tasks · 4 checks');
+  });
+
+  it.each([
+    ['error', 'Failed: Background tasks · 1 failed'],
+    ['cancelled', 'Cancelled · 1 cancelled'],
+  ])('keeps the %s verdict of a polled background task in the live fold', (status, label) => {
+    const output = JSON.stringify({
+      background_task_id: 'bg1',
+      tool: Tools.bash_tool,
+      status,
+    });
+    mount(
+      [toPart({ name: Constants.CHECK_BACKGROUND_TASK, output, runStepStatus: 'completed' })],
+      undefined,
+      true,
+    );
+    expect(
+      within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
+    ).toHaveAccessibleName(label);
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+  });
+
   it('shows a multiplier for consecutive uses of the same tool and resets on a different tool', () => {
     jest.useFakeTimers();
     const first = toPart({ name: 'create_file', output: 'created' }, 'first');
@@ -535,8 +609,9 @@ describe('live fold parity with the cards it hides', () => {
     mount([toPart({ name: 'lookup', output: 'rows' }), think], undefined, true);
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(button).toHaveTextContent('接下来检查顺序约定');
-    expect(button).not.toHaveTextContent('两个引用');
+    /** Only the finished sentence; the one still being written stays out. */
+    expect(button).toHaveTextContent('两个引用共享一个提交。');
+    expect(button).not.toHaveTextContent('接下来');
   });
 
   it('keeps a CJK sentence that ends exactly at the tail instead of reverting to the call', () => {
@@ -740,8 +815,7 @@ describe('live fold parity with the cards it hides', () => {
         true,
       );
       fireEvent.click(screen.getByRole('button', { name: 'Reviewed the work' }));
-      const group = screen.getByTestId('tool-call-group-panel')
-        .previousElementSibling as HTMLElement;
+      const group = screen.getByRole('button', { name: /Ran 2 actions.*1 failed/ });
       expect(group).toHaveAccessibleName(/1 failed/);
       expect(group.querySelector('.lucide-triangle-alert')).not.toBeNull();
     });
@@ -909,79 +983,47 @@ describe('live activity hardening transitions', () => {
     </QueryClientProvider>
   );
 
-  it.each([160, 640])('streams each short sentence freely until it fills a %ipx row', (width) => {
+  it('shows a thought only as finished sentences, each held for a second', () => {
     jest.useFakeTimers();
-    jest.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(width);
-    jest.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (
-      this: HTMLElement,
-    ) {
-      return (this.textContent?.length ?? 0) * 8;
-    });
     const content = (think: string): TMessageContentParts[] => [
       { type: ContentTypes.THINK, think },
     ];
     const view = render(frame(content('Let me')));
     const header = screen.getByRole('button');
-    view.rerender(frame(content('Let me check')));
-    expect(header).toHaveAccessibleName('Let me check');
+    /** Nothing finished yet: the generic line, not a fragment. */
+    expect(header).toHaveAccessibleName('Thinking...');
+    view.rerender(frame(content('Let me check the evidence')));
+    act(() => jest.advanceTimersByTime(1000));
+    expect(header).toHaveAccessibleName('Thinking...');
 
-    const full = 'Checking the available evidence '.repeat(Math.ceil(width / 240)).trim();
-    view.rerender(frame(content(full)));
-    expect(header).toHaveAccessibleName(full);
-    view.rerender(frame(content(full + ' carefully')));
-    expect(header).toHaveAccessibleName(full);
-    act(() => jest.advanceTimersByTime(500));
-    expect(header).toHaveAccessibleName(full + ' carefully');
+    /** A sentence finishing a second after the last paint shows at once. */
+    view.rerender(frame(content('Let me check the evidence.')));
+    expect(header).toHaveAccessibleName('Let me check the evidence.');
 
-    view.rerender(frame(content(full + ' carefully. Now I')));
-    act(() => jest.advanceTimersByTime(500));
-    expect(header).toHaveAccessibleName('Now I');
-    view.rerender(frame(content(full + ' carefully. Now I can check')));
-    expect(header).toHaveAccessibleName('Now I can check');
+    /** The next sentence is written behind the finished one. */
+    view.rerender(frame(content('Let me check the evidence. Now I can')));
+    act(() => jest.advanceTimersByTime(200));
+    expect(header).toHaveAccessibleName('Let me check the evidence.');
+
+    /** Finished 200ms after the last paint: the line holds its sentence for
+     *  the rest of the second before the next one takes it. */
+    view.rerender(frame(content('Let me check the evidence. Now I can decide.')));
+    act(() => jest.advanceTimersByTime(200));
+    expect(header).toHaveAccessibleName('Let me check the evidence.');
+    act(() => jest.advanceTimersByTime(600));
+    expect(header).toHaveAccessibleName('Now I can decide.');
     expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
-    jest.restoreAllMocks();
   });
 
-  it('releases a queued reasoning preview when resizing gives the line more room', () => {
+  it('keeps decimals and versions inside one sentence', () => {
     jest.useFakeTimers();
-    let width = 160;
-    const callbacks = new Set<ResizeObserverCallback>();
-    const disconnect = jest.fn();
-    jest.spyOn(global, 'ResizeObserver').mockImplementation((callback) => {
-      callbacks.add(callback);
-      return {
-        observe: jest.fn(),
-        unobserve: jest.fn(),
-        disconnect: () => {
-          callbacks.delete(callback);
-          disconnect();
-        },
-      };
-    });
-    jest.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(() => width);
-    jest.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (
-      this: HTMLElement,
-    ) {
-      return (this.textContent?.length ?? 0) * 8;
-    });
     const content = (think: string): TMessageContentParts[] => [
       { type: ContentTypes.THINK, think },
     ];
-    const initial = 'Checking the available evidence';
-    const view = render(frame(content(initial)));
-    view.rerender(frame(content(initial + ' carefully')));
-    expect(screen.getByRole('button')).toHaveAccessibleName(initial);
-
-    width = 640;
-    act(() => {
-      for (const callback of callbacks) {
-        callback([], { observe: () => {}, unobserve: () => {}, disconnect: () => {} });
-      }
-    });
-    expect(screen.getByRole('button')).toHaveAccessibleName(initial + ' carefully');
-    view.unmount();
-    expect(disconnect).toHaveBeenCalled();
-    jest.restoreAllMocks();
+    render(frame(content('The gain was 3.5 points on v2.1 today. Next up')));
+    expect(screen.getByRole('button')).toHaveAccessibleName(
+      'The gain was 3.5 points on v2.1 today.',
+    );
   });
 
   function SandboxEvent() {
@@ -1187,7 +1229,9 @@ describe('live activity hardening transitions', () => {
         });
       }
       expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
-      expect(screen.getByRole('button')).toHaveAccessibleName('Next sentence');
+      /** The finished sentence is the long run itself, clamped to one line;
+       *  the sentence after it is still being written. */
+      expect(screen.getByRole('button')).toHaveAccessibleName(`${'x'.repeat(255)}…`);
     },
   );
 
@@ -1244,7 +1288,8 @@ describe('live activity hardening transitions', () => {
         cancelled: /Cancelled.*1 cancelled/,
         completed: 'Finished in background',
       }[status];
-      expect(screen.getByRole('button')).toHaveAccessibleName(expected);
+      /** The header is the first button; a failure adds the pill after it. */
+      expect(screen.getAllByRole('button')[0]).toHaveAccessibleName(expected);
     },
   );
 
@@ -1268,7 +1313,7 @@ describe('live activity hardening transitions', () => {
         ...calls.slice(1),
       ]),
     );
-    expect(screen.getByRole('button')).toHaveAccessibleName(/Looking up item 1023.*1 failed/);
+    expect(screen.getAllByRole('button')[0]).toHaveAccessibleName(/Looking up item 1023.*1 failed/);
     expect(screen.getByTestId('activity-phase-announcer')).toHaveTextContent('1 failed');
   });
 

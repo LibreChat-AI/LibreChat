@@ -426,6 +426,8 @@ export type TDeleteSkillFileResponse = {
 
 /** Response from GET `/api/skills/:id/files/:relativePath` (JSON mode). */
 export type TSkillFileContentResponse = {
+  /** Opaque storage revision for conditional sub-file replacement. Absent on older servers. */
+  fileId?: string;
   content?: string;
   mimeType: string;
   isBinary: boolean;

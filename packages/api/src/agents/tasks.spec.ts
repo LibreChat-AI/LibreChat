@@ -1,4 +1,5 @@
 import type { Response } from 'express';
+import type { PendingBackgroundCompletion } from './backgroundCompletion';
 import type { ServerRequest } from '~/types';
 import {
   createBackgroundTaskCancelHandler,
@@ -8,6 +9,12 @@ import {
 import { BackgroundTaskRegistryClass } from './background';
 
 const conversationId = 'convo-1';
+
+type PendingList = (input: { userId: string; conversationId: string }) => Promise<{
+  completions: PendingBackgroundCompletion[];
+  dead: PendingBackgroundCompletion[];
+  complete: boolean;
+}>;
 
 const response = () => {
   const res = { status: jest.fn(), json: jest.fn() };
@@ -73,7 +80,7 @@ describe('background task routes', () => {
     expect(failed.status).toHaveBeenCalledWith(503);
     expect(next).toHaveBeenCalledTimes(1);
   });
-  it('lists only the caller’s tasks without results', () => {
+  it('lists only the caller’s tasks without results', async () => {
     const registry = new BackgroundTaskRegistryClass();
     const running = createTask(registry, 'call-1');
     const done = createTask(registry, 'call-2');
@@ -81,7 +88,7 @@ describe('background task routes', () => {
     const handler = createBackgroundTaskIndexHandler({ registry });
 
     const res = response();
-    handler(request(), res);
+    await handler(request(), res);
     const body = res.json.mock.calls[0][0];
     expect(res.status).toHaveBeenCalledWith(200);
     expect(body.cancellable).toBe(true);
@@ -106,13 +113,130 @@ describe('background task routes', () => {
     registry.markCompletionPersistenceFinished('user-1', conversationId, done.id);
     later.mockRestore();
     const afterPersistence = response();
-    handler(request(), afterPersistence);
+    await handler(request(), afterPersistence);
     expect(afterPersistence.json.mock.calls[0][0].tasks[1].settledAt).toBe(body.tasks[1].settledAt);
     expect(JSON.stringify(body)).not.toContain('secret output');
 
     const other = response();
-    handler(request({ userId: 'user-2', cancellation: false }), other);
-    expect(other.json).toHaveBeenCalledWith({ conversationId, tasks: [], cancellable: false });
+    await handler(request({ userId: 'user-2', cancellation: false }), other);
+    expect(other.json).toHaveBeenCalledWith({
+      conversationId,
+      tasks: [],
+      complete: false,
+      cancellable: false,
+    });
+  });
+
+  describe('result delivery', () => {
+    const completion = (
+      taskId: string,
+      overrides: Partial<PendingBackgroundCompletion> = {},
+    ): PendingBackgroundCompletion => ({
+      taskId,
+      toolCallId: `${taskId}-call`,
+      toolName: 'bash_tool',
+      dispatchedAt: new Date('2026-09-25T14:52:02.000Z'),
+      result: { status: 'completed', settledAt: new Date('2026-09-25T14:52:09.000Z') },
+      claimedByWakeup: false,
+      ...overrides,
+    });
+
+    const finishedWithWakeup = (registry: BackgroundTaskRegistryClass, toolCallId: string) => {
+      const task = createTask(registry, toolCallId);
+      registry.markCompletionWakeup('user-1', conversationId, task.id);
+      registry.complete('user-1', conversationId, task.id, { content: 'ok' });
+      return task;
+    };
+
+    const list = async (
+      registry: BackgroundTaskRegistryClass,
+      durable: Awaited<ReturnType<PendingList>>,
+    ) => {
+      const pending = { list: jest.fn<ReturnType<PendingList>, Parameters<PendingList>>() };
+      pending.list.mockResolvedValue(durable);
+      const res = response();
+      await createBackgroundTaskIndexHandler({ registry, pending })(request(), res);
+      expect(pending.list).toHaveBeenCalledWith({ userId: 'user-1', conversationId });
+      expect(res.json.mock.calls[0][0].complete).toBe(durable.complete);
+      return res.json.mock.calls[0][0].tasks as Array<Record<string, unknown>>;
+    };
+
+    it('marks a finished result pending until the agent receives it', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const task = finishedWithWakeup(registry, 'call-1');
+      const tasks = await list(registry, {
+        completions: [completion(task.id)],
+        dead: [],
+        complete: true,
+      });
+      expect(tasks).toEqual([
+        expect.objectContaining({ taskId: task.id, status: 'completed', delivery: 'pending' }),
+      ]);
+    });
+
+    it('reports delivered once a wake-up on any replica took the result', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const task = finishedWithWakeup(registry, 'call-1');
+      const tasks = await list(registry, { completions: [], dead: [], complete: true });
+      expect(tasks[0]).toEqual(expect.objectContaining({ taskId: task.id, delivery: 'delivered' }));
+    });
+
+    it('keeps the local view when the durable listing was truncated', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const task = finishedWithWakeup(registry, 'call-1');
+      const tasks = await list(registry, { completions: [], dead: [], complete: false });
+      expect(tasks[0]).toEqual(expect.objectContaining({ taskId: task.id, delivery: 'pending' }));
+    });
+
+    it('lists finished results this process does not hold, but not remote running work', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const tasks = await list(registry, {
+        completions: [
+          completion('remote-finished'),
+          completion('remote-running', { result: undefined }),
+        ],
+        dead: [completion('remote-dead', { result: { status: 'error', settledAt: new Date() } })],
+        complete: true,
+      });
+      expect(tasks).toEqual([
+        {
+          taskId: 'remote-finished',
+          toolName: 'bash_tool',
+          toolCallId: 'remote-finished-call',
+          status: 'completed',
+          cancellationRequested: false,
+          startedAt: '2026-09-25T14:52:02.000Z',
+          settledAt: '2026-09-25T14:52:09.000Z',
+          delivery: 'pending',
+        },
+        expect.objectContaining({ taskId: 'remote-dead', status: 'error', delivery: 'failed' }),
+      ]);
+    });
+
+    it('marks a local result whose delivery dead-lettered as failed', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const task = finishedWithWakeup(registry, 'call-1');
+      const tasks = await list(registry, {
+        completions: [],
+        dead: [completion(task.id)],
+        complete: true,
+      });
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]).toEqual(expect.objectContaining({ taskId: task.id, delivery: 'failed' }));
+    });
+
+    it('still lists local tasks when the durable store is unreachable', async () => {
+      const registry = new BackgroundTaskRegistryClass();
+      const task = finishedWithWakeup(registry, 'call-1');
+      const pending = { list: jest.fn().mockRejectedValue(new Error('mongo down')) };
+      const res = response();
+      await createBackgroundTaskIndexHandler({ registry, pending })(request(), res);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json.mock.calls[0][0]).toMatchObject({
+        complete: false,
+        tasks: [expect.objectContaining({ taskId: task.id, delivery: 'pending' })],
+      });
+    });
   });
 
   it('cancels every running task when no ids are given', () => {

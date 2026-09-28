@@ -261,4 +261,139 @@ describe('AnimatedText', () => {
     );
     expect(animated).toEqual(['appended', 'tail']);
   });
+
+  it('collapses the settled prefix into one text node and only renders the tail per word', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const base = Array.from({ length: 40 }, (_, i) => `w${i}`).join(' ');
+    const { container, rerender } = render(<AnimatedText text={base} />);
+
+    setTime(settle);
+    rerender(<AnimatedText text={`${base} next`} />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text={`${base} next one`} />);
+
+    const [first, ...rest] = Array.from(container.childNodes);
+    expect(first.nodeType).toBe(Node.TEXT_NODE);
+    expect(first.textContent).toBe(`${base} `);
+    expect(rest.length).toBeLessThanOrEqual(2);
+    const animated = Array.from(container.querySelectorAll('span[data-lc-fade]')).map((span) =>
+      span.textContent?.trim(),
+    );
+    expect(animated).toEqual(['one']);
+    expect(container.textContent).toBe(`${base} next one`);
+  });
+
+  it('keeps the last word out of the settled prefix so it can keep growing', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const { container, rerender } = render(<AnimatedText text="alpha beta" />);
+    setTime(settle);
+    rerender(<AnimatedText text="alpha beta" />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text="alpha betamax" />);
+
+    expect(container.firstChild?.textContent).toBe('alpha ');
+    expect(container.childNodes).toHaveLength(2);
+    expect(container.textContent).toBe('alpha betamax');
+  });
+
+  it.each([
+    ['a spaceless CJK run', '我们需要先分析这个问题然后给出答案'.repeat(8), '首先考虑'],
+    ['an unsegmented run without whitespace', 'x'.repeat(200), 'yyyy'],
+    ['spaced words', 'word '.repeat(60), 'more '],
+  ])('only classifies a bounded tail per render for %s', (_label, base, appended) => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const { container, rerender } = render(<AnimatedText text={base} />);
+    setTime(settle);
+    rerender(<AnimatedText text={`${base}${appended}`} />);
+    setTime(settle * 2);
+
+    const execSpy = jest.spyOn(RegExp.prototype, 'exec');
+    rerender(<AnimatedText text={`${base}${appended}${appended}`} />);
+    const classified = execSpy.mock.calls.reduce(
+      (longest, [input], index) =>
+        execSpy.mock.contexts[index].source === '\\S+\\s*'
+          ? Math.max(longest, input.length)
+          : longest,
+      0,
+    );
+    execSpy.mockRestore();
+
+    expect(classified).toBeGreaterThan(0);
+    expect(classified).toBeLessThanOrEqual(64 + appended.length * 2);
+    expect(container.textContent).toBe(`${base}${appended}${appended}`);
+  });
+
+  it.each([
+    ['ZWJ families and combining marks', ['\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', 'e\u0301']],
+    ['skin-tone modifiers', ['\u{1F44D}\u{1F3FD}', '\u{1F44B}\u{1F3FF}']],
+    ['regional-indicator flags', ['\u{1F1FA}\u{1F1F8}', '\u{1F1EF}\u{1F1F5}']],
+  ])('never cuts the settled prefix inside a grapheme cluster: %s', (_label, clusters) => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    let text = clusters.join('').repeat(40);
+    const { container, rerender } = render(<AnimatedText text={text} />);
+    for (let step = 1; step <= 12; step++) {
+      setTime(settle * step);
+      text += step % 3 === 0 ? 'x' : clusters[step % clusters.length];
+      rerender(<AnimatedText text={text} />);
+      const first = container.firstChild?.textContent ?? '';
+      expect(first.length).toBeGreaterThan(0);
+      const units = Array.from(
+        new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+      );
+      expect(units.some((unit) => unit.index === first.length)).toBe(true);
+    }
+    expect(container.textContent).toBe(text);
+  });
+
+  it('does not cut inside a spaceless run when Intl.Segmenter is unavailable', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const segmenter = Intl.Segmenter;
+    const flags = '\u{1F1FA}\u{1F1F8}\u{1F1EF}\u{1F1F5}';
+    try {
+      Object.defineProperty(Intl, 'Segmenter', { value: undefined, configurable: true });
+      let Isolated: typeof AnimatedText = AnimatedText;
+      jest.isolateModules(() => {
+        jest.doMock('react', () => React);
+        Isolated = jest.requireActual<typeof import('../animate')>('../animate').AnimatedText;
+      });
+      let text = `a ${flags.repeat(20)}`;
+      const { container, rerender } = render(<Isolated text={text} />);
+      for (let step = 1; step <= 6; step++) {
+        setTime(settle * step);
+        text += step % 2 === 0 ? 'x' : flags;
+        rerender(<Isolated text={text} />);
+        const settledLength = container.firstChild?.textContent?.length ?? 0;
+        expect(settledLength).toBeLessThanOrEqual(2);
+      }
+      expect(container.textContent).toBe(text);
+    } finally {
+      Object.defineProperty(Intl, 'Segmenter', { value: segmenter, configurable: true });
+    }
+  });
+
+  it('re-classifies from the start when the text no longer extends the settled prefix', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const { container, rerender } = render(<AnimatedText text="first draft here" />);
+    setTime(settle);
+    rerender(<AnimatedText text="first draft here now" />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text="replaced text" />);
+
+    expect(container.textContent).toBe('replaced text');
+  });
+
+  it('renders the current characters when a rewrite keeps the probed prefix regions', () => {
+    const settle = FADE_DURATION_MS + FADE_STAGGER_MAX_MS + 1;
+    const head = 'h'.repeat(40);
+    const edge = 'e'.repeat(40);
+    const original = `${head} ${'a'.repeat(30)} ${edge} tail`;
+    const rewritten = `${head} ${'b'.repeat(30)} ${edge} tail more`;
+    const { container, rerender } = render(<AnimatedText text={original} />);
+    setTime(settle);
+    rerender(<AnimatedText text={`${original} next`} />);
+    setTime(settle * 2);
+    rerender(<AnimatedText text={rewritten} />);
+
+    expect(container.textContent).toBe(rewritten);
+  });
 });

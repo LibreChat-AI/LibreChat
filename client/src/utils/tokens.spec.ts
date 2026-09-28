@@ -1016,14 +1016,19 @@ describe('per-message usage index (branch + total)', () => {
         'a1',
         {
           contextBudget: 1000,
-          breakdown: { maxContextTokens: 1000, instructionTokens: 100, messageTokens: 60 },
+          breakdown: {
+            maxContextTokens: 1000,
+            instructionTokens: 100,
+            summaryTokens: 25,
+            messageTokens: 60,
+          },
         },
       ],
       /** Nothing to read at all — skipped rather than counted as a full window. */
       ['a2', { contextBudget: 1000, breakdown: { maxContextTokens: 1000 } }],
     ]);
 
-    expect(collectAnchorSeries(CONVO, 'a2', anchors)).toEqual([{ used: 160, basis: 'breakdown' }]);
+    expect(collectAnchorSeries(CONVO, 'a2', anchors)).toEqual([{ used: 185, basis: 'breakdown' }]);
   });
 
   it('latestExchangeTokens sums the tail response and its user turn', () => {

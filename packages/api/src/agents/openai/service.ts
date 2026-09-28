@@ -570,9 +570,12 @@ export function buildNonStreamingResponse(
   reasoning: string,
   toolCalls: Map<number, ToolCall>,
   usage: CompletionUsage,
+  /** True when the map contains only accepted client-owned calls, not legacy run-step history. */
+  acceptedToolCallsOnly = false,
 ): ChatCompletionResponse {
   const toolCallsArray = Array.from(toolCalls.values());
-  const finishReason = toolCallsArray.length > 0 && !text ? 'tool_calls' : 'stop';
+  const finishReason =
+    toolCallsArray.length > 0 && (acceptedToolCallsOnly || !text) ? 'tool_calls' : 'stop';
 
   return {
     id: context.requestId,
@@ -920,7 +923,7 @@ export async function createAgentChatCompletion(
 
     // Finalize response
     if (isStreaming && handlerConfig) {
-      sendFinalChunk(handlerConfig);
+      sendFinalChunk(handlerConfig, 'stop', undefined, true);
       res.end();
     } else if (aggregator) {
       aggregator.finishToolCalls?.();
@@ -939,6 +942,7 @@ export async function createAgentChatCompletion(
         aggregator.getReasoning(),
         aggregator.toolCalls,
         usage,
+        true,
       );
       res.json(response);
     }

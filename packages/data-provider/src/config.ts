@@ -25,6 +25,7 @@ import {
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
+export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
 import {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
@@ -1204,6 +1205,11 @@ export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS = 5 * 60_000;
  * initial admission wait or an already-admitted operation's execution budget.
  */
 export const CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS = 5 * 60_000;
+/** Code API's per-request admission ceiling, independent of the retry horizon. */
+export const CODE_ENVIRONMENT_ADMISSION_MAX_MS = 5 * 60_000;
+/** Maximum opt-in HTTP budget: five minutes of admission and execution plus ten seconds for settlement and delivery. */
+export const CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS =
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS + CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS + 10_000;
 
 /**
  * Typed user-tunable surface for one attached code environment. Omitted fields
@@ -1238,6 +1244,17 @@ export const codeEnvironmentUserConfigSchema = z
           .int()
           .min(0)
           .max(CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS)
+          .optional(),
+        /** Total HTTP budget for one workspace tool call, including retries,
+         * execution, settlement, and delivery. Only set this after verifying
+         * the shortest timeout on the actual Code API path and updating Code API
+         * to honor per-request queue allowances. Omission keeps the 30-second
+         * per-attempt admission budget. */
+        maxRequestTimeoutMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS)
           .optional(),
       })
       .strict()
@@ -1575,6 +1592,15 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Cooperative cancellation for process-local ordinary tools. Off
            * by default so existing deployments opt into the new control. */
           ordinaryToolCancellation: z.boolean().optional().default(false),
+          /** During graceful shutdown, how long an interrupted background tool gets to
+           * settle on its own before its result is recorded as interrupted. */
+          shutdownInterruptGraceMs: z
+            .number()
+            .int()
+            .min(0)
+            .max(60_000)
+            .optional()
+            .default(AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT),
         })
         .optional(),
       skills: z
@@ -3903,6 +3929,14 @@ export enum ErrorTypes {
    * Provider throttled or refused the request for exceeding a rate/spend allowance
    */
   MODEL_RATE_LIMIT = 'model_rate_limit',
+  /**
+   * Provider accepted the request, then closed the connection before the response finished
+   */
+  MODEL_STREAM_CLOSED = 'model_stream_closed',
+  /**
+   * Provider accepted the request, then sent nothing for longer than the model response timeout
+   */
+  MODEL_STREAM_STALLED = 'model_stream_stalled',
   /**
    * An agent model provider failed and the run could not recover.
    */

@@ -76,6 +76,9 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('../Parts', () => ({
+  StreamingThoughtPeek: ({ text }: { text: string }) => (
+    <div data-testid="streaming-thought-peek">{text}</div>
+  ),
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div
       data-testid="attachment-group"
@@ -1261,14 +1264,19 @@ describe('ContentParts — live activity fold', () => {
     expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
     expect(screen.queryByTestId('reasoning')).toBeNull();
 
+    /** The next sentence is not shown while it is still being written. */
     rerender(frame('Both refs share a commit. That leaves the ordering'));
     act(() => {
-      jest.advanceTimersByTime(500);
+      jest.advanceTimersByTime(1000);
     });
-    expect(liveHeader()).toHaveTextContent('That leaves the ordering');
-    /** The previous sentence is the `aria-hidden` line sliding out, which is
-     *  the tick itself; the row's current line is the new sentence alone. */
-    expect(within(liveHeader()).getByTitle('That leaves the ordering')).toBeInTheDocument();
+    expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
+    expect(liveHeader()).not.toHaveTextContent('That leaves the ordering');
+    rerender(frame('Both refs share a commit. That leaves the ordering.'));
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(liveHeader()).toHaveTextContent('That leaves the ordering.');
+    expect(within(liveHeader()).getByTitle('That leaves the ordering.')).toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 

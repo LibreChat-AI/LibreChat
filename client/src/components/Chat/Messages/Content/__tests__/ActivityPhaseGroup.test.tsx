@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import ActivityPhaseGroup from '../ActivityPhaseGroup';
+import { useFailedReveal } from '../reveal';
 
 const mockUseSmoothStreaming = jest.fn(() => true);
 const mockScheduleLayoutReconcile = jest.fn((_target: HTMLElement | null) => jest.fn());
@@ -10,6 +11,11 @@ const mockScheduleLayoutReconcile = jest.fn((_target: HTMLElement | null) => jes
 jest.mock('~/hooks/Messages/useSmoothStreaming', () => ({
   __esModule: true,
   default: () => mockUseSmoothStreaming(),
+}));
+
+jest.mock('~/hooks/MCP', () => ({
+  useMCPIconMap: () => new Map(),
+  useMCPServerNames: () => [],
 }));
 
 jest.mock('~/hooks', () => {
@@ -405,5 +411,310 @@ describe('ActivityPhaseGroup', () => {
     expect(image).toHaveAttribute('href', 'https://example.com/page');
     /** Outside the fold: collapsing the card must not take the media with it. */
     expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(image);
+  });
+});
+
+describe('ActivityPhaseGroup failure fast path', () => {
+  const toPart = (call: Record<string, unknown>, id: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, args: '{}', type: 'tool_call', progress: 1, ...call },
+    }) as unknown as TMessageContentParts;
+  const okCall = toPart({ name: 'lookup', output: 'rows' }, 'ok');
+  const failedCall = toPart(
+    { name: 'fetch_page', output: 'Error: tool call failed: HTTP 429\nretry after 60' },
+    'f1',
+  );
+  const RevealProbe = ({ onReveal }: { onReveal: () => void }) => {
+    useFailedReveal(true, onReveal);
+    return <div data-testid="phase-content" />;
+  };
+
+  test('peeks the first failed call under a collapsed card and reaches it in one click', () => {
+    const onReveal = jest.fn();
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[okCall, failedCall]}>
+        <RevealProbe onReveal={onReveal} />
+      </ActivityPhaseGroup>,
+    );
+    const peek = screen.getByTestId('activity-phase-failed-peek');
+    expect(peek).toHaveTextContent('HTTP 429');
+    expect(peek).toHaveTextContent('com_ui_show_error');
+    expect(screen.queryByTestId('phase-content')).not.toBeInTheDocument();
+
+    fireEvent.click(peek);
+
+    expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByTestId('activity-phase-failed-peek')).not.toBeInTheDocument();
+    expect(onReveal).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the error action and remaining count outside the shrinking peek label', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[failedCall, failedCall]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+
+    const peek = screen.getByTestId('activity-phase-failed-peek');
+    const label = screen.getByText('com_ui_failed_subject');
+    const box = label.parentElement;
+    expect(box).toHaveClass('min-w-0', 'flex');
+    expect(label).toHaveClass('max-w-full', 'shrink-0', 'truncate');
+    expect(box).toContainElement(screen.getByText('HTTP 429'));
+    expect(screen.getByText('com_ui_plus_n_more')).toHaveClass('shrink-0');
+    expect(screen.getByText('com_ui_show_error')).toHaveClass('shrink-0');
+    expect(peek.firstElementChild).toHaveClass('shrink-0');
+  });
+
+  test('the pill beside the header does the same on an open card', () => {
+    const onReveal = jest.fn();
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[failedCall, failedCall]}>
+        <RevealProbe onReveal={onReveal} />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: LABEL }));
+    const pill = screen.getByRole('button', { name: 'com_ui_show_failed_n' });
+    fireEvent.click(pill);
+    expect(onReveal).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  test('a card with no failure shows neither pill nor peek', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[okCall]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('activity-phase-failed-peek')).not.toBeInTheDocument();
+  });
+});
+
+describe('ActivityPhaseGroup open header', () => {
+  const runningCall = {
+    type: ContentTypes.TOOL_CALL,
+    [ContentTypes.TOOL_CALL]: {
+      id: 'r1',
+      name: 'lookup',
+      args: '{"intent":"Checking the rollback path"}',
+      type: 'tool_call',
+      progress: 0.5,
+      output: '',
+    },
+  } as unknown as TMessageContentParts;
+
+  test('titles an open card by its label instead of the live line', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent liveParts={[runningCall]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    const live = screen.getByRole('button');
+    expect(live).toHaveAttribute('aria-labelledby');
+    expect(live).toHaveTextContent('Checking the rollback path');
+
+    fireEvent.click(live);
+
+    const open = screen.getByRole('button', { name: LABEL });
+    expect(open).not.toHaveAttribute('aria-labelledby');
+    expect(open).toHaveClass('font-semibold', 'text-text-primary');
+    expect(open).not.toHaveTextContent('Checking the rollback path');
+  });
+
+  test('keeps the live line open when the span has no label yet', () => {
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[runningCall]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.getByRole('button')).toHaveTextContent('Checking the rollback path');
+  });
+
+  test('pins the open header and rails the rows under it', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    const header = screen.getByRole('button', { name: LABEL });
+    const pinned = header.parentElement?.parentElement;
+    expect(pinned).not.toHaveClass('sticky');
+    fireEvent.click(header);
+    expect(pinned).toHaveClass('sticky', 'top-0');
+    expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('pl-6');
+  });
+});
+
+describe('ActivityPhaseGroup open live header', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+  /** A thought's line holds for a second; the retired line lingers in the
+   *  ticker, so the current line is read from its own title. */
+  const settle = () => act(() => jest.advanceTimersByTime(1000));
+  const thought = (reasoning_label?: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.THINK,
+      think: 'The refs share a commit. Next I check the ordering.',
+      ...(reasoning_label == null ? {} : { reasoning_label }),
+    }) as unknown as TMessageContentParts;
+
+  test('previews the newest finished sentence while collapsed', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought('Comparing refs')]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByRole('button')).toHaveTextContent('Next I check the ordering.');
+  });
+
+  test("titles an open card by the thought's label instead of repeating its text", () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought('Comparing refs')]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    const header = screen.getByRole('button');
+    expect(within(header).getByTitle('Comparing refs')).toBeInTheDocument();
+    expect(within(header).queryByTitle('Next I check the ordering.')).toBeNull();
+  });
+
+  test('falls back to a running line no row uses when no label has landed', () => {
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought()]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    const header = screen.getByRole('button');
+    expect(within(header).getByTitle('com_ui_running')).toBeInTheDocument();
+    expect(within(header).queryByTitle('com_ui_thinking')).toBeNull();
+  });
+
+  const runningCall = (intent: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'r1',
+        name: 'list_documents',
+        args: JSON.stringify({ intent }),
+        type: 'tool_call',
+        progress: 0.5,
+        output: '',
+      },
+    }) as unknown as TMessageContentParts;
+  const batchLabel = (text: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.ACTIVITY_LABEL,
+      activity_label: text,
+      activity_label_type: 'batch',
+      pending: false,
+    }) as unknown as TMessageContentParts;
+
+  test("does not repeat the newest call's intent, which is its own row", () => {
+    const intent = 'Reading the roadmap card so edits preserve project choices';
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[runningCall(intent)]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    const header = screen.getByRole('button');
+    expect(within(header).queryByTitle(intent)).toBeNull();
+    expect(within(header).getByTitle('com_ui_running')).toBeInTheDocument();
+  });
+
+  test('titles an open card by the newest batch label behind a running call', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[batchLabel('Found the recap'), runningCall('Reading the roadmap card')]}
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    settle();
+    expect(within(screen.getByRole('button')).getByTitle('Found the recap')).toBeInTheDocument();
+  });
+});
+
+describe('ActivityPhaseGroup streaming thought peek', () => {
+  const thought: TMessageContentParts = {
+    type: ContentTypes.THINK,
+    think: '<think>The refs share a commit. Next I check the ordering. Then the tags.',
+  } as unknown as TMessageContentParts;
+  const call: TMessageContentParts = {
+    type: ContentTypes.TOOL_CALL,
+    [ContentTypes.TOOL_CALL]: {
+      id: 'c1',
+      name: 'lookup',
+      args: '{}',
+      type: 'tool_call',
+      output: '',
+    },
+  } as unknown as TMessageContentParts;
+
+  test("shows the streaming thought under a collapsed live card, in the cursor's place", () => {
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought]} showCursor>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    const peek = screen.getByTestId('streaming-thought-peek');
+    expect(peek).toHaveTextContent('Next I check the ordering. Then the tags.');
+    /** Straight from the stream, the thought still carries its opening tag. */
+    expect(peek).not.toHaveTextContent('<think>');
+    expect(screen.queryByTestId('activity-phase-cursor')).toBeNull();
+    /** Under the header, not inside the fold that would unmount it. */
+    expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(peek);
+  });
+
+  test('gives way to the rows once the card is open', () => {
+    render(
+      <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    fireEvent.click(screen.getByRole('button'));
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+  });
+
+  test('keeps the cursor when a call, not a thought, is at the tail', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[thought, call]}
+        showCursor
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+    expect(screen.getByTestId('activity-phase-cursor')).toBeInTheDocument();
   });
 });
