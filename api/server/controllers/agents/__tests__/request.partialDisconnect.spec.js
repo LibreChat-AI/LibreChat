@@ -301,4 +301,27 @@ describe('ResumableAgentController tenant context', () => {
       content: [{ type: 'summary', summarizing: true, initiatedBy: 'user' }],
     });
   });
+
+  /** The disconnect save runs while the generation is still live and the
+   *  completing run overwrites the row, so it must not report a failure that
+   *  has not happened: no typed failure is invented for a compaction whose
+   *  snapshot carries no summary or error part. */
+  it('saves a non-outcome compaction partial on disconnect without a synthesized failure', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000 },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'think', think: 'Picking what to summarize' }],
+      },
+    );
+
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({
+      unfinished: true,
+      error: false,
+      content: [{ type: 'think', think: 'Picking what to summarize' }],
+    });
+    expect(savedMessage.content).toHaveLength(1);
+  });
 });

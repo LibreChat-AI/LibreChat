@@ -207,26 +207,38 @@ export function resolveFailedTurnContent(
  * redoing it.
  *
  * Every summary and error part is marked, the same stamp `markCompactionOutcome`
- * puts on a completed run's outcome; a run stopped before any part streamed
- * records the typed failure so the row still carries its identity. The parts
- * are otherwise untouched, keeping the row's `unfinished` shape, and content
- * from a turn that was not a compaction is returned unchanged.
+ * puts on a completed run's outcome; a summary placeholder the run opened but
+ * never streamed text into counts as no outcome. A terminal abort (Stop) with
+ * no outcome records the typed failure so the row still carries its identity;
+ * a non-terminal snapshot (`synthesizeFailure: false`, the disconnect save the
+ * run may still complete and overwrite) marks what is there and invents
+ * nothing. The parts are otherwise untouched, keeping the row's `unfinished`
+ * shape, and content from a turn that was not a compaction is returned
+ * unchanged.
  */
 export function markAbortedCompactionContent(
   contentParts: TMessageContentParts[],
   isCompaction: boolean,
+  { synthesizeFailure = true }: { synthesizeFailure?: boolean } = {},
 ): TMessageContentParts[] {
   if (!isCompaction) {
     return contentParts;
   }
-  let markedOutcome = false;
+  let hasOutcome = false;
   for (const part of contentParts) {
-    if (part?.type === ContentTypes.SUMMARY || part?.type === ContentTypes.ERROR) {
+    if (part?.type === ContentTypes.SUMMARY) {
       part.initiatedBy = 'user';
-      markedOutcome = true;
+      if (isSummaryPartWithText(part)) {
+        hasOutcome = true;
+      }
+      continue;
+    }
+    if (part?.type === ContentTypes.ERROR) {
+      part.initiatedBy = 'user';
+      hasOutcome = true;
     }
   }
-  if (!markedOutcome) {
+  if (!hasOutcome && synthesizeFailure) {
     contentParts.push(...compactionFailureContent());
   }
   return contentParts;

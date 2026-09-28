@@ -100,6 +100,36 @@ describe('abortJob compaction identity', () => {
     await manager.destroy();
   });
 
+  /** A placeholder the summarizer opened but never streamed text into is not
+   *  an outcome: the typed failure is what makes the stopped row identifiable. */
+  it('records the typed failure beside an empty summary placeholder', async () => {
+    const { manager, jobStore } = await configureManager();
+    const streamId = 'abort-compaction-placeholder';
+    const placeholder: Agents.MessageContentComplex = {
+      type: ContentTypes.SUMMARY,
+      content: [],
+      summarizing: true,
+    };
+    const job = await manager.createJob(streamId, 'user-1', 'conversation-1', {
+      initialMetadata: { compact: true },
+    });
+    jobStore.setContentParts(streamId, [placeholder], job.createdAt);
+
+    const result = await manager.abortJob(streamId);
+
+    expect(result.success).toBe(true);
+    expect(result.content).toEqual([
+      { ...placeholder, initiatedBy: 'user' } as Agents.MessageContentComplex,
+      {
+        type: ContentTypes.ERROR,
+        error: COMPACTION_FAILED_ERROR,
+        initiatedBy: 'user',
+      },
+    ]);
+
+    await manager.destroy();
+  });
+
   it('leaves a stopped ordinary turn without the marker', async () => {
     const { manager, jobStore } = await configureManager();
     const streamId = 'abort-ordinary-turn';

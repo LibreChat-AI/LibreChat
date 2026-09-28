@@ -326,6 +326,14 @@ describe('markAbortedCompactionContent', () => {
     summarizing: true,
   });
 
+  /** The summarizer opens the part when its round starts, so a stop can land
+   *  between that and the first delta. */
+  const emptySummaryPlaceholder = (): TMessageContentParts => ({
+    type: ContentTypes.SUMMARY,
+    content: [],
+    summarizing: true,
+  });
+
   /** The abort path owns a cancelled run's row: its partial summary is kept
    *  (the turn is unfinished, not failed) but must still carry the marker, or
    *  on a branch ending in a user message the row keeps a Regenerate that
@@ -353,6 +361,24 @@ describe('markAbortedCompactionContent', () => {
     expect(parts[1]).toMatchObject({ initiatedBy: 'user' });
   });
 
+  /** A summary placeholder with no text is not an outcome: the run produced
+   *  nothing to keep, so the typed failure is the turn's identity. The
+   *  placeholder itself is still marked. */
+  it('records the typed failure beside a summary placeholder that streamed nothing', () => {
+    const parts = [emptySummaryPlaceholder()];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toEqual([
+      { ...emptySummaryPlaceholder(), initiatedBy: 'user' },
+      {
+        type: ContentTypes.ERROR,
+        error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
+        initiatedBy: 'user',
+      },
+    ]);
+  });
+
   /** A run stopped before any part streamed still needs an identifiable row:
    *  an empty one reads as an answer to the message it hangs off. */
   it('records the typed failure when nothing streamed before the stop', () => {
@@ -367,6 +393,17 @@ describe('markAbortedCompactionContent', () => {
         initiatedBy: 'user',
       },
     ]);
+  });
+
+  /** The disconnect save runs while the generation is still live and the
+   *  completion path overwrites the row: inventing a failure there would
+   *  report one that never happened. */
+  it('marks without synthesizing a failure for a non-terminal snapshot', () => {
+    const parts: TMessageContentParts[] = [emptySummaryPlaceholder()];
+
+    markAbortedCompactionContent(parts, true, { synthesizeFailure: false });
+
+    expect(parts).toEqual([{ ...emptySummaryPlaceholder(), initiatedBy: 'user' }]);
   });
 
   it('returns content from a turn that was not a compaction unchanged', () => {

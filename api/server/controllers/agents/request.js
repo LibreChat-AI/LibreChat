@@ -1857,9 +1857,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
 
+      /** The run is still live here: mark what streamed, but leave the outcome
+       *  to whichever path settles the turn (the terminal abort synthesizes
+       *  the typed failure a stopped compaction with no summary needs). */
       const persistableContent = markAbortedCompactionContent(
         filterPersistableAbortContent(aggregatedContent),
         isCompaction,
+        { synthesizeFailure: false },
       );
       if (persistableContent.length === 0) {
         logger.debug('[ResumableAgentController] No persistable content to save partial response');
