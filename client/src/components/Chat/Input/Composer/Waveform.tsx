@@ -29,7 +29,7 @@ interface WaveformProps {
  * motion keeps the step.
  *
  * The bar color is the element's own `text-text-primary`, read from the
- * canvas, so it follows the theme like any other text.
+ * canvas every frame, so it follows the theme like any other text.
  */
 function Waveform({ active, className }: WaveformProps) {
   const read = useAudioLevels(active);
@@ -47,7 +47,8 @@ function Waveform({ active, className }: WaveformProps) {
     canvas.width = Math.round(width * ratio);
     canvas.height = Math.round(height * ratio);
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    const color = getComputedStyle(canvas).color;
+    /* Live: read per frame so a theme switch mid-dictation recolors the bars. */
+    const style = getComputedStyle(canvas);
 
     const capacity = Math.ceil(width / BAR_PITCH) + 2;
     const levels: number[] = new Array(capacity).fill(0);
@@ -67,7 +68,7 @@ function Waveform({ active, className }: WaveformProps) {
       const progress = reducedMotion ? 1 : (now - sampledAt) / SAMPLE_MS;
 
       context.clearRect(0, 0, width, height);
-      context.fillStyle = color;
+      context.fillStyle = style.color;
       context.beginPath();
       for (let age = 0; age < capacity; age++) {
         const x = width - BAR_WIDTH - (age - 1 + progress) * BAR_PITCH;
