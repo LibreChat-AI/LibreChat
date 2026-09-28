@@ -34,7 +34,10 @@ interface MockSSEInstance {
   headers: Record<string, string>;
   readyState: number;
   _listeners: Record<string, SSEEventListener>;
-  _emit: (event: string, data?: Partial<MessageEvent> & { responseCode?: number }) => void;
+  _emit: (
+    event: string,
+    data?: Partial<MessageEvent> & { responseCode?: number; readyState?: number },
+  ) => void;
 }
 
 const mockSSEInstances: MockSSEInstance[] = [];
@@ -1629,6 +1632,34 @@ describe('useResumableSSE', () => {
     expect(getLastSSE()._url).toBe(
       '/api/agents/chat/stream/stream-epoch?resume=true&generationCreatedAt=1000&generationProtocolVersion=2',
     );
+    unmount();
+  });
+
+  it('reattaches without waiting for the foreground once the resume body ends before final', async () => {
+    jest.useFakeTimers();
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const initialSSE = getLastSSE();
+    await act(async () => {
+      initialSSE._emit('message', {
+        data: JSON.stringify({ event: 'on.message.delta', data: { text: 'part' } }),
+      });
+    });
+
+    await act(async () => {
+      initialSSE._emit('readystatechange', { readyState: 2 });
+    });
+    await advanceRetryTimer(1000);
+
+    expect(mockSSEInstances).toHaveLength(2);
+    expect(getLastSSE()._url).toBe(
+      '/api/agents/chat/stream/stream-123?resume=true&generationCreatedAt=1000&generationProtocolVersion=2',
+    );
+    expect(mockErrorHandler).not.toHaveBeenCalled();
     unmount();
   });
 

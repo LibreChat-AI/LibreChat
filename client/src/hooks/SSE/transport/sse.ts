@@ -10,6 +10,7 @@ import type {
 import { normalizeFrame } from './frames';
 
 type StreamErrorEvent = MessageEvent & { responseCode?: number };
+type ReadyStateChangeEvent = Event & { readyState?: number };
 type EventCallback = (event: ChatEvent) => void;
 
 const jsonHeaders = (token?: string) => ({
@@ -156,14 +157,32 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
         method: 'GET',
       });
 
+      /**
+       * sse.js closes a 2xx body that simply ends without dispatching
+       * anything, so the frames decide what that means: after `final` it is
+       * the ordinary end of the stream, before it an intermediary dropped the
+       * connection underneath the attachment. `failureSeen` is set by every
+       * `error` and `abort` (including a 401 whose refresh restreams), so the
+       * silent close below does not add a second verdict to one they already
+       * accounted for; `open` clears it for the refreshed reattachment.
+       */
+      let final = false;
+      let failureSeen = false;
+      const dispatch = (event: ChatEvent) => {
+        final ||= event.type === 'final';
+        onEvent(event);
+      };
+
       sse.addEventListener('open', () => {
-        onEvent({ type: 'open' });
+        failureSeen = false;
+        dispatch({ type: 'open' });
       });
 
-      sse.addEventListener('message', emitFrame(onEvent));
+      sse.addEventListener('message', emitFrame(dispatch));
 
       let refreshed = false;
       sse.addEventListener('error', async (e: StreamErrorEvent) => {
+        failureSeen = true;
         if (e.responseCode === 401 && !refreshed) {
           refreshed = true;
           const refreshedToken = await refreshToken();
@@ -177,7 +196,7 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
             return;
           }
         }
-        onEvent({
+        dispatch({
           type: 'error',
           status: e.responseCode,
           data: parseErrorBody(e.data, e.responseCode),
@@ -186,7 +205,15 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
 
       /** sse.js dispatches `abort` when the XHR is cancelled, by our close or by the user agent. */
       sse.addEventListener('abort', () => {
-        onEvent(signal.aborted ? { type: 'abort' } : { type: 'error', status: 0 });
+        failureSeen = true;
+        dispatch(signal.aborted ? { type: 'abort' } : { type: 'error', status: 0 });
+      });
+
+      sse.addEventListener('readystatechange', (e: ReadyStateChangeEvent) => {
+        if (e.readyState !== SSE.CLOSED || final || failureSeen) {
+          return;
+        }
+        dispatch({ type: 'error', status: 0 });
       });
 
       signal.addEventListener('abort', () => sse.close(), { once: true });

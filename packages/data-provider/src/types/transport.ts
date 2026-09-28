@@ -263,8 +263,10 @@ export type ChatStreamRequest = {
 /** The handle `reconnectToStream` returns for one attachment. */
 export interface ChatStreamConnection {
   /**
-   * Whether the connection has closed. A response body that simply ends
-   * dispatches no event, so this is the only way to see that it did.
+   * Whether the connection has closed. A response body that ends before the
+   * terminal frame reports itself as `{ type: 'error', status: 0 }`; this is
+   * what a check that cannot listen for events (the foreground reattach)
+   * reads to notice a body that ended after `final`.
    */
   readonly closed: boolean;
 }
@@ -283,11 +285,12 @@ export interface ChatTransport<TRequest = ChatTransportRequest> {
    * Attaches to a running generation and reports it through the same events
    * as `send`. Aborting the signal while the stream is open emits
    * `{ type: 'abort' }`; a cancel the caller did not issue (a backgrounded or
-   * frozen tab) is a dropped connection and emits `{ type: 'error', status: 0 }`.
-   * The first 401 refreshes the token and reattaches on the same handle; a
-   * failed refresh or a second 401 is reported as the 401, so the caller's own
-   * retry budget bounds it. A server-written error that is not JSON arrives as
-   * its raw text.
+   * frozen tab) is a dropped connection and emits `{ type: 'error', status: 0 }`,
+   * and so does a response body that ends before the terminal frame; after it
+   * the ordinary end of the body dispatches nothing. The first 401 refreshes
+   * the token and reattaches on the same handle; a failed refresh or a second
+   * 401 is reported as the 401, so the caller's own retry budget bounds it. A
+   * server-written error that is not JSON arrives as its raw text.
    *
    * AI SDK: `reconnectToStream`, which resolves to a stream (or `null` when
    * nothing is running); here the caller learns that from a 404 `error`.

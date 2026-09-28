@@ -375,7 +375,7 @@ describe('createSSETransport().reconnectToStream', () => {
     expect(connection.closed).toBe(true);
   });
 
-  it('reports closed once the response body ends without a terminal event', () => {
+  it('reports a body that ends before the terminal frame as a dropped connection', () => {
     const connection = attach();
     current().receiveHeaders();
     current().write(message({ created: true, message: {} }));
@@ -384,8 +384,63 @@ describe('createSSETransport().reconnectToStream', () => {
     current().emit('load');
 
     expect(connection.closed).toBe(true);
+    expect(events).toEqual([
+      { type: 'open' },
+      { type: 'created', data: { created: true, message: {} } },
+      { type: 'error', status: 0 },
+    ]);
     controller.abort();
-    expect(events.map((event) => event.type)).toEqual(['open', 'created']);
+    expect(events).toHaveLength(3);
+  });
+
+  it('ends quietly once the terminal frame arrived before the body ended', () => {
+    attach();
+    current().receiveHeaders();
+    current().write(message({ final: true, terminalStatus: 'complete' }));
+
+    current().emit('load');
+
+    expect(events.map((event) => event.type)).toEqual(['open', 'final']);
+  });
+
+  it('reports a body that ends without carrying any frame', () => {
+    attach();
+    current().receiveHeaders();
+
+    current().emit('load');
+
+    expect(events).toEqual([{ type: 'open' }, { type: 'error', status: 0 }]);
+  });
+
+  it('counts the terminal frame parsed out of the closing chunk', () => {
+    attach();
+    current().receiveHeaders();
+    /** The trailing frame has no blank line yet, so `progress` keeps it buffered
+     * and only the closing `load` parses and dispatches it. */
+    current().write('data: ' + JSON.stringify({ final: true }) + '\n');
+
+    current().emit('load');
+
+    expect(events.map((event) => event.type)).toEqual(['open', 'final']);
+  });
+
+  it('reports a body that ends without the final frame after a 401 reattachment', async () => {
+    jest.spyOn(request, 'refreshToken').mockResolvedValue({ token: 'token-2' } as never);
+    jest.spyOn(request, 'dispatchTokenUpdatedEvent').mockImplementation(() => undefined);
+    attach();
+    current().status = 401;
+    current().write('Unauthorized');
+
+    await new Promise(process.nextTick);
+    current().receiveHeaders();
+    current().write(message({ created: true, message: {} }));
+    current().emit('load');
+
+    expect(events).toEqual([
+      { type: 'open' },
+      { type: 'created', data: { created: true, message: {} } },
+      { type: 'error', status: 0 },
+    ]);
   });
 
   it('refreshes the token on a 401 and reattaches with the request headers', async () => {
