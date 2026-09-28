@@ -161,7 +161,7 @@ test.describe('mid-run steering and queuing', () => {
   }) => {
     test.setTimeout(150000);
     const label = uniqueLabel('steer-code-layout');
-    const steerText = `\`\`\`js\n${`const payload = '${'x'.repeat(300)}';\n`.repeat(12)}\`\`\``;
+    const steerText = `Please use this example:\n\n\`\`\`js\n${`const payload = '${'x'.repeat(300)}';\n`.repeat(12)}\`\`\``;
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, PROVIDER_C);
@@ -179,6 +179,7 @@ test.describe('mid-run steering and queuing', () => {
 
     const row = inFlightSteers(page).filter({ hasText: 'const payload' });
     await expect(row.locator('.markdown pre > div')).toHaveCount(1);
+    await expect(row.getByRole('button', { name: 'Show more' })).toBeInViewport();
     for (const width of [1200, 390]) {
       await page.setViewportSize({ width, height: 850 });
       const bounds = await row.evaluate((element) => {
@@ -205,7 +206,10 @@ test.describe('mid-run steering and queuing', () => {
       expect(bounds.codeLeft).toBeGreaterThanOrEqual(bounds.bubbleLeft);
       expect(bounds.codeRight).toBeLessThanOrEqual(bounds.bubbleRight);
       expect(bounds.codeScrollWidth).toBeGreaterThan(bounds.codeClientWidth);
+      await expect(row.getByRole('button', { name: 'Show more' })).toBeInViewport();
     }
+    await row.getByRole('button', { name: 'Show more' }).click();
+    await expect(row.getByRole('button', { name: 'Show less' })).toBeVisible();
   });
 
   /**
