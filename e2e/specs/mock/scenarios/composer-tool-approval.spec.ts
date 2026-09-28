@@ -13,7 +13,7 @@ import {
   expectApprovalInvocationCount,
 } from '../approvals.helpers';
 import { messagesView, replyPrompt, replyText, sendMessage } from '../helpers';
-import { cleanupAgent } from '../agents.helpers';
+import { cleanupAgent, closeMobileDrawer } from '../agents.helpers';
 
 const REVIEW_IN_COMPOSER = 'Review this request in the panel above the message box.';
 
@@ -21,6 +21,12 @@ const approvalChip = (page: Page) => page.getByTestId('pending-tool-approval-but
 /** The thread's own card: the composer panel renders a copy with the same call id. */
 const threadApprovalCard = (page: Page, toolCallId: string) =>
   approvalCard(page, toolCallId).and(page.locator(':not(#pending-tool-approval-panel *)'));
+
+async function startWithApprovalAgent(page: Page): Promise<string> {
+  const agentId = await createAndSelectApprovalAgent(page);
+  await closeMobileDrawer(page);
+  return agentId;
+}
 
 async function expectComposerReview(page: Page) {
   const panel = composerApprovalPanel(page);
@@ -65,7 +71,7 @@ test.describe('composer tool approval review', () => {
     clearApprovalInvocations(value);
 
     try {
-      agentId = await createAndSelectApprovalAgent(page);
+      agentId = await startWithApprovalAgent(page);
       const response = await sendMessage(page, `${APPROVAL_PROMPT_MARKER}${label}`);
       expect(response.ok()).toBeTruthy();
       await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
@@ -91,7 +97,7 @@ test.describe('composer tool approval review', () => {
     clearApprovalInvocations(value);
 
     try {
-      agentId = await createAndSelectApprovalAgent(page);
+      agentId = await startWithApprovalAgent(page);
       await sendMessage(page, replyPrompt(label));
       await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
       await expect(messagesView(page).getByText(replyText(label))).toBeVisible({
@@ -126,7 +132,7 @@ test.describe('composer tool approval review', () => {
     clearApprovalInvocations(value);
 
     try {
-      agentId = await createAndSelectApprovalAgent(page);
+      agentId = await startWithApprovalAgent(page);
       await sendMessage(page, `${APPROVAL_PROMPT_MARKER}${label}`);
       await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
       const panel = await expectComposerReview(page);
