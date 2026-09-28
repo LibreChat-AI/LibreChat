@@ -428,28 +428,24 @@ async function saveErrorTurn(
     }
 
     const userId = req.user.id;
-    /** Full documents: the compaction finalization below reuses the loaded
-     *  row rather than reading it a second time. */
-    const existing = await getMessages({
-      user: userId,
-      messageId: errorMessageId,
-      conversationId,
-    });
+    const existing = await getMessages(
+      { user: userId, messageId: errorMessageId, conversationId },
+      '_id',
+    );
     if (existing.length > 0) {
-      await finalizeFailedCompactionTurn(req, {
-        userId,
-        conversationId,
-        messageId: errorMessageId,
-        partialRow: existing[0],
-      });
+      /** No compaction finalization here: this id can normalize back to the
+       *  anchor itself when the anchor ends in `_`, and the anchor is never
+       *  the failed run's row. The run's own snapshot, if any, is checked
+       *  under its distinct live response id below. */
       return;
     }
     if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
-      const partial = await getMessages({
-        user: userId,
-        messageId: liveResponseMessageId,
-        conversationId,
-      });
+      /** Full documents only where the compaction finalization needs the
+       *  content; ordinary failures keep the id-only projection. */
+      const partial = await getMessages(
+        { user: userId, messageId: liveResponseMessageId, conversationId },
+        req.body?.compact === true ? undefined : '_id',
+      );
       if (partial.length > 0) {
         await finalizeFailedCompactionTurn(req, {
           userId,

@@ -5,7 +5,7 @@ const {
   GenerationJobManager,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
-  resolveAbortAnchorDecision,
+  resolveAbortedTurnAnchorDecision,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -770,23 +770,21 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
            *  anchor is never upserted over it; absent (Stop won the race
            *  before the branch loaded), there is nothing to parent the aborted
            *  response onto and nothing is written. */
-          let anchorDecision = resolveAbortAnchorDecision(jobData, true);
-          if (jobData?.compact === true && jobData?.userMessage?.messageId && req?.user?.id) {
-            const anchorRows = await getMessages({
-              user: req.user.id,
-              messageId: jobData.userMessage.messageId,
-              conversationId: jobData.conversationId,
-            });
-            anchorDecision = resolveAbortAnchorDecision(jobData, anchorRows.length > 0);
-          }
+          /** The compaction anchor policy (never upsert the projected leaf,
+           *  never write a response with nothing to hang it on) lives in
+           *  @librechat/api; this supplies the route's reader. */
+          const anchorDecision = await resolveAbortedTurnAnchorDecision(jobData, {
+            messageExists: (messageId, conversationId) =>
+              getMessages({ user: req?.user?.id, messageId, conversationId }).then(
+                (rows) => rows.length > 0,
+              ),
+          });
           if (anchorDecision === 'skip-turn') {
             /** Throwing here is the contract for "do not publish the normal
              *  FINAL": the manager emits a reconciliation frame instead of
              *  one whose response points at a row deliberately never
              *  persisted. */
-            persistenceErrors.push(
-              new Error('Compaction anchor was never persisted; abort turn withheld'),
-            );
+            persistenceErrors.push(new Error('Compaction anchor unavailable; abort turn withheld'));
           }
 
           if (

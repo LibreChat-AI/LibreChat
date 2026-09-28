@@ -481,7 +481,7 @@ describe('Agent Abort Endpoint', () => {
         expect(response.status).toBe(200);
         expect(mockSaveMessage).not.toHaveBeenCalled();
         expect(beforePublishError).toBeInstanceOf(Error);
-        expect(beforePublishError.message).toContain('anchor was never persisted');
+        expect(beforePublishError.message).toContain('anchor unavailable');
       });
     });
 
