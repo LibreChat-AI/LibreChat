@@ -1194,6 +1194,7 @@
   "com_ui_background_finished": "Finished in background",
   "com_ui_background_running": "Running in background",
   "com_ui_backup_code_number": "Code #{{number}}",
+  "com_ui_backup_code_verification_required": "Enter your backup code to continue",
   "com_ui_backup_codes": "Backup Codes",
   "com_ui_backup_codes_regenerate_error": "There was an error regenerating backup codes",
   "com_ui_backup_codes_regenerated": "Backup codes have been regenerated successfully",

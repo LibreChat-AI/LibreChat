@@ -2,6 +2,7 @@ import {
   persistRedirectToSession,
   getPostLoginRedirect,
   isSafeRedirect,
+  hasStoredRedirect,
   SESSION_KEY,
 } from '../redirect';
 
@@ -203,5 +204,42 @@ describe('persistRedirectToSession', () => {
   it('rejects /login paths', () => {
     persistRedirectToSession('/login?redirect_to=/c/new');
     expect(sessionStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+});
+
+describe('blocked session storage', () => {
+  /** Embedded and private contexts throw on access rather than answering null. */
+  const originalDescriptor = Object.getOwnPropertyDescriptor(window, 'sessionStorage');
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Storage is blocked in this context', 'SecurityError');
+      },
+    });
+  });
+
+  afterAll(() => {
+    if (originalDescriptor != null) {
+      Object.defineProperty(window, 'sessionStorage', originalDescriptor);
+    }
+  });
+
+  it('persisting a destination does not take down the sign-in', () => {
+    expect(() => persistRedirectToSession('/c/new')).not.toThrow();
+  });
+
+  it('a blocked store reads as empty so the URL param still resolves', () => {
+    const params = new URLSearchParams('redirect_to=%2Fc%2Fnew');
+    expect(getPostLoginRedirect(params)).toBe('/c/new');
+  });
+
+  it('no destination resolves when only the blocked store exists', () => {
+    expect(getPostLoginRedirect(new URLSearchParams())).toBeNull();
+  });
+
+  it('hasStoredRedirect counts a blocked store as empty', () => {
+    expect(hasStoredRedirect()).toBe(false);
   });
 });
