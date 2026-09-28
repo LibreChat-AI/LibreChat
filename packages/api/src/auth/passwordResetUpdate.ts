@@ -1,13 +1,12 @@
-import type { IUser, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
+import type { TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 
-export type PasswordResetUpdate = Pick<IUser, 'password' | 'credentialsChangedAt'> &
-  Pick<
-    TwoFactorEnrollmentUpdate,
-    | 'pendingTotpSecret'
-    | 'pendingBackupCodes'
-    | 'twoFactorAcknowledgementNonceHash'
-    | 'twoFactorFinalizationNonceHash'
-  >;
+export type PasswordResetUpdate = { password?: string; credentialsChangedAt?: Date | null } & Pick<
+  TwoFactorEnrollmentUpdate,
+  | 'pendingTotpSecret'
+  | 'pendingBackupCodes'
+  | 'twoFactorAcknowledgementNonceHash'
+  | 'twoFactorFinalizationNonceHash'
+>;
 
 /**
  * Retire bearer credentials from the replaced password. Clearing the staged enrollment in this

@@ -1,21 +1,25 @@
 import jwt from 'jsonwebtoken';
 import { SystemRoles } from 'librechat-data-provider';
 import type { NextFunction, Request, Response } from 'express';
-import type { IUser } from '@librechat/data-schemas';
+import type { StoredTwoFactorAccount, TokenIssuance } from './twoFactor';
 import type { CloudFrontCookieScope } from '~/cdn/cloudfront-cookies';
-import type { TokenIssuance } from './twoFactor';
 import { isTokenRetired, isTwoFactorEnrollmentRequired } from './twoFactor';
 import { clearEnrollmentViewer } from './gates';
 import { isEnabled } from '~/utils';
 
-type ShareUser = Pick<IUser, 'twoFactorEnabled'> &
-  Partial<Pick<IUser, 'id' | 'provider' | 'role' | 'tenantId'>> & {
-    _id: { toString(): string };
-    orgId?: string;
-    storageRegion?: string;
-    twoFactorEnrolledAt?: Date | string | number | null;
-    credentialsChangedAt?: Date | string | number | null;
-  };
+type ShareUser = Pick<
+  StoredTwoFactorAccount,
+  | '_id'
+  | 'id'
+  | 'provider'
+  | 'role'
+  | 'tenantId'
+  | 'orgId'
+  | 'storageRegion'
+  | 'twoFactorEnabled'
+  | 'twoFactorEnrolledAt'
+  | 'credentialsChangedAt'
+>;
 type ShareRequest = Request & {
   user?: ShareUser;
   authStrategy?: string;

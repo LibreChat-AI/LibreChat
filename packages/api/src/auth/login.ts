@@ -3,8 +3,9 @@ import {
   TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
   TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
 } from 'librechat-data-provider';
-import type { IUser } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
+import type { StoredTwoFactorAccount } from './twoFactor';
+import type { UserDocumentId } from '~/auth/verification';
 import {
   TOKEN_RETIREMENT_FIELDS,
   generateTwoFactorSetupToken,
@@ -14,16 +15,16 @@ import {
 } from './twoFactor';
 import { clearCloudFrontCookies } from '~/cdn';
 
-type LoginUser = IUser & { __v?: number; orgId?: string; storageRegion?: string };
+type LoginUser = StoredTwoFactorAccount & { __v?: number };
 type LoginRequest = Request & { user?: LoginUser };
 
 export interface LoginDependencies {
-  getUserById: (userId: string, projection: string) => Promise<IUser | null>;
+  getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
   clearCloudFrontCookies: typeof clearCloudFrontCookies;
-  generate2FATempToken: (userId: IUser['_id']) => string;
+  generate2FATempToken: (userId: UserDocumentId) => string;
   setAuthTokens: (
-    userId: IUser['_id'],
+    userId: UserDocumentId,
     res: Response,
     unused: null,
     req: Request,

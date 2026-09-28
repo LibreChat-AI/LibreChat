@@ -8,16 +8,10 @@ import {
   runAsSystem,
   tenantStorage,
 } from '@librechat/data-schemas';
-import type {
-  IUser,
-  IAgent,
-  IAssistant,
-  AssistantQuery,
-  SystemCapability,
-} from '@librechat/data-schemas';
+import type { IAgent, IAssistant, AssistantQuery, SystemCapability } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { FilterQuery, ProjectionType, Types } from 'mongoose';
-import type { TokenIssuance, TwoFactorTokenCredential } from '~/auth/twoFactor';
+import type { TokenIssuance, TwoFactorAccount, TwoFactorTokenCredential } from '~/auth/twoFactor';
 import {
   isTokenRetired,
   isTwoFactorEnrollmentRequired,
@@ -34,8 +28,9 @@ type Principal = {
   principalId?: string | Types.ObjectId;
 };
 
-type ImageUser = Partial<
-  Pick<IUser, 'provider' | 'twoFactorEnabled' | 'twoFactorEnrolledAt' | 'credentialsChangedAt'>
+type ImageUser = Pick<
+  TwoFactorAccount,
+  'provider' | 'twoFactorEnabled' | 'twoFactorEnrolledAt' | 'credentialsChangedAt'
 > & {
   role?: string | null;
   tenantId?: string;

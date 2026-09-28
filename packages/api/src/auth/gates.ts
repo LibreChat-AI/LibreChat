@@ -1,8 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
 import type { NextFunction, Request, Response } from 'express';
-import type { IUser } from '@librechat/data-schemas';
-import type { TokenIssuance, TokenRetirementSignals } from './twoFactor';
+import type { TokenIssuance, TokenRetirementSignals, TwoFactorAccount } from './twoFactor';
 import type { CloudFrontCookieScope } from '~/cdn/cloudfront-cookies';
 import {
   generateTwoFactorSetupToken,
@@ -11,12 +10,10 @@ import {
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
 
-type AuthUser = Pick<IUser, 'twoFactorEnabled'> &
-  Partial<Pick<IUser, 'id' | 'provider' | 'tenantId'>> & {
-    _id?: { toString(): string };
-    orgId?: string;
-    storageRegion?: string;
-  };
+type AuthUser = Pick<
+  TwoFactorAccount,
+  '_id' | 'id' | 'provider' | 'tenantId' | 'orgId' | 'storageRegion' | 'twoFactorEnabled'
+>;
 
 type AuthRequest = Request & { user?: AuthUser; authStrategy?: string };
 

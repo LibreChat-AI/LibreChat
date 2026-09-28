@@ -1,4 +1,4 @@
-import type { IUser } from '@librechat/data-schemas';
+import type { TwoFactorAccount } from './twoFactor';
 
 /**
  * Everything an authentication response may say about a user.
@@ -37,7 +37,9 @@ interface HydratedUser {
 }
 
 /** Reduces a user document, hydrated or lean, to the fields a client is allowed to receive. */
-export function sanitizeUserForResponse(user: IUser | HydratedUser | null | undefined): PublicUser {
+export function sanitizeUserForResponse(
+  user: TwoFactorAccount | HydratedUser | null | undefined,
+): PublicUser {
   if (user == null) {
     return {};
   }

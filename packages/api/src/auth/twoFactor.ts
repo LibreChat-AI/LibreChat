@@ -2,12 +2,9 @@ import jwt from 'jsonwebtoken';
 import { logger } from '@librechat/data-schemas';
 import { createHash, randomBytes } from 'node:crypto';
 import { isTwoFactorPolicyProvider } from 'librechat-data-provider';
-import type {
-  IUser,
-  TwoFactorEnrollmentGuard,
-  TwoFactorEnrollmentUpdate,
-} from '@librechat/data-schemas';
+import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
+import type { UserDocumentId } from '~/auth/verification';
 import { isEnabled } from '~/utils';
 
 const TWO_FACTOR_SETUP_TOKEN_EXPIRY = '10m';
@@ -37,13 +34,45 @@ interface TwoFactorSetupBody {
 /**
  * The account events that retire every bearer token minted before them.
  *
- * Widened past `IUser`'s `Date`, because callers pass lean documents whose stamps can arrive
+ * Widened past the stored `Date`, because callers pass lean documents whose stamps can arrive
  * already serialized, and a cutoff that fails to parse must not lock every session out.
  */
 export interface TokenRetirementSignals {
   twoFactorEnrolledAt?: Date | string | number | null;
   credentialsChangedAt?: Date | string | number | null;
 }
+
+/** A stored backup code: only its hash is persisted, and redemption marks it used. */
+export interface TwoFactorBackupCode {
+  codeHash: string;
+  used: boolean;
+  usedAt?: Date | null;
+}
+
+/**
+ * The account fields the two-factor and credential routes read, as a plain shape: neither the
+ * request's user nor the data-layer results carry Mongoose types across the package boundary.
+ */
+export interface TwoFactorAccount extends TokenRetirementSignals {
+  _id?: UserDocumentId;
+  id?: string;
+  provider?: string;
+  role?: string;
+  tenantId?: string;
+  orgId?: string;
+  storageRegion?: string;
+  password?: string;
+  twoFactorEnabled?: boolean;
+  totpSecret?: string;
+  backupCodes?: TwoFactorBackupCode[];
+  pendingTotpSecret?: string;
+  pendingBackupCodes?: TwoFactorBackupCode[];
+  twoFactorAcknowledgementNonceHash?: string | null;
+  twoFactorFinalizationNonceHash?: string | null;
+}
+
+/** An account as the data layer returns it, always addressed by its document id. */
+export type StoredTwoFactorAccount = TwoFactorAccount & { _id: UserDocumentId };
 
 /** The user fields `isTokenRetired` needs, for callers that read with an explicit projection. */
 export const TOKEN_RETIREMENT_FIELDS = 'twoFactorEnrolledAt credentialsChangedAt';
@@ -80,7 +109,7 @@ export type TwoFactorEnrollmentRequest = Request & {
 };
 
 export type TwoFactorSetupUser = Pick<
-  IUser,
+  StoredTwoFactorAccount,
   '_id' | 'provider' | 'twoFactorEnabled' | 'pendingTotpSecret' | 'pendingBackupCodes'
 >;
 
@@ -90,26 +119,28 @@ export interface TwoFactorEnrollmentDependencies {
   verifyTOTP: (secret: string, token: string) => Promise<boolean>;
   generateBackupCodes: () => Promise<{
     plainCodes: string[];
-    codeObjects: NonNullable<IUser['backupCodes']>;
+    codeObjects: TwoFactorBackupCode[];
   }>;
   updateTwoFactorEnrollment: (
     userId: string,
     guard: TwoFactorEnrollmentGuard,
     update: TwoFactorEnrollmentUpdate,
-  ) => Promise<IUser | null>;
+  ) => Promise<StoredTwoFactorAccount | null>;
 }
 
 type TwoFactorEnrollmentFailure = { ok: false; status: 400; message: string };
 
 export type TwoFactorConfirmResult =
-  | { ok: true; user: IUser; plainCodes: string[]; acknowledgementNonce: string }
+  | { ok: true; user: StoredTwoFactorAccount; plainCodes: string[]; acknowledgementNonce: string }
   | TwoFactorEnrollmentFailure;
 
 export type TwoFactorAcknowledgeResult =
-  | { ok: true; user: IUser; finalizationNonce: string }
+  | { ok: true; user: StoredTwoFactorAccount; finalizationNonce: string }
   | TwoFactorEnrollmentFailure;
 
-export type TwoFactorFinalizeResult = { ok: true; user: IUser } | TwoFactorEnrollmentFailure;
+export type TwoFactorFinalizeResult =
+  | { ok: true; user: StoredTwoFactorAccount }
+  | TwoFactorEnrollmentFailure;
 
 const fail = (message: string): TwoFactorEnrollmentFailure => ({ ok: false, status: 400, message });
 
@@ -120,7 +151,7 @@ const hashEnrollmentNonce = (nonce: string): string =>
   createHash('sha256').update(nonce).digest('hex');
 
 export function isTwoFactorEnrollmentRequired(
-  user: (Pick<IUser, 'twoFactorEnabled'> & Partial<Pick<IUser, 'provider'>>) | null | undefined,
+  user: Pick<TwoFactorAccount, 'twoFactorEnabled' | 'provider'> | null | undefined,
 ): boolean {
   if (!isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION) || user?.twoFactorEnabled) {
     return false;
@@ -130,7 +161,7 @@ export function isTwoFactorEnrollmentRequired(
 }
 
 export function isTwoFactorSetupEligible(
-  user: Partial<Pick<IUser, 'provider'>> | null | undefined,
+  user: Pick<TwoFactorAccount, 'provider'> | null | undefined,
 ): boolean {
   return isTwoFactorPolicyProvider(user?.provider);
 }
@@ -146,7 +177,7 @@ export function isTwoFactorSetupEligible(
  * federated sign-in path is the only way in.
  */
 export function isCredentialLoginBlockedByTwoFactorPolicy(
-  user: Partial<Pick<IUser, 'provider'>> | null | undefined,
+  user: Pick<TwoFactorAccount, 'provider'> | null | undefined,
 ): boolean {
   return (
     isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION) &&
@@ -557,7 +588,9 @@ export function blockTwoFactorDisableWhenRequired(
 ): Response | void {
   if (
     !isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION) ||
-    !isTwoFactorPolicyProvider((req.user as Partial<Pick<IUser, 'provider'>> | undefined)?.provider)
+    !isTwoFactorPolicyProvider(
+      (req.user as Pick<TwoFactorAccount, 'provider'> | undefined)?.provider,
+    )
   ) {
     next();
     return;

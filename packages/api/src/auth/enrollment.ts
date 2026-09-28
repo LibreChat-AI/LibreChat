@@ -1,8 +1,9 @@
 import { logger } from '@librechat/data-schemas';
 import { TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE } from 'librechat-data-provider';
-import type { IUser, TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
+import type { TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
-import type { TwoFactorEnrollmentDependencies } from './twoFactor';
+import type { TwoFactorEnrollmentDependencies, StoredTwoFactorAccount } from './twoFactor';
+import type { UserDocumentId } from '~/auth/verification';
 import {
   TOKEN_RETIREMENT_FIELDS,
   acknowledgeTwoFactorSetup,
@@ -18,7 +19,6 @@ import {
 import { sanitizeUserForResponse } from './user';
 import { clearCloudFrontCookies } from '~/cdn';
 
-type EnrollmentUser = IUser & { orgId?: string; storageRegion?: string };
 type LoginChallengeBody = { tempToken?: string; token?: string; backupCode?: string };
 type SetupBody = { token?: string };
 type ChallengeRequest = Request<Record<string, string>, object, LoginChallengeBody>;
@@ -39,14 +39,17 @@ export function clearEnrollmentNonces(
 
 export interface EnrollmentControllerDependencies
   extends Omit<TwoFactorEnrollmentDependencies, 'getUserById' | 'getTOTPSecret' | 'verifyTOTP'> {
-  getUserById: (userId: string, projection: string) => Promise<IUser | null>;
+  getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
   getTOTPSecret: (storedSecret: string | null | undefined) => Promise<string | null>;
   verifyTOTP: (secret: string | null, token: string) => Promise<boolean>;
-  verifyBackupCode: (input: { user: IUser; backupCode: string }) => Promise<boolean>;
+  verifyBackupCode: (input: {
+    user: StoredTwoFactorAccount;
+    backupCode: string;
+  }) => Promise<boolean>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
   clearCloudFrontCookies: typeof clearCloudFrontCookies;
   setAuthTokens: (
-    userId: IUser['_id'],
+    userId: UserDocumentId,
     res: Response,
     unused: null,
     req: Request,
@@ -63,14 +66,14 @@ interface EnrollmentControllers {
 export function createEnrollmentControllers(
   deps: EnrollmentControllerDependencies,
 ): EnrollmentControllers {
-  const sanitizeUser = (user: IUser) => ({
+  const sanitizeUser = (user: StoredTwoFactorAccount) => ({
     ...sanitizeUserForResponse(user),
     id: user._id.toString(),
   });
 
   const revokeMintedSession = async (
     res: Response,
-    user: EnrollmentUser,
+    user: StoredTwoFactorAccount,
     userId: string,
   ): Promise<void> => {
     await deps.deleteAllUserSessions({ userId });

@@ -1,8 +1,8 @@
 import jwt from 'jsonwebtoken';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
-import type { IUser, ISession } from '@librechat/data-schemas';
+import type { ISession, OIDCTokens } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
-import type { TokenIssuance } from './twoFactor';
+import type { TokenIssuance, TwoFactorAccount } from './twoFactor';
 import {
   generateTwoFactorSetupToken,
   isTokenRetired,
@@ -14,20 +14,21 @@ const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this use
 
 type UserIdentifier = string | { toString(): string };
 
-type RefreshUser = Partial<
-  Pick<
-    IUser,
-    'provider' | 'twoFactorEnabled' | 'tenantId' | 'twoFactorEnrolledAt' | 'credentialsChangedAt'
-  >
-> & {
-  _id?: UserIdentifier;
-  orgId?: string;
-  storageRegion?: string;
-};
+type RefreshUser = Pick<
+  TwoFactorAccount,
+  | '_id'
+  | 'provider'
+  | 'tenantId'
+  | 'orgId'
+  | 'storageRegion'
+  | 'twoFactorEnabled'
+  | 'twoFactorEnrolledAt'
+  | 'credentialsChangedAt'
+>;
 
 type RefreshSession = Pick<ISession, 'expiration'> & { _id: UserIdentifier };
 type SessionDeletionResult = { deletedCount?: number };
-type AuthResponseSource = Partial<IUser> & { __v?: number };
+type AuthResponseSource = TwoFactorAccount & { __v?: number; federatedTokens?: OIDCTokens };
 
 interface LocalRefreshDependencies {
   userProjection: string;
@@ -62,7 +63,7 @@ interface LocalRefreshDependencies {
 export function sanitizeUserForAuthResponse<T extends object>(
   user: T | null | undefined,
 ): Partial<T> {
-  const hydrated = user as (T & { toObject?: () => Partial<IUser> }) | null | undefined;
+  const hydrated = user as (T & { toObject?: () => AuthResponseSource }) | null | undefined;
   const source = (typeof hydrated?.toObject === 'function' ? hydrated.toObject() : hydrated) ?? {};
   const {
     password: _password,
