@@ -247,7 +247,12 @@ export type ConfigOverrideIssue = {
   path: string;
   /** The same location as keys, unambiguous when a record key itself contains a dot. */
   segments: string[];
-  message: string;
+  /**
+   * A stable, machine-readable reason: a zod issue code (`invalid_type`, `custom`, ...),
+   * `missing_merge_key`, or `invalid_document`. Schema messages are not carried because
+   * they can echo the submitted values.
+   */
+  code: string;
 };
 
 type IssuePath = Array<string | number>;
@@ -260,8 +265,8 @@ function hasOwn(target: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(target, key);
 }
 
-function toIssue(segments: string[], message: string): ConfigOverrideIssue {
-  return { path: segments.join('.'), segments, message };
+function toIssue(segments: string[], code: string): ConfigOverrideIssue {
+  return { path: segments.join('.'), segments, code };
 }
 
 /**
@@ -346,7 +351,7 @@ function getKeylessItemIssues(overrides: AnyObject): ConfigOverrideIssue[] {
     }
     return node.flatMap((item, index) =>
       isPlainObject(item) && (typeof item[keyField] !== 'string' || item[keyField] === '')
-        ? [toIssue([...segments, String(index)], `${keyField}: Required`)]
+        ? [toIssue([...segments, String(index)], 'missing_merge_key')]
         : [],
     );
   });
@@ -400,7 +405,7 @@ export function getConfigOverrideIssues(
   options: ConfigOverrideCheckOptions = {},
 ): ConfigOverrideIssue[] {
   if (!isPlainObject(overrides)) {
-    return [toIssue([], 'Overrides must be an object')];
+    return [toIssue([], 'invalid_document')];
   }
   const merged = deepMerge(base as AnyObject, overrides);
   const issues = getKeylessItemIssues(overrides);
@@ -428,8 +433,7 @@ export function getConfigOverrideIssues(
         continue;
       }
       seen.add(path);
-      const detail = issuePath.length > segments.length ? `${issuePath.join('.')}: ` : '';
-      issues.push(toIssue(segments, `${detail}${issue.message}`));
+      issues.push(toIssue(segments, issue.code));
     }
   }
   return issues;
@@ -551,9 +555,9 @@ function stripInvalidOverrides(config: IConfig, base: Partial<TCustomConfig>): A
     }
     const before = stripped;
     for (let index = issues.length - 1; index >= 0; index--) {
-      const { path, segments, message } = issues[index];
+      const { path, segments, code } = issues[index];
       logger.warn(
-        `[mergeConfigOverrides] Ignoring invalid override "${path}" for ${principal}: ${message}`,
+        `[mergeConfigOverrides] Ignoring invalid override "${path}" for ${principal} (${code})`,
       );
       stripped = omitPath(stripped, segments);
     }

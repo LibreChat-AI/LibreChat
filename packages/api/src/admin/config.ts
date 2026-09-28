@@ -423,11 +423,12 @@ function redactAppConfigForResponse(appConfig: AppConfig): AppConfig {
   return safeConfig;
 }
 
+/** Reports only the paths and stable codes: schema messages can echo the submitted values. */
 function invalidOverrideResponse(res: Response, issues: ConfigOverrideIssue[]): Response {
-  const [first] = issues;
   return res.status(400).json({
-    error: `Invalid config value at ${first.path}: ${first.message}`,
-    issues,
+    error: 'Invalid config override',
+    code: 'CONFIG_OVERRIDE_INVALID',
+    issues: issues.map(({ path, code }) => ({ path, code })),
   });
 }
 

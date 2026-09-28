@@ -2450,10 +2450,11 @@ describe('createAdminConfigHandlers', () => {
       await handlers.upsertConfigOverrides(req, res);
 
       expect(res.statusCode).toBe(400);
-      expect(res.body?.error).toContain('registration.oauthStateTtlMs');
-      expect(res.body?.issues).toEqual([
-        expect.objectContaining({ path: 'registration.oauthStateTtlMs' }),
-      ]);
+      expect(res.body).toEqual({
+        error: 'Invalid config override',
+        code: 'CONFIG_OVERRIDE_INVALID',
+        issues: [{ path: 'registration.oauthStateTtlMs', code: 'too_small' }],
+      });
       expect(deps.upsertConfig).not.toHaveBeenCalled();
     });
 
@@ -2556,7 +2557,7 @@ describe('createAdminConfigHandlers', () => {
       await handlers.patchConfigField(req, res);
 
       expect(res.statusCode).toBe(400);
-      expect(res.body?.error).toContain('endpoints.custom');
+      expect(res.body?.issues).toEqual([{ path: 'endpoints.custom', code: 'invalid_type' }]);
       expect(deps.patchConfigFields).not.toHaveBeenCalled();
     });
 

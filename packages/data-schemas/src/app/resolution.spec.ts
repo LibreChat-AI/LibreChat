@@ -1148,7 +1148,7 @@ describe('getConfigOverrideIssues', () => {
       {
         path: 'endpoints.custom.0',
         segments: ['endpoints', 'custom', '0'],
-        message: 'name: Required',
+        code: 'missing_merge_key',
       },
     ]);
     const base = {
@@ -1196,7 +1196,7 @@ describe('getConfigOverrideIssues', () => {
 
   it('rejects an overrides document that is not an object', () => {
     expect(getConfigOverrideIssues(['stray'])).toEqual([
-      { path: '', segments: [], message: 'Overrides must be an object' },
+      { path: '', segments: [], code: 'invalid_document' },
     ]);
   });
 });
@@ -1227,7 +1227,7 @@ describe('getConfigOverrideIssues: items addressed by id', () => {
     expect(issues).toContainEqual(
       expect.objectContaining({
         path: 'endpoints.agents.statefulCodeSessions.environments.1.pairing',
-        message: 'Only attached code environments may configure pairing',
+        code: 'custom',
       }),
     );
   });
