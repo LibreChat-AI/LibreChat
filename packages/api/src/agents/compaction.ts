@@ -264,6 +264,52 @@ export function markAbortedCompactionContent(
 }
 
 /**
+ * Whether the abort route's prerequisite user write applies to a job: a
+ * compaction's `userMessage` is the already-persisted branch leaf projected
+ * for identity only, so upserting it would erase a user leaf's text or turn
+ * an assistant leaf into an empty user row. The anchor exists by definition;
+ * only the aborted response needs writing.
+ */
+export function shouldPersistAbortAnchor(
+  jobData: { compact?: boolean } | null | undefined,
+): boolean {
+  return jobData?.compact !== true;
+}
+
+/**
+ * The content a failed compaction finalizes its already-persisted partial row
+ * with. The disconnect save is marker-only because the run is still live when
+ * it fires, so when the run then fails that snapshot is the row that stays,
+ * and it must carry the terminal outcome a compaction that failed without a
+ * snapshot records: a partial summary is marked failed beside its text, and a
+ * snapshot with no summary or error part gets the typed failure. Null when
+ * the row is not a compaction's or already carries a terminal outcome.
+ */
+export function resolveFinalizedCompactionTurn(
+  partialRow: { content?: unknown } | null | undefined,
+  requestBody: { compact?: boolean } | null | undefined,
+): { content: TMessageContentParts[] } | null {
+  if (requestBody?.compact !== true) {
+    return null;
+  }
+  const content = Array.isArray(partialRow?.content)
+    ? (partialRow.content as TMessageContentParts[])
+    : [];
+  for (const part of content) {
+    if (part?.type === ContentTypes.ERROR) {
+      return null;
+    }
+    if (
+      part?.type === ContentTypes.SUMMARY &&
+      (part.failed === true || isUsableSummaryPart(part))
+    ) {
+      return null;
+    }
+  }
+  return { content: markAbortedCompactionContent(content, true) };
+}
+
+/**
  * Stamps `initiatedBy: 'user'` on the part that carries a manual compaction's
  * outcome, which is the turn's only record of having been one: the run emits no
  * text of its own, and a compaction hangs off whatever leaf the branch ends

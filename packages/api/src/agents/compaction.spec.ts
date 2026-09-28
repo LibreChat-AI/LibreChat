@@ -19,6 +19,8 @@ import {
   markCompactionOutcome,
   resolveFailedTurnContent,
   resolveCheckpointMessage,
+  resolveFinalizedCompactionTurn,
+  shouldPersistAbortAnchor,
   restoreCompactionSemanticIndex,
   restoreCompactionSemanticIndexSnapshot,
   stripUnusableSummaryParts,
@@ -429,6 +431,87 @@ describe('markAbortedCompactionContent', () => {
 
     expect(markAbortedCompactionContent(parts, false)).toBe(parts);
     expect(parts[0]).not.toHaveProperty('initiatedBy');
+  });
+});
+
+describe('shouldPersistAbortAnchor', () => {
+  it('keeps the prerequisite user write for an ordinary turn', () => {
+    expect(shouldPersistAbortAnchor({})).toBe(true);
+    expect(shouldPersistAbortAnchor(null)).toBe(true);
+  });
+
+  /** The compaction's `userMessage` is the persisted leaf projected for
+   *  identity only; upserting it would erase the leaf. */
+  it('skips the prerequisite write for a compaction', () => {
+    expect(shouldPersistAbortAnchor({ compact: true })).toBe(false);
+  });
+});
+
+describe('resolveFinalizedCompactionTurn', () => {
+  const compactionFailed = JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED });
+
+  it('leaves a partial row of a turn that was not a compaction alone', () => {
+    const row = { content: [{ type: ContentTypes.TEXT, text: 'Partial answer' }] };
+
+    expect(resolveFinalizedCompactionTurn(row, {})).toBeNull();
+  });
+
+  /** The disconnect snapshot is marker-only, so a run that fails afterwards
+   *  leaves a row with no summary or error part and no marker at all. */
+  it('finalizes a snapshot without a summary or error part with the typed failure', () => {
+    const row = { content: [{ type: ContentTypes.THINK, think: 'Picking what to summarize' }] };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      content: [
+        { type: ContentTypes.THINK, think: 'Picking what to summarize' },
+        { type: ContentTypes.ERROR, error: compactionFailed, initiatedBy: 'user' },
+      ],
+    });
+  });
+
+  it('marks a partial summary failed beside its text', () => {
+    const row = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+          initiatedBy: 'user',
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(row, { compact: true })).toEqual({
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+          initiatedBy: 'user',
+          failed: true,
+        },
+      ],
+    });
+  });
+
+  it('leaves a row that already carries a terminal outcome alone', () => {
+    const failedSummary = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+          failed: true,
+          initiatedBy: 'user',
+        },
+      ],
+    };
+    const recordedFailure = {
+      content: [{ type: ContentTypes.ERROR, error: 'Summarization failed', initiatedBy: 'user' }],
+    };
+
+    expect(resolveFinalizedCompactionTurn(failedSummary, { compact: true })).toBeNull();
+    expect(resolveFinalizedCompactionTurn(recordedFailure, { compact: true })).toBeNull();
   });
 });
 
