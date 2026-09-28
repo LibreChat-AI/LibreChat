@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { EToolResources, FileContext } from 'librechat-data-provider';
-import type { IChatProject } from '~/types';
+import type { IChatProject, IMongoFile } from '~/types';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
 import { runAsSystem } from '~/config/tenantContext';
 import { createFileMethods } from './file';
@@ -2289,6 +2289,29 @@ describe('File Methods', () => {
       await fileMethods.deleteFileByFilter({ file_id: ids[1] });
       const after = await ChatProject.findById(project._id).lean();
       expect(after?.file_ids).toEqual([ids[0], 'other']);
+    });
+
+    it('clears the user projects on a user-wide delete without reading the files', async () => {
+      const { project, untouched, ChatProject } = await seed();
+      const File = mongoose.models.File as mongoose.Model<IMongoFile>;
+      const findSpy = jest.spyOn(File, 'find');
+      await fileMethods.deleteFiles([], project.user);
+      expect(findSpy).not.toHaveBeenCalled();
+      findSpy.mockRestore();
+      const after = await ChatProject.findById(project._id).lean();
+      expect(after?.file_ids).toEqual([]);
+      expect(after?.contextRevision).toBe(5);
+      expect((await ChatProject.findById(untouched._id).lean())?.file_ids).toHaveLength(1);
+    });
+
+    it('still reports a completed delete when the project cleanup fails', async () => {
+      const { ids, ChatProject } = await seed();
+      const spy = jest.spyOn(ChatProject, 'updateMany').mockImplementationOnce(() => {
+        throw new Error('cleanup failed');
+      });
+      const deleted = await fileMethods.deleteFile(ids[0]);
+      spy.mockRestore();
+      expect(deleted?.file_id).toBe(ids[0]);
     });
   });
 

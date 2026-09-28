@@ -1266,14 +1266,34 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       const user = String(file.user);
       idsByUser.set(user, [...(idsByUser.get(user) ?? []), file.file_id]);
     }
-    await Promise.all(
-      [...idsByUser].map(([user, fileIds]) =>
-        ChatProject.updateMany(
-          { user, file_ids: { $in: fileIds } },
-          { $pull: { file_ids: { $in: fileIds } }, $inc: { contextRevision: 1 } },
+    try {
+      await Promise.all(
+        [...idsByUser].map(([user, fileIds]) =>
+          ChatProject.updateMany(
+            { user, file_ids: { $in: fileIds } },
+            { $pull: { file_ids: { $in: fileIds } }, $inc: { contextRevision: 1 } },
+          ),
         ),
-      ),
-    );
+      );
+    } catch (error) {
+      logger.warn('[detachFilesFromProjects] Failed to detach deleted files from projects', error);
+    }
+  }
+
+  /** Clears every project file reference of a user whose files were all deleted. */
+  async function detachAllUserFilesFromProjects(user: string): Promise<void> {
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument> | undefined;
+    if (!ChatProject) {
+      return;
+    }
+    try {
+      await ChatProject.updateMany(
+        { user, 'file_ids.0': { $exists: true } },
+        { $set: { file_ids: [] }, $inc: { contextRevision: 1 } },
+      );
+    } catch (error) {
+      logger.warn('[detachAllUserFilesFromProjects] Failed to detach deleted files', error);
+    }
   }
 
   /**
@@ -1315,10 +1335,12 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     user?: string,
   ): Promise<{ deletedCount?: number }> {
     const File = mongoose.models.File as Model<IMongoFile>;
-    let deleteQuery: FilterQuery<IMongoFile> = { file_id: { $in: file_ids } };
     if (user) {
-      deleteQuery = { user: user };
+      const result = await File.deleteMany({ user });
+      await detachAllUserFilesFromProjects(user);
+      return result;
     }
+    const deleteQuery: FilterQuery<IMongoFile> = { file_id: { $in: file_ids } };
     const doomed = await File.find(deleteQuery)
       .select({ file_id: 1, user: 1 })
       .lean<IMongoFile[]>();

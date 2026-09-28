@@ -786,23 +786,26 @@ describe('persistent Project context', () => {
     ).toBeNull();
   });
 
-  it('releases the temporary hold before attaching and survives a release failure', async () => {
+  it('releases the temporary hold before attaching and attaches nothing when the release fails', async () => {
     const project = await methods.createChatProject(owner, { name: 'Holds' });
     const id = project._id!.toString();
-    await createReference('held', { expiresAt: new Date(Date.now() + 3_600_000) });
-    await createReference('held-fail', { expiresAt: new Date(Date.now() + 3_600_000) });
+    const expiresAt = new Date(Date.now() + 3_600_000);
+    await createReference('held', { expiresAt });
+    await createReference('held-fail', { expiresAt });
 
     const attached = await methods.addChatProjectFile(owner, id, 'held');
     expect(attached?.file_ids).toEqual(['held']);
     expect(await File.findOne({ file_id: 'held' }).lean()).not.toHaveProperty('expiresAt');
 
-    const spy = jest.spyOn(File, 'findOneAndUpdate').mockImplementationOnce(() => {
+    const spy = jest.spyOn(File, 'updateOne').mockImplementationOnce(() => {
       throw new Error('release failed');
     });
-    const again = await methods.addChatProjectFile(owner, id, 'held-fail');
+    await expect(methods.addChatProjectFile(owner, id, 'held-fail')).rejects.toThrow(
+      'release failed',
+    );
     spy.mockRestore();
-    expect(again?.file_ids).toEqual(['held', 'held-fail']);
-    expect(await File.findOne({ file_id: 'held-fail' }).lean()).not.toHaveProperty('expiresAt');
+    expect((await methods.getChatProject(owner, id))?.file_ids).toEqual(['held']);
+    expect((await File.findOne({ file_id: 'held-fail' }).lean())?.expiresAt).toEqual(expiresAt);
   });
 
   it('rejects unauthorized, agent-scoped, unindexed, missing and expired references', async () => {

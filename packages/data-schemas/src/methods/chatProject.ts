@@ -577,30 +577,12 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       throw new Error('Project file unavailable');
     }
 
-    const releaseTemporaryHold = async (): Promise<boolean> => {
-      try {
-        await File.findOneAndUpdate(
-          {
-            _id: file._id,
-            file_id: fileId,
-            user,
-            tenantId: project.tenantId ?? null,
-          },
-          { $unset: { expiresAt: '', temp_file_id: '' } },
-          { timestamps: false },
-        );
-        return true;
-      } catch (error) {
-        logger.warn('[chatProject] Failed to release temporary file hold', error);
-        return false;
-      }
-    };
-
-    const released = await releaseTemporaryHold();
+    await File.updateOne(
+      { _id: file._id, file_id: fileId, user, tenantId: project.tenantId ?? null },
+      { $unset: { expiresAt: '', temp_file_id: '' } },
+      { timestamps: false },
+    );
     const restoreTemporaryHold = async (): Promise<void> => {
-      if (!released) {
-        return;
-      }
       const hold = {
         ...(file.expiresAt != null ? { expiresAt: file.expiresAt } : {}),
         ...(file.temp_file_id != null ? { temp_file_id: file.temp_file_id } : {}),
@@ -613,12 +595,6 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       } catch (error) {
         logger.warn('[chatProject] Failed to restore temporary file hold', error);
       }
-    };
-    const attached = async (result: IChatProject): Promise<IChatProject> => {
-      if (!released) {
-        await releaseTemporaryHold();
-      }
-      return result;
     };
 
     const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
@@ -634,11 +610,11 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         { new: true, runValidators: true },
       ).lean<IChatProject>();
       if (updated) {
-        return await attached(updated);
+        return updated;
       }
       const current = await getChatProject(user, projectId);
       if (current?.file_ids?.includes(fileId)) {
-        return await attached(current);
+        return current;
       }
       await restoreTemporaryHold();
       if (!current) {
