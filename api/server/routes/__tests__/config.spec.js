@@ -440,6 +440,34 @@ describe('GET /api/config', () => {
       });
     });
 
+    it('publishes deployment-owned MCP App operation limits over the defaults', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        mcpSettings: { apps: true },
+        mcpAppSandbox: { operationLimits: { timeoutMs: 45000, maxActive: 4 } },
+      });
+      const response = await request(createApp(mockUser)).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.mcpApps.operationLimits).toEqual({
+        maxBytes: 4 * 1024 * 1024,
+        timeoutMs: 45000,
+        maxActive: 4,
+      });
+    });
+
+    it('publishes no operation limits override when the deployment sets none', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        mcpSettings: { apps: true },
+        mcpAppSandbox: { maxActiveViews: 7 },
+      });
+      const response = await request(createApp(mockUser)).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.mcpApps).not.toHaveProperty('operationLimits');
+    });
+
     it('should include modelSpecs, balance, and webSearch', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       process.env.CHECK_BALANCE = 'true';
