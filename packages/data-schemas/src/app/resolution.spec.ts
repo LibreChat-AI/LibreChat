@@ -923,6 +923,17 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     ]);
   });
 
+  it('drops a merged array item that has no merge key', () => {
+    const merged = mergeConfigOverrides({} as AppConfig, [
+      fakeConfig(
+        { endpoints: { custom: [{ baseURL: 'https://keyless' }, { name: 'kept', baseURL: 'x' }] } },
+        10,
+      ),
+    ]) as unknown as { endpoints: { custom: Array<Record<string, unknown>> } };
+
+    expect(merged.endpoints.custom).toEqual([{ name: 'kept', baseURL: 'x' }]);
+  });
+
   it('lets a lower-priority valid override survive a higher-priority invalid one', () => {
     const merged = mergeConfigOverrides(base, [
       fakeConfig({ interface: { contextCost: false } }, 10),

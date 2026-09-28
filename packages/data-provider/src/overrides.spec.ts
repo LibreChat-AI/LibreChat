@@ -56,6 +56,18 @@ describe('getConfigOverrideIssues', () => {
     ).toEqual(['modelSpecs.list']);
   });
 
+  it('requires the merge key on every merged-by-name array item', () => {
+    expect(
+      getConfigOverrideIssues({
+        endpoints: { custom: [{ baseURL: 'https://a' }, { name: '', models: 5 }] },
+      }),
+    ).toEqual([
+      { path: 'endpoints.custom.0', message: 'name: Required' },
+      { path: 'endpoints.custom.1', message: 'name: Required' },
+    ]);
+    expect(getConfigOverrideIssues({ baseURL: 'https://a' }, 'endpoints.custom.0')).toEqual([]);
+  });
+
   it('accepts fields the schema does not define and stored secret shapes', () => {
     expect(getConfigOverrideIssues({ unknownSection: 5 })).toEqual([]);
     expect(getConfigOverrideIssues(3, 'unknown.path')).toEqual([]);

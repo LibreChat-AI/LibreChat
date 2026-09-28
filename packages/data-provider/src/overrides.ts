@@ -11,10 +11,10 @@ export type ConfigOverrideIssue = {
 type PlainObject = { [key: string]: unknown };
 
 /**
- * Override arrays merged item-by-item over the base (by `name`) rather than replaced,
- * so each item may carry only the fields it changes.
+ * Override arrays merged item-by-item over the base by a key field rather than replaced,
+ * so each item may carry only the fields it changes, but must carry its key.
  */
-const PARTIAL_ARRAY_PATHS = new Set<string>(['endpoints.custom']);
+const PARTIAL_ARRAY_KEYS: Record<string, string> = { 'endpoints.custom': 'name' };
 const MAX_DEPTH = 32;
 
 function isPlainObject(value: unknown): value is PlainObject {
@@ -86,14 +86,17 @@ function checkPartial(
     return [];
   }
 
-  if (
-    def.typeName === ZodFirstPartyTypeKind.ZodArray &&
-    Array.isArray(value) &&
-    PARTIAL_ARRAY_PATHS.has(path)
-  ) {
-    return value.flatMap((item, index) =>
-      checkPartial(def.type, item, joinPath(path, String(index)), depth + 1),
-    );
+  const keyField = Object.prototype.hasOwnProperty.call(PARTIAL_ARRAY_KEYS, path)
+    ? PARTIAL_ARRAY_KEYS[path]
+    : undefined;
+  if (def.typeName === ZodFirstPartyTypeKind.ZodArray && Array.isArray(value) && keyField) {
+    return value.flatMap((item, index) => {
+      const itemPath = joinPath(path, String(index));
+      if (isPlainObject(item) && (typeof item[keyField] !== 'string' || item[keyField] === '')) {
+        return [{ path: itemPath, message: `${keyField}: Required` }];
+      }
+      return checkPartial(def.type, item, itemPath, depth + 1);
+    });
   }
 
   if (!isPlainObject(value)) {
