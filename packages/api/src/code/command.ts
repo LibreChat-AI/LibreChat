@@ -17,6 +17,7 @@ import type { WorkspaceExecuteCommandResult } from './workspace';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
+  fitWorkspaceCommandTimeoutToBudget,
   executeWorkspaceTool,
   WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   WORKSPACE_COMMAND_MAX_TIMEOUT_MS,
@@ -102,7 +103,15 @@ export function resolveAttachedWorkspaceCommandTimeoutMax(
   } else if (upstreamMaxTimeoutMs != null) {
     requested = upstream;
   }
-  return Math.min(requested, upstream);
+  return fitCommandTimeoutMaxToBudget(
+    Math.min(requested, upstream),
+    resolveAttachedWorkspaceRequestTimeoutMs(configSchema),
+  );
+}
+
+function fitCommandTimeoutMaxToBudget(maxTimeoutMs: number, maxRequestTimeoutMs?: number): number {
+  if (maxRequestTimeoutMs == null) return maxTimeoutMs;
+  return Math.min(maxTimeoutMs, fitWorkspaceCommandTimeoutToBudget(maxRequestTimeoutMs));
 }
 
 /**
@@ -321,7 +330,10 @@ export function createAttachedWorkspaceBashTool({
   maxRequestTimeoutMs?: number;
   fetchImpl?: CodeBridgeFetch;
 }): DynamicStructuredTool {
-  const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
+  const effectiveMaxTimeoutMs = fitCommandTimeoutMaxToBudget(
+    normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
+    maxRequestTimeoutMs,
+  );
   const schema = structuredClone(
     buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment),
   );

@@ -395,6 +395,72 @@ describe('createAttachedWorkspaceBashTool', () => {
     expect(foregroundRequest).toMatchObject({ timeoutMs: 30_000 });
   });
 
+  test('fits the command ceiling inside a configured total HTTP budget', () => {
+    expect(
+      resolveAttachedWorkspaceCommandTimeoutMax({
+        limits: { maxCommandTimeoutMs: 80_000, maxRequestTimeoutMs: 90_000 },
+      }),
+    ).toBe(70_000);
+    expect(
+      resolveAttachedWorkspaceCommandTimeoutMax({
+        limits: { maxCommandTimeoutMs: 60_000, maxRequestTimeoutMs: 90_000 },
+      }),
+    ).toBe(60_000);
+    expect(
+      resolveAttachedWorkspaceCommandTimeoutMax(
+        { limits: { maxCommandTimeoutMs: 120_000, maxRequestTimeoutMs: 125_000 } },
+        90_000,
+      ),
+    ).toBe(90_000);
+    expect(
+      resolveAttachedWorkspaceCommandTimeoutMax({ limits: { maxCommandTimeoutMs: 120_000 } }),
+    ).toBe(120_000);
+  });
+
+  test('starts an omitted background timeout that the configured budget can carry', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const configSchema = { limits: { maxCommandTimeoutMs: 80_000, maxRequestTimeoutMs: 90_000 } };
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      maxTimeoutMs: resolveAttachedWorkspaceCommandTimeoutMax(configSchema),
+      maxRequestTimeoutMs: resolveAttachedWorkspaceRequestTimeoutMs(configSchema),
+      fetchImpl,
+    });
+
+    await bashTool.invoke(
+      { command: 'npm test' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+
+    const [, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toMatchObject({ timeoutMs: 70_000 });
+    expect(init?.headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('10000');
+    jest.restoreAllMocks();
+  });
+
+  test('advertises and enforces only the timeout that fits when given both limits directly', async () => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      maxTimeoutMs: 80_000,
+      maxRequestTimeoutMs: 90_000,
+      fetchImpl,
+    });
+
+    expect(bashTool.schema).toMatchObject({
+      properties: { timeoutMs: expect.objectContaining({ maximum: 70_000 }) },
+    });
+    await expect(
+      bashTool.func({ command: 'npm test', timeoutMs: 80_000 }, undefined, {}),
+    ).rejects.toThrow('deployment limit of 70000 milliseconds');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test('resolves the administrator-configured retry horizon', () => {
     expect(resolveAttachedWorkspaceQueueWaitMs()).toBe(5 * 60_000);
     expect(resolveAttachedWorkspaceQueueWaitMs({ limits: { maxQueueWaitMs: 30_000 } })).toBe(
