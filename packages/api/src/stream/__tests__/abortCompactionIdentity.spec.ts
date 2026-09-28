@@ -50,7 +50,7 @@ describe('abortJob compaction identity', () => {
     jest.resetModules();
   });
 
-  it('stamps the partial summary a stopped compaction had streamed', async () => {
+  it('stamps the partial summary a stopped compaction had streamed as failed', async () => {
     const { manager, jobStore } = await configureManager();
     const streamId = 'abort-compaction-partial';
     const job = await manager.createJob(streamId, 'user-1', 'conversation-1', {
@@ -62,10 +62,12 @@ describe('abortJob compaction identity', () => {
     const finalEvent = result.finalEvent as AbortFinalEvent;
 
     expect(result.success).toBe(true);
-    /** The row keeps its unfinished shape; only the marker is added. */
+    /** The row keeps its unfinished shape; the partial summary keeps its text
+     *  but reads as failed, or its label presents the truncated prefix as a
+     *  finished checkpoint. */
     expect(finalEvent.responseMessage).toMatchObject({ unfinished: true, error: false });
     expect(result.content).toEqual([
-      { ...partialSummary, initiatedBy: 'user' } as Agents.MessageContentComplex,
+      { ...partialSummary, initiatedBy: 'user', failed: true } as Agents.MessageContentComplex,
     ]);
 
     await manager.destroy();
@@ -100,9 +102,9 @@ describe('abortJob compaction identity', () => {
     await manager.destroy();
   });
 
-  /** A placeholder the summarizer opened but never streamed text into is not
-   *  an outcome: the typed failure is what makes the stopped row identifiable. */
-  it('records the typed failure beside an empty summary placeholder', async () => {
+  /** A placeholder the summarizer opened but never streamed text into carries
+   *  nothing to show: the typed failure replaces it as the row's outcome. */
+  it('replaces an empty summary placeholder with the typed failure', async () => {
     const { manager, jobStore } = await configureManager();
     const streamId = 'abort-compaction-placeholder';
     const placeholder: Agents.MessageContentComplex = {
@@ -119,7 +121,6 @@ describe('abortJob compaction identity', () => {
 
     expect(result.success).toBe(true);
     expect(result.content).toEqual([
-      { ...placeholder, initiatedBy: 'user' } as Agents.MessageContentComplex,
       {
         type: ContentTypes.ERROR,
         error: COMPACTION_FAILED_ERROR,

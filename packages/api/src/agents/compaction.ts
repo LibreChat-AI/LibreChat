@@ -206,15 +206,14 @@ export function resolveFailedTurnContent(
  * Regenerate would answer the user turn behind the compaction instead of
  * redoing it.
  *
- * Every summary and error part is marked, the same stamp `markCompactionOutcome`
- * puts on a completed run's outcome; a summary placeholder the run opened but
- * never streamed text into counts as no outcome. A terminal abort (Stop) with
- * no outcome records the typed failure so the row still carries its identity;
- * a non-terminal snapshot (`synthesizeFailure: false`, the disconnect save the
- * run may still complete and overwrite) marks what is there and invents
- * nothing. The parts are otherwise untouched, keeping the row's `unfinished`
- * shape, and content from a turn that was not a compaction is returned
- * unchanged.
+ * A terminal abort (Stop) settles the turn, so it applies the completed run's
+ * outcome rules: a usable summary is marked as the outcome; a partial one
+ * keeps its text but is marked `failed`, or its label would present the
+ * truncated prefix as a finished checkpoint; a placeholder that never streamed
+ * text goes, leaving the typed failure as the row's outcome. A non-terminal
+ * snapshot (`synthesizeFailure: false`, the disconnect save the run may still
+ * complete and overwrite) marks what is there and rewrites nothing else.
+ * Content from a turn that was not a compaction is returned unchanged.
  */
 export function markAbortedCompactionContent(
   contentParts: TMessageContentParts[],
@@ -225,18 +224,38 @@ export function markAbortedCompactionContent(
     return contentParts;
   }
   let hasOutcome = false;
-  for (const part of contentParts) {
-    if (part?.type === ContentTypes.SUMMARY) {
-      part.initiatedBy = 'user';
-      if (isSummaryPartWithText(part)) {
-        hasOutcome = true;
-      }
+  for (let index = contentParts.length - 1; index >= 0; index -= 1) {
+    const part = contentParts[index];
+    if (part == null) {
       continue;
     }
-    if (part?.type === ContentTypes.ERROR) {
+    if (part.type === ContentTypes.ERROR) {
       part.initiatedBy = 'user';
       hasOutcome = true;
+      continue;
     }
+    if (part.type !== ContentTypes.SUMMARY) {
+      continue;
+    }
+    /** The usability predicate's false side narrows the part's type away, so
+     *  the reference is taken before it runs. */
+    const summary = part;
+    if (isUsableSummaryPart(part)) {
+      summary.initiatedBy = 'user';
+      hasOutcome = true;
+      continue;
+    }
+    if (!synthesizeFailure) {
+      summary.initiatedBy = 'user';
+      continue;
+    }
+    if (isSummaryPartWithText(summary)) {
+      summary.initiatedBy = 'user';
+      summary.failed = true;
+      hasOutcome = true;
+      continue;
+    }
+    contentParts.splice(index, 1);
   }
   if (!hasOutcome && synthesizeFailure) {
     contentParts.push(...compactionFailureContent());

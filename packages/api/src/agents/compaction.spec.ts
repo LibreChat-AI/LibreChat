@@ -334,17 +334,36 @@ describe('markAbortedCompactionContent', () => {
     summarizing: true,
   });
 
-  /** The abort path owns a cancelled run's row: its partial summary is kept
-   *  (the turn is unfinished, not failed) but must still carry the marker, or
-   *  on a branch ending in a user message the row keeps a Regenerate that
-   *  answers that user turn instead of redoing the compaction. */
-  it('marks the partial summary a stopped compaction had streamed', () => {
+  const completedSummary = (text: string): TMessageContentParts => ({
+    type: ContentTypes.SUMMARY,
+    content: [{ type: ContentTypes.TEXT, text }],
+    boundary: completedBoundary,
+  });
+
+  /** The abort path owns a cancelled run's row: its partial summary must still
+   *  carry the marker, or on a branch ending in a user message the row keeps a
+   *  Regenerate that answers that user turn instead of redoing the compaction.
+   *  The truncated prefix is kept but marked failed, or its label presents it
+   *  as a finished checkpoint. */
+  it('marks the partial summary a stopped compaction had streamed as failed', () => {
     const parts = [partialSummary('Half a summary')];
 
     markAbortedCompactionContent(parts, true);
 
     expect(parts).toHaveLength(1);
-    expect(parts[0]).toMatchObject({ initiatedBy: 'user', summarizing: true });
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user', failed: true, summarizing: true });
+  });
+
+  /** A round that finished before the Stop landed is a real checkpoint: the
+   *  race is not a failure. */
+  it('marks a summary that completed before the stop without failing it', () => {
+    const parts = [completedSummary('Finished before the stop.')];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user' });
+    expect(parts[0]).not.toHaveProperty('failed');
   });
 
   /** Every part that can carry the marker gets it: the row's identity must not
@@ -357,20 +376,19 @@ describe('markAbortedCompactionContent', () => {
 
     markAbortedCompactionContent(parts, true);
 
-    expect(parts[0]).toMatchObject({ initiatedBy: 'user' });
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user', failed: true });
     expect(parts[1]).toMatchObject({ initiatedBy: 'user' });
   });
 
-  /** A summary placeholder with no text is not an outcome: the run produced
-   *  nothing to keep, so the typed failure is the turn's identity. The
-   *  placeholder itself is still marked. */
-  it('records the typed failure beside a summary placeholder that streamed nothing', () => {
+  /** A summary placeholder with no text is not an outcome: nothing of the
+   *  round survived to show, so the typed failure is the row's whole
+   *  outcome. */
+  it('replaces a summary placeholder that streamed nothing with the typed failure', () => {
     const parts = [emptySummaryPlaceholder()];
 
     markAbortedCompactionContent(parts, true);
 
     expect(parts).toEqual([
-      { ...emptySummaryPlaceholder(), initiatedBy: 'user' },
       {
         type: ContentTypes.ERROR,
         error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
@@ -396,14 +414,14 @@ describe('markAbortedCompactionContent', () => {
   });
 
   /** The disconnect save runs while the generation is still live and the
-   *  completion path overwrites the row: inventing a failure there would
-   *  report one that never happened. */
-  it('marks without synthesizing a failure for a non-terminal snapshot', () => {
-    const parts: TMessageContentParts[] = [emptySummaryPlaceholder()];
+   *  completion path overwrites the row: it stamps identity and rewrites
+   *  nothing else, not even the failure flag of a still-streaming part. */
+  it('marks a non-terminal snapshot without failing or synthesizing anything', () => {
+    const parts: TMessageContentParts[] = [partialSummary('Half a summary')];
 
     markAbortedCompactionContent(parts, true, { synthesizeFailure: false });
 
-    expect(parts).toEqual([{ ...emptySummaryPlaceholder(), initiatedBy: 'user' }]);
+    expect(parts).toEqual([{ ...partialSummary('Half a summary'), initiatedBy: 'user' }]);
   });
 
   it('returns content from a turn that was not a compaction unchanged', () => {
