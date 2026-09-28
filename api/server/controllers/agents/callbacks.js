@@ -33,6 +33,7 @@ const {
   getToolInputValidationDetails,
   captureSubagentIdentity,
   collectToolCallIds,
+  createToolTimingTracker,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -513,7 +514,14 @@ function getDefaultHandlers({
     }
     return emitForJob({ event: UsageEvents.ON_TOKEN_USAGE, data: payload });
   };
+  const toolTiming = createToolTimingTracker();
   const handlers = {
+    [StepEvents.ON_TOOL_CALLS_DISPATCHED]: {
+      handle: async (event, data) => {
+        toolTiming.dispatched(data);
+        await emitForJob({ event, data });
+      },
+    },
     [GraphEvents.CHAT_MODEL_END]: new ModelEndHandler(
       collectedUsage,
       collectedThoughtSignatures,
@@ -594,6 +602,7 @@ function getDefaultHandlers({
           const index = stepMap?.get(stepId)?.index;
           const part = typeof index === 'number' ? contentParts[index] : undefined;
           if (part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
+            Object.assign(part.tool_call, toolTiming.take(part.tool_call.id, stepId));
             part.tool_call.runStepStatus = data.status;
             /**
              * The raw derivable duration, left unset rather than zeroed when
@@ -619,6 +628,7 @@ function getDefaultHandlers({
        * @param {GraphRunnableConfig['configurable']} [metadata] The runnable metadata.
        */
       handle: async (event, data, metadata) => {
+        toolTiming.observe(data);
         aggregateContent({ event, data });
         if (data?.delta.type === StepTypes.TOOL_CALLS) {
           await emitForJob({ event, data });
@@ -655,6 +665,7 @@ function getDefaultHandlers({
             agentId: metadata?.agent_id,
           });
         }
+        toolTiming.completed(toolCallId, data?.result?.completed_at);
         aggregateContent({ event, data });
         const stepId = data?.result?.id;
         const runStep = stepMap?.get(stepId);

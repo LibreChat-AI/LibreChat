@@ -38,6 +38,10 @@ export default function ToolCall({
   onExpand,
   runStepStatus,
   runStepDurationMs,
+  toolPreparationStartedAt,
+  toolDispatchedAt,
+  toolPreparationDurationMs,
+  toolExecutionDurationMs,
 }: {
   initialProgress: number;
   isLast?: boolean;
@@ -52,6 +56,10 @@ export default function ToolCall({
   onExpand?: () => void;
   runStepStatus?: PartMetadata['runStepStatus'];
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
+  toolPreparationStartedAt?: PartMetadata['toolPreparationStartedAt'];
+  toolDispatchedAt?: PartMetadata['toolDispatchedAt'];
+  toolPreparationDurationMs?: PartMetadata['toolPreparationDurationMs'];
+  toolExecutionDurationMs?: PartMetadata['toolExecutionDurationMs'];
 }) {
   const localize = useLocalize();
   const [oauthError, setOAuthError] = useState<string | null>(null);
@@ -357,6 +365,12 @@ export default function ToolCall({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (phase === 'running') {
+            if (toolDispatchedAt != null) {
+              return localize('com_ui_tool_calling', { 0: displayFunctionName });
+            }
+            if (toolPreparationStartedAt != null) {
+              return localize('com_ui_tool_preparing', { 0: displayFunctionName });
+            }
             return displayFunctionName
               ? localize('com_assistants_running_var', { 0: displayFunctionName })
               : localize('com_assistants_running_action');
@@ -369,10 +383,14 @@ export default function ToolCall({
           phase={phase}
           onClick={handleToggleInfo}
           inProgressText={
-            intent ??
-            (displayFunctionName
-              ? localize('com_assistants_running_var', { 0: displayFunctionName })
-              : localize('com_assistants_running_action'))
+            toolDispatchedAt != null
+              ? localize('com_ui_tool_calling', { 0: intent ?? displayFunctionName })
+              : toolPreparationStartedAt != null
+                ? localize('com_ui_tool_preparing', { 0: intent ?? displayFunctionName })
+                : (intent ??
+                  (displayFunctionName
+                    ? localize('com_assistants_running_var', { 0: displayFunctionName })
+                    : localize('com_assistants_running_action')))
           }
           authText={
             phase === 'running' && authDomain.length > 0
@@ -382,6 +400,9 @@ export default function ToolCall({
           finishedText={getFinishedText()}
           subtitle={subtitle}
           durationMs={runStepDurationMs}
+          toolPreparationDurationMs={toolPreparationDurationMs}
+          toolExecutionDurationMs={toolExecutionDurationMs}
+          phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
           icon={
             <ToolIcon type={toolIconType} iconUrl={mcpIconUrl} isAnimating={phase === 'running'} />
           }

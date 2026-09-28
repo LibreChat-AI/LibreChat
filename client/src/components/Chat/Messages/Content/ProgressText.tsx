@@ -8,6 +8,7 @@ import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { cn, getRunStepDurationLabels } from '~/utils';
 import CancelledIcon from './CancelledIcon';
 import { useFailedReveal } from './reveal';
+import { ElapsedTimer } from '../Elapsed';
 import { ROW_GLYPH_SLOT } from './rows';
 import { useLocalize } from '~/hooks';
 
@@ -69,6 +70,9 @@ export default function ProgressText({
   icon: iconProp,
   subtitle,
   durationMs,
+  toolPreparationDurationMs,
+  toolExecutionDurationMs,
+  phaseStartAt,
   hasInput = true,
   popover = false,
   isExpanded = false,
@@ -89,8 +93,11 @@ export default function ProgressText({
   authText?: string;
   icon?: React.ReactNode;
   subtitle?: string;
-  /** Wall-clock duration of the run step, from `PartMetadata.runStepDurationMs`. */
+  /** Total run-step lifetime, not necessarily tool execution. */
   durationMs?: number;
+  toolPreparationDurationMs?: number;
+  toolExecutionDurationMs?: number;
+  phaseStartAt?: number;
   hasInput?: boolean;
   popover?: boolean;
   isExpanded?: boolean;
@@ -139,10 +146,36 @@ export default function ProgressText({
    * failed card "how long it took" is not the fact the reader needs — that
    * slot already carries the cancelled icon or the failure suffix.
    */
-  const duration =
-    phase === 'completed' && isReportableRunStepDuration(durationMs)
-      ? getRunStepDurationLabels(durationMs, i18n.language)
-      : undefined;
+  const measured = toolPreparationDurationMs != null || toolExecutionDurationMs != null;
+  const durationParts =
+    phase !== 'completed'
+      ? []
+      : [
+          ...(isReportableRunStepDuration(toolPreparationDurationMs)
+            ? [
+                {
+                  label: localize('com_ui_tool_preparation_time'),
+                  duration: getRunStepDurationLabels(toolPreparationDurationMs, i18n.language),
+                },
+              ]
+            : []),
+          ...(isReportableRunStepDuration(toolExecutionDurationMs)
+            ? [
+                {
+                  label: localize('com_ui_tool_call_time'),
+                  duration: getRunStepDurationLabels(toolExecutionDurationMs, i18n.language),
+                },
+              ]
+            : []),
+          ...(!measured && isReportableRunStepDuration(durationMs)
+            ? [
+                {
+                  label: localize('com_ui_tool_total_time'),
+                  duration: getRunStepDurationLabels(durationMs, i18n.language),
+                },
+              ]
+            : []),
+        ];
 
   return (
     <Wrapper popover={popover} failed={phase === 'failed'} rootRef={rootRef}>
@@ -194,22 +227,17 @@ export default function ProgressText({
         {errorSuffix && (
           <span className="shrink-0 font-normal text-status-error">· {errorSuffix}</span>
         )}
-        {duration && (
-          <>
-            {/* The compact form is the readable one on screen but a poor
-                thing to hear ("one point four s"), so it is hidden from
-                assistive technology and paired with a spoken equivalent.
-                Both live inside the button, so its accessible name carries
-                the duration — this is not an `aria-live` region and does not
-                re-announce. */}
-            <span className="shrink-0 font-normal text-text-secondary" aria-hidden="true">
-              · {localize(duration.key, duration.values)}
+        {isRunning && phaseStartAt != null && <ElapsedTimer start={phaseStartAt} />}
+        {durationParts.map(({ label, duration }) => (
+          <span key={label} className="shrink-0 font-normal text-text-secondary">
+            <span aria-hidden="true">
+              · {label} {localize(duration.key, duration.values)}
             </span>
             <span className="sr-only">
-              {localize(duration.announcedKey, duration.announcedValues)}
+              {label} {localize(duration.announcedKey, duration.announcedValues)}
             </span>
-          </>
-        )}
+          </span>
+        ))}
         {hasInput && (
           <ChevronDown
             className={cn(

@@ -466,6 +466,10 @@ const Part = memo(function Part({
               toolCall.backgroundTask?.cancelled === true ? 'cancelled' : toolCall.runStepStatus
             }
             runStepDurationMs={toolCall.runStepDurationMs}
+            toolPreparationStartedAt={toolCall.toolPreparationStartedAt}
+            toolDispatchedAt={toolCall.toolDispatchedAt}
+            toolPreparationDurationMs={toolCall.toolPreparationDurationMs}
+            toolExecutionDurationMs={toolCall.toolExecutionDurationMs}
           />
         );
       })();
