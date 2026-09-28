@@ -1,4 +1,4 @@
-import { Tools, Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
+import { Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type {
   Agents,
   TAttachment,
@@ -12,9 +12,8 @@ import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activit
 import { hasPendingApprovalInPart, hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
+import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
 import { boundIntentLabel, getToolCallIntent } from './Parts/intent';
-import { isBashProgrammaticToolCall } from './routing';
-import { getToolMeta, summarizeSpan } from './outcome';
 import { isError } from './ToolOutput';
 
 /** How often a live fold's header may repaint. A streamed intent moves the
@@ -246,7 +245,7 @@ export function getSpanIconNames(parts: ReadonlyArray<TMessageContentParts | und
     const toolCall = part == null ? undefined : getStandardToolCall(part);
     if (toolCall != null) {
       const name = toolCall.name ?? '';
-      icons.add(isBashProgrammaticToolCall(name, toolCall.args) ? Tools.bash_tool : name);
+      icons.add(getToolIconName(name, toolCall.args, toolCall.output));
       continue;
     }
     const legacy = part == null ? null : getToolMeta(part);

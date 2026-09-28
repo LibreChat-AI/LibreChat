@@ -165,6 +165,45 @@ describe('ActivityPhaseGroup', () => {
     expect(screen.getByText(LABEL).parentElement).toHaveClass('flex-1', 'text-left');
   });
 
+  test.each([
+    ['create_file', '', 'lucide-file-plus-2'],
+    ['edit_file', '', 'lucide-file-pen-line'],
+    ['create_file', 'Created skills/demo/SKILL.md', 'lucide-file-plus-2'],
+    ['create_file', 'Updated AGENTS.md with safe diagnostic guidance', 'lucide-file-pen-line'],
+    ['edit_file', 'Edited AGENTS.md', 'lucide-file-pen-line'],
+  ])(
+    'shows the file-row glyph on settled and live phase headers for %s: %s',
+    (name, output, glyph) => {
+      const part = {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 'file-1',
+          name,
+          args: '{"path":"AGENTS.md"}',
+          output,
+          type: 'tool_call',
+        },
+      } as unknown as TMessageContentParts;
+      const { rerender } = render(
+        <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[part]}>
+          <div data-testid="phase-content" />
+        </ActivityPhaseGroup>,
+      );
+
+      expect(screen.getByRole('button', { name: LABEL }).querySelector(`.${glyph}`)).not.toBeNull();
+      expect(
+        screen.getByRole('button', { name: LABEL }).querySelector('.lucide-wrench'),
+      ).toBeNull();
+
+      rerender(
+        <ActivityPhaseGroup labelPart={labelPart} hasContent liveParts={[part]}>
+          <div data-testid="phase-content" />
+        </ActivityPhaseGroup>,
+      );
+      expect(screen.getByRole('button').querySelector(`.${glyph}`)).not.toBeNull();
+    },
+  );
+
   test('keeps the focus ring inside the clipped header', () => {
     render(
       <ActivityPhaseGroup labelPart={labelPart} hasContent>

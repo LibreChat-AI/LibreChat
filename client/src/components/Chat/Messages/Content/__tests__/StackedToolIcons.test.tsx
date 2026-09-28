@@ -48,6 +48,15 @@ describe('shared header glyphs', () => {
     },
   );
 
+  it.each([
+    ['create_file', 'lucide-file-plus-2'],
+    ['edit_file', 'lucide-file-pen-line'],
+  ])('renders %s with the same glyph as its file row', (name, glyph) => {
+    const { container } = render(<StackedToolIcons toolNames={[name]} />);
+    expect(container.querySelector(`.${glyph}`)).not.toBeNull();
+    expect(container.querySelector('.lucide-wrench')).toBeNull();
+  });
+
   it('retains a bounded stack and overflow count', () => {
     const { container } = render(
       <StackedToolIcons

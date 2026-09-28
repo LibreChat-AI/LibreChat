@@ -38,6 +38,19 @@ function hasFailedOutput(output: unknown): boolean {
   return typeof output === 'string' && isError(output);
 }
 
+/** A create_file overwrite displays the edit glyph in its own row. Headers use
+ *  the same identity, without changing the tool name used for labels/counts. */
+export function getToolIconName(
+  name: string,
+  args?: string | Record<string, unknown>,
+  output?: string | null,
+): string {
+  if (name === 'create_file' && output?.startsWith('Updated ')) {
+    return 'edit_file';
+  }
+  return isBashProgrammaticToolCall(name, args) ? Tools.bash_tool : name;
+}
+
 /**
  * Group metadata must agree with the individual card, which resolves its
  * outcome from the run step's terminal verdict through `resolveToolCallPhase`.
@@ -105,7 +118,7 @@ export function getToolMeta(
      *  agents" on completion even when the child returned no text. */
     const completed = !!tc.output || tc.progress === 1;
     const name = tc.name ?? '';
-    const iconName = isBashProgrammaticToolCall(name, tc.args) ? Tools.bash_tool : name;
+    const iconName = getToolIconName(name, tc.args, tc.output);
     /** Memory tools report failure in prose ("Invalid key ...") that generic
      *  `isError` parsing does not recognize, so `MemoryCall` classifies it with
      *  its own predicate. Reuse that here or a persisted call with no terminal

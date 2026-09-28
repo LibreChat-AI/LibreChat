@@ -847,6 +847,26 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByText(/web_search|file_search|retrieval/)).not.toBeInTheDocument();
   });
 
+  it('uses the edit glyph for a create_file overwrite without changing its tool label', () => {
+    renderGroup({
+      ...baseProps,
+      parts: [
+        {
+          part: makePart(
+            'file-1',
+            'Updated AGENTS.md with safe diagnostic guidance',
+            'create_file',
+          ),
+          idx: 0,
+        },
+      ],
+      lastContentIdx: 0,
+    });
+
+    expect(screen.getByTestId('stacked-icons')).toHaveAttribute('data-tool-names', 'edit_file');
+    expect(screen.getByRole('button', { name: 'Create File' })).toBeInTheDocument();
+  });
+
   it('keeps repeated action counts and failed-call status in the compact summary', () => {
     renderGroup({
       ...baseProps,
