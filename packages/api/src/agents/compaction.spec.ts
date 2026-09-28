@@ -18,7 +18,9 @@ import {
   markAbortedCompactionContent,
   markCompactionOutcome,
   persistFinalizedCompactionTurn,
+  planAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
+  settleExistingRowsBeforeErrorTurn,
   resolveFailedTurnContent,
   resolveCheckpointMessage,
   resolveFinalizedCompactionTurn,
@@ -976,5 +978,122 @@ describe('unusable summary parts', () => {
     const payload = [{ role: 'assistant', content: [completeSummary] }];
 
     expect(stripUnusableSummaryParts(payload)).toBe(payload);
+  });
+});
+
+describe('planAbortedTurnPersistence', () => {
+  it('writes both rows for an ordinary turn the abort must persist', () => {
+    expect(planAbortedTurnPersistence('persist', true)).toEqual({
+      writeUserRow: true,
+      writeResponseRow: true,
+      withholdFinal: false,
+    });
+  });
+
+  it('writes only the response for a compaction anchored on a persisted leaf', () => {
+    expect(planAbortedTurnPersistence('skip-anchor', true)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: true,
+      withholdFinal: false,
+    });
+  });
+
+  it('withholds the final and every row when the anchor never persisted', () => {
+    expect(planAbortedTurnPersistence('skip-turn', true)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: false,
+      withholdFinal: true,
+      withholdReason: expect.stringContaining('anchor unavailable'),
+    });
+  });
+
+  it('writes nothing for a turn the abort would not persist', () => {
+    expect(planAbortedTurnPersistence('persist', false)).toEqual({
+      writeUserRow: false,
+      writeResponseRow: false,
+      withholdFinal: false,
+    });
+  });
+});
+
+describe('settleExistingRowsBeforeErrorTurn', () => {
+  const partialSummaryRow = () => ({
+    messageId: 'live-response',
+    unfinished: true,
+    content: [
+      {
+        type: ContentTypes.SUMMARY,
+        content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+        summarizing: true,
+      },
+    ],
+  });
+  const deps = (rowsByMessageId: Record<string, unknown[]>) => {
+    const saved: Record<string, unknown>[] = [];
+    return {
+      saved,
+      deps: {
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        errorMessageId: 'error-target',
+        liveResponseMessageId: 'live-response',
+        getMessages: jest.fn(async ({ messageId }: { messageId: string }) =>
+          (rowsByMessageId[messageId] ?? []).map((row) => row),
+        ) as never,
+        saveFinalizedTurn: async (message: Record<string, unknown>) => {
+          saved.push(message);
+          return message;
+        },
+      },
+    };
+  };
+
+  it('settles a compaction snapshot under its live id and blocks the error row', async () => {
+    const { saved, deps: d } = deps({ 'live-response': [partialSummaryRow()] });
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      messageId: 'live-response',
+      unfinished: false,
+      error: true,
+    });
+  });
+
+  /** The error id normalizes back to the anchor itself when the anchor ends
+   *  in `_`: the anchor match must not stop the live row from settling, and
+   *  nothing may be written over that match. */
+  it('settles the live row past an anchor-shaped collision', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'anchor-shaped-match' }],
+      'live-response': [partialSummaryRow()],
+    });
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(true);
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ messageId: 'live-response' });
+  });
+
+  it('blocks the error row for an ordinary turn with an existing row, writing nothing', async () => {
+    const { saved, deps: d } = deps({
+      'error-target': [{ messageId: 'error-target', _id: 'existing' }],
+      'live-response': [{ messageId: 'live-response', _id: 'partial' }],
+    });
+
+    await expect(settleExistingRowsBeforeErrorTurn({}, d)).resolves.toBe(true);
+
+    expect(saved).toHaveLength(0);
+    // The ordinary early return never reads the live row.
+    expect(d.getMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the error row through when no row covers the turn', async () => {
+    const { saved, deps: d } = deps({});
+
+    await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(false);
+
+    expect(saved).toHaveLength(0);
   });
 });

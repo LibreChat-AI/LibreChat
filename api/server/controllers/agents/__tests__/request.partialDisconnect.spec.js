@@ -51,6 +51,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   markAbortedCompactionContent: (...args) =>
     jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
+  settleExistingRowsBeforeErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
   isScheduleFireRequest: jest.fn(() => false),
   exemptFromConcurrencyLimiter: jest.fn(() => false),

@@ -52,7 +52,7 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
-  persistFinalizedCompactionTurn,
+  settleExistingRowsBeforeErrorTurn,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -428,48 +428,6 @@ async function saveErrorTurn(
     }
 
     const userId = req.user.id;
-    /** Whether the failed run's own partial row exists under its distinct
-     *  live response id, finalizing it when it does (a no-op for turns that
-     *  were not compactions). Full documents are requested only where the
-     *  compaction finalization needs the content; ordinary failures keep the
-     *  id-only projection. */
-    const settleLiveSnapshot = async () => {
-      if (liveResponseMessageId == null || liveResponseMessageId === errorMessageId) {
-        return false;
-      }
-      const partial = await getMessages(
-        { user: userId, messageId: liveResponseMessageId, conversationId },
-        req.body?.compact === true ? undefined : '_id',
-      );
-      if (partial.length === 0) {
-        return false;
-      }
-      await finalizeFailedCompactionTurn(req, {
-        userId,
-        conversationId,
-        messageId: liveResponseMessageId,
-        partialRow: partial[0],
-      });
-      return true;
-    };
-    const existing = await getMessages(
-      { user: userId, messageId: errorMessageId, conversationId },
-      '_id',
-    );
-    if (existing.length > 0) {
-      /** This id can normalize back to the compaction anchor itself when the
-       *  anchor ends in `_`: the failed run's row is the distinct live
-       *  response id, so a compaction settles there and never writes the
-       *  error row over whatever matched here. */
-      if (req.body?.compact === true) {
-        await settleLiveSnapshot();
-      }
-      return;
-    }
-    if (await settleLiveSnapshot()) {
-      return;
-    }
-
     const reqCtx = {
       userId,
       isTemporary:
@@ -480,6 +438,24 @@ async function saveErrorTurn(
         req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     };
+    /** The existing-row settlement (which row a failed turn settles, and
+     *  whether its error row may be written at all) lives in @librechat/api;
+     *  this supplies the caller's reads and write. */
+    const coveredByExistingRow = await settleExistingRowsBeforeErrorTurn(req.body, {
+      userId,
+      conversationId,
+      errorMessageId,
+      liveResponseMessageId,
+      getMessages,
+      saveFinalizedTurn: (message) =>
+        saveMessage(reqCtx, message, {
+          context: 'api/server/controllers/agents/request.js - finalize failed compaction turn',
+        }),
+    });
+    if (coveredByExistingRow) {
+      return;
+    }
+
     const context = 'api/server/controllers/agents/request.js - failed turn';
     const endpoint = endpointOption?.endpoint;
     const model = getAgentResponseModel(req, endpointOption);
@@ -584,38 +560,6 @@ async function saveErrorTurn(
  * marking. The decision lives in @librechat/api; this is the wiring, reusing
  * the row the caller already loaded.
  */
-/**
- * The disconnect save is marker-only while the run is still live; a failed
- * turn is what settles it, so a compaction's partial row is finalized with the
- * terminal outcome instead of keeping the snapshot's live-run marking. The
- * operation lives in @librechat/api; this wiring supplies the caller's
- * persistence and the row saveErrorTurn already loaded.
- */
-async function finalizeFailedCompactionTurn(
-  req,
-  { userId, conversationId, messageId, partialRow },
-) {
-  await persistFinalizedCompactionTurn(partialRow, req.body, {
-    messageId,
-    conversationId,
-    saveMessage: (message) =>
-      saveMessage(
-        {
-          userId,
-          isTemporary:
-            req?._agentEventBindingRetention?.isTemporary ??
-            req?.resolvedConversation?.isTemporary ??
-            req?.body?.isTemporary,
-          expiredAt:
-            req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
-          interfaceConfig: req?.config?.interfaceConfig,
-        },
-        message,
-        { context: 'api/server/controllers/agents/request.js - finalize failed compaction turn' },
-      ),
-  });
-}
-
 function classifyScheduledFailure(error, aborted = false) {
   if (aborted || error?.code === 'SCHEDULE_NO_LONGER_ACTIVE') {
     return { status: 'interrupted', error: error?.message };

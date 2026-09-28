@@ -259,6 +259,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   markAbortedCompactionContent: (...args) =>
     jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
+  settleExistingRowsBeforeErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
   logAgentMemorySnapshot: jest.fn(),
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),

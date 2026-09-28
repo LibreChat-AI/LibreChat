@@ -6,6 +6,7 @@ const {
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
   resolveAbortedTurnAnchorDecision,
+  planAbortedTurnPersistence,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
@@ -765,33 +766,27 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
-          /** A compaction anchors on the persisted branch leaf, so its
-           *  existence decides the prerequisite write: present, the projected
-           *  anchor is never upserted over it; absent (Stop won the race
-           *  before the branch loaded), there is nothing to parent the aborted
-           *  response onto and nothing is written. */
-          /** The compaction anchor policy (never upsert the projected leaf,
-           *  never write a response with nothing to hang it on) lives in
-           *  @librechat/api; this supplies the route's reader. */
-          const anchorDecision = await resolveAbortedTurnAnchorDecision(jobData, {
-            messageExists: (messageId, conversationId) =>
-              getMessages({ user: req?.user?.id, messageId, conversationId }).then(
-                (rows) => rows.length > 0,
-              ),
-          });
-          if (anchorDecision === 'skip-turn') {
-            /** Throwing here is the contract for "do not publish the normal
-             *  FINAL": the manager emits a reconciliation frame instead of
-             *  one whose response points at a row deliberately never
-             *  persisted. */
-            persistenceErrors.push(new Error('Compaction anchor unavailable; abort turn withheld'));
+          /** The stopped turn's persistence plan (which rows to write, and
+           *  whether the normal FINAL must be withheld for a reconciliation
+           *  frame instead) comes from @librechat/api, decided from the
+           *  compaction anchor this route reads. */
+          const abortPersistencePlan = planAbortedTurnPersistence(
+            await resolveAbortedTurnAnchorDecision(jobData, {
+              messageExists: (messageId, conversationId) =>
+                getMessages({ user: req?.user?.id, messageId, conversationId }).then(
+                  (rows) => rows.length > 0,
+                ),
+            }),
+            shouldPersistAbortedTurn,
+          );
+          if (abortPersistencePlan.withholdFinal && abortPersistencePlan.withholdReason) {
+            persistenceErrors.push(new Error(abortPersistencePlan.withholdReason));
           }
 
           if (
             jobData?.userMessage?.messageId &&
             jobData?.responseMessageId &&
-            shouldPersistAbortedTurn &&
-            anchorDecision !== 'skip-turn'
+            abortPersistencePlan.writeResponseRow
           ) {
             const messageContext = {
               userId: req?.user?.id,
@@ -852,7 +847,7 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
              * write and checkpoint cleanup so every independently useful
              * operation gets a chance to succeed. A compaction skips the
              * prerequisite: its anchor is the persisted leaf itself. */
-            if (anchorDecision === 'persist') {
+            if (abortPersistencePlan.writeUserRow) {
               try {
                 const persistedRequest = await saveMessage(messageContext, requestMessage, {
                   context: 'api/server/routes/agents/index.js - abort user prerequisite',
