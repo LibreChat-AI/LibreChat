@@ -38,3 +38,18 @@ export const revealedQueuedTurnFamily = atomFamily((_conversationId: string) =>
 export const pendingSteerCancelClientIdsFamily = atomFamily((_conversationId: string) =>
   atom<string[]>([]),
 );
+
+/**
+ * Steer ids whose applied event landed in THIS session, pending their one-shot
+ * receipt draw-in. `SteerPart` consumes its id on mount so the animation plays
+ * exactly once, at the live chip to inline hand-off, never on reload, share, or
+ * a later revisit. Global rather than per-conversation: steer ids are unique,
+ * and the applied part renders in surfaces that don't know their convo id. */
+export const liveAppliedSteerIdsAtom = atom<string[]>([]);
+
+/** Membership view of `liveAppliedSteerIdsAtom` so each `SteerPart` subscribes to
+ *  its own id only: stamping/consuming one steer re-renders that part, not
+ *  every mounted historical part in a long conversation. */
+export const liveAppliedSteerFamily = atomFamily((steerId: string) =>
+  atom((get) => steerId.length > 0 && get(liveAppliedSteerIdsAtom).includes(steerId)),
+);

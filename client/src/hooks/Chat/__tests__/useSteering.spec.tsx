@@ -22,6 +22,7 @@ import { clearAllDrafts, getPendingDraftId, getNewConversationDraftId } from '~/
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
+import ChatSettingsProvider from '~/routes/ChatSettings';
 import { applyPendingAction } from '~/utils/approval';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';
@@ -134,7 +135,7 @@ function setup(params: HookParams = {}, initialize?: (snapshot: MutableSnapshot)
       initializeState={withActiveGeneration(initialize, params.conversationId ?? CONVO_ID)}
     >
       <GenerationProbe />
-      {children}
+      <ChatSettingsProvider>{children}</ChatSettingsProvider>
     </RecoilRoot>
   );
   const rendered = renderHook(

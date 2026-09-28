@@ -1,7 +1,7 @@
 import React from 'react';
-import { act, renderHook } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import { QueryKeys, ContentTypes } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import { ChatContext } from '~/Providers/ChatContext';
@@ -64,6 +64,9 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     ...overrides,
   };
 };
+
+/** The facade delivers cache writes on a microtask, outside the render that caused them. */
+const flushCacheNotify = () => Promise.resolve();
 
 /** Renders `useChat` under the real `ChatContext`; `rerender` swaps the contract value. */
 const renderChat = (initial: ChatContract) => {
@@ -224,7 +227,7 @@ describe('useChat', () => {
     expect(result.current.messages).toHaveLength(2);
   });
 
-  it('re-reads messages when the message cache is written', () => {
+  it('re-reads messages when the message cache is written', async () => {
     let messages: TMessage[] = [userMessage, response({ text: 'Old' })];
     const contract = createContract({
       getMessages: jest.fn(() => messages),
@@ -236,11 +239,12 @@ describe('useChat', () => {
       queryClient.setQueryData([QueryKeys.messages, 'convo-1'], next);
     });
 
-    act(() => {
+    await act(async () => {
       result.current.setMessages((views) => [
         { ...views[0], parts: [{ type: 'text', text: 'Edited' }] },
         views[1],
       ]);
+      await flushCacheNotify();
     });
 
     expect(result.current.messages[0].parts).toEqual([{ type: 'text', text: 'Edited' }]);
@@ -274,7 +278,7 @@ describe('useChat', () => {
     expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello' }]);
   });
 
-  it('follows each stream frame written to the cache with the same message references', () => {
+  it('follows each stream frame written to the cache with the same message references', async () => {
     const key = [QueryKeys.messages, 'convo-1'];
     const streaming = response({ content: [{ type: ContentTypes.TEXT, text: 'Hel' }] });
     const queryClient = new QueryClient();
@@ -292,9 +296,10 @@ describe('useChat', () => {
     const { result } = renderHook(() => useChat(), { wrapper });
     const before = queryClient.getQueryData<TMessage[]>(key);
 
-    act(() => {
+    await act(async () => {
       streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello' }];
       queryClient.setQueryData(key, [userMessage, streaming]);
+      await flushCacheNotify();
     });
 
     expect(queryClient.getQueryData<TMessage[]>(key)).toBe(before);
@@ -302,13 +307,62 @@ describe('useChat', () => {
     expect(result.current.status).toBe('streaming');
 
     const findAll = jest.spyOn(queryClient.getQueryCache(), 'findAll');
-    act(() => {
+    await act(async () => {
       streaming.content = [{ type: ContentTypes.TEXT, text: 'Hello there' }];
       queryClient.setQueryData(key, [userMessage, streaming]);
+      await flushCacheNotify();
     });
 
     expect(result.current.messages[1].parts).toEqual([{ type: 'text', text: 'Hello there' }]);
     expect(findAll).not.toHaveBeenCalled();
+  });
+
+  it('never updates while another component mounts a query on its messages', async () => {
+    const key = [QueryKeys.messages, 'convo-1'];
+    const queryClient = new QueryClient();
+    const contract = createContract({
+      getMessages: jest.fn(() => queryClient.getQueryData<TMessage[]>(key)),
+    });
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    /** Mounting an observer with initial data creates and fills the query inside this render. */
+    const Reader = () => {
+      useQuery({ queryKey: key, queryFn: () => [userMessage], initialData: [userMessage] });
+      return null;
+    };
+    const Probe = ({ withReader }: { withReader: boolean }) => {
+      const { messages } = useChat();
+      return (
+        <>
+          <span data-testid="count">{messages.length}</span>
+          {withReader && <Reader />}
+        </>
+      );
+    };
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>
+          <Probe withReader={false} />
+        </ChatContext.Provider>
+      </QueryClientProvider>,
+    );
+
+    await act(async () => {
+      view.rerender(
+        <QueryClientProvider client={queryClient}>
+          <ChatContext.Provider value={contract}>
+            <Probe withReader />
+          </ChatContext.Provider>
+        </QueryClientProvider>,
+      );
+      await flushCacheNotify();
+    });
+
+    expect(view.getByTestId('count')).toHaveTextContent('1');
+    const renderPhaseUpdates = consoleError.mock.calls.filter(([message]) =>
+      String(message).includes('Cannot update a component'),
+    );
+    consoleError.mockRestore();
+    expect(renderPhaseUpdates).toEqual([]);
   });
 
   it('keeps its messages when another conversation is written', () => {

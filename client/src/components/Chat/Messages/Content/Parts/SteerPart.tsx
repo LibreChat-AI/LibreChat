@@ -1,8 +1,10 @@
 import { memo, useMemo, useState, useEffect, useCallback } from 'react';
-import { useRecoilValue, useSetRecoilState } from 'recoil';
+import { useRecoilValue } from 'recoil';
+import { useAtomValue, useSetAtom } from 'jotai';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import SteerReceipt, { type SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
+import { liveAppliedSteerFamily, liveAppliedSteerIdsAtom } from '~/store/steer';
 import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
 import MessageQuotes from '~/components/Chat/Messages/Content/MessageQuotes';
 import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
@@ -95,8 +97,8 @@ const SteerPart = memo(function SteerPart({
    *  identity consumes its id whether it animated or not, so nothing lingers.
    *  The membership selector scopes the subscription to THIS id — stamping or
    *  consuming one steer never re-renders the other mounted parts. */
-  const isLiveApplied = useRecoilValue(store.liveAppliedSteerFamily(steerId ?? ''));
-  const setLiveAppliedIds = useSetRecoilState(store.liveAppliedSteerIds);
+  const isLiveApplied = useAtomValue(liveAppliedSteerFamily(steerId ?? ''));
+  const setLiveAppliedIds = useSetAtom(liveAppliedSteerIdsAtom);
   const [captured, setCaptured] = useState<{ id: string | undefined; animate: boolean }>({
     id: steerId,
     animate: isLiveApplied,

@@ -8,6 +8,7 @@ import {
   toUIMessage,
 } from 'librechat-data-provider';
 import type { TMessage, UIMessage, TAttachment, UIMappingOptions } from 'librechat-data-provider';
+import type { QueryCacheNotifyEvent } from '@tanstack/react-query';
 import type { TAskFunction } from '~/common';
 import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/MemoryCall';
 import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
@@ -225,6 +226,9 @@ export const getChatStatus = (isSubmitting: boolean, latest: TMessage | undefine
   return latest && isErrorMessage(latest) ? 'error' : 'ready';
 };
 
+/** Cache events that add, drop or rewrite a query's data. */
+const dataEvents = new Set<QueryCacheNotifyEvent['type']>(['added', 'removed', 'updated']);
+
 /** Ids on the active branch: the contract's tail and its ancestors. */
 const getActiveBranch = (byId: Map<string, TMessage>, tailId: string | undefined) => {
   const branch = new Set<string>();
@@ -256,13 +260,29 @@ export function useChat(): UseChatHelpers {
 
   const queryClient = useQueryClient();
   const queryHash = useMemo(() => hashQueryKey([QueryKeys.messages, messagesKey]), [messagesKey]);
+  /**
+   * Only events that can change what `readSnapshot` reads. Observers mount inside other
+   * components' renders and the cache notifies synchronously, so the change is delivered after
+   * the current task instead of inside someone else's render.
+   */
   const subscribe = useCallback(
-    (onChange: () => void) =>
-      queryClient.getQueryCache().subscribe((event) => {
-        if (event.query.queryHash === queryHash) {
-          onChange();
+    (onChange: () => void) => {
+      let active = true;
+      const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+        if (event.query.queryHash !== queryHash || !dataEvents.has(event.type)) {
+          return;
         }
-      }),
+        queueMicrotask(() => {
+          if (active) {
+            onChange();
+          }
+        });
+      });
+      return () => {
+        active = false;
+        unsubscribe();
+      };
+    },
     [queryClient, queryHash],
   );
   const snapshot = useRef<{ writes: number; stored?: TMessage[] }>();

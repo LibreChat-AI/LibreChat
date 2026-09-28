@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { v4 } from 'uuid';
-import { useStore } from 'jotai';
+import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilCallback } from 'recoil';
 import {
@@ -97,6 +97,7 @@ import useEventHandlers, {
 } from './useEventHandlers';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { createSSETransport } from './transport';
 import { useFileMapContext } from '~/Providers';
@@ -965,7 +966,7 @@ export default function useResumableSSE(
   const setAbortScroll = useSetRecoilState(store.abortScrollFamily(runIndex));
   const setSubmission = useSetRecoilState(store.submissionByIndex(runIndex));
   const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(runIndex));
-  const setLiveAppliedSteerIds = useSetRecoilState(store.liveAppliedSteerIds);
+  const setLiveAppliedSteerIds = useSetAtom(liveAppliedSteerIdsAtom);
 
   const streamRef = useRef<AbortController | null>(null);
   /** Removes the foreground re-attach listener owned by the newest

@@ -44,6 +44,7 @@ import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
 import { TermsAndConditionsModal } from '~/components/ui';
 import useDrawerSwipe from '~/hooks/Nav/useDrawerSwipe';
+import ChatSettingsProvider from './ChatSettings';
 import { useHealthCheck } from '~/data-provider';
 import { Banner } from '~/components/Banners';
 import store from '~/store';
@@ -68,7 +69,7 @@ function KeyboardShortcutsProvider() {
   );
 }
 
-export default function Root() {
+function RootLayout() {
   const [showTerms, setShowTerms] = useState(false);
   const [bannerHeight, setBannerHeight] = useState(0);
   /** Shared with the drawer so the two agree on the breakpoint-transition frame. */
@@ -243,5 +244,13 @@ export default function Root() {
         </FileMapContext.Provider>
       </SetConvoProvider>
     </CodeHighlightThrottleContext.Provider>
+  );
+}
+
+export default function Root() {
+  return (
+    <ChatSettingsProvider>
+      <RootLayout />
+    </ChatSettingsProvider>
   );
 }

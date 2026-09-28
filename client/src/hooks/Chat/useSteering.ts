@@ -26,6 +26,7 @@ import type {
   SettledQueuedTurnReceipt,
 } from '~/store/families';
 import type { AgentQueuedTurnReceipt, GenerationProtocolVersion } from '~/data-provider';
+import type { DuringRunAction } from '~/Providers/ChatSettingsContext';
 import type { QueueSendLock } from '~/utils/queueIntent';
 import type { ExtendedFile, FileSetter } from '~/common';
 import {
@@ -60,6 +61,7 @@ import {
 } from '~/components/Chat/Input/Composer/state';
 import { hasQueuedIntent, acquireQueueSendLock, releaseQueueSendLock } from '~/utils/queueIntent';
 import { revealedQueuedTurnFamily, pendingSteerCancelClientIdsFamily } from '~/store/steer';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeApprovalMode from '../Agents/useCodeApprovalMode';
 import { markComposerFilesTaken } from '~/utils/composerFiles';
 import { useSteerRehome } from '~/hooks/Chat/useSteerCancel';
@@ -71,8 +73,7 @@ import { useFileMapContext } from '~/Providers';
 import useLocalize from '~/hooks/useLocalize';
 import store from '~/store';
 
-/** During-run submit routes: inject into the live run, or queue for after it. */
-export type DuringRunAction = 'steer' | 'queue';
+export type { DuringRunAction };
 
 /** Composer state consumed into a queued item alongside the text. */
 export interface QueuedMessageContext {
@@ -595,9 +596,11 @@ export default function useSteering({
   const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
   const { mutate: enqueueAgentQueuedTurn } = useEnqueueAgentQueuedTurnMutation();
   const { mutateAsync: cancelAgentQueuedTurn } = useCancelAgentQueuedTurnMutation();
-  const defaultAction = useRecoilValue<DuringRunAction>(store.duringRunDefaultAction);
-  const setDefaultAction = useSetRecoilState(store.duringRunDefaultAction);
-  const steerInterruptsByDefault = useRecoilValue(store.steerInterruptsByDefault);
+  const {
+    duringRunDefaultAction: defaultAction,
+    setDuringRunDefaultAction: setDefaultAction,
+    steerInterruptsByDefault,
+  } = useChatSettings();
 
   const { selected: codeApprovalMode } = useCodeApprovalMode(conversation, addedConversation);
   const endpoint = conversation?.endpointType ?? conversation?.endpoint;
