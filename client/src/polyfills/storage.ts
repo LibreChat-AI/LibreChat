@@ -29,6 +29,20 @@ export function createMemoryStorage(): Storage {
       }
       return items.get(property);
     },
+    set: (target, property, value, receiver) => {
+      if (typeof property !== 'string' || property in target) {
+        return Reflect.set(target, property, value, receiver);
+      }
+      items.set(property, String(value));
+      return true;
+    },
+    deleteProperty: (target, property) => {
+      if (typeof property !== 'string' || property in target) {
+        return Reflect.deleteProperty(target, property);
+      }
+      items.delete(property);
+      return true;
+    },
     ownKeys: () => Array.from(items.keys()),
     getOwnPropertyDescriptor: (_target, property) => {
       if (typeof property !== 'string' || !items.has(property)) {

@@ -60,4 +60,15 @@ describe('createMemoryStorage', () => {
     expect(typeof storage.getItem).toBe('function');
     expect(storage.getItem('getItem')).toBe('shadow');
   });
+
+  it('routes named-property writes and deletes through the stored items', () => {
+    const storage = createMemoryStorage();
+    storage.lastModel = 'gpt';
+    expect(storage.getItem('lastModel')).toBe('gpt');
+    expect(storage).toHaveLength(1);
+    expect(Object.keys(storage)).toEqual(['lastModel']);
+    delete storage.lastModel;
+    expect(storage.getItem('lastModel')).toBeNull();
+    expect(storage).toHaveLength(0);
+  });
 });
