@@ -37,6 +37,17 @@ function expectOtherUserCached(store: ReturnType<typeof makeStore>) {
 }
 
 describe('evictAuthUserDocs', () => {
+  it('lets a retry find a document an earlier failed delete left behind', async () => {
+    const store = makeStore({ delete: ['doc-a'] });
+    await expect(evictAuthUserDocs(store, { userId: 'user-1' })).resolves.toBe(false);
+
+    store.delete.mockImplementation(async (key: string) => store.values.delete(key));
+    await expect(evictAuthUserDocs(store, { userId: 'user-1' })).resolves.toBe(true);
+
+    expect(store.values.has('doc-a')).toBe(false);
+    expect(store.values.has(INDEX_KEY)).toBe(false);
+  });
+
   it('deletes the indexed and explicit documents and the index', async () => {
     const store = makeStore();
 
@@ -50,7 +61,7 @@ describe('evictAuthUserDocs', () => {
     expectOtherUserCached(store);
   });
 
-  it('reports a failed index read and still deletes what it can reach', async () => {
+  it('reports a failed index read and keeps the index for a retry', async () => {
     const store = makeStore({ get: [INDEX_KEY] });
 
     await expect(evictAuthUserDocs(store, { userId: 'user-1', cacheKey: 'doc-c' })).resolves.toBe(
@@ -58,19 +69,19 @@ describe('evictAuthUserDocs', () => {
     );
 
     expect(store.values.has('doc-c')).toBe(false);
-    expect(store.values.has(INDEX_KEY)).toBe(false);
+    expect(store.values.get(INDEX_KEY)).toEqual(['doc-a', 'doc-b']);
     expect(store.values.has('doc-a')).toBe(true);
     expectOtherUserCached(store);
   });
 
-  it('reports a failed document delete without skipping the other deletes', async () => {
+  it('reports a failed document delete, deletes the others and keeps the index for a retry', async () => {
     const store = makeStore({ delete: ['doc-a'] });
 
     await expect(evictAuthUserDocs(store, { userId: 'user-1' })).resolves.toBe(false);
 
     expect(store.values.has('doc-a')).toBe(true);
     expect(store.values.has('doc-b')).toBe(false);
-    expect(store.values.has(INDEX_KEY)).toBe(false);
+    expect(store.values.get(INDEX_KEY)).toEqual(['doc-a', 'doc-b']);
     expectOtherUserCached(store);
   });
 

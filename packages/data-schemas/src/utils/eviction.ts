@@ -14,9 +14,10 @@ function describeError(error: unknown): string {
 /**
  * Deletes the cached auth user documents for a user, attempting every delete even when
  * another fails. Resolves false when a document may still be served: the reverse index could
- * not be read, so its keys are unknown, or a document delete failed. A failed delete of the
- * index alone leaves only the names of deleted keys behind, so it is logged and still counts
- * as evicted. Never throws, so callers keep their own write results.
+ * not be read, so its keys are unknown, or a document delete failed. The index is deleted only
+ * after every document it names is gone, so a retry can still find what an earlier attempt
+ * left behind. A failed delete of the index alone leaves only the names of deleted keys, so it
+ * is logged and still counts as evicted. Never throws, so callers keep their own write results.
  */
 export async function evictAuthUserDocs(
   store: AuthUserDocEvictionStore,
@@ -44,24 +45,30 @@ export async function evictAuthUserDocs(
     }
   }
 
-  const documentKeys = [...keys];
-  const results = await Promise.allSettled(
-    [...documentKeys, ...(indexKey ? [indexKey] : [])].map((key) => store.delete(key)),
-  );
+  const results = await Promise.allSettled([...keys].map((key) => store.delete(key)));
   let documentsDeleted = true;
-  results.forEach((result, index) => {
-    if (result.status === 'fulfilled') {
-      return;
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      documentsDeleted = false;
+      logger.warn('[authUserDocCache] Cached document delete failed during eviction', {
+        userId: input.userId,
+        error: describeError(result.reason),
+      });
     }
-    const isIndex = index >= documentKeys.length;
-    documentsDeleted = documentsDeleted && isIndex;
-    logger.warn(
-      isIndex
-        ? '[authUserDocCache] Reverse index delete failed during eviction'
-        : '[authUserDocCache] Cached document delete failed during eviction',
-      { userId: input.userId, error: describeError(result.reason) },
-    );
-  });
+  }
+  if (!indexRead || !documentsDeleted) {
+    return false;
+  }
 
-  return indexRead && documentsDeleted;
+  if (indexKey) {
+    try {
+      await store.delete(indexKey);
+    } catch (error) {
+      logger.warn('[authUserDocCache] Reverse index delete failed during eviction', {
+        userId: input.userId,
+        error: describeError(error),
+      });
+    }
+  }
+  return true;
 }
