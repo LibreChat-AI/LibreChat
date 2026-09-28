@@ -42,14 +42,19 @@ async function installAppearance(page: Page, appearance: Appearance, definition?
   );
 }
 
-/** Tabs from the document start onto a bare button and reads the outline it draws. */
+/**
+ * Tabs onto a bare button and reads the outline it draws. Tab moves on from the focused element,
+ * so a sentinel that takes script focus but sits outside the tab order anchors the move.
+ */
 async function keyboardFocusOutline(page: Page): Promise<Outline> {
   await page.evaluate((id) => {
+    const sentinel = document.createElement('span');
+    sentinel.tabIndex = -1;
     const probe = document.createElement('button');
     probe.id = id;
     probe.textContent = 'Focus probe';
-    document.body.prepend(probe);
-    (document.activeElement as HTMLElement | null)?.blur();
+    document.body.prepend(sentinel, probe);
+    sentinel.focus();
   }, PROBE);
   await page.keyboard.press('Tab');
 
