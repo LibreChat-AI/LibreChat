@@ -968,6 +968,7 @@ export default function useStepHandler({
 
         // Store tool call IDs if present
         if (runStep.stepDetails.type === StepTypes.TOOL_CALLS) {
+          const streamedCallCount = runStep.stepDetails.tool_calls?.length ?? 0;
           let updatedResponse = { ...response };
           ((runStep.stepDetails.tool_calls ?? []) as Agents.ToolCall[]).forEach((toolCall) => {
             const toolCallId = toolCall.id ?? '';
@@ -984,7 +985,7 @@ export default function useStepHandler({
                 stepId: runStep.id,
                 toolPreparationStartedAt:
                   firstFragmentByCall.current.get(toolCallId) ??
-                  ((runStep.stepDetails.tool_calls?.length ?? 0) <= 1
+                  (streamedCallCount <= 1
                     ? firstFragmentByStep.current.get(runStep.id)
                     : undefined),
                 toolDispatchedAt: dispatchedByCall.current.get(toolCallId),
