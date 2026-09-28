@@ -1271,22 +1271,26 @@ describe('getConfigFieldIssues', () => {
   });
 
   it('judges a write together with the fields the principal already overrides', () => {
-    const stored = {
-      cloudfront: {
-        domain: 'https://cdn.example.com',
-        imageSigning: 'cookies',
-        cookieDomain: '.example.com',
-      },
+    const cloudfront = {
+      domain: 'https://cdn.example.com',
+      imageSigning: 'cookies',
+      cookieDomain: '.example.com',
     };
-    expect(getConfigFieldIssues({ 'cloudfront.requireSignedAccess': true }, {}, stored)).toEqual(
-      [],
-    );
     expect(
       getConfigFieldIssues(
         { 'cloudfront.requireSignedAccess': true },
         {},
         {
-          cloudfront: { ...stored.cloudfront, imageSigning: 'none' },
+          overrides: { cloudfront },
+        },
+      ),
+    ).toEqual([]);
+    expect(
+      getConfigFieldIssues(
+        { 'cloudfront.requireSignedAccess': true },
+        {},
+        {
+          overrides: { cloudfront: { ...cloudfront, imageSigning: 'none' } },
         },
       ).map((issue) => issue.path),
     ).toEqual(['cloudfront.requireSignedAccess']);
@@ -1295,9 +1299,51 @@ describe('getConfigFieldIssues', () => {
         { 'interface.customWelcome': 'hi' },
         {},
         {
-          interface: { contextCost: 'yes' },
+          overrides: { interface: { contextCost: 'yes' } },
         },
       ),
+    ).toEqual([]);
+  });
+
+  it('reports a stored related field the write makes invalid', () => {
+    expect(
+      getConfigFieldIssues(
+        { 'cloudfront.imageSigning': 'none' },
+        {},
+        {
+          overrides: {
+            cloudfront: {
+              domain: 'https://cdn.example.com',
+              imageSigning: 'cookies',
+              cookieDomain: '.example.com',
+              requireSignedAccess: true,
+            },
+          },
+        },
+      ).map((issue) => issue.path),
+    ).toEqual(['cloudfront.requireSignedAccess']);
+  });
+
+  it('validates on a base with the remaining tombstones of the principal applied', () => {
+    const base = {
+      cloudfront: {
+        domain: 'https://cdn.example.com',
+        imageSigning: 'cookies',
+        cookieDomain: '.example.com',
+      },
+    } as Partial<TCustomConfig>;
+    expect(getConfigFieldIssues({ 'cloudfront.requireSignedAccess': true }, base)).toEqual([]);
+    expect(
+      getConfigFieldIssues({ 'cloudfront.requireSignedAccess': true }, base, {
+        overrides: {},
+        tombstones: ['cloudfront.imageSigning'],
+      }).map((issue) => issue.path),
+    ).toEqual(['cloudfront.requireSignedAccess']);
+    expect(
+      getConfigFieldIssues({ 'cloudfront.imageSigning': 'cookies' }, base, {
+        overrides: { cloudfront: { requireSignedAccess: true } },
+        tombstones: ['cloudfront.imageSigning'],
+      }),
     ).toEqual([]);
   });
 

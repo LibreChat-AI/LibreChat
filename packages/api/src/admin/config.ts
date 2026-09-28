@@ -943,7 +943,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         getBaseYamlConfig(user.tenantId),
       ]);
       const encryptedFields = encryptConfigSecretFields(fields);
-      const fieldIssues = getConfigFieldIssues(encryptedFields, baseYaml, existing?.overrides);
+      const fieldIssues = getConfigFieldIssues(encryptedFields, baseYaml, existing);
       if (fieldIssues.length > 0) {
         return invalidOverrideResponse(res, fieldIssues);
       }

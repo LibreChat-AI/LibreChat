@@ -10,6 +10,7 @@ import {
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig, IConfig } from '~/types';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
+import { getTombstonePathsToClear } from '~/methods/config';
 import logger from '~/config/winston';
 
 type AnyObject = { [key: string]: unknown };
@@ -456,22 +457,35 @@ function isRelatedPath(a: string[], b: string[]): boolean {
 }
 
 /**
- * Checks dot-path field writes on top of the principal's stored overrides, building the
- * result the way a Mongo `$set` on each `overrides.<path>` would. Only issues on or around
- * the written paths are reported, so an older stored field does not block an unrelated write.
+ * Checks dot-path field writes on top of the principal's stored config, building the
+ * result the way `patchConfigFields` stores it: a Mongo `$set` on each `overrides.<path>`,
+ * clearing the tombstones those paths clear. The principal's remaining tombstones are
+ * applied to the base. An issue is reported when it touches a written path, or when the
+ * write introduced it elsewhere (a related field the write made invalid); issues the stored
+ * config already had are left to merge time so they do not block an unrelated write.
  */
 export function getConfigFieldIssues(
   fields: Record<string, unknown>,
   base: Partial<TCustomConfig> = {},
-  stored?: unknown,
+  stored?: { overrides?: unknown; tombstones?: unknown[] } | null,
 ): ConfigOverrideIssue[] {
   const written = Object.keys(fields).map((fieldPath) => fieldPath.split('.'));
+  const cleared = new Set(Object.keys(fields).flatMap(getTombstonePathsToClear));
+  const effectiveBase = (stored?.tombstones ?? [])
+    .filter((path): path is string => typeof path === 'string' && !cleared.has(path))
+    .reduce((current, path) => deletePath(current, path), base as AnyObject);
+  const storedOverrides = isPlainObject(stored?.overrides) ? stored.overrides : {};
   const candidate = Object.entries(fields).reduce<unknown>(
     (current, [fieldPath, value]) => setPath(current, fieldPath.split('.'), value),
-    isPlainObject(stored) ? stored : {},
+    storedOverrides,
   );
-  return getConfigOverrideIssues(candidate, base).filter((issue) =>
-    written.some((segments) => isRelatedPath(issue.segments, segments)),
+  const existing = new Set(
+    getConfigOverrideIssues(storedOverrides, effectiveBase).map((issue) => issue.path),
+  );
+  return getConfigOverrideIssues(candidate, effectiveBase).filter(
+    (issue) =>
+      !existing.has(issue.path) ||
+      written.some((segments) => isRelatedPath(issue.segments, segments)),
   );
 }
 
