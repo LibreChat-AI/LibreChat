@@ -236,4 +236,39 @@ test.describe('Principal config override validation', () => {
       await clearOverrides(request, admin, target.userId);
     }
   });
+
+  test('a lower-priority override completed by a higher-priority one keeps both @scenario:config-override-layers-complete-each-other', async ({
+    request,
+  }) => {
+    const { admin, target } = await sessions(request);
+    const rolePath = '/api/admin/config/role/USER';
+    await clearOverrides(request, admin, target.userId);
+    try {
+      /** The role layer leaves out the required `siteKey`, which the user layer supplies. */
+      const role = await request.put(rolePath, {
+        headers: admin.headers,
+        data: { priority: 10, overrides: { turnstile: { options: { size: 'compact' } } } },
+      });
+      expect(role.ok()).toBeTruthy();
+      const user = await request.put(configPath(target.userId), {
+        headers: admin.headers,
+        data: { priority: 20, overrides: { turnstile: { siteKey: 'layered-site-key' } } },
+      });
+      expect(user.ok()).toBeTruthy();
+
+      await expect
+        .poll(
+          async () => {
+            const res = await request.get('/api/config', { headers: target.headers });
+            expect(res.ok()).toBeTruthy();
+            return ((await res.json()) as { turnstile?: unknown }).turnstile;
+          },
+          { timeout: 30000, intervals: [500, 1000, 2000] },
+        )
+        .toEqual({ siteKey: 'layered-site-key', options: { size: 'compact' } });
+    } finally {
+      await request.delete(rolePath, { headers: admin.headers });
+      await clearOverrides(request, admin, target.userId);
+    }
+  });
 });

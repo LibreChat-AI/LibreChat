@@ -2557,7 +2557,9 @@ describe('createAdminConfigHandlers', () => {
       await handlers.patchConfigField(req, res);
 
       expect(res.statusCode).toBe(400);
-      expect(res.body?.issues).toEqual([{ path: 'endpoints.custom', code: 'invalid_type' }]);
+      expect(res.body?.issues).toEqual([
+        { path: 'endpoints.custom', code: 'indexed_merge_key_write' },
+      ]);
       expect(deps.patchConfigFields).not.toHaveBeenCalled();
     });
 

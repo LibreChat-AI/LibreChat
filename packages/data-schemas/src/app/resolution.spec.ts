@@ -890,13 +890,13 @@ describe('mergeConfigOverrides', () => {
 });
 
 describe('mergeConfigOverrides: filtered MCP servers', () => {
-  it('does not let a filtered process-backed server complete a later partial', () => {
+  it('does not let a filtered process-backed server shape a later partial', () => {
     const merged = mergeConfigOverrides({} as AppConfig, [
       fakeConfig({ mcpServers: { injected: { type: 'stdio', command: 'node', args: ['x'] } } }, 10),
       fakeConfig({ mcpServers: { injected: { title: 'Injected' } } }, 20, undefined, 'other'),
     ]) as unknown as { mcpConfig?: Record<string, unknown> };
 
-    expect(merged.mcpConfig?.injected).toBeUndefined();
+    expect(merged.mcpConfig?.injected).toEqual({ title: 'Injected' });
   });
 });
 
@@ -996,7 +996,7 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     expect(merged.messageFilter.pii.customPatterns.map((pattern) => pattern.id)).toEqual(['ok']);
   });
 
-  it('keeps valid sections when a cascade of removals outlasts the first passes', () => {
+  it('drops a replaced array item left incomplete by a repair and keeps other sections', () => {
     const merged = mergeConfigOverrides(baseConfig, [
       fakeConfig(
         {
@@ -1009,10 +1009,36 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
         },
         10,
       ),
-    ]) as unknown as { interfaceConfig: Record<string, unknown>; endpoints: unknown };
+    ]) as unknown as {
+      interfaceConfig: Record<string, unknown>;
+      endpoints: unknown;
+    };
 
     expect(merged.interfaceConfig.customWelcome).toBe('kept');
     expect(merged.endpoints).toEqual(baseConfig.endpoints);
+  });
+
+  it('keeps a lower layer that relies on a higher layer for a required field', () => {
+    const merged = mergeConfigOverrides({} as AppConfig, [
+      fakeConfig(
+        {
+          cloudfront: {
+            imageSigning: 'cookies',
+            cookieDomain: '.example.com',
+            requireSignedAccess: true,
+          },
+        },
+        10,
+      ),
+      fakeConfig({ cloudfront: { domain: 'https://cdn.example.com' } }, 20, undefined, 'other'),
+    ]) as unknown as { cloudfront: Record<string, unknown> };
+
+    expect(merged.cloudfront).toEqual({
+      imageSigning: 'cookies',
+      cookieDomain: '.example.com',
+      requireSignedAccess: true,
+      domain: 'https://cdn.example.com',
+    });
   });
 
   it('lets a lower-priority valid override survive a higher-priority invalid one', () => {
@@ -1143,15 +1169,6 @@ describe('getConfigOverrideIssues', () => {
     expect(getConfigOverrideIssues({ endpoints: { azureOpenAI: { assistants: true } } })).toEqual(
       [],
     );
-    expect(
-      paths(
-        getConfigOverrideIssues(
-          { endpoints: { azureOpenAI: { assistants: true } } },
-          {},
-          { requireComplete: true },
-        ),
-      ),
-    ).toEqual(['endpoints.azureOpenAI']);
   });
 
   it('requires the merge key on custom endpoint items and maps merged items back by it', () => {

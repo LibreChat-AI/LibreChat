@@ -338,6 +338,24 @@ function attributeIssue(
   return segments.length > 0 ? segments : undefined;
 }
 
+/**
+ * Whether the override node at `segments` is final: at or inside an array the merge replaces
+ * (any array not merged by key), so no other layer can supply what it leaves out.
+ */
+function isReplacedArrayNode(overrides: AnyObject, segments: string[]): boolean {
+  let node: unknown = overrides;
+  for (let index = 0; index < segments.length; index++) {
+    node = Array.isArray(node)
+      ? node[Number(segments[index])]
+      : (node as AnyObject)[segments[index]];
+    const path = segments.slice(0, index + 1).join('.');
+    if (Array.isArray(node) && !hasOwn(ARRAY_MERGE_KEYS, path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Items of a merged-by-key array need their key: the merge drops an item without one. */
 function getKeylessItemIssues(overrides: AnyObject): ConfigOverrideIssue[] {
   return Object.entries(ARRAY_MERGE_KEYS).flatMap(([arrayPath, keyField]) => {
@@ -382,27 +400,17 @@ function expandUnionIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
   });
 }
 
-export interface ConfigOverrideCheckOptions {
-  /**
-   * Whether an issue the overrides caused only by leaving something out counts: a required
-   * field or a related field that another override layer may still supply. Off for a
-   * single write, which is judged only on the values it supplies; on at merge, where the
-   * accumulated config is final.
-   */
-  requireComplete?: boolean;
-}
-
 /**
  * Checks config overrides the way they apply: merged over `base` (YAML-shaped), each
  * section they touch parsed with its `configSchema` schema, and every failure attributed
  * to the override node that caused it. Unions, refinements, required fields and defaults
- * are therefore judged on the merged result, not on the patch alone. Keys the schema does
- * not define are accepted unchanged.
+ * are therefore judged on the merged result, not on the patch alone. An issue caused only
+ * by leaving something out (a required or related field another layer may supply) is not
+ * reported, except inside an array the merge replaces, where nothing can supply it. Keys the schema does not define are accepted unchanged.
  */
 export function getConfigOverrideIssues(
   overrides: unknown,
   base: Partial<TCustomConfig> = {},
-  options: ConfigOverrideCheckOptions = {},
 ): ConfigOverrideIssue[] {
   if (!isPlainObject(overrides)) {
     return [toIssue([], 'invalid_document')];
@@ -425,7 +433,10 @@ export function getConfigOverrideIssues(
       }
       const issuePath: IssuePath = [section, ...issue.path];
       const segments = attributeIssue(overrides, merged, issuePath);
-      if (!segments || (!options.requireComplete && segments.length < issuePath.length)) {
+      if (
+        !segments ||
+        (segments.length < issuePath.length && !isReplacedArrayNode(overrides, segments))
+      ) {
         continue;
       }
       const path = segments.join('.');
@@ -540,10 +551,13 @@ function omitPath(target: unknown, segments: string[]): unknown {
     return target;
   }
   const next = { ...target };
-  if (rest.length === 0) {
+  const child = rest.length === 0 ? undefined : omitPath(next[segment], rest);
+  /** A node its repairs emptied supplies nothing, so the value beneath it stays instead. */
+  const emptied = child != null && typeof child === 'object' && Object.keys(child).length === 0;
+  if (rest.length === 0 || emptied) {
     delete next[segment];
   } else {
-    next[segment] = omitPath(next[segment], rest);
+    next[segment] = child;
   }
   return next;
 }
@@ -551,17 +565,18 @@ function omitPath(target: unknown, segments: string[]): unknown {
 /**
  * Drops the override nodes that make the merged config fail `configSchema`, so an invalid
  * stored value (written before write-time validation, by an older server, or one that only
- * fails once layered over other overrides) leaves the value beneath it in place.
+ * fails once layered over other overrides) leaves the value beneath it in place. A layer
+ * is not judged on what it leaves out, since a higher-priority layer may supply it.
  */
 function stripInvalidOverrides(config: IConfig, base: Partial<TCustomConfig>): AnyObject {
   const principal = `${config.principalType}/${config.principalId}`;
   let stripped: unknown = config.overrides;
   /**
-   * Removing a field can leave its parent incomplete, so check again while removals make
-   * progress. If they stop, only the sections that still fail are dropped.
+   * Removing a field can make a related field it supplies fail, so check again while
+   * removals make progress. If they stop, only the sections that still fail are dropped.
    */
   for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
-    const issues = getConfigOverrideIssues(stripped, base, { requireComplete: true });
+    const issues = getConfigOverrideIssues(stripped, base);
     if (issues.length === 0) {
       return stripped as AnyObject;
     }
@@ -582,9 +597,7 @@ function stripInvalidOverrides(config: IConfig, base: Partial<TCustomConfig>): A
     }
   }
   const failing = new Set(
-    getConfigOverrideIssues(stripped, base, { requireComplete: true }).map(
-      (issue) => issue.segments[0],
-    ),
+    getConfigOverrideIssues(stripped, base).map((issue) => issue.segments[0]),
   );
   logger.warn(
     `[mergeConfigOverrides] Ignoring still-invalid sections ${[...failing].join(', ')} for ${principal}`,
