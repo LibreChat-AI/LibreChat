@@ -1,5 +1,8 @@
 import { useId, useLayoutEffect } from 'react';
+import { atom } from 'jotai';
 import { useRecoilState } from 'recoil';
+import { atomFamily } from 'jotai/utils';
+import type { Artifact } from '~/common';
 import { useMessageContext } from '~/Providers';
 import store from '~/store';
 
@@ -20,9 +23,11 @@ interface ToolArtifactClaim {
  * Scopes a tool artifact's chat-row dedup to the message that mounts it, so
  * the same file shows one card per message (FR-06) but collapses repeat
  * mounts within a single message to one (FR-07). Falls back to the bare
- * file id when no message is known (search/shared views without an
- * ambient `MessageContext`), which keeps today's cross-message dedup for
- * that caller — `ArtifactRouting.test.tsx`'s "latest mount wins" and
+ * file id when no message is known — only the search-results route
+ * (`routes/Search.tsx` → `SearchMessage`) renders without an ambient
+ * `MessageContext`; `Share/Message.tsx` already provides one with
+ * `messageId` set. That fallback keeps today's cross-message dedup for
+ * the search route — `ArtifactRouting.test.tsx`'s "latest mount wins" and
  * "does not ping-pong" cases render this way and must stay green.
  *
  * Shared by `ToolArtifactCard` and `ToolMermaidArtifact` so the same file
@@ -47,4 +52,28 @@ export default function useToolArtifactClaim(id: string): ToolArtifactClaim {
   }, [claimKey, setClaim]);
 
   return { isMyClaim: claim == null || claim === claimKey, claimKey };
+}
+
+/**
+ * Per-file-identity "newest version seen" for tool-diagram artifacts.
+ * Every mounted `ToolMermaidArtifact` offers its own artifact here on
+ * mount, keeping whichever entry has the larger `lastUpdateTime` (ties
+ * keep the current entry, so equal-time offers don't drift). Entries
+ * persist after a card unmounts, so a message whose diagram was
+ * superseded stays discoverable for any other message sharing the same
+ * file identity even after the newer card leaves the DOM.
+ */
+export const newestToolArtifactFamily = atomFamily((_id: string) => atom<Artifact | null>(null));
+
+/**
+ * Shared by `ToolArtifactCard`'s self-heal registration and
+ * `ToolMermaidArtifact`/`Mermaid`'s newest-version handling so both use
+ * the same "is `candidate` strictly newer than `other`" rule instead of
+ * two copies that could drift out of sync.
+ */
+export function isStrictlyNewer(
+  candidate: Pick<Artifact, 'lastUpdateTime'>,
+  other: Pick<Artifact, 'lastUpdateTime'> | null | undefined,
+): boolean {
+  return other != null && candidate.lastUpdateTime > other.lastUpdateTime;
 }

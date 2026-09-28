@@ -9,9 +9,9 @@ import {
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
 import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
+import useToolArtifactClaim, { isStrictlyNewer } from './claim';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
-import useToolArtifactClaim from './claim';
 import ArtifactRow from './ArtifactRow';
 import store from '~/store';
 
@@ -156,7 +156,7 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
     // overwrites in a loop.
     const isNewerOrTied =
       existingEntry == null ||
-      artifact.lastUpdateTime > existingEntry.lastUpdateTime ||
+      isStrictlyNewer(artifact, existingEntry) ||
       (artifact.lastUpdateTime === existingEntry.lastUpdateTime && isMyGlobalClaim);
     if (!isNewerOrTied) {
       return;

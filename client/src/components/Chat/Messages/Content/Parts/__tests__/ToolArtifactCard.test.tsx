@@ -48,13 +48,14 @@ jest.mock('~/components/Messages/Content/Mermaid/Mermaid', () => ({
     artifact,
   }: {
     children: string;
-    artifact?: { id: string; title?: string; type?: string };
+    artifact?: { id: string; title?: string; type?: string; content?: string };
   }) => (
     <div
       data-testid="mermaid-render"
       data-artifact-id={artifact?.id}
       data-artifact-title={artifact?.title}
       data-artifact-type={artifact?.type}
+      data-artifact-content={artifact?.content}
     >
       {children}
     </div>
@@ -256,6 +257,161 @@ describe('ToolMermaidArtifact message-scoped dedup (FR-09)', () => {
       </RecoilRoot>,
     );
     expect(screen.getAllByTestId('mermaid-render')).toHaveLength(1);
+  });
+});
+
+describe('ToolMermaidArtifact newest-version selection (B14)', () => {
+  const mermaidCards = () => screen.getAllByTestId('mermaid-render');
+
+  const ArtifactKeysProbe = ({ onSnapshot }: { onSnapshot: (keys: string[]) => void }) => {
+    const artifacts = useRecoilValue(store.artifactsState);
+    React.useEffect(() => {
+      onSnapshot(Object.keys(artifacts ?? {}));
+    });
+    return null;
+  };
+
+  it('offers the older message card the newer content when the newer message mounts after it', () => {
+    const older = baseAttachment({
+      file_id: 'diagram-mount-order-a',
+      filename: 'flow.mmd',
+      text: 'graph TD\nA-->B',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    const newer = baseAttachment({
+      file_id: 'diagram-mount-order-a',
+      filename: 'flow.mmd',
+      text: 'graph TD\nA-->C',
+      updatedAt: '2024-01-02T00:00:00.000Z',
+    });
+    let artifactKeys: string[] = [];
+    render(
+      <RecoilRoot>
+        <ArtifactKeysProbe onSnapshot={(keys) => (artifactKeys = keys)} />
+        <MessageContext.Provider value={messageScope('m1')}>
+          <AttachmentGroup attachments={[older]} />
+        </MessageContext.Provider>
+        <MessageContext.Provider value={messageScope('m2')}>
+          <AttachmentGroup attachments={[newer]} />
+        </MessageContext.Provider>
+      </RecoilRoot>,
+    );
+    const cards = mermaidCards();
+    expect(cards).toHaveLength(2);
+    // Opening EITHER card — including the older message's — would register
+    // the newest version.
+    cards.forEach((card) => {
+      expect(card).toHaveAttribute('data-artifact-content', 'graph TD\nA-->C');
+    });
+    // Each inline diagram still renders its own message's source.
+    expect(cards[0].textContent).toBe('graph TD\nA-->B');
+    expect(cards[1].textContent).toBe('graph TD\nA-->C');
+    // Mounting alone never writes into artifactsState (navigator unaffected).
+    expect(artifactKeys).toHaveLength(0);
+  });
+
+  it('keeps the newest content when the newer message mounts before the older one', () => {
+    const newer = baseAttachment({
+      file_id: 'diagram-mount-order-b',
+      filename: 'flow.mmd',
+      text: 'graph TD\nA-->C',
+      updatedAt: '2024-01-02T00:00:00.000Z',
+    });
+    const older = baseAttachment({
+      file_id: 'diagram-mount-order-b',
+      filename: 'flow.mmd',
+      text: 'graph TD\nA-->B',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    render(
+      <RecoilRoot>
+        <MessageContext.Provider value={messageScope('m1')}>
+          <AttachmentGroup attachments={[newer]} />
+        </MessageContext.Provider>
+        <MessageContext.Provider value={messageScope('m2')}>
+          <AttachmentGroup attachments={[older]} />
+        </MessageContext.Provider>
+      </RecoilRoot>,
+    );
+    const cards = mermaidCards();
+    expect(cards).toHaveLength(2);
+    cards.forEach((card) => {
+      expect(card).toHaveAttribute('data-artifact-content', 'graph TD\nA-->C');
+    });
+    expect(cards[0].textContent).toBe('graph TD\nA-->C');
+    expect(cards[1].textContent).toBe('graph TD\nA-->B');
+  });
+
+  it('keeps the newer content after the newer card unmounts and the older card mounts fresh', () => {
+    const fileId = 'diagram-remount';
+    const newer = baseAttachment({
+      file_id: fileId,
+      filename: 'flow.mmd',
+      text: 'graph TD\nA-->C',
+      updatedAt: '2024-01-02T00:00:00.000Z',
+    });
+    const older = baseAttachment({
+      file_id: fileId,
+      filename: 'flow.mmd',
+      text: 'graph TD\nA-->B',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    const { unmount } = render(
+      <RecoilRoot>
+        <MessageContext.Provider value={messageScope('m1')}>
+          <AttachmentGroup attachments={[newer]} />
+        </MessageContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('mermaid-render')).toHaveAttribute(
+      'data-artifact-content',
+      'graph TD\nA-->C',
+    );
+    unmount();
+
+    render(
+      <RecoilRoot>
+        <MessageContext.Provider value={messageScope('m2')}>
+          <AttachmentGroup attachments={[older]} />
+        </MessageContext.Provider>
+      </RecoilRoot>,
+    );
+    const reopened = screen.getByTestId('mermaid-render');
+    expect(reopened).toHaveAttribute('data-artifact-content', 'graph TD\nA-->C');
+    expect(reopened.textContent).toBe('graph TD\nA-->B');
+  });
+
+  it('settles on one version when two diagrams for the same file share lastUpdateTime (no ping-pong)', () => {
+    const fileId = 'diagram-tie';
+    const versionA = () =>
+      baseAttachment({ file_id: fileId, filename: 'tie.mmd', text: 'graph TD\nA-->B' });
+    const versionB = () =>
+      baseAttachment({ file_id: fileId, filename: 'tie.mmd', text: 'graph TD\nA-->C' });
+
+    const renderPair = () =>
+      render(
+        <RecoilRoot>
+          <MessageContext.Provider value={messageScope('m1')}>
+            <AttachmentGroup attachments={[versionA()]} />
+          </MessageContext.Provider>
+          <MessageContext.Provider value={messageScope('m2')}>
+            <AttachmentGroup attachments={[versionB()]} />
+          </MessageContext.Provider>
+        </RecoilRoot>,
+      );
+
+    const { unmount } = renderPair();
+    const firstCards = mermaidCards();
+    const settled = firstCards[0].getAttribute('data-artifact-content');
+    expect(settled).not.toBeNull();
+    expect(['graph TD\nA-->B', 'graph TD\nA-->C']).toContain(settled);
+    expect(firstCards[1]).toHaveAttribute('data-artifact-content', settled as string);
+    unmount();
+
+    renderPair();
+    const secondCards = mermaidCards();
+    expect(secondCards[0]).toHaveAttribute('data-artifact-content', settled as string);
+    expect(secondCards[1]).toHaveAttribute('data-artifact-content', settled as string);
   });
 });
 

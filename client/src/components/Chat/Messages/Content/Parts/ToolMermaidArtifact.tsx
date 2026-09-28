@@ -1,11 +1,12 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useLayoutEffect, useMemo, useState } from 'react';
+import { useAtom } from 'jotai';
 import { Download } from 'lucide-react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
+import useToolArtifactClaim, { isStrictlyNewer, newestToolArtifactFamily } from './claim';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES, toolArtifactKey } from '~/utils/artifacts';
 import Mermaid from '~/components/Messages/Content/Mermaid/Mermaid';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
-import useToolArtifactClaim from './claim';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -22,11 +23,21 @@ interface ToolMermaidArtifactProps {
  * Shares `useToolArtifactClaim` with `ToolArtifactCard` so the same
  * `.mmd` file dedups identically: one card per message (falling back to
  * one card total where no message is known).
+ *
+ * A diagram remade in a later turn (same file identity, newer
+ * `lastUpdateTime`) must still open the newest version from an EARLIER
+ * message's card. Every mount offers this instance's own artifact to
+ * `newestToolArtifactFamily`, keyed by file identity; the artifact
+ * handed to `Mermaid` (which is what gets registered once opened) is
+ * upgraded to that newest entry when it's ahead of this instance's own
+ * version, while the inline diagram below keeps rendering `text` — this
+ * message's own source — unchanged.
  */
 const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps) => {
   const localize = useLocalize();
   const file = attachment as TFile & TAttachmentMetadata;
-  const { isMyClaim } = useToolArtifactClaim(toolArtifactKey(file));
+  const fileKey = toolArtifactKey(file);
+  const { isMyClaim } = useToolArtifactClaim(fileKey);
   /* Once the diagram collapses into its trigger row, that row carries the
    * filename and the download itself, so this header would repeat both
    * beside it. */
@@ -44,12 +55,32 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
       fileToArtifact({ ...attachment, text }, { preClassifiedType: TOOL_ARTIFACT_TYPES.MERMAID }),
     [attachment, text],
   );
+  const [newestArtifact, setNewestArtifact] = useAtom(newestToolArtifactFamily(fileKey));
+
+  useLayoutEffect(() => {
+    if (artifact == null) {
+      return;
+    }
+    setNewestArtifact((current) =>
+      current == null || isStrictlyNewer(artifact, current) ? artifact : current,
+    );
+  }, [artifact, setNewestArtifact]);
 
   if (!isMyClaim) {
     return null;
   }
 
   const visibleFilename = displayFilename(attachment.filename);
+  // Adopt the shared family's entry unless THIS instance's own artifact is
+  // strictly newer than it (can't happen once its own mount effect has
+  // offered it, but guards the pre-effect render). A tied `lastUpdateTime`
+  // is "not strictly newer" in either direction, so every mounted instance
+  // converges on whichever version the family already settled on instead
+  // of each preferring its own on a tie.
+  const registeredArtifact =
+    artifact != null && newestArtifact != null && !isStrictlyNewer(artifact, newestArtifact)
+      ? newestArtifact
+      : artifact;
 
   return (
     <div className="my-2 flex w-full flex-col gap-1">
@@ -86,7 +117,7 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
       {file.file_id ? (
         <Mermaid
           id={file.file_id}
-          artifact={artifact ?? undefined}
+          artifact={registeredArtifact ?? undefined}
           onDownload={attachment.filepath ? handleDownload : undefined}
           onRowModeChange={setIsRowMode}
           rowTitle={attachment.filename ? visibleFilename : undefined}
@@ -95,7 +126,7 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
         </Mermaid>
       ) : (
         <Mermaid
-          artifact={artifact ?? undefined}
+          artifact={registeredArtifact ?? undefined}
           onDownload={attachment.filepath ? handleDownload : undefined}
           onRowModeChange={setIsRowMode}
           rowTitle={attachment.filename ? visibleFilename : undefined}

@@ -78,8 +78,12 @@ const SearchContent = ({
               />
             );
             /** Every part gets the row's message id so file-card dedup
-             *  (`useToolArtifactClaim`) scopes correctly here and in shared
-             *  views, which mount with no ambient `MessageContext.Provider`.
+             *  (`useToolArtifactClaim`) scopes correctly regardless of
+             *  caller: the search-results route renders `SearchContent`
+             *  with no ambient `MessageContext`, while `Share/Message.tsx`
+             *  already provides one with `messageId` set — this explicit
+             *  per-part provider keeps both paths consistent instead of
+             *  relying on whichever context happens to be ambient.
              *  An error part additionally resolves the agent a handoff made
              *  active from its own position, which it reads from
              *  `MessageContext`; persisted content is compacted, so `idx` is
