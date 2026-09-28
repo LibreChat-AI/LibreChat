@@ -461,7 +461,7 @@ const InFlightSteer = memo(function InFlightSteer({
       /* pointer-events-auto: the overlay container disables events so wheeling
        * over the gaps reaches the messages behind; each bubble re-enables them
        * for its own controls and internal scroll. */
-      className="group pointer-events-auto flex flex-col items-end gap-1.5"
+      className="group pointer-events-auto flex max-w-full flex-col items-end gap-1.5"
     >
       {(images.length > 0 || others.length > 0) && (
         <div className="flex flex-wrap items-center justify-end gap-2">

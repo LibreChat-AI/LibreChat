@@ -156,6 +156,58 @@ test.describe('mid-run steering and queuing', () => {
     await expect(queuedRows(page)).toHaveCount(0);
   });
 
+  test('keeps a pending fenced-code steer inside the composer at desktop and mobile widths', async ({
+    page,
+  }) => {
+    test.setTimeout(150000);
+    const label = uniqueLabel('steer-code-layout');
+    const steerText = `\`\`\`js\n${`const payload = '${'x'.repeat(300)}';\n`.repeat(12)}\`\`\``;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, PROVIDER_C);
+    await selectEphemeralMCP(page);
+    await establishConversation(page, `steer-code-setup-${label}`);
+
+    const run = await sendMessage(page, `E2E_STEER_TOOL_REPLY:${label}`);
+    expect(run.ok()).toBeTruthy();
+    await typeDuringRun(page, steerText);
+    const [steerResponse] = await Promise.all([
+      page.waitForResponse(isSteerRequest, { timeout: 15000 }),
+      messageInput(page).press('Enter'),
+    ]);
+    expect(steerResponse.status()).toBe(202);
+
+    const row = inFlightSteers(page).filter({ hasText: 'const payload' });
+    await expect(row.locator('.markdown pre > div')).toHaveCount(1);
+    for (const width of [1200, 390]) {
+      await page.setViewportSize({ width, height: 850 });
+      const bounds = await row.evaluate((element) => {
+        const stack = element.closest('[data-testid="in-flight-steers"]')?.getBoundingClientRect();
+        const bubble = element.querySelector('.rounded-theme-surface')?.getBoundingClientRect();
+        const codeBlock = element.querySelector('.markdown pre > div')?.getBoundingClientRect();
+        const codeScroller = element.querySelector('.markdown pre code')?.parentElement;
+        if (!stack || !bubble || !codeBlock || !codeScroller) {
+          throw new Error('Pending steer code block is missing');
+        }
+        return {
+          stackLeft: stack.left,
+          stackRight: stack.right,
+          bubbleLeft: bubble.left,
+          bubbleRight: bubble.right,
+          codeLeft: codeBlock.left,
+          codeRight: codeBlock.right,
+          codeScrollWidth: codeScroller.scrollWidth,
+          codeClientWidth: codeScroller.clientWidth,
+        };
+      });
+      expect(bounds.bubbleLeft).toBeGreaterThanOrEqual(bounds.stackLeft);
+      expect(bounds.bubbleRight).toBeLessThanOrEqual(bounds.stackRight);
+      expect(bounds.codeLeft).toBeGreaterThanOrEqual(bounds.bubbleLeft);
+      expect(bounds.codeRight).toBeLessThanOrEqual(bounds.bubbleRight);
+      expect(bounds.codeScrollWidth).toBeGreaterThan(bounds.codeClientWidth);
+    }
+  });
+
   /**
    * Two steers submitted in quick succession must BOTH inject at the next
    * tool-batch boundary: the drain is an atomic take-all, the hook returns one
