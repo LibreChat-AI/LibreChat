@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useLayoutEffect, useRef } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef } from 'react';
 import {
   useRecoilCallback,
   useRecoilState,
@@ -11,6 +11,7 @@ import type { Artifact } from '~/common';
 import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
+import useToolArtifactClaim from './claim';
 import ArtifactRow from './ArtifactRow';
 import store from '~/store';
 
@@ -24,27 +25,30 @@ interface ToolArtifactCardProps {
  *
  * Three effects, separately scoped:
  *
- *  1. **Dedup claim** (`useLayoutEffect`, runs synchronously before
- *     paint). The same file can appear in multiple tool calls within a
- *     single message (e.g. the agent reads back what it just wrote) or
- *     across messages. Each card claims `toolArtifactClaim(artifact.id)`
- *     with its unique component-instance key on mount; the latest card
- *     to mount wins, so older duplicates re-render to `null`. The atom
- *     is family-keyed by artifact id, so claims for unrelated artifacts
- *     don't trigger re-renders here. Cleanup releases the claim if it's
- *     still ours so a subsequent re-mount can take it.
+ *  1. **Dedup claim** (`useToolArtifactClaim`, via `useLayoutEffect`
+ *     inside it, runs synchronously before paint). The same file can
+ *     appear in multiple tool calls within a single message (e.g. the
+ *     agent reads back what it just wrote) or across messages. The
+ *     shared hook scopes the claim to the mounting message (falling
+ *     back to the bare artifact id where no message is known), so the
+ *     same file shows one card per message instead of one card total.
+ *     Within one message the latest card to mount wins, so older
+ *     duplicates re-render to `null`.
  *
  *  2. **Self-heal registration** subscribes to the per-id selector
  *     `artifactByIdSelector(artifact.id)` and writes only when the
- *     entry is missing or the cached content/type/title drifted. The
+ *     entry is missing or the cached content/type/title drifted AND
+ *     this card's version is at least as new (`lastUpdateTime`). The
  *     panel's `useArtifacts` hook resets `artifactsState` on close, so
  *     this re-fires deterministically once the slice transitions back
- *     to `undefined` — without the no-deps render-loop pattern. The
- *     write is also gated on `isMyClaim`, making the registration
- *     single-writer per id: when two cards exist for the same file
- *     across turns, only the latest (claim-holder) updates state.
- *     Without that guard, both cards would observe each other's write
- *     and trade overwrites in a loop.
+ *     to `undefined` — without the no-deps render-loop pattern. A
+ *     strictly newer version always wins regardless of mount order;
+ *     when two versions share a `lastUpdateTime` (no timestamp signal),
+ *     the tie breaks on a SEPARATE global "latest mount" claim kept
+ *     only for this purpose — today's semantics, scoped to the id alone
+ *     so it survives across messages. That single-writer tie-break is
+ *     what stops two cards for the same file from observing each
+ *     other's write and trading overwrites in a loop.
  *
  *  3. **Focus + open on mount** (deps: artifact.id, artifact.type) —
  *     gated on `isSubmitting` captured at first render via a ref AND
@@ -65,7 +69,6 @@ interface ToolArtifactCardProps {
  *     of context.
  */
 const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) => {
-  const claimKey = useId();
   const file = attachment as TFile & TAttachmentMetadata;
   const fileId = file.file_id;
   const setVisible = useSetRecoilState(store.artifactsVisibility);
@@ -74,9 +77,15 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
   const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
   const existingEntry = useRecoilValue(store.artifactByIdSelector(artifact.id));
-  const [claim, setClaim] = useRecoilState(store.toolArtifactClaim(artifact.id));
+  const { isMyClaim: canRender, claimKey } = useToolArtifactClaim(artifact.id);
+  // Global (message-independent) claim — used only as the registration
+  // tie-break below, never for the render-null gate. Reuses the same
+  // `claimKey` as the display claim above so the two never fight over the
+  // SAME atom entry in the no-message fallback, where both keys collapse
+  // to `store.toolArtifactClaim(artifact.id)`.
+  const [globalClaim, setGlobalClaim] = useRecoilState(store.toolArtifactClaim(artifact.id));
+  const isMyGlobalClaim = globalClaim === claimKey;
   const isSelected = artifact.id === currentArtifactId;
-  const isMyClaim = claim === claimKey;
   /* Read+reset on mount only — `useRecoilCallback` avoids subscribing
    * to the per-file_id flag (no re-renders when other files resolve).
    * The deferred-preview hook flips this to `true` on the pending→ready
@@ -119,35 +128,41 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
   }
 
   useLayoutEffect(() => {
-    // Always (re)claim on mount — a later card for the same id displaces
-    // an earlier one, so the chip migrates to the most recent mention.
-    setClaim(claimKey);
+    // Always (re)claim the global slot on mount — keeps today's
+    // latest-mount semantics as the tie-break input for the registration
+    // effect below, independent of which message a card renders under.
+    setGlobalClaim(claimKey);
     return () => {
       // Only release when the claim is still ours; if a sibling already
       // took over we don't want to clobber its claim.
-      setClaim((prev) => (prev === claimKey ? null : prev));
+      setGlobalClaim((prev) => (prev === claimKey ? null : prev));
     };
-  }, [claimKey, setClaim]);
+  }, [claimKey, setGlobalClaim]);
 
   useEffect(() => {
-    // Only the claim-winner writes. Two cards with the same `artifact.id`
-    // but divergent content (same file_id reused across turns) would
-    // otherwise see each other's write through `existingEntry`, detect
-    // drift, and trade overwrites in a loop. Gating on `isMyClaim`
-    // makes registration single-writer per id.
-    if (!isMyClaim) {
-      return;
-    }
-    if (
+    const contentDrifted = !(
       existingEntry != null &&
       existingEntry.content === artifact.content &&
       existingEntry.type === artifact.type &&
       existingEntry.title === artifact.title
-    ) {
+    );
+    if (!contentDrifted) {
+      return;
+    }
+    // A strictly newer version always wins, regardless of mount order.
+    // When two versions share a `lastUpdateTime` (no timestamp signal to
+    // order them), fall back to the global "latest mount" claim so a
+    // ping-ponging pair still converges on ONE writer instead of trading
+    // overwrites in a loop.
+    const isNewerOrTied =
+      existingEntry == null ||
+      artifact.lastUpdateTime > existingEntry.lastUpdateTime ||
+      (artifact.lastUpdateTime === existingEntry.lastUpdateTime && isMyGlobalClaim);
+    if (!isNewerOrTied) {
       return;
     }
     setArtifacts((prev) => ({ ...(prev ?? {}), [artifact.id]: artifact }));
-  }, [artifact, existingEntry, isMyClaim, setArtifacts]);
+  }, [artifact, existingEntry, isMyGlobalClaim, setArtifacts]);
 
   useEffect(() => {
     if (isCodeOnlyArtifact(artifact.type)) {
@@ -207,9 +222,9 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
     setVisible(true);
   };
 
-  // Another card with the same artifact id has the active claim — render
-  // nothing here, that row is the canonical trigger for this file.
-  if (claim != null && !isMyClaim) {
+  // Another card holds the message-scoped display claim for this file —
+  // render nothing here, that row is the canonical trigger for this file.
+  if (!canRender) {
     return null;
   }
 

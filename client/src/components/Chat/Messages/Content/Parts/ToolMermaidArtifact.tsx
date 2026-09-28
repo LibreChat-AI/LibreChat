@@ -1,14 +1,13 @@
-import { memo, useId, useLayoutEffect, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
-import { useRecoilState } from 'recoil';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES, toolArtifactKey } from '~/utils/artifacts';
 import Mermaid from '~/components/Messages/Content/Mermaid/Mermaid';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
+import useToolArtifactClaim from './claim';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import store from '~/store';
 
 interface ToolMermaidArtifactProps {
   attachment: TAttachment;
@@ -20,26 +19,18 @@ interface ToolMermaidArtifactProps {
  * user opens it in the Artifact panel. The compact card keeps the file
  * available in chat without rendering the same diagram twice.
  *
- * Shares the `toolArtifactClaim` dedup atom with `ToolArtifactCard` so
- * the same `.mmd` file can't double-render across tool calls / messages.
+ * Shares `useToolArtifactClaim` with `ToolArtifactCard` so the same
+ * `.mmd` file dedups identically: one card per message (falling back to
+ * one card total where no message is known).
  */
 const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps) => {
   const localize = useLocalize();
   const file = attachment as TFile & TAttachmentMetadata;
-  const claimKey = useId();
-  const [claim, setClaim] = useRecoilState(store.toolArtifactClaim(toolArtifactKey(file)));
-  const isMyClaim = claim === claimKey;
+  const { isMyClaim } = useToolArtifactClaim(toolArtifactKey(file));
   /* Once the diagram collapses into its trigger row, that row carries the
    * filename and the download itself, so this header would repeat both
    * beside it. */
   const [isRowMode, setIsRowMode] = useState(false);
-
-  useLayoutEffect(() => {
-    setClaim(claimKey);
-    return () => {
-      setClaim((prev) => (prev === claimKey ? null : prev));
-    };
-  }, [claimKey, setClaim]);
 
   const { handleDownload } = useAttachmentLink({
     href: attachment.filepath ?? '',
@@ -54,7 +45,7 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
     [attachment, text],
   );
 
-  if (claim != null && !isMyClaim) {
+  if (!isMyClaim) {
     return null;
   }
 

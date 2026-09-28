@@ -70,7 +70,6 @@ const SearchContent = ({
             }
             const partElement: ReactElement = (
               <Part
-                key={`display-${messageId}-${idx}`}
                 showCursor={false}
                 isSubmitting={false}
                 isCreatedByUser={message.isCreatedByUser}
@@ -78,20 +77,25 @@ const SearchContent = ({
                 part={part}
               />
             );
-            /** An error part resolves the agent a handoff made active from its own position,
-             *  which it reads from `MessageContext`; persisted content is compacted, so `idx` is
+            /** Every part gets the row's message id so file-card dedup
+             *  (`useToolArtifactClaim`) scopes correctly here and in shared
+             *  views, which mount with no ambient `MessageContext.Provider`.
+             *  An error part additionally resolves the agent a handoff made
+             *  active from its own position, which it reads from
+             *  `MessageContext`; persisted content is compacted, so `idx` is
              *  that position in `message.content`. */
-            const rendered: ReactElement =
-              part.type === ContentTypes.ERROR ? (
-                <MessageContext.Provider
-                  key={`display-${messageId}-${idx}`}
-                  value={{ ...messageContext, partIndex: idx }}
-                >
-                  {partElement}
-                </MessageContext.Provider>
-              ) : (
-                partElement
-              );
+            const rendered: ReactElement = (
+              <MessageContext.Provider
+                key={`display-${messageId}-${idx}`}
+                value={{
+                  ...messageContext,
+                  messageId,
+                  ...(part.type === ContentTypes.ERROR ? { partIndex: idx } : {}),
+                }}
+              >
+                {partElement}
+              </MessageContext.Provider>
+            );
             if (!resumesAfterSteer) {
               return rendered;
             }
