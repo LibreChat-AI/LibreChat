@@ -135,22 +135,19 @@ const SplitText: React.FC<SplitTextProps> = ({
 
   return (
     <>
-      <span className="sr-only">{text}</span>
-      {/* Every grapheme sits in its own inline-block box, so the bidi algorithm
-          never sees the text as one run: under an RTL document the boxes lay out
-          right-to-left and Latin text mirrors. `dir="auto"` resolves the paragraph
-          and each word from their own first strong character instead. */}
       <p
         ref={ref}
         dir="auto"
         className={`split-parent inline overflow-hidden ${className}`}
         style={{ textAlign, whiteSpace: 'normal', wordWrap: 'break-word' }}
-        aria-hidden="true"
       >
+        {/* The paragraph's auto direction ignores word boxes with their own dir. */}
+        <span className="sr-only">{text}</span>
         {words.map((word, wordIndex) => (
           <span
             key={wordIndex}
             dir="auto"
+            aria-hidden="true"
             style={{ display: 'inline-block', whiteSpace: 'nowrap' }}
           >
             {word.map((letter, letterIndex) => {

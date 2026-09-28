@@ -23,26 +23,34 @@ describe('SplitText', () => {
     }
   });
 
-  it('resolves direction from the text, not the document, for every word box', () => {
-    document.documentElement.dir = 'rtl';
+  it.each([
+    ['rtl', 'Welcome to reeva::chat', ['Welcome', 'to', 'reeva::chat']],
+    ['ltr', 'שלום עולם', ['שלום', 'עולם']],
+  ])('uses the accessible copy to resolve %s-document greeting %s', (dir, text, expectedWords) => {
+    const previousDir = document.documentElement.dir;
+    document.documentElement.dir = dir;
     try {
-      const { container } = render(<SplitText text="Welcome to reeva::chat" />);
+      const { container } = render(<SplitText text={text} />);
       const paragraph = container.querySelector('p');
       expect(paragraph).toHaveAttribute('dir', 'auto');
-      const wordBoxes = container.querySelectorAll('p > span');
-      /** three words plus nothing else at that level */
-      expect(wordBoxes).toHaveLength(3);
-      for (const box of Array.from(wordBoxes)) {
-        expect(box).toHaveAttribute('dir', 'auto');
+
+      const accessibleCopy = paragraph?.querySelector('.sr-only');
+      expect(paragraph?.firstElementChild).toBe(accessibleCopy);
+      expect(accessibleCopy).toHaveTextContent(text);
+      expect(accessibleCopy?.closest('[aria-hidden="true"]')).toBeNull();
+
+      const wordBoxes = container.querySelectorAll('p > span[dir="auto"]');
+      expect(wordBoxes).toHaveLength(expectedWords.length);
+      for (const [index, box] of Array.from(wordBoxes).entries()) {
+        expect(box).toHaveAttribute('aria-hidden', 'true');
+        expect(
+          Array.from(box.querySelectorAll('span.inline-block'))
+            .map((span) => span.textContent)
+            .join(''),
+        ).toBe(expectedWords[index]);
       }
-      /** Grapheme order inside a word is the source order; the direction
-       *  attribute, not reordering, decides how the boxes lay out. */
-      const firstWord = Array.from(wordBoxes[0].querySelectorAll('span.inline-block'))
-        .map((span) => span.textContent)
-        .join('');
-      expect(firstWord).toBe('Welcome');
     } finally {
-      document.documentElement.dir = '';
+      document.documentElement.dir = previousDir;
     }
   });
 });
