@@ -5,7 +5,8 @@ import { getPrimaryE2EUser } from '../../../setup/users.mock';
  * The client bounds MCP App operations by what the authenticated startup config
  * publishes, so a deployment's `mcpAppSandbox.operationLimits` must reach it,
  * merged over the defaults for the fields the deployment leaves out. The harness
- * configures only `timeoutMs`; the other two fields come from the defaults.
+ * configures only `timeoutMs`, above its default, and the other two fields come
+ * from the defaults.
  */
 
 test.describe('MCP App operation limits', () => {
@@ -27,7 +28,7 @@ test.describe('MCP App operation limits', () => {
     };
     expect(config.mcpApps?.operationLimits).toEqual({
       maxBytes: 4 * 1024 * 1024,
-      timeoutMs: 30000,
+      timeoutMs: 45000,
       maxActive: 16,
     });
   });

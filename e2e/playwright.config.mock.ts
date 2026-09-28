@@ -271,9 +271,9 @@ function writeRuntimeMockConfig() {
         ].join('\n'),
       }
     : { allowedDomain: '', stdioEnv: '', networkServers: '' };
-  /** Equal to the default timeout, so every fixture behaves as before; a configured value is what
-   *  lets the startup config show whether the deployment's operation limits reach the client. */
-  const mcpAppOperationLimits = ['  operationLimits:', '    timeoutMs: 30000'];
+  /** Longer than the 30s default, so no fixture can time out sooner, and distinct from it, so the
+   *  startup config shows whether the deployment's operation limits reach the client. */
+  const mcpAppOperationLimits = ['  operationLimits:', '    timeoutMs: 45000'];
   const mcpAppsConfig = enableMcpApps
     ? {
         setting:
