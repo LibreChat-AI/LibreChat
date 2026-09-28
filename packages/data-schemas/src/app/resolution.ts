@@ -15,7 +15,7 @@ import logger from '~/config/winston';
 type AnyObject = { [key: string]: unknown };
 
 const MAX_MERGE_DEPTH = 10;
-const MAX_STRIP_PASSES = 4;
+const MAX_STRIP_PASSES = 16;
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Filters are a fail-closed security boundary even during mixed-package rollouts. */
 const BASE_ONLY_OVERRIDE_SECTIONS = new Set<string>(['filters', ...BASE_ONLY_CONFIG_SECTIONS]);
@@ -264,6 +264,29 @@ function toIssue(segments: string[], message: string): ConfigOverrideIssue {
 }
 
 /**
+ * The override item an issue path segment names: by the merge key for merged-by-key arrays
+ * (the merged index differs from the override's), by index, or by `id` for refinements that
+ * address an item by its identifier.
+ */
+function findItemIndex(
+  node: unknown[],
+  key: string,
+  keyField: string | undefined,
+  mergedItem: unknown,
+): number {
+  if (keyField) {
+    return node.findIndex(
+      (item) =>
+        isPlainObject(item) && isPlainObject(mergedItem) && item[keyField] === mergedItem[keyField],
+    );
+  }
+  if (/^\d+$/.test(key)) {
+    return Number(key);
+  }
+  return node.findIndex((item) => isPlainObject(item) && item.id === key);
+}
+
+/**
  * The override node an issue in the merged config belongs to: the deepest node the
  * overrides supply on the issue's path. Items of merged-by-key arrays are matched by their
  * key, since the merged index differs from the override's. `undefined` means the overrides
@@ -285,14 +308,7 @@ function attributeIssue(
         ? ARRAY_MERGE_KEYS[arrayPath]
         : undefined;
       const mergedItem = Array.isArray(mergedNode) ? mergedNode[Number(key)] : undefined;
-      const index = keyField
-        ? node.findIndex(
-            (item) =>
-              isPlainObject(item) &&
-              isPlainObject(mergedItem) &&
-              item[keyField] === mergedItem[keyField],
-          )
-        : Number(key);
+      const index = findItemIndex(node, key, keyField, mergedItem);
       if (keyField && index < 0) {
         return undefined;
       }
@@ -301,7 +317,9 @@ function attributeIssue(
       }
       segments.push(String(index));
       node = node[index];
-      mergedNode = mergedItem;
+      mergedNode = Array.isArray(mergedNode)
+        ? mergedNode[keyField ? Number(key) : index]
+        : undefined;
       continue;
     }
     if (!isPlainObject(node) || !hasOwn(node, key)) {
@@ -492,7 +510,10 @@ function omitPath(target: unknown, segments: string[]): unknown {
 function stripInvalidOverrides(config: IConfig, base: Partial<TCustomConfig>): AnyObject {
   const principal = `${config.principalType}/${config.principalId}`;
   let stripped: unknown = config.overrides;
-  /** Removing a field can leave its parent incomplete, so check again until nothing fails. */
+  /**
+   * Removing a field can leave its parent incomplete, so check again while removals make
+   * progress. If they stop, only the sections that still fail are dropped.
+   */
   for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
     const issues = getConfigOverrideIssues(stripped, base, { requireComplete: true });
     if (issues.length === 0) {
@@ -502,6 +523,7 @@ function stripInvalidOverrides(config: IConfig, base: Partial<TCustomConfig>): A
       logger.warn(`[mergeConfigOverrides] Ignoring malformed overrides document for ${principal}`);
       return {};
     }
+    const before = stripped;
     for (let index = issues.length - 1; index >= 0; index--) {
       const { path, segments, message } = issues[index];
       logger.warn(
@@ -509,9 +531,21 @@ function stripInvalidOverrides(config: IConfig, base: Partial<TCustomConfig>): A
       );
       stripped = omitPath(stripped, segments);
     }
+    if (stripped === before) {
+      break;
+    }
   }
-  logger.warn(`[mergeConfigOverrides] Ignoring overrides for ${principal}: still invalid`);
-  return {};
+  const failing = new Set(
+    getConfigOverrideIssues(stripped, base, { requireComplete: true }).map(
+      (issue) => issue.segments[0],
+    ),
+  );
+  logger.warn(
+    `[mergeConfigOverrides] Ignoring still-invalid sections ${[...failing].join(', ')} for ${principal}`,
+  );
+  return Object.fromEntries(
+    Object.entries(stripped as AnyObject).filter(([section]) => !failing.has(section)),
+  );
 }
 
 function filterMCPServerOverrides(value: unknown, current: unknown): AnyObject {

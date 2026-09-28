@@ -980,6 +980,25 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     expect(merged.messageFilter.pii.customPatterns.map((pattern) => pattern.id)).toEqual(['ok']);
   });
 
+  it('keeps valid sections when a cascade of removals outlasts the first passes', () => {
+    const merged = mergeConfigOverrides(baseConfig, [
+      fakeConfig(
+        {
+          interface: { customWelcome: 'kept' },
+          endpoints: {
+            azureOpenAI: {
+              groups: [{ group: 'g', apiKey: 'k', instanceName: 'i', version: 'v', models: 5 }],
+            },
+          },
+        },
+        10,
+      ),
+    ]) as unknown as { interfaceConfig: Record<string, unknown>; endpoints: unknown };
+
+    expect(merged.interfaceConfig.customWelcome).toBe('kept');
+    expect(merged.endpoints).toEqual(baseConfig.endpoints);
+  });
+
   it('lets a lower-priority valid override survive a higher-priority invalid one', () => {
     const merged = mergeConfigOverrides(base, [
       fakeConfig({ interface: { contextCost: false } }, 10),
@@ -1174,6 +1193,38 @@ describe('getConfigOverrideIssues', () => {
     expect(getConfigOverrideIssues(['stray'])).toEqual([
       { path: '', segments: [], message: 'Overrides must be an object' },
     ]);
+  });
+});
+
+describe('getConfigOverrideIssues: items addressed by id', () => {
+  it('attributes a refinement that names an array item by its id to that item', () => {
+    const environment = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      name: id,
+      type: 'managed',
+      baseURL: 'https://code.example.com',
+      ...extra,
+    });
+    const issues = getConfigOverrideIssues({
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              environment('worker-a'),
+              environment('worker-b', { pairing: { workerId: 'w1', tokenEnv: 'TOKEN' } }),
+            ],
+          },
+        },
+      },
+    });
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        path: 'endpoints.agents.statefulCodeSessions.environments.1.pairing',
+        message: 'Only attached code environments may configure pairing',
+      }),
+    );
   });
 });
 

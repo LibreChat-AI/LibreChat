@@ -938,19 +938,12 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       }
       const requestedPriority = hasBroadManage ? priority : undefined;
 
-      const hasObjectValuedSecretPatch = Object.entries(fields).some(([fieldPath, value]) =>
-        isConfigSecretPreservablePatch(fieldPath, value),
-      );
-      const existing =
-        requestedPriority == null || hasObjectValuedSecretPatch
-          ? await findConfigByPrincipal(principalType, principalId, { includeInactive: true })
-          : null;
-      const encryptedFields = encryptConfigSecretFields(fields);
-      const [stored, baseYaml] = await Promise.all([
-        existing ?? findConfigByPrincipal(principalType, principalId, { includeInactive: true }),
+      const [existing, baseYaml] = await Promise.all([
+        findConfigByPrincipal(principalType, principalId, { includeInactive: true }),
         getBaseYamlConfig(user.tenantId),
       ]);
-      const fieldIssues = getConfigFieldIssues(encryptedFields, baseYaml, stored?.overrides);
+      const encryptedFields = encryptConfigSecretFields(fields);
+      const fieldIssues = getConfigFieldIssues(encryptedFields, baseYaml, existing?.overrides);
       if (fieldIssues.length > 0) {
         return invalidOverrideResponse(res, fieldIssues);
       }
