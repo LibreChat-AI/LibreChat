@@ -14,9 +14,9 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
+import { fileToArtifact, toolArtifactKey, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
 import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
-import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
 import Image from '~/components/Chat/Messages/Content/Image';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import ToolMermaidArtifact from './ToolMermaidArtifact';
@@ -179,10 +179,21 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
   const panelId = useId();
   const [isExpanded, setIsExpanded] = useState(false);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
-  const visibleAttachments = useMemo(
-    () => attachments.filter((attachment) => Boolean(attachment.filepath)),
-    [attachments],
-  );
+  const visibleAttachments = useMemo(() => {
+    // Same file identity can arrive twice (e.g. two tool calls touching
+    // one file in a message) — keep the last occurrence so the folded
+    // row lists it once instead of listing the same name twice.
+    const byIdentity = new Map<string, TAttachment>();
+    for (const attachment of attachments) {
+      if (!attachment.filepath) {
+        continue;
+      }
+      const key = toolArtifactKey(attachment as Partial<TFile>);
+      byIdentity.delete(key);
+      byIdentity.set(key, attachment);
+    }
+    return Array.from(byIdentity.values());
+  }, [attachments]);
   const count = visibleAttachments.length;
   const summary = useMemo(() => {
     const names = visibleAttachments.map((attachment) => displayFilename(attachment.filename));
