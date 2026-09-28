@@ -428,28 +428,34 @@ async function saveErrorTurn(
     }
 
     const userId = req.user.id;
-    const existing = await getMessages(
-      { user: userId, messageId: errorMessageId, conversationId },
-      '_id',
-    );
+    /** Full documents: the compaction finalization below reuses the loaded
+     *  row rather than reading it a second time. */
+    const existing = await getMessages({
+      user: userId,
+      messageId: errorMessageId,
+      conversationId,
+    });
     if (existing.length > 0) {
       await finalizeFailedCompactionTurn(req, {
         userId,
         conversationId,
         messageId: errorMessageId,
+        partialRow: existing[0],
       });
       return;
     }
     if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
-      const partial = await getMessages(
-        { user: userId, messageId: liveResponseMessageId, conversationId },
-        '_id',
-      );
+      const partial = await getMessages({
+        user: userId,
+        messageId: liveResponseMessageId,
+        conversationId,
+      });
       if (partial.length > 0) {
         await finalizeFailedCompactionTurn(req, {
           userId,
           conversationId,
           messageId: liveResponseMessageId,
+          partialRow: partial[0],
         });
         return;
       }
@@ -566,10 +572,13 @@ async function saveErrorTurn(
  * The disconnect save is marker-only while the run is still live; a failed
  * turn is what settles it, so a compaction's partial row is finalized here
  * with the terminal outcome instead of keeping the snapshot's live-run
- * marking. The decision lives in @librechat/api; this is the wiring.
+ * marking. The decision lives in @librechat/api; this is the wiring, reusing
+ * the row the caller already loaded.
  */
-async function finalizeFailedCompactionTurn(req, { userId, conversationId, messageId }) {
-  const [partialRow] = await getMessages({ user: userId, messageId, conversationId });
+async function finalizeFailedCompactionTurn(
+  req,
+  { userId, conversationId, messageId, partialRow },
+) {
   const finalized = resolveFinalizedCompactionTurn(partialRow, req.body);
   if (finalized == null) {
     return;
