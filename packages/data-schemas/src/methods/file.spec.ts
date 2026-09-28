@@ -122,6 +122,28 @@ describe('File Methods', () => {
   });
 
   describe('getAvailableProjectFiles', () => {
+    it('treats an empty tenant id as no tenant, matching project file reads', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      await File.create({
+        user: userId,
+        file_id: 'untenanted',
+        filename: 'Untenanted.txt',
+        filepath: '/uploads/untenanted',
+        object: 'file',
+        type: 'text/plain',
+        bytes: 1,
+        embedded: true,
+        context: FileContext.message_attachment,
+      });
+      const result = await fileMethods.getAvailableProjectFiles({
+        userId,
+        tenantId: '',
+        excludedFileIds: [],
+        limit: 10,
+      });
+      expect(result.files.map((file) => file.file_id)).toEqual(['untenanted']);
+    });
+
     it('paginates only eligible owner files with stable cursors and literal search', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const now = new Date('2026-01-01T00:00:00.000Z');

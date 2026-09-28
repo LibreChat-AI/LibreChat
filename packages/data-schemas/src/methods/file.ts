@@ -608,7 +608,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const filters: FilterQuery<IMongoFile>[] = [
       {
         user: userId,
-        tenantId: tenantId ?? null,
+        tenantId: tenantId != null && tenantId !== '' ? tenantId : null,
         embedded: true,
         context: FileContext.message_attachment,
         $or: [{ expiredAt: null }, { expiredAt: { $gt: now } }],
