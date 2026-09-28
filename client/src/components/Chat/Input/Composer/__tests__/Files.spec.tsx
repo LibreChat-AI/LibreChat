@@ -27,6 +27,12 @@ jest.mock('~/data-provider', () => ({
   useSharedFileDownload: () => ({ refetch: jest.fn() }),
 }));
 
+const mockShowToast = jest.fn();
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useToastContext: () => ({ showToast: mockShowToast }),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) =>
     options ? `${key}:${options['0']}` : key,
@@ -127,6 +133,14 @@ describe('FileGrid', () => {
     renderGrid();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_composer_preview_file:bare.png' }));
     await waitFor(() => expect(mockFetchPreview).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'com_ui_composer_preview_failed:bare.png',
+          status: 'error',
+        }),
+      ),
+    );
     await waitFor(() =>
       expect(
         screen.getByRole('button', { name: 'com_ui_composer_preview_file:bare.png' }),

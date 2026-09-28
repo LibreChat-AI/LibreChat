@@ -1331,6 +1331,7 @@
   "com_ui_composer_palette": "Attach and tools",
   "com_ui_composer_palette_help": "Use the arrow keys to browse, Enter to select, and {{0}}+D to favorite.",
   "com_ui_composer_palette_search": "Search tools, skills and servers",
+  "com_ui_composer_preview_failed": "Couldn't load a preview of {{0}}",
   "com_ui_composer_preview_file": "Preview {{0}}",
   "com_ui_composer_search_files": "Search files",
   "com_ui_composer_search_mcp": "Search MCP servers",

@@ -1,7 +1,7 @@
 import { memo, useRef, useMemo, useState, useEffect } from 'react';
 import { Eye, Search } from 'lucide-react';
 import { apiBaseUrl } from 'librechat-data-provider';
-import { Button, IconButton, Spinner } from '@librechat/client';
+import { Button, IconButton, Spinner, useToastContext } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import FilePreviewDialog, {
@@ -216,6 +216,17 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
      the list refreshing it and the preview opening. The link is the fallback. */
   const { user } = useAuthContext();
   const { refetch: fetchPreview } = useFilePreviewBlob(user?.id, previewing?.file_id);
+  const { showToast } = useToastContext();
+  /* Read through a ref: `showToast` is a new function each render, and the
+     preview effect must not refetch because of it. */
+  const previewFailedRef = useRef<(file: TFile) => void>(() => undefined);
+  previewFailedRef.current = (file: TFile) => {
+    showToast({
+      message: localize('com_ui_composer_preview_failed', { 0: file.filename ?? '' }),
+      status: 'error',
+    });
+    setPreviewing(null);
+  };
   const [imageUrl, setImageUrl] = useState<string>();
   useEffect(() => {
     if (previewKind !== 'image' || previewing == null) {
@@ -232,16 +243,18 @@ export default function FileGrid({ query, view, onAttach }: FileGridProps) {
         setImageUrl(objectUrl);
         return;
       }
+      /* Nothing to show: stay on the grid and say so, rather than open an
+         empty viewer or let the click appear to do nothing. */
+      const fail = () => previewFailedRef.current(previewing);
       if (!previewing.filepath) {
-        /* Nothing to show: stay on the grid rather than open an empty viewer. */
-        setPreviewing(null);
+        fail();
         return;
       }
       /* A stored link can be expired: open only once it actually loads. */
       const fallback = toAbsoluteFilePath(previewing.filepath, apiBaseUrl());
       const probe = new Image();
       probe.onload = () => !cancelled && setImageUrl(fallback);
-      probe.onerror = () => !cancelled && setPreviewing(null);
+      probe.onerror = () => !cancelled && fail();
       probe.src = fallback;
     });
     return () => {
