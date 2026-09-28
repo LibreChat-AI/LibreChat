@@ -302,6 +302,28 @@ export function isSettledJobRecord(
   );
 }
 
+/**
+ * Whether a disconnect snapshot may still be written for this turn. A
+ * compaction whose settling path (completion, error, abort) owns the final
+ * row must not have it reopened as an unfinished snapshot; ordinary turns
+ * keep writing their fallback row exactly as before, settled or not, because
+ * their terminal row write may still fail.
+ */
+export function allowsDisconnectSnapshot(
+  isCompaction: boolean,
+  jobRecord:
+    | {
+        createdAt?: number;
+        status?: string;
+        terminalPersistencePending?: boolean;
+      }
+    | null
+    | undefined,
+  jobCreatedAt?: number,
+): boolean {
+  return !isCompaction || !isSettledJobRecord(jobRecord, jobCreatedAt);
+}
+
 /** How the abort route persists a stopped turn's prerequisite rows. */
 export type AbortAnchorDecision = 'persist' | 'skip-anchor' | 'skip-turn';
 

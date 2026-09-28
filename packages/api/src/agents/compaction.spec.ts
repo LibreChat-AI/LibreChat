@@ -19,6 +19,7 @@ import {
   markCompactionOutcome,
   persistFinalizedCompactionTurn,
   isSettledJobRecord,
+  allowsDisconnectSnapshot,
   planAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
@@ -1197,6 +1198,23 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
     });
 
     expect(saved).toHaveLength(0);
+  });
+});
+
+describe('allowsDisconnectSnapshot', () => {
+  it('keeps an ordinary turn writing its fallback row, settled or not', () => {
+    expect(allowsDisconnectSnapshot(false, { createdAt: 1000, status: 'error' }, 1000)).toBe(true);
+    expect(allowsDisconnectSnapshot(false, null)).toBe(true);
+  });
+
+  it('keeps a live compaction writing its snapshot', () => {
+    expect(allowsDisconnectSnapshot(true, { createdAt: 1000, status: 'running' }, 1000)).toBe(true);
+  });
+
+  it('withholds a settled compaction snapshot', () => {
+    expect(allowsDisconnectSnapshot(true, { createdAt: 1000, status: 'aborted' }, 1000)).toBe(
+      false,
+    );
   });
 });
 

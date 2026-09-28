@@ -53,7 +53,7 @@ const {
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
   settleExistingRowsBeforeErrorTurn,
-  isSettledJobRecord,
+  allowsDisconnectSnapshot,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -1896,12 +1896,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
-      /** A compaction whose settling path (completion, error, abort) owns the
-       *  final row must not have it reopened as an unfinished snapshot here;
-       *  the guard reads the same record, so the window is the settling
-       *  path's own commit span. Ordinary turns keep the pre-change behavior
-       *  exactly: their snapshot is the fallback row, settled or not. */
-      if (isCompaction && isSettledJobRecord(jobRecord, jobCreatedAt)) {
+      /** Whether this turn's snapshot may still be written is decided in
+       *  @librechat/api: a settled compaction's row belongs to the path that
+       *  finished it, while an ordinary turn's snapshot stays the fallback
+       *  row regardless. */
+      if (!allowsDisconnectSnapshot(isCompaction, jobRecord, jobCreatedAt)) {
         logger.debug(
           '[ResumableAgentController] Skipping compaction partial save for a settled job',
         );
