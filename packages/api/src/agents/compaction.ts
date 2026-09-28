@@ -267,22 +267,40 @@ export function markAbortedCompactionContent(
 export type AbortAnchorDecision = 'persist' | 'skip-anchor' | 'skip-turn';
 
 /**
- * A compaction's `userMessage` is the branch leaf projected for identity
- * only: when the leaf is already persisted, the projection must never be
- * upserted over it (an ordinary prerequisite write would erase a user leaf's
- * text or turn an assistant leaf into an empty user row), so only the aborted
- * response is written. When the leaf is NOT persisted, Stop won the race
- * before the branch loaded and there is nothing to anchor the response onto,
- * so nothing is written at all. Ordinary turns keep the prerequisite write.
+ * Decides how a stopped turn's persistence treats its user row, reading the
+ * anchor through the caller's database reader. A compaction's `userMessage`
+ * is the branch leaf projected for identity only: when the leaf is persisted,
+ * the projection must never be upserted over it (an ordinary prerequisite
+ * write would erase a user leaf's text or turn an assistant leaf into an
+ * empty user row), so only the aborted response is written. When the leaf is
+ * NOT persisted, Stop won the race before the branch loaded and there is
+ * nothing to anchor the response onto, so nothing is written at all; a read
+ * that fails says the same thing, without throwing past the caller's
+ * remaining cleanup. Ordinary turns keep the prerequisite write.
  */
-export function resolveAbortAnchorDecision(
-  jobData: { compact?: boolean } | null | undefined,
-  anchorExists: boolean,
-): AbortAnchorDecision {
-  if (jobData?.compact !== true) {
+export async function resolveAbortedTurnAnchorDecision(
+  jobData:
+    | {
+        compact?: boolean;
+        conversationId?: string;
+        userMessage?: { messageId?: string } | null;
+      }
+    | null
+    | undefined,
+  {
+    messageExists,
+  }: { messageExists: (messageId: string, conversationId?: string) => Promise<boolean> },
+): Promise<AbortAnchorDecision> {
+  const anchorId = jobData?.userMessage?.messageId;
+  if (jobData?.compact !== true || anchorId == null || anchorId.length === 0) {
     return 'persist';
   }
-  return anchorExists ? 'skip-anchor' : 'skip-turn';
+  try {
+    const anchorExists = await messageExists(anchorId, jobData.conversationId);
+    return anchorExists ? 'skip-anchor' : 'skip-turn';
+  } catch {
+    return 'skip-turn';
+  }
 }
 
 /**
@@ -311,13 +329,18 @@ export async function persistFinalizedCompactionTurn(
   if (!finalized.write) {
     return false;
   }
-  await saveMessage({
+  const saved = await saveMessage({
     messageId,
     conversationId,
     unfinished: false,
     error: true,
     ...(finalized.content != null && { content: finalized.content }),
   });
+  if (saved == null) {
+    /** The same contract the surrounding failed-turn persistence holds: a
+     *  falsy save is a failure to settle, not a settled row. */
+    throw new Error('Failed compaction turn could not be finalized');
+  }
   return true;
 }
 
@@ -337,12 +360,14 @@ export type FinalizedCompactionTurn =
  * fires, so when the run then fails that snapshot is the row that stays: a
  * partial summary is marked failed beside its text, a snapshot with no
  * summary or error part gets the typed failure, and a snapshot whose parts
- * already carry the failure still settles its live-run flags. Only a
- * completed checkpoint (the run produced its summary before failing) is left
- * untouched, and rows of turns that were not compactions are never written.
+ * already carry the failure still settles its live-run flags. A completed
+ * checkpoint is preserved as content, but a snapshot still flagged
+ * `unfinished` settles its envelope even then, or the restored conversation
+ * keeps treating the terminal job as live; a row that was already settled is
+ * left alone. Rows of turns that were not compactions are never written.
  */
 export function resolveFinalizedCompactionTurn(
-  partialRow: { content?: unknown } | null | undefined,
+  partialRow: { content?: unknown; unfinished?: boolean } | null | undefined,
   requestBody: { compact?: boolean } | null | undefined,
 ): FinalizedCompactionTurn {
   if (requestBody?.compact !== true) {
@@ -377,7 +402,7 @@ export function resolveFinalizedCompactionTurn(
     return { write: true };
   }
   if (sawCheckpoint) {
-    return { write: false };
+    return partialRow?.unfinished === true ? { write: true } : { write: false };
   }
   return { write: true, content: markAbortedCompactionContent(content, true) };
 }

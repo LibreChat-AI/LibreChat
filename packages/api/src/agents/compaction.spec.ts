@@ -18,7 +18,7 @@ import {
   markAbortedCompactionContent,
   markCompactionOutcome,
   persistFinalizedCompactionTurn,
-  resolveAbortAnchorDecision,
+  resolveAbortedTurnAnchorDecision,
   resolveFailedTurnContent,
   resolveCheckpointMessage,
   resolveFinalizedCompactionTurn,
@@ -435,22 +435,50 @@ describe('markAbortedCompactionContent', () => {
   });
 });
 
-describe('resolveAbortAnchorDecision', () => {
-  it('keeps the prerequisite user write for an ordinary turn', () => {
-    expect(resolveAbortAnchorDecision({}, true)).toBe('persist');
-    expect(resolveAbortAnchorDecision(null, false)).toBe('persist');
+describe('resolveAbortedTurnAnchorDecision', () => {
+  const reader = (exists: boolean) => jest.fn(async () => exists);
+  const jobData = {
+    compact: true,
+    conversationId: 'conversation-1',
+    userMessage: { messageId: 'leaf-1' },
+  };
+
+  it('keeps the prerequisite user write for an ordinary turn', async () => {
+    const messageExists = reader(true);
+
+    await expect(resolveAbortedTurnAnchorDecision({}, { messageExists })).resolves.toBe('persist');
+    await expect(resolveAbortedTurnAnchorDecision(null, { messageExists })).resolves.toBe(
+      'persist',
+    );
+    expect(messageExists).not.toHaveBeenCalled();
   });
 
   /** The compaction's `userMessage` is the persisted leaf projected for
    *  identity only; upserting it would erase the leaf. */
-  it('skips the prerequisite write for a compaction anchored on a persisted leaf', () => {
-    expect(resolveAbortAnchorDecision({ compact: true }, true)).toBe('skip-anchor');
+  it('skips the prerequisite write for a compaction anchored on a persisted leaf', async () => {
+    await expect(
+      resolveAbortedTurnAnchorDecision(jobData, { messageExists: reader(true) }),
+    ).resolves.toBe('skip-anchor');
   });
 
   /** Stop can win the race before the branch loaded, leaving the projection
    *  with no row behind it: a response written there would be orphaned. */
-  it('skips the whole turn when the compaction anchor was never persisted', () => {
-    expect(resolveAbortAnchorDecision({ compact: true }, false)).toBe('skip-turn');
+  it('skips the whole turn when the compaction anchor was never persisted', async () => {
+    await expect(
+      resolveAbortedTurnAnchorDecision(jobData, { messageExists: reader(false) }),
+    ).resolves.toBe('skip-turn');
+  });
+
+  /** A read that throws must not escape past the caller's remaining cleanup:
+   *  nothing is known about the anchor, so nothing is written either. */
+  it('skips the whole turn when the anchor read fails', async () => {
+    const messageExists = jest.fn(async () => {
+      throw new Error('mongo unavailable');
+    });
+
+    await expect(resolveAbortedTurnAnchorDecision(jobData, { messageExists })).resolves.toBe(
+      'skip-turn',
+    );
   });
 });
 
@@ -534,6 +562,32 @@ describe('persistFinalizedCompactionTurn', () => {
 
     expect(saveMessage).not.toHaveBeenCalled();
   });
+
+  /** The surrounding failed-turn persistence treats a falsy save as a
+   *  failure, not a settled row. */
+  it('fails when the injected save resolves falsy', async () => {
+    const partialRow = {
+      content: [
+        {
+          type: ContentTypes.ERROR,
+          error: 'Summarization failed',
+          initiatedBy: 'user',
+        },
+      ],
+    };
+
+    await expect(
+      persistFinalizedCompactionTurn(
+        partialRow,
+        { compact: true },
+        {
+          messageId: 'response-1',
+          conversationId: 'conversation-1',
+          saveMessage: async () => null,
+        },
+      ),
+    ).rejects.toThrow('Failed compaction turn could not be finalized');
+  });
 });
 
 describe('resolveFinalizedCompactionTurn', () => {
@@ -612,9 +666,27 @@ describe('resolveFinalizedCompactionTurn', () => {
     });
   });
 
-  /** A checkpoint the run completed before failing stands exactly as it is. */
-  it('leaves a completed checkpoint untouched', () => {
+  /** A checkpoint the run completed before failing is preserved as content,
+   *  but a snapshot still flagged unfinished settles its envelope: the
+   *  restored conversation must not keep treating the terminal job as live. */
+  it('settles the envelope of an unfinished snapshot holding a completed checkpoint', () => {
+    const snapshot = {
+      unfinished: true,
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'A finished checkpoint.' }],
+          boundary: completedBoundary,
+        },
+      ],
+    };
+
+    expect(resolveFinalizedCompactionTurn(snapshot, { compact: true })).toEqual({ write: true });
+  });
+
+  it('leaves an already-settled checkpoint row untouched', () => {
     const row = {
+      unfinished: false,
       content: [
         {
           type: ContentTypes.SUMMARY,
