@@ -450,16 +450,26 @@ export type ReadableMessageRow = {
 };
 
 /**
+/** How a failed generation's fresh error row proceeds after its existing rows
+ * are settled. */
+export type ErrorTurnSettlement =
+  /** An existing row covers the turn; the caller skips the error row. */
+  | { covered: true }
+  /** The error row is written, under the live response id when the
+   * anchor-shaped collision makes the error id unusable for it. */
+  | { covered: false; errorRowMessageId?: string };
+
+/**
  * Settles the rows a failed generation already persisted before its error row
- * is written, through the caller's injected reads and write. Returns whether
- * an existing row covers the turn, in which case the caller skips the fresh
- * error row entirely.
+ * is written, through the caller's injected reads and write.
  *
  * The error id can normalize back to the compaction anchor itself when the
  * anchor ends in `_`: a match there never receives the error row, and the
- * failed run settles its own distinct live response row instead. Ordinary
- * turns keep their existing behavior: a found partial row is preserved as it
- * stands and blocks the error row.
+ * failed run settles its own distinct live response row instead. When no live
+ * row exists either, the error row is still written, redirected to the live
+ * response id so it can never overwrite the anchor. Ordinary turns keep their
+ * existing behavior: a found partial row is preserved as it stands and blocks
+ * the error row.
  */
 export async function settleExistingRowsBeforeErrorTurn(
   requestBody: { compact?: boolean } | null | undefined,
@@ -485,7 +495,7 @@ export async function settleExistingRowsBeforeErrorTurn(
      *  path does, so other devices learn the persisted turn ended. */
     announceSettledTurn?: (messageId: string) => Promise<unknown>;
   },
-): Promise<boolean> {
+): Promise<ErrorTurnSettlement> {
   const isCompaction = requestBody?.compact === true;
   const settleLiveRow = async (): Promise<boolean> => {
     if (liveResponseMessageId == null || liveResponseMessageId === errorMessageId) {
@@ -515,12 +525,21 @@ export async function settleExistingRowsBeforeErrorTurn(
     '_id',
   );
   if (existing.length > 0) {
-    if (isCompaction) {
-      await settleLiveRow();
+    if (!isCompaction) {
+      return { covered: true };
     }
-    return true;
+    if (await settleLiveRow()) {
+      return { covered: true };
+    }
+    /** The match is the anchor itself and no live row was ever saved: the
+     *  failed run still records its error row, under its own response id. */
+    return {
+      covered: false,
+      ...(liveResponseMessageId != null &&
+        liveResponseMessageId !== errorMessageId && { errorRowMessageId: liveResponseMessageId }),
+    };
   }
-  return settleLiveRow();
+  return { covered: await settleLiveRow() };
 }
 
 /**

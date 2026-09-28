@@ -473,7 +473,7 @@ async function saveErrorTurn(
     /** The existing-row settlement (which row a failed turn settles, and
      *  whether its error row may be written at all) lives in @librechat/api;
      *  this supplies the caller's reads and write. */
-    const coveredByExistingRow = await settleExistingRowsBeforeErrorTurn(req.body, {
+    const settlement = await settleExistingRowsBeforeErrorTurn(req.body, {
       userId,
       conversationId,
       errorMessageId,
@@ -495,8 +495,13 @@ async function saveErrorTurn(
           },
         ),
     });
-    if (coveredByExistingRow) {
+    if (settlement.covered) {
       return;
+    }
+    /** The anchor-shaped collision redirects the error row to the failed
+     *  run's own response id, so it can never overwrite the anchor. */
+    if (settlement.errorRowMessageId != null) {
+      errorMessageId = settlement.errorRowMessageId;
     }
 
     const context = 'api/server/controllers/agents/request.js - failed turn';
