@@ -356,7 +356,10 @@ function isReplacedArrayNode(overrides: AnyObject, segments: string[]): boolean 
   return false;
 }
 
-/** Items of a merged-by-key array need their key: the merge drops an item without one. */
+/**
+ * Items of a merged-by-key array must be objects with their key: the merge drops any other
+ * item, or keeps it as is when nothing lies beneath the array.
+ */
 function getKeylessItemIssues(overrides: AnyObject): ConfigOverrideIssue[] {
   return Object.entries(ARRAY_MERGE_KEYS).flatMap(([arrayPath, keyField]) => {
     const segments = arrayPath.split('.');
@@ -368,7 +371,7 @@ function getKeylessItemIssues(overrides: AnyObject): ConfigOverrideIssue[] {
       return [];
     }
     return node.flatMap((item, index) =>
-      isPlainObject(item) && (typeof item[keyField] !== 'string' || item[keyField] === '')
+      !isPlainObject(item) || typeof item[keyField] !== 'string' || item[keyField] === ''
         ? [toIssue([...segments, String(index)], 'missing_merge_key')]
         : [],
     );
