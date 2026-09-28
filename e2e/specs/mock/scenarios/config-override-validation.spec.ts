@@ -1,13 +1,13 @@
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
-import { getPrimaryE2EUser, getSecondaryE2EUser } from '../../../setup/users.mock';
+import { getPrimaryE2EUser } from '../../../setup/users.mock';
 import { withMongo } from '../db';
 
 /**
  * Principal config overrides are checked against `configSchema`: an invalid field is
  * rejected when written, and one already stored is ignored when merged, so the
  * `librechat.yaml` value survives. The primary user (first registered, ADMIN) writes
- * overrides for the secondary user, whose own `/api/config` shows the merged result.
+ * overrides for a user this file registers, whose own `/api/config` shows the merged result.
  * `interface.contextCost` is `true` in e2e/config/librechat.e2e.yaml.
  */
 
@@ -32,9 +32,16 @@ async function login(
   return { headers: { Authorization: `Bearer ${token}` }, userId: userId as string };
 }
 
+/** A user owned by this file, so no other spec's cleanup can remove it mid-run. */
+const targetUser = {
+  email: `config-override-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`,
+  name: 'Config Override Target',
+  password: 'securepassword789',
+};
+
 async function sessions(request: APIRequestContext): Promise<{ admin: Session; target: Session }> {
   const admin = await login(request, getPrimaryE2EUser());
-  const target = await login(request, getSecondaryE2EUser());
+  const target = await login(request, targetUser);
   return { admin, target };
 }
 
@@ -77,6 +84,24 @@ async function clearOverrides(
 
 test.describe('Principal config override validation', () => {
   test.describe.configure({ mode: 'serial' });
+
+  test.beforeAll(async ({ request }) => {
+    const res = await request.post('/api/auth/register', {
+      data: { ...targetUser, confirm_password: targetUser.password },
+    });
+    expect(res.ok()).toBeTruthy();
+  });
+
+  test.afterAll(async () => {
+    await withMongo(async (db) => {
+      const user = await db.collection('users').findOne({ email: targetUser.email });
+      if (!user) {
+        return;
+      }
+      await db.collection('configs').deleteMany({ principalId: user._id.toString() });
+      await db.collection('users').deleteOne({ _id: user._id });
+    });
+  });
 
   test('an invalid field in a whole-document write is rejected and nothing is stored @scenario:config-override-invalid-put-rejected', async ({
     request,
