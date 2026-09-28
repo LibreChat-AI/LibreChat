@@ -152,10 +152,12 @@ async function mockChallengeAuth(page: Page) {
   await page.route('**/api/roles/**', (route) => json(route, { name: 'USER', permissions: {} }));
 }
 
-/** Drives one full ordinary-challenge sign-in from the login screen. */
+/** Drives one full ordinary-challenge sign-in from the login screen. The password field
+ *  is located by label: SecretInput renders input[type=password], whose role mapping is
+ *  not something the spec should depend on. */
 async function signInThroughChallenge(page: Page) {
   await page.getByRole('textbox', { name: 'Email' }).fill(ENROLLED_USER.email);
-  await page.getByRole('textbox', { name: 'Password' }).fill('password');
+  await page.getByLabel('Password').fill('password');
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page).toHaveURL(CHALLENGE_PATTERN);
   await page.getByLabel('Enter your 2FA code to continue').fill('123456');
