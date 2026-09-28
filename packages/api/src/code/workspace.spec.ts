@@ -338,6 +338,39 @@ describe('workspace admission feedback', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('cancels a typed rate-limit wait without replaying the request', async () => {
+    jest.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const reason = new DOMException('Stopped', 'AbortError');
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: 'rate_limited' }), {
+            status: 429,
+            headers: { 'Retry-After': '1' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+      const request = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        signal: controller.signal,
+        fetchImpl,
+        maxQueueWaitMs: 0,
+        request: { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'x' },
+      });
+
+      await jest.advanceTimersByTimeAsync(1);
+      controller.abort(reason);
+      await expect(request).rejects.toBe(reason);
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('retries a Code API rate limit, which rejects before the operation starts', async () => {
     const rateLimited = () =>
       new Response(
@@ -386,41 +419,64 @@ describe('workspace admission feedback', () => {
     expect(new Set(bodies).size).toBe(1);
   });
 
-  test.each([undefined, 'invalid'])(
-    'uses the typed 429 body delay when Retry-After is %s',
-    async (retryAfter) => {
-      jest.useFakeTimers();
-      try {
-        const fetchImpl = jest
-          .fn()
-          .mockResolvedValueOnce(
-            new Response(JSON.stringify({ error: 'rate_limited', retry_after_seconds: 2 }), {
-              status: 429,
-              ...(retryAfter ? { headers: { 'Retry-After': retryAfter } } : {}),
-            }),
-          )
-          .mockResolvedValueOnce(new Response('{}', { status: 504 }));
-        const result = executeWorkspaceTool({
+  test.each([
+    ['missing', undefined],
+    ['invalid', 'invalid'],
+    ['overflowing', '9'.repeat(400)],
+  ] as const)('uses the typed 429 body delay when Retry-After is %s', async (_case, retryAfter) => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: 'rate_limited', retry_after_seconds: 2 }), {
+            status: 429,
+            ...(retryAfter ? { headers: { 'Retry-After': retryAfter } } : {}),
+          }),
+        )
+        .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        codeApiMaxRetryWaitMs: 3_000,
+        request: {
+          protocolVersion: 1,
+          operation: 'read_file',
+          workspaceId: 'primary',
+          path: 'x',
+        },
+      }).catch((error: WorkspaceToolHttpError) => error);
+
+      await jest.advanceTimersByTimeAsync(1_999);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test.each([-1, 300_001, 1.5, Number.NaN])(
+    'rejects an invalid Code API retry limit of %p before transport',
+    async (codeApiMaxRetryWaitMs) => {
+      const fetchImpl = jest.fn();
+      await expect(
+        executeWorkspaceTool({
           baseURL: 'https://code.example/v1',
           authHeaders: {},
           fetchImpl,
-          codeApiMaxRetryWaitMs: 3_000,
+          codeApiMaxRetryWaitMs,
           request: {
             protocolVersion: 1,
             operation: 'read_file',
             workspaceId: 'primary',
             path: 'x',
           },
-        }).catch((error: WorkspaceToolHttpError) => error);
-
-        await jest.advanceTimersByTimeAsync(1_999);
-        expect(fetchImpl).toHaveBeenCalledTimes(1);
-        await jest.advanceTimersByTimeAsync(1);
-        await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
-        expect(fetchImpl).toHaveBeenCalledTimes(2);
-      } finally {
-        jest.useRealTimers();
-      }
+        }),
+      ).rejects.toMatchObject({ reason: 'invalid' });
+      expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
 
@@ -534,7 +590,211 @@ describe('workspace admission feedback', () => {
     }
   });
 
-  test('reports a rate limit as not started once the retry horizon is spent', async () => {
+  test.each([0, 50])(
+    'retries typed 429s after a %i ms queue horizon without re-enabling capacity retries',
+    async (maxQueueWaitMs) => {
+      jest.useFakeTimers();
+      try {
+        const fetchImpl = jest
+          .fn()
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ error: 'rate_limited' }), {
+              status: 429,
+              headers: { 'Retry-After': '0' },
+            }),
+          )
+          .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+        const result = executeWorkspaceTool({
+          baseURL: 'https://code.example/v1',
+          authHeaders: {},
+          fetchImpl,
+          maxQueueWaitMs,
+          codeApiMaxRetryWaitMs: 100,
+          request: {
+            protocolVersion: 1,
+            operation: 'read_file',
+            workspaceId: 'primary',
+            path: 'x',
+          },
+        }).catch((error: WorkspaceToolHttpError) => error);
+
+        await jest.advanceTimersByTimeAsync(100);
+        await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  test('continues 429 recovery after a queue retry but never extends its capacity horizon', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ code: 'WORKSPACE_QUEUE_TIMEOUT' }), {
+            status: 503,
+            headers: { 'Retry-After': '0' },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: 'rate_limited' }), {
+            status: 429,
+            headers: { 'Retry-After': '0' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        maxQueueWaitMs: 150,
+        codeApiMaxRetryWaitMs: 100,
+        request: { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'x' },
+      }).catch((error: WorkspaceToolHttpError) => error);
+
+      await jest.advanceTimersByTimeAsync(200);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('never borrows the rate-limit horizon to retry a later capacity timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: 'rate_limited' }), {
+            status: 429,
+            headers: { 'Retry-After': '0' },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ code: 'WORKSPACE_QUEUE_TIMEOUT' }), {
+            status: 503,
+            headers: { 'Retry-After': '0' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        maxQueueWaitMs: 50,
+        codeApiMaxRetryWaitMs: 200,
+        request: { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'x' },
+      }).catch((error: WorkspaceToolHttpError) => error);
+
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 503 });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('retries after an authorized rate-limit wait despite timer jitter', async () => {
+    jest.useFakeTimers();
+    const startedAt = Date.now();
+    let currentTime = startedAt;
+    jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+    try {
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: 'rate_limited' }), {
+            status: 429,
+            headers: { 'Retry-After': '0' },
+          }),
+        )
+        .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: 100,
+        request: { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'x' },
+      }).catch((error: WorkspaceToolHttpError) => error);
+
+      await jest.advanceTimersByTimeAsync(0);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      currentTime += 101;
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 504 });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('charges an overslept 429 wait before considering another retry', async () => {
+    jest.useFakeTimers();
+    const startedAt = Date.now();
+    let currentTime = startedAt;
+    jest.spyOn(Date, 'now').mockImplementation(() => currentTime);
+    try {
+      const rateLimited = () =>
+        new Response(JSON.stringify({ error: 'rate_limited' }), {
+          status: 429,
+          headers: { 'Retry-After': '0' },
+        });
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(rateLimited())
+        .mockResolvedValueOnce(rateLimited())
+        .mockResolvedValueOnce(new Response('{}', { status: 504 }));
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: 200,
+        request: { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'x' },
+      }).catch((error: WorkspaceToolHttpError) => error);
+
+      await jest.advanceTimersByTimeAsync(0);
+      currentTime += 150;
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 429 });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('reserves the caller HTTP execution budget when capacity retries are disabled', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'rate_limited' }), {
+          status: 429,
+          headers: { 'Retry-After': '0' },
+        }),
+      );
+      const result = executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: 1_000,
+        maxRequestTimeoutMs: 35_050,
+        request: { protocolVersion: 1, operation: 'read_file', workspaceId: 'primary', path: 'x' },
+      }).catch((error: WorkspaceToolHttpError) => error);
+
+      await jest.advanceTimersByTimeAsync(50);
+      await expect(result).resolves.toMatchObject({ upstreamStatus: 429 });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('reports a rate limit as not started when its retry budget is disabled', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: 'rate_limited', retry_after_seconds: 1 }), {
         status: 429,
@@ -546,7 +806,7 @@ describe('workspace admission feedback', () => {
       baseURL: 'https://code.example/v1',
       authHeaders: {},
       fetchImpl,
-      maxQueueWaitMs: 0,
+      codeApiMaxRetryWaitMs: 0,
       request: {
         protocolVersion: 1,
         operation: 'execute_command',

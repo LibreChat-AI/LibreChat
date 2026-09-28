@@ -1578,6 +1578,7 @@ async function loadToolDefinitionsWrapper({
       enabled: codeExecutionEnabled,
       context: resolvedCodeExecutionContext,
       principalId: JSON.stringify([getTenantId(), req.user.id]),
+      codeApiMaxRetryWaitMs: req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
       getAuthHeaders: (workerId) => getCodeApiAuthHeaders(req, workerId),
     }),
   };
@@ -1781,6 +1782,7 @@ async function loadAgentTools({
     enabled: codeExecutionEnabled,
     context: codeExecutionContext,
     principalId: JSON.stringify([getTenantId(), req.user.id]),
+    codeApiMaxRetryWaitMs: req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     getAuthHeaders: (workerId) => getCodeApiAuthHeaders(req, workerId),
   });
   const { loadedTools, toolContextMap, dynamicToolContextMap, primedCodeFiles } = await loadTools({

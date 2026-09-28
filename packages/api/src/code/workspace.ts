@@ -357,7 +357,10 @@ function waitForWorkspaceAdmission(delayMs: number, signal?: AbortSignal): Promi
 
 function workspaceAdmissionRetryDelay(value: string | null, rateLimitBody?: string): number {
   if (value != null && /^\d+$/.test(value)) {
-    return Math.max(100, Math.min(Number(value) * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) {
+      return Math.max(100, Math.min(seconds * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+    }
   }
   if (rateLimitBody) {
     try {
@@ -867,6 +870,7 @@ export async function executeWorkspaceTool({
     maxQueueWaitMs > WORKSPACE_QUEUE_MAX_WAIT_MS ||
     !Number.isSafeInteger(codeApiMaxRetryWaitMs) ||
     codeApiMaxRetryWaitMs < 0 ||
+    codeApiMaxRetryWaitMs > 300_000 ||
     (maxRequestTimeoutMs !== undefined &&
       (!Number.isSafeInteger(maxRequestTimeoutMs) ||
         maxRequestTimeoutMs < 1 ||
@@ -883,9 +887,10 @@ export async function executeWorkspaceTool({
     maxRequestTimeoutMs == null ? Infinity : Date.now() + maxRequestTimeoutMs,
   );
   const queueDeadlineAt = Date.now() + maxQueueWaitMs;
-  const retryDeadlineAt = Math.min(queueDeadlineAt, callerDeadlineAt - completionReserveMs);
+  const callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
   const body = JSON.stringify(request);
   let lastAdmissionRejection: WorkspaceToolHttpError | undefined;
+  let lastRetryDeadlineAt = Infinity;
   let rateLimitWaitedMs = 0;
   while (true) {
     try {
@@ -919,7 +924,7 @@ export async function executeWorkspaceTool({
       if (timeoutSignal.aborted) {
         throw lastAdmissionRejection ?? new WorkspaceToolHttpError('insufficient_time');
       }
-      if (lastAdmissionRejection && Date.now() >= retryDeadlineAt) {
+      if (lastAdmissionRejection && Date.now() >= lastRetryDeadlineAt) {
         throw lastAdmissionRejection;
       }
       const remainingMs = Math.min(
@@ -952,7 +957,12 @@ export async function executeWorkspaceTool({
         signal?.throwIfAborted();
         const rejection = new WorkspaceToolHttpError('rejected', response.status, body, truncated);
         const admission = getWorkspaceAdmissionRejection(response.status, body, truncated);
-        if (admission == null || Date.now() >= queueDeadlineAt) throw rejection;
+        if (admission == null) throw rejection;
+        const retryDeadlineAt = Math.min(
+          admission === 'queue_timeout' ? queueDeadlineAt : Infinity,
+          callerRetryDeadlineAt,
+        );
+        if (Date.now() >= retryDeadlineAt) throw rejection;
         const retryAfterMs = workspaceAdmissionRetryDelay(
           response.headers.get('Retry-After'),
           admission === 'rate_limited' ? body : undefined,
@@ -965,14 +975,16 @@ export async function executeWorkspaceTool({
         }
         const delayMs = Math.min(retryAfterMs, retryDeadlineAt - Date.now());
         lastAdmissionRejection = rejection;
+        lastRetryDeadlineAt = retryDeadlineAt;
         if (delayMs <= 0) throw rejection;
         const waitStartedAt = Date.now();
         await waitForWorkspaceAdmission(delayMs, signal);
         if (admission === 'rate_limited') {
-          rateLimitWaitedMs += Date.now() - waitStartedAt;
-          if (rateLimitWaitedMs > codeApiMaxRetryWaitMs) throw rejection;
+          /** A timer may run late. Charge the actual wait, but honor the retry that
+           * was authorized before waiting; another 429 cannot exceed the balance. */
+          rateLimitWaitedMs += Math.max(retryAfterMs, Date.now() - waitStartedAt);
         }
-        /** A clamped delay can land exactly on the queue or HTTP deadline. Never open
+        /** A clamped delay can land exactly on this admission's retry deadline. Never open
          * another admission window without the full execution reserve. */
         if (Date.now() >= retryDeadlineAt) {
           throw rejection;

@@ -4111,17 +4111,10 @@ async function handleAttachedWorkspaceEditFileCall({
       const filteredContent = filteredFileResult(tc, req, path.filePath, preview.content);
       if (filteredContent != null) return filteredContent;
       expectedBaseSha256 = preview.baseSha256;
-      /** Zero disables retries, not the two operations required for a protected
-       * edit. Positive horizons must not restart after a successful preview. */
+      /** A spent queue horizon disables capacity retries, not the required
+       * hash-guarded edit attempt or its independent rate-limit recovery. */
       if (workspaceParams.maxQueueWaitMs > 0) {
-        const remainingMs = queueDeadlineAt - Date.now();
-        if (remainingMs <= 0) {
-          return errorResult(
-            tc,
-            'The workspace retry budget expired after preview. The file was not modified.',
-          );
-        }
-        workspaceParams.maxQueueWaitMs = remainingMs;
+        workspaceParams.maxQueueWaitMs = Math.max(0, queueDeadlineAt - Date.now());
       }
     }
     const result = await options.editWorkspaceFile({
