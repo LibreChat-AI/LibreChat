@@ -27,6 +27,9 @@ interface UserMethodDeps {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
+const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
+
 function isAuthUserDocCacheEnabled(): boolean {
   return process.env.AUTH_USER_CACHE_MODE === 'on';
 }
@@ -353,9 +356,9 @@ export function createUserMethods(
     }
     logger.warn(
       '[awaitAuthUserDocEviction] Cached auth documents were not evicted after a credential change; waiting for them to expire',
-      { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS },
+      { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
     );
-    await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS);
+    await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
   }
 
   /** Atomically updates a SAML user only when the incoming identity can claim the document. */

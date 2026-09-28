@@ -85,11 +85,15 @@ const resetPassword = async () => {
      * A passkey signs in on its own, so leaving one in place would keep an attacker
      * logged in after an administrator believes the account has been recovered.
      */
-    const { deletedCount } = await Passkey.deleteMany({ user: user._id });
-    /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
-    await Session.deleteMany({ user: user._id });
-    /** Confirmed only once no cached pre-reset document can still authorize an old token. */
-    await methods.awaitAuthUserDocEviction(user._id.toString());
+    let deletedCount;
+    try {
+      ({ deletedCount } = await Passkey.deleteMany({ user: user._id }));
+      /** A refresh session outlives the stamp: refreshing mints a token issued after it. */
+      await Session.deleteMany({ user: user._id });
+    } finally {
+      /** The password is already changed, so the cache settles even when a revocation fails. */
+      await methods.awaitAuthUserDocEviction(user._id.toString());
+    }
 
     console.log('Password successfully reset!');
     if (deletedCount > 0) {
