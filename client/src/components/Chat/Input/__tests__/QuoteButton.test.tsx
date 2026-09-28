@@ -150,6 +150,84 @@ describe('QuoteButton', () => {
       }
     }
   });
+
+  it('anchors a long code selection to its visible portion inside nested scrollers', () => {
+    jest.useFakeTimers();
+    const codeLine = 'set -e; git fetch '.repeat(40);
+    let rangeRect = rect({ top: 100, bottom: 120, left: 140, right: 2200 });
+    const originalRangeRect = Range.prototype.getBoundingClientRect;
+    const elementRect = jest
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this instanceof HTMLButtonElement) {
+          return rect({ top: 0, bottom: 30, left: 0, right: 100 });
+        }
+        if (this.tagName === 'PRE') {
+          return rect({ top: 95, bottom: 180, left: 100, right: 400 });
+        }
+        return rect({ top: 80, bottom: 500, left: 90, right: 500 });
+      });
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => rangeRect,
+    });
+
+    try {
+      render(
+        <RecoilRoot>
+          <div className="message-render" style={{ overflow: 'auto' }}>
+            <pre style={{ overflowX: 'auto' }}>
+              <code>{codeLine}</code>
+            </pre>
+          </div>
+          <textarea id={mainTextareaId} />
+          <Quotes />
+          <QuoteButton conversationId={CONVO_ID} />
+        </RecoilRoot>,
+      );
+      const code = document.querySelector('.message-render code');
+      if (!code) {
+        throw new Error('Code selection target was not rendered');
+      }
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+
+      fireEvent.mouseUp(document);
+      const button = screen.getByTestId('add-to-chat-button');
+      expect(button).toHaveStyle({ top: '62px', left: '220px' });
+
+      rangeRect = rect({ top: 100, bottom: 120, left: -200, right: 1860 });
+      fireEvent.scroll(code.closest('pre')!);
+      act(() => jest.advanceTimersByTime(20));
+      expect(button).toHaveStyle({ left: '200px' });
+
+      rangeRect = rect({ top: 100, bottom: 120, left: -2200, right: -140 });
+      fireEvent.scroll(code.closest('pre')!);
+      act(() => jest.advanceTimersByTime(20));
+      expect(button).not.toBeVisible();
+
+      rangeRect = rect({ top: 140, bottom: 240, left: 310, right: 2200 });
+      fireEvent.mouseUp(document);
+      expect(button).toHaveStyle({ top: '102px', left: '305px' });
+      fireEvent.click(button);
+      expect(JSON.parse(screen.getByTestId('quotes').textContent ?? '[]')).toEqual([
+        codeLine.trim(),
+      ]);
+    } finally {
+      jest.useRealTimers();
+      elementRect.mockRestore();
+      if (originalRangeRect) {
+        Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+          configurable: true,
+          value: originalRangeRect,
+        });
+      } else {
+        delete (Range.prototype as Partial<Range>).getBoundingClientRect;
+      }
+    }
+  });
 });
 
 describe('QuoteButton lifecycle', () => {

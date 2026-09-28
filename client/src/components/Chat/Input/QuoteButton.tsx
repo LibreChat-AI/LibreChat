@@ -179,31 +179,24 @@ const readSelection = (): Reading | null => {
   };
 };
 
-/**
- * Whether the selection is still on screen, judged against the window
- * intersected with every ancestor that clips it, on both axes. Text slipping
- * under the chat header or sideways out of a table is invisible even though its
- * un-clipped rect is still inside the window, and checking the window alone
- * would leave the popup floating over unrelated UI.
- */
-const isAnchorVisible = (anchor: Anchor, clippers: HTMLElement[]): boolean => {
-  let top = 0;
-  let bottom = window.innerHeight;
-  let left = 0;
-  let right = window.innerWidth;
-  for (let index = 0; index < clippers.length; index++) {
-    const bounds = clippers[index].getBoundingClientRect();
+/** Use only the visible part of a selection to place the popup. A long code
+ * line can extend far beyond its scroll container even while partly selected. */
+const clipAnchor = (anchor: Anchor, clippers: HTMLElement[]): Anchor | null => {
+  let top = Math.max(0, anchor.top);
+  let bottom = Math.min(window.innerHeight, anchor.bottom);
+  let left = Math.max(0, anchor.left);
+  let right = Math.min(window.innerWidth, anchor.right);
+  for (const clipper of clippers) {
+    const bounds = clipper.getBoundingClientRect();
     top = Math.max(top, bounds.top);
     bottom = Math.min(bottom, bounds.bottom);
     left = Math.max(left, bounds.left);
     right = Math.min(right, bounds.right);
-    if (top > bottom || left > right) {
-      return false;
+    if (top >= bottom || left >= right) {
+      return null;
     }
   }
-  return (
-    anchor.bottom >= top && anchor.top <= bottom && anchor.right >= left && anchor.left <= right
-  );
+  return top < bottom && left < right ? { top, bottom, left, right } : null;
 };
 
 /** Place the popup on the preferred side, falling back to the other side and
@@ -321,7 +314,8 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
        *  tracked during the settle window, so a selection scrolled out of the
        *  chat in those 300ms would otherwise be published off-screen and
        *  clamped into view, stranding the popup over unrelated UI. */
-      if (!reading || !isAnchorVisible(reading.anchor, reading.clippers)) {
+      const anchor = reading && clipAnchor(reading.anchor, reading.clippers);
+      if (!reading || !anchor) {
         hide();
         return;
       }
@@ -333,9 +327,9 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
         !previous ||
         previous.text !== reading.text ||
         previous.viaTouch !== touch ||
-        !sameAnchor(previous.anchor, reading.anchor)
+        !sameAnchor(previous.anchor, anchor)
       ) {
-        presentSelection({ text: reading.text, anchor: reading.anchor, viaTouch: touch });
+        presentSelection({ text: reading.text, anchor, viaTouch: touch });
       }
     };
 
@@ -403,8 +397,9 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
       if (!range) {
         return;
       }
-      const anchor = anchorFromRect(range.getBoundingClientRect());
-      if (!anchor || !isAnchorVisible(anchor, clippersRef.current)) {
+      const bounds = anchorFromRect(range.getBoundingClientRect());
+      const anchor = bounds && clipAnchor(bounds, clippersRef.current);
+      if (!anchor) {
         hide();
         return;
       }
