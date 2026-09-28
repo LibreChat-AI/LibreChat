@@ -28,6 +28,15 @@ memory:
   personalize: true
   tokenLimit: 10000
 
+# Budgets that exist only here, not in the environment, so
+# yaml-rate-limits.spec.ts proves librechat.yaml reaches the limiters that route
+# modules build while loading. No other spec calls the speech routes.
+rateLimits:
+  stt:
+    userMax: 2
+  tts:
+    userMax: 2
+
 mcpSettings:
   # Deliberately excludes 127.0.0.1, so the URL-based `e2e-http` server below is blocked
   # at boot (stored as inspectionFailed). mcp-allowlist-override.spec.ts adds that origin
