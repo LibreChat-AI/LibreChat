@@ -343,11 +343,15 @@ export function planAbortedTurnPersistence(
   shouldPersistAbortedTurn: boolean,
 ): AbortedTurnPersistencePlan {
   const active = shouldPersistAbortedTurn && anchorDecision !== 'skip-turn';
+  /** Withholding the FINAL only matters when a row would otherwise have been
+   *  written: an abort with no persistable content and no created event
+   *  publishes an early-abort FINAL of its own, and nothing was withheld. */
+  const withhold = shouldPersistAbortedTurn && anchorDecision === 'skip-turn';
   return {
     writeUserRow: active && anchorDecision === 'persist',
     writeResponseRow: active,
-    withholdFinal: anchorDecision === 'skip-turn',
-    ...(anchorDecision === 'skip-turn' && {
+    withholdFinal: withhold,
+    ...(withhold && {
       withholdReason: 'Compaction anchor unavailable; abort turn withheld',
     }),
   };
