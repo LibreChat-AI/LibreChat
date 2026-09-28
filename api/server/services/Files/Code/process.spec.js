@@ -67,6 +67,8 @@ jest.mock('@librechat/api', () => {
     processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
     prepareCodeOutputBufferForInspection:
       jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
+    getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
+    appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in
@@ -2059,6 +2061,8 @@ describe('Code Process', () => {
           req: mockReq,
           signal: controller.signal,
           maxQueueWaitMs: 0,
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
         }),
       ).resolves.toBe(result);
 
@@ -2079,6 +2083,8 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: 125_000,
+        deadlineAtMs: 160_000,
         request: {
           protocolVersion: 1,
           operation: 'read_file',
@@ -2138,6 +2144,8 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
         request: {
           protocolVersion: 1,
           operation: 'search_text',
@@ -2196,6 +2204,8 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
         request: {
           protocolVersion: 1,
           operation: 'list_files',
@@ -2256,6 +2266,8 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
         request: {
           protocolVersion: 1,
           operation: 'write_file',
@@ -2294,11 +2306,15 @@ describe('Code Process', () => {
           bridgeWorkerId: 'worker-user-1',
           req: mockReq,
           expected_base_sha256: 'a'.repeat(64),
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
         }),
       ).resolves.toBe(result);
 
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
         expect.objectContaining({
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
           request: {
             protocolVersion: 1,
             operation: 'edit_file',
@@ -2336,11 +2352,15 @@ describe('Code Process', () => {
           codeApiBaseUrl: 'https://attached-code.example.com/v1',
           executionProfile: 'stateful',
           req: mockReq,
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
         }),
       ).resolves.toBe(result);
 
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
         expect.objectContaining({
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
           request: {
             protocolVersion: 1,
             operation: 'preview_edit',
@@ -3499,6 +3519,24 @@ describe('Code Process', () => {
       });
 
       expect(result.files?.[0]?.name).toBe('photo.webp');
+    });
+
+    it('tells the model an attached workspace cannot open primed files', async () => {
+      setupSessionInfoOk();
+      getFiles.mockResolvedValue([makeFile({ status: 'ready' })]);
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: ['fid-ready'], files: [] } },
+        agentId: 'agent-id',
+        codeFileLocation: 'programmatic',
+      });
+
+      expect(result.toolContext).toContain('not in the attached workspace');
+      expect(result.toolContext).toContain('$LIBRECHAT_CODE_DATA_DIR/data-ready.xlsx');
+      expect(result.toolContext).not.toContain('/mnt/data');
+      expect(result.toolContext).not.toContain('tool environment:');
+      expect(result.files).toHaveLength(1);
     });
 
     it('annotates a pending file with "(preview not yet generated)"', async () => {

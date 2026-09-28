@@ -1,5 +1,5 @@
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
-import { MCP_STATUS_LABELS, scheduleMCPNeedsAgentRecovery } from './errors';
+import { scheduleMCPStatusLabel, scheduleMCPNeedsAgentRecovery } from './errors';
 import { useLocalize } from '~/hooks';
 
 export default function ScheduleMCPRecovery({
@@ -28,7 +28,7 @@ export default function ScheduleMCPRecovery({
             className="flex flex-wrap items-baseline gap-x-2 text-xs text-text-secondary"
           >
             <p>
-              {item.server} ({ownerLabel}): {localize(MCP_STATUS_LABELS[item.status])}
+              {item.server} ({ownerLabel}): {localize(scheduleMCPStatusLabel(item))}
             </p>
             {scheduleMCPNeedsAgentRecovery([item]) && (
               <button

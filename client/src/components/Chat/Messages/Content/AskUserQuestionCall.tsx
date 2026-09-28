@@ -150,7 +150,7 @@ export default function AskUserQuestionCall({
     <>
       <div className={TOOL_ROW_CLASSES} data-testid="ask-user-question-call">
         <ProgressText
-          phase="completed"
+          phase={terminalFailure ? 'failed' : 'completed'}
           onClick={toggleExpanded}
           inProgressText={statusLabel}
           finishedText={statusLabel}

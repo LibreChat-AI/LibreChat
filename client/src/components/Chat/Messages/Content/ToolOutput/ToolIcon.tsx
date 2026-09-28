@@ -12,6 +12,7 @@ import {
   Brain,
   Zap,
   Wrench,
+  ListChecks,
 } from 'lucide-react';
 import LangIcon from '~/components/Messages/Content/LangIcon';
 import CustomIcon from '~/components/ui/CustomIcon';
@@ -32,6 +33,7 @@ export type ToolIconType =
   | 'skill'
   | 'read_file'
   | 'bash_tool'
+  | 'background_tasks'
   | 'ask_user_question'
   | 'memory'
   | 'action'
@@ -48,6 +50,7 @@ const ICON_MAP: Record<ToolIconType, React.ComponentType<{ className?: string }>
   skill: ScrollText,
   read_file: FileText,
   bash_tool: BashIcon,
+  background_tasks: ListChecks,
   ask_user_question: MessageCircleQuestion,
   memory: Brain,
   action: Zap,
@@ -60,6 +63,9 @@ export function getToolIconType(name: string): ToolIconType {
   }
   if (name.includes(Constants.mcp_delimiter)) {
     return 'mcp';
+  }
+  if (name === Constants.CHECK_BACKGROUND_TASK) {
+    return 'background_tasks';
   }
   if (name === 'execute_code' || name === Constants.PROGRAMMATIC_TOOL_CALLING) {
     return 'execute_code';

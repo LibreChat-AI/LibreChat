@@ -87,6 +87,10 @@ jest.mock('./Tools/mcp', () => ({
   reinitMCPServer: jest.fn(),
 }));
 
+jest.mock('~/server/services/Schedules', () => ({
+  recordMCPToolAuthFailure: jest.fn(async () => true),
+}));
+
 jest.mock('./GraphTokenService', () => ({
   getGraphApiToken: jest.fn(),
 }));
@@ -1544,6 +1548,44 @@ describe('User parameter passing tests', () => {
   });
 
   describe('createMCPTool', () => {
+    it('records a typed OBO failure against the scheduled generation before returning an error', async () => {
+      const user = { id: 'scheduled-owner', role: 'USER' };
+      const missing = new Error('Unattended provider not configured');
+      const error = Object.assign(new Error('MCP tool error'), { cause: missing });
+      const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+      require('~/models').getRoleByName.mockResolvedValue({
+        permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } },
+      });
+      mockGetMCPManager.mockReturnValue({ callTool: jest.fn().mockRejectedValue(error) });
+      const tool = await createMCPTool({
+        user,
+        toolKey: `test-tool${D}test-server`,
+        provider: 'openai',
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+        config: { type: 'streamable-http', url: 'https://mcp.example.com' },
+        availableTools: {
+          [`test-tool${D}test-server`]: {
+            function: { description: 'Test MCP', parameters: { type: 'object', properties: {} } },
+          },
+        },
+      });
+      await expect(
+        tool.func({}, undefined, {
+          configurable: { user },
+          metadata: { provider: 'openai', thread_id: 'scheduled-conversation', run_id: 'run-1' },
+          toolCall: {},
+        }),
+      ).rejects.toThrow();
+      expect(receipt).toHaveBeenCalledWith({
+        error,
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+        userId: 'scheduled-owner',
+        serverName: 'test-server',
+      });
+    });
+
     it('keeps shared OAuth recovery alive when one tool caller aborts', async () => {
       const mockUser = { id: 'shared-recovery-user', role: 'USER' };
       const mockRes = { write: jest.fn(), flush: jest.fn() };
@@ -2783,6 +2825,8 @@ describe('User parameter passing tests', () => {
         serverName: 'server1',
         provider: 'anthropic',
         userMCPAuthMap: {},
+        streamId: 'scheduled-stream',
+        jobCreatedAt: 42,
       });
 
       // Verify all calls to reinitMCPServer had the user
@@ -2790,6 +2834,8 @@ describe('User parameter passing tests', () => {
       reinitCalls.forEach((call) => {
         expect(call.user).toBe(mockUser);
         expect(call.user.id).toBe('user-001');
+        expect(call.streamId).toBe('scheduled-stream');
+        expect(call.jobCreatedAt).toBe(42);
       });
     });
 
@@ -2817,12 +2863,16 @@ describe('User parameter passing tests', () => {
         provider: 'google',
         userMCPAuthMap: {},
         availableTools: undefined, // Force reinit
+        streamId: 'resumed-stream',
+        jobCreatedAt: 43,
       });
 
       // Verify the call to reinitMCPServer had the user
       expect(reinitCalls.length).toBe(1);
       expect(reinitCalls[0].user).toBe(mockUser);
       expect(reinitCalls[0].user.id).toBe('user-002');
+      expect(reinitCalls[0].streamId).toBe('resumed-stream');
+      expect(reinitCalls[0].jobCreatedAt).toBe(43);
     });
   });
 

@@ -6426,11 +6426,22 @@ describe('MCPConnectionFactory', () => {
       expect(upstreamTokenProviderResolver).not.toHaveBeenCalled();
     });
 
-    it('throws an internal error when upstreamTokenProvider is omitted on an OBO connection', async () => {
+    it('identifies missing upstream credentials before exchanging an OBO token', async () => {
       const { resolveOboToken } = jest.requireMock('~/mcp/oauth') as {
         resolveOboToken: jest.Mock;
       };
       resolveOboToken.mockClear();
+      const OboError = OboTokenResolutionError as unknown as jest.Mock;
+      OboError.mockImplementation((reason: string, userMessage: string, retryable = false) => {
+        const error = new Error(userMessage);
+        Object.setPrototypeOf(error, OboError.prototype);
+        return Object.assign(error, {
+          name: 'OboTokenResolutionError',
+          reason,
+          retryable,
+          userMessage,
+        });
+      });
       const oboTokenResolver = jest.fn();
 
       await expect(
@@ -6450,7 +6461,11 @@ describe('MCPConnectionFactory', () => {
             /** upstreamTokenProvider intentionally omitted */
           },
         ),
-      ).rejects.toThrow(/upstreamTokenProvider not plumbed/);
+      ).rejects.toMatchObject({
+        name: 'OboTokenResolutionError',
+        reason: 'missing_upstream_provider',
+        retryable: false,
+      });
       expect(resolveOboToken).not.toHaveBeenCalled();
     });
 

@@ -105,76 +105,44 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
     };
   });
 
-  it.each(
-    [true, false].flatMap((stream) =>
-      ['wire-string', 'wire-object', 'native-string', 'idless'].map(
-        (shape) => [stream, shape] as const,
-      ),
-    ),
-  )(
-    'retains complete and mixed snapshots through the service (stream=%s, shape=%s)',
-    async (stream, shape) => {
+  it.each([true, false])(
+    'keeps graph and provider-owned calls internal (stream=%s)',
+    async (stream) => {
       const req = createMockReq(
         { id: 'user' },
         { model: 'agent_test', messages: [{ role: 'user', content: 'hi' }], stream },
       );
       const res = createMockRes();
       processStream.mockImplementationOnce(async () => {
-        const { customHandlers: h } = createRun.mock.calls[0][0] as Parameters<
+        const { customHandlers: handlers } = createRun.mock.calls[0][0] as Parameters<
           NonNullable<ChatCompletionDependencies['createRun']>
         >[0];
-        const meta = { langgraph_node: 'agent=test', langgraph_step: 1 };
-        await h.on_run_step.handle(
-          'on_run_step',
-          {
-            id: 'step',
-            stepDetails: {
-              type: 'tool_calls',
-              tool_calls: [
-                (() => {
-                  if (shape === 'idless')
-                    return { name: 'get_time', args: { city: 'Madrid' }, index: 0 };
-                  if (shape === 'native-string')
-                    return { id: 'a', name: 'get_time', args: '{"city":"Madrid"}', index: 0 };
-                  return {
-                    id: 'a',
-                    function: {
-                      name: 'get_time',
-                      arguments: shape === 'wire-object' ? { city: 'Madrid' } : '{"city":"Madrid"}',
-                    },
-                    index: 0,
-                  };
-                })(),
-                { id: 'b', name: 'get_time', args: {}, index: 1 },
-              ],
-            },
-          },
-          meta,
-        );
-        await h.on_run_step_delta.handle(
-          'on_run_step_delta',
-          {
-            id: 'step',
-            delta: { type: 'tool_calls', tool_calls: [{ index: 1, args: '{"city":"Paris"}' }] },
-          },
-          meta,
-        );
-        await h.on_message_delta.handle('on_message_delta', {
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted',
+          agentId: 'agent_test',
+          messageId: 'message',
+          toolCalls: [
+            { id: 'internal', name: 'get_time', args: { city: 'Madrid' } },
+            { id: 'server', name: 'web_search', args: { query: 'weather' } },
+          ],
+          toolCallDispositions: ['sdk', 'provider'],
+          invalidToolCalls: [],
+        });
+        await handlers.on_message_delta.handle('on_message_delta', {
           delta: { content: [{ type: 'text', text: 'Finished.' }] },
         });
       });
+
       await createAgentChatCompletion(req, res, deps);
+
       if (stream) {
-        const frames = (res.write as jest.Mock).mock.calls
+        const chunks: ChatCompletionChunk[] = (res.write as jest.Mock).mock.calls
           .map(([frame]: [string]) => frame)
-          .filter((frame) => frame !== 'data: [DONE]\n\n');
-        const chunks: ChatCompletionChunk[] = frames.map((frame) => JSON.parse(frame.slice(6)));
-        const args = new Map<number, string>();
-        for (const chunk of chunks)
-          for (const call of chunk.choices[0].delta.tool_calls ?? [])
-            args.set(call.index, (args.get(call.index) ?? '') + (call.function?.arguments ?? ''));
-        expect(args.get(0)).toBe('{"city":"Madrid"}');
-        expect(args.get(1)).toBe('{"city":"Paris"}');
+          .filter((frame) => frame !== 'data: [DONE]\n\n')
+          .map((frame) => JSON.parse(frame.slice(6)));
+        expect(chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])).toEqual([]);
+        expect(chunks.some((chunk) => chunk.choices[0].delta.content === 'Finished.')).toBe(true);
         expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('stop');
       } else {
         expect(getResponseMock(res, 'json')).toHaveBeenCalledWith(
@@ -182,25 +150,67 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
             choices: [
               expect.objectContaining({
                 finish_reason: 'stop',
-                message: expect.objectContaining({
-                  content: 'Finished.',
-                  tool_calls: [
-                    {
-                      id: shape === 'idless' ? 'call_0' : 'a',
-                      type: 'function',
-                      function: { name: 'get_time', arguments: '{"city":"Madrid"}' },
-                    },
-                    {
-                      id: 'b',
-                      type: 'function',
-                      function: { name: 'get_time', arguments: '{"city":"Paris"}' },
-                    },
-                  ],
-                }),
+                message: expect.objectContaining({ content: 'Finished.' }),
               }),
             ],
           }),
         );
+        const response = getResponseMock(res, 'json').mock.calls[0][0] as ChatCompletionChunk;
+        expect(JSON.stringify(response)).not.toContain('tool_calls');
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'finishes with tool_calls when an accepted client call follows text (stream=%s)',
+    async (stream) => {
+      const req = createMockReq(
+        { id: 'user' },
+        { model: 'agent_test', messages: [{ role: 'user', content: 'hi' }], stream },
+      );
+      const res = createMockRes();
+      processStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers } = createRun.mock.calls[0][0] as Parameters<
+          NonNullable<ChatCompletionDependencies['createRun']>
+        >[0];
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'Checking the weather.' }] },
+        });
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-client',
+          agentId: 'agent_test',
+          toolCalls: [{ id: 'client', name: 'lookup', args: { city: 'Madrid' } }],
+          toolCallDispositions: ['client'],
+          invalidToolCalls: [],
+        });
+      });
+
+      await createAgentChatCompletion(req, res, deps);
+
+      if (stream) {
+        const chunks: ChatCompletionChunk[] = (res.write as jest.Mock).mock.calls
+          .map(([frame]: [string]) => frame)
+          .filter((frame) => frame !== 'data: [DONE]\n\n')
+          .map((frame) => JSON.parse(frame.slice(6)));
+        expect(
+          chunks.some((chunk) => chunk.choices[0].delta.content === 'Checking the weather.'),
+        ).toBe(true);
+        expect(
+          chunks
+            .flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? [])
+            .some((call) => call.id === 'client'),
+        ).toBe(true);
+        expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe('tool_calls');
+      } else {
+        const response = getResponseMock(res, 'json').mock.calls[0][0] as {
+          choices: [
+            { message: { content: string; tool_calls: [{ id: string }] }; finish_reason: string },
+          ];
+        };
+        expect(response.choices[0].message.content).toBe('Checking the weather.');
+        expect(response.choices[0].message.tool_calls[0].id).toBe('client');
+        expect(response.choices[0].finish_reason).toBe('tool_calls');
       }
     },
   );
@@ -217,14 +227,13 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
         const { customHandlers: h } = createRun.mock.calls[0][0] as Parameters<
           NonNullable<ChatCompletionDependencies['createRun']>
         >[0];
-        await h.on_run_step.handle('on_run_step', {
-          id: 'step',
-          stepDetails: {
-            type: 'tool_calls',
-            tool_calls: [
-              { id: 'a', function: { name: 'get_time', arguments: '{"city":"DO_NOT_FLUSH"}' } },
-            ],
-          },
+        await h.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-before-failure',
+          agentId: 'agent_test',
+          toolCalls: [{ id: 'a', name: 'get_time', args: { city: 'DO_NOT_FLUSH' } }],
+          toolCallDispositions: ['client'],
+          invalidToolCalls: [],
         });
         throw new Error('provider failed');
       });
@@ -234,9 +243,13 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
       const { customHandlers: h } = createRun.mock.calls[0][0] as Parameters<
         NonNullable<ChatCompletionDependencies['createRun']>
       >[0];
-      await h.on_run_step_delta.handle('on_run_step_delta', {
-        id: 'step',
-        delta: { type: 'tool_calls', tool_calls: [{ id: 'a', args: '{"late":true}' }] },
+      await h.on_model_response.handle('on_model_response', {
+        type: 'model_response',
+        id: 'late',
+        agentId: 'agent_test',
+        toolCalls: [{ id: 'late', name: 'get_time', args: { late: true } }],
+        toolCallDispositions: ['client'],
+        invalidToolCalls: [],
       });
       expect(JSON.stringify((res.write as jest.Mock).mock.calls)).not.toContain('late');
     },

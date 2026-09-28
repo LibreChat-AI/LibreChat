@@ -8,13 +8,16 @@ import {
   useCreateSkillMutation,
   useDeleteSkillMutation,
   useImportSkillMutation,
+  useUploadSkillFileMutation,
 } from '../mutations';
-import { useSkillsInfiniteQuery } from '../queries';
+import { useSkillsInfiniteQuery, useListSkillFilesQuery } from '../queries';
 
 const mockCreateSkill = jest.fn();
 const mockDeleteSkill = jest.fn();
 const mockImportSkill = jest.fn();
 const mockListSkills = jest.fn();
+const mockUploadSkillFile = jest.fn();
+const mockListSkillFiles = jest.fn();
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -26,6 +29,8 @@ jest.mock('librechat-data-provider', () => {
       deleteSkill: (...args: unknown[]) => mockDeleteSkill(...args),
       importSkill: (...args: unknown[]) => mockImportSkill(...args),
       listSkills: (...args: unknown[]) => mockListSkills(...args),
+      uploadSkillFile: (...args: unknown[]) => mockUploadSkillFile(...args),
+      listSkillFiles: (...args: unknown[]) => mockListSkillFiles(...args),
     },
   };
 });
@@ -222,6 +227,69 @@ describe('skill creation cache updates', () => {
         .getQueryData<{ pages: TSkillListResponse[] }>(queryKey)
         ?.pages.flatMap((page) => page.skills),
     ).toEqual([]);
+    queryClient.clear();
+  });
+});
+
+describe('skill file replacement cache', () => {
+  it('fetches the complete list when a direct-file save had no list cache', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const saved = { relativePath: 'references/edited.md' };
+    const sibling = { relativePath: 'scripts/run.sh' };
+    mockUploadSkillFile.mockResolvedValue(saved);
+    mockListSkillFiles.mockResolvedValue({ files: [saved, sibling] });
+    const { result, rerender } = renderHook(
+      ({ enabled }) => ({
+        upload: useUploadSkillFileMutation(),
+        files: useListSkillFilesQuery('skill-id', { enabled }),
+      }),
+      { wrapper, initialProps: { enabled: false } },
+    );
+    await act(async () => {
+      await result.current.upload.mutateAsync({ skillId: 'skill-id', formData: new FormData() });
+    });
+    expect(queryClient.getQueryData([QueryKeys.skillFiles, 'skill-id'])).toBeUndefined();
+    rerender({ enabled: true });
+    await waitFor(() => expect(result.current.files.data?.files).toEqual([saved, sibling]));
+    queryClient.clear();
+  });
+
+  it('cancels stale in-flight list reads and refreshes a complete list after replacement', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const key = [QueryKeys.skillFiles, 'skill-id'];
+    const original = { relativePath: 'references/edited.md', file_id: 'old' };
+    const saved = { ...original, file_id: 'saved' };
+    const sibling = { relativePath: 'scripts/run.sh' };
+    queryClient.setQueryData(key, { files: [original, sibling] });
+    const stale = deferred<{ files: (typeof original)[] }>();
+    mockListSkillFiles
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue({ files: [saved, sibling] });
+    mockUploadSkillFile.mockResolvedValue(saved);
+    const { result } = renderHook(
+      () => ({
+        upload: useUploadSkillFileMutation(),
+        files: useListSkillFilesQuery('skill-id'),
+      }),
+      { wrapper },
+    );
+    act(() => {
+      void result.current.files.refetch();
+    });
+    await act(async () => {
+      await result.current.upload.mutateAsync({ skillId: 'skill-id', formData: new FormData() });
+    });
+    await waitFor(() => expect(result.current.files.data?.files).toEqual([saved, sibling]));
+    await act(async () => {
+      stale.resolve({ files: [original] });
+    });
+    expect(result.current.files.data?.files).toEqual([saved, sibling]);
     queryClient.clear();
   });
 });

@@ -11,6 +11,7 @@ import {
   resolveAttachedWorkspaceCommandTimeoutMax,
   resolveAttachedWorkspaceProgrammaticTimeout,
   resolveAttachedWorkspaceQueueWaitMs,
+  resolveAttachedWorkspaceRequestTimeoutMs,
 } from './command';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from '~/agents/invocation';
 
@@ -376,7 +377,7 @@ describe('createAttachedWorkspaceBashTool', () => {
     expect(foregroundRequest).toMatchObject({ timeoutMs: 30_000 });
   });
 
-  test('resolves the administrator-configured admission budget', () => {
+  test('resolves the administrator-configured retry horizon', () => {
     expect(resolveAttachedWorkspaceQueueWaitMs()).toBe(5 * 60_000);
     expect(resolveAttachedWorkspaceQueueWaitMs({ limits: { maxQueueWaitMs: 30_000 } })).toBe(
       30_000,
@@ -385,6 +386,37 @@ describe('createAttachedWorkspaceBashTool', () => {
     expect(resolveAttachedWorkspaceQueueWaitMs({ limits: { maxQueueWaitMs: 10 * 60_000 } })).toBe(
       5 * 60_000,
     );
+  });
+
+  test('opts Bash into a verified HTTP limit without changing execution or disabling the initial attempt', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    expect(resolveAttachedWorkspaceRequestTimeoutMs()).toBeUndefined();
+    expect(
+      resolveAttachedWorkspaceRequestTimeoutMs({ limits: { maxRequestTimeoutMs: 125_000 } }),
+    ).toBe(125_000);
+    expect(
+      resolveAttachedWorkspaceRequestTimeoutMs({ limits: { maxRequestTimeoutMs: 610_001 } }),
+    ).toBeUndefined();
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      maxTimeoutMs: 90_000,
+      maxQueueWaitMs: 0,
+      maxRequestTimeoutMs: 125_000,
+      fetchImpl,
+    });
+
+    await bashTool.func({ command: 'sleep 90', timeoutMs: 90_000 }, undefined, {});
+    await bashTool.func({ command: 'pwd' }, undefined, {});
+
+    const [, long] = (fetchImpl as jest.Mock).mock.calls[0];
+    const [, short] = (fetchImpl as jest.Mock).mock.calls[1];
+    expect(JSON.parse(long.body).timeoutMs).toBe(90_000);
+    expect(JSON.parse(short.body).timeoutMs).toBe(30_000);
+    expect(long.headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('25000');
+    expect(short.headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('85000');
   });
 
   test('lowers the omitted timeout when the deployment ceiling is below 30 seconds', async () => {

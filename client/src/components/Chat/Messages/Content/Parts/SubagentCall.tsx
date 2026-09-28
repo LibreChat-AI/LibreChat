@@ -21,10 +21,12 @@ import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { parseSubagentBackgroundHandle } from './handle';
+import { isError } from '../ToolOutput/OutputRenderer';
 import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
+import { useFailedReveal } from '../reveal';
 import { cn, parseToolName } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -218,7 +220,10 @@ export default function SubagentCall({
    * status is the authority on why it stopped.
    */
   const hasError =
-    (progress?.status === 'error' || runStepStatus === 'failed') && runStepStatus !== 'cancelled';
+    runStepStatus !== 'cancelled' &&
+    (progress?.status === 'error' ||
+      runStepStatus === 'failed' ||
+      (typeof output === 'string' && isError(output)));
   const finished = isClosed
     ? runStepStatus !== 'cancelled'
     : initialProgress >= 1 || progress?.status === 'stop' || hasError;
@@ -374,6 +379,15 @@ export default function SubagentCall({
     if (!canOpenDetails || openPanel == null) return;
     openPanel(panelSelection);
   }, [canOpenDetails, openPanel, panelSelection]);
+  const revealFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (claimFocus()) {
+        openDetails();
+      }
+    },
+    [openDetails],
+  );
+  useFailedReveal(hasError && canOpenDetails, revealFailure);
 
   return (
     <>

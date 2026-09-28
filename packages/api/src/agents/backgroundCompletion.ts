@@ -6,6 +6,13 @@ export const BACKGROUND_TASK_ABORT_GRACE_MS: number = 60 * 1000;
 /** Three missed heartbeats prove the process-local executor has been lost. */
 export const BACKGROUND_TOOL_PRODUCER_LEASE_MS: number = 30_000;
 export const BACKGROUND_TOOL_PRODUCER_HEARTBEAT_MS: number = 10_000;
+/** Recorded as the result of a background tool the server had to stop while shutting down. */
+export const BACKGROUND_TASK_SHUTDOWN_MESSAGE: string =
+  'Background task was interrupted because its server shut down before it finished. Run it again if you still need the result.';
+/** Kept at the end of the background drain for the final durable receipt writes. */
+export const BACKGROUND_SHUTDOWN_FLUSH_RESERVE_MS: number = 2_000;
+/** Left after the background drain for the shutdown tasks that run after it. */
+export const BACKGROUND_SHUTDOWN_TEARDOWN_RESERVE_MS: number = 2_000;
 
 /** Host-owned identity recorded before ordinary background tool work begins. */
 export interface BackgroundToolWakeupRegistration {
