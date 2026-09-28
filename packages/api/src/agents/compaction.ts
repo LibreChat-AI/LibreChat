@@ -110,7 +110,9 @@ export interface CheckpointCandidate {
  * keeps the row from that summary on: a response that summarized mid-run keeps
  * producing after it, and the SDK formatter (`applySummaryBoundary`) promotes
  * the summary and keeps the parts that follow, exactly as it does when the full
- * history is sent. A legacy `summary` field replaces the whole row.
+ * history is sent. A sliced row drops its stored token count, which still covers
+ * the parts before the summary, so the prompt is charged for what it sends. A
+ * legacy `summary` field replaces the whole row.
  */
 export function resolveCheckpointMessage<T extends CheckpointCandidate>(
   message: T,
@@ -120,7 +122,7 @@ export function resolveCheckpointMessage<T extends CheckpointCandidate>(
     const summaryIndex = message.content.lastIndexOf(summaryPart);
     return summaryIndex === 0
       ? message
-      : { ...message, content: message.content.slice(summaryIndex) };
+      : { ...message, content: message.content.slice(summaryIndex), tokenCount: undefined };
   }
   if (!message.summary) {
     return null;

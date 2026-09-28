@@ -263,11 +263,10 @@ describe('resolveCheckpointMessage', () => {
       content: [{ type: ContentTypes.TEXT, text: 'Before summarizing' }, summaryPart, trailingText],
     };
 
-    expect(resolveCheckpointMessage(message)).toEqual({
-      messageId: 'response',
-      tokenCount: 90,
-      content: [summaryPart, trailingText],
-    });
+    const resolved = resolveCheckpointMessage(message);
+
+    expect(resolved).toEqual({ messageId: 'response', content: [summaryPart, trailingText] });
+    expect(resolved?.tokenCount).toBeUndefined();
   });
 
   it('starts at the last usable summary', () => {
@@ -293,7 +292,7 @@ describe('resolveCheckpointMessage', () => {
   });
 
   it('returns the row itself when it already starts at its summary', () => {
-    const message = { content: [summaryPart] };
+    const message = { content: [summaryPart], tokenCount: 12 };
 
     expect(resolveCheckpointMessage(message)).toBe(message);
   });
