@@ -52,7 +52,7 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
-  resolveFinalizedCompactionTurn,
+  persistFinalizedCompactionTurn,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -575,28 +575,36 @@ async function saveErrorTurn(
  * marking. The decision lives in @librechat/api; this is the wiring, reusing
  * the row the caller already loaded.
  */
+/**
+ * The disconnect save is marker-only while the run is still live; a failed
+ * turn is what settles it, so a compaction's partial row is finalized with the
+ * terminal outcome instead of keeping the snapshot's live-run marking. The
+ * operation lives in @librechat/api; this wiring supplies the caller's
+ * persistence and the row saveErrorTurn already loaded.
+ */
 async function finalizeFailedCompactionTurn(
   req,
   { userId, conversationId, messageId, partialRow },
 ) {
-  const finalized = resolveFinalizedCompactionTurn(partialRow, req.body);
-  if (finalized == null) {
-    return;
-  }
-  await saveMessage(
-    {
-      userId,
-      isTemporary:
-        req?._agentEventBindingRetention?.isTemporary ??
-        req?.resolvedConversation?.isTemporary ??
-        req?.body?.isTemporary,
-      expiredAt:
-        req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
-      interfaceConfig: req?.config?.interfaceConfig,
-    },
-    { messageId, conversationId, ...finalized },
-    { context: 'api/server/controllers/agents/request.js - finalize failed compaction turn' },
-  );
+  await persistFinalizedCompactionTurn(partialRow, req.body, {
+    messageId,
+    conversationId,
+    saveMessage: (message) =>
+      saveMessage(
+        {
+          userId,
+          isTemporary:
+            req?._agentEventBindingRetention?.isTemporary ??
+            req?.resolvedConversation?.isTemporary ??
+            req?.body?.isTemporary,
+          expiredAt:
+            req?._agentEventBindingRetention?.expiredAt ?? req?.resolvedConversation?.expiredAt,
+          interfaceConfig: req?.config?.interfaceConfig,
+        },
+        message,
+        { context: 'api/server/controllers/agents/request.js - finalize failed compaction turn' },
+      ),
+  });
 }
 
 function classifyScheduledFailure(error, aborted = false) {

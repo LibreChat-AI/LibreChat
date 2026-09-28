@@ -263,17 +263,62 @@ export function markAbortedCompactionContent(
   return contentParts;
 }
 
+/** How the abort route persists a stopped turn's prerequisite rows. */
+export type AbortAnchorDecision = 'persist' | 'skip-anchor' | 'skip-turn';
+
 /**
- * Whether the abort route's prerequisite user write applies to a job: a
- * compaction's `userMessage` is the already-persisted branch leaf projected
- * for identity only, so upserting it would erase a user leaf's text or turn
- * an assistant leaf into an empty user row. The anchor exists by definition;
- * only the aborted response needs writing.
+ * A compaction's `userMessage` is the branch leaf projected for identity
+ * only: when the leaf is already persisted, the projection must never be
+ * upserted over it (an ordinary prerequisite write would erase a user leaf's
+ * text or turn an assistant leaf into an empty user row), so only the aborted
+ * response is written. When the leaf is NOT persisted, Stop won the race
+ * before the branch loaded and there is nothing to anchor the response onto,
+ * so nothing is written at all. Ordinary turns keep the prerequisite write.
  */
-export function shouldPersistAbortAnchor(
+export function resolveAbortAnchorDecision(
   jobData: { compact?: boolean } | null | undefined,
-): boolean {
-  return jobData?.compact !== true;
+  anchorExists: boolean,
+): AbortAnchorDecision {
+  if (jobData?.compact !== true) {
+    return 'persist';
+  }
+  return anchorExists ? 'skip-anchor' : 'skip-turn';
+}
+
+/**
+ * Finalizes a failed compaction's already-persisted partial row, with the
+ * write injected so the operation runs against whatever persistence the
+ * caller owns. The row settles with the terminal envelope the error path
+ * writes (an errored, finished turn): with the snapshot's `unfinished` flag
+ * left in place, restored sessions and downstream readers would keep
+ * classifying the failed turn as an incomplete response. Returns whether a
+ * write happened.
+ */
+export async function persistFinalizedCompactionTurn(
+  partialRow: { content?: unknown } | null | undefined,
+  requestBody: { compact?: boolean } | null | undefined,
+  {
+    messageId,
+    conversationId,
+    saveMessage,
+  }: {
+    messageId: string;
+    conversationId: string;
+    saveMessage: (message: Record<string, unknown>) => Promise<unknown>;
+  },
+): Promise<boolean> {
+  const finalized = resolveFinalizedCompactionTurn(partialRow, requestBody);
+  if (finalized == null) {
+    return false;
+  }
+  await saveMessage({
+    messageId,
+    conversationId,
+    unfinished: false,
+    error: true,
+    ...finalized,
+  });
+  return true;
 }
 
 /**

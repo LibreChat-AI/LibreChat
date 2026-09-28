@@ -17,10 +17,11 @@ import {
   getSummaryPartText,
   markAbortedCompactionContent,
   markCompactionOutcome,
+  persistFinalizedCompactionTurn,
+  resolveAbortAnchorDecision,
   resolveFailedTurnContent,
   resolveCheckpointMessage,
   resolveFinalizedCompactionTurn,
-  shouldPersistAbortAnchor,
   restoreCompactionSemanticIndex,
   restoreCompactionSemanticIndexSnapshot,
   stripUnusableSummaryParts,
@@ -434,16 +435,76 @@ describe('markAbortedCompactionContent', () => {
   });
 });
 
-describe('shouldPersistAbortAnchor', () => {
+describe('resolveAbortAnchorDecision', () => {
   it('keeps the prerequisite user write for an ordinary turn', () => {
-    expect(shouldPersistAbortAnchor({})).toBe(true);
-    expect(shouldPersistAbortAnchor(null)).toBe(true);
+    expect(resolveAbortAnchorDecision({}, true)).toBe('persist');
+    expect(resolveAbortAnchorDecision(null, false)).toBe('persist');
   });
 
   /** The compaction's `userMessage` is the persisted leaf projected for
    *  identity only; upserting it would erase the leaf. */
-  it('skips the prerequisite write for a compaction', () => {
-    expect(shouldPersistAbortAnchor({ compact: true })).toBe(false);
+  it('skips the prerequisite write for a compaction anchored on a persisted leaf', () => {
+    expect(resolveAbortAnchorDecision({ compact: true }, true)).toBe('skip-anchor');
+  });
+
+  /** Stop can win the race before the branch loaded, leaving the projection
+   *  with no row behind it: a response written there would be orphaned. */
+  it('skips the whole turn when the compaction anchor was never persisted', () => {
+    expect(resolveAbortAnchorDecision({ compact: true }, false)).toBe('skip-turn');
+  });
+});
+
+describe('persistFinalizedCompactionTurn', () => {
+  it('writes the finalized content with the terminal envelope', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const partialRow = {
+      content: [
+        {
+          type: ContentTypes.SUMMARY,
+          content: [{ type: ContentTypes.TEXT, text: 'Half a summary' }],
+          summarizing: true,
+        },
+      ],
+    };
+
+    await persistFinalizedCompactionTurn(
+      partialRow,
+      { compact: true },
+      {
+        messageId: 'response-1',
+        conversationId: 'conversation-1',
+        saveMessage: async (message) => {
+          saved.push(message);
+          return message;
+        },
+      },
+    );
+
+    /** The snapshot was saved `unfinished` with no error while the run was
+     *  live; the settled row must not keep reading as an incomplete
+     *  response. */
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      messageId: 'response-1',
+      conversationId: 'conversation-1',
+      unfinished: false,
+      error: true,
+    });
+    expect(saved[0].content).toEqual([
+      expect.objectContaining({ type: ContentTypes.SUMMARY, failed: true, initiatedBy: 'user' }),
+    ]);
+  });
+
+  it('writes nothing when the row needs no finalization', async () => {
+    const saveMessage = jest.fn();
+
+    await persistFinalizedCompactionTurn(
+      { content: [{ type: ContentTypes.TEXT, text: 'An ordinary partial' }] },
+      {},
+      { messageId: 'response-1', conversationId: 'conversation-1', saveMessage },
+    );
+
+    expect(saveMessage).not.toHaveBeenCalled();
   });
 });
 
