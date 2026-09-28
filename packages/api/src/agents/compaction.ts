@@ -303,6 +303,107 @@ export async function resolveAbortedTurnAnchorDecision(
   }
 }
 
+/** The abort route's persistence plan for a stopped turn: which rows to write
+ *  and whether the normal FINAL must be withheld (the manager publishes a
+ *  reconciliation frame instead, so the client is never pointed at a response
+ *  that was deliberately never persisted). */
+export interface AbortedTurnPersistencePlan {
+  writeUserRow: boolean;
+  writeResponseRow: boolean;
+  withholdFinal: boolean;
+  withholdReason?: string;
+}
+
+export function planAbortedTurnPersistence(
+  anchorDecision: AbortAnchorDecision,
+  shouldPersistAbortedTurn: boolean,
+): AbortedTurnPersistencePlan {
+  const active = shouldPersistAbortedTurn && anchorDecision !== 'skip-turn';
+  return {
+    writeUserRow: active && anchorDecision === 'persist',
+    writeResponseRow: active,
+    withholdFinal: anchorDecision === 'skip-turn',
+    ...(anchorDecision === 'skip-turn' && {
+      withholdReason: 'Compaction anchor unavailable; abort turn withheld',
+    }),
+  };
+}
+
+/** A message row as the failed-turn settlement reads it: identity for the
+ *  anchor-shaped check, content and envelope for the live row it finalizes. */
+export type ReadableMessageRow = {
+  messageId: string;
+  content?: unknown;
+  unfinished?: boolean;
+};
+
+/**
+ * Settles the rows a failed generation already persisted before its error row
+ * is written, through the caller's injected reads and write. Returns whether
+ * an existing row covers the turn, in which case the caller skips the fresh
+ * error row entirely.
+ *
+ * The error id can normalize back to the compaction anchor itself when the
+ * anchor ends in `_`: a match there never receives the error row, and the
+ * failed run settles its own distinct live response row instead. Ordinary
+ * turns keep their existing behavior: a found partial row is preserved as it
+ * stands and blocks the error row.
+ */
+export async function settleExistingRowsBeforeErrorTurn(
+  requestBody: { compact?: boolean } | null | undefined,
+  {
+    userId,
+    conversationId,
+    errorMessageId,
+    liveResponseMessageId,
+    getMessages,
+    saveFinalizedTurn,
+  }: {
+    userId: string;
+    conversationId: string;
+    errorMessageId: string;
+    liveResponseMessageId?: string | null;
+    getMessages: (
+      filter: { user: string; messageId: string; conversationId: string },
+      projection?: string,
+    ) => Promise<ReadableMessageRow[]>;
+    saveFinalizedTurn: (message: Record<string, unknown>) => Promise<unknown>;
+  },
+): Promise<boolean> {
+  const isCompaction = requestBody?.compact === true;
+  const settleLiveRow = async (): Promise<boolean> => {
+    if (liveResponseMessageId == null || liveResponseMessageId === errorMessageId) {
+      return false;
+    }
+    /** Full documents only where the compaction finalization needs the
+     *  content; ordinary failures keep the id-only projection. */
+    const partial = await getMessages(
+      { user: userId, messageId: liveResponseMessageId, conversationId },
+      isCompaction ? undefined : '_id',
+    );
+    if (partial.length === 0) {
+      return false;
+    }
+    await persistFinalizedCompactionTurn(partial[0], requestBody, {
+      messageId: liveResponseMessageId,
+      conversationId,
+      saveMessage: saveFinalizedTurn,
+    });
+    return true;
+  };
+  const existing = await getMessages(
+    { user: userId, messageId: errorMessageId, conversationId },
+    '_id',
+  );
+  if (existing.length > 0) {
+    if (isCompaction) {
+      await settleLiveRow();
+    }
+    return true;
+  }
+  return settleLiveRow();
+}
+
 /**
  * Finalizes a failed compaction's already-persisted partial row, with the
  * write injected so the operation runs against whatever persistence the
