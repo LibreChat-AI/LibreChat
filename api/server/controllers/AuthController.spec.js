@@ -2531,6 +2531,22 @@ describe('refreshController – LibreChat path', () => {
       expect(res.clearCookie).toHaveBeenCalledWith('token_provider');
     });
 
+    it('withdraws the session it had already minted when the recheck cannot complete', async () => {
+      getUserById
+        .mockResolvedValueOnce({ _id: 'local-user-id', provider: 'local', twoFactorEnabled: true })
+        .mockRejectedValueOnce(new Error('database unavailable'));
+
+      await refreshController(req, res);
+
+      expect(setAuthTokens).toHaveBeenCalled();
+      expect(deleteAllUserSessions).toHaveBeenCalledWith({ userId: 'local-user-id' });
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.send).not.toHaveBeenCalledWith(
+        expect.objectContaining({ token: 'local-app-token' }),
+      );
+    });
+
     it('withholds the enrollment token it had already minted', async () => {
       isTwoFactorEnrollmentRequired.mockReturnValue(true);
       racingRead({ _id: 'local-user-id', provider: 'local', twoFactorEnabled: false });

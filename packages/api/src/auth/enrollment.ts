@@ -14,6 +14,7 @@ import {
   isCredentialLoginBlockedByTwoFactorPolicy,
   isEnrollmentSupersededByRecovery,
   isTokenRetired,
+  recheckMintedCredential,
   verifyTwoFactorLoginChallengeToken,
 } from './twoFactor';
 import { sanitizeUserForResponse } from './user';
@@ -137,7 +138,10 @@ export function createEnrollmentControllers(
 
       const userData = sanitizeUser(user);
       const authToken = await deps.setAuthTokens(user._id, res, null, req);
-      const retirement = await deps.getUserById(credential.userId, TOKEN_RETIREMENT_FIELDS);
+      const retirement = await recheckMintedCredential(
+        () => deps.getUserById(credential.userId, TOKEN_RETIREMENT_FIELDS),
+        () => revokeMintedSession(res, user, credential.userId),
+      );
       if (isTokenRetired(credential, retirement)) {
         logger.warn(
           `[verify2FAWithTempToken] Password was reset while the challenge was being verified: userId=${credential.userId}`,
@@ -223,7 +227,10 @@ export function createEnrollmentControllers(
       const userData = sanitizeUser(result.user);
       await deps.deleteAllUserSessions({ userId: result.user._id.toString() });
       const authToken = await deps.setAuthTokens(result.user._id, res, null, req);
-      const retirement = await deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS);
+      const retirement = await recheckMintedCredential(
+        () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
+        () => revokeMintedSession(res, result.user, userId),
+      );
       if (
         isEnrollmentSupersededByRecovery(
           result.user.twoFactorEnrolledAt,

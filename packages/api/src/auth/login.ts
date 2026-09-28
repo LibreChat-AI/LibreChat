@@ -8,6 +8,7 @@ import type { StoredTwoFactorAccount } from './twoFactor';
 import type { UserDocumentId } from '~/auth/verification';
 import {
   TOKEN_RETIREMENT_FIELDS,
+  recheckMintedCredential,
   generateTwoFactorSetupToken,
   hasPasswordResetSince,
   isCredentialLoginBlockedByTwoFactorPolicy,
@@ -104,10 +105,15 @@ export function createLoginController(deps: LoginDependencies) {
       const { password: _p, totpSecret: _t, __v, ...user } = req.user;
       user.id = user._id.toString();
 
-      const token = await deps.setAuthTokens(req.user._id, res, null, req);
-      if (await wasPasswordRevokedDuringLogin(req.user)) {
-        await withdrawLoginSession(res, req.user);
-        return refuseRevokedLogin(res, req.user);
+      const loginUser = req.user;
+      const token = await deps.setAuthTokens(loginUser._id, res, null, req);
+      const revoked = await recheckMintedCredential(
+        () => wasPasswordRevokedDuringLogin(loginUser),
+        () => withdrawLoginSession(res, loginUser),
+      );
+      if (revoked) {
+        await withdrawLoginSession(res, loginUser);
+        return refuseRevokedLogin(res, loginUser);
       }
 
       return res.status(200).send({ token, user });

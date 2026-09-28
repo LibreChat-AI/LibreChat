@@ -6,6 +6,7 @@ import type { TokenIssuance, TwoFactorAccount } from './twoFactor';
 import {
   generateTwoFactorSetupToken,
   isTokenRetired,
+  recheckMintedCredential,
   isTwoFactorEnrollmentRequired,
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
@@ -95,10 +96,7 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
     return isTokenRetired(credential, current);
   };
 
-  const withdrawSession = async (res: Response, user: RefreshUser, userId: string) => {
-    deps.warn(
-      `[refreshController] Password was reset while the refresh was in flight: userId=${userId}`,
-    );
+  const revokeSession = async (res: Response, user: RefreshUser, userId: string) => {
     await deps.deleteAllUserSessions({ userId });
     res.clearCookie('refreshToken');
     res.clearCookie('token_provider');
@@ -107,6 +105,13 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
       tenantId: user.tenantId ?? user.orgId,
       storageRegion: user.storageRegion,
     });
+  };
+
+  const withdrawSession = async (res: Response, user: RefreshUser, userId: string) => {
+    deps.warn(
+      `[refreshController] Password was reset while the refresh was in flight: userId=${userId}`,
+    );
+    await revokeSession(res, user, userId);
     return res.status(401).send(EXPIRED_REFRESH_MESSAGE);
   };
 
@@ -175,7 +180,11 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
         }
 
         const token = await deps.setAuthTokens(userId, res, session, req);
-        if (await isCredentialRetired(userId, credential)) {
+        const retired = await recheckMintedCredential(
+          () => isCredentialRetired(userId, credential),
+          () => revokeSession(res, user, userId),
+        );
+        if (retired) {
           return withdrawSession(res, user, userId);
         }
         return res.status(200).send({ token, user: sanitizeUserForAuthResponse(user) });

@@ -223,6 +223,21 @@ describe('loginController', () => {
       expect(res.clearCookie).toHaveBeenCalledWith('token_provider');
     });
 
+    it('withdraws the session it had already minted when the recheck cannot complete', async () => {
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'false';
+      mockGetUserById.mockRejectedValueOnce(new Error('database unavailable'));
+      const req = { user: { _id: 'user-9', email: 'user@example.com' } };
+      const res = createResponse();
+
+      await loginController(req, res);
+
+      expect(mockSetAuthTokens).toHaveBeenCalledTimes(1);
+      expect(mockDeleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-9' });
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.send).not.toHaveBeenCalled();
+    });
+
     /** Otherwise the holder of the revoked password picks the second factor the account keeps. */
     it('withholds the enrollment token it had already minted', async () => {
       process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';

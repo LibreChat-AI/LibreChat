@@ -171,6 +171,13 @@ afterAll(() => {
   }
 });
 
+/** The recheck after minting is a read like any other, and it can fail after the cookies are set. */
+const failRecheckAfterMint = () =>
+  mockSetAuthTokens.mockImplementationOnce(async () => {
+    jest.spyOn(store, 'getUserById').mockRejectedValueOnce(new Error('database unavailable'));
+    return 'auth-token';
+  });
+
 describe('verify2FAWithTempToken', () => {
   beforeEach(() => {
     store.reset({ twoFactorEnabled: true, totpSecret: 'encrypted-secret' });
@@ -342,6 +349,22 @@ describe('verify2FAWithTempToken', () => {
       expect(res.status).toHaveBeenCalledWith(401);
     });
 
+    it('withdraws the minted session when the recheck cannot complete', async () => {
+      const tempToken = generateTwoFactorLoginChallengeToken('user-1', process.env.JWT_SECRET);
+      mockVerifyTOTP.mockResolvedValueOnce(true);
+      failRecheckAfterMint();
+      const res = createResponse();
+
+      await verify2FAWithTempToken({ body: { tempToken, token: '123456' } }, res);
+
+      expect(mockDeleteAllUserSessions).toHaveBeenCalledWith({ userId: 'user-1' });
+      expect(mockDeleteAllUserSessions.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockSetAuthTokens.mock.invocationCallOrder[0],
+      );
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(res.status).toHaveBeenCalledWith(500);
+    });
+
     it('leaves a verification no reset raced through alone', async () => {
       const tempToken = generateTwoFactorLoginChallengeToken('user-1', process.env.JWT_SECRET);
       const res = createResponse();
@@ -499,6 +522,20 @@ describe('finalize2FASetup', () => {
     expect(mockDeleteAllUserSessions.mock.invocationCallOrder[0]).toBeLessThan(
       mockSetAuthTokens.mock.invocationCallOrder[0],
     );
+  });
+
+  it('withdraws the enrolled session when the recheck cannot complete', async () => {
+    const finalizationToken = await reachFinalization();
+    failRecheckAfterMint();
+
+    const res = await runFinalize(finalizationToken);
+
+    expect(mockDeleteAllUserSessions).toHaveBeenCalledTimes(2);
+    expect(mockDeleteAllUserSessions.mock.invocationCallOrder[1]).toBeGreaterThan(
+      mockSetAuthTokens.mock.invocationCallOrder[0],
+    );
+    expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 
   it('leaves existing sessions alone when finalization is rejected', async () => {

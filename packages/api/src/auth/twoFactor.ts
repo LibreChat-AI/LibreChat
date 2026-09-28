@@ -245,6 +245,22 @@ export function isTokenRetired(
 }
 
 /**
+ * Runs the retirement recheck that follows a mint. The minted credential postdates every cutoff,
+ * so a recheck that cannot complete withdraws it before failing rather than leaving it live.
+ */
+export async function recheckMintedCredential<T>(
+  recheck: () => Promise<T>,
+  withdraw: () => Promise<void>,
+): Promise<T> {
+  try {
+    return await recheck();
+  } catch (error) {
+    await withdraw();
+    throw error;
+  }
+}
+
+/**
  * Whether password recovery landed after an enrollment was promoted.
  *
  * Recovery clears the staged enrollment in the same write that stamps `credentialsChangedAt`, so a reset
