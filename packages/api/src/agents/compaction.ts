@@ -224,6 +224,7 @@ export function markAbortedCompactionContent(
     return contentParts;
   }
   let hasOutcome = false;
+  let removedUnfinishedRound = false;
   for (let index = contentParts.length - 1; index >= 0; index -= 1) {
     const part = contentParts[index];
     if (part == null) {
@@ -256,11 +257,34 @@ export function markAbortedCompactionContent(
       continue;
     }
     contentParts.splice(index, 1);
+    removedUnfinishedRound = true;
   }
-  if (!hasOutcome && synthesizeFailure) {
+  /** An earlier round's checkpoint is not this round's outcome: a round the
+   *  run opened but never finished still records the typed failure beside it,
+   *  or the stopped turn reads as the successful compaction the checkpoint
+   *  describes. */
+  if ((!hasOutcome || removedUnfinishedRound) && synthesizeFailure) {
     contentParts.push(...compactionFailureContent());
   }
   return contentParts;
+}
+
+/** Whether a job record has reached a status whose path owns the turn's final
+ *  row (completion, error, or abort): the disconnect snapshot must not be
+ *  written over it, or the settled row reopens as an unfinished response.
+ *  Only a same-epoch record is trusted. */
+export function isSettledJobRecord(
+  jobRecord: { createdAt?: number; status?: string } | null | undefined,
+  jobCreatedAt?: number,
+): boolean {
+  if (jobRecord == null || (jobCreatedAt != null && jobRecord.createdAt !== jobCreatedAt)) {
+    return false;
+  }
+  return (
+    jobRecord.status === 'complete' ||
+    jobRecord.status === 'error' ||
+    jobRecord.status === 'aborted'
+  );
 }
 
 /** How the abort route persists a stopped turn's prerequisite rows. */
