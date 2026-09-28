@@ -33,12 +33,6 @@ jest.mock('~/hooks', () => ({
     if (key === 'com_ui_n_of_n_actions_failed') {
       return `${values?.[0]}/${values?.[1]} failed`;
     }
-    if (key === 'com_ui_n_actions_failed') {
-      return `${values?.[0]} failed`;
-    }
-    if (key === 'com_ui_one_action_failed') {
-      return '1 failed';
-    }
     if (key === 'com_ui_n_actions_cancelled') {
       return `${values?.[0]} cancelled`;
     }
