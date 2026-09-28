@@ -19,7 +19,7 @@ import {
   markCompactionOutcome,
   persistFinalizedCompactionTurn,
   isSettledJobRecord,
-  allowsDisconnectSnapshot,
+  resolveDisconnectSnapshotMode,
   planAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
@@ -1201,20 +1201,37 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
   });
 });
 
-describe('allowsDisconnectSnapshot', () => {
+describe('resolveDisconnectSnapshotMode', () => {
   it('keeps an ordinary turn writing its fallback row, settled or not', () => {
-    expect(allowsDisconnectSnapshot(false, { createdAt: 1000, status: 'error' }, 1000)).toBe(true);
-    expect(allowsDisconnectSnapshot(false, null)).toBe(true);
+    expect(resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'error' }, 1000)).toBe(
+      'live',
+    );
+    expect(resolveDisconnectSnapshotMode(false, null)).toBe('live');
   });
 
   it('keeps a live compaction writing its snapshot', () => {
-    expect(allowsDisconnectSnapshot(true, { createdAt: 1000, status: 'running' }, 1000)).toBe(true);
+    expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000)).toBe(
+      'live',
+    );
   });
 
   it('withholds a settled compaction snapshot', () => {
-    expect(allowsDisconnectSnapshot(true, { createdAt: 1000, status: 'aborted' }, 1000)).toBe(
-      false,
+    expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'aborted' }, 1000)).toBe(
+      'skip',
     );
+  });
+
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is promoted to the turn's terminal row, because no other row
+   *  will ever be persisted for it. */
+  it('promotes a reconciled compaction snapshot to the terminal row', () => {
+    const reconciled = {
+      createdAt: 1000,
+      status: 'error',
+      finalEvent: JSON.stringify({ final: true, reconcile: true }),
+    };
+
+    expect(resolveDisconnectSnapshotMode(true, reconciled, 1000)).toBe('terminal');
   });
 });
 

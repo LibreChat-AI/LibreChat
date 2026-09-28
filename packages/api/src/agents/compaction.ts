@@ -325,26 +325,47 @@ export function isSettledJobRecord(
   );
 }
 
+/** How a disconnect may persist this turn's snapshot. */
+export type DisconnectSnapshotMode =
+  /** The run is still live: the snapshot keeps the live shape. */
+  | 'live'
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is the turn's only row, so it persists with the terminal
+   *  outcome and envelope. */
+  | 'terminal'
+  /** A settled terminal row exists: the snapshot is withheld so it cannot
+   *  reopen the settled turn. */
+  | 'skip';
+
 /**
- * Whether a disconnect snapshot may still be written for this turn. A
- * compaction whose settling path (completion, error, abort) owns the final
- * row must not have it reopened as an unfinished snapshot; ordinary turns
- * keep writing their fallback row exactly as before, settled or not, because
- * their terminal row write may still fail.
+ * How the last-subscriber disconnect may persist this turn's snapshot. A
+ * compaction whose settling path (completion, error, abort) durably owns the
+ * final row must not have it reopened as an unfinished snapshot; a compaction
+ * whose terminal write settled for a reconciliation frame has no row at all,
+ * so its snapshot is promoted to the terminal row; ordinary turns keep
+ * writing their fallback row exactly as before, because their terminal row
+ * write may still fail.
  */
-export function allowsDisconnectSnapshot(
+export function resolveDisconnectSnapshotMode(
   isCompaction: boolean,
   jobRecord:
     | {
         createdAt?: number;
         status?: string;
         terminalPersistencePending?: boolean;
+        finalEvent?: string;
       }
     | null
     | undefined,
   jobCreatedAt?: number,
-): boolean {
-  return !isCompaction || !isSettledJobRecord(jobRecord, jobCreatedAt);
+): DisconnectSnapshotMode {
+  if (!isCompaction) {
+    return 'live';
+  }
+  if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
+    return 'skip';
+  }
+  return hasDurableReconcileFrame(jobRecord?.finalEvent) ? 'terminal' : 'live';
 }
 
 /** How the abort route persists a stopped turn's prerequisite rows. */
