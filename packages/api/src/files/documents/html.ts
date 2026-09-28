@@ -1361,6 +1361,11 @@ ${PPTX_SLIDE_LIST_CSS}
     }
 
     function finalize() {
+      /* previewer.preview() and the safety-net timer both call this; the
+       * timer already guards on settled before calling it, but the
+       * promise path does not, so guard here once for both callers
+       * instead of at each call site. */
+      if (settled) { return; }
       wrapSlides();
       if (!hasRenderedContent()) {
         showFallback('renderer-empty-slide-list');

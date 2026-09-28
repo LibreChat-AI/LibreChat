@@ -107,4 +107,87 @@ describe('pptx CDN bootstrap — slide layout', () => {
     const { initializationOptions } = await renderPptxLayout(1, 800);
     expect(initializationOptions).toEqual({ width: 960 });
   });
+
+  test('does not re-wrap an already-wrapped slide when the 8s safety net fires before preview() resolves', async () => {
+    /* previewer.preview() can still be pending when the safety-net timer
+     * fires (its bundled deps can take a while after appending slide
+     * nodes). If both paths call finalize() unguarded, the slide gets
+     * wrapped twice, nesting .lc-slide-wrap inside .lc-slide-wrap. */
+    const html = await _internal.pptxToHtmlViaCdn(
+      Buffer.from('fixture'),
+      '<ol class="lc-pptx-list"><li>fallback</li></ol>',
+    );
+
+    let safetyNetCallback: (() => void) | undefined;
+    let resolvePreview: ((value: { slides: unknown[] }) => void) | undefined;
+    const { window } = new JSDOM(html, {
+      runScripts: 'dangerously',
+      beforeParse(parsedWindow) {
+        Object.defineProperty(parsedWindow.HTMLElement.prototype, 'clientWidth', {
+          configurable: true,
+          get(this: HTMLElement) {
+            return this.id === 'lc-render' ? 800 : 0;
+          },
+        });
+        // Capture the 8s safety-net timer instead of letting it run on the
+        // real clock, so the test can fire it deterministically.
+        Object.defineProperty(parsedWindow, 'setTimeout', {
+          configurable: true,
+          writable: true,
+          value: (handler: () => void, timeout?: number) => {
+            if (timeout === 8000) {
+              safetyNetCallback = handler;
+              return 0;
+            }
+            return 0;
+          },
+        });
+        Object.assign(parsedWindow, {
+          pptxPreview: {
+            init(container: HTMLElement, options: FakePptxPreviewInitOptions) {
+              const wrapper = parsedWindow.document.createElement('div');
+              wrapper.className = 'pptx-preview-wrapper';
+              container.appendChild(wrapper);
+              return {
+                preview() {
+                  // Slide DOM lands synchronously, mirroring the pinned
+                  // library appending nodes as it renders — but the
+                  // outer promise is held open so the test can fire the
+                  // safety net BEFORE it resolves.
+                  const slide = parsedWindow.document.createElement('div');
+                  slide.className = 'pptx-preview-slide-wrapper';
+                  slide.style.width = `${options.width}px`;
+                  slide.style.height = `${options.width * 0.5625}px`;
+                  slide.textContent = 'Slide 1';
+                  wrapper.appendChild(slide);
+                  return new Promise((resolve) => {
+                    resolvePreview = resolve;
+                  });
+                },
+              };
+            },
+          },
+        });
+      },
+    });
+
+    if (!safetyNetCallback) {
+      throw new Error('safety-net setTimeout was not captured');
+    }
+    // Safety net fires first: a slide is already in the DOM, so it calls
+    // finalize() and wraps it.
+    safetyNetCallback();
+
+    // The slow preview() promise resolves after the safety net already
+    // finalized — its own .then() must not wrap the same slide again.
+    if (!resolvePreview) {
+      throw new Error('preview() was not called');
+    }
+    resolvePreview({ slides: [{}] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const wraps = Array.from(window.document.querySelectorAll('.lc-slide-wrap'));
+    expect(wraps).toHaveLength(1);
+    expect(window.document.querySelectorAll('.lc-slide-wrap .lc-slide-wrap')).toHaveLength(0);
+  });
 });
