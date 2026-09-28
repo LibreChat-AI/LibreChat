@@ -235,9 +235,12 @@ describe('mergeConfigOverrides', () => {
   });
 
   it('replaces plain arrays (no merge key) instead of concatenating', () => {
-    const configs = [fakeConfig({ endpoints: ['anthropic', 'google'] }, 10)];
-    const result = mergeConfigOverrides(baseConfig, configs) as unknown as Record<string, unknown>;
-    expect(result.endpoints).toEqual(['anthropic', 'google']);
+    const base = { registration: { allowedDomains: ['base.com'] } } as unknown as AppConfig;
+    const configs = [fakeConfig({ registration: { allowedDomains: ['a.com', 'b.com'] } }, 10)];
+    const result = mergeConfigOverrides(base, configs) as unknown as {
+      registration: { allowedDomains: string[] };
+    };
+    expect(result.registration.allowedDomains).toEqual(['a.com', 'b.com']);
   });
 
   it('merges endpoints.custom arrays by name instead of replacing', () => {
@@ -422,11 +425,11 @@ describe('mergeConfigOverrides', () => {
     expect(baseConfig).toEqual(original);
   });
 
-  it('handles null override values', () => {
+  it('keeps the base value under a null override the schema does not allow', () => {
     const configs = [fakeConfig({ interface: { modelSelect: null } }, 10)];
     const result = mergeConfigOverrides(baseConfig, configs) as unknown as Record<string, unknown>;
     const iface = result.interfaceConfig as Record<string, unknown>;
-    expect(iface.modelSelect).toBeNull();
+    expect(iface.modelSelect).toBe(true);
   });
 
   it('skips configs with no overrides object', () => {
@@ -877,6 +880,64 @@ describe('mergeConfigOverrides', () => {
     const mcpConfig = result.mcpConfig as Record<string, unknown>;
 
     expect(mcpConfig.github).toBeUndefined();
+  });
+});
+
+describe('mergeConfigOverrides: invalid stored overrides', () => {
+  const base = {
+    interfaceConfig: { contextCost: true, customWelcome: 'base' },
+    registration: { oauthStateTtlMs: 600_000, allowedDomains: ['base.com'] },
+    endpoints: {
+      custom: [{ name: 'groq', baseURL: 'https://base', apiKey: 'k', models: { default: ['m'] } }],
+    },
+  } as unknown as AppConfig;
+
+  it('keeps the base value when a stored override field fails the schema', () => {
+    const merged = mergeConfigOverrides(base, [
+      fakeConfig(
+        {
+          interface: { contextCost: 'yes', customWelcome: 'override' },
+          registration: { oauthStateTtlMs: 5, allowedDomains: ['override.com'] },
+        },
+        10,
+      ),
+    ]) as unknown as Record<string, Record<string, unknown>>;
+
+    expect(merged.interfaceConfig).toEqual({ contextCost: true, customWelcome: 'override' });
+    expect(merged.registration).toEqual({
+      oauthStateTtlMs: 600_000,
+      allowedDomains: ['override.com'],
+    });
+  });
+
+  it('drops only the invalid field of a merged array item', () => {
+    const merged = mergeConfigOverrides(base, [
+      fakeConfig(
+        { endpoints: { custom: [{ name: 'groq', baseURL: 'https://o', models: 5 }] } },
+        10,
+      ),
+    ]) as unknown as { endpoints: { custom: Array<Record<string, unknown>> } };
+
+    expect(merged.endpoints.custom).toEqual([
+      { name: 'groq', baseURL: 'https://o', apiKey: 'k', models: { default: ['m'] } },
+    ]);
+  });
+
+  it('lets a lower-priority valid override survive a higher-priority invalid one', () => {
+    const merged = mergeConfigOverrides(base, [
+      fakeConfig({ interface: { contextCost: false } }, 10),
+      fakeConfig({ interface: { contextCost: 'no' } }, 20, undefined, 'other'),
+    ]) as unknown as { interfaceConfig: Record<string, unknown> };
+
+    expect(merged.interfaceConfig.contextCost).toBe(false);
+  });
+
+  it('leaves fields the schema does not define untouched', () => {
+    const merged = mergeConfigOverrides(base, [
+      fakeConfig({ registration: { enabled: false } }, 10),
+    ]) as unknown as { registration: Record<string, unknown> };
+
+    expect(merged.registration.enabled).toBe(false);
   });
 });
 

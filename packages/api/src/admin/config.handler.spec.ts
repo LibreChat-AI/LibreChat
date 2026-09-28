@@ -2434,4 +2434,99 @@ describe('createAdminConfigHandlers', () => {
       }
     });
   });
+
+  describe('override validation against configSchema', () => {
+    it('rejects a whole-document write with an invalid field and stores nothing', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          overrides: { registration: { oauthStateTtlMs: 5 }, interface: { modelSelect: false } },
+        },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body?.error).toContain('registration.oauthStateTtlMs');
+      expect(res.body?.issues).toEqual([
+        expect.objectContaining({ path: 'registration.oauthStateTtlMs' }),
+      ]);
+      expect(deps.upsertConfig).not.toHaveBeenCalled();
+    });
+
+    it('accepts a partial section whose provided fields are valid', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          overrides: {
+            registration: { oauthStateTtlMs: 120_000 },
+            mcpServers: { github: { timeout: 5000 } },
+            endpoints: { custom: [{ name: 'groq', apiKey: 'sk-test' }] },
+          },
+        },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(deps.upsertConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a field patch with an invalid value and writes no entry', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          entries: [
+            { fieldPath: 'interface.customWelcome', value: 'hi' },
+            { fieldPath: 'registration.oauthStateTtlMs', value: 'soon' },
+          ],
+        },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body?.issues).toEqual([
+        expect.objectContaining({ path: 'registration.oauthStateTtlMs' }),
+      ]);
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
+    });
+
+    it('validates an object patch as a partial of the addressed section', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'interface.schedules', value: { maxPerUser: 'x' } }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body?.issues).toEqual([
+        expect.objectContaining({ path: 'interface.schedules.maxPerUser' }),
+      ]);
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
+    });
+
+    it('accepts a secret field cleared with a non-string value', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'ocr.apiKey', value: null }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(deps.patchConfigFields).toHaveBeenCalledTimes(1);
+    });
+  });
 });

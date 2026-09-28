@@ -10,9 +10,10 @@ import {
   hasProcessMCPServerConfig,
   isProcessMCPServerConfig,
   isProcessMCPServerField,
+  getConfigOverrideIssues,
 } from 'librechat-data-provider';
 import type { AppConfig, ConfigSection, IConfig, SystemCapability } from '@librechat/data-schemas';
-import type { TCustomConfig } from 'librechat-data-provider';
+import type { ConfigOverrideIssue, TCustomConfig } from 'librechat-data-provider';
 import type { Types, ClientSession } from 'mongoose';
 import type { Response } from 'express';
 import type { CapabilityUser } from '~/middleware/capabilities';
@@ -411,6 +412,14 @@ function redactAppConfigForResponse(appConfig: AppConfig): AppConfig {
   return safeConfig;
 }
 
+function invalidOverrideResponse(res: Response, issues: ConfigOverrideIssue[]): Response {
+  const [first] = issues;
+  return res.status(400).json({
+    error: `Invalid config value at ${first.path}: ${first.message}`,
+    issues,
+  });
+}
+
 function preservePatchedConfigSecretFields(
   fields: Record<string, unknown>,
   existingOverrides?: unknown,
@@ -715,6 +724,10 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       }
 
       const encryptedOverrides = encryptConfigSecrets(filteredOverrides);
+      const overrideIssues = getConfigOverrideIssues(encryptedOverrides);
+      if (overrideIssues.length > 0) {
+        return invalidOverrideResponse(res, overrideIssues);
+      }
       const needsExistingSecrets = getConfigSecretSections().some((section) =>
         isConfigSecretPreservablePatch(
           section,
@@ -911,6 +924,12 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
           ? await findConfigByPrincipal(principalType, principalId, { includeInactive: true })
           : null;
       const encryptedFields = encryptConfigSecretFields(fields);
+      const fieldIssues = Object.entries(encryptedFields).flatMap(([fieldPath, value]) =>
+        getConfigOverrideIssues(value, fieldPath),
+      );
+      if (fieldIssues.length > 0) {
+        return invalidOverrideResponse(res, fieldIssues);
+      }
       const preservedFields = preservePatchedConfigSecretFields(
         encryptedFields,
         existing?.overrides,

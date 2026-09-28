@@ -5,10 +5,12 @@ import {
   RUNTIME_CONFIG_INTERFACE_FIELDS,
   PERMISSION_SUB_KEYS,
   isProcessMCPServerConfig,
+  getConfigOverrideIssues,
 } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig, IConfig } from '~/types';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
+import logger from '~/config/winston';
 
 type AnyObject = { [key: string]: unknown };
 
@@ -238,6 +240,55 @@ function deepMerge<T extends AnyObject>(target: T, source: AnyObject, depth = 0,
   return result as T;
 }
 
+function omitPath(target: unknown, segments: string[]): unknown {
+  const [segment, ...rest] = segments;
+  if (Array.isArray(target)) {
+    const index = Number(segment);
+    if (!Number.isInteger(index) || index < 0 || index >= target.length) {
+      return target;
+    }
+    const next = [...target];
+    if (rest.length === 0) {
+      next.splice(index, 1);
+    } else {
+      next[index] = omitPath(next[index], rest);
+    }
+    return next;
+  }
+  if (target == null || typeof target !== 'object' || !(segment in target)) {
+    return target;
+  }
+  const next = { ...(target as AnyObject) };
+  if (rest.length === 0) {
+    delete next[segment];
+  } else {
+    next[segment] = omitPath(next[segment], rest);
+  }
+  return next;
+}
+
+/**
+ * Drops override fields that fail `configSchema`, so an invalid stored value (written
+ * before write-time validation, or by an older server) leaves the base value in place
+ * instead of replacing it.
+ */
+function stripInvalidOverrides(config: IConfig): AnyObject {
+  const overrides = config.overrides as AnyObject;
+  const issues = getConfigOverrideIssues(overrides);
+  if (issues.length === 0) {
+    return overrides;
+  }
+  let stripped: unknown = overrides;
+  for (let index = issues.length - 1; index >= 0; index--) {
+    const { path, message } = issues[index];
+    logger.warn(
+      `[mergeConfigOverrides] Ignoring invalid override "${path}" for ${config.principalType}/${config.principalId}: ${message}`,
+    );
+    stripped = omitPath(stripped, path.split('.'));
+  }
+  return stripped as AnyObject;
+}
+
 function filterMCPServerOverrides(value: unknown, current: unknown): AnyObject {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -305,7 +356,7 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
 
     if (config.overrides && typeof config.overrides === 'object') {
       const remapped: AnyObject = {};
-      for (const [key, value] of Object.entries(config.overrides)) {
+      for (const [key, value] of Object.entries(stripInvalidOverrides(config))) {
         if (
           BASE_ONLY_OVERRIDE_SECTIONS.has(key) ||
           (!isBasePrincipal && BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(key))
