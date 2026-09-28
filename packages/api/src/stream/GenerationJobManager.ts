@@ -91,6 +91,7 @@ import {
 } from './internal/timing';
 import { filterPersistableAbortContent } from './abortContent';
 import { toClientPendingAction } from '~/agents/hitl/policy';
+import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
 import { sanitizeJobMetadata } from './metadata';
@@ -4799,6 +4800,13 @@ class GenerationJobManagerClass {
       // Filter only after the transform so sparse/empty/OAuth parts cannot
       // shift a retained ID-less ask answer onto a different tool call.
       abortContent = filterPersistableAbortContent(content);
+      // A stopped compaction is unfinished rather than failed, so the row keeps
+      // the abort shape, plus the marker that keeps it identifiable as the
+      // compaction's own turn instead of an answer to its parent.
+      abortContent = markAbortedCompactionContent(
+        abortContent as TMessageContentParts[],
+        jobData.compact === true,
+      );
       shouldPersistAbortContent = abortContent.length > 0;
       text = shouldPersistAbortContent
         ? parseTextParts(abortContent as TMessageContentParts[], false, {

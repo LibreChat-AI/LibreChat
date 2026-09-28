@@ -117,6 +117,60 @@ async function compactWithEmptySummarizer(page: Page, request: APIRequestContext
   return { conversationId, compactionId: compactionId as string };
 }
 
+/**
+ * A real cancelled compaction: the fixture summarizer is held silent so the run
+ * is still summarizing when the composer's Stop fires, and the branch ends in
+ * a user message, the shape whose Regenerate would otherwise answer that user
+ * turn instead of redoing the compaction. Returns the conversation and the
+ * turn the cancelled compaction persisted.
+ */
+async function cancelCompactionOnUserLeaf(page: Page, request: APIRequestContext, label: string) {
+  const { answerId, messages } = precedingTurns(label);
+  const leafUserId = randomUUID();
+  const conversationId = await seedBranch([
+    ...messages,
+    {
+      messageId: leafUserId,
+      parentMessageId: answerId,
+      text: `Compact this before answering ${label}`,
+      isCreatedByUser: true,
+      sender: 'User',
+    },
+  ]);
+
+  const behavior = await request.post(`${LABEL_SERVER}/__e2e/behavior`, {
+    data: { mode: 'ok', delayMs: 60_000 },
+  });
+  expect(behavior.ok()).toBeTruthy();
+
+  await page.goto(`/c/${conversationId}`);
+  await page.getByTestId('token-usage').click();
+  await page.getByRole('button', { name: 'Compact context' }).click();
+  const stop = page.getByTestId('stop-generation-button');
+  await expect(stop).toBeVisible();
+  await stop.click();
+
+  /** The Stop route persists the aborted turn before it publishes the final
+   *  event, so the row is in storage once the stop settles. */
+  let compactionId: string | undefined;
+  await expect
+    .poll(
+      () =>
+        withMongo(async (db) => {
+          const row = await db.collection('messages').findOne({
+            conversationId,
+            parentMessageId: leafUserId,
+            isCreatedByUser: false,
+          });
+          compactionId = row?.messageId as string | undefined;
+          return compactionId != null;
+        }),
+      { timeout: 20_000 },
+    )
+    .toBeTruthy();
+  return { conversationId, compactionId: compactionId as string };
+}
+
 test.describe('compaction rerun controls', () => {
   /** `compactWithEmptySummarizer` switches the shared fixture summarizer to
    *  blank output before it returns, so a failure inside it would leave every
@@ -302,6 +356,60 @@ test.describe('compaction rerun controls', () => {
       page,
       request,
       'reloaded-compaction',
+    );
+    try {
+      const row = await openRow(page, conversationId, compactionId);
+
+      await expect(row.getByText('Could not compact the context', { exact: false })).toBeVisible();
+      await expect(page.locator(`[id="edit-${compactionId}"]`)).toHaveCount(0);
+      await expect(page.getByTestId('regenerate-generation-button')).toHaveCount(0);
+      await expect(page.getByTestId('continue-generation-button')).toHaveCount(0);
+    } finally {
+      await cleanup(conversationId);
+    }
+  });
+
+  /* A real cancelled run, not a seeded row: the abort path owns the stopped
+     turn, so the marker has to be stamped where the aborted content is
+     assembled or the row keeps the user turn's rerun controls live. */
+  test('a cancelled compaction on a user leaf offers no rerun controls @scenario:cancelled-compaction-on-user-turn-offers-no-rerun-controls', async ({
+    page,
+    request,
+  }) => {
+    const { conversationId, compactionId } = await cancelCompactionOnUserLeaf(
+      page,
+      request,
+      'cancelled-live',
+    );
+    try {
+      const row = page.locator(`[id="${compactionId}"]`);
+      await expect(row).toBeVisible();
+      await row.hover();
+
+      await expect(row.getByText('Could not compact the context', { exact: false })).toBeVisible();
+      /* Replaying the user turn behind it would answer that message again rather
+         than redo the compaction, so the marker withholds the controls here too. */
+      await expect(page.locator(`[id="edit-${compactionId}"]`)).toHaveCount(0);
+      await expect(page.getByTestId('regenerate-generation-button')).toHaveCount(0);
+      await expect(page.getByTestId('continue-generation-button')).toHaveCount(0);
+      /* The redo path a compaction keeps is the indicator's own action. */
+      await page.getByTestId('token-usage').click();
+      await expect(page.getByRole('button', { name: 'Compact context' })).toBeEnabled();
+    } finally {
+      await cleanup(conversationId);
+    }
+  });
+
+  /* The same cancelled turn read back from storage: the row the abort path
+     persisted has to carry the marker a reload rebuilds it from. */
+  test('a cancelled compaction on a user leaf stays free of rerun controls after a reload @scenario:cancelled-compaction-on-user-turn-survives-reload-without-rerun-controls', async ({
+    page,
+    request,
+  }) => {
+    const { conversationId, compactionId } = await cancelCompactionOnUserLeaf(
+      page,
+      request,
+      'cancelled-reload',
     );
     try {
       const row = await openRow(page, conversationId, compactionId);

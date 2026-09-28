@@ -15,6 +15,7 @@ import {
   dropUnusableSummaryParts,
   findCheckpointSummaryPart,
   getSummaryPartText,
+  markAbortedCompactionContent,
   markCompactionOutcome,
   resolveFailedTurnContent,
   resolveCheckpointMessage,
@@ -314,6 +315,65 @@ describe('resolveCheckpointMessage', () => {
     expect(
       resolveCheckpointMessage({ content: [{ type: ContentTypes.TEXT, text: 'x' }] }),
     ).toBeNull();
+  });
+});
+
+describe('markAbortedCompactionContent', () => {
+  const partialSummary = (text: string): TMessageContentParts => ({
+    type: ContentTypes.SUMMARY,
+    /** Streamed deltas never carry a boundary; a stopped round keeps them. */
+    content: [{ type: ContentTypes.TEXT, text }],
+    summarizing: true,
+  });
+
+  /** The abort path owns a cancelled run's row: its partial summary is kept
+   *  (the turn is unfinished, not failed) but must still carry the marker, or
+   *  on a branch ending in a user message the row keeps a Regenerate that
+   *  answers that user turn instead of redoing the compaction. */
+  it('marks the partial summary a stopped compaction had streamed', () => {
+    const parts = [partialSummary('Half a summary')];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user', summarizing: true });
+  });
+
+  /** Every part that can carry the marker gets it: the row's identity must not
+   *  depend on which of its parts a reader inspects first. */
+  it('marks an error part the stopped run had already recorded', () => {
+    const parts: TMessageContentParts[] = [
+      partialSummary('Half a summary'),
+      { type: ContentTypes.ERROR, error: 'Something else failed first' },
+    ];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user' });
+    expect(parts[1]).toMatchObject({ initiatedBy: 'user' });
+  });
+
+  /** A run stopped before any part streamed still needs an identifiable row:
+   *  an empty one reads as an answer to the message it hangs off. */
+  it('records the typed failure when nothing streamed before the stop', () => {
+    const parts: TMessageContentParts[] = [];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toEqual([
+      {
+        type: ContentTypes.ERROR,
+        error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
+        initiatedBy: 'user',
+      },
+    ]);
+  });
+
+  it('returns content from a turn that was not a compaction unchanged', () => {
+    const parts = [partialSummary('An automatic detour partial')];
+
+    expect(markAbortedCompactionContent(parts, false)).toBe(parts);
+    expect(parts[0]).not.toHaveProperty('initiatedBy');
   });
 });
 

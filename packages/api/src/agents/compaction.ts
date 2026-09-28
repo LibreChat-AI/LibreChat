@@ -197,6 +197,42 @@ export function resolveFailedTurnContent(
 }
 
 /**
+ * The content an aborted compaction persists: the run's stream-aggregated
+ * parts, carrying the marker that keeps the turn identifiable as a compaction.
+ * The abort path owns a cancelled run's row (a stopped turn is unfinished, not
+ * failed) and nothing else on that path knows the request was a compaction, so
+ * without this the row reads as an answer to the message it hangs off and keeps
+ * that message's rerun controls: on a branch ending in a user message,
+ * Regenerate would answer the user turn behind the compaction instead of
+ * redoing it.
+ *
+ * Every summary and error part is marked, the same stamp `markCompactionOutcome`
+ * puts on a completed run's outcome; a run stopped before any part streamed
+ * records the typed failure so the row still carries its identity. The parts
+ * are otherwise untouched, keeping the row's `unfinished` shape, and content
+ * from a turn that was not a compaction is returned unchanged.
+ */
+export function markAbortedCompactionContent(
+  contentParts: TMessageContentParts[],
+  isCompaction: boolean,
+): TMessageContentParts[] {
+  if (!isCompaction) {
+    return contentParts;
+  }
+  let markedOutcome = false;
+  for (const part of contentParts) {
+    if (part?.type === ContentTypes.SUMMARY || part?.type === ContentTypes.ERROR) {
+      part.initiatedBy = 'user';
+      markedOutcome = true;
+    }
+  }
+  if (!markedOutcome) {
+    contentParts.push(...compactionFailureContent());
+  }
+  return contentParts;
+}
+
+/**
  * Stamps `initiatedBy: 'user'` on the part that carries a manual compaction's
  * outcome, which is the turn's only record of having been one: the run emits no
  * text of its own, and a compaction hangs off whatever leaf the branch ends

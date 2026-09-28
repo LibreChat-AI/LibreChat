@@ -52,6 +52,7 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
+  markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -1663,6 +1664,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
          *  no user message of its own, the response parented onto an
          *  existing message. A reconnecting client rebuilds it that way. */
         ...((isRegenerate || isCompaction) && { isRegenerate: true }),
+        /** The job record is where the abort paths learn the turn was a
+         *  compaction: they run after the request that created the job. */
+        ...(isCompaction && { compact: true }),
         ...(scheduleId
           ? {
               scheduleId,
@@ -1853,7 +1857,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
 
-      const persistableContent = filterPersistableAbortContent(aggregatedContent);
+      const persistableContent = markAbortedCompactionContent(
+        filterPersistableAbortContent(aggregatedContent),
+        isCompaction,
+      );
       if (persistableContent.length === 0) {
         logger.debug('[ResumableAgentController] No persistable content to save partial response');
         return;

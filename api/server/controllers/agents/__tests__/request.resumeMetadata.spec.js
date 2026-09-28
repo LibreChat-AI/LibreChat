@@ -257,6 +257,8 @@ jest.mock('@librechat/api', () => ({
   ).getSteerRecoveryFailure,
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  markAbortedCompactionContent: (...args) =>
+    jest.requireActual('@librechat/api').markAbortedCompactionContent(...args),
   sendEvent: jest.fn(),
   logAgentMemorySnapshot: jest.fn(),
   isScheduleFireRequest: (...args) => mockIsScheduleFireRequest(...args),
