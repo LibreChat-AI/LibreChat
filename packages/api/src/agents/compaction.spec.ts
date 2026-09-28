@@ -20,6 +20,7 @@ import {
   persistFinalizedCompactionTurn,
   isSettledJobRecord,
   resolveDisconnectSnapshotMode,
+  resolveReconciledSnapshotEnvelope,
   planAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
@@ -1202,36 +1203,74 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
 });
 
 describe('resolveDisconnectSnapshotMode', () => {
-  it('keeps an ordinary turn writing its fallback row, settled or not', () => {
-    expect(resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'error' }, 1000)).toBe(
-      'live',
-    );
-    expect(resolveDisconnectSnapshotMode(false, null)).toBe('live');
+  it('keeps an ordinary turn writing its fallback row, settled or not', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(false, { createdAt: 1000, status: 'error' }, 1000),
+    ).resolves.toBe('live');
+    await expect(resolveDisconnectSnapshotMode(false, null, undefined)).resolves.toBe('live');
   });
 
-  it('keeps a live compaction writing its snapshot', () => {
-    expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000)).toBe(
-      'live',
-    );
+  it('keeps a live compaction writing its snapshot', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'running' }, 1000),
+    ).resolves.toBe('live');
   });
 
-  it('withholds a settled compaction snapshot', () => {
-    expect(resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'aborted' }, 1000)).toBe(
-      'skip',
-    );
+  it('withholds a settled compaction snapshot', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, { createdAt: 1000, status: 'aborted' }, 1000),
+    ).resolves.toBe('skip');
+  });
+
+  const reconciled = () => ({
+    createdAt: 1000,
+    status: 'error',
+    finalEvent: JSON.stringify({ final: true, reconcile: true }),
   });
 
   /** The terminal write failed and settled for a reconciliation frame: the
    *  snapshot is promoted to the turn's terminal row, because no other row
    *  will ever be persisted for it. */
-  it('promotes a reconciled compaction snapshot to the terminal row', () => {
-    const reconciled = {
-      createdAt: 1000,
-      status: 'error',
-      finalEvent: JSON.stringify({ final: true, reconcile: true }),
-    };
+  it('promotes a reconciled compaction snapshot to the terminal row', async () => {
+    await expect(resolveDisconnectSnapshotMode(true, reconciled(), 1000)).resolves.toBe('terminal');
+  });
 
-    expect(resolveDisconnectSnapshotMode(true, reconciled, 1000)).toBe('terminal');
+  /** The promotion must not recreate the orphan an absent-anchor abort
+   *  deliberately withheld: without a persisted anchor there is nothing to
+   *  hang the terminal row on. */
+  it('withholds a reconciled snapshot whose anchor was never persisted', async () => {
+    await expect(
+      resolveDisconnectSnapshotMode(true, reconciled(), 1000, {
+        anchorExists: async () => false,
+      }),
+    ).resolves.toBe('skip');
+  });
+});
+
+describe('resolveReconciledSnapshotEnvelope', () => {
+  it('keeps the abort row shape for an aborted claim', () => {
+    expect(resolveReconciledSnapshotEnvelope('aborted')).toEqual({
+      unfinished: true,
+      error: false,
+    });
+  });
+
+  it('settles a completed claim as a finished row', () => {
+    expect(resolveReconciledSnapshotEnvelope('complete')).toEqual({
+      unfinished: false,
+      error: false,
+    });
+  });
+
+  it('settles everything else with the error envelope', () => {
+    expect(resolveReconciledSnapshotEnvelope('error')).toEqual({
+      unfinished: false,
+      error: true,
+    });
+    expect(resolveReconciledSnapshotEnvelope(undefined)).toEqual({
+      unfinished: false,
+      error: true,
+    });
   });
 });
 

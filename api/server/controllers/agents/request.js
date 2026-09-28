@@ -54,6 +54,7 @@ const {
   resolveFailedTurnContent,
   settleExistingRowsBeforeErrorTurn,
   resolveDisconnectSnapshotMode,
+  resolveReconciledSnapshotEnvelope,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -1861,7 +1862,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * overwrite this with the complete response using the same messageId pattern.
      */
     job.emitter.on('allSubscribersLeft', async (aggregatedContent) => {
-      if (partialResponseSaved || !aggregatedContent || aggregatedContent.length === 0) {
+      /** Empty content is rejected only after the snapshot mode is known: a
+       *  reconciled compaction synthesizes its terminal outcome from nothing,
+       *  while a live run has nothing persistable. */
+      if (partialResponseSaved || !aggregatedContent) {
         return;
       }
 
@@ -1878,11 +1882,31 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        *  runs keep the marker-only shape, a failed terminal write (settled
        *  for a reconciliation frame) promotes the snapshot to the turn's
        *  terminal row, and a durably settled compaction withholds it. */
-      const snapshotMode = resolveDisconnectSnapshotMode(isCompaction, jobRecord, jobCreatedAt);
+      const snapshotMode = await resolveDisconnectSnapshotMode(
+        isCompaction,
+        jobRecord,
+        jobCreatedAt,
+        {
+          anchorExists: async () =>
+            (
+              await getMessages(
+                {
+                  user: userId,
+                  messageId: resumeState.userMessage.messageId,
+                  conversationId,
+                },
+                '_id',
+              )
+            ).length > 0,
+        },
+      );
       if (snapshotMode === 'skip') {
         logger.debug(
           '[ResumableAgentController] Skipping compaction partial save for a settled job',
         );
+        return;
+      }
+      if (snapshotMode !== 'terminal' && aggregatedContent.length === 0) {
         return;
       }
       const persistableContent = markAbortedCompactionContent(
@@ -1913,9 +1937,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sender: client?.sender ?? 'AI',
           content: persistableContent,
           /** A snapshot promoted to the terminal row settles with the
-           *  terminal envelope; a live-run snapshot keeps the live shape. */
-          unfinished: snapshotMode !== 'terminal',
-          error: snapshotMode === 'terminal',
+           *  envelope its reconciled claim's status dictates; a live-run
+           *  snapshot keeps the live shape. */
+          ...(snapshotMode === 'terminal'
+            ? resolveReconciledSnapshotEnvelope(jobRecord?.status)
+            : { unfinished: true, error: false }),
           isCreatedByUser: false,
           user: userId,
           endpoint: endpointOption.endpoint,
