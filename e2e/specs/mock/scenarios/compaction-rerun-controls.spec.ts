@@ -123,15 +123,30 @@ async function compactWithEmptySummarizer(page: Page, request: APIRequestContext
  * a user message, the shape whose Regenerate would otherwise answer that user
  * turn instead of redoing the compaction. Returns the conversation and the
  * turn the cancelled compaction persisted.
+ *
+ * The conversation is created through the composer (a seeded one carries no
+ * model, so its compact submission never starts) and the user leaf is seeded
+ * onto the answer: seeded rows are newer, so the leaf reads as latest.
  */
 async function cancelCompactionOnUserLeaf(page: Page, request: APIRequestContext, label: string) {
-  const { answerId, messages } = precedingTurns(label);
+  await page.goto('/c/new');
+  await sendMessageAndWaitForCompletion(page, `tell me about ${label}`);
+  const conversationId = new URL(page.url()).pathname.replace('/c/', '');
+  expect(conversationId).not.toBe('new');
+
+  const answerId = await withMongo(async (db) => {
+    const row = await db
+      .collection('messages')
+      .findOne({ conversationId, isCreatedByUser: false }, { sort: { createdAt: -1 } });
+    return row?.messageId as string | undefined;
+  });
+  expect(answerId).toBeTruthy();
+
   const leafUserId = randomUUID();
-  const conversationId = await seedBranch([
-    ...messages,
+  await seedMessages(userEmail, conversationId, [
     {
       messageId: leafUserId,
-      parentMessageId: answerId,
+      parentMessageId: answerId as string,
       text: `Compact this before answering ${label}`,
       isCreatedByUser: true,
       sender: 'User',
@@ -144,10 +159,13 @@ async function cancelCompactionOnUserLeaf(page: Page, request: APIRequestContext
   expect(behavior.ok()).toBeTruthy();
 
   await page.goto(`/c/${conversationId}`);
+  await expect(
+    messagesView(page).getByText(`Compact this before answering ${label}`),
+  ).toBeVisible();
   await page.getByTestId('token-usage').click();
   await page.getByRole('button', { name: 'Compact context' }).click();
   const stop = page.getByTestId('stop-generation-button');
-  await expect(stop).toBeVisible();
+  await expect(stop).toBeVisible({ timeout: 20_000 });
   await stop.click();
 
   /** The Stop route persists the aborted turn before it publishes the final
