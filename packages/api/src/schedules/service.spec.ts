@@ -79,6 +79,7 @@ function makeService(
     initializeNullBalance: jest.fn(async () => null),
     preflightMCP: jest.fn().mockResolvedValue([]),
     resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+    getAgentBillingMode: jest.fn(async () => 'user' as const),
     getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
     isUserDeleting: jest.fn(async () => false),
     enqueueAgentTrigger,
@@ -187,6 +188,7 @@ describe('balance initialization', () => {
       initializeNullBalance,
       preflightMCP: jest.fn().mockResolvedValue([]),
       resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+      getAgentBillingMode: jest.fn(async () => 'user' as const),
       getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
       isUserDeleting: jest.fn(async () => false),
       enqueueAgentTrigger: jest.fn(async () => undefined),
@@ -315,6 +317,7 @@ describe('balance initialization', () => {
       initializeNullBalance,
       preflightMCP: jest.fn().mockResolvedValue([]),
       resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+      getAgentBillingMode: jest.fn(async () => 'user' as const),
       getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
       isUserDeleting: jest.fn(async () => false),
       enqueueAgentTrigger: jest.fn(async () => undefined),
@@ -1987,6 +1990,7 @@ describe('scheduled resume capacity', () => {
       initializeNullBalance: jest.fn(async () => null),
       preflightMCP: jest.fn().mockResolvedValue([]),
       resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+      getAgentBillingMode: jest.fn(async () => 'user' as const),
       getChatProject: jest.fn(async () => ('project' in over ? over.project : { _id: 'proj-1' })),
       isUserDeleting: jest.fn(async () => false),
       enqueueAgentTrigger: jest.fn(async () => undefined),
@@ -2744,6 +2748,64 @@ it('interrupts an A3 admission wait at shutdown without a model-visible policy r
     await outcome;
     signal.mockRestore();
   }
+describe('agent billing balance gate', () => {
+  const makeBalanceGateService = (billingMode: 'user' | 'agent' | undefined) => {
+    const getAppConfig = jest.fn(async () => ({
+      interface: { schedules: true },
+      balance: { enabled: true },
+    }));
+    const getAgentBillingMode = jest.fn(async () => billingMode);
+
+    const service = createSchedulesService({
+      methods: {} as unknown as SchedulesServiceDeps['methods'],
+      getAppConfig,
+      findUserById: jest.fn(async () => null),
+      findBalance: jest.fn(async () => ({ tokenCredits: 0 })),
+      upsertBalance: jest.fn(async () => null),
+      initializeNullBalance: jest.fn(async () => null),
+      preflightMCP: jest.fn().mockResolvedValue([]),
+      resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+      getAgentBillingMode,
+      getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
+      isUserDeleting: jest.fn(async () => false),
+      enqueueAgentTrigger: jest.fn(async () => undefined),
+      getTriggerDelivery: jest.fn(async () => null),
+    } as unknown as SchedulesServiceDeps);
+
+    return { service, getAppConfig, getAgentBillingMode };
+  };
+
+  it('does not gate a separately billed scheduled agent on user balance', async () => {
+    const { service, getAppConfig, getAgentBillingMode } = makeBalanceGateService('agent');
+
+    await expect(
+      service.engineDeps.isOutOfBalance({ id: 'user-1' } as never, 'agent-1'),
+    ).resolves.toBe(false);
+
+    expect(getAgentBillingMode).toHaveBeenCalledWith('agent-1');
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it('preserves the existing user balance gate for user-billed agents', async () => {
+    const { service, getAppConfig, getAgentBillingMode } = makeBalanceGateService('user');
+
+    await expect(
+      service.engineDeps.isOutOfBalance({ id: 'user-1' } as never, 'agent-1'),
+    ).resolves.toBe(true);
+
+    expect(getAgentBillingMode).toHaveBeenCalledWith('agent-1');
+    expect(getAppConfig).toHaveBeenCalled();
+  });
+
+  it('preserves the legacy balance gate when no agent is supplied', async () => {
+    const { service, getAppConfig, getAgentBillingMode } = makeBalanceGateService(undefined);
+
+    await expect(service.engineDeps.isOutOfBalance({ id: 'user-1' } as never)).resolves.toBe(true);
+
+    expect(getAgentBillingMode).not.toHaveBeenCalled();
+    expect(getAppConfig).toHaveBeenCalled();
+  });
+
 });
 
 describe('scheduled reset policy synchronization', () => {

@@ -1016,6 +1016,7 @@ class BaseClient {
     try {
       if (
         balanceConfig?.enabled &&
+        this.options.agent?.billing_mode !== 'agent' &&
         supportsBalanceCheck[this.options.endpointType ?? this.options.endpoint]
       ) {
         const balanceAdmission = checkBalance(
