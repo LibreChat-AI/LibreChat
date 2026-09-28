@@ -39,10 +39,16 @@ const targetUser = {
   password: 'securepassword789',
 };
 
+let cachedSessions: { admin: Session; target: Session } | undefined;
+
+/** Logs in once per worker: the harness allows 20 logins per window across all specs. */
 async function sessions(request: APIRequestContext): Promise<{ admin: Session; target: Session }> {
-  const admin = await login(request, getPrimaryE2EUser());
-  const target = await login(request, targetUser);
-  return { admin, target };
+  if (!cachedSessions) {
+    const admin = await login(request, getPrimaryE2EUser());
+    const target = await login(request, targetUser);
+    cachedSessions = { admin, target };
+  }
+  return cachedSessions;
 }
 
 function configPath(userId: string): string {
