@@ -62,7 +62,45 @@ describe('filterAttachmentsForPart', () => {
 
 describe('mapAttachments', () => {
   it('groups by toolCallId and drops unkeyed entries', () => {
-    const map = mapAttachments([att({}), att({ toolCallId: 'call_1' }), att({ toolCallId: '' })]);
+    const map = mapAttachments([
+      att({ file_id: 'f1' }),
+      att({ toolCallId: 'call_1', file_id: 'f2' }),
+      att({ toolCallId: '', file_id: 'f3' }),
+    ]);
     expect(Object.keys(map).sort()).toEqual(['call_0', 'call_1']);
+  });
+
+  it('keeps a repeated file_id only under its later toolCallId', () => {
+    const first = att({ toolCallId: 'call_0', file_id: 'f1' });
+    const second = att({ toolCallId: 'call_1', file_id: 'f1' });
+    const map = mapAttachments([first, second]);
+    expect(map['call_0']).toBeUndefined();
+    expect(map['call_1']).toEqual([second]);
+  });
+
+  it('drops an earlier duplicate of the same file within one toolCallId', () => {
+    const first = att({ toolCallId: 'call_0', file_id: 'f1' });
+    const second = att({ toolCallId: 'call_0', file_id: 'f1' });
+    const map = mapAttachments([first, second]);
+    expect(map['call_0']).toEqual([second]);
+  });
+
+  it('keeps two attachments with the same filename but different file_ids', () => {
+    const first = att({ toolCallId: 'call_0', file_id: 'f1', filename: 'data.zip' });
+    const second = att({ toolCallId: 'call_0', file_id: 'f2', filename: 'data.zip' });
+    const map = mapAttachments([first, second]);
+    expect(map['call_0']).toEqual([first, second]);
+  });
+
+  it('keeps every non-file attachment even when they share a toolCallId', () => {
+    const first = att({ toolCallId: 'call_0', file_id: undefined });
+    const second = att({ toolCallId: 'call_0', file_id: undefined });
+    const map = mapAttachments([first, second]);
+    expect(map['call_0']).toEqual([first, second]);
+  });
+
+  it('skips null and undefined entries', () => {
+    const map = mapAttachments([null, att({ toolCallId: 'call_0' }), undefined]);
+    expect(map['call_0']).toHaveLength(1);
   });
 });

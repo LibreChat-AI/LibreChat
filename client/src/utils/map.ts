@@ -1,17 +1,47 @@
 import type * as t from 'librechat-data-provider';
 import type { TPluginMap } from '~/common';
+import { toolArtifactKey } from './artifacts';
 
-/** Maps Attachments by `toolCallId` for quick lookup */
+/** Identity for a file-backed attachment, or `null` for attachments (e.g. web search) that aren't a file. */
+const fileIdentity = (attachment: t.TAttachment): string | null => {
+  const file = attachment as Partial<t.TFile>;
+  if (file.file_id == null && file.filepath == null) {
+    return null;
+  }
+  return toolArtifactKey(file);
+};
+
+/**
+ * Maps Attachments by `toolCallId` for quick lookup. Attachments are assumed
+ * to belong to one message: when the same file (by `toolArtifactKey`) repeats
+ * — e.g. a tool call rewrites the file it produced earlier in the message —
+ * only its last occurrence survives, so a message never shows the same file
+ * twice. Non-file attachments (no `file_id`/`filepath`) never collapse.
+ */
 export function mapAttachments(attachments: Array<t.TAttachment | null | undefined>) {
   const attachmentMap: Record<string, t.TAttachment[] | undefined> = {};
 
-  for (const attachment of attachments) {
+  const identities = attachments.map((attachment) =>
+    attachment == null ? null : fileIdentity(attachment),
+  );
+  const lastIndexByIdentity = new Map<string, number>();
+  identities.forEach((identity, index) => {
+    if (identity != null) {
+      lastIndexByIdentity.set(identity, index);
+    }
+  });
+
+  attachments.forEach((attachment, index) => {
     if (attachment === null || attachment === undefined) {
-      continue;
+      return;
+    }
+    const identity = identities[index];
+    if (identity != null && lastIndexByIdentity.get(identity) !== index) {
+      return;
     }
     const key = attachment.toolCallId || '';
     if (key.length === 0) {
-      continue;
+      return;
     }
 
     if (!attachmentMap[key]) {
@@ -19,7 +49,7 @@ export function mapAttachments(attachments: Array<t.TAttachment | null | undefin
     }
 
     attachmentMap[key]?.push(attachment);
-  }
+  });
 
   return attachmentMap;
 }
