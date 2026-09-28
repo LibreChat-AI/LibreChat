@@ -349,6 +349,44 @@ describe('createRunFileMessageEncoder', () => {
     expect(harness.encodeDocuments).not.toHaveBeenCalled();
   });
 
+  /** A file the user sent through "Upload to Provider": the chosen path survives child routing. */
+  const providerChosen = (file_id: string, type: string): TFile => ({
+    ...pdf,
+    file_id,
+    filename: file_id,
+    type,
+    text: undefined,
+    metadata: { destinationChosen: true },
+  });
+
+  it('keeps archives out of the document encoder under the inherited MIME list', async () => {
+    const harness = setup();
+    await harness.encode(
+      [providerChosen('zip', 'application/zip'), providerChosen('sql', 'application/sql')],
+      'child',
+    );
+    expect(harness.encodeDocuments).toHaveBeenCalledTimes(1);
+    expect(harness.encodeDocuments).toHaveBeenCalledWith(
+      harness.req,
+      [expect.objectContaining({ file_id: 'sql' })],
+      expect.anything(),
+      harness.getStrategyFunctions,
+    );
+  });
+
+  it('sends a binary type to the document encoder when the endpoint lists it', async () => {
+    const harness = setup({
+      fileConfig: { endpoints: { openAI: { supportedMimeTypes: ['^application/zip$'] } } },
+    });
+    await harness.encode([providerChosen('zip', 'application/zip')], 'child');
+    expect(harness.encodeDocuments).toHaveBeenCalledWith(
+      harness.req,
+      [expect.objectContaining({ file_id: 'zip' })],
+      expect.anything(),
+      harness.getStrategyFunctions,
+    );
+  });
+
   it.each([{ disabled: true }, { supportedMimeTypes: ['image/png'] }, { fileSizeLimit: 0.000001 }])(
     'rejects incompatible child policy before reading bytes: %j',
     async (policy) => {

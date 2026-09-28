@@ -23,6 +23,7 @@ import {
 } from '../attachments';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
+import { isProviderDocumentCandidate } from '~/files/encode/utils';
 import { countTokens } from '~/utils/tokenizer';
 
 type ContentBlock = Exclude<BaseMessage['content'], string>[number];
@@ -176,8 +177,7 @@ export function createRunFileMessageEncoder(
       } else if (file.type.startsWith('video/')) {
         videos.push(file);
       } else if (
-        endpointConfig.supportedMimeTypes &&
-        fileConfig.checkType?.(file.type, endpointConfig.supportedMimeTypes)
+        isProviderDocumentCandidate(file.type, fileConfig, endpointConfig.supportedMimeTypes)
       ) {
         documents.push(file);
       }

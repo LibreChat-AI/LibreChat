@@ -14,6 +14,7 @@ const {
   encodeAndFormatVideos,
   getTransactionsConfig,
   encodeAndFormatDocuments,
+  isProviderDocumentCandidate,
   getLangfuseTraceMessageFields,
   isContentFilterError,
   assertModelBoundProviderContent,
@@ -1842,15 +1843,18 @@ class BaseClient {
         categorizedAttachments.audios.push(file);
         allFiles.push(file);
       } else if (
-        file.type &&
-        deliveryRouting?.endpointConfig.supportedMimeTypes &&
-        deliveryRouting.fileConfig.checkType(
+        isProviderDocumentCandidate(
           file.type,
-          deliveryRouting.endpointConfig.supportedMimeTypes,
+          deliveryRouting?.fileConfig,
+          deliveryRouting?.endpointConfig.supportedMimeTypes,
         )
       ) {
         categorizedAttachments.documents.push(file);
         allFiles.push(file);
+      } else if (deliveryPath === 'provider') {
+        logger.warn(
+          `[BaseClient] Not sending "${file.filename}" (${file.type}) to the provider: list this type in the endpoint's own supportedMimeTypes to send it`,
+        );
       }
     }
 

@@ -3560,6 +3560,63 @@ describe('BaseClient', () => {
       });
     };
 
+    describe('provider documents under the inherited supportedMimeTypes list', () => {
+      /** A file the user sent through "Upload to Provider"; the endpoint sets no MIME list. */
+      const providerFile = (file_id, type) => ({
+        user: 'user1',
+        file_id,
+        filename: file_id,
+        filepath: `/uploads/${file_id}`,
+        type,
+        bytes: 100,
+        source: 'local',
+        llmDeliveryPath: 'provider',
+        metadata: { destinationChosen: true },
+      });
+
+      const withSupportedMimeTypes = (supportedMimeTypes) => {
+        TestClient.options.req = {
+          config: {
+            fileConfig: {
+              endpoints: { [EModelEndpoint.openAI]: { fileLimit: 10, supportedMimeTypes } },
+            },
+          },
+        };
+        TestClient.options.agent = routedAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+        });
+      };
+
+      test('skips archives but keeps other listed types without an endpoint opt-in', async () => {
+        withSupportedMimeTypes(undefined);
+        const { logger } = require('@librechat/data-schemas');
+        const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+        const sql = providerFile('query.sql', 'application/sql');
+        const zip = providerFile('archive.zip', 'application/zip');
+        const pdf = providerFile('report.pdf', 'application/pdf');
+
+        try {
+          const result = await TestClient.processAttachments({}, [sql, zip, pdf]);
+
+          expect(TestClient.addDocuments).toHaveBeenCalledWith(expect.anything(), [sql, pdf]);
+          expect(result).toEqual([sql, pdf]);
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('"archive.zip"'));
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      test('sends a binary type the endpoint lists explicitly', async () => {
+        withSupportedMimeTypes(['^application/zip$']);
+        const zip = providerFile('archive.zip', 'application/zip');
+
+        await TestClient.processAttachments({}, [zip]);
+
+        expect(TestClient.addDocuments).toHaveBeenCalledWith(expect.anything(), [zip]);
+      });
+    });
+
     test('keeps a none image in returned files without adding image URLs', async () => {
       routeTo('none', 'image/*');
       const message = {};

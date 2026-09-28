@@ -18,6 +18,7 @@ import type {
 import {
   getFileStream,
   getConfiguredFileSizeLimit,
+  isConfiguredProviderMediaType,
   isAttachmentObjectNotFoundError,
 } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
@@ -58,9 +59,58 @@ function usesAnthropicDocumentCapabilities(provider: Providers, model?: string):
   );
 }
 
+const isGoogleProvider = (provider: Providers): boolean =>
+  provider === Providers.GOOGLE || provider === Providers.VERTEXAI;
+
+/**
+ * Whether the model behind this provider is Gemini, which rejects inline Office documents
+ * and textual `application/*` types (JSON, SQL) with a 400. OpenAI-compatible gateways
+ * report an OpenAI-like provider for Gemini models.
+ */
+function usesGeminiDocumentCapabilities(provider: Providers, model?: string): boolean {
+  return (
+    isGoogleProvider(provider) ||
+    (isOpenAILikeProvider(provider) && (model?.toLowerCase().includes('gemini') ?? false))
+  );
+}
+
+/**
+ * Textual types that OpenAI-compatible gateways can reject as a `file` part (Azure OpenAI
+ * answers 400 "Invalid file data" for these), so they go as text unless the endpoint lists
+ * them. `text/*`, JSON, YAML and TypeScript stay file parts.
+ */
+const textPartApplicationTypes = new Set([
+  'application/sql',
+  'application/x-sh',
+  'application/xml',
+]);
+
+/**
+ * Whether a document goes as a text part because the endpoint's own `supportedMimeTypes`
+ * does not list it. Gemini accepts `text/*` inline but rejects every textual
+ * `application/*` type (JSON, YAML, XML, SQL).
+ */
+function sendsAsTextWithoutOptIn(provider: Providers, mimeType: string, model?: string): boolean {
+  if (usesGeminiDocumentCapabilities(provider, model)) {
+    return !mimeType.startsWith('text/') && isAnthropicTextDocumentType(mimeType);
+  }
+  return textPartApplicationTypes.has(mimeType);
+}
+
+/** A textual file as a plain text part, which every provider and API shape accepts. */
+function formatTextDocumentBlock(filename: string, content: string): DocumentBlock {
+  return {
+    type: 'text',
+    text: `File: "${filename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
+  };
+}
+
 /**
  * Formats a base64-encoded document into the appropriate provider-specific block.
  * Returns `null` when the provider has no matching handler.
+ *
+ * `optedIn` is true when the endpoint's own `supportedMimeTypes` lists the type, rather
+ * than the built-in list it inherits.
  */
 function formatDocumentBlock(
   provider: Providers,
@@ -69,6 +119,7 @@ function formatDocumentBlock(
   filename: string | undefined,
   useResponsesApi: boolean | undefined,
   model?: string,
+  optedIn = false,
 ): DocumentBlock | null {
   if (provider === Providers.ANTHROPIC) {
     const source = getAnthropicDocumentSource(mimeType, content);
@@ -89,15 +140,19 @@ function formatDocumentBlock(
     return document;
   }
 
-  if (provider === Providers.GOOGLE || provider === Providers.VERTEXAI) {
+  const resolvedFilename = filename ?? 'document';
+
+  if (!optedIn && sendsAsTextWithoutOptIn(provider, mimeType, model)) {
+    return formatTextDocumentBlock(resolvedFilename, content);
+  }
+
+  if (isGoogleProvider(provider)) {
     return {
       type: 'media',
       mimeType,
       data: content,
     };
   }
-
-  const resolvedFilename = filename ?? 'document';
 
   /* A gateway translates an OpenAI `file` part into a base64 document with the file's own
    * media type, which Claude rejects for anything but PDF. Send textual files as text. */
@@ -106,10 +161,7 @@ function formatDocumentBlock(
     isAnthropicTextDocumentType(mimeType) &&
     usesAnthropicDocumentCapabilities(provider, model)
   ) {
-    return {
-      type: 'text',
-      text: `File: "${resolvedFilename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
-    };
+    return formatTextDocumentBlock(resolvedFilename, content);
   }
 
   if (useResponsesApi) {
@@ -136,26 +188,37 @@ function formatDocumentBlock(
 /**
  * Filters out files the provider's document path cannot send to the model.
  * Claude rejects non-PDF binary documents with a 400 that recurs on every retry,
- * including when it is reached through an OpenAI-compatible gateway. Unsupported
- * types are skipped instead of bricking the conversation.
+ * including when it is reached through an OpenAI-compatible gateway. Gemini rejects
+ * inline Office documents the same way, so for Gemini a type other than PDF or text
+ * goes only when the endpoint lists it. Unsupported types are skipped instead of
+ * bricking the conversation.
  */
 function filterProviderDocumentFiles(
   provider: Providers,
   files: IMongoFile[],
-  model?: string,
+  model: string | undefined,
+  isOptedIn: (mimeType: string) => boolean,
 ): IMongoFile[] {
   if (provider === Providers.BEDROCK) {
     return files.filter((file) => isBedrockDocumentType(file.type));
   }
 
-  if (!usesAnthropicDocumentCapabilities(provider, model)) {
+  let label: string;
+  let isSupported: (file: IMongoFile) => boolean;
+  if (usesAnthropicDocumentCapabilities(provider, model)) {
+    label = 'Claude';
+    isSupported = (file) => isAnthropicDocumentType(file.type);
+  } else if (usesGeminiDocumentCapabilities(provider, model)) {
+    label = 'Gemini';
+    isSupported = (file) => isAnthropicDocumentType(file.type) || isOptedIn(file.type ?? '');
+  } else {
     return files;
   }
 
   const processable: IMongoFile[] = [];
   const skipped: string[] = [];
   for (const file of files) {
-    if (isAnthropicDocumentType(file.type)) {
+    if (isSupported(file)) {
       processable.push(file);
     } else {
       skipped.push(`"${file.filename}" (${file.type})`);
@@ -164,7 +227,7 @@ function filterProviderDocumentFiles(
 
   if (skipped.length) {
     console.warn(
-      `Skipping attachment(s) unsupported by Claude document input: ${skipped.join(', ')}`,
+      `Skipping attachment(s) unsupported by ${label} document input: ${skipped.join(', ')}`,
     );
   }
 
@@ -192,8 +255,11 @@ function getBase64DecodedByteCount(content: string): number {
  * - **Bedrock**: Only encodes types in `bedrockDocumentFormats`; all others are skipped.
  * - **Anthropic**: Only encodes PDFs (base64 source) and textual types (plain-text source);
  *   all others are skipped.
+ * - **Google/Vertex**: Encodes PDFs and textual types, plus types the endpoint's own
+ *   `supportedMimeTypes` lists; all others are skipped.
  * - **PDF**: Validated via `validatePdf` before encoding.
- * - **Generic types**: Encoded with a provider-specific size check.
+ * - **Generic types**: Encoded with a provider-specific size check. Textual types a
+ *   provider can reject as a file part go as a text part unless the endpoint lists them.
  */
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
@@ -216,7 +282,9 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const processableFiles = filterProviderDocumentFiles(provider, files, model);
+  const isOptedIn = (mimeType: string) =>
+    isConfiguredProviderMediaType(req, { provider, endpoint }, mimeType);
+  const processableFiles = filterProviderDocumentFiles(provider, files, model, isOptedIn);
 
   if (!processableFiles.length) {
     return result;
@@ -325,6 +393,7 @@ export async function encodeAndFormatDocuments(
         file.filename,
         useResponsesApi,
         model,
+        isOptedIn(mimeType),
       );
       if (block) {
         result.documents.push(block);
