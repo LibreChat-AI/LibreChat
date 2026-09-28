@@ -278,6 +278,12 @@ function stripInvalidOverrides(config: IConfig): AnyObject {
   if (issues.length === 0) {
     return overrides;
   }
+  if (issues.some((issue) => issue.segments.length === 0)) {
+    logger.warn(
+      `[mergeConfigOverrides] Ignoring malformed overrides document for ${config.principalType}/${config.principalId}: ${issues[0].message}`,
+    );
+    return {};
+  }
   let stripped: unknown = overrides;
   for (let index = issues.length - 1; index >= 0; index--) {
     const { path, segments, message } = issues[index];

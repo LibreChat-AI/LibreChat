@@ -947,6 +947,15 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
     });
   });
 
+  it('ignores a stored overrides document that is not an object', () => {
+    const merged = mergeConfigOverrides(base, [
+      fakeConfig(['stray'] as unknown as Record<string, unknown>, 10),
+    ]) as unknown as Record<string, unknown>;
+
+    expect(merged).toEqual(base);
+    expect(merged).not.toHaveProperty('0');
+  });
+
   it('lets a lower-priority valid override survive a higher-priority invalid one', () => {
     const merged = mergeConfigOverrides(base, [
       fakeConfig({ interface: { contextCost: false } }, 10),
