@@ -1,4 +1,9 @@
-import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
+import {
+  logger,
+  getConfigFieldIssues,
+  getConfigOverrideIssues,
+  BASE_CONFIG_PRINCIPAL_ID,
+} from '@librechat/data-schemas';
 import {
   BASE_PRINCIPAL_CONFIG_SECTIONS,
   BASE_ONLY_CONFIG_SECTIONS,
@@ -10,10 +15,15 @@ import {
   hasProcessMCPServerConfig,
   isProcessMCPServerConfig,
   isProcessMCPServerField,
-  getConfigOverrideIssues,
 } from 'librechat-data-provider';
-import type { AppConfig, ConfigSection, IConfig, SystemCapability } from '@librechat/data-schemas';
-import type { ConfigOverrideIssue, TCustomConfig } from 'librechat-data-provider';
+import type {
+  AppConfig,
+  ConfigSection,
+  IConfig,
+  SystemCapability,
+  ConfigOverrideIssue,
+} from '@librechat/data-schemas';
+import type { TCustomConfig } from 'librechat-data-provider';
 import type { Types, ClientSession } from 'mongoose';
 import type { Response } from 'express';
 import type { CapabilityUser } from '~/middleware/capabilities';
@@ -471,6 +481,15 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
     invalidateConfigCaches,
   } = deps;
 
+  /** The deployment's `librechat.yaml` config, which overrides are validated on top of. */
+  async function getBaseYamlConfig(tenantId?: string): Promise<Partial<TCustomConfig>> {
+    if (!getAppConfig) {
+      return {};
+    }
+    const appConfig = await getAppConfig({ tenantId, baseOnly: true });
+    return appConfig?.config ?? {};
+  }
+
   /**
    * GET / — List all active config overrides.
    */
@@ -724,7 +743,10 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       }
 
       const encryptedOverrides = encryptConfigSecrets(filteredOverrides);
-      const overrideIssues = getConfigOverrideIssues(encryptedOverrides);
+      const overrideIssues = getConfigOverrideIssues(
+        encryptedOverrides,
+        await getBaseYamlConfig(user.tenantId),
+      );
       if (overrideIssues.length > 0) {
         return invalidOverrideResponse(res, overrideIssues);
       }
@@ -924,8 +946,9 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
           ? await findConfigByPrincipal(principalType, principalId, { includeInactive: true })
           : null;
       const encryptedFields = encryptConfigSecretFields(fields);
-      const fieldIssues = Object.entries(encryptedFields).flatMap(([fieldPath, value]) =>
-        getConfigOverrideIssues(value, fieldPath),
+      const fieldIssues = getConfigFieldIssues(
+        encryptedFields,
+        await getBaseYamlConfig(user.tenantId),
       );
       if (fieldIssues.length > 0) {
         return invalidOverrideResponse(res, fieldIssues);

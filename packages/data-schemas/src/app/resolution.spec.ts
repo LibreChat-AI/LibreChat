@@ -1,7 +1,8 @@
 import { INTERFACE_PERMISSION_FIELDS, PermissionTypes } from 'librechat-data-provider';
+import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig, IConfig } from '~/types';
+import { getConfigFieldIssues, getConfigOverrideIssues, mergeConfigOverrides } from './resolution';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
-import { mergeConfigOverrides } from './resolution';
 
 function fakeConfig(
   overrides: Record<string, unknown>,
@@ -936,7 +937,10 @@ describe('mergeConfigOverrides: invalid stored overrides', () => {
 
   it('strips an invalid field under a record key that contains a dot', () => {
     const merged = mergeConfigOverrides(
-      { mcpConfig: { 'team.prod': { url: 'https://mcp', timeout: 1000 } } } as unknown as AppConfig,
+      {
+        config: { mcpServers: { 'team.prod': { url: 'https://mcp', timeout: 1000 } } },
+        mcpConfig: { 'team.prod': { url: 'https://mcp', timeout: 1000 } },
+      } as unknown as AppConfig,
       [fakeConfig({ mcpServers: { 'team.prod': { timeout: 'x', initTimeout: 500 } } }, 10)],
     ) as unknown as { mcpConfig: Record<string, Record<string, unknown>> };
 
@@ -1026,5 +1030,173 @@ describe('INTERFACE_PERMISSION_FIELDS', () => {
     for (const field of uiFields) {
       expect(INTERFACE_PERMISSION_FIELDS.has(field)).toBe(false);
     }
+  });
+});
+
+describe('getConfigOverrideIssues', () => {
+  const paths = (issues: Array<{ path: string }>) => issues.map((issue) => issue.path);
+
+  it('accepts a partial section whose supplied fields are valid', () => {
+    expect(
+      getConfigOverrideIssues({
+        registration: { allowedDomains: ['a.com'] },
+        interface: { schedules: { maxPerUser: 2 } },
+        mcpServers: { github: { timeout: 5000 } },
+      }),
+    ).toEqual([]);
+  });
+
+  it('reports each invalid supplied field by its dot-path', () => {
+    expect(
+      paths(
+        getConfigOverrideIssues({
+          registration: { oauthStateTtlMs: 5 },
+          balance: { enabled: 'yes' },
+          interface: { contextCost: null },
+        }),
+      ),
+    ).toEqual(['registration.oauthStateTtlMs', 'balance.enabled', 'interface.contextCost']);
+  });
+
+  it('judges a union by the branch the value was written for', () => {
+    expect(paths(getConfigOverrideIssues({ memory: { agent: { id: 5 } } }))).toEqual([
+      'memory.agent.id',
+    ]);
+    expect(
+      paths(getConfigOverrideIssues({ memory: { agent: { id: 5, provider: 'openAI' } } })),
+    ).toEqual(['memory.agent.id']);
+    expect(getConfigOverrideIssues({ memory: { agent: { id: 'agent_1' } } })).toEqual([]);
+    expect(
+      paths(getConfigOverrideIssues({ interface: { schedules: { maxPerUser: 'x' } } })),
+    ).toEqual(['interface.schedules.maxPerUser']);
+  });
+
+  it('applies refinements to the values an override supplies', () => {
+    expect(
+      paths(
+        getConfigOverrideIssues({
+          messageFilter: {
+            pii: { customPatterns: [{ id: 'p1', label: 'Bad', regex: '(unclosed' }] },
+          },
+        }),
+      ),
+    ).toEqual(['messageFilter.pii.customPatterns.0.regex']);
+    expect(
+      paths(
+        getConfigOverrideIssues({
+          cloudfront: {
+            domain: 'https://cdn.example.com',
+            imageSigning: 'none',
+            requireSignedAccess: true,
+          },
+        }),
+      ),
+    ).toEqual(['cloudfront.requireSignedAccess']);
+  });
+
+  it('leaves a write that relies on the base for related or required fields to the merge', () => {
+    const base = {
+      cloudfront: {
+        domain: 'https://cdn.example.com',
+        imageSigning: 'cookies',
+        cookieDomain: '.example.com',
+      },
+    } as Partial<TCustomConfig>;
+    expect(getConfigOverrideIssues({ cloudfront: { requireSignedAccess: true } }, base)).toEqual(
+      [],
+    );
+    expect(getConfigOverrideIssues({ endpoints: { azureOpenAI: { assistants: true } } })).toEqual(
+      [],
+    );
+    expect(
+      paths(
+        getConfigOverrideIssues(
+          { endpoints: { azureOpenAI: { assistants: true } } },
+          {},
+          { requireComplete: true },
+        ),
+      ),
+    ).toEqual(['endpoints.azureOpenAI']);
+  });
+
+  it('requires the merge key on custom endpoint items and maps merged items back by it', () => {
+    expect(getConfigOverrideIssues({ endpoints: { custom: [{ baseURL: 'https://a' }] } })).toEqual([
+      {
+        path: 'endpoints.custom.0',
+        segments: ['endpoints', 'custom', '0'],
+        message: 'name: Required',
+      },
+    ]);
+    const base = {
+      endpoints: {
+        custom: [
+          { name: 'a', apiKey: 'k', baseURL: 'https://a', models: { default: ['m'] } },
+          { name: 'b', apiKey: 'k', baseURL: 'https://b', models: { default: ['m'] } },
+        ],
+      },
+    } as Partial<TCustomConfig>;
+    expect(
+      paths(getConfigOverrideIssues({ endpoints: { custom: [{ name: 'b', models: 5 }] } }, base)),
+    ).toEqual(['endpoints.custom.0.models']);
+  });
+
+  it('keeps a record key that contains a dot as one segment', () => {
+    expect(
+      getConfigOverrideIssues({ mcpServers: { 'team.prod': { timeout: 'x' } } }, {
+        mcpServers: { 'team.prod': { url: 'https://mcp' } },
+      } as Partial<TCustomConfig>),
+    ).toEqual([expect.objectContaining({ segments: ['mcpServers', 'team.prod', 'timeout'] })]);
+  });
+
+  it('accepts keys the schema does not define and stored secret shapes', () => {
+    expect(
+      getConfigOverrideIssues({ unknownSection: 5, registration: { enabled: false } }),
+    ).toEqual([]);
+    expect(
+      getConfigOverrideIssues({
+        endpoints: {
+          custom: [
+            {
+              name: 'x',
+              apiKey: 'v3:enc',
+              apiKeyPreview: 'sk-...',
+              baseURL: 'https://x',
+              models: { default: ['m'] },
+            },
+          ],
+        },
+        ocr: { apiKey: '' },
+      }),
+    ).toEqual([]);
+  });
+
+  it('rejects an overrides document that is not an object', () => {
+    expect(getConfigOverrideIssues(['stray'])).toEqual([
+      { path: '', segments: [], message: 'Overrides must be an object' },
+    ]);
+  });
+});
+
+describe('getConfigFieldIssues', () => {
+  it('checks each written path the way the stored override would hold it', () => {
+    expect(getConfigFieldIssues({ 'registration.oauthStateTtlMs': 120_000 })).toEqual([]);
+    expect(
+      getConfigFieldIssues({ 'registration.oauthStateTtlMs': 5 }).map((issue) => issue.path),
+    ).toEqual(['registration.oauthStateTtlMs']);
+  });
+
+  it('rejects a path past a field that holds a value', () => {
+    expect(
+      getConfigFieldIssues({ 'interface.contextCost.foo': true }).map((issue) => issue.path),
+    ).toEqual(['interface.contextCost']);
+    expect(getConfigFieldIssues({ 'registration.unknownField.foo': 1 })).toEqual([]);
+  });
+
+  it('rejects an indexed write into a merged-by-name array', () => {
+    expect(
+      getConfigFieldIssues({ 'endpoints.custom.0.models': { default: ['m'] } }).map(
+        (issue) => issue.path,
+      ),
+    ).toEqual(['endpoints.custom']);
   });
 });

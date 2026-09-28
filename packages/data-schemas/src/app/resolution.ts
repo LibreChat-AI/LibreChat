@@ -5,7 +5,7 @@ import {
   RUNTIME_CONFIG_INTERFACE_FIELDS,
   PERMISSION_SUB_KEYS,
   isProcessMCPServerConfig,
-  getConfigOverrideIssues,
+  configSchema,
 } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig, IConfig } from '~/types';
@@ -15,6 +15,7 @@ import logger from '~/config/winston';
 type AnyObject = { [key: string]: unknown };
 
 const MAX_MERGE_DEPTH = 10;
+const MAX_STRIP_PASSES = 4;
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Filters are a fail-closed security boundary even during mixed-package rollouts. */
 const BASE_ONLY_OVERRIDE_SECTIONS = new Set<string>(['filters', ...BASE_ONLY_CONFIG_SECTIONS]);
@@ -240,6 +241,212 @@ function deepMerge<T extends AnyObject>(target: T, source: AnyObject, depth = 0,
   return result as T;
 }
 
+export type ConfigOverrideIssue = {
+  /** Dot-path of the override node the issue is attributed to, in YAML (`TCustomConfig`) keys. */
+  path: string;
+  /** The same location as keys, unambiguous when a record key itself contains a dot. */
+  segments: string[];
+  message: string;
+};
+
+type IssuePath = Array<string | number>;
+
+function isPlainObject(value: unknown): value is AnyObject {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(target: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(target, key);
+}
+
+function toIssue(segments: string[], message: string): ConfigOverrideIssue {
+  return { path: segments.join('.'), segments, message };
+}
+
+/**
+ * The override node an issue in the merged config belongs to: the deepest node the
+ * overrides supply on the issue's path. Items of merged-by-key arrays are matched by their
+ * key, since the merged index differs from the override's. `undefined` means the overrides
+ * did not supply anything on the path, so the issue is the base's own.
+ */
+function attributeIssue(
+  overrides: AnyObject,
+  merged: AnyObject,
+  issuePath: IssuePath,
+): string[] | undefined {
+  const segments: string[] = [];
+  let node: unknown = overrides;
+  let mergedNode: unknown = merged;
+  for (const part of issuePath) {
+    const key = String(part);
+    if (Array.isArray(node)) {
+      const arrayPath = segments.join('.');
+      const keyField = hasOwn(ARRAY_MERGE_KEYS, arrayPath)
+        ? ARRAY_MERGE_KEYS[arrayPath]
+        : undefined;
+      const mergedItem = Array.isArray(mergedNode) ? mergedNode[Number(key)] : undefined;
+      const index = keyField
+        ? node.findIndex(
+            (item) =>
+              isPlainObject(item) &&
+              isPlainObject(mergedItem) &&
+              item[keyField] === mergedItem[keyField],
+          )
+        : Number(key);
+      if (keyField && index < 0) {
+        return undefined;
+      }
+      if (!Number.isInteger(index) || index < 0 || index >= node.length) {
+        break;
+      }
+      segments.push(String(index));
+      node = node[index];
+      mergedNode = mergedItem;
+      continue;
+    }
+    if (!isPlainObject(node) || !hasOwn(node, key)) {
+      break;
+    }
+    segments.push(key);
+    node = node[key];
+    mergedNode = isPlainObject(mergedNode) ? mergedNode[key] : undefined;
+  }
+  return segments.length > 0 ? segments : undefined;
+}
+
+/** Items of a merged-by-key array need their key: the merge drops an item without one. */
+function getKeylessItemIssues(overrides: AnyObject): ConfigOverrideIssue[] {
+  return Object.entries(ARRAY_MERGE_KEYS).flatMap(([arrayPath, keyField]) => {
+    const segments = arrayPath.split('.');
+    let node: unknown = overrides;
+    for (const segment of segments) {
+      node = isPlainObject(node) && hasOwn(node, segment) ? node[segment] : undefined;
+    }
+    if (!Array.isArray(node)) {
+      return [];
+    }
+    return node.flatMap((item, index) =>
+      isPlainObject(item) && (typeof item[keyField] !== 'string' || item[keyField] === '')
+        ? [toIssue([...segments, String(index)], `${keyField}: Required`)]
+        : [],
+    );
+  });
+}
+
+type SchemaIssue = NonNullable<
+  ReturnType<typeof configSchema.safeParse>['error']
+>['issues'][number];
+
+/**
+ * A union reports one issue at its own path; the branch whose failures are fewest, then
+ * deepest, is the shape the value was written for, so its issues locate the actual fault.
+ */
+function expandUnionIssues(issues: SchemaIssue[], depth = 0): SchemaIssue[] {
+  return issues.flatMap((issue) => {
+    if (issue.code !== 'invalid_union' || depth >= MAX_MERGE_DEPTH) {
+      return [issue];
+    }
+    const branches = issue.unionErrors.map((error) => error.issues);
+    const closest = branches.reduce<SchemaIssue[] | undefined>((best, branch) => {
+      if (!best || branch.length < best.length) {
+        return branch;
+      }
+      const depthOf = (list: SchemaIssue[]) => Math.max(0, ...list.map((i) => i.path.length));
+      return branch.length === best.length && depthOf(branch) > depthOf(best) ? branch : best;
+    }, undefined);
+    return closest && closest.length > 0 ? expandUnionIssues(closest, depth + 1) : [issue];
+  });
+}
+
+export interface ConfigOverrideCheckOptions {
+  /**
+   * Whether an issue the overrides caused only by leaving something out counts: a required
+   * field or a related field that another override layer may still supply. Off for a
+   * single write, which is judged only on the values it supplies; on at merge, where the
+   * accumulated config is final.
+   */
+  requireComplete?: boolean;
+}
+
+/**
+ * Checks config overrides the way they apply: merged over `base` (YAML-shaped), each
+ * section they touch parsed with its `configSchema` schema, and every failure attributed
+ * to the override node that caused it. Unions, refinements, required fields and defaults
+ * are therefore judged on the merged result, not on the patch alone. Keys the schema does
+ * not define are accepted unchanged.
+ */
+export function getConfigOverrideIssues(
+  overrides: unknown,
+  base: Partial<TCustomConfig> = {},
+  options: ConfigOverrideCheckOptions = {},
+): ConfigOverrideIssue[] {
+  if (!isPlainObject(overrides)) {
+    return [toIssue([], 'Overrides must be an object')];
+  }
+  const merged = deepMerge(base as AnyObject, overrides);
+  const issues = getKeylessItemIssues(overrides);
+  const seen = new Set(issues.map((issue) => issue.path));
+  const shape = configSchema.shape;
+  for (const section of Object.keys(overrides)) {
+    if (!hasOwn(shape, section)) {
+      continue;
+    }
+    const result = shape[section as keyof typeof shape].safeParse(merged[section]);
+    if (result.success) {
+      continue;
+    }
+    for (const issue of expandUnionIssues(result.error.issues)) {
+      if (issue.code === 'unrecognized_keys') {
+        continue;
+      }
+      const issuePath: IssuePath = [section, ...issue.path];
+      const segments = attributeIssue(overrides, merged, issuePath);
+      if (!segments || (!options.requireComplete && segments.length < issuePath.length)) {
+        continue;
+      }
+      const path = segments.join('.');
+      if (seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+      const detail = issuePath.length > segments.length ? `${issuePath.join('.')}: ` : '';
+      issues.push(toIssue(segments, `${detail}${issue.message}`));
+    }
+  }
+  return issues;
+}
+
+/** Sets a dot-path the way a Mongo `$set` on `overrides.<path>` does, without mutating. */
+function setPath(target: unknown, segments: string[], value: unknown): unknown {
+  if (segments.length === 0) {
+    return value;
+  }
+  const [segment, ...rest] = segments;
+  if (Array.isArray(target) && /^\d+$/.test(segment)) {
+    const next = [...target];
+    next[Number(segment)] = setPath(next[Number(segment)], rest, value);
+    return next;
+  }
+  const next: AnyObject = isPlainObject(target) ? { ...target } : {};
+  next[segment] = setPath(next[segment], rest, value);
+  return next;
+}
+
+/**
+ * Checks dot-path field writes over the base, building the override the way a Mongo
+ * `$set` on each `overrides.<path>` would.
+ */
+export function getConfigFieldIssues(
+  fields: Record<string, unknown>,
+  base: Partial<TCustomConfig> = {},
+): ConfigOverrideIssue[] {
+  const candidate = Object.entries(fields).reduce<unknown>(
+    (current, [fieldPath, value]) => setPath(current, fieldPath.split('.'), value),
+    {},
+  );
+  return getConfigOverrideIssues(candidate, base);
+}
+
 function omitPath(target: unknown, segments: string[]): unknown {
   const [segment, ...rest] = segments;
   if (Array.isArray(target)) {
@@ -255,10 +462,10 @@ function omitPath(target: unknown, segments: string[]): unknown {
     }
     return next;
   }
-  if (target == null || typeof target !== 'object' || !(segment in target)) {
+  if (!isPlainObject(target) || !hasOwn(target, segment)) {
     return target;
   }
-  const next = { ...(target as AnyObject) };
+  const next = { ...target };
   if (rest.length === 0) {
     delete next[segment];
   } else {
@@ -268,31 +475,33 @@ function omitPath(target: unknown, segments: string[]): unknown {
 }
 
 /**
- * Drops override fields that fail `configSchema`, so an invalid stored value (written
- * before write-time validation, or by an older server) leaves the base value in place
- * instead of replacing it.
+ * Drops the override nodes that make the merged config fail `configSchema`, so an invalid
+ * stored value (written before write-time validation, by an older server, or one that only
+ * fails once layered over other overrides) leaves the value beneath it in place.
  */
-function stripInvalidOverrides(config: IConfig): AnyObject {
-  const overrides = config.overrides as AnyObject;
-  const issues = getConfigOverrideIssues(overrides);
-  if (issues.length === 0) {
-    return overrides;
+function stripInvalidOverrides(config: IConfig, base: Partial<TCustomConfig>): AnyObject {
+  const principal = `${config.principalType}/${config.principalId}`;
+  let stripped: unknown = config.overrides;
+  /** Removing a field can leave its parent incomplete, so check again until nothing fails. */
+  for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
+    const issues = getConfigOverrideIssues(stripped, base, { requireComplete: true });
+    if (issues.length === 0) {
+      return stripped as AnyObject;
+    }
+    if (issues.some((issue) => issue.segments.length === 0)) {
+      logger.warn(`[mergeConfigOverrides] Ignoring malformed overrides document for ${principal}`);
+      return {};
+    }
+    for (let index = issues.length - 1; index >= 0; index--) {
+      const { path, segments, message } = issues[index];
+      logger.warn(
+        `[mergeConfigOverrides] Ignoring invalid override "${path}" for ${principal}: ${message}`,
+      );
+      stripped = omitPath(stripped, segments);
+    }
   }
-  if (issues.some((issue) => issue.segments.length === 0)) {
-    logger.warn(
-      `[mergeConfigOverrides] Ignoring malformed overrides document for ${config.principalType}/${config.principalId}: ${issues[0].message}`,
-    );
-    return {};
-  }
-  let stripped: unknown = overrides;
-  for (let index = issues.length - 1; index >= 0; index--) {
-    const { path, segments, message } = issues[index];
-    logger.warn(
-      `[mergeConfigOverrides] Ignoring invalid override "${path}" for ${config.principalType}/${config.principalId}: ${message}`,
-    );
-    stripped = omitPath(stripped, segments);
-  }
-  return stripped as AnyObject;
+  logger.warn(`[mergeConfigOverrides] Ignoring overrides for ${principal}: still invalid`);
+  return {};
 }
 
 function filterMCPServerOverrides(value: unknown, current: unknown): AnyObject {
@@ -346,6 +555,8 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
   const sorted = [...configs].sort((a, b) => a.priority - b.priority);
 
   let merged = { ...baseConfig };
+  /** The YAML-shaped config the next override lands on, for validating it in place. */
+  let raw: Partial<TCustomConfig> = baseConfig.config ?? {};
   for (const config of sorted) {
     const isBasePrincipal = config.principalId?.toString() === BASE_CONFIG_PRINCIPAL_ID;
     if (Array.isArray(config.tombstones)) {
@@ -356,19 +567,22 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
           (isBasePrincipal || !BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(path.split('.')[0]))
         ) {
           merged = deleteConfigPath(merged, remapOverridePath(path));
+          raw = deletePath(raw as AnyObject, path) as Partial<TCustomConfig>;
         }
       }
     }
 
     if (config.overrides && typeof config.overrides === 'object') {
       const remapped: AnyObject = {};
-      for (const [key, value] of Object.entries(stripInvalidOverrides(config))) {
+      const applied: AnyObject = {};
+      for (const [key, value] of Object.entries(stripInvalidOverrides(config, raw))) {
         if (
           BASE_ONLY_OVERRIDE_SECTIONS.has(key) ||
           (!isBasePrincipal && BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(key))
         ) {
           continue;
         }
+        applied[key] = value;
         const mappedKey = OVERRIDE_KEY_MAP[key as keyof typeof OVERRIDE_KEY_MAP] ?? key;
         if (mappedKey === 'mcpConfig') {
           remapped[mappedKey] = filterMCPServerOverrides(
@@ -416,6 +630,7 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
         }
       }
       merged = deepMerge(merged, remapped);
+      raw = deepMerge(raw as AnyObject, applied) as Partial<TCustomConfig>;
     }
   }
 
