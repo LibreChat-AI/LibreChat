@@ -17,7 +17,7 @@ function getService() {
     enqueueAgentTrigger,
     getAgentTriggerDelivery,
   } = require('~/server/services/Agents/triggers');
-  const { resolveAgentFireAccess } = require('./access');
+  const { resolveAgentFireAccess, getAgentBillingMode } = require('./access');
   const methods = require('~/models');
   const isUserDeleting = async (userId) => !(await methods.isAgentTriggerPrincipalActive(userId));
 
@@ -44,6 +44,7 @@ function getService() {
     // deferred Retry-After) or a dead-letter apart from a genuinely orphaned run.
     getTriggerDelivery: getAgentTriggerDelivery,
     resolveAgentFireAccess,
+    getAgentBillingMode,
     // Chat projects are user-owned, so this scoped read is both the existence and the
     // authorization check the fire-time destination precheck needs.
     getChatProject: (userId, projectId) => methods.getChatProject(userId, projectId),
