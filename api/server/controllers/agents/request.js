@@ -53,6 +53,7 @@ const {
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
   settleExistingRowsBeforeErrorTurn,
+  isSettledJobRecord,
   markAbortedCompactionContent,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -1897,6 +1898,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        * record is the source, since the client-facing resume snapshot never
        * carries server-private state. */
       const contextMeta = jobRecord?.createdAt === jobCreatedAt ? jobRecord.contextMeta : undefined;
+      /** A job whose settling path (completion, error, abort) owns the final
+       *  row must not have it reopened as an unfinished snapshot here; the
+       *  guard reads the same record, so the window is the settling path's
+       *  own commit span. */
+      if (isSettledJobRecord(jobRecord, jobCreatedAt)) {
+        logger.debug('[ResumableAgentController] Skipping partial response save for a settled job');
+        return;
+      }
 
       try {
         const partialMessage = {

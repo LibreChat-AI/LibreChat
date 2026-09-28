@@ -18,6 +18,7 @@ import {
   markAbortedCompactionContent,
   markCompactionOutcome,
   persistFinalizedCompactionTurn,
+  isSettledJobRecord,
   planAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
   settleExistingRowsBeforeErrorTurn,
@@ -394,6 +395,27 @@ describe('markAbortedCompactionContent', () => {
     markAbortedCompactionContent(parts, true);
 
     expect(parts).toEqual([
+      {
+        type: ContentTypes.ERROR,
+        error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
+        initiatedBy: 'user',
+      },
+    ]);
+  });
+
+  /** An earlier round's checkpoint is not the stopped round's outcome: the
+   *  failure lands beside it, or the row reads as the successful compaction
+   *  the checkpoint describes (and as a leaf that can no longer compact). */
+  it('records the typed failure beside an earlier checkpoint when the current round streamed nothing', () => {
+    const parts = [completedSummary('An earlier checkpoint.'), emptySummaryPlaceholder()];
+
+    markAbortedCompactionContent(parts, true);
+
+    expect(parts).toEqual([
+      expect.objectContaining({
+        type: ContentTypes.SUMMARY,
+        initiatedBy: 'user',
+      }),
       {
         type: ContentTypes.ERROR,
         error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
@@ -1095,5 +1117,24 @@ describe('settleExistingRowsBeforeErrorTurn', () => {
     await expect(settleExistingRowsBeforeErrorTurn({ compact: true }, d)).resolves.toBe(false);
 
     expect(saved).toHaveLength(0);
+  });
+});
+
+describe('isSettledJobRecord', () => {
+  it.each(['complete', 'error', 'aborted'])('treats a %s record as settled', (status) => {
+    expect(isSettledJobRecord({ createdAt: 1000, status })).toBe(true);
+  });
+
+  it('leaves live and missing records unsettled', () => {
+    expect(isSettledJobRecord({ createdAt: 1000, status: 'running' })).toBe(false);
+    expect(isSettledJobRecord({ createdAt: 1000, status: 'requires_action' })).toBe(false);
+    expect(isSettledJobRecord(null)).toBe(false);
+    expect(isSettledJobRecord(undefined)).toBe(false);
+  });
+
+  /** Another epoch's record describes a different generation, not this one. */
+  it('ignores a record from another epoch', () => {
+    expect(isSettledJobRecord({ createdAt: 2000, status: 'error' }, 1000)).toBe(false);
+    expect(isSettledJobRecord({ createdAt: 1000, status: 'error' }, 1000)).toBe(true);
   });
 });
