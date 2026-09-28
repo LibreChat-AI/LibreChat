@@ -1225,15 +1225,30 @@ export default function useStepHandler({
         if (typeof at === 'number' && Number.isFinite(at) && at >= 0) {
           for (const chunk of runStepDelta.delta.tool_calls ?? []) {
             if (chunk.id) {
+              const first =
+                chunk.index === 0 ? firstFragmentByStep.current.get(runStepDelta.id) : undefined;
               firstFragmentByCall.current.set(
                 chunk.id,
-                Math.min(firstFragmentByCall.current.get(chunk.id) ?? at, at),
+                Math.min(firstFragmentByCall.current.get(chunk.id) ?? at, first ?? at, at),
               );
+              if (first != null) firstFragmentByStep.current.delete(runStepDelta.id);
             } else if (chunk.index === 0 && runStepDelta.delta.tool_calls?.length === 1) {
-              firstFragmentByStep.current.set(
-                runStepDelta.id,
-                Math.min(firstFragmentByStep.current.get(runStepDelta.id) ?? at, at),
-              );
+              const declared = stepMap.current.get(runStepDelta.id)?.stepDetails;
+              const firstCallId =
+                declared?.type === StepTypes.TOOL_CALLS && declared.tool_calls?.length === 1
+                  ? declared.tool_calls[0]?.id
+                  : undefined;
+              if (firstCallId) {
+                firstFragmentByCall.current.set(
+                  firstCallId,
+                  Math.min(firstFragmentByCall.current.get(firstCallId) ?? at, at),
+                );
+              } else {
+                firstFragmentByStep.current.set(
+                  runStepDelta.id,
+                  Math.min(firstFragmentByStep.current.get(runStepDelta.id) ?? at, at),
+                );
+              }
             }
           }
         }
@@ -1435,11 +1450,16 @@ export default function useStepHandler({
          *  `undefined`. */
         const durationMs = getRunStepDurationMs(closed);
         const callId = existingToolCall.id ?? '';
+        const singleCallStep =
+          runStep.stepDetails.type === StepTypes.TOOL_CALLS &&
+          (runStep.stepDetails.tool_calls?.length ?? 0) <= 1;
+        const observedAt = Math.min(
+          firstFragmentByCall.current.get(callId) ?? Infinity,
+          existingToolCall.toolPreparationStartedAt ?? Infinity,
+          singleCallStep ? (firstFragmentByStep.current.get(closed.id) ?? Infinity) : Infinity,
+        );
         const timing = getToolTimingDurations({
-          observedAt:
-            existingToolCall.toolPreparationStartedAt ??
-            firstFragmentByCall.current.get(callId) ??
-            firstFragmentByStep.current.get(closed.id),
+          observedAt: Number.isFinite(observedAt) ? observedAt : undefined,
           dispatchedAt: existingToolCall.toolDispatchedAt ?? dispatchedByCall.current.get(callId),
           completedAt: completedByCall.current.get(callId),
         });

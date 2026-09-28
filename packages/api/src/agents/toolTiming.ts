@@ -20,6 +20,8 @@ const validTime = (value: number | undefined): value is number =>
 export function createToolTimingTracker(): ToolTimingTracker {
   const firstByCall = new Map<string, number>();
   const firstByStep = new Map<string, number>();
+  const firstCallByStep = new Map<string, string>();
+  const callIdsByStep = new Map<string, Set<string>>();
   const dispatchedByCall = new Map<string, number>();
   const completedByCall = new Map<string, number>();
 
@@ -28,9 +30,19 @@ export function createToolTimingTracker(): ToolTimingTracker {
       if (!validTime(at) || delta.type !== 'tool_calls') return;
       for (const chunk of delta.tool_calls ?? []) {
         if (chunk.id) {
-          firstByCall.set(chunk.id, Math.min(firstByCall.get(chunk.id) ?? at, at));
+          const first = chunk.index === 0 ? firstByStep.get(id) : undefined;
+          firstByCall.set(chunk.id, Math.min(firstByCall.get(chunk.id) ?? at, first ?? at, at));
+          if (chunk.index === 0) {
+            firstCallByStep.set(id, chunk.id);
+            firstByStep.delete(id);
+          }
         } else if (id && delta.tool_calls?.length === 1 && chunk.index === 0) {
-          firstByStep.set(id, Math.min(firstByStep.get(id) ?? at, at));
+          const firstCallId = firstCallByStep.get(id);
+          if (firstCallId) {
+            firstByCall.set(firstCallId, Math.min(firstByCall.get(firstCallId) ?? at, at));
+          } else {
+            firstByStep.set(id, Math.min(firstByStep.get(id) ?? at, at));
+          }
         }
       }
     },
@@ -39,20 +51,36 @@ export function createToolTimingTracker(): ToolTimingTracker {
       for (const call of toolCalls) {
         if (!call.id) continue;
         dispatchedByCall.set(call.id, Math.min(dispatchedByCall.get(call.id) ?? at, at));
+        if (call.stepId) {
+          const ids = callIdsByStep.get(call.stepId) ?? new Set<string>();
+          ids.add(call.id);
+          callIdsByStep.set(call.stepId, ids);
+        }
       }
     },
     completed(id: string, at?: number): void {
       if (id && validTime(at)) completedByCall.set(id, at);
     },
     take(callId: string, stepId: string): ReturnType<typeof getToolTimingDurations> {
-      const start = firstByCall.get(callId) ?? firstByStep.get(stepId);
+      const ownedIds = callIdsByStep.get(stepId);
+      const soleCall = ownedIds?.size === 1 && ownedIds.has(callId);
+      const start = Math.min(
+        firstByCall.get(callId) ?? Infinity,
+        soleCall ? (firstByStep.get(stepId) ?? Infinity) : Infinity,
+      );
       const dispatchedAt = dispatchedByCall.get(callId);
       const completedAt = completedByCall.get(callId);
       firstByCall.delete(callId);
       firstByStep.delete(stepId);
+      firstCallByStep.delete(stepId);
+      callIdsByStep.delete(stepId);
       dispatchedByCall.delete(callId);
       completedByCall.delete(callId);
-      return getToolTimingDurations({ observedAt: start, dispatchedAt, completedAt });
+      return getToolTimingDurations({
+        observedAt: Number.isFinite(start) ? start : undefined,
+        dispatchedAt,
+        completedAt,
+      });
     },
   };
 }
