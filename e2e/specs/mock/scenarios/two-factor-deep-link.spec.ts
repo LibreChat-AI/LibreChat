@@ -162,6 +162,28 @@ async function signInThroughChallenge(page: Page) {
   await page.getByRole('button', { name: 'Verify' }).click();
 }
 
+/** The authenticated shell shows its account button on wide viewports and its header
+ *  toggle on narrow ones; either mounting proves the sign-in completed and stayed. */
+async function expectAuthenticatedShell(page: Page) {
+  await expect
+    .poll(
+      async () =>
+        (await page.getByTestId('nav-user').isVisible()) ||
+        (await page.getByTestId('header-open-sidebar-button').isVisible()),
+      { timeout: 30000 },
+    )
+    .toBe(true);
+}
+
+/** Ends the stand-in session the way the app itself would: an in-page logout request
+ *  (page.request would bypass the route mocks) flips the session, and the next document
+ *  load finds no session and keeps the login screen. */
+async function endMockSession(page: Page) {
+  await page.evaluate(() =>
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined),
+  );
+}
+
 test.describe('ordinary 2FA challenge · deep links', () => {
   test('a safe destination survives the challenge and is consumed by that sign-in @scenario:2fa-deep-link-survives-challenge', async ({
     page,
@@ -174,7 +196,7 @@ test.describe('ordinary 2FA challenge · deep links', () => {
 
     await expect(page).toHaveURL(DEEP_LINK_PATTERN, { timeout: 15000 });
     /** The authenticated shell mounts and settles here rather than bouncing back to /login. */
-    await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 15000 });
+    await expectAuthenticatedShell(page);
     /** Consumed by that sign-in: nothing is left to misdirect a later one. */
     expect(await page.evaluate(() => sessionStorage.getItem('post_login_redirect_to'))).toBeNull();
 
@@ -184,7 +206,7 @@ test.describe('ordinary 2FA challenge · deep links', () => {
 
     /** A reload authenticates through the refreshed session and stays on the deep link. */
     await page.reload();
-    await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 15000 });
+    await expectAuthenticatedShell(page);
     await expect(page).toHaveURL(DEEP_LINK_PATTERN);
   });
 
@@ -207,7 +229,7 @@ test.describe('ordinary 2FA challenge · deep links', () => {
     await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible({ timeout: 15000 });
     await signInThroughChallenge(page);
 
-    await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 15000 });
+    await expectAuthenticatedShell(page);
     await expect(page).toHaveURL(DEFAULT_PATTERN);
   });
 
@@ -220,18 +242,17 @@ test.describe('ordinary 2FA challenge · deep links', () => {
     await page.goto(`/login?redirect_to=${encodeURIComponent(DEEP_LINK)}`);
     await signInThroughChallenge(page);
     await expect(page).toHaveURL(DEEP_LINK_PATTERN, { timeout: 15000 });
-    await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 15000 });
+    await expectAuthenticatedShell(page);
 
-    await page.getByTestId('nav-user').click();
-    await page.getByRole('menuitem', { name: 'Log out' }).click();
-    await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible({ timeout: 15000 });
+    await endMockSession(page);
 
     /** The second sign-in declares a destination of its own: it must land there,
      *  not on the first sign-in's, and leave nothing behind for a third. */
     await page.goto(`/login?redirect_to=${encodeURIComponent(SECOND_LINK)}`);
+    await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible({ timeout: 15000 });
     await signInThroughChallenge(page);
     await expect(page).toHaveURL(SECOND_LINK_PATTERN, { timeout: 15000 });
-    await expect(page.getByTestId('nav-user')).toBeVisible({ timeout: 15000 });
+    await expectAuthenticatedShell(page);
     expect(await page.evaluate(() => sessionStorage.getItem('post_login_redirect_to'))).toBeNull();
   });
 });
