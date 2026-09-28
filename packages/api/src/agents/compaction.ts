@@ -213,7 +213,9 @@ export function resolveFailedTurnContent(
  * text goes, leaving the typed failure as the row's outcome. A non-terminal
  * snapshot (`synthesizeFailure: false`, the disconnect save the run may still
  * complete and overwrite) marks what is there and rewrites nothing else.
- * Content from a turn that was not a compaction is returned unchanged.
+ * Content from a turn that was not a compaction is returned unchanged, and
+ * the parts are never edited in place: the aggregated parts belong to the
+ * still-live run on the disconnect path, so every stamped part is a copy.
  */
 export function markAbortedCompactionContent(
   contentParts: TMessageContentParts[],
@@ -223,54 +225,56 @@ export function markAbortedCompactionContent(
   if (!isCompaction) {
     return contentParts;
   }
+  const marked: TMessageContentParts[] = [];
   let hasOutcome = false;
   let removedUnfinishedRound = false;
-  for (let index = contentParts.length - 1; index >= 0; index -= 1) {
-    const part = contentParts[index];
+  for (const part of contentParts) {
     if (part == null) {
+      marked.push(part);
       continue;
     }
     if (part.type === ContentTypes.ERROR) {
-      part.initiatedBy = 'user';
+      marked.push({ ...part, initiatedBy: 'user' as const });
       hasOutcome = true;
+      removedUnfinishedRound = false;
       continue;
     }
     if (part.type !== ContentTypes.SUMMARY) {
+      marked.push(part);
       continue;
     }
     /** The usability predicate's false side narrows the part's type away, so
      *  the reference is taken before it runs. */
     const summary = part;
     if (isUsableSummaryPart(part)) {
-      summary.initiatedBy = 'user';
+      marked.push({ ...summary, initiatedBy: 'user' as const });
       hasOutcome = true;
+      removedUnfinishedRound = false;
       continue;
     }
     if (!synthesizeFailure) {
-      summary.initiatedBy = 'user';
+      marked.push({ ...summary, initiatedBy: 'user' as const });
       continue;
     }
     if (isSummaryPartWithText(summary)) {
-      summary.initiatedBy = 'user';
-      summary.failed = true;
+      marked.push({ ...summary, initiatedBy: 'user' as const, failed: true });
       hasOutcome = true;
+      removedUnfinishedRound = false;
       continue;
     }
-    contentParts.splice(index, 1);
-    /** Walking backwards, an outcome already seen belongs to a later round:
-     *  this placeholder is an earlier round the later one superseded. */
-    if (!hasOutcome) {
-      removedUnfinishedRound = true;
-    }
+    /** A later outcome supersedes this placeholder's round; the flag is
+     *  cleared whenever an outcome follows, so only a round opened after the
+     *  latest outcome synthesizes the failure. */
+    removedUnfinishedRound = true;
   }
   /** An earlier round's checkpoint is not this round's outcome: a round the
    *  run opened but never finished still records the typed failure beside it,
    *  or the stopped turn reads as the successful compaction the checkpoint
    *  describes. */
   if ((!hasOutcome || removedUnfinishedRound) && synthesizeFailure) {
-    contentParts.push(...compactionFailureContent());
+    marked.push(...compactionFailureContent());
   }
-  return contentParts;
+  return marked;
 }
 
 /** Whether a job record has reached a status whose path owns the turn's final
@@ -314,14 +318,20 @@ export type DisconnectSnapshotMode =
 
 /**
  * How the last-subscriber disconnect may persist this turn's snapshot, read
- * from the same-epoch job record the caller already loaded. The guard reads
- * the record the settling path writes, so the remaining window is that
- * path's own commit span.
+ * from the same-epoch job record the caller already loaded. A compaction
+ * whose settling path owns the final row withholds the snapshot; the guard
+ * reads the record that path writes, so the remaining window is the path's
+ * own commit span. Ordinary turns keep writing their fallback row, settled
+ * or not.
  */
 export function resolveDisconnectSnapshotMode(
+  isCompaction: boolean,
   jobRecord: { createdAt?: number; status?: string } | null | undefined,
   jobCreatedAt?: number,
 ): DisconnectSnapshotMode {
+  if (!isCompaction) {
+    return 'live';
+  }
   return isSettledJobRecord(jobRecord, jobCreatedAt) ? 'skip' : 'live';
 }
 
@@ -462,7 +472,6 @@ export type ReadableMessageRow = {
   unfinished?: boolean;
 };
 
-/**
 /** How a failed generation's fresh error row proceeds after its existing rows
  * are settled. */
 export type ErrorTurnSettlement =
