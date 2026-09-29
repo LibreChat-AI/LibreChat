@@ -1093,4 +1093,46 @@ describe('office file shells', () => {
     expect(html).not.toContain(line);
     expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
   });
+  const OVERSIZED_NOTICE =
+    'This document is too large for the simplified preview. Download it to view the full content.';
+
+  const oversizedNoticeChecks = (html: string): string | undefined => {
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain(OVERSIZED_NOTICE);
+    const notice = /<p id="lc-fallback-notice">([^<]*)<\/p>/.exec(html)?.[1];
+    expect(notice).toBe(OVERSIZED_NOTICE);
+    expect(notice).not.toContain('below');
+    expect(html).toContain('id="lc-doc-data"');
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
+    return notice;
+  };
+
+  test('shows a short notice when a pptx shell drops its oversized fallback', async () => {
+    const zip = await JSZip.loadAsync(readFixture('sample.pptx'));
+    const line = 'x'.repeat(3000);
+    Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .forEach((name) => zip.remove(name));
+    for (let n = 1; n <= 300; n++) {
+      zip.file(
+        `ppt/slides/slide${n}.xml`,
+        `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${line}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+      );
+    }
+    const pptx = await zip.generateAsync({ type: 'nodebuffer' });
+    expect(oversizedNoticeChecks(await pptxToHtml(pptx, { fileShell: true }))).toBe(
+      OVERSIZED_NOTICE,
+    );
+  });
+
+  test('shows a short notice when a docx shell drops its oversized fallback', async () => {
+    const zip = await JSZip.loadAsync(readFixture('sample.docx'));
+    const paragraph = `<w:p><w:r><w:t>${'y'.repeat(3000)}</w:t></w:r></w:p>`;
+    const doc = await zip.file('word/document.xml')!.async('string');
+    zip.file('word/document.xml', doc.replace('<w:body>', `<w:body>${paragraph.repeat(300)}`));
+    const docx = await zip.generateAsync({ type: 'nodebuffer' });
+    expect(oversizedNoticeChecks(await wordDocToHtml(docx, { fileShell: true }))).toBe(
+      OVERSIZED_NOTICE,
+    );
+  });
 });

@@ -368,6 +368,8 @@ const MAX_DOCX_CDN_BINARY_BYTES = 350 * 1024;
  * `cap-mirrors-extract` test in `html.spec.ts` pins the relationship.
  */
 const OFFICE_HTML_OUTPUT_CAP = 512 * 1024;
+const OFFICE_OVERSIZED_NOTICE =
+  'This document is too large for the simplified preview. Download it to view the full content.';
 
 /**
  * Build the CDN-rendered HTML document for a DOCX. The base64 payload
@@ -477,7 +479,7 @@ ${DOCX_EXTRA_CSS}
 <body>
 <div id="lc-render"><div class="lc-docx-loading">Loading preview…</div></div>
 <div id="lc-fallback" hidden>
-<p id="lc-fallback-notice">High-fidelity renderer unavailable (CDN blocked or offline). Showing the simplified preview below.</p>
+<p id="lc-fallback-notice">${fileShell && !mammothFallbackHtml ? OFFICE_OVERSIZED_NOTICE : 'High-fidelity renderer unavailable (CDN blocked or offline). Showing the simplified preview below.'}</p>
 <article class="lc-docx">${mammothFallbackHtml}</article>
 </div>
 ${fileShell ? OFFICE_DOC_DATA_SLOT : `<script id="lc-doc-data" type="application/octet-stream;base64">${base64}</script>`}
@@ -1215,7 +1217,7 @@ ${PPTX_SLIDE_LIST_CSS}
 <body>
 <div id="lc-render"><div class="lc-pptx-loading">Loading preview…</div></div>
 <div id="lc-fallback" hidden>
-  <p id="lc-fallback-notice">High-fidelity renderer unavailable or returned no slide content. Showing the simplified slide-list view below.</p>
+  <p id="lc-fallback-notice">${fileShell && !slideListFallbackBody ? OFFICE_OVERSIZED_NOTICE : 'High-fidelity renderer unavailable or returned no slide content. Showing the simplified slide-list view below.'}</p>
   ${slideListFallbackBody}
   <details style="font-size: 12px; color: var(--muted); margin: 16px 0 0;">
     <summary style="cursor: pointer;">Diagnostic details</summary>
