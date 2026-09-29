@@ -40,6 +40,7 @@ import {
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
 import PendingManualSkillsChips from './PendingManualSkillsChips';
+import { registerReloadGuard } from '~/features/updates/activity';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
@@ -282,6 +283,25 @@ const ChatForm = memo(function ChatForm({
    *  answer box, or is locked behind the batch card that owns the answer. A
    *  collapsed batch is neither — it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
+
+  const queuedForUpdate = useRecoilValue(store.queuedMessagesByConvoId(conversationId));
+  const pendingEnqueuesForUpdate = useRecoilValue(
+    store.pendingQueuedTurnEnqueueIdsByConvoId(conversationId),
+  );
+  const updateBusyRef = useRef(false);
+  updateBusyRef.current =
+    isSubmitting ||
+    showStopButton ||
+    filesLoading ||
+    files.size > 0 ||
+    composerReserved ||
+    queuedForUpdate.length > 0 ||
+    pendingEnqueuesForUpdate.length > 0 ||
+    (methods.getValues('text') ?? '').length > 0;
+  useEffect(
+    () => registerReloadGuard(() => updateBusyRef.current || !!textAreaRef.current?.value),
+    [],
+  );
 
   const consumeDraft = useAutoSave({
     index,

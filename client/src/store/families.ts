@@ -400,7 +400,23 @@ export type PendingSteer = {
 const pendingSteersByConvoId = atomFamily<PendingSteer[], string>({
   key: 'pendingSteersByConvoId',
   default: [],
+  effects: [
+    ({ onSet, node }) => {
+      onSet((steers) => {
+        if (!(steers instanceof DefaultValue) && steers.length > 0) {
+          pendingQueueKeys.add(node.key);
+        } else {
+          pendingQueueKeys.delete(node.key);
+        }
+      });
+    },
+  ],
 });
+
+/** Queued turns and pending steers can outlive their mounted composer. Track
+ * non-empty queues at the state owner so a release cannot discard an offscreen turn. */
+const pendingQueueKeys = new Set<string>();
+const hasInMemoryQueuedTurns = (): boolean => pendingQueueKeys.size > 0;
 
 /** A message composed during a run, queued to send after it finishes.
  *  Attachments ride the queued item (already uploaded at attach time) and are
@@ -471,6 +487,17 @@ export type QueuedMessageOrigin = {
 const queuedMessagesByConvoId = atomFamily<QueuedMessage[], string>({
   key: 'queuedMessagesByConvoId',
   default: [],
+  effects: [
+    ({ onSet, node }) => {
+      onSet((messages) => {
+        if (!(messages instanceof DefaultValue) && messages.length > 0) {
+          pendingQueueKeys.add(node.key);
+        } else {
+          pendingQueueKeys.delete(node.key);
+        }
+      });
+    },
+  ],
 });
 
 export type SettledQueuedTurnReceipt = {
@@ -494,6 +521,17 @@ const settledQueuedTurnReceiptsByConvoId = atomFamily<SettledQueuedTurnReceipt[]
 const pendingQueuedTurnEnqueueIdsByConvoId = atomFamily<string[], string>({
   key: 'pendingQueuedTurnEnqueueIdsByConvoId',
   default: [],
+  effects: [
+    ({ onSet, node }) => {
+      onSet((ids) => {
+        if (!(ids instanceof DefaultValue) && ids.length > 0) {
+          pendingQueueKeys.add(node.key);
+        } else {
+          pendingQueueKeys.delete(node.key);
+        }
+      });
+    },
+  ],
 });
 
 /**
@@ -821,6 +859,7 @@ export default {
   pendingQuotesByConvoId,
   pendingSteersByConvoId,
   queuedMessagesByConvoId,
+  hasInMemoryQueuedTurns,
   settledQueuedTurnReceiptsByConvoId,
   pendingQueuedTurnEnqueueIdsByConvoId,
   runEndByIndex,

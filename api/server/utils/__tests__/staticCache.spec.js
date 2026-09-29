@@ -31,6 +31,8 @@ describe('staticCache', () => {
     indexFile = path.join(testDir, 'index.html');
     manifestFile = path.join(testDir, 'manifest.json');
     swFile = path.join(testDir, 'sw.js');
+    fs.writeFileSync(path.join(testDir, 'version.json'), '{"schemaVersion":1}');
+    fs.writeFileSync(path.join(testDir, 'assets.12345678.js'), 'hashed');
 
     const jsContent = 'console.log("test");';
     const htmlContent = '<html><body>Test</body></html>';
@@ -115,6 +117,14 @@ describe('staticCache', () => {
       const response = await request(app).get('/sw.js').expect(200);
 
       expect(response.headers['cache-control']).toBe('no-store, no-cache, must-revalidate');
+    });
+
+    it('keeps the release pointer uncacheable and only hashed assets immutable', async () => {
+      app.use(staticCache(testDir));
+      const pointer = await request(app).get('/version.json').expect(200);
+      expect(pointer.headers['cache-control']).toBe('no-store, no-cache, must-revalidate');
+      const asset = await request(app).get('/assets.12345678.js').expect(200);
+      expect(asset.headers['cache-control']).toBe('public, max-age=31536000, immutable');
     });
 
     it('should not set cache headers for /dist/images/ files', async () => {

@@ -1906,3 +1906,25 @@ describe('MCP UI refresh configuration', () => {
     ).toBe(false);
   });
 });
+
+describe('frontend update policy', () => {
+  it('is opt-in and bounds the check cadence', () => {
+    const parse = (frontendUpdates?: object) =>
+      configSchema.parse({
+        version: '1.0',
+        interface: frontendUpdates ? { frontendUpdates } : {},
+      }).interface.frontendUpdates;
+    expect(parse()).toBeUndefined();
+    expect(parse({})).toEqual({});
+    expect(parse({ autoReload: true, pollIntervalMs: 60000 })).toEqual({
+      autoReload: true,
+      pollIntervalMs: 60000,
+    });
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        interface: { frontendUpdates: { pollIntervalMs: 59999 } },
+      }).success,
+    ).toBe(false);
+  });
+});

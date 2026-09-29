@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { build } from 'vite';
+import { writeRelease } from '../client/scripts/release.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -28,14 +29,25 @@ test(
     const server = createServer(async (req, res) => {
       const pathname = new URL(req.url, 'http://localhost').pathname;
       try {
-        const relative = pathname.startsWith('/assets/') ? pathname.slice(1) : 'index.html';
+        const relative = pathname.startsWith('/assets/')
+          ? pathname.slice(1)
+          : pathname === '/version.json'
+            ? 'version.json'
+            : 'index.html';
         const filename = pathname === '/sw.js' ? 'sw.js' : relative;
         if (filename.includes('..')) {
           res.writeHead(400).end();
           return;
         }
         const content = await readFile(path.join(temporary, serving, 'dist', filename));
-        res.setHeader('Content-Type', filename.endsWith('.js') ? 'text/javascript' : 'text/html');
+        res.setHeader(
+          'Content-Type',
+          filename.endsWith('.js')
+            ? 'text/javascript'
+            : filename.endsWith('.json')
+              ? 'application/json'
+              : 'text/html',
+        );
         res.setHeader('Cache-Control', 'no-store');
         res.end(content);
       } catch {
@@ -48,7 +60,7 @@ test(
         await mkdir(fixture);
         await writeFile(
           path.join(fixture, 'index.html'),
-          `<html><head>${guards}<script data-lc-client-entry type="module" src="/entry.js"></script></head><body><input aria-label="Draft"></body></html>`,
+          `<html><head><meta name="lc-asset-build-id" content="__LC_ASSET_BUILD_ID__">${guards}<script data-lc-client-entry type="module" src="/entry.js"></script></head><body><input aria-label="Draft"></body></html>`,
         );
         await writeFile(
           path.join(fixture, 'entry.js'),
@@ -69,6 +81,7 @@ test(
             rollupOptions: { output: { entryFileNames: 'assets/[name].[hash].js' } },
           },
         });
+        await writeRelease(path.join(fixture, 'dist'));
         await writeFile(
           path.join(fixture, 'dist/sw.js'),
           `${heal}\n// ${version}\nself.skipWaiting();`,
@@ -96,7 +109,7 @@ test(
       assert.equal(await page.evaluate(() => window.fixtureWorkerError), undefined);
       await page.getByLabel('Draft').fill('Keep my unsent text');
       const firstId = await page.evaluate(() => window.__lcRumQueue[0].attributes.clientBuildId);
-      assert.match(firstId, /^index\..+\.js$/);
+      assert.match(firstId, /^assets-[a-f0-9]{64}$/);
       assert.equal(
         await page.evaluate(
           () =>
@@ -158,7 +171,7 @@ test(
         firstId,
       );
       assert.notEqual(nextId, firstId);
-      assert.match(nextId, /^index\..+\.js$/);
+      assert.match(nextId, /^assets-[a-f0-9]{64}$/);
     } finally {
       await browser?.close();
       await new Promise((resolve) => server.close(resolve));

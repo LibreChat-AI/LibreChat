@@ -37,6 +37,7 @@ import {
 import { useGetFileConfig, useUploadFileMutation } from '~/data-provider';
 import useAgentUploadTarget from '~/hooks/Agents/useAgentUploadTarget';
 import useLocalize, { TranslationKeys } from '~/hooks/useLocalize';
+import { holdReloadForUpload } from '~/features/updates/activity';
 import { useDelayedUploadToast } from './useDelayedUploadToast';
 import { useChatContext } from '~/Providers/ChatContext';
 import store, { ephemeralAgentByConvoId } from '~/store';
@@ -810,6 +811,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
   ): Promise<boolean> => {
     /** `FileList` is live: copy it before yielding, as callers reset the input synchronously */
     const fileList = Array.from(_files);
+    const releaseReload = holdReloadForUpload();
     const assignedFileId = uploadLifecycle?.fileId;
     if (assignedFileId) {
       uploadErrorCallbacks.set(assignedFileId, uploadLifecycle);
@@ -844,6 +846,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       throw error;
     } finally {
       releaseProcessing();
+      releaseReload();
     }
   };
 

@@ -44,9 +44,12 @@ function staticCache(staticPath, options = {}) {
       fileName.endsWith('.webmanifest') ||
       fileName === 'manifest.json' ||
       fileName === 'sw.js' ||
-      fileName === 'sw-heal.js'
+      fileName === 'sw-heal.js' ||
+      fileName === 'version.json'
     ) {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    } else if (/\.[\w-]{8,}\.(?:js|css)$/.test(fileName)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     } else {
       res.setHeader('Cache-Control', `public, max-age=${maxAge}, s-maxage=${sMaxAge}`);
     }

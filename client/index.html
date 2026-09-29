@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <base href="/" />
+    <meta name="lc-asset-build-id" content="__LC_ASSET_BUILD_ID__" />
     <meta name="theme-color" content="#171717" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -110,6 +111,10 @@
             });
             /* Stamp before persistence: a recovery reload may precede the RUM module. */
             safeAttributes.clientBuildId = 'unknown';
+            var releaseMeta = document.querySelector('meta[name="lc-asset-build-id"]');
+            if (releaseMeta && /^assets-[a-f0-9]{64}$/.test(releaseMeta.content)) {
+              safeAttributes.clientBuildId = releaseMeta.content;
+            }
             var entryScripts = document.querySelectorAll('script[type="module"][src]');
             for (var i = 0; i < entryScripts.length; i++) {
               var filename = entryScripts[i]
@@ -117,7 +122,10 @@
                 .split(/[?#]/, 1)[0]
                 .split('/')
                 .pop();
-              if (/^index[.-][\w-]+\.js$/.test(filename)) {
+              if (
+                safeAttributes.clientBuildId === 'unknown' &&
+                /^index[.-][\w-]+\.js$/.test(filename)
+              ) {
                 safeAttributes.clientBuildId = filename;
                 break;
               }

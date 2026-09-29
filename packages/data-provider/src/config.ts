@@ -2314,6 +2314,14 @@ export const interfaceSchema = z
     /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),
+    frontendUpdates: z
+      .object({
+        /** Automatic reload requires a deployment-wide static release pointer. Default: false. */
+        autoReload: z.boolean().optional(),
+        /** Check cadence in milliseconds. Default: 300000. */
+        pollIntervalMs: z.number().int().min(60000).max(3600000).optional(),
+      })
+      .optional(),
     remoteAgents: z
       .object({
         use: z.boolean().optional(),
