@@ -8,6 +8,39 @@ export function isOpenIDSessionMissingError(error: unknown): boolean {
   return error instanceof Error && error.message === 'failed to load session';
 }
 
+/**
+ * Reloads the persisted Express session before a publication decision. express-session rejects with
+ * `failed to load session` when the record is merely absent — the session-store TTL elapsed, the
+ * entry was evicted, or a logout in another replica removed it — which describes an empty session
+ * rather than one that advanced past this result. Tolerate that case so a refresh backed by a
+ * still-valid refresh token seeds a new record instead of demanding an interactive sign-in, and let
+ * every other store failure (an outage) propagate to the caller.
+ *
+ * Logout safety does not depend on this record: `revokeOpenIDRefreshTokenChain` writes a durable
+ * revoked publication flight for every refresh token it retires, so a retired token still fails.
+ *
+ * @returns `true` when the persisted record was read, `false` when it was gone.
+ */
+export async function reloadOpenIDSessionIfPersisted(
+  session?: { reload?: (callback: (error?: Error | null) => void) => void } | null,
+): Promise<boolean> {
+  if (typeof session?.reload !== 'function') {
+    return false;
+  }
+  const reload = session.reload.bind(session);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      reload((error?: Error | null) => (error ? reject(error) : resolve()));
+    });
+    return true;
+  } catch (error) {
+    if (isOpenIDSessionMissingError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 export function toOpenIDLogArgument(error: unknown): LogArgument {
   return error instanceof Error ? error : String(error);
 }

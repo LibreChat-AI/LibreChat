@@ -1,0 +1,90 @@
+name: Native Workspace Acceptance
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'e2e/byom/**'
+      - '.github/workflows/workspace-acceptance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workspace:
+    name: Saved chat attach and offline detach (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Run the native worker unchanged, with Seatbelt and its real ownership checks.
+      # Pin the external fixture so this acceptance result has a reproducible worker revision.
+      - uses: actions/checkout@v5
+        with:
+          repository: LibreChat-AI/code-interpreter
+          ref: 67d75d859aee891923c40cde1db073489d74a424
+          path: .native-code
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+          cache: npm
+
+      - name: Install native prerequisites
+        run: |
+          brew list redis >/dev/null 2>&1 || brew install redis
+          brew list ripgrep >/dev/null 2>&1 || brew install ripgrep
+          command -v sandbox-exec
+          command -v redis-server
+          command -v rg
+
+      - name: Install and build LibreChat
+        env:
+          VITE_ENABLE_LOGGER: 'true'
+          VITE_LOGGER_FILTER: conversation,ResumableSSE
+        run: |
+          npm ci
+          npm run e2e:prepare
+          npx playwright install chromium
+
+      - name: Build the real Code API and worker
+        run: |
+          npm ci --prefix .native-code/packages/code
+          npm run build --prefix .native-code/packages/code
+          npm install --prefix .native-code/service --no-audit --no-fund
+          npm run build --prefix .native-code/service
+          cp .native-code/service/src/matplotlib-async.py .native-code/service/.build-service/src/matplotlib-async.py
+
+      - name: Exercise saved-chat workspace transitions
+        env:
+          BYOM_WORKSPACE_TRANSITIONS: 'true'
+          BYOM_CODE_REPO: ${{ github.workspace }}/.native-code
+        run: node e2e/byom/run.mjs
+
+      # The native harness retains private identities and cookies for local debugging.
+      # Never upload its run directory, raw logs, or browser storage state from CI.
+      - name: Record acceptance scope
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          {
+            echo '### Native workspace acceptance'
+            echo "Head: \`$HEAD\`"
+            echo "Result: $RESULT"
+            echo 'Scope: saved chat, agent switch without implicit access, no-workspace send/reload, explicit attach, approved native command, offline detach, continued chat/reload.'
+            echo 'Worker: `67d75d859aee891923c40cde1db073489d74a424`. Platform: macOS Seatbelt. No Linux/WSL certification.'
+          } >> "$GITHUB_STEP_SUMMARY"

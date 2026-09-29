@@ -19,6 +19,28 @@ export const composerSurfaceShadow = {
 } as const;
 
 /**
+ * The composer's submit slot: send, stop, and the during-run send button that
+ * takes their place while a run generates. One recipe because all three swap
+ * into the same position and must be indistinguishable in everything but the
+ * icon they carry.
+ *
+ * Wherever touch is reachable it is the row's one 44px target. `size-theme-control` is
+ * 36px, which a thumb aimed at the bottom corner of a phone clips or misses
+ * outright, and below `sm` the composer surface runs to the viewport floor by
+ * design, so the target has to grow upward instead of gaining a band of padding
+ * beneath it. Centering is `flex` rather than the icon's fit inside
+ * `p-theme-compact`, which only held while the box was exactly icon-sized.
+ */
+export const composerSubmitClasses = (): string =>
+  cn(
+    'flex items-center justify-center',
+    'size-theme-control touch:size-theme-control-touch',
+    'rounded-theme-control-round bg-text-primary p-theme-compact text-text-primary',
+    'outline-offset-4 transition-all duration-theme-normal',
+    'disabled:cursor-not-allowed disabled:text-text-secondary disabled:opacity-10',
+  );
+
+/**
  * Shared appearance for a labeled control in the composer's action row — the
  * capability checkboxes, the MCP selector, the code-approval selector. Border,
  * radius, height, spacing and elevation are one decision here so a row of them

@@ -9,6 +9,7 @@ import type { FilesDraft } from '~/utils';
 import {
   beginRetainedDeletionPass,
   clearAllDrafts,
+  clearFilesDraft,
   clearMessagesCache,
   clearRetainedFileDeletion,
   failedFileIdsFrom,
@@ -299,10 +300,13 @@ export default function useNewChat({
   const startNewChat = useCallback(() => {
     clearMessagesCache(queryClient, conversationId);
     queryClient.invalidateQueries([QueryKeys.messages]);
-    /** `newConversation` empties the composer, but the unsaved-chat draft key outlives it and
-     * `useAutoSave` restores from that key on the way in, so an unsent paste came back on every
-     * later new chat. Dropping the key first makes an explicit new chat an actual clean slate,
-     * for the text draft and its attachments alike. Per-conversation drafts are untouched.
+    /** The unsaved-chat draft key outlives the reset and `useAutoSave` restores from it on the way
+     * in, so an unsent paste came back on every later new chat. Its attachments are dropped here to
+     * make an explicit new chat a clean slate; its text is deliberately kept, because the restore
+     * is also what puts a draft back when the user simply leaves the unsaved chat and returns, and
+     * clearing it made that the one composer that forgot what had been typed in it. Nothing else is
+     * gained by clearing it: unlike an attachment there is no upload behind it to leave dangling.
+     * Per-conversation drafts are untouched either way.
      *
      * With draft saving on, `newConversation` deliberately leaves the draft's files alive
      * because a draft normally keeps them restorable; discarding the draft removes the only
@@ -442,8 +446,11 @@ export default function useNewChat({
     if (isFilesDraftOwnedByThisTab(pendingDraft)) {
       clearAllDrafts(pendingId);
     }
+    /** Attachments only: the uploads behind them have just been deleted, so restoring the chips
+     * would reference files that are gone, while the typed message is what the user expects to
+     * find again on the way back into the unsaved chat. */
     if (isFilesDraftOwnedByThisTab(idleDraft)) {
-      clearAllDrafts(draftId);
+      clearFilesDraft(draftId);
     }
     const discardedFileIds = Array.from(
       new Set([

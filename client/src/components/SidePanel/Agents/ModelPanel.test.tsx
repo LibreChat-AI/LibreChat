@@ -276,6 +276,43 @@ describe('ModelPanel', () => {
     expect(container.querySelector('#model')).not.toBeNull();
   });
 
+  it.each([
+    [EModelEndpoint.anthropic, 'claude-opus-5'],
+    [EModelEndpoint.bedrock, 'global.anthropic.claude-opus-5'],
+  ])(
+    'preserves saved %s settings through model switches and a restored form',
+    (provider, previousModel) => {
+      const saved = {
+        thinking: false,
+        thinkingBudget: 4096,
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+      };
+      const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+      const renderForm = (model: string, parameters = saved) => (
+        <TestForm
+          defaultProvider={provider}
+          defaultModel={model}
+          defaultModelParameters={parameters}
+          formRef={formRef}
+          models={{ [provider]: [previousModel, `${previousModel}-5`] }}
+          modelsReady={true}
+        />
+      );
+      const { getByTestId, unmount } = render(renderForm(previousModel));
+      fireEvent.click(getByTestId(`com_ui_model-${previousModel}-5`));
+      expect(formRef.current?.getValues('model_parameters')).toEqual(saved);
+      fireEvent.click(getByTestId(`com_ui_model-${previousModel}`));
+      expect(formRef.current?.getValues('model_parameters')).toEqual(saved);
+      fireEvent.click(getByTestId(`com_ui_model-${previousModel}-5`));
+      const restored = JSON.parse(JSON.stringify(formRef.current?.getValues('model_parameters')));
+      unmount();
+      render(renderForm(`${previousModel}-5`, restored));
+      expect(formRef.current?.getValues('model_parameters')).toEqual(saved);
+    },
+  );
+
   it('prunes a saved model_parameters value once its endpoint drops the matching param', async () => {
     mockStartupConfig.mockReturnValue({
       endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },

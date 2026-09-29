@@ -198,7 +198,9 @@ test.describe('mobile chat header controls', () => {
       ]);
       const theme = await page.locator('html').getAttribute('class');
 
-      expect(isOpaque(toggle.background), `toggle fill ${toggle.background} in ${theme}`).toBe(true);
+      expect(isOpaque(toggle.background), `toggle fill ${toggle.background} in ${theme}`).toBe(
+        true,
+      );
       expect(toggle.background, `theme ${theme}`).toBe(newChat.background);
       expect(toggle.background, `theme ${theme}`).toBe(overflow.background);
       expect(toggle.radius).toBe(newChat.radius);

@@ -83,6 +83,21 @@ describe('useSubmitMessage', () => {
     expect(reset).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('preserves a refused automatic prompt (accepted=%s)', (accepted) => {
+    mockUseRecoilValue.mockReturnValue(true);
+    ask.mockReturnValue(accepted);
+    const { result } = renderHook(() => useSubmitMessage());
+    act(() => result.current.submitPrompt('selected prompt'));
+    expect(ask).toHaveBeenCalledWith({ text: 'selected prompt' }, expect.any(Object));
+    if (accepted) {
+      expect(mockSetActivePrompt).not.toHaveBeenCalled();
+      expect(reset).toHaveBeenCalled();
+    } else {
+      expect(mockSetActivePrompt).toHaveBeenCalledWith('selected prompt');
+      expect(reset).not.toHaveBeenCalled();
+    }
+  });
+
   it('reads the tail at call time and appends it to root when missing', () => {
     const rootMessages = [{ messageId: 'root-user' }];
     const latest = { messageId: 'assistant-tail', text: 'tail' };

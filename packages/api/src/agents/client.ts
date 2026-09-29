@@ -106,16 +106,24 @@ export function applyAttachmentOnlyText(
   formattedMessage.content = ATTACHMENT_ONLY_TEXT;
 }
 
-export function prependFileContext(
+/**
+ * Prepends context text to a formatted message: joined ahead of its string
+ * content or first text part, or added as a leading text part when it has
+ * neither. Array content is replaced, never edited in place: a formatted copy
+ * shares its array with the stored row it came from, so the stored row and
+ * every other reader of it stay untouched.
+ */
+export function prependContextText(
   formattedMessage: FormattedMessageWithContent,
-  fileContext?: string | null,
+  text: string | null | undefined,
+  separator = '\n',
 ): void {
-  if (!fileContext) {
+  if (!text) {
     return;
   }
 
   if (typeof formattedMessage.content === 'string') {
-    formattedMessage.content = `${fileContext}\n${formattedMessage.content}`;
+    formattedMessage.content = `${text}${separator}${formattedMessage.content}`;
     return;
   }
 
@@ -123,13 +131,24 @@ export function prependFileContext(
     return;
   }
 
-  const textPart = formattedMessage.content.find((part) => part.type === ContentTypes.TEXT);
-  if (textPart != null && typeof textPart.text === 'string') {
-    textPart.text = `${fileContext}\n${textPart.text}`;
+  const index = formattedMessage.content.findIndex(
+    (part) => part.type === ContentTypes.TEXT && typeof part.text === 'string',
+  );
+  if (index < 0) {
+    formattedMessage.content = [{ type: ContentTypes.TEXT, text }, ...formattedMessage.content];
     return;
   }
+  const textPart = formattedMessage.content[index];
+  formattedMessage.content = formattedMessage.content.map((part, position) =>
+    position === index ? { ...textPart, text: `${text}${separator}${textPart.text}` } : part,
+  );
+}
 
-  formattedMessage.content.unshift({ type: ContentTypes.TEXT, text: fileContext });
+export function prependFileContext(
+  formattedMessage: FormattedMessageWithContent,
+  fileContext?: string | null,
+): void {
+  prependContextText(formattedMessage, fileContext);
 }
 
 /**

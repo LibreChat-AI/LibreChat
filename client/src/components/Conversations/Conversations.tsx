@@ -24,7 +24,8 @@ import {
   useEffectiveProjectId,
   useUnpinDroppedConversation,
 } from './dnd';
-import { useLocalize, TranslationKeys, useElementSize } from '~/hooks';
+import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
+import { groupConversationsWithRunning, RUNNING_CHATS_GROUP } from './running';
 import { groupConversations, cn } from '~/utils';
 import { useActiveJobs } from '~/data-provider';
 import Convo from './Convo';
@@ -58,6 +59,12 @@ interface ConversationsProps {
   isError?: boolean;
   /** Re-run the conversations request from the error state. */
   onRetry?: () => void;
+  /** The sidebar's single scroll viewport: the list is windowed by it rather than
+   *  scrolling on its own, so the sections above it scroll with the chats. */
+  scrollViewport: HTMLElement | null;
+  /** Wrapper around everything inside that viewport, whose height changes when a
+   *  section above the list expands or collapses. */
+  scrollContent: HTMLElement | null;
 }
 
 interface MeasuredRowProps {
@@ -153,10 +160,14 @@ const DateLabel: FC<{ groupName: string; isFirst?: boolean; isAlphabetical?: boo
     const displayName = localize(groupName as TranslationKeys) || groupName;
     return (
       <h2
-        aria-label={localize(
-          isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
-          isAlphabetical ? { letter: displayName } : { date: displayName },
-        )}
+        aria-label={
+          groupName === RUNNING_CHATS_GROUP
+            ? localize('com_a11y_chats_running_section')
+            : localize(
+                isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
+                isAlphabetical ? { letter: displayName } : { date: displayName },
+              )
+        }
         className={cn('pl-1 pt-1 text-text-secondary', isFirst === true ? 'mt-0' : 'mt-2')}
         style={{ fontSize: '0.7rem' }}
       >
@@ -187,6 +198,8 @@ const Conversations: FC<ConversationsProps> = ({
   hasNextPage = false,
   isError = false,
   onRetry,
+  scrollViewport,
+  scrollContent,
 }) => {
   const localize = useLocalize();
   const search = useRecoilValue(store.search);
@@ -232,39 +245,70 @@ const Conversations: FC<ConversationsProps> = ({
   });
   dropRef(chatsRegionRef);
   const convoHeight = isSmallScreen ? 44 : 34;
+  const { ref: listContainerRef, width: listWidth } = useElementSize<HTMLDivElement>();
+  /** The list does not scroll: the sidebar's one scroll container does, and the
+   *  list virtualizes against the slice of it the rows currently occupy. */
   const {
-    ref: listContainerRef,
-    width: listWidth,
-    height: listHeight,
-  } = useElementSize<HTMLDivElement>();
+    ref: listWindowRef,
+    height: windowHeight,
+    scrollTop: windowScrollTop,
+    isOnScreen: isListOnScreen,
+  } = useOuterScrollWindow(scrollViewport, scrollContent);
+
+  /** One element is both the width source and the window anchor; a stable
+   *  callback keeps React from detaching and reattaching it every render. */
+  const setListNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      listContainerRef(node);
+      listWindowRef(node);
+    },
+    [listContainerRef, listWindowRef],
+  );
 
   // Fetch active job IDs for showing generation indicators
   const { data: activeJobsData } = useActiveJobs();
-  const activeJobIds = useMemo(
-    () => new Set(activeJobsData?.activeJobIds ?? []),
-    [activeJobsData?.activeJobIds],
-  );
+  const activeJobIdsRef = useRef<Set<string> | null>(null);
+  const activeJobIds = useMemo(() => {
+    const ids = activeJobsData?.activeJobIds ?? [];
+    const next = new Set(ids);
+    const previous = activeJobIdsRef.current;
+    if (previous && next.size === previous.size && ids.every((id) => previous.has(id))) {
+      return previous;
+    }
+    activeJobIdsRef.current = next;
+    return next;
+  }, [activeJobsData?.activeJobIds]);
 
   const filteredConversations = useMemo(
     () => rawConversations.filter(Boolean) as TConversation[],
     [rawConversations],
   );
 
-  /** The pinned section above carries pins, so they stay out of these groups — except in
-   *  the archive, which that section does not cover: an archived pin would otherwise be
-   *  absent from the sidebar entirely rather than merely further down it. */
-  const groupedConversations = useMemo(
+  /** The pinned section carries pins except in the archive or during search, when it is
+   *  hidden. Keep matching pins in the Chats results instead of showing an empty list. */
+  const includePinned = isArchivedView || !!search.query;
+  const datedConversations = useMemo(
     () =>
       groupConversations(filteredConversations, {
         field: sort.field,
         direction: sort.direction,
+        includePinned,
+      }),
+    [filteredConversations, includePinned, sort.direction, sort.field],
+  );
+  /** The archive keeps its server order, while search still promotes active matches. */
+  const groupedConversations = useMemo(
+    () =>
+      groupConversationsWithRunning(datedConversations, activeJobIds, {
+        field: sort.field,
+        direction: sort.direction,
         includePinned: isArchivedView,
       }),
-    [filteredConversations, isArchivedView, sort.direction, sort.field],
+    [datedConversations, activeJobIds, isArchivedView, sort.direction, sort.field],
   );
 
-  /* Pins are stripped from the date groups. An all-pin page leaves the
-     virtual list with no rows, so onRowsRendered never fires and later
+  /* Outside search, pins are stripped from the date groups. An all-pin page leaves
+     the virtual list with no rows, so onRowsRendered never fires and later
      unpinned chats stay unreachable. Ask for another page only when the
      conversations input actually changes; a failed fetchNextPage leaves
      the same array and must not loop. */
@@ -440,11 +484,26 @@ const Conversations: FC<ConversationsProps> = ({
 
   const handleRowsRendered = useCallback(
     ({ stopIndex }: { stopIndex: number }) => {
+      /** Reaching the end of what is rendered only means the reader is near the
+       *  end of the list when the reader can see it. A list still below the
+       *  fold renders its first row to keep a height, and on a page whose chats
+       *  are nearly all pinned that row is already within the threshold — which
+       *  would spend another request on chats nobody has looked at. The list
+       *  fills the moment it comes into view instead; a page holding no chats
+       *  at all is drained by the separate all-pin effect above.
+       *
+       *  Asked here rather than read from the last frame: a commit that swaps
+       *  what the sidebar holds — leaving a search restores the sections and
+       *  the unfiltered page together — reports its rows before any observer
+       *  has seen the new layout. */
+      if (!isListOnScreen()) {
+        return;
+      }
       if (stopIndex >= flattenedItems.length - 8) {
         throttledLoadMore();
       }
     },
-    [flattenedItems.length, throttledLoadMore],
+    [flattenedItems.length, throttledLoadMore, isListOnScreen],
   );
   const isListError =
     isChatsExpanded &&
@@ -477,11 +536,13 @@ const Conversations: FC<ConversationsProps> = ({
   }
 
   let body: ReactNode = (
-    <div ref={listContainerRef} className="min-h-0 flex-1 overflow-hidden">
+    <div ref={setListNode} className="flex-1">
       <List
         ref={containerRef}
+        autoHeight
         width={listWidth}
-        height={listHeight}
+        height={windowHeight}
+        scrollTop={windowScrollTop}
         deferredMeasurementCache={cache}
         rowCount={flattenedItems.length}
         rowHeight={getRowHeight}
@@ -546,7 +607,7 @@ const Conversations: FC<ConversationsProps> = ({
   return (
     <div
       ref={chatsRegionRef}
-      className="relative flex h-full min-h-0 flex-col pb-2 text-sm text-text-primary"
+      className="relative flex flex-1 flex-col pb-2 text-sm text-text-primary"
     >
       <div className="px-3">
         <ChatsHeader

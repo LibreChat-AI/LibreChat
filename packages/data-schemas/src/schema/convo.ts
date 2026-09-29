@@ -41,6 +41,7 @@ const convoSchema: Schema<IConversation> = new Schema(
       default: false,
     },
     ...conversationPreset,
+    codeEnvironmentRevision: { type: Number, select: false },
     agent_id: {
       type: String,
     },
@@ -141,6 +142,7 @@ const convoSchema: Schema<IConversation> = new Schema(
               maxlength: MAX_AGENT_EVENT_ACTOR_SUMMARY_LENGTH,
             },
             tokenCount: { type: Number, min: 0, required: true },
+            version: { type: Number, min: 1 },
           },
           _id: false,
           default: undefined,

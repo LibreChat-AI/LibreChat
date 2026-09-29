@@ -7,6 +7,7 @@ import type { RunFileSessionDeps } from './session';
 import type { ServerRequest } from '~/types';
 import { createRunFileSession, getAuthorizedRunFileSnapshot } from './session';
 import { AgentAttachmentLimitError } from '../attachments';
+import { resolveTurnDeliveryRouting } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
 
 function setup(
@@ -219,6 +220,10 @@ it.each([{ totalSizeLimit: 1 }, { fileLimit: 1 }])(
       getAgent: (id) => ({
         provider: 'openAI',
         agentContextAttachments: id === 'writer' ? writerAttachments : [],
+        deliveryRouting: resolveTurnDeliveryRouting({
+          agent: { provider: 'openAI' },
+          config: { fileConfig },
+        }),
       }),
       encodeDocuments,
       encodeImages: async () => ({ image_urls: [] }),

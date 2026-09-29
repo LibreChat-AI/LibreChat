@@ -133,3 +133,8 @@ export function isAbortError(error: unknown): boolean {
 
   return false;
 }
+
+/** Whether an error represents cancellation by this specific owning signal. */
+export function isOwnedAbortError(error: unknown, signal?: AbortSignal | null): boolean {
+  return signal?.aborted === true && (isAbortError(error) || error === signal.reason);
+}

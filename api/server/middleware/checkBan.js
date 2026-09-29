@@ -88,7 +88,7 @@ const checkBan = async (req, res, next = () => {}) => {
     }
 
     req.ip = removePorts(req);
-    let userId = req.user?.id ?? req.user?._id ?? null;
+    let userId = req.user?.id ?? req.user?._id?.toString() ?? null;
 
     if (!userId && req?.body?.email) {
       const user = await findUser({ email: req.body.email }, '_id');

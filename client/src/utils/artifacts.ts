@@ -14,6 +14,7 @@ import type {
 } from '@codesandbox/sandpack-react';
 import type { TStartupConfig, TAttachment, TFile } from 'librechat-data-provider';
 import type { PhrasingContent } from 'mdast';
+import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { Artifact } from '~/common';
 import { MERMAID_ARTIFACT_TYPE } from '~/common/artifacts';
 import { getCodeBlockFilename } from './downloadFile';
@@ -30,6 +31,11 @@ const artifactFilename = {
   'application/vnd.librechat.docx-preview': 'index.html',
   'application/vnd.librechat.spreadsheet-preview': 'index.html',
   'application/vnd.librechat.presentation-preview': 'index.html',
+  /* SVG artifacts are a bare `<svg>` document. The Sandpack `static`
+   * template always loads `index.html`, so `getSvgFiles` ships a
+   * companion HTML shell; the editor/download file stays `index.svg`. */
+  'image/svg+xml': 'index.svg',
+  'image/svg': 'index.svg',
   // mermaid and markdown types are handled separately in useArtifactProps.ts
   default: 'index.html',
   // 'css': 'css',
@@ -67,6 +73,8 @@ const artifactTemplate: Record<
   'application/vnd.librechat.docx-preview': 'static',
   'application/vnd.librechat.spreadsheet-preview': 'static',
   'application/vnd.librechat.presentation-preview': 'static',
+  'image/svg+xml': 'static',
+  'image/svg': 'static',
   default: 'static',
   // 'css': 'css',
   // 'javascript': 'js',
@@ -170,7 +178,11 @@ export function getArtifactDownloadFilename(
     filename = hasSourceFilename || hasMatchingExtension ? title : `${title}${extension}`;
   }
   filename = filenamify(filename, { replacement: '_' });
-  /* File-backed blobs export cached preview content, not the original file. */
+  /* A file-backed artifact's blob is the cached extraction (or an edit of
+   * it), never the stored file: `extractUtf8` truncates past 512 KB, so
+   * handing these bytes over under the original name would claim to be
+   * the file. Mermaid is no exception — a share that dropped the download
+   * route leaves only that same cached text. */
   if (artifact.download) {
     const dot = filename.lastIndexOf('.');
     filename =
@@ -182,6 +194,47 @@ export function getArtifactDownloadFilename(
 export function getTemplate(type: string, language?: string): SandpackPredefinedTemplate {
   const key = getKey(type, language);
   return artifactTemplate[key] ?? (artifactTemplate.default as SandpackPredefinedTemplate);
+}
+
+/** `image/svg` is the alias some callers emit for `image/svg+xml`. */
+export function isSvgArtifactType(type: string): boolean {
+  return type === 'image/svg+xml' || type === 'image/svg';
+}
+
+/**
+ * Files for an `image/svg+xml` (or `image/svg`) artifact. The Sandpack
+ * `static` template always loads `index.html`; a bare SVG in that slot
+ * renders blank. Keep the source on `index.svg` for the code tab and wrap
+ * a copy in a full-viewport HTML shell for the preview. viewBox-only
+ * sources fill the panel via `body > svg { width/height: 100% }`, scoped to
+ * the root because CSS beats presentation attributes: an unscoped `svg` rule
+ * would stretch a nested `<svg>` viewport, such as a sprite or inset diagram,
+ * over its own `width`/`height` and corrupt the artifact's internal layout.
+ *
+ * The shell holds a *copy* of the source, so an edit cannot be applied by
+ * replacing `index.svg` alone — both entries have to be rebuilt from the
+ * new text. `useArtifactProps` exposes this builder as `deriveFiles` for
+ * exactly that.
+ */
+export function getSvgFiles(content: string): Record<string, string> {
+  const svg = content.replace(/^\uFEFF?\s*<\?xml\b[^?]*\?>\s*/i, '');
+  return {
+    'index.svg': content,
+    'index.html': `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+html,body{margin:0;height:100%;overflow:hidden}
+body>svg{display:block;width:100%;height:100%}
+</style>
+</head>
+<body>
+${svg}
+</body>
+</html>`,
+  };
 }
 
 const standardDependencies = {
@@ -260,6 +313,9 @@ const dependenciesMap: Record<
   'application/vnd.librechat.docx-preview': {},
   'application/vnd.librechat.spreadsheet-preview': {},
   'application/vnd.librechat.presentation-preview': {},
+  /* SVG preview is a static HTML shell + the source file; no npm deps. */
+  'image/svg+xml': {},
+  'image/svg': {},
   default: standardDependencies,
 };
 
@@ -446,6 +502,168 @@ export function isPreviewOnlyArtifact(type: string | null | undefined): boolean 
  */
 export function isCodeOnlyArtifact(type: string | null | undefined): boolean {
   return type === TOOL_ARTIFACT_TYPES.CODE;
+}
+
+/**
+ * Glyph buckets an artifact row falls back to when the file type has no
+ * brand icon in `LANG_ICON_PATHS` (React, the office previews, mermaid,
+ * and every code language without a logo).
+ */
+export type ArtifactGlyph =
+  | 'preview'
+  | 'code'
+  | 'text'
+  | 'diagram'
+  | 'document'
+  | 'spreadsheet'
+  | 'presentation';
+
+/**
+ * How a chat row presents one artifact.
+ *
+ * `rendersPreview` is the distinction the row exists to carry: an HTML,
+ * React, markdown or office artifact opens as something to *look at*,
+ * while a `.py` or `.sql` artifact opens as source to *read*. The panel
+ * already knows the difference (`isCodeOnlyArtifact` hides its preview
+ * tab); before this, the chat trigger showed both as the same `<>` chip.
+ */
+export interface ArtifactRowKind {
+  /** `LangIcon` hint; `''` when no brand glyph applies. */
+  lang: string;
+  /**
+   * Format name shown beside the title. A translation key for named
+   * formats; a raw language identifier (`python`, `hcl`) for the CODE
+   * bucket, which follows `CodeWindowHeader` in printing the hint
+   * verbatim rather than inventing a localized name per language.
+   */
+  label: { key: ArtifactFormatKey } | { text: string };
+  /** Opening this artifact yields a rendered view, not source. */
+  rendersPreview: boolean;
+  fallbackGlyph: ArtifactGlyph;
+}
+
+type ArtifactFormatKey = Extract<
+  TranslationKeys,
+  | 'com_ui_artifact_format_html'
+  | 'com_ui_artifact_format_react'
+  | 'com_ui_artifact_format_markdown'
+  | 'com_ui_artifact_format_text'
+  | 'com_ui_artifact_format_diagram'
+  | 'com_ui_artifact_format_document'
+  | 'com_ui_artifact_format_spreadsheet'
+  | 'com_ui_artifact_format_presentation'
+  | 'com_ui_code'
+  | 'com_ui_preview'
+>;
+
+/**
+ * Legacy and model-authored spellings of the canonical buckets. The
+ * markdown `:::artifact` path takes its type straight from the authored
+ * attribute, so these arrive alongside the values in
+ * `TOOL_ARTIFACT_TYPES`; `artifactTemplate` carries the same aliases.
+ */
+const ARTIFACT_TYPE_ALIASES: Record<string, string> = {
+  'application/vnd.ant.react': TOOL_ARTIFACT_TYPES.REACT,
+  'application/vnd.code-html': TOOL_ARTIFACT_TYPES.HTML,
+  'text/md': TOOL_ARTIFACT_TYPES.MARKDOWN,
+};
+
+const ARTIFACT_ROW_KINDS: Record<string, ArtifactRowKind> = {
+  [TOOL_ARTIFACT_TYPES.HTML]: {
+    lang: 'html',
+    label: { key: 'com_ui_artifact_format_html' },
+    rendersPreview: true,
+    fallbackGlyph: 'preview',
+  },
+  [TOOL_ARTIFACT_TYPES.REACT]: {
+    lang: '',
+    label: { key: 'com_ui_artifact_format_react' },
+    rendersPreview: true,
+    fallbackGlyph: 'preview',
+  },
+  [TOOL_ARTIFACT_TYPES.MARKDOWN]: {
+    lang: 'markdown',
+    label: { key: 'com_ui_artifact_format_markdown' },
+    rendersPreview: true,
+    fallbackGlyph: 'text',
+  },
+  [TOOL_ARTIFACT_TYPES.MERMAID]: {
+    lang: '',
+    label: { key: 'com_ui_artifact_format_diagram' },
+    rendersPreview: true,
+    fallbackGlyph: 'diagram',
+  },
+  [TOOL_ARTIFACT_TYPES.DOCX]: {
+    lang: '',
+    label: { key: 'com_ui_artifact_format_document' },
+    rendersPreview: true,
+    fallbackGlyph: 'document',
+  },
+  [TOOL_ARTIFACT_TYPES.SPREADSHEET]: {
+    lang: '',
+    label: { key: 'com_ui_artifact_format_spreadsheet' },
+    rendersPreview: true,
+    fallbackGlyph: 'spreadsheet',
+  },
+  [TOOL_ARTIFACT_TYPES.PRESENTATION]: {
+    lang: '',
+    label: { key: 'com_ui_artifact_format_presentation' },
+    rendersPreview: true,
+    fallbackGlyph: 'presentation',
+  },
+  [TOOL_ARTIFACT_TYPES.PLAIN_TEXT]: {
+    lang: '',
+    label: { key: 'com_ui_artifact_format_text' },
+    /* `useArtifactProps` routes plain text through `getMarkdownFiles` and
+     * `isCodeOnlyArtifact` covers only CODE, so the panel opens a `.txt`
+     * on its rendered preview tab — the row must say so. */
+    rendersPreview: true,
+    fallbackGlyph: 'text',
+  },
+};
+
+/**
+ * Resolve the glyph, format name and preview/source split for one
+ * artifact row. Takes the fields rather than the whole `Artifact` so
+ * both the file-backed path (where `title` is the on-disk filename) and
+ * the markdown path (where it is authored prose) can call it.
+ */
+export function artifactRowKind({
+  type,
+  language,
+  title,
+}: {
+  type?: string | null;
+  language?: string | null;
+  title?: string | null;
+}): ArtifactRowKind {
+  const resolvedType = (type != null && lookupOwn(ARTIFACT_TYPE_ALIASES, type)) || type;
+  if (resolvedType != null) {
+    const known = lookupOwn(ARTIFACT_ROW_KINDS, resolvedType);
+    if (known != null) {
+      return known;
+    }
+  }
+  /* `language` is written at construction for the CODE bucket, but the
+   * markdown path never sets it, so fall back to the title the way the
+   * panel's fence hint does. */
+  const lang = language || languageForFilename(title ?? undefined);
+  if (resolvedType === TOOL_ARTIFACT_TYPES.CODE) {
+    return {
+      lang,
+      label: lang ? { text: lang } : { key: 'com_ui_code' },
+      rendersPreview: false,
+      fallbackGlyph: 'code',
+    };
+  }
+  /* Unknown types ride `artifactTemplate.default` — a `static` Sandpack
+   * template — so the panel renders them. */
+  return {
+    lang,
+    label: lang ? { text: lang } : { key: 'com_ui_preview' },
+    rendersPreview: true,
+    fallbackGlyph: 'preview',
+  };
 }
 
 /**

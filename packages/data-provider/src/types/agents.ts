@@ -1,8 +1,20 @@
 /* eslint-disable @typescript-eslint/no-namespace */
+import { z } from 'zod';
+import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
-import type { TAttachment, TPlugin } from 'src/schemas';
-import type { SummaryContentPart } from './assistants';
+import type { FunctionTool, ToolResources, AgentToolOptions } from './tools';
+import type { StatefulCodeEnvironment } from '../stateful-code';
+import type { SummaryContentPart } from './content';
+import type { TFile } from './files';
 import { StepTypes, ContentTypes, ToolCallTypes } from './runs';
+import { ArtifactModes } from 'src/artifacts';
+import { EToolResources } from './tools';
+export {
+  STATEFUL_CODE_ENVIRONMENTS,
+  resolveStatefulCodeEnvironment,
+  resolveAllowedStatefulCodeEnvironments,
+} from '../stateful-code';
+export type { StatefulCodeEnvironment } from '../stateful-code';
 
 export namespace Agents {
   export type MessageType = 'human' | 'ai' | 'generic' | 'system' | 'function' | 'tool' | 'remove';
@@ -834,4 +846,319 @@ export type GraphEdge = {
    * Only applies when prompt is provided for handoff edges.
    */
   promptKey?: string;
+};
+
+/* Agent types */
+
+export type AgentAvatar = {
+  filepath: string;
+  source: string;
+};
+
+export type AgentParameterValue = number | string | null;
+
+export type AgentModelParameters = {
+  model?: string;
+  temperature: AgentParameterValue;
+  maxContextTokens: AgentParameterValue;
+  max_context_tokens: AgentParameterValue;
+  max_output_tokens: AgentParameterValue;
+  top_p: AgentParameterValue;
+  frequency_penalty: AgentParameterValue;
+  presence_penalty: AgentParameterValue;
+  useResponsesApi?: boolean;
+  web_search?: boolean;
+};
+
+export interface AgentBaseResource {
+  /**
+   * A list of file IDs made available to the tool.
+   */
+  file_ids?: Array<string>;
+  /**
+   * A list of files already fetched.
+   */
+  files?: Array<TFile>;
+}
+
+export interface AgentToolResources {
+  [EToolResources.image_edit]?: AgentBaseResource;
+  [EToolResources.execute_code]?: ExecuteCodeResource;
+  [EToolResources.file_search]?: AgentFileResource;
+  [EToolResources.context]?: AgentBaseResource;
+  /** @deprecated Use context instead */
+  [EToolResources.ocr]?: AgentBaseResource;
+}
+/**
+ * A resource for the execute_code tool.
+ * Contains file IDs made available to the tool (max 20 files) and already fetched files.
+ */
+export type ExecuteCodeResource = AgentBaseResource;
+
+export interface AgentFileResource extends AgentBaseResource {
+  /**
+   * The ID of the vector store attached to this agent. There
+   * can be a maximum of 1 vector store attached to the agent.
+   */
+  vector_store_ids?: Array<string>;
+}
+export type SupportContact = {
+  name?: string;
+  email?: string;
+};
+
+export type AgentOwnerContact = {
+  name?: string;
+};
+
+/**
+ * Configuration for spawning subagents (isolated-context child agents) from an agent.
+ * When `enabled` is true, the agent gets a subagent-spawn tool that can delegate work
+ * to itself, listed single-agent targets, and/or explicit saved-agent teams.
+ */
+export type AgentSubagentGraphEdge = Omit<
+  GraphEdge,
+  'edgeType' | 'condition' | 'prompt' | 'promptKey'
+> & {
+  edgeType: 'direct';
+  condition?: never;
+  prompt?: string;
+  promptKey?: never;
+};
+
+/** A bounded saved-agent team that can be spawned as one isolated child graph. */
+export type AgentSubagentGraph = {
+  /** Stable spawn-tool enum value for the team. */
+  type: string;
+  name: string;
+  description: string;
+  /** Member IDs. In create/update payloads, an empty ID refers to the current agent. */
+  agent_ids: string[];
+  edges: AgentSubagentGraphEdge[];
+  /** Entry member ID. In create/update payloads, an empty ID refers to the current agent. */
+  entry_agent_id: string;
+  /** Result member ID. In create/update payloads, an empty ID refers to the current agent. */
+  result_agent_id: string;
+};
+
+export type AgentSubagentsConfig = {
+  enabled?: boolean;
+  /** When true (default), the agent may spawn itself in an isolated context. */
+  allowSelf?: boolean;
+  /** Share current-turn files with authorized descendants. Off unless explicitly enabled. */
+  shareFiles?: boolean;
+  /** Specific agents that may be spawned as subagents. */
+  agent_ids?: string[];
+  /** Explicit saved-agent teams that may be spawned as bounded child graphs. */
+  graphs?: AgentSubagentGraph[];
+};
+
+export type AgentGitIdentity = {
+  /** Commit author and committer display name. */
+  name: string;
+  /** Commit author and committer email address. */
+  email: string;
+};
+
+// GitHub App bot noreply addresses contain `[bot]`, which Zod's email validator rejects.
+const githubAppBotEmail =
+  /^\d+\+[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
+const standardGitEmail = z.string().email();
+
+export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .refine((value) => !/[\0\r\n]/.test(value)),
+    email: z
+      .string()
+      .trim()
+      .max(254)
+      .refine(
+        (value) =>
+          !/[\0\r\n]/.test(value) &&
+          (standardGitEmail.safeParse(value).success || githubAppBotEmail.test(value)),
+      ),
+  })
+  .optional();
+
+export type Agent = {
+  _id?: string;
+  id: string;
+  name: string | null;
+  author?: string | null;
+  /** The original custom endpoint name, lowercased */
+  endpoint?: string | null;
+  authorName?: string | null;
+  description: string | null;
+  created_at: number;
+  avatar: AgentAvatar | null;
+  instructions?: string | null;
+  additional_instructions?: string | null;
+  tools?: string[];
+  tool_kwargs?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  provider: AgentProvider;
+  model: string | null;
+  model_parameters: AgentModelParameters;
+  conversation_starters?: string[];
+  tool_resources?: AgentToolResources;
+  /** @deprecated Use edges instead */
+  agent_ids?: string[];
+  edges?: GraphEdge[];
+  end_after_tools?: boolean;
+  hide_sequential_outputs?: boolean;
+  /** Per-agent opt-in for stateful code sessions (requires the app-level capability). */
+  stateful_code_sessions?: boolean;
+  /** Stateful workspace sharing scope. Defaults to one workspace per user. */
+  stateful_code_environment?: StatefulCodeEnvironment;
+  /** Operator-configured managed or attached stateful execution environment. */
+  code_environment_id?: string | null;
+  /** Default attached workspace for new chats; empty means no agent default. */
+  code_workspace_id?: string;
+  repositoryInstructions?: 'prefer' | 'defer' | 'off';
+  /** Non-secret Git authorship injected into this agent's sandboxed commands. */
+  git_identity?: AgentGitIdentity | null;
+  artifacts?: ArtifactModes;
+  recursion_limit?: number;
+  isPublic?: boolean;
+  /**
+   * Whether the requesting user holds EDIT on this agent, so a single VIEW-scoped fetch can
+   * serve consumers that only need the editable subset instead of issuing a second full
+   * paginated walk under an EDIT-scoped cache key.
+   *
+   * Set by the list endpoint only; single-agent responses omit it. Treat absence as unknown
+   * and fail open (`isEditable !== false`), never as `false`, since a client on an older
+   * server would otherwise see an empty list rather than too many rows.
+   *
+   * Reflects the caller's ACL grant. The `MANAGE_AGENTS` capability bypasses ACL on write,
+   * so a capability holder can edit agents this flag reports as not editable.
+   */
+  isEditable?: boolean;
+  version?: number;
+  category?: string;
+  support_contact?: SupportContact;
+  owner_contact?: AgentOwnerContact;
+  /** Per-tool configuration options (deferred loading, allowed callers, etc.) */
+  tool_options?: AgentToolOptions;
+  /** Attached action registrations, each `${encodedDomain}${actionDelimiter}${action_id}` */
+  actions?: string[];
+  /** Optional allowlist of skill ObjectIds. Only applies when `skills_enabled`. */
+  skills?: string[];
+  /** Master toggle for skill use on this agent. `true` = active (full catalog unless
+   *  `skills` narrows it). `false`/undefined = inactive (no skills available). */
+  skills_enabled?: boolean;
+  /** Enables runtime skill creation without exposing an existing skill catalog. */
+  skill_authoring_enabled?: boolean;
+  /** Explicit catalog exposure while skills are enabled. Missing preserves legacy semantics. */
+  skills_scope?: SkillsScope;
+  /** Subagent spawning configuration — isolated-context child agents. */
+  subagents?: AgentSubagentsConfig;
+  /** Memory partition: `agent` isolates memories per (user, agent); default shared pool */
+  memory_scope?: MemoryScope;
+};
+
+export type TAgentsMap = Record<string, Agent | undefined>;
+
+export type AgentCreateParams = {
+  git_identity?: AgentGitIdentity;
+  name?: string | null;
+  description?: string | null;
+  avatar?: AgentAvatar | null;
+  file_ids?: string[];
+  instructions?: string | null;
+  tools?: Array<FunctionTool | string>;
+  provider: AgentProvider;
+  model: string | null;
+  model_parameters: AgentModelParameters;
+} & Pick<
+  Agent,
+  | 'agent_ids'
+  | 'edges'
+  | 'end_after_tools'
+  | 'hide_sequential_outputs'
+  | 'stateful_code_sessions'
+  | 'stateful_code_environment'
+  | 'code_environment_id'
+  | 'code_workspace_id'
+  | 'repositoryInstructions'
+  | 'artifacts'
+  | 'recursion_limit'
+  | 'category'
+  | 'support_contact'
+  | 'tool_options'
+  | 'skills'
+  | 'skills_enabled'
+  | 'skill_authoring_enabled'
+  | 'skills_scope'
+  | 'subagents'
+  | 'memory_scope'
+>;
+
+export type AgentUpdateParams = {
+  name?: string | null;
+  description?: string | null;
+  avatar?: AgentAvatar | null;
+  file_ids?: string[];
+  instructions?: string | null;
+  tools?: Array<FunctionTool | string>;
+  tool_resources?: ToolResources;
+  provider?: AgentProvider;
+  model?: string | null;
+  model_parameters?: AgentModelParameters;
+} & Pick<
+  Agent,
+  | 'agent_ids'
+  | 'edges'
+  | 'end_after_tools'
+  | 'hide_sequential_outputs'
+  | 'stateful_code_sessions'
+  | 'stateful_code_environment'
+  | 'code_environment_id'
+  | 'git_identity'
+  | 'code_workspace_id'
+  | 'repositoryInstructions'
+  | 'artifacts'
+  | 'recursion_limit'
+  | 'category'
+  | 'support_contact'
+  | 'tool_options'
+  | 'skills'
+  | 'skills_enabled'
+  | 'skill_authoring_enabled'
+  | 'skills_scope'
+  | 'subagents'
+  | 'memory_scope'
+>;
+
+export type AgentListParams = {
+  limit?: number;
+  requiredPermission: number;
+  category?: string;
+  search?: string;
+  cursor?: string;
+  promoted?: 0 | 1;
+};
+
+export type AgentListResponse = {
+  object: string;
+  data: Agent[];
+  first_id: string;
+  last_id: string;
+  has_more: boolean;
+  after?: string;
+};
+
+export type AgentFile = {
+  file_id: string;
+  id?: string;
+  temp_file_id?: string;
+  bytes: number;
+  created_at: number;
+  filename: string;
+  object: string;
+  purpose: 'fine-tune' | 'fine-tune-results' | 'agents' | 'agents_output';
 };

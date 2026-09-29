@@ -1759,6 +1759,41 @@ describe('MCPOAuthHandler - Configurable OAuth Metadata', () => {
       );
     });
 
+    it('normalizes a zero exchange lifetime before persistence', async () => {
+      const flowManager = {
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: 123,
+          metadata: {
+            serverName: 'test-server',
+            codeVerifier: 'verifier',
+            clientInfo: {},
+            metadata: {},
+          },
+        }),
+        completeFlowIfCurrent: jest.fn().mockResolvedValue('updated'),
+      } as unknown as FlowStateManager<MCPOAuthTokens>;
+      mockExchangeAuthorization.mockResolvedValue({
+        access_token: 'expired-token',
+        token_type: 'Bearer',
+        expires_in: 0,
+      });
+      const persist = jest.fn(async (tokens: MCPOAuthTokens) => tokens);
+      const result = await MCPOAuthHandler.completeOAuthFlow(
+        'flow',
+        'code',
+        flowManager,
+        {},
+        persist,
+      );
+      expect(result.expires_at).toEqual(expect.any(Number));
+      expect(result.expires_at).toBeLessThanOrEqual(Date.now());
+      expect(persist).toHaveBeenCalledWith(
+        expect.objectContaining({ expires_in: 0, expires_at: result.expires_at }),
+        expect.any(Function),
+      );
+    });
+
     it('persists exchanged tokens before completing and waking the OAuth flow', async () => {
       const mockFlowManager = {
         getFlowState: jest.fn().mockResolvedValue({
@@ -3214,6 +3249,112 @@ describe('MCPOAuthHandler - Configurable OAuth Metadata', () => {
         123,
         'abc',
         expect.any(Error),
+      );
+    });
+
+    /**
+     * The `authorization_code` exchange must carry the same parameters as the
+     * `/authorize` request that produced the code, so the decision travels on flow
+     * metadata rather than being re-read from live config. Validation is unaffected:
+     * `assertResourceBoundToServer` runs on both paths before the exchange.
+     */
+    const exchangeFlowState = (sendResourceParameter?: boolean): FlowStateManager<MCPOAuthTokens> =>
+      ({
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: 123,
+          metadata: {
+            serverName: 'entra-server',
+            userId: 'user-123',
+            serverUrl: 'https://example.com/mcp',
+            state: 'abc',
+            codeVerifier: 'verifier',
+            clientInfo: { client_id: 'cid' },
+            metadata: {
+              authorization_endpoint: 'https://login.microsoftonline.test/authorize',
+              token_endpoint: 'https://login.microsoftonline.test/token',
+            },
+            resourceMetadata: { resource: 'https://example.com/mcp' },
+            ...(sendResourceParameter !== undefined && { sendResourceParameter }),
+          } as MCPOAuthFlowMetadata,
+        }),
+        completeFlowIfCurrent: jest.fn().mockResolvedValue('updated'),
+      }) as unknown as FlowStateManager<MCPOAuthTokens>;
+
+    it('omits resource at token exchange when the flow opted out of the parameter', async () => {
+      mockExchangeAuthorization.mockResolvedValue({
+        access_token: 'access-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      });
+
+      await MCPOAuthHandler.completeOAuthFlow('flow-id', 'auth-code', exchangeFlowState(false), {});
+
+      expect(mockExchangeAuthorization).toHaveBeenCalledTimes(1);
+      expect(mockExchangeAuthorization.mock.calls[0][1].resource).toBeUndefined();
+    });
+
+    it('strips an inherited resource from the token endpoint at exchange when opted out', async () => {
+      // The SDK builds the token request from `token_endpoint` verbatim, so a `resource`
+      // left in the configured `token_url` would survive the opt-out.
+      mockExchangeAuthorization.mockResolvedValue({
+        access_token: 'access-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      });
+      const flowManager = {
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: 123,
+          metadata: {
+            serverName: 'entra-server',
+            userId: 'user-123',
+            serverUrl: 'https://example.com/mcp',
+            state: 'abc',
+            codeVerifier: 'verifier',
+            clientInfo: { client_id: 'cid' },
+            metadata: {
+              authorization_endpoint: 'https://login.microsoftonline.test/authorize',
+              token_endpoint:
+                'https://login.microsoftonline.test/token?resource=https%3A%2F%2Fstale.example.test%2Fmcp&foo=bar',
+            },
+            resourceMetadata: { resource: 'https://example.com/mcp' },
+            sendResourceParameter: false,
+          } as MCPOAuthFlowMetadata,
+        }),
+        completeFlowIfCurrent: jest.fn().mockResolvedValue('updated'),
+      } as unknown as FlowStateManager<MCPOAuthTokens>;
+
+      await MCPOAuthHandler.completeOAuthFlow('flow-id', 'auth-code', flowManager, {});
+
+      const exchangedTokenEndpoint = mockExchangeAuthorization.mock.calls[0][1].metadata
+        ?.token_endpoint as string | undefined;
+      expect(exchangedTokenEndpoint).toBeDefined();
+      const tokenEndpoint = new URL(exchangedTokenEndpoint as string);
+      expect(tokenEndpoint.searchParams.has('resource')).toBe(false);
+      expect(tokenEndpoint.searchParams.get('foo')).toBe('bar');
+      expect(mockExchangeAuthorization.mock.calls[0][1].resource).toBeUndefined();
+    });
+
+    it('sends resource at token exchange for flows initiated before the opt-out existed', async () => {
+      // Mixed-version upgrade: flow state has a bounded TTL, so a flow started under
+      // older code carries no flag and must keep the previous behavior.
+      mockExchangeAuthorization.mockResolvedValue({
+        access_token: 'access-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      });
+
+      await MCPOAuthHandler.completeOAuthFlow(
+        'flow-id',
+        'auth-code',
+        exchangeFlowState(undefined),
+        {},
+      );
+
+      expect(mockExchangeAuthorization).toHaveBeenCalledTimes(1);
+      expect(mockExchangeAuthorization.mock.calls[0][1].resource?.href).toBe(
+        'https://example.com/mcp',
       );
     });
 

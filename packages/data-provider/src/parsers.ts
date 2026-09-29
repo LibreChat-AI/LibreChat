@@ -2,7 +2,7 @@ import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc.js';
 import timezonePlugin from 'dayjs/plugin/timezone.js';
 import type { ZodIssue } from 'zod';
-import type * as a from './types/assistants';
+import type * as a from './types/content';
 import type * as s from './schemas';
 import type * as t from './types';
 import {

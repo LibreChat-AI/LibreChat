@@ -69,13 +69,8 @@ jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn(),
   loadToolsForExecution: (...args) => mockLoadToolsForExecution(...args),
   getAccessibleMcpServerNames: (...args) => mockGetAccessibleMcpServerNames(...args),
-  isFatalAgentInitializationError: (error) =>
-    [
-      'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
-      'resource_recovery_required',
-      'stateful_code_environment_not_allowed',
-      'code_workspace_unavailable',
-    ].includes(error?.code),
+  isFatalAgentInitializationError:
+    jest.requireActual('@librechat/api').isFatalAgentInitializationError,
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
@@ -98,7 +93,7 @@ jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
 
-const { initializeClient } = require('./initialize');
+const { createInitializeClient, initializeClient } = require('./initialize');
 const { processAddedConvo } = require('./addedConvo');
 const { getSkillDbMethods, getSkillToolDeps } = require('./skillDeps');
 const { loadAgentTools } = require('~/server/services/ToolService');
@@ -182,6 +177,79 @@ describe('initializeClient — processAgent ACL gate', () => {
     },
   });
 
+  it.each([false, true])('defers host credential resolution with restored=%s', async (restored) => {
+    const upstreamTokenProvider = jest.fn();
+    const resolveUpstreamTokenProvider = jest.fn().mockResolvedValue(upstreamTokenProvider);
+    const hostInitializeClient = createInitializeClient({ resolveUpstreamTokenProvider });
+    const req = makeReq();
+    req._isScheduledFire = true;
+    req._isAgentTrigger = !restored;
+    req.body.agent_id = PRIMARY_ID;
+    req.body.agentTrigger = {
+      version: 1,
+      event: {
+        type: 'schedule.occurrence',
+        occurredAt: 0,
+        source: { type: 'schedule', id: 'sched-1' },
+      },
+    };
+    const signal = new AbortController().signal;
+    mockInitializeAgent.mockImplementationOnce(async ({ loadTools, agent }) => {
+      await loadTools({
+        tools: ['run_query_mcp_warehouse'],
+        model: agent.model,
+        agentId: agent.id,
+        provider: agent.provider,
+      });
+      return makePrimaryConfig([]);
+    });
+
+    await hostInitializeClient({
+      req,
+      res: {},
+      signal,
+      scheduledTokenContext: restored
+        ? {
+            scheduleId: 'sched-1',
+            ownerId: req.user.id,
+            agentId: PRIMARY_ID,
+            invocationMode: 'delegated',
+          }
+        : undefined,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(resolveUpstreamTokenProvider).not.toHaveBeenCalled();
+    const toolLoadParams = loadAgentTools.mock.calls[0][0];
+    expect(toolLoadParams.upstreamTokenProvider).toBeUndefined();
+    const resolver = toolLoadParams.upstreamTokenProviderResolver;
+    await expect(resolver({ signal })).resolves.toBe(upstreamTokenProvider);
+    expect(resolveUpstreamTokenProvider).toHaveBeenCalledWith(req.user, {
+      signal,
+      context: {
+        scheduleId: 'sched-1',
+        ownerId: req.user.id,
+        agentId: PRIMARY_ID,
+        invocationMode: 'delegated',
+      },
+    });
+  });
+
+  it('keeps interactive agent initialization independent of the host resolver', async () => {
+    const resolveUpstreamTokenProvider = jest.fn();
+    const hostInitializeClient = createInitializeClient({ resolveUpstreamTokenProvider });
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+
+    await hostInitializeClient({
+      req: makeReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(resolveUpstreamTokenProvider).not.toHaveBeenCalled();
+  });
+
   it('replaces untrusted artifact route metadata with the executing agent context', async () => {
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
 
@@ -236,6 +304,9 @@ describe('initializeClient — processAgent ACL gate', () => {
         jobCreatedAt: 1234,
       }),
     );
+    expect(
+      require('~/server/controllers/agents/callbacks').createBackgroundCodeResultHandler,
+    ).toHaveBeenCalledWith(expect.objectContaining({ jobCreatedAt: 1234 }));
     expect(createToolEndCallback).toHaveBeenCalledWith(
       expect.objectContaining({
         streamId: 'conv_1',
@@ -335,10 +406,11 @@ describe('initializeClient — processAgent ACL gate', () => {
       endpointOption: makeEndpointOption(),
     });
     expect(capturedToolExecuteOptions.ordinaryToolCancellation).toBe(false);
+    expect(capturedToolExecuteOptions.backgroundCompletionResultMaxChars).toBeUndefined();
 
     const enabledReq = makeReq();
     enabledReq.config.endpoints.agents = {
-      backgroundTasks: { ordinaryToolCancellation: true },
+      backgroundTasks: { ordinaryToolCancellation: true, completionResultMaxChars: 4096 },
     };
     await initializeClient({
       req: enabledReq,
@@ -347,6 +419,7 @@ describe('initializeClient — processAgent ACL gate', () => {
       endpointOption: makeEndpointOption(),
     });
     expect(capturedToolExecuteOptions.ordinaryToolCancellation).toBe(true);
+    expect(capturedToolExecuteOptions.backgroundCompletionResultMaxChars).toBe(4096);
   });
 
   it('propagates an expected-MCP-tools failure from the runtime tool loader', async () => {
@@ -354,6 +427,34 @@ describe('initializeClient — processAgent ACL gate', () => {
       code: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
       statusCode: 503,
     });
+    loadAgentTools.mockRejectedValueOnce(toolError);
+    mockInitializeAgent.mockImplementationOnce(async ({ req, res, loadTools, agent }) => {
+      await loadTools({
+        req,
+        res,
+        tools: ['run_query_mcp_warehouse'],
+        model: agent.model,
+        agentId: agent.id,
+        provider: agent.provider,
+      });
+      return makePrimaryConfig([]);
+    });
+
+    await expect(
+      initializeClient({
+        req: makeReq(),
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      }),
+    ).rejects.toBe(toolError);
+  });
+
+  it.each([
+    new (require('@librechat/api').OpenIDReauthRequiredError)('Please sign in again'),
+    new (require('@librechat/api').MCPAuthenticationRejectedError)('private-mcp', false),
+    new (require('@librechat/api').MCPAuthenticationRefreshError)(new Error('Retry later')),
+  ])('preserves credential failure through the runtime agent loader: %s', async (toolError) => {
     loadAgentTools.mockRejectedValueOnce(toolError);
     mockInitializeAgent.mockImplementationOnce(async ({ req, res, loadTools, agent }) => {
       await loadTools({
@@ -1536,17 +1637,19 @@ describe('initializeClient — subagent loading', () => {
   });
 
   it.each([
-    [true, 'request'],
-    [false, 'request'],
-    [true, 'fallback'],
-    [true, 'override'],
-    [true, 'override-resolved'],
-    [true, 'resolved'],
-    [false, 'resolved-null'],
-    [false, 'other-owner'],
+    [true, 'request', false],
+    [false, 'request', false],
+    [true, 'fallback', false],
+    [true, 'override', false],
+    [true, 'override-resolved', false],
+    [true, 'resolved', false],
+    [true, 'moved', true],
+    [false, 'resolved-null', false],
+    [true, 'resolved-null', true],
+    [false, 'other-owner', false],
   ])(
-    'validates the lazy subagent workspace before exposure: registered=%s source=%s',
-    async (registered, source) => {
+    'validates the lazy subagent workspace before exposure: registered=%s source=%s moves=%s',
+    async (registered, source, movesEnabled) => {
       const subAgent = await createAgent({
         id: SUBAGENT_ID,
         name: 'Attached Stateful Subagent',
@@ -1568,6 +1671,7 @@ describe('initializeClient — subagent loading', () => {
       req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
       req.config.endpoints.agents.statefulCodeSessions = {
         allowedEnvironments: ['agent-user'],
+        conversationMoves: { enabled: movesEnabled },
         environments: [
           {
             id: 'attached-vm',
@@ -1593,7 +1697,12 @@ describe('initializeClient — subagent loading', () => {
           codeWorkspaces: req.body.codeWorkspaces,
         });
         delete req.body.codeWorkspaces;
-        if (source === 'resolved') req.resolvedConversation = conversation.toObject();
+        if (source === 'moved') {
+          req.resolvedConversation = {
+            ...conversation.toObject(),
+            codeWorkspaces: [{ environmentId: 'old-machine', workspaceId: 'old-project' }],
+          };
+        } else if (source === 'resolved') req.resolvedConversation = conversation.toObject();
         else if (source !== 'resolved-null') delete req.resolvedConversation;
         if (source.startsWith('override')) {
           conversation.codeWorkspaces = [
@@ -1633,6 +1742,7 @@ describe('initializeClient — subagent loading', () => {
           }),
         ),
       );
+      const readSpy = jest.spyOn(db, 'readAdmittedConvoCodeEnvironmentDecision');
       try {
         const initialization = initializeClient({
           req,
@@ -1641,7 +1751,8 @@ describe('initializeClient — subagent loading', () => {
           signal: new AbortController().signal,
           endpointOption: makeEndpointOption(),
         });
-        const defaultsWithoutAttached = source === 'resolved-null' || source === 'other-owner';
+        const defaultsWithoutAttached =
+          source === 'other-owner' || (source === 'resolved-null' && !movesEnabled);
         if (!registered && !defaultsWithoutAttached) {
           await expect(initialization).rejects.toMatchObject({
             code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
@@ -1650,6 +1761,12 @@ describe('initializeClient — subagent loading', () => {
           return;
         }
         await initialization;
+        if (movesEnabled)
+          expect(readSpy).toHaveBeenCalledWith(
+            req.user.id,
+            requestBody?.conversationId ?? req.body.conversationId,
+          );
+        else expect(readSpy).not.toHaveBeenCalled();
         if (defaultsWithoutAttached) {
           expect(fetchSpy).not.toHaveBeenCalled();
           expect(agentClientArgs.mcpRequestBody).toEqual(
@@ -1680,6 +1797,7 @@ describe('initializeClient — subagent loading', () => {
         }
       } finally {
         fetchSpy.mockRestore();
+        readSpy.mockRestore();
         delete process.env.TEST_LAZY_WORKSPACE_TOKEN;
       }
 

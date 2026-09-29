@@ -100,6 +100,14 @@ for number in "$@"; do
     continue
   fi
 
+  # Canary is an intentional integration target. Keep it untouched even if a caller passes
+  # its number to the sweep or overrides RELEASE_BASE, TARGET_BASE or EXPLAIN_MISSING.
+  if [ "$base_ref" = "canary" ]; then
+    echo "#$number: skipped — canary is an explicit target"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
   if [ "$base_ref" = "$TARGET_BASE" ] && [ "$EXPLAIN_MISSING" = "true" ] && [ "$DRY_RUN" != "true" ]; then
     echo "#$number: already on $TARGET_BASE — posting any missing explanation"
     post_explanation "$number"

@@ -1,6 +1,11 @@
 import getStream from 'get-stream';
 import { Providers } from '@librechat/agents';
-import { FileSources, mergeFileConfig, getEndpointFileConfig } from 'librechat-data-provider';
+import {
+  FileSources,
+  mergeFileConfig,
+  isExplicitMimeConfig,
+  getEndpointFileConfig,
+} from 'librechat-data-provider';
 import type { ServerRequest, StrategyFunctions, ProcessedFile } from '~/types';
 import type { StoredFileRef } from '~/storage/path';
 import { resolveDownloadPath } from '~/storage/path';
@@ -68,6 +73,107 @@ export const getConfiguredFileSizeLimit = (
     endpoint: endpoint ?? provider,
   });
   return endpointConfig?.fileSizeLimit;
+};
+
+/**
+ * Whether the admin explicitly allowed `mimeType` for this endpoint via
+ * `fileConfig.endpoints.<name>.supportedMimeTypes`. The inherited default list does
+ * not count as opting in, mirroring the client's picker and drag-drop logic, so an
+ * OpenAI-compatible endpoint only receives video/audio parts when configured for them.
+ * @param req - The server request object containing config
+ * @param params - Object containing provider and optional endpoint
+ * @param params.provider - The provider to look up
+ * @param params.endpoint - Optional endpoint name for lookup
+ * @param mimeType - The MIME type of the file being attached
+ * @returns True when the endpoint config explicitly matches the MIME type
+ */
+export const isConfiguredProviderMediaType = (
+  req: ServerRequest,
+  params: {
+    provider: Providers;
+    endpoint?: string;
+  },
+  mimeType: string,
+): boolean => {
+  if (!req.config?.fileConfig) {
+    return false;
+  }
+  const { provider, endpoint } = params;
+  const fileConfig = mergeFileConfig(req.config.fileConfig);
+  const endpointConfig = getEndpointFileConfig({
+    fileConfig,
+    endpoint: endpoint ?? provider,
+  });
+  const types = endpointConfig?.supportedMimeTypes;
+  if (!isExplicitMimeConfig(types)) {
+    return false;
+  }
+  return fileConfig.checkType?.(mimeType, types) ?? false;
+};
+
+/**
+ * Maps accepted audio MIME types to the format token OpenAI-compatible providers expect.
+ * Mirrors the canonicalization in `api/server/services/Files/Audio/STTService.js`: the
+ * accepted MIME list carries aliases (`audio/wave`, `audio/x-wav`, `audio/mpeg`) whose
+ * names are not themselves valid format values.
+ */
+const audioMimeToFormat: Record<string, string> = {
+  'audio/mp3': 'mp3',
+  'audio/mpeg': 'mp3',
+  'audio/mpeg3': 'mp3',
+  'audio/wav': 'wav',
+  'audio/wave': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/ogg': 'ogg',
+  'audio/vorbis': 'ogg',
+  'audio/opus': 'ogg',
+  'audio/mp4': 'm4a',
+  'audio/m4a': 'm4a',
+  'audio/x-m4a': 'm4a',
+  'audio/flac': 'flac',
+  'audio/x-flac': 'flac',
+  'audio/webm': 'webm',
+  'audio/aac': 'aac',
+};
+
+/**
+ * Format values OpenAI-compatible providers accept for an `input_audio` part.
+ * Used to validate an extension-derived fallback so an arbitrary filename suffix
+ * never reaches the provider as a format.
+ */
+const supportedAudioFormats = new Set([
+  'wav',
+  'mp3',
+  'aiff',
+  'aac',
+  'ogg',
+  'flac',
+  'm4a',
+  'webm',
+  'pcm16',
+  'pcm24',
+]);
+
+/**
+ * Resolves the `input_audio.format` value for a file.
+ *
+ * Prefers the MIME type, which is validated upstream against `audioMimeTypes`, because
+ * the filename extension is user-controlled: it may be absent (`recording`), an alias
+ * that is not a valid format (`clip.wave`), or disagree with the actual content. Falls
+ * back to the extension only when it is itself a supported format.
+ * @param mimeType - The file's MIME type
+ * @param filename - The original filename
+ * @returns The canonical format, or undefined when neither source yields a supported one
+ */
+export const getAudioFormat = (mimeType: string, filename: string): string | undefined => {
+  const fromMime = audioMimeToFormat[mimeType?.toLowerCase()];
+  if (fromMime) {
+    return fromMime;
+  }
+  const parts = filename?.toLowerCase().split('.') ?? [];
+  /** `parts[0]` must be non-empty so a dotfile (`.mp3`) is not read as an extension. */
+  const extension = parts.length > 1 && parts[0] ? parts[parts.length - 1] : undefined;
+  return extension && supportedAudioFormats.has(extension) ? extension : undefined;
 };
 
 /**

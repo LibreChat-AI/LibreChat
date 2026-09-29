@@ -510,6 +510,8 @@ export type RunEnd = {
   endedAt: number;
   /** Exact terminal epoch whose idle transition may release one queued start. */
   generationCreatedAt?: number;
+  /** The completed run's response, which a revealed queued follow-up parents to. */
+  responseMessageId?: string;
   /** Armed "Interrupt & send" flag traveling with a PARKED signal, so
    *  another run on the same pane can neither consume nor clear it. */
   interruptArmed?: boolean;

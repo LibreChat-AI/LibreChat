@@ -3,7 +3,6 @@ import {
   createMethods,
   getTransactionSupport,
   logger,
-  RoleBits,
   runAfterTransaction,
 } from '@librechat/data-schemas';
 import {
@@ -411,6 +410,7 @@ export class AccessControlService {
     revokedPrincipals = [],
     grantedBy,
     session,
+    maxWriteAttempts,
   }: {
     resourceType: ResourceType;
     resourceId: string | Types.ObjectId;
@@ -418,6 +418,7 @@ export class AccessControlService {
     revokedPrincipals?: BulkPrincipal[];
     grantedBy: string | Types.ObjectId;
     session?: ClientSession;
+    maxWriteAttempts?: number;
   }): Promise<BulkPermissionUpdateResult> {
     const supportsTransactions = await getTransactionSupport(
       this._mongoose,
@@ -459,6 +460,8 @@ export class AccessControlService {
         errors: [],
       };
       const bulkWrites: Parameters<AllMethods['bulkWriteAclEntries']>[0] = [];
+      /** Role-only edits go through the atomic guarded write, not this batch. */
+      const roleBitsWrites: Parameters<AllMethods['replaceRoleBits']>[0] = [];
       const insightsChangesByBulkWriteIndex = new Map<number, InsightsPermissionChange>();
 
       const updatedPrincipalKey = (principal: BulkPrincipal | null | undefined) => {
@@ -572,14 +575,6 @@ export class AccessControlService {
               grantedBy,
               grantedAt,
             },
-            ...(preserveInsights && {
-              $bit: {
-                permBits: {
-                  or: role.permBits & RoleBits.OWNER,
-                  and: ~(RoleBits.OWNER & ~role.permBits),
-                },
-              },
-            }),
             $setOnInsert: {
               principalType: principal.type,
               resourceType,
@@ -591,9 +586,18 @@ export class AccessControlService {
             },
           };
           const bulkWriteIndex = bulkWrites.length;
-          bulkWrites.push({
-            updateMany: { filter: query, update, upsert: true },
-          });
+          if (preserveInsights) {
+            roleBitsWrites.push({
+              filter: query,
+              insert: update.$setOnInsert,
+              roleBits: role.permBits,
+              metadata: update.$set,
+            });
+          } else {
+            bulkWrites.push({
+              updateMany: { filter: query, update, upsert: true },
+            });
+          }
           results.granted.push({
             type: principal.type,
             id: principal.id,
@@ -633,6 +637,13 @@ export class AccessControlService {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+      }
+
+      if (roleBitsWrites.length > 0) {
+        await this._dbMethods.replaceRoleBits(roleBitsWrites, {
+          ...sessionOptions,
+          maxAttempts: maxWriteAttempts,
+        });
       }
 
       if (bulkWrites.length > 0) {

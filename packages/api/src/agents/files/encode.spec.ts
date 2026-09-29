@@ -1,8 +1,9 @@
-import { FileSources, ImageDetail } from 'librechat-data-provider';
+import { FileContext, FileSources, ImageDetail } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { RunFileEncodingAgent, RunFileMessageEncoderDeps } from './encode';
 import type { ServerRequest } from '~/types';
 import { AgentAttachmentLimitError, AgentAttachmentPolicyError } from '../attachments';
+import { resolveTurnDeliveryRouting } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
 
 jest.mock('~/utils/tokenizer', () => ({ countTokens: (text: string) => text.length }));
@@ -28,14 +29,32 @@ const nativeDocument = {
 };
 const nativeImage = { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1n' } };
 
+/** A child as the host loads it, before initialization settles its delivery routing. */
+type LoadedAgent = Omit<RunFileEncodingAgent, 'deliveryRouting'> & {
+  endpoint?: string;
+  useResponsesApi?: boolean;
+};
+
 function setup({
   fileConfig = {},
   agents = { child: { provider: 'openAI' } },
 }: {
   fileConfig?: NonNullable<ServerRequest['config']>['fileConfig'];
-  agents?: Record<string, RunFileEncodingAgent>;
+  agents?: Record<string, LoadedAgent>;
 } = {}) {
   const req = { body: {}, config: { fileConfig } } as ServerRequest;
+  const initialized = Object.fromEntries(
+    Object.entries(agents).map(([id, { endpoint, useResponsesApi, ...agent }]) => [
+      id,
+      {
+        ...agent,
+        deliveryRouting: resolveTurnDeliveryRouting({
+          agent: { provider: agent.provider, endpoint, model_parameters: { useResponsesApi } },
+          config: req.config,
+        }),
+      },
+    ]),
+  );
   const encodeImages = jest.fn(async () => ({ image_urls: [nativeImage] }));
   const encodeDocuments = jest.fn(async () => ({ documents: [nativeDocument] }));
   const encodeAudios = jest.fn(async () => ({ audios: [{ type: 'media', data: 'audio' }] }));
@@ -46,7 +65,7 @@ function setup({
   >(extractFileContext);
   const deps: RunFileMessageEncoderDeps = {
     req,
-    getAgent: (id) => agents[id],
+    getAgent: (id) => initialized[id],
     encodeImages,
     encodeDocuments,
     encodeAudios,
@@ -65,7 +84,7 @@ describe('createRunFileMessageEncoder', () => {
           provider: 'openAI',
           endpoint: 'child-provider',
           model: 'child-model',
-          model_parameters: { useResponsesApi: true },
+          useResponsesApi: true,
           imageDetail: ImageDetail.high,
         },
       },
@@ -136,6 +155,70 @@ describe('createRunFileMessageEncoder', () => {
       expect.objectContaining({ attachments: [{ ...pdf, llmDeliveryPath: 'text' }] }),
     );
     expect(pdf.llmDeliveryPath).toBe('provider');
+  });
+
+  it('delivers stored text only to a child that runs no tool able to read a tool-routed file', async () => {
+    const csv: TFile = {
+      ...pdf,
+      file_id: 'input-csv',
+      filename: 'sales.csv',
+      filepath: '/files/sales.csv',
+      type: 'text/csv',
+      text: 'region,total\nwest,4',
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+    };
+    const harness = setup({
+      agents: {
+        noReader: { provider: 'openAI', fileConsumers: { executeCode: false, fileSearch: false } },
+        runsCode: { provider: 'openAI', fileConsumers: { executeCode: true, fileSearch: false } },
+        searches: { provider: 'openAI', fileConsumers: { executeCode: false, fileSearch: true } },
+        unknown: { provider: 'openAI' },
+      },
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
+            textFallbackWithoutTools: true,
+          },
+        },
+      },
+    });
+
+    /* Run Code uploads the file on its first call, so the child that runs code keeps it off the
+     * prompt whether or not its sandbox holds a copy yet. File search serves only what its
+     * store holds, so the searching child receives the text for a file never embedded. */
+    const sandboxCsv: TFile = {
+      ...csv,
+      metadata: {
+        destinationChosen: false,
+        codeEnvRef: {
+          kind: 'user',
+          id: 'user-1',
+          storage_session_id: 'session-1',
+          file_id: 'sandbox-input-csv',
+        },
+      },
+    };
+
+    const [noReader, runsCode, unprovisioned, searches, unknown] = await Promise.all([
+      harness.encode([csv], 'noReader'),
+      harness.encode([sandboxCsv], 'runsCode'),
+      harness.encode([csv], 'runsCode'),
+      harness.encode([csv], 'searches'),
+      harness.encode([csv], 'unknown'),
+    ]);
+
+    expect(JSON.stringify(noReader[0].content)).toContain('region,total');
+    expect(runsCode).toEqual([]);
+    expect(unprovisioned).toEqual([]);
+    expect(JSON.stringify(searches[0].content)).toContain('region,total');
+    expect(unknown).toEqual([]);
+    expect(harness.extractText).toHaveBeenCalledWith(
+      expect.objectContaining({ attachments: [{ ...csv, llmDeliveryPath: 'text' }] }),
+    );
+    expect(harness.encodeDocuments).not.toHaveBeenCalled();
+    expect(csv.llmDeliveryPath).toBe('none');
   });
 
   it('honors an explicit tool destination even when the receiving endpoint supports native files', async () => {
@@ -283,6 +366,28 @@ describe('createRunFileMessageEncoder', () => {
       expect(harness.extractText).not.toHaveBeenCalled();
     },
   );
+
+  it('leaves code outputs with cleared sandbox references out of the child prompt and its count budget', async () => {
+    /* Priming clears a dead reference on the turn's copy so the output is re-provisioned; the
+     * output still belongs to the sandbox, so it neither reaches the prompt nor spends the
+     * one-file budget. */
+    const harness = setup({ fileConfig: { endpoints: { openAI: { fileLimit: 1 } } } });
+    const output = (file_id: string): TFile => ({
+      ...pdf,
+      file_id,
+      filename: `${file_id}.png`,
+      type: 'image/png',
+      text: undefined,
+      llmDeliveryPath: undefined,
+      context: FileContext.execute_code,
+      metadata: {},
+    });
+
+    await expect(harness.encode([output('chart-a'), output('chart-b')], 'child')).resolves.toEqual(
+      [],
+    );
+    expect(harness.encodeImages).not.toHaveBeenCalled();
+  });
 
   it('includes permanent child context in the count budget before encoding shared files', async () => {
     const harness = setup({

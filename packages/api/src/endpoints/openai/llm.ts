@@ -4,6 +4,7 @@ import {
   ReasoningEffort,
   ReasoningParameterFormat,
   removeNullishValues,
+  prefersResponsesApiByModel,
   supportsAdaptiveThinking,
 } from 'librechat-data-provider';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
@@ -11,7 +12,14 @@ import type { AzureOpenAIInput } from '@librechat/agents/langchain/openai';
 import type { SettingDefinition } from 'librechat-data-provider';
 import type { OpenAI } from 'openai';
 import type * as t from '~/types';
-import { sanitizeModelName, constructAzureURL } from '~/utils/azure';
+import {
+  sanitizeModelName,
+  constructAzureURL,
+  isCanonicalAzureURL,
+  getAzureDeploymentName,
+  constructAzureChatBasePath,
+  constructAzureInstanceBasePath,
+} from '~/utils/azure';
 import { isEnabled } from '~/utils/common';
 
 type OpenAILLMConfig = Omit<Partial<t.OAIClientOptions>, 'verbosity'> &
@@ -130,22 +138,16 @@ function isOpenAIEndpoint(endpoint?: EModelEndpoint | string | null): boolean {
  */
 const responsesApiRequiredPattern = /\bgpt-5\.6\b/;
 
-/**
- * Models that take the Responses API for every turn, not only reasoning ones.
- * OpenAI's guidance for GPT-6 Astra is to use Responses, and tool calls require
- * it outright.
- *
- * Decided here rather than in the agents SDK at invocation time: the max-tokens
- * field below is shaped from `useResponsesApi`, so a later switch would send
- * `max_completion_tokens` to an endpoint expecting `max_output_tokens`. Config
- * time is also the only place that knows the model before Azure replaces it
- * with a deployment name.
- * @see https://developers.openai.com/api/docs/guides/latest-model
- */
-const responsesApiPreferredPattern = /^gpt-6-astra(?:-|$)/i;
-
-function prefersResponsesApi(model?: string): boolean {
-  return typeof model === 'string' && responsesApiPreferredPattern.test(model);
+/** Native model defaults apply only to canonical Azure transports; gateways
+ * may implement a different API contract even for the same model name. */
+function isCanonicalAzureBaseURL(baseURL?: string | null, azure?: false | t.AzureOptions): boolean {
+  if (!azure) {
+    return false;
+  }
+  if (!baseURL) {
+    return true;
+  }
+  return isCanonicalAzureURL(constructAzureURL({ baseURL, azureOptions: azure }));
 }
 
 function requiresResponsesApiForReasoning({
@@ -868,16 +870,24 @@ export function getOpenAILLMConfig({
     (dropParams.includes('reasoning_effort') || dropParams.includes('useResponsesApi'));
   /**
    * The GPT-5.6 default above is reasoning-driven, so dropping `reasoning_effort`
-   * removes its reason to route. Astra's is not: it takes Responses for every
+   * removes its reason to route. GPT-6's is not: it takes Responses for every
    * turn, and a drop rule clearing an unsupported stored effort must not also
    * disable its routing. Only an explicit `useResponsesApi` drop does that.
    */
   const responsesApiExplicitlyOptedOut =
     dropParams != null && dropParams.includes('useResponsesApi');
-  if (
+  const firstPartyOpenAI =
+    !useOpenRouter && endpoint === EModelEndpoint.openAI && isCanonicalOpenAIBaseURL(baseURL);
+  const firstPartyAzure =
     !useOpenRouter &&
-    endpoint === EModelEndpoint.openAI &&
-    isCanonicalOpenAIBaseURL(baseURL) &&
+    endpoint === EModelEndpoint.azureOpenAI &&
+    isCanonicalAzureBaseURL(baseURL, azure);
+  const firstPartyEndpoint = firstPartyOpenAI || firstPartyAzure;
+  /** Keep GPT-6 model identity on Azure, with the deployment name used on the wire. */
+  const firstPartyResponsesModel =
+    firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model);
+  if (
+    firstPartyOpenAI &&
     reasoningFormat !== ReasoningParameterFormat.disabled &&
     llmConfig.useResponsesApi == null &&
     !responsesApiOptedOut &&
@@ -887,17 +897,13 @@ export function getOpenAILLMConfig({
   }
 
   /**
-   * Route GPT-6 Astra to the Responses API for every turn. Unlike the GPT-5.6
-   * rule above this does not depend on reasoning params: Astra serves tool calls
-   * only from Responses, and OpenAI recommends it generally.
+   * Route GPT-6 to Responses before invocation, including unset effort, so tools
+   * bound later cannot accidentally reach Chat Completions with default reasoning.
    */
   if (
-    !useOpenRouter &&
-    endpoint === EModelEndpoint.openAI &&
-    isCanonicalOpenAIBaseURL(baseURL) &&
+    firstPartyResponsesModel &&
     llmConfig.useResponsesApi == null &&
-    !responsesApiExplicitlyOptedOut &&
-    prefersResponsesApi(llmConfig.model)
+    !responsesApiExplicitlyOptedOut
   ) {
     llmConfig.useResponsesApi = true;
   }
@@ -908,16 +914,17 @@ export function getOpenAILLMConfig({
    * above uses, so the decision lives in one place: OpenRouter and custom
    * gateways route through endpoints whose contract is not OpenAI's, and only
    * this layer can tell them apart.
-   *
-   * Scoped to the canonical OpenAI endpoint. Astra is not documented as
-   * available on Azure OpenAI, and Azure's first-party hosts do not satisfy the
-   * OpenAI-host check, so declaring it there would claim a surface this cannot
-   * verify.
    */
-  if (!useOpenRouter && endpoint === EModelEndpoint.openAI && isCanonicalOpenAIBaseURL(baseURL)) {
+  if (firstPartyEndpoint) {
     llmConfig.firstPartyEndpoint = true;
   }
 
+  /** Settle an administrator route drop before shaping API-specific fields.
+   * The drop loop later removes the flag, but it must already govern effort. */
+  if (responsesApiExplicitlyOptedOut) llmConfig.useResponsesApi = false;
+
+  const solLunaRulesApply =
+    firstPartyEndpoint && /^gpt-6-(?:sol|luna)(?:-|$)/i.test(llmConfig.model ?? '');
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -930,6 +937,17 @@ export function getOpenAILLMConfig({
         reasoningMode,
         reasoningContext,
       }) || hasModelKwargs;
+  }
+
+  /** Flat effort is an ignored constructor field in Chat Completions. Convert
+   * after shaping (including nested defaults), before administrator drops. */
+  if (solLunaRulesApply && llmConfig.useResponsesApi !== true) {
+    const effort = llmConfig.reasoning_effort ?? llmConfig.reasoning?.effort;
+    if (effort != null && effort !== '') {
+      modelKwargs.reasoning_effort = effort;
+      hasModelKwargs = true;
+    }
+    delete llmConfig.reasoning_effort;
   }
 
   /** DeepSeek thinking-mode requires `reasoning_content` replay on tool turns (#13366). */
@@ -991,6 +1009,44 @@ export function getOpenAILLMConfig({
     dropParams.forEach((param) => deleteConfigParam({ param, llmConfig, modelKwargs }));
   }
 
+  /** Normalize the final effective value in either API, regardless of whether
+   * it came from saved settings, flat params, or a nested configured object.
+   * Copy nested objects so administrator defaults are never mutated. */
+  if (solLunaRulesApply) {
+    if (llmConfig.reasoning?.effort === ReasoningEffort.minimal) {
+      llmConfig.reasoning = { ...llmConfig.reasoning, effort: ReasoningEffort.low };
+    }
+    if (modelKwargs.reasoning_effort === ReasoningEffort.minimal) {
+      modelKwargs.reasoning_effort = ReasoningEffort.low;
+    }
+  }
+
+  /** Sol/Luna reject sampling controls when Responses uses reasoning. The
+   * provider default is medium, so an unset effort is reasoning-enabled too.
+   * Strip only the request copy; saved settings remain available when the user
+   * switches models or explicitly selects `none`. */
+  const solLunaResponsesReasoning =
+    solLunaRulesApply &&
+    llmConfig.useResponsesApi === true &&
+    llmConfig.reasoning?.effort !== ReasoningEffort.none;
+  if (solLunaResponsesReasoning) {
+    for (const param of [
+      'temperature',
+      'topP',
+      'top_p',
+      'logprobs',
+      'topLogprobs',
+      'top_logprobs',
+    ]) {
+      deleteConfigParam({ param, llmConfig, modelKwargs });
+    }
+    for (const target of [llmConfig as Record<string, unknown>, modelKwargs]) {
+      if (Array.isArray(target.include)) {
+        target.include = target.include.filter((value) => value !== 'message.output_text.logprobs');
+      }
+    }
+  }
+
   hasModelKwargs =
     applyResponsesVerbosity({
       llmConfig,
@@ -1020,26 +1076,27 @@ export function getOpenAILLMConfig({
   }
 
   const useModelName = isEnabled(process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME);
+  const model = llmConfig.model;
   const updatedAzure = { ...azure };
   updatedAzure.azureOpenAIApiDeploymentName = useModelName
     ? sanitizeModelName(llmConfig.model || '')
-    : azure.azureOpenAIApiDeploymentName;
+    : azure.azureOpenAIApiDeploymentName ||
+      getAzureDeploymentName(baseURL, azure) ||
+      (firstPartyResponsesModel || llmConfig.useResponsesApi ? model : undefined);
 
   if (process.env.AZURE_OPENAI_DEFAULT_MODEL) {
     llmConfig.model = process.env.AZURE_OPENAI_DEFAULT_MODEL;
   }
 
   const constructAzureOpenAIBasePath = () => {
-    if (!baseURL) {
+    if (baseURL) {
+      updatedAzure.azureOpenAIBasePath = constructAzureChatBasePath(baseURL, updatedAzure);
       return;
     }
-    const azureURL = constructAzureURL({
-      baseURL,
-      azureOptions: updatedAzure,
-    });
-    updatedAzure.azureOpenAIBasePath = azureURL.split(
-      `/${updatedAzure.azureOpenAIApiDeploymentName}`,
-    )[0];
+    const instanceBasePath = constructAzureInstanceBasePath(updatedAzure);
+    if (instanceBasePath != null && updatedAzure.azureOpenAIBasePath == null) {
+      updatedAzure.azureOpenAIBasePath = instanceBasePath;
+    }
   };
 
   constructAzureOpenAIBasePath();
@@ -1060,6 +1117,15 @@ export function getOpenAILLMConfig({
 
   constructAzureResponsesApi();
 
-  llmConfig.model = updatedAzure.azureOpenAIApiDeploymentName;
+  /** Keep Astra's identity for SDK constraints; only the wire model is a deployment alias. */
+  if (firstPartyResponsesModel) {
+    llmConfig.model = model;
+    llmConfig.modelKwargs = {
+      ...llmConfig.modelKwargs,
+      model: updatedAzure.azureOpenAIApiDeploymentName,
+    };
+  } else {
+    llmConfig.model = updatedAzure.azureOpenAIApiDeploymentName;
+  }
   return { llmConfig, tools, azure: updatedAzure };
 }

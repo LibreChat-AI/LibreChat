@@ -308,6 +308,37 @@ export default function CodeSettings() {
           )}
           {showGitIdentity && (
             <div className="space-y-2 border-t border-border-light pt-3">
+              <label
+                htmlFor="repository-instructions"
+                className="text-xs font-medium text-text-secondary"
+              >
+                {localize('com_ui_repository_instructions')}
+              </label>
+              <Select
+                value={watch('repositoryInstructions') ?? 'prefer'}
+                onValueChange={(value) => {
+                  if (value === 'prefer' || value === 'defer' || value === 'off')
+                    setValue('repositoryInstructions', value, { shouldDirty: true });
+                }}
+              >
+                <SelectTrigger id="repository-instructions">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="prefer">
+                    {localize('com_ui_repository_instructions_prefer')}
+                  </SelectItem>
+                  <SelectItem value="defer">
+                    {localize('com_ui_repository_instructions_defer')}
+                  </SelectItem>
+                  <SelectItem value="off">
+                    {localize('com_ui_repository_instructions_off')}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-text-tertiary">
+                {localize('com_ui_repository_instructions_description')}
+              </p>
               <div className="text-xs font-medium text-text-secondary">
                 {localize('com_ui_agent_git_identity')}
               </div>
@@ -325,7 +356,8 @@ export default function CodeSettings() {
                   validate: validateGitIdentity,
                   deps: ['git_identity.name'],
                 })}
-                type="email"
+                type="text"
+                inputMode="email"
                 maxLength={254}
                 placeholder={localize('com_ui_agent_git_email')}
                 aria-label={localize('com_ui_agent_git_email')}

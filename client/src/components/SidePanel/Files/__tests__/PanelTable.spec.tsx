@@ -1,6 +1,11 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { FileSources, FileContext } from 'librechat-data-provider';
+import {
+  FileSources,
+  FileContext,
+  EToolResources,
+  AgentCapabilities,
+} from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { columns } from '../PanelColumns';
@@ -8,10 +13,14 @@ import DataTable from '../PanelTable';
 
 const mockShowToast = jest.fn();
 const mockAddFile = jest.fn();
+const mockSetEphemeralAgent = jest.fn();
 
 let mockFileMap: Record<string, TFile> = {};
 let mockFiles: Map<string, ExtendedFile> = new Map();
 let mockConversation: Record<string, unknown> | null = { endpoint: 'openAI' };
+let mockAgentsConfig: { capabilities?: string[] } | null = {
+  capabilities: [AgentCapabilities.file_search],
+};
 let mockRawFileConfig: Record<string, unknown> | null = {
   endpoints: {
     openAI: { fileLimit: 10, supportedMimeTypes: ['application/pdf', 'text/plain'] },
@@ -59,9 +68,21 @@ jest.mock('~/Providers', () => ({
   }),
 }));
 
+jest.mock('recoil', () => ({
+  useSetRecoilState: () => mockSetEphemeralAgent,
+}));
+
+jest.mock('~/store', () => ({
+  ephemeralAgentByConvoId: (conversationId: string) => ({ key: conversationId }),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useUpdateFiles: () => ({ addFile: mockAddFile }),
+  useGetAgentsConfig: () => ({ agentsConfig: mockAgentsConfig }),
+  useAgentCapabilities: (capabilities?: string[]) => ({
+    fileSearchEnabled: capabilities?.includes('file_search') ?? false,
+  }),
 }));
 
 jest.mock('~/data-provider', () => ({
@@ -124,6 +145,8 @@ describe('PanelTable handleFileClick', () => {
   beforeEach(() => {
     mockShowToast.mockClear();
     mockAddFile.mockClear();
+    mockSetEphemeralAgent.mockClear();
+    mockAgentsConfig = { capabilities: [AgentCapabilities.file_search] };
     mockFiles = new Map();
     mockConversation = { endpoint: 'openAI' };
     mockRawFileConfig = {
@@ -170,6 +193,7 @@ describe('PanelTable handleFileClick', () => {
       filename: 'report.pdf',
       context: FileContext.run_artifact,
       metadata: { runFile },
+      llmDeliveryPath: 'text',
     });
     mockFileMap = { [file.file_id]: file };
 
@@ -182,6 +206,7 @@ describe('PanelTable handleFileClick', () => {
         filename: 'report.pdf',
         filepath: file.filepath,
         metadata: { runFile },
+        llmDeliveryPath: 'text',
         attached: true,
         progress: 1,
       }),
@@ -268,5 +293,75 @@ describe('PanelTable handleFileClick', () => {
     clickFilenameCell();
 
     expect(mockAddFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns on file search when attaching an embedded file', () => {
+    const file = makeFile({ file_id: 'embedded-file', embedded: true });
+    mockFileMap = { [file.file_id]: file };
+
+    renderTable([file]);
+    clickFilenameCell();
+
+    expect(mockAddFile).toHaveBeenCalledTimes(1);
+    expect(mockSetEphemeralAgent).toHaveBeenCalledTimes(1);
+
+    const updater = mockSetEphemeralAgent.mock.calls[0][0];
+    expect(updater({ web_search: true })).toEqual({
+      web_search: true,
+      [EToolResources.file_search]: true,
+    });
+  });
+
+  it('leaves file search alone for a file that was never embedded', () => {
+    const file = makeFile({ file_id: 'plain-file', embedded: false });
+    mockFileMap = { [file.file_id]: file };
+
+    renderTable([file]);
+    clickFilenameCell();
+
+    expect(mockAddFile).toHaveBeenCalledTimes(1);
+    expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+  });
+
+  it('leaves file search alone when the capability is disabled', () => {
+    mockAgentsConfig = { capabilities: [] };
+    const file = makeFile({ file_id: 'embedded-file', embedded: true });
+    mockFileMap = { [file.file_id]: file };
+
+    renderTable([file]);
+    clickFilenameCell();
+
+    expect(mockAddFile).toHaveBeenCalledTimes(1);
+    expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+  });
+
+  it('leaves file search alone when a saved agent owns the conversation', () => {
+    mockConversation = { endpoint: 'openAI', agent_id: 'agent_abc123' };
+    const file = makeFile({ file_id: 'embedded-file', embedded: true });
+    mockFileMap = { [file.file_id]: file };
+
+    renderTable([file]);
+    clickFilenameCell();
+
+    expect(mockAddFile).toHaveBeenCalledTimes(1);
+    expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
+  });
+
+  it('leaves file search alone when the attachment itself is rejected', () => {
+    const file = makeFile({ file_id: 'embedded-file', embedded: true });
+    mockFileMap = { [file.file_id]: file };
+
+    mockFiles = new Map(
+      Array.from({ length: 5 }, (_, i) => [
+        `existing-${i}`,
+        makeExtendedFile({ file_id: `existing-${i}` }),
+      ]),
+    );
+
+    renderTable([file]);
+    clickFilenameCell();
+
+    expect(mockAddFile).not.toHaveBeenCalled();
+    expect(mockSetEphemeralAgent).not.toHaveBeenCalled();
   });
 });

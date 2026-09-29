@@ -2,6 +2,8 @@ import { logger } from '@librechat/data-schemas';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type * as t from './types';
 import {
+  applyRequestHeaders,
+  canUseAppConnection,
   canBackfillSharedServerInstructions,
   getMissingRuntimeBodyPlaceholderFields,
   hasRuntimeUrlPlaceholders,
@@ -77,7 +79,7 @@ const MAX_TEARDOWN_RESTARTS = 3;
  * Only meant to be extended by MCPManager.
  * Much of the logic was move here from the old MCPManager to make it more manageable.
  * User connections will soon be ephemeral and not cached anymore:
- * https://github.com/danny-avila/LibreChat/discussions/8790
+ * https://github.com/LibreChat-AI/LibreChat/discussions/8790
  */
 export abstract class UserConnectionManager {
   // Connections shared by all users.
@@ -583,6 +585,7 @@ export abstract class UserConnectionManager {
       oboTokenResolver,
       oboTrustChecker,
       upstreamTokenProvider,
+      upstreamTokenProviderResolver,
       oboIdentityContext,
       onOAuthCredentialsChanged,
       onOAuthCredentialsChanging,
@@ -601,16 +604,21 @@ export abstract class UserConnectionManager {
   ): Promise<MCPConnection> {
     signal?.throwIfAborted();
     this.assertCreationNotCancelled(creationGuard, userId, serverName);
-    if (await this.appConnections!.has(serverName)) {
+    const declaredConfig =
+      providedConfig ??
+      (await MCPServersRegistry.getInstance().getServerConfig(serverName, userId));
+    if (
+      (!declaredConfig || canUseAppConnection(declaredConfig)) &&
+      (await this.appConnections!.has(serverName))
+    ) {
       throw new McpError(
         ErrorCode.InvalidRequest,
         `[MCP][User: ${userId}] Trying to create user-specific connection for app-level server "${serverName}"`,
       );
     }
 
-    const config =
-      providedConfig ??
-      (await MCPServersRegistry.getInstance().getServerConfig(serverName, userId));
+    /** Resolution uses effective headers; identity and persistence keep the declaration. */
+    const config = declaredConfig && applyRequestHeaders(declaredConfig);
 
     /** Capture before resolving credentials/creating the connection. If another replica rotates
      *  the generation while creation is in flight, this connection's publications are fenced. */
@@ -640,7 +648,9 @@ export abstract class UserConnectionManager {
     const existingPublicationGeneration = connection
       ? this.toolPublicationGenerations.get(connection)
       : undefined;
-    const configGeneration = config ? getMCPAppToolsPublicationGeneration(config) : undefined;
+    const configGeneration = declaredConfig
+      ? getMCPAppToolsPublicationGeneration(declaredConfig)
+      : undefined;
     const existingConfigGeneration = connection
       ? this.toolConfigGenerations.get(connection)
       : undefined;
@@ -738,7 +748,7 @@ export abstract class UserConnectionManager {
     }
 
     // Now check if config exists for new connection creation
-    if (!config) {
+    if (!config || !declaredConfig) {
       throw new McpError(
         ErrorCode.InvalidRequest,
         `[MCP][User: ${userId}] Configuration for server "${serverName}" not found.`,
@@ -785,7 +795,7 @@ export abstract class UserConnectionManager {
         serverConfig: runtimeConfig,
         /** Runtime OAuth detection enriches the connection config. Keep the durable definition
          * separate so callback liveness compares against the config that actually owns it. */
-        serverDefinition: config,
+        serverDefinition: declaredConfig,
         ...(usesDirectOpenIDBearerRecovery(config) && { directBearerSourceConfig: config }),
         directBearerRecoveryState,
         serverName: serverName,
@@ -828,11 +838,10 @@ export abstract class UserConnectionManager {
               }
             };
       const recaptureCredentialGeneration: t.UserConnectionContext['onOAuthCredentialsInvalidated'] =
-        ephemeralConnection
-          ? undefined
-          : async () => {
-              credentialGeneration = await getMCPToolsChangedGeneration({ userId, serverName });
-            };
+        async () => {
+          credentialGeneration = await getMCPToolsChangedGeneration({ userId, serverName });
+          return credentialGeneration;
+        };
 
       const useOAuth = usesDirectOpenIDBearerRecovery(config)
         ? false
@@ -858,6 +867,7 @@ export abstract class UserConnectionManager {
           oboTokenResolver: oboTokenResolver,
           oboTrustChecker: oboTrustChecker,
           upstreamTokenProvider: upstreamTokenProvider,
+          upstreamTokenProviderResolver,
           oboIdentityContext,
           graphTokenResolver,
           returnOnOAuth: returnOnOAuth,
@@ -875,6 +885,7 @@ export abstract class UserConnectionManager {
           requestBody,
           graphTokenResolver,
           upstreamTokenProvider,
+          upstreamTokenProviderResolver,
           connectionTimeout,
           signal,
         };
@@ -900,7 +911,7 @@ export abstract class UserConnectionManager {
           tools,
           userId,
           serverName,
-          serverConfig: config,
+          serverConfig: declaredConfig,
           ...(effectiveGeneration && { publicationGeneration: effectiveGeneration }),
           ...(publicationRevision && { publicationRevision }),
         });
@@ -948,13 +959,14 @@ export abstract class UserConnectionManager {
               oboTokenResolver,
               oboTrustChecker,
               upstreamTokenProvider,
+              upstreamTokenProviderResolver,
               oboIdentityContext,
               signal,
               returnOnOAuth,
               connectionTimeout,
               graphTokenResolver,
               ephemeralConnection,
-              serverConfig: config,
+              serverConfig: declaredConfig,
               directBearerRecoveryState,
               directBearerResolvedConfig: refreshedConfig,
             },
@@ -974,7 +986,7 @@ export abstract class UserConnectionManager {
       }
 
       logger.info(`[MCP][User: ${userId}][${serverName}] Connection successfully established`);
-      await this.backfillResolvedInstructions(serverName, config, connection, userId);
+      await this.backfillResolvedInstructions(serverName, declaredConfig, connection, userId);
       signal?.throwIfAborted();
       if (!ephemeralConnection) {
         await this.updateUserLastActivity(userId);
@@ -1075,12 +1087,16 @@ export abstract class UserConnectionManager {
     requestBody?: t.UserMCPConnectionOptions['requestBody'];
     graphTokenResolver?: t.UserMCPConnectionOptions['graphTokenResolver'];
   }): Promise<t.ParsedServerConfig> {
-    const dbSourced = isUserSourced(config);
+    /** Mirrors the factory's entry-point normalization; without it this
+     *  validation pass would inspect a different header map than the one the
+     *  connection ends up sending. */
+    const runtimeConfig = applyRequestHeaders(config);
+    const dbSourced = isUserSourced(runtimeConfig);
     /** Plugin-authored placeholders must never resolve against the user's Graph token. */
     const graphProcessedConfig =
-      dbSourced || isPluginSourced(config)
-        ? config
-        : await preProcessGraphTokens(config, {
+      dbSourced || isPluginSourced(runtimeConfig)
+        ? runtimeConfig
+        : await preProcessGraphTokens(runtimeConfig, {
             user,
             graphTokenResolver,
             scopes: process.env.GRAPH_API_SCOPES,

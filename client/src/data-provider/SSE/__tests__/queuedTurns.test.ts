@@ -145,6 +145,12 @@ describe('Agent queued-turn data adapter', () => {
     expect(shouldPollAgentQueuedTurns([{ status: 'queued' }])).toBe(true);
   });
 
+  it('keeps polling an empty projection while the client still holds a server-owned row', () => {
+    expect(shouldPollAgentQueuedTurns([])).toBe(false);
+    expect(shouldPollAgentQueuedTurns([], undefined, Date.now(), true)).toBe(true);
+    expect(shouldPollAgentQueuedTurns(undefined, undefined, Date.now(), true)).toBe(true);
+  });
+
   it('counts an admitted turn as an owed run, unlike the receipt poll', () => {
     /**
      * The receipt poll stops at `admitted` because nothing is left to wait

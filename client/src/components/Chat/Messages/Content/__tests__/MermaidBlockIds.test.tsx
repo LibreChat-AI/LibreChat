@@ -25,59 +25,102 @@ jest.mock('~/components/Messages/Content/CodeBlock', () => ({
   ),
 }));
 
-const renderMarkdown = (content: string) =>
-  render(
-    <MarkdownBlocks
-      content={content}
-      remarkPlugins={getRemarkPlugins()}
-      rehypePlugins={getRehypePlugins()}
-      components={getMarkdownComponents()}
-    />,
-  );
+const view = (content: string, streaming: boolean) => (
+  <MarkdownBlocks
+    content={content}
+    streaming={streaming}
+    remarkPlugins={getRemarkPlugins()}
+    rehypePlugins={getRehypePlugins()}
+    components={getMarkdownComponents()}
+  />
+);
+
+const renderMarkdown = (content: string, streaming: boolean) => render(view(content, streaming));
 
 const mermaidIds = () =>
   screen.getAllByTestId('mermaid').map((element) => element.getAttribute('data-mermaid-id'));
 
 describe('Mermaid block ids', () => {
-  it('gives each Mermaid fence in a message a distinct id', () => {
-    renderMarkdown(
-      ['```mermaid', 'graph TD', 'A-->B', '```', '', '```mermaid', 'graph TD', 'C-->D', '```'].join(
-        '\n',
-      ),
-    );
+  /** A finished message renders as one pipeline and a streaming one per block; both number alike. */
+  describe.each([
+    ['a finished', false],
+    ['a streaming', true],
+  ])('in %s message', (_label, streaming) => {
+    it('gives each Mermaid fence in a message a distinct id', () => {
+      renderMarkdown(
+        [
+          '```mermaid',
+          'graph TD',
+          'A-->B',
+          '```',
+          '',
+          '```mermaid',
+          'graph TD',
+          'C-->D',
+          '```',
+        ].join('\n'),
+        streaming,
+      );
 
-    const ids = mermaidIds();
-    expect(ids).toHaveLength(2);
-    expect(new Set(ids).size).toBe(2);
-  });
+      const ids = mermaidIds();
+      expect(ids).toHaveLength(2);
+      expect(new Set(ids).size).toBe(2);
+    });
 
-  it('keeps Mermaid ids distinct across intervening executable code blocks', () => {
-    renderMarkdown(
-      [
-        '```mermaid',
-        'graph TD',
-        'A-->B',
-        '```',
-        '',
-        '```python',
-        'print("hi")',
-        '```',
-        '',
-        '```mermaid',
-        'graph TD',
-        'C-->D',
-        '```',
-        '',
-        '```mermaid',
-        'graph TD',
-        'E-->F',
-        '```',
-      ].join('\n'),
-    );
+    it('keeps Mermaid ids distinct across intervening executable code blocks', () => {
+      renderMarkdown(
+        [
+          '```mermaid',
+          'graph TD',
+          'A-->B',
+          '```',
+          '',
+          '```python',
+          'print("hi")',
+          '```',
+          '',
+          '```mermaid',
+          'graph TD',
+          'C-->D',
+          '```',
+          '',
+          '```mermaid',
+          'graph TD',
+          'E-->F',
+          '```',
+        ].join('\n'),
+        streaming,
+      );
 
-    const ids = mermaidIds();
-    expect(ids).toHaveLength(3);
-    expect(new Set(ids).size).toBe(3);
+      const ids = mermaidIds();
+      expect(ids).toHaveLength(3);
+      expect(new Set(ids).size).toBe(3);
+    });
+
+    it('does not let a Mermaid fence disturb executable code block indices', () => {
+      renderMarkdown(
+        [
+          '```python',
+          'print("first")',
+          '```',
+          '',
+          '```mermaid',
+          'graph TD',
+          'A-->B',
+          '```',
+          '',
+          '```python',
+          'print("second")',
+          '```',
+        ].join('\n'),
+        streaming,
+      );
+
+      const indices = screen
+        .getAllByTestId('code-block')
+        .map((element) => element.getAttribute('data-block-index'));
+      expect(indices).toEqual(['0', '1']);
+    });
   });
 
   /**
@@ -102,46 +145,13 @@ describe('Mermaid block ids', () => {
     ].join('\n');
     const listStillGrowing = [listWithTwo, '', '- step three'].join('\n');
 
-    const { rerender } = renderMarkdown(listWithOne);
+    const { rerender } = renderMarkdown(listWithOne, true);
     expect(mermaidIds()).toEqual(['mermaid-0']);
 
-    const view = (content: string) => (
-      <MarkdownBlocks
-        content={content}
-        remarkPlugins={getRemarkPlugins()}
-        rehypePlugins={getRehypePlugins()}
-        components={getMarkdownComponents()}
-      />
-    );
-
-    rerender(view(listWithTwo));
+    rerender(view(listWithTwo, true));
     expect(mermaidIds()).toEqual(['mermaid-0', 'mermaid-1']);
 
-    rerender(view(listStillGrowing));
+    rerender(view(listStillGrowing, true));
     expect(mermaidIds()).toEqual(['mermaid-0', 'mermaid-1']);
-  });
-
-  it('does not let a Mermaid fence disturb executable code block indices', () => {
-    renderMarkdown(
-      [
-        '```python',
-        'print("first")',
-        '```',
-        '',
-        '```mermaid',
-        'graph TD',
-        'A-->B',
-        '```',
-        '',
-        '```python',
-        'print("second")',
-        '```',
-      ].join('\n'),
-    );
-
-    const indices = screen
-      .getAllByTestId('code-block')
-      .map((element) => element.getAttribute('data-block-index'));
-    expect(indices).toEqual(['0', '1']);
   });
 });

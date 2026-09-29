@@ -467,7 +467,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
     }
   }
 
-  async function upload(req: Request, res: Response): Promise<Response> {
+  async function upload(req: Request & { file_id?: string }, res: Response): Promise<Response> {
     try {
       const purpose = req.body?.purpose as string | undefined;
       if (!req.file || !UPLOAD_PURPOSES.includes(purpose as AgentUploadPurpose)) {
@@ -501,6 +501,7 @@ export function createAgentManagementFileHandlers(deps: AgentManagementFileDeps)
           }
 
           req.body = {
+            file_id: req.file_id,
             endpoint: authorized.uploadConfig.endpoint,
             endpointType: authorized.uploadConfig.endpointType,
             agent_id: req.params.id,

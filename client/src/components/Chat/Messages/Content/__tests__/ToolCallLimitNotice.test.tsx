@@ -11,7 +11,7 @@ const TRANSLATIONS: Record<string, string> = {
   com_ui_tool_call_limit_continue_prompt: 'Keep going from where you stopped.',
   com_ui_tool_call_limit_answer: 'Answer now',
   com_ui_tool_call_limit_answer_prompt: 'Stop using tools and answer now.',
-  com_ui_dismiss: 'Dismiss',
+  com_ui_tool_call_limit_dismiss: 'Dismiss',
 };
 
 jest.mock('~/hooks', () => ({
@@ -100,7 +100,9 @@ describe('ToolCallLimitNotice', () => {
     ).not.toBeInTheDocument();
     /** The explanation and the way to hide it must survive. */
     expect(screen.getByText(TRANSLATIONS.com_ui_tool_call_limit_body)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_dismiss }),
+    ).toBeInTheDocument();
   });
 
   it('offers no actions on a message that is not the branch tail', () => {
@@ -124,7 +126,9 @@ describe('ToolCallLimitNotice', () => {
   it('can be dismissed', () => {
     renderNotice({ ask: jest.fn(), isSubmitting: false, latestMessageId: 'response-1' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_dismiss }),
+    );
 
     expect(screen.queryByText(TRANSLATIONS.com_ui_tool_call_limit_title)).not.toBeInTheDocument();
   });
@@ -137,7 +141,9 @@ describe('ToolCallLimitNotice', () => {
       latestMessageId: 'response-1',
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_dismiss }),
+    );
     expect(screen.queryByText(TRANSLATIONS.com_ui_tool_call_limit_title)).not.toBeInTheDocument();
 
     rerender(

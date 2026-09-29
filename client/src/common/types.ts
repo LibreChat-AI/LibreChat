@@ -596,6 +596,7 @@ export interface ExtendedFile {
   source?: FileSources;
   attached?: boolean;
   embedded?: boolean;
+  llmDeliveryPath?: t.TFile['llmDeliveryPath'];
   tool_resource?: string;
   metadata?: t.TFile['metadata'];
 }

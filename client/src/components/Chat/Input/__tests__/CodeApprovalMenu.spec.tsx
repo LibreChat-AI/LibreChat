@@ -1,5 +1,7 @@
 import userEvent from '@testing-library/user-event';
 import { render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryKeys, Constants, LocalStorageKeys } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import CodeApprovalMenu from '../CodeApprovalMenu';
 
@@ -28,14 +30,20 @@ describe('CodeApprovalMenu', () => {
     });
   });
 
-  const renderMenu = () =>
-    render(
-      <CodeApprovalMenu
-        conversation={conversation}
-        setConversation={mockSetConversation}
-        disabled={false}
-      />,
+  let queryClient: QueryClient;
+
+  const renderMenu = () => {
+    queryClient = new QueryClient();
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <CodeApprovalMenu
+          conversation={conversation}
+          setConversation={mockSetConversation}
+          disabled={false}
+        />
+      </QueryClientProvider>,
     );
+  };
 
   test('defaults to ask and stores accept-edits on the conversation', async () => {
     renderMenu();
@@ -45,6 +53,46 @@ describe('CodeApprovalMenu', () => {
 
     const update = mockSetConversation.mock.calls[0][0];
     expect(update(conversation)).toEqual({ ...conversation, codeApprovalMode: 'acceptEdits' });
+  });
+
+  test('writes the pick into the conversation detail cache', async () => {
+    renderMenu();
+    const key = [QueryKeys.conversation, conversation.conversationId];
+    queryClient.setQueryData<TConversation>(key, { ...conversation, codeApprovalMode: 'ask' });
+
+    await userEvent.click(screen.getByTestId('code-approval-mode'));
+    await userEvent.click(await screen.findByText('com_ui_code_approval_accept_edits'));
+
+    expect(queryClient.getQueryData<TConversation>(key)?.codeApprovalMode).toBe('acceptEdits');
+  });
+
+  test('seeds a detail record from the live conversation when none exists yet', async () => {
+    renderMenu();
+
+    await userEvent.click(screen.getByTestId('code-approval-mode'));
+    await userEvent.click(await screen.findByText('com_ui_code_approval_accept_edits'));
+
+    expect(queryClient.getQueryData([QueryKeys.conversation, conversation.conversationId])).toEqual(
+      { ...conversation, codeApprovalMode: 'acceptEdits' },
+    );
+  });
+
+  test('leaves the detail cache alone for a chat that has no id yet', async () => {
+    queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CodeApprovalMenu
+          conversation={{ ...conversation, conversationId: Constants.NEW_CONVO as string }}
+          setConversation={mockSetConversation}
+          disabled={false}
+        />
+      </QueryClientProvider>,
+    );
+
+    await userEvent.click(screen.getByTestId('code-approval-mode'));
+    await userEvent.click(await screen.findByText('com_ui_code_approval_accept_edits'));
+
+    expect(queryClient.getQueryData([QueryKeys.conversation, Constants.NEW_CONVO])).toBeUndefined();
   });
 
   test('offers every mode as a radio and marks the selected one', async () => {
@@ -114,4 +162,29 @@ describe('CodeApprovalMenu', () => {
       codeApprovalMode: 'fullAccess',
     });
   });
+});
+
+test("remembers the pick as this browser's default for the next chat", async () => {
+  localStorage.clear();
+  mockUseCodeApprovalMode.mockReturnValue({
+    available: true,
+    modes: ['ask', 'acceptEdits'],
+    selected: 'ask',
+  });
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <CodeApprovalMenu
+        conversation={conversation}
+        setConversation={mockSetConversation}
+        disabled={false}
+      />
+    </QueryClientProvider>,
+  );
+
+  await userEvent.click(screen.getByTestId('code-approval-mode'));
+  await userEvent.click(await screen.findByText('com_ui_code_approval_accept_edits'));
+
+  expect(localStorage.getItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE)).toBe(
+    JSON.stringify('acceptEdits'),
+  );
 });

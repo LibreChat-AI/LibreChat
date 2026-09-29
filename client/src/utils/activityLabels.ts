@@ -30,6 +30,10 @@ export type ActivityPhaseSegment =
        *  the header carries the newest child label as a ticker instead of a
        *  generated summary. Set only by `synthesizeActivityFolds`. */
       synthesized?: boolean;
+      /** A synthesized card over the span the run is still writing: it folds
+       *  from the first tool call and keeps the in-flight tail inside, and its
+       *  header is resolved at render from the newest activity in `content`. */
+      live?: boolean;
     };
 
 function isVisibleContentPart(part: TMessageContentParts | undefined): boolean {
@@ -230,6 +234,27 @@ function claimsActivity(part: TMessageContentParts | undefined): boolean {
   return typeof name !== 'string' || !name.startsWith(Constants.LC_TRANSFER_TO_);
 }
 
+/**
+ * A call a live row cannot stand for: a handoff, whose card names the
+ * destination agent and can never join a group, or a legacy Assistants variant
+ * (no top-level `args`), which the live header has no line for. Questions
+ * and subagents also retain their own cards: optimistic answers, child
+ * progress and detached-thread navigation are not carried by the outer part.
+ */
+function endsLiveSpan(part: TMessageContentParts | undefined): boolean {
+  if (part?.type !== ContentTypes.TOOL_CALL) {
+    return false;
+  }
+  const toolCall = part[ContentTypes.TOOL_CALL];
+  return (
+    !claimsActivity(part) ||
+    toolCall == null ||
+    !('args' in toolCall) ||
+    toolCall.name === 'ask_user_question' ||
+    toolCall.name === Constants.SUBAGENT
+  );
+}
+
 type FoldRun = {
   content: Array<TMessageContentParts | undefined>;
   contentIndices: number[];
@@ -321,6 +346,54 @@ function buildSynthesizedPhaseLabel(run: FoldRun): SynthesizedPhaseHeader | unde
 }
 
 /**
+ * Builds the header for the span a run is still writing. It needs no filled
+ * label — one claimable tool call is enough — because its purpose is to hold
+ * the block at the single row it will settle into, rather than letting every
+ * call add and remove rows on the way there. The text stays empty: the newest
+ * line needs localization, so the renderer resolves it.
+ */
+function buildLivePhaseLabel(run: FoldRun): SynthesizedPhaseHeader | undefined {
+  let activities = 0;
+  let reasons = false;
+  for (const part of run.content) {
+    /** A thought counts from its first character. Left outside until a tool
+     *  call arrived, it rendered as its own row with a multi-line peek that
+     *  the first call then snapped shut — a grow-and-shrink on every step of a
+     *  reasoning model that talks between calls. */
+    if (part?.type === ContentTypes.THINK) {
+      const thought = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
+      reasons ||= thought.trim().length > 0;
+      continue;
+    }
+    /** Only an agents-shaped call can be named by the live header; the legacy
+     *  Assistants variants carry no top-level `args` and keep their own cards. */
+    const toolCall = part?.type === ContentTypes.TOOL_CALL ? part[ContentTypes.TOOL_CALL] : null;
+    if (toolCall != null && 'args' in toolCall && claimsActivity(part)) {
+      activities += 1;
+    }
+  }
+  if (activities === 0 && !reasons) {
+    return undefined;
+  }
+  const endPosition = run.content.length - 1;
+  const labelIndex = run.contentIndices[endPosition];
+  return {
+    labelIndex,
+    endPosition,
+    labelPart: {
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: '',
+      activity_label_type: 'phase',
+      activity_start_index: run.contentIndices[0],
+      activity_end_index: labelIndex + 1,
+      activity_count: activities,
+      status: 'ok',
+      pending: true,
+    } as ActivityLabelPart,
+  };
+}
+
+/**
  * Splits one unclaimed content segment at its hard boundaries and folds every
  * run that carries enough labeled activity into a phase segment.
  *
@@ -332,6 +405,7 @@ function buildSynthesizedPhaseLabel(run: FoldRun): SynthesizedPhaseHeader | unde
  */
 function synthesizeActivityFolds(
   segment: Extract<ActivityPhaseSegment, { type: 'content' }>,
+  liveTail = false,
 ): ActivityPhaseSegment[] {
   const segments: ActivityPhaseSegment[] = [];
   const pending: FoldRun = { content: [], contentIndices: [] };
@@ -360,11 +434,12 @@ function synthesizeActivityFolds(
       pending.contentIndices.push(run.contentIndices[position]);
     }
   };
-  const flushRun = () => {
+  const flushRun = (live = false) => {
     if (run.contentIndices.length === 0) {
       return;
     }
-    const header = buildSynthesizedPhaseLabel(run);
+    const liveHeader = live ? buildLivePhaseLabel(run) : undefined;
+    const header = liveHeader ?? buildSynthesizedPhaseLabel(run);
     if (header == null) {
       carryOver(0);
     } else {
@@ -380,6 +455,7 @@ function synthesizeActivityFolds(
         labelIndex: header.labelIndex,
         hasContent: content.some(isVisibleContentPart),
         synthesized: true,
+        ...(liveHeader != null && { live: true }),
       });
       /** Everything past the newest label is still in flight — the reasoning
        *  and the tool call the reader is watching right now. It stays outside
@@ -393,7 +469,10 @@ function synthesizeActivityFolds(
   for (let position = 0; position < segment.content.length; position += 1) {
     const part = segment.content[position];
     const index = segment.contentIndices[position];
-    if (isFoldBoundaryPart(part)) {
+    /** Folding a call the header cannot stand for would hide its card for the
+     *  rest of the run, so while streaming it ends the span the way prose
+     *  does, and the calls after it start a live span of their own. */
+    if (isFoldBoundaryPart(part) || (liveTail && endsLiveSpan(part))) {
       flushRun();
       pending.content.push(part);
       pending.contentIndices.push(index);
@@ -402,7 +481,9 @@ function synthesizeActivityFolds(
     run.content.push(part);
     run.contentIndices.push(index);
   }
-  flushRun();
+  /** Only a run that reaches the end of the message is still being written; a
+   *  boundary after it means the stream has moved on to something else. */
+  flushRun(liveTail);
   flushPending();
   return folded ? segments : [segment];
 }
@@ -415,6 +496,8 @@ function synthesizeActivityFolds(
 export function groupActivityPhases(
   content: Array<TMessageContentParts | undefined> | undefined,
   laneGroups?: ReadonlySet<number>,
+  /** True while this message is the one the run is streaming into. */
+  live = false,
 ): ActivityPhaseSegment[] | undefined {
   if (!content) {
     return undefined;
@@ -446,12 +529,15 @@ export function groupActivityPhases(
     /** No marker has landed yet — the whole message is one unclaimed span.
      *  Returning `undefined` when nothing folds keeps the untouched
      *  fast path for messages that never accumulate labeled activity. */
-    const folded = synthesizeActivityFolds({
-      type: 'content',
-      content: definedIndices.map((index) => content[index]),
-      contentIndices: definedIndices,
-      startIndex: definedIndices[0] ?? 0,
-    });
+    const folded = synthesizeActivityFolds(
+      {
+        type: 'content',
+        content: definedIndices.map((index) => content[index]),
+        contentIndices: definedIndices,
+        startIndex: definedIndices[0] ?? 0,
+      },
+      live,
+    );
     return folded.some((segment) => segment.type === 'phase') ? folded : undefined;
   }
 
@@ -607,8 +693,11 @@ export function groupActivityPhases(
   if (!foldable) {
     return segments;
   }
-  return segments.flatMap((segment) =>
-    segment.type === 'content' ? synthesizeActivityFolds(segment) : segment,
+  const tail = segments.length - 1;
+  return segments.flatMap((segment, position) =>
+    segment.type === 'content'
+      ? synthesizeActivityFolds(segment, live && position === tail)
+      : segment,
   );
 }
 

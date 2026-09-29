@@ -264,6 +264,11 @@ describe('createSchedule late-create compensation', () => {
 
     const inserted = (deps.methods.createScheduleWithSlot as jest.Mock).mock.calls[0][0];
     expect(inserted.nextRunAt).toBeUndefined();
+    expect(deps.preflightMCP).toHaveBeenCalledWith(
+      CREATE_BODY.agent_id,
+      expect.objectContaining({ id: 'user-1' }),
+      expect.objectContaining({ scheduleId: inserted.id }),
+    );
     // And it is never armed afterwards, because the barrier refused the create.
     expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
   });
@@ -1185,6 +1190,11 @@ describe('updateSchedule re-enable attachment revalidation', () => {
     await createSchedulesHandlers(deps).updateSchedule(makeReEnableReq(), res);
 
     expect(markFilesUsed).toHaveBeenCalledWith(['file-a', 'file-b'], 'user-1');
+    expect(deps.preflightMCP).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ id: 'user-1', tenantId: 't1' }),
+      expect.objectContaining({ scheduleId: 'sched-1' }),
+    );
     expect(captured.status ?? 200).toBe(200);
     expect(deps.methods.updateScheduleById).toHaveBeenCalled();
   });

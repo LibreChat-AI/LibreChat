@@ -12,6 +12,7 @@
  */
 
 import { Keyv } from 'keyv';
+import jwt from 'jsonwebtoken';
 import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { OAuthTestServer } from './helpers/oauthTestServer';
@@ -75,6 +76,250 @@ async function seedStoredClient(tokenStore: InMemoryTokenStore, serverUrl: strin
     metadata: { ...tokenMetadata, ...bindingMetadata(serverUrl) },
   });
 }
+
+describe('Persisted access-token expiry', () => {
+  const ONE_YEAR_SECONDS = 365 * 24 * 60 * 60;
+
+  /** Stores one provider response and reports the lifetime the access record actually carries. */
+  async function persistedLifetimeSeconds(
+    tokens: Record<string, unknown>,
+    updateExisting = false,
+  ): Promise<number> {
+    const tokenStore = new InMemoryTokenStore();
+    if (updateExisting) {
+      await tokenStore.createToken({
+        userId: 'u1',
+        type: 'mcp_oauth',
+        identifier: 'mcp:test-srv',
+        token: 'enc:previous-token',
+        expiresIn: 3600,
+        metadata: tokenMetadata,
+      });
+    }
+    await MCPTokenStorage.storeTokens({
+      userId: 'u1',
+      serverName: 'test-srv',
+      tokens: tokens as never,
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      findToken: tokenStore.findToken,
+      clientInfo: { client_id: 'test-client' },
+      metadata: bindingMetadata('https://mcp.example.com/'),
+    });
+    const stored = await tokenStore.findToken({
+      userId: 'u1',
+      type: 'mcp_oauth',
+      identifier: 'mcp:test-srv',
+    });
+    return Math.round((stored!.expiresAt.getTime() - Date.now()) / 1000);
+  }
+
+  it.each([{ expires_in: 0 }, { expires_at: 0 }])(
+    'preserves an explicitly zero lifetime: %j',
+    async (expiry) => {
+      await expect(
+        persistedLifetimeSeconds({
+          access_token: 'opaque-zero-lifetime',
+          token_type: 'Bearer',
+          ...expiry,
+        }),
+      ).resolves.toBeLessThanOrEqual(0);
+    },
+  );
+
+  it('updates an existing access record to expire immediately for expires_in zero', async () => {
+    await expect(
+      persistedLifetimeSeconds(
+        {
+          access_token: 'replacement',
+          token_type: 'Bearer',
+          expires_in: 0,
+        },
+        true,
+      ),
+    ).resolves.toBeLessThanOrEqual(0);
+  });
+
+  it.each([NaN, Infinity])(
+    'ignores non-finite expires_at %s in favor of a finite lifetime',
+    async (expires_at) => {
+      await expect(
+        persistedLifetimeSeconds({
+          access_token: 'opaque',
+          token_type: 'Bearer',
+          expires_at,
+          expires_in: 3600,
+        }),
+      ).resolves.toBe(3600);
+    },
+  );
+
+  it('keeps a disclosed lifetime', async () => {
+    await expect(
+      persistedLifetimeSeconds({
+        access_token: 'opaque-access-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: 'r1',
+        obtained_at: Date.now(),
+      }),
+    ).resolves.toBe(3600);
+  });
+
+  /**
+   * A lifetime that has already elapsed must not be recorded as a year of validity: `getTokens`
+   * decides to refresh from this record, so a dead credential stored as valid is only discovered
+   * when the resource server rejects a request.
+   */
+  it('records a credential that arrived expired as expired', async () => {
+    const lifetime = await persistedLifetimeSeconds({
+      access_token: 'expired-access-token',
+      token_type: 'Bearer',
+      expires_at: Date.now() - 60_000,
+      refresh_token: 'r1',
+      obtained_at: Date.now(),
+    });
+    expect(lifetime).toBeLessThanOrEqual(0);
+    expect(lifetime).not.toBe(ONE_YEAR_SECONDS);
+  });
+
+  it('does not round a sub-second remaining lifetime up to a year', async () => {
+    const lifetime = await persistedLifetimeSeconds({
+      access_token: 'nearly-expired-access-token',
+      token_type: 'Bearer',
+      expires_at: Date.now() + 900,
+      refresh_token: 'r1',
+      obtained_at: Date.now(),
+    });
+    expect(lifetime).toBeLessThanOrEqual(1);
+    expect(lifetime).not.toBe(ONE_YEAR_SECONDS);
+  });
+
+  /**
+   * A JWT `exp` comes from the provider's clock, so skew can make a live credential look expired.
+   * That case keeps its existing leniency (`tokens.test.ts`) and is deliberately not changed here.
+   */
+  it('keeps the default for a past JWT exp, which may be clock skew', async () => {
+    const expiredJwt = jwt.sign(
+      { sub: 'u1', exp: Math.floor(Date.now() / 1000) - 60 },
+      'test-secret',
+    );
+    await expect(
+      persistedLifetimeSeconds({
+        access_token: expiredJwt,
+        token_type: 'Bearer',
+        refresh_token: 'r1',
+        obtained_at: Date.now(),
+      }),
+    ).resolves.toBe(ONE_YEAR_SECONDS);
+  });
+
+  /** RFC 6749 §5.1 makes `expires_in` only RECOMMENDED, so an unknown lifetime keeps its default. */
+  it('keeps the long default when no lifetime is knowable', async () => {
+    await expect(
+      persistedLifetimeSeconds({
+        access_token: 'opaque-access-token-without-expiry',
+        token_type: 'Bearer',
+        refresh_token: 'r1',
+        obtained_at: Date.now(),
+      }),
+    ).resolves.toBe(ONE_YEAR_SECONDS);
+  });
+});
+
+describe('A credential persisted with an elapsed lifetime', () => {
+  let server: OAuthTestServer;
+  let tokenStore: InMemoryTokenStore;
+
+  beforeEach(async () => {
+    server = await createOAuthMCPServer({
+      tokenTTLMs: 60000,
+      issueRefreshTokens: true,
+      rotateRefreshTokens: true,
+    });
+    tokenStore = new InMemoryTokenStore();
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  /**
+   * The stored-credential read is the only path that can recover before a request fails, so a
+   * response whose lifetime already elapsed has to refresh here rather than reach a transport,
+   * get rejected, and risk an interactive prompt for a grant that is still renewable.
+   */
+  it('refreshes on the next read instead of requiring re-authentication', async () => {
+    const code = await server.getAuthCode();
+    const tokenRes = await fetch(`${server.url}token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=authorization_code&code=${code}`,
+    });
+    const initial = (await tokenRes.json()) as { access_token: string; refresh_token: string };
+
+    await MCPTokenStorage.storeTokens({
+      userId: 'u1',
+      serverName: 'test-srv',
+      tokens: { ...initial, token_type: 'Bearer', obtained_at: Date.now(), expires_at: Date.now() },
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      findToken: tokenStore.findToken,
+      clientInfo: { client_id: 'test-client' },
+      metadata: bindingMetadata(server.url),
+    });
+
+    const result = await MCPTokenStorage.getTokens({
+      userId: 'u1',
+      serverName: 'test-srv',
+      findToken: tokenStore.findToken,
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      refreshTokens: async (refreshToken) => {
+        const res = await fetch(`${server.url}token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `grant_type=refresh_token&refresh_token=${refreshToken}`,
+        });
+        if (!res.ok) {
+          throw new Error(`Refresh failed: ${res.status}`);
+        }
+        const data = (await res.json()) as MCPOAuthTokens & { expires_in: number };
+        return {
+          ...data,
+          obtained_at: Date.now(),
+          expires_at: Date.now() + data.expires_in * 1000,
+        };
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.access_token).not.toBe(initial.access_token);
+    expect(
+      server.tokenRequests.filter(({ grantType }) => grantType === 'refresh_token'),
+    ).toHaveLength(1);
+
+    const mcpRes = await fetch(server.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${result!.access_token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'initialize',
+        id: 1,
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '0.0.1' },
+        },
+      }),
+    });
+    expect(mcpRes.status).toBe(200);
+  });
+});
 
 describe('MCP OAuth Token Expiry Scenarios', () => {
   afterEach(() => {
@@ -276,7 +521,14 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
       const budgetMs = 2_000;
       const startedAt = Date.now();
       const discovery = ProviderRefreshFactory.discoverTools(
-        { serverName: 'test-srv', serverConfig: { type: 'streamable-http', url: server.url } },
+        {
+          serverName: 'test-srv',
+          serverConfig: {
+            type: 'streamable-http',
+            url: server.url,
+            oauthRefreshCoordination: true,
+          },
+        },
         {
           useOAuth: true,
           user: { id: 'u1' } as IUser,
@@ -384,7 +636,14 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
       >,
     ) =>
       new TokenLoadingFactory(
-        { serverName: 'test-srv', serverConfig: { type: 'streamable-http', url: server.url } },
+        {
+          serverName: 'test-srv',
+          serverConfig: {
+            type: 'streamable-http',
+            url: server.url,
+            oauthRefreshCoordination: true,
+          },
+        },
         {
           useOAuth: true,
           user: { id: 'u1' } as IUser,
@@ -1066,4 +1325,39 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
       expect(age < PENDING_STALE_MS).toBe(true);
     });
   });
+});
+
+describe('mixed-version token flow isolation', () => {
+  it.each([undefined, 'tenant/a'])(
+    'does not expose typed failures to legacy readers (%s)',
+    async (tenantId) => {
+      const manager = new FlowStateManager<MCPOAuthTokens>(new Keyv(), { ci: true, ttl: 30_000 });
+      const legacyId = MCPOAuthHandler.generateFlowId('u1', 'test-srv', tenantId);
+      const currentId = MCPOAuthHandler.generateTokenFlowId('u1', 'test-srv', tenantId);
+      expect(currentId).not.toBe(legacyId);
+      await manager.initFlow(legacyId, 'mcp_get_tokens');
+      await manager.initFlow(currentId, 'mcp_get_tokens');
+      const failure = Object.assign(new Error('retry later'), {
+        name: 'MCPTokenRefreshUnavailableError',
+      });
+      await manager.failFlow(currentId, 'mcp_get_tokens', failure);
+      expect(await manager.getFlowState(legacyId, 'mcp_get_tokens')).toMatchObject({
+        status: 'PENDING',
+      });
+      expect(await manager.getFlowState(currentId, 'mcp_get_tokens')).toMatchObject({
+        status: 'FAILED',
+        errorName: failure.name,
+      });
+      await manager.completeFlow(legacyId, 'mcp_get_tokens', {
+        access_token: 'legacy-token',
+        obtained_at: Date.now(),
+        token_type: 'Bearer',
+      });
+      expect(await manager.getFlowState(currentId, 'mcp_get_tokens')).toMatchObject({
+        status: 'FAILED',
+      });
+      await manager.deleteFlow(legacyId, 'mcp_get_tokens');
+      await manager.deleteFlow(currentId, 'mcp_get_tokens');
+    },
+  );
 });

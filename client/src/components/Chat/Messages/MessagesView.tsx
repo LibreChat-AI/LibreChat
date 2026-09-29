@@ -14,6 +14,7 @@ import { FLAT_THREAD, ThreadList } from './Thread';
 import { fontSizeAtom } from '~/store/fontSize';
 import MultiMessage from './MultiMessage';
 import ScrollButton from './ScrollButton';
+import PendingTurn from './PendingTurn';
 import MessageNav from './MessageNav';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -125,6 +126,11 @@ function MessagesViewContent({
                       )}
                     </RowMountProvider>
                   </div>
+                  <PendingTurn
+                    scrollableRef={scrollableRef}
+                    messages={messages}
+                    maximizeChatSpace={maximizeChatSpace}
+                  />
                 </>
               )}
               <div

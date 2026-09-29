@@ -1205,6 +1205,90 @@ describe('discoverConnectedAgents', () => {
     },
   );
 
+  it.each([
+    ['handoff', [{ from: 'A', to: 'B', edgeType: 'handoff' as const }], undefined],
+    ['legacy chain', undefined, ['B']],
+  ])('propagates owning-run cancellation during %s discovery', async (_case, edges, agentIds) => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      discoverConnectedAgents(
+        {
+          req: makeReq(),
+          res: makeRes(),
+          signal: controller.signal,
+          primaryConfig: makeConfig('A', edges),
+          agent_ids: agentIds,
+          allowedProviders: new Set(),
+          modelsConfig: { openai: ['gpt-4o'] },
+          loadTools: jest.fn(),
+        },
+        {
+          getAgent: jest.fn(async () => makeAgent('B', [])),
+          checkPermission: jest.fn().mockResolvedValue(true),
+          logViolation: jest.fn(),
+          db: {} as never,
+        },
+      ),
+    ).rejects.toBe(controller.signal.reason);
+  });
+
+  it.each(['getAgent', 'checkPermission', 'validateAgentModel', 'initializeAgent'] as const)(
+    'detaches promptly when cancellation occurs during %s',
+    async (stage) => {
+      const controller = new AbortController();
+      const reason = new Error(`stopped during ${stage}`);
+      let settlePending!: (value: unknown) => void;
+      const pending = new Promise<unknown>((resolve) => {
+        settlePending = resolve;
+      });
+      const getAgent = jest.fn(async () => makeAgent('B', []));
+      const checkPermission = jest.fn().mockResolvedValue(true);
+
+      if (stage === 'getAgent') {
+        getAgent.mockReturnValueOnce(pending as Promise<Agent>);
+      } else if (stage === 'checkPermission') {
+        checkPermission.mockReturnValueOnce(pending as Promise<boolean>);
+      } else if (stage === 'validateAgentModel') {
+        mockValidateAgentModel.mockReturnValueOnce(pending as Promise<{ isValid: boolean }>);
+      } else {
+        mockInitializeAgent.mockReturnValueOnce(pending as Promise<InitializedAgent>);
+      }
+
+      const discovery = discoverConnectedAgents(
+        {
+          req: makeReq(),
+          res: makeRes(),
+          signal: controller.signal,
+          primaryConfig: makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' as const }]),
+          allowedProviders: new Set(),
+          modelsConfig: { openai: ['gpt-4o'] },
+          loadTools: jest.fn(),
+        },
+        {
+          getAgent,
+          checkPermission,
+          logViolation: jest.fn(),
+          db: {} as never,
+        },
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort(reason);
+
+      await expect(discovery).rejects.toBe(reason);
+      if (stage === 'getAgent') {
+        settlePending(makeAgent('B', []));
+      } else if (stage === 'checkPermission') {
+        settlePending(true);
+      } else if (stage === 'validateAgentModel') {
+        settlePending({ isValid: true });
+      } else {
+        settlePending(makeConfig('B'));
+      }
+    },
+  );
+
   it('skips when request has no authenticated user', async () => {
     const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
 
@@ -1308,6 +1392,48 @@ describe('resolveSubagentGraphs', () => {
       primary: { token: 'primary-token' },
       graph: { token: 'graph-token' },
     });
+  });
+
+  it('propagates owning-run cancellation while resolving a graph member', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const primaryConfig = makeConfig('A') as GraphSubagentHostConfig;
+    primaryConfig.subagents = {
+      enabled: true,
+      graphs: [
+        {
+          type: 'team',
+          name: 'Team',
+          description: 'A remote graph team',
+          agent_ids: ['A', 'B'],
+          edges: [{ from: 'A', to: 'B', edgeType: 'direct' }],
+          entry_agent_id: 'A',
+          result_agent_id: 'B',
+        },
+      ],
+    };
+
+    await expect(
+      resolveSubagentGraphs(
+        {
+          req: makeReq(),
+          res: makeRes(),
+          signal: controller.signal,
+          primaryConfig,
+          rootConfigs: [primaryConfig],
+          allowedProviders: new Set(),
+          modelsConfig: { openai: ['gpt-4o'] },
+          loadTools: jest.fn(),
+          resourceType: 'remote_agent',
+        },
+        {
+          getAgent: jest.fn(async ({ id }: { id: string }) => makeAgent(id)),
+          checkPermission: jest.fn().mockResolvedValue(true),
+          logViolation: jest.fn(),
+          db: {} as never,
+        },
+      ),
+    ).rejects.toBe(controller.signal.reason);
   });
 
   it('does not charge initialized root members against the graph load budget', async () => {

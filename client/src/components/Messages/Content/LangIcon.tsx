@@ -77,6 +77,20 @@ const NAME_MAP: Record<string, string> = {
   groovy: 'apachegroovy',
 };
 
+/**
+ * Whether `lang` resolves to a brand glyph. Callers that need a fallback
+ * icon of their own can't infer it from `LangIcon` returning `null`,
+ * since that happens inside React's render.
+ */
+export function hasLangIcon(lang: string): boolean {
+  const key = lang.toLowerCase();
+  if (key === 'txt' || key === 'text') {
+    return true;
+  }
+  const resolved = LANG_ALIASES[key] ?? key;
+  return LANG_ICON_PATHS[NAME_MAP[resolved] ?? resolved] != null;
+}
+
 const LangIcon = React.memo(function LangIcon({ lang, className }: LangIconProps) {
   const key = lang.toLowerCase();
   if (key === 'txt' || key === 'text') {

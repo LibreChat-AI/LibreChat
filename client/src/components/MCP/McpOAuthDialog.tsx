@@ -11,7 +11,7 @@ import {
 } from '@librechat/client';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
-import { cn } from '~/utils';
+import { cn, openInNewTab } from '~/utils';
 
 interface McpOAuthDialogProps {
   open: boolean;
@@ -143,7 +143,7 @@ export default function McpOAuthDialog({
               type="button"
               variant="submit"
               className="flex-1"
-              onClick={() => window.open(oauthUrl, '_blank', 'noopener,noreferrer')}
+              onClick={() => openInNewTab(oauthUrl)}
             >
               {localize('com_ui_continue_oauth')}
               <ExternalLink className="size-4" aria-hidden="true" />

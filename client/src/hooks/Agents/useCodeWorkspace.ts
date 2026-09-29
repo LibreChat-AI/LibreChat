@@ -8,6 +8,9 @@ import {
 import {
   AgentCapabilities,
   CODE_ENVIRONMENT_DECISION_VERSION,
+  CODE_ENVIRONMENT_MOVE_VERSION,
+  CODE_ENVIRONMENT_TRANSITION_VERSION,
+  CODE_WORKSPACE_RECOVERY_VERSION,
   PermissionTypes,
   Permissions,
 } from 'librechat-data-provider';
@@ -20,8 +23,14 @@ import type {
   TConversation,
   TPublicCodeEnvironment,
 } from 'librechat-data-provider';
+import type { CodeEnvironmentReconciliation } from '~/store/codeEnvironmentReconciliation';
+import {
+  useCodeEnvironmentStatusQueries,
+  useGetStartupConfig,
+  useIsReplacingConversationCodeEnvironment,
+  useConversationCodeEnvironmentRecovery,
+} from '~/data-provider';
 import { collectReachableAgents, findExecutionEnvironment } from './useCodeApprovalMode';
-import { useCodeEnvironmentStatusQueries, useGetStartupConfig } from '~/data-provider';
 import { useWorkspacePreferences } from './workspacePreferences';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
@@ -33,6 +42,7 @@ export type CodeWorkspaceState =
   | 'without_attached'
   | 'loading'
   | 'choose'
+  | 'relocatable'
   | 'ready'
   | 'missing'
   | 'unavailable'
@@ -40,19 +50,54 @@ export type CodeWorkspaceState =
 
 export interface CodeWorkspaceEnvironmentResult {
   environment: TPublicCodeEnvironment;
-  state: Exclude<CodeWorkspaceState, 'not_required'>;
+  state: Exclude<CodeWorkspaceState, 'not_required' | 'relocatable'>;
   workspaces: CodeWorkspaceDescriptor[];
   selected?: CodeWorkspaceSelection;
 }
 
+/**
+ * A change of a saved chat's sealed decision that its owner may make from the composer. The
+ * decision stays sealed against implicit changes; only this explicit transition replaces it, and
+ * it never touches the chat's messages or copies a file between machines.
+ *
+ * - `move`: the attached decision no longer covers every environment the chat's agents use, most
+ *   often because an agent was pointed at a different machine or its saved workspace disappeared.
+ * - `attach`: the chat has been running without an attached environment and can now take one, so
+ *   switching a saved chat to a coding agent is a transition rather than a dead end.
+ */
+export interface CodeWorkspaceTransition {
+  kind: 'move' | 'attach';
+  conversationId: string;
+  /** The persisted selections this replaces, exactly as the conversation stores them; empty for a
+   *  chat that has been running without an attached environment. */
+  from: CodeWorkspaceSelection[];
+  /** Environments the decision covered that the agents no longer use. */
+  previous: Array<
+    Pick<TPublicCodeEnvironment, 'id'> & Partial<Pick<TPublicCodeEnvironment, 'name'>>
+  >;
+  /** Registered sealed selections the agents still use; a move carries them over unchanged. */
+  retained: CodeWorkspaceSelection[];
+  /** Environments needing a new selection, including those whose workspace disappeared. */
+  targets: CodeWorkspaceEnvironmentResult[];
+  /** Whether the chat may leave attached execution and continue without a workspace. Offered when
+   *  the machine it sealed is no longer usable, so an unreachable worker never silently becomes a
+   *  changed execution mode and never strands the composer either. */
+  detachable: boolean;
+}
+
 export interface CodeWorkspaceResult {
+  recovery?: CodeEnvironmentReconciliation;
   required: boolean;
   supportsEnvironmentDecisions: boolean;
   locked: boolean;
   mode?: CodeEnvironmentMode;
   state: CodeWorkspaceState;
   canSubmit: boolean;
+  /** Whether the composer shows the workspace control. A chat running without an attached
+   *  environment keeps it, so the state it is in stays visible and reversible. */
+  visible: boolean;
   environments: CodeWorkspaceEnvironmentResult[];
+  transition?: CodeWorkspaceTransition;
   selections?: CodeWorkspaceSelection[];
   resolveSelections: (
     selections?: CodeWorkspaceSelection[],
@@ -111,6 +156,20 @@ export default function useCodeWorkspace(
   const { data: startupConfig } = useGetStartupConfig();
   const supportsEnvironmentDecisions =
     startupConfig?.codeEnvironmentDecisionVersion === CODE_ENVIRONMENT_DECISION_VERSION;
+  const supportsEnvironmentMoves =
+    startupConfig?.codeEnvironmentMoveVersion === CODE_ENVIRONMENT_MOVE_VERSION;
+  /** Attaching an environment and leaving attached execution are advertised beside the move rather
+   *  than as a higher move version, so a deployment mid-rollout keeps serving the move to a client
+   *  that predates them, and a client that has them never offers a replica an attach it refuses as
+   *  `locked` or an empty target set it calls `invalid`. */
+  const supportsEnvironmentTransitions =
+    supportsEnvironmentDecisions &&
+    startupConfig?.codeEnvironmentTransitionVersion === CODE_ENVIRONMENT_TRANSITION_VERSION;
+  const recovery = useConversationCodeEnvironmentRecovery(conversation?.conversationId);
+  const replacingDecision = useIsReplacingConversationCodeEnvironment(conversation?.conversationId);
+  const supportsWorkspaceRecovery =
+    supportsEnvironmentMoves &&
+    startupConfig?.codeWorkspaceRecoveryVersion === CODE_WORKSPACE_RECOVERY_VERSION;
   const preferences = useWorkspacePreferences(conversation?.agent_id);
   const { agentsConfig, endpointsConfig } = useGetAgentsConfig();
   const canRunCode = useHasAccess({
@@ -208,14 +267,32 @@ export default function useCodeWorkspace(
     required && selectionMetadataComplete,
   );
   const storedSelections = conversation?.codeWorkspaces;
-  const attachedEnvironmentIds = new Set(attachedEnvironments.map(({ id }) => id));
+  const attachedEnvironmentIds = useMemo(
+    () => new Set(attachedEnvironments.map(({ id }) => id)),
+    [attachedEnvironments],
+  );
   const hasForeignStoredSelection = storedSelections?.some(
     ({ environmentId }) => !attachedEnvironmentIds.has(environmentId),
   );
   const isNewChat =
     conversation != null &&
     (conversation.conversationId == null || conversation.conversationId === 'new');
-  const locked = conversation != null && !isNewChat;
+  /** Only a recorded decision is sealed. A saved chat whose turns never involved a code-capable
+   *  agent stores none, so switching one to a coding agent still gets to choose; treating it as
+   *  sealed leaves the composer showing a decision its owner never made, with no workspace to
+   *  select and no way to submit.
+   *
+   *  Until the deployment advertises the decision protocol, a replica that still reads a
+   *  field-less row as a sealed `without_attached` may serve the next turn and reject an attached
+   *  choice as `locked`, so the legacy lock stays for the whole rollout window. Nothing is lost by
+   *  waiting: the composer only reports that unmade decision once the same flag is on. */
+  const holdsDecision =
+    conversation?.codeEnvironmentMode != null || (storedSelections?.length ?? 0) > 0;
+  const locked =
+    conversation != null && !isNewChat && (holdsDecision || !supportsEnvironmentDecisions);
+  /** A new chat and a saved chat that never decided are both still choosing, so agent defaults, a
+   *  remembered selection, and a sole workspace apply to each. */
+  const undecided = conversation != null && !locked;
   const environmentResults = attachedEnvironments.map((environment, index) => {
     const status = statuses[index];
     const workspaces =
@@ -224,7 +301,7 @@ export default function useCodeWorkspace(
         : [];
     let stored = storedSelections?.find(({ environmentId }) => environmentId === environment.id);
     let conflictingDefaults = false;
-    if (stored == null && isNewChat && !hasForeignStoredSelection) {
+    if (stored == null && undecided && !hasForeignStoredSelection) {
       const defaults = workspaceMetadata.defaults.get(environment.id) ?? new Set<string>();
       let preferred: string | undefined;
       if (defaults.size === 1) preferred = [...defaults][0];
@@ -243,8 +320,14 @@ export default function useCodeWorkspace(
       status: status?.data,
       workspaces,
       stored,
+      /** A saved chat already holds the server's decision, so a sole workspace is not a draft
+       *  choice there: auto-selecting it would submit a selection its persisted decision rejects.
+       *  Attached selections are sealed whether or not selection-less decisions are advertised. */
       hasStoredSelections:
-        stored != null || conflictingDefaults || hasForeignStoredSelection === true,
+        (locked && (supportsEnvironmentDecisions || (storedSelections?.length ?? 0) > 0)) ||
+        stored != null ||
+        conflictingDefaults ||
+        hasForeignStoredSelection === true,
     });
     let state: CodeWorkspaceEnvironmentResult['state'] = 'choose';
     if (status == null || status.isLoading) state = 'loading';
@@ -257,12 +340,21 @@ export default function useCodeWorkspace(
     } else if (status.data.workspaces == null) state = 'unsupported';
     else if (selected != null) state = 'ready';
     else if (stored != null) state = 'missing';
+    else if (workspaces.length === 0) state = 'unavailable';
     return { environment, state, workspaces, selected };
   });
 
   const resolveSelections = useCallback(
     (selections?: CodeWorkspaceSelection[]): CodeWorkspaceSelection[] | undefined => {
       if (!required || !selectionMetadataComplete || !isCodeWorkspaceSelections(selections ?? [])) {
+        return undefined;
+      }
+      /** A saved chat's decision is sealed as a whole: trimming a selection its agents no longer use
+       *  would submit a set the persisted decision rejects. */
+      if (
+        locked &&
+        selections?.some(({ environmentId }) => !attachedEnvironmentIds.has(environmentId))
+      ) {
         return undefined;
       }
       const resolved: CodeWorkspaceSelection[] = [];
@@ -291,13 +383,17 @@ export default function useCodeWorkspace(
       }
       return resolved.sort((a, b) => a.environmentId.localeCompare(b.environmentId));
     },
-    [environmentResults, required, selectionMetadataComplete],
+    [attachedEnvironmentIds, environmentResults, locked, required, selectionMetadataComplete],
   );
 
   const selections = resolveSelections(storedSelections);
   let inferredMode: CodeEnvironmentMode | undefined = conversation?.codeEnvironmentMode;
   if (inferredMode == null && storedSelections != null) {
     inferredMode = 'attached';
+  } else if (inferredMode == null && !isNewChat && supportsEnvironmentDecisions) {
+    // Suggestions are not consent. Existing non-coding chats start without workspace access;
+    // only an explicit selection in the composer may attach their first coding turn.
+    inferredMode = 'without_attached';
   } else if (inferredMode == null && selections != null) {
     inferredMode = 'attached';
   } else if (inferredMode == null && required && supportsEnvironmentDecisions) {
@@ -321,7 +417,16 @@ export default function useCodeWorkspace(
     ):
       | { codeEnvironmentMode?: CodeEnvironmentMode; codeWorkspaces?: CodeWorkspaceSelection[] }
       | undefined => {
+      if (recovery != null) return undefined;
       if (!required) return {};
+      /**
+       * A replacement in flight has no decided answer yet. The server checks for active work
+       * before it polls the target workspace, so a turn submitted during that poll starts under
+       * the decision being replaced, runs without the workspace its owner just chose, and the
+       * replacement still lands afterwards because the stored decision it swaps is unchanged.
+       * Nothing reports that to the reader, so the send waits instead.
+       */
+      if (replacingDecision) return undefined;
       const requestedMode =
         candidateMode ??
         inferredMode ??
@@ -341,9 +446,94 @@ export default function useCodeWorkspace(
         ? undefined
         : { codeEnvironmentMode: 'attached', codeWorkspaces };
     },
-    [inferredMode, required, resolveSelections, supportsEnvironmentDecisions],
+    [
+      inferredMode,
+      recovery,
+      replacingDecision,
+      required,
+      resolveSelections,
+      supportsEnvironmentDecisions,
+    ],
   );
   const canSubmit = resolveSubmission(storedSelections, conversation?.codeEnvironmentMode) != null;
+  let transition: CodeWorkspaceTransition | undefined;
+  if (
+    supportsEnvironmentMoves &&
+    locked &&
+    selectionMetadataComplete &&
+    state !== 'loading' &&
+    conversation?.conversationId != null
+  ) {
+    const configuredEnvironments = statefulCodeSessions?.environments;
+    const base = {
+      conversationId: conversation.conversationId,
+      from: storedSelections ?? [],
+      previous: (storedSelections ?? [])
+        .filter(({ environmentId }) => !attachedEnvironmentIds.has(environmentId))
+        .map(({ environmentId }) => ({
+          id: environmentId,
+          name: configuredEnvironments?.find(({ id }) => id === environmentId)?.name,
+        })),
+      retained: environmentResults.flatMap((result) =>
+        result.state === 'ready' && result.selected != null ? [result.selected] : [],
+      ),
+      targets: environmentResults.filter(
+        (result) =>
+          result.state === 'choose' || (supportsWorkspaceRecovery && result.state === 'missing'),
+      ),
+    };
+    /**
+     * A transition replaces the decision whole, so one that named only some of the environments
+     * the agents use would seal a decision the next turn refuses: `resolveSelections` resolves
+     * every environment or none. An environment that is unreachable, missing its workspace or on
+     * an outdated worker is neither carried over nor selectable, so no set of picks covers it, and
+     * offering the transition anyway would trade one dead end for a sealed one that needs a second
+     * transition to escape. Leaving attached execution stays available, since that is the escape.
+     */
+    const coversEveryEnvironment =
+      base.retained.length + base.targets.length === environmentResults.length;
+    if (
+      supportsEnvironmentTransitions &&
+      state === 'without_attached' &&
+      conversation.codeEnvironmentMode === 'without_attached' &&
+      base.targets.length > 0 &&
+      coversEveryEnvironment
+    ) {
+      /** Only a decision this chat actually recorded is sealed, so a chat that merely lacks the
+       *  fields still chooses in the composer and needs no transition. */
+      transition = { ...base, kind: 'attach', detachable: false };
+    } else if (
+      inferredMode === 'attached' &&
+      (storedSelections?.length ?? 0) > 0 &&
+      // Dropping the last attached agent makes ordinary chat sendable, but does not remove
+      // its persisted seal. Keep the explicit detach action available for that conversation.
+      (state === 'choose' || !canSubmit || attachedEnvironments.length === 0)
+    ) {
+      const move: CodeWorkspaceTransition = {
+        ...base,
+        kind: 'move',
+        detachable: supportsEnvironmentTransitions,
+        ...(coversEveryEnvironment ? {} : { retained: [], targets: [] }),
+      };
+      /** An uncoverable environment leaves nothing to move onto, so the transition is worth
+       *  offering only where leaving attached execution is also served. */
+      if (move.targets.length > 0 || move.retained.length > 0 || move.detachable) {
+        transition = move;
+        if (
+          state === 'choose' ||
+          (supportsWorkspaceRecovery && state === 'missing' && coversEveryEnvironment)
+        )
+          state = 'relocatable';
+      }
+    }
+  }
+  /** A sealed chat hides the control once its decision needs nothing from its owner, except while
+   *  it runs without a workspace: that state is worth naming, and attaching one starts here. */
+  const visible =
+    recovery != null ||
+    transition != null ||
+    (required &&
+      (!locked || !canSubmit || transition != null || inferredMode === 'without_attached'));
   const rememberSelection = useCallback(
     (selection: CodeWorkspaceSelection) => {
       preferences.remember(selection.environmentId, selection.workspaceId, [
@@ -353,13 +543,16 @@ export default function useCodeWorkspace(
     [preferences, workspaceMetadata.preferenceAgentIds],
   );
   return {
+    recovery,
     required,
     supportsEnvironmentDecisions,
     locked,
     mode: inferredMode,
     state,
     canSubmit,
+    visible,
     environments: environmentResults,
+    transition,
     selections,
     resolveSelections,
     resolveSubmission,

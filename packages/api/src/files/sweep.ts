@@ -63,6 +63,7 @@ type SweepDependencies = {
 type StartSweepDependencies = {
   sweepExpiredFiles: (options?: ExpiredFileSweepOptions) => Promise<ExpiredFileSweepResult>;
   runAsSystem: <T>(fn: () => Promise<T>) => Promise<T>;
+  isLeader: () => Promise<boolean>;
   logger: SweepLogger;
 };
 
@@ -368,9 +369,34 @@ export async function sweepExpiredFiles(
   return { scanned: files.length, deleted, failed };
 }
 
+/** Joins configuration readiness with distributed or primary-assigned ownership. */
+export function createClusteredFileSweep(
+  distributed: boolean,
+  start: (options: ExpiredFileSweepOptions) => NodeJS.Timeout | null,
+): { configure: (options: ExpiredFileSweepOptions) => void; assign: () => void } {
+  let eligible = distributed;
+  let started = false;
+  let options: ExpiredFileSweepOptions | undefined;
+  const maybeStart = () => {
+    if (!eligible || started || options == null) return;
+    started = true;
+    start(options);
+  };
+  return {
+    configure: (value) => {
+      options = value;
+      maybeStart();
+    },
+    assign: () => {
+      eligible = true;
+      maybeStart();
+    },
+  };
+}
+
 export function startExpiredFileSweep(
   options: ExpiredFileSweepOptions | undefined = {},
-  { sweepExpiredFiles, runAsSystem, logger }: StartSweepDependencies,
+  { sweepExpiredFiles, runAsSystem, isLeader, logger }: StartSweepDependencies,
 ): NodeJS.Timeout | null {
   const intervalMs = getFileRetentionSweepInterval();
   if (intervalMs === 0) {
@@ -386,6 +412,9 @@ export function startExpiredFileSweep(
 
     isSweeping = true;
     try {
+      if (!(await isLeader())) {
+        return;
+      }
       await runAsSystem(() => sweepExpiredFiles(options));
     } catch (error) {
       logger.error('[sweepExpiredFiles] Background sweep failed:', error);

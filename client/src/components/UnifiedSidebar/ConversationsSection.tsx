@@ -142,19 +142,27 @@ const ConversationsSection = memo(() => {
     void refetch();
   }, [refetch]);
 
-  const [isSearchLoading, setIsSearchLoading] = useState(
-    !!search.query && (search.isTyping || isLoading || isFetching),
-  );
+  const isSearchLoading =
+    search.isTyping ||
+    (!!search.query && (isLoading || (isFetching && conversations.length === 0)));
 
+  /** Projects, Pinned and Chats share one scroll container so the sidebar scrolls
+   *  as a single surface: the chats list is virtualized against this viewport
+   *  rather than scrolling inside a pane of its own. */
+  const [scrollViewport, setScrollViewport] = useState<HTMLDivElement | null>(null);
+  const [scrollContent, setScrollContent] = useState<HTMLDivElement | null>(null);
+
+  /** Searching replaces what the surface holds: Projects and Pinned leave and
+   *  the chats become results. A scroll position kept from the previous
+   *  contents would open those results partway down whenever they are long
+   *  enough for the browser not to clamp it, so the surface returns to the top
+   *  whenever it changes what it is showing. */
+  const isSearching = Boolean(search.query);
   useEffect(() => {
-    if (search.isTyping) {
-      setIsSearchLoading(true);
-    } else if (!isLoading && !isFetching) {
-      setIsSearchLoading(false);
-    } else if (!!search.query && (isLoading || isFetching)) {
-      setIsSearchLoading(true);
+    if (scrollViewport) {
+      scrollViewport.scrollTop = 0;
     }
-  }, [search.query, search.isTyping, isLoading, isFetching]);
+  }, [isSearching, scrollViewport]);
 
   return (
     <div
@@ -170,37 +178,48 @@ const ConversationsSection = memo(() => {
           <SearchBar isSmallScreen={isSmallScreen} />
         </div>
       )}
-      {!search.query && <ProjectsSection toggleNav={toggleNav} isAuthenticated={isAuthenticated} />}
-      {!search.query && (
-        <PinnedSection
-          conversations={pinnedConversations}
-          toggleNav={toggleNav}
-          isSmallScreen={isSmallScreen}
-          /* Only a successful drain proves the list is whole: a failed later
-             page still publishes partial data and stops fetching. The Chats filters
-             never reach this query, so nothing else can truncate it. */
-          membershipComplete={isPinnedComplete}
-          /* When that drain last ran, which decides whether it is current
-             enough to prune the stored order against. */
-          membershipUpdatedAt={pinnedUpdatedAt}
-        />
-      )}
-      <div className="flex min-h-0 flex-grow flex-col overflow-hidden">
-        <Conversations
-          conversations={conversations}
-          moveToTop={moveToTop}
-          toggleNav={toggleNav}
-          containerRef={conversationsRef}
-          loadMoreConversations={loadMoreConversations}
-          isLoading={isFetchingNextPage || isLoading}
-          isSearchLoading={isSearchLoading || isPreviousData}
-          isChatsExpanded={isChatsExpanded}
-          setIsChatsExpanded={setIsChatsExpanded}
-          hasNextPage={computedHasNextPage}
-          isError={isError}
-          onRetry={retryConversations}
-          chatsHeaderTrailing={chatsHeaderTrailing}
-        />
+      <div
+        ref={setScrollViewport}
+        className="scrollbar-gutter-stable min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+      >
+        {/* `min-h-full` keeps the sections filling a tall sidebar, so the chats
+            list still claims the space below them when there is little to show. */}
+        <div ref={setScrollContent} className="flex min-h-full flex-col">
+          {!search.query && (
+            <ProjectsSection toggleNav={toggleNav} isAuthenticated={isAuthenticated} />
+          )}
+          {!search.query && (
+            <PinnedSection
+              conversations={pinnedConversations}
+              toggleNav={toggleNav}
+              isSmallScreen={isSmallScreen}
+              /* Only a successful drain proves the list is whole: a failed later
+                 page still publishes partial data and stops fetching. The Chats filters
+                 never reach this query, so nothing else can truncate it. */
+              membershipComplete={isPinnedComplete}
+              /* When that drain last ran, which decides whether it is current
+                 enough to prune the stored order against. */
+              membershipUpdatedAt={pinnedUpdatedAt}
+            />
+          )}
+          <Conversations
+            conversations={conversations}
+            moveToTop={moveToTop}
+            toggleNav={toggleNav}
+            containerRef={conversationsRef}
+            loadMoreConversations={loadMoreConversations}
+            isLoading={isFetchingNextPage || isLoading}
+            isSearchLoading={isSearchLoading || isPreviousData}
+            isChatsExpanded={isChatsExpanded}
+            setIsChatsExpanded={setIsChatsExpanded}
+            hasNextPage={computedHasNextPage}
+            isError={isError}
+            onRetry={retryConversations}
+            chatsHeaderTrailing={chatsHeaderTrailing}
+            scrollViewport={scrollViewport}
+            scrollContent={scrollContent}
+          />
+        </div>
       </div>
     </div>
   );

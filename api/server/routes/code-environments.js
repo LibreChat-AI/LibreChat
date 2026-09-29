@@ -1,5 +1,6 @@
 const express = require('express');
 const {
+  GenerationJobManager,
   createCodeEnvironmentHttpHandlers,
   codeEnvironmentPairingLimiter,
   codeEnvironmentStatusIpLimiter,
@@ -19,6 +20,11 @@ function getHandlers() {
       getAppConfig,
       registry: getCodeEnvironmentRegistry(),
       principalIsActive: db.isAgentTriggerPrincipalActive,
+      conversations: {
+        get: db.getConvoCodeEnvironmentDecision,
+        replaceDecision: db.replaceConvoCodeEnvironmentDecision,
+      },
+      generations: GenerationJobManager,
     });
   }
   return handlers;
@@ -43,5 +49,11 @@ router.patch('/:environmentId/settings', (req, res, next) =>
   getHandlers().updateSettings(req, res, next),
 );
 router.delete('/:environmentId', (req, res, next) => getHandlers().remove(req, res, next));
+router.patch(
+  '/conversations/:conversationId/decision',
+  codeEnvironmentStatusIpLimiter,
+  codeEnvironmentStatusLimiter,
+  (req, res, next) => getHandlers().moveConversationDecision(req, res, next),
+);
 
 module.exports = router;

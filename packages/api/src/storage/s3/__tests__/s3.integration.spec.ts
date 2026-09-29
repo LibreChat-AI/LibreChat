@@ -193,7 +193,7 @@ describe('S3 Integration Tests', () => {
 
       const savedFile = await saveURLToS3WithMetadata({
         userId: TEST_USER_ID,
-        URL: 'https://raw.githubusercontent.com/danny-avila/LibreChat/main/package.json',
+        URL: 'https://raw.githubusercontent.com/LibreChat-AI/LibreChat/main/package.json',
         fileName,
         basePath: TEST_BASE_PATH,
       });

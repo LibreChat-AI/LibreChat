@@ -1211,6 +1211,24 @@ describe('loadMCPServerCatalogs — credential refresh during discovery', () => 
     expect(result.serversWithoutTools).toEqual([]);
   });
 
+  it.each([false, true])(
+    'tracks peer adoption and still fences a later writer (%s)',
+    async (superseded) => {
+      const fence = createFence();
+      const discoverServerTools = jest.fn(async (options: ToolDiscoveryOptions) => {
+        await fence.rotateOnAnotherReplica();
+        await options.onOAuthCredentialsAdopted?.('generation-2');
+        if (superseded) await fence.rotateOnAnotherReplica();
+        return { tools: listedTools };
+      });
+      const result = await loadCatalogs(fence, discoverServerTools);
+      expect(result.serverTools).toEqual(
+        superseded ? new Map() : new Map([[serverName, recoveredTools]]),
+      );
+      expect(result.serversWithoutTools).toEqual(superseded ? [serverName] : []);
+    },
+  );
+
   it.each([
     ['another replica', 'rotateOnAnotherReplica'],
     ['another request on this replica', 'rotateOnThisReplica'],
@@ -2127,4 +2145,36 @@ describe('recoverMCPServerCatalogs — discovery that outlives its budget', () =
     expect(result).toEqual(new Map([['closing', availableTools('closing-tool')]]));
     expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Discovery for closing'));
   });
+});
+
+it('recovers a catalog without loading an unused shadowed user API key', async () => {
+  const discoverServerTools = jest.fn().mockResolvedValue({ tools: [] });
+  const loadUserMCPAuthMap = jest.fn().mockResolvedValue({});
+  await recoverMCPServerCatalogs(
+    {
+      user,
+      servers: [
+        {
+          serverName: 'shadowed',
+          serverConfig: {
+            type: 'streamable-http',
+            url: 'https://shadowed.example.com/mcp',
+            apiKey: { source: 'user', authorization_type: 'basic' },
+            headers: { Authorization: 'Basic {{MCP_API_KEY}}' },
+            requestHeaders: { authorization: 'Bearer request-secret' },
+            customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Generated key' } },
+          },
+        },
+      ],
+    },
+    {
+      loadUserMCPAuthMap,
+      discoverServerTools,
+      formatServerTools: jest.fn().mockReturnValue({}),
+      getRecoveryGeneration: jest.fn().mockResolvedValue('generation-1'),
+      recoveryTracker,
+    },
+  );
+  expect(loadUserMCPAuthMap).not.toHaveBeenCalled();
+  expect(discoverServerTools).toHaveBeenCalledTimes(1);
 });

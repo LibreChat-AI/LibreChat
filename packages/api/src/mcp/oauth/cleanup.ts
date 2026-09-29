@@ -230,6 +230,7 @@ export async function clearStoredMCPOAuthState({
   const baseFlowId = dependencies.oauthHandler.generateFlowId(userId, serverName);
   const flowDeletes = [
     [dependencies.oauthHandler.generateTokenFlowId(userId, serverName, tenantId), 'mcp_get_tokens'],
+    [dependencies.oauthHandler.generateFlowId(userId, serverName, tenantId), 'mcp_get_tokens'],
     [baseFlowId, 'mcp_get_tokens'],
     ...(!skipOAuthFlows
       ? ([

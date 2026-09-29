@@ -1,5 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import { EModelEndpoint, FileSources } from 'librechat-data-provider';
+import { EModelEndpoint, FileContext, FileSources } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
 
@@ -18,7 +18,9 @@ import {
   getAgentContextAttachments,
   buildAgentContextAttachmentsByAgentId,
   isModelBoundAttachmentFile,
+  isToolOwnedAttachment,
 } from './attachments';
+import { applyTurnDelivery, resolveTurnDeliveryRouting } from './files/delivery';
 
 const makeTextFile = (file_id: string, filename: string, text: string): IMongoFile =>
   ({
@@ -668,5 +670,116 @@ describe('agent attachment helpers', () => {
         req,
       }),
     ).resolves.toEqual(new Map());
+  });
+});
+
+describe('files that belong to a tool', () => {
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const sandboxRef = {
+    kind: 'user',
+    id: 'user-1',
+    file_id: 'sandbox-file',
+    storage_session_id: 's1',
+  };
+
+  it('keeps a code output tool-owned after priming clears its expired sandbox references', () => {
+    const output = {
+      file_id: 'rows-json',
+      type: 'application/json',
+      context: FileContext.execute_code,
+      text: '{"rows":[]}',
+      metadata: {},
+    } as unknown as IMongoFile;
+
+    expect(isToolOwnedAttachment(output)).toBe(true);
+    expect(isModelBoundAttachmentFile(output)).toBe(false);
+  });
+
+  it('still treats a route-less user upload without tool references as prompt content', () => {
+    const upload = {
+      file_id: 'legacy-upload',
+      type: 'application/pdf',
+      context: FileContext.message_attachment,
+      metadata: {},
+    } as unknown as IMongoFile;
+
+    expect(isToolOwnedAttachment(upload)).toBe(false);
+    expect(isModelBoundAttachmentFile(upload)).toBe(true);
+  });
+
+  it('admits a Run Code thread shaped like the one the history limit locked', () => {
+    /* Spreadsheets routed to tools with text stored for the fallback, one screenshot, and the
+     * code outputs of an earlier run whose expired sandbox references priming cleared. Counted
+     * as prompt attachments, the outputs and the spreadsheets' fallback text filled the per-turn
+     * count past its default of ten, so every later turn was refused. */
+    const config = {
+      fileConfig: {
+        textFallbackWithoutTools: true,
+        endpoints: {
+          default: { defaultLLMDeliveryPath: { overrides: { [XLSX]: 'none' as const } } },
+        },
+      },
+    };
+    const routing = resolveTurnDeliveryRouting({
+      agent: { provider: EModelEndpoint.bedrock, endpoint: EModelEndpoint.bedrock },
+      config,
+    });
+    const consumers = { executeCode: true, fileSearch: false };
+    const sheet = (file_id: string, extra: object = {}) =>
+      ({
+        file_id,
+        type: XLSX,
+        bytes: 200_000,
+        source: FileSources.local,
+        context: FileContext.message_attachment,
+        llmDeliveryPath: 'none',
+        text: 'x'.repeat(110_000),
+        metadata: { destinationChosen: false },
+        ...extra,
+      }) as unknown as IMongoFile;
+    const olderSheets = ['q3-actuals', 'q3-budget', 'q3-map'].map((id) =>
+      sheet(id, {
+        llmDeliveryPath: 'text',
+        metadata: { destinationChosen: false, codeEnvRef: sandboxRef },
+      }),
+    );
+    const newSheets = ['s1', 's2', 's3', 's4', 's5', 's6'].map((id) => sheet(id));
+    const screenshot = {
+      file_id: 'screenshot',
+      type: 'image/png',
+      bytes: 380_971,
+      source: FileSources.local,
+      context: FileContext.message_attachment,
+      llmDeliveryPath: 'provider',
+      metadata: { destinationChosen: false },
+    } as unknown as IMongoFile;
+    const outputs = Array.from(
+      { length: 8 },
+      (_, index) =>
+        ({
+          file_id: `output-${index}`,
+          type: 'application/json',
+          bytes: 20_000,
+          source: FileSources.local,
+          context: FileContext.execute_code,
+          text: 'y'.repeat(20_000),
+          metadata: {},
+        }) as unknown as IMongoFile,
+    );
+
+    const admitted = applyTurnDelivery([...olderSheets, screenshot, ...newSheets, ...outputs], {
+      routing,
+      consumers,
+    }).filter(isModelBoundAttachmentFile);
+
+    expect(admitted.map((file) => file.file_id)).toEqual(['screenshot']);
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: admitted,
+        fileConfig: config.fileConfig,
+        endpoint: EModelEndpoint.bedrock,
+        countRepeatedExtractedText: true,
+      }),
+    ).not.toThrow();
   });
 });

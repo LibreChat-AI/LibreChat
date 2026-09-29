@@ -83,8 +83,10 @@ export function shouldPollAgentQueuedTurns(
   receipts: unknown,
   reconcileUntil?: number,
   observedAt = Date.now(),
+  expectsReceipts = false,
 ): boolean {
   return (
+    expectsReceipts ||
     (reconcileUntil != null && observedAt < reconcileUntil) ||
     (Array.isArray(receipts) &&
       receipts.some(
@@ -117,11 +119,18 @@ export function isQueuedTurnSuccessorOwed(receipts: unknown): boolean {
   );
 }
 
+/**
+ * `expectsReceipts` keeps the poll alive while the caller still holds a
+ * server-owned row the projection has not settled. A snapshot fetched while
+ * the enqueue is still committing can come back empty, and a poll that stops
+ * on that answer would leave a fast successor unnoticed until the next focus.
+ */
 export function useAgentQueuedTurns(
   conversationId: string,
   enabled: boolean,
   clientRequestIds: string[] = [],
   reconcileUntil?: number,
+  expectsReceipts = false,
 ) {
   const queryClient = useQueryClient();
   const knownIds = [...new Set(clientRequestIds)].sort();
@@ -138,7 +147,9 @@ export function useAgentQueuedTurns(
     refetchOnMount: 'always',
     refetchOnWindowFocus: 'always',
     refetchInterval: (receipts) =>
-      shouldPollAgentQueuedTurns(receipts, reconcileUntil) ? 2_000 : false,
+      shouldPollAgentQueuedTurns(receipts, reconcileUntil, Date.now(), expectsReceipts)
+        ? 2_000
+        : false,
     retry: false,
   });
   const { refetch } = query;

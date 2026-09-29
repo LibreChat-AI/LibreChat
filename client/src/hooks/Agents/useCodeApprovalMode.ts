@@ -8,6 +8,7 @@ import {
 } from 'librechat-data-provider';
 import type { Agent, TAgentsMap, TConfig, TPublicCodeEnvironment } from 'librechat-data-provider';
 import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
+import { useCodeApprovalModePreference } from './codeApprovalPreference';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useGetAgentsConfig from './useGetAgentsConfig';
 import { useAgentsMapContext } from '~/Providers';
@@ -22,6 +23,7 @@ export default function useCodeApprovalMode(
 } {
   const { agentsConfig } = useGetAgentsConfig();
   const agentsMap = useAgentsMapContext();
+  const preference = useCodeApprovalModePreference();
   const { agent: primaryAgent } = useAgentToolPermissions(conversation?.agent_id);
   const { agent: addedAgent } = useAgentToolPermissions(addedConversation?.agent_id);
   const statefulCodeSessions = agentsConfig?.statefulCodeSessions as
@@ -81,7 +83,12 @@ export default function useCodeApprovalMode(
     if (fullAccessAllowed) allowed.add('fullAccess');
     return CODE_APPROVAL_MODES.filter((mode) => allowed.has(mode));
   }, [attachedEnvironments, available, codeEnvironments, endpointModes, reachable.complete]);
-  const requested = conversation?.codeApprovalMode ?? 'ask';
+  /** A conversation that carries no mode of its own opens on the reader's last
+   *  pick in this browser, so choosing `acceptEdits` or `fullAccess` survives a
+   *  new chat and a reload instead of being re-picked every time. The remembered
+   *  value is a preference, not a grant: it passes the same policy gate below as
+   *  a stored one, so a mode current policy no longer allows falls back to `ask`. */
+  const requested = conversation?.codeApprovalMode ?? preference.get() ?? 'ask';
   /**
    * Fail closed while agent/environment metadata is incomplete. An affirmative
    * server capability means `ask` is safe to submit even before an attached

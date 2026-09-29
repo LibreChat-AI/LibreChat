@@ -33,10 +33,10 @@ import {
   inferClientAuthMethod,
 } from './methods';
 import { isSSRFTarget, resolveHostnameSSRF, isOAuthUrlAllowed } from '~/auth';
+import { MCPTokenStorage, MCPTokenRefreshUnavailableError } from './tokens';
 import { probeResourceMetadataHint } from './resourceHint';
 import { createHardenedOAuthFetch } from './hardenedFetch';
 import { sanitizeUrlForLogging } from '~/mcp/utils';
-import { MCPTokenStorage } from './tokens';
 import { getOAuthUrlPort } from './url';
 
 /** Type for the OAuth metadata from the SDK */
@@ -589,8 +589,94 @@ export class MCPOAuthHandler {
     }
   }
 
-  private static appendResourceParameter(body: URLSearchParams, resource?: string): void {
-    if (!resource) {
+  /**
+   * RFC 8707 makes `resource` OPTIONAL, and authorization servers that reject it cannot
+   * complete a flow that sends it — Entra ID v2.0 answers `AADSTS9010010` when `resource`
+   * accompanies `scope`. Opting out suppresses the parameter without weakening the
+   * RFC 9728 §3.3 binding, which {@link discoverResourceMetadata} asserts at discovery and
+   * {@link completeOAuthFlow} re-asserts at token exchange regardless of this setting.
+   * See `OAuthOptionsSchema.send_resource_parameter`.
+   */
+  private static shouldSendResourceParameter(config?: MCPOptions['oauth']): boolean {
+    return config?.send_resource_parameter !== false;
+  }
+
+  /**
+   * Removes a `resource` parameter that came from the authorization endpoint itself.
+   * {@link startAuthorization} copies the endpoint's query string verbatim, so a `resource`
+   * an admin left in `authorization_url` — or one present on a discovered endpoint —
+   * survives into the generated request. Opting out has to delete it rather than merely
+   * decline to add one, or the parameter still reaches the provider that rejects it and
+   * the flow this option exists to repair keeps failing.
+   */
+  /**
+   * Returns `endpoint` without its `resource` query parameter.
+   *
+   * The MCP SDK uses `token_endpoint` verbatim and the refresh paths post to the resolved
+   * token URL as-is, so a `resource` an admin left in `token_url` — or one present on a
+   * discovered token endpoint — still reaches the provider even though every place
+   * LibreChat *adds* the parameter is gated. Only the outbound URL is rewritten: stored
+   * metadata keeps its configured form, so {@link assertStoredClientBinding} still matches
+   * and changing the option does not force re-authentication.
+   */
+  private static withoutResourceParameter(
+    endpoint: string | URL,
+    shouldSend: boolean,
+    serverName: string,
+  ): string | URL {
+    if (shouldSend) {
+      return endpoint;
+    }
+    try {
+      const url = new URL(typeof endpoint === 'string' ? endpoint : endpoint.href);
+      if (!url.searchParams.has('resource')) {
+        return endpoint;
+      }
+      url.searchParams.delete('resource');
+      logger.debug(
+        `[MCPOAuth] Removed inherited resource parameter from the token endpoint for ${serverName}; disabled by send_resource_parameter`,
+      );
+      return typeof endpoint === 'string' ? url.href : url;
+    } catch {
+      /** Endpoints are validated absolute URLs; never fail a refresh over sanitization. */
+      return endpoint;
+    }
+  }
+
+  private static stripInheritedResourceParameter(authorizationUrl: URL, serverName: string): void {
+    if (!authorizationUrl.searchParams.has('resource')) {
+      return;
+    }
+    authorizationUrl.searchParams.delete('resource');
+    logger.debug(
+      `[MCPOAuth] Removed inherited resource parameter from the authorization URL for ${serverName}; disabled by send_resource_parameter`,
+    );
+  }
+
+  /**
+   * Whether a pending flow's captured RFC 8707 decision still matches the live config.
+   *
+   * {@link assertStoredClientBinding} deliberately ignores this setting so that flipping it
+   * does not invalidate stored tokens. A pending flow cannot be treated the same way: its
+   * authorization URL was already built with or without `resource`, so replaying it would
+   * reissue exactly the request the operator just reconfigured away from. A flow initiated
+   * before this field existed carries no flag and reads as "sending", which is what it did.
+   */
+  public static matchesResourceParameterDecision(
+    flowMetadata: Pick<MCPOAuthFlowMetadata, 'sendResourceParameter'> | undefined,
+    config?: MCPOptions['oauth'],
+  ): boolean {
+    return (
+      (flowMetadata?.sendResourceParameter !== false) === this.shouldSendResourceParameter(config)
+    );
+  }
+
+  private static appendResourceParameter(
+    body: URLSearchParams,
+    resource?: string,
+    config?: MCPOptions['oauth'],
+  ): void {
+    if (!resource || !this.shouldSendResourceParameter(config)) {
       return;
     }
     body.set('resource', resource);
@@ -730,6 +816,7 @@ export class MCPOAuthHandler {
 
     try {
       this.assertNoUnpinnedClientSecret(config);
+      const sendResourceParameter = this.shouldSendResourceParameter(config);
 
       if (config?.authorization_url && config?.token_url && config?.client_id) {
         logger.debug(`[MCPOAuth] Using pre-configured OAuth settings for ${serverName}`);
@@ -883,7 +970,12 @@ export class MCPOAuthHandler {
         authorizationUrl.searchParams.set('state', state);
         logger.debug(`[MCPOAuth] Added state parameter to authorization URL`);
 
-        if (resourceMetadata?.resource) {
+        if (!sendResourceParameter) {
+          this.stripInheritedResourceParameter(authorizationUrl, serverName);
+          logger.debug(
+            `[MCPOAuth] Omitting resource parameter from pre-configured authorization URL for ${serverName}; disabled by send_resource_parameter`,
+          );
+        } else if (resourceMetadata?.resource) {
           const canonicalResource = new URL(resourceMetadata.resource).href;
           authorizationUrl.searchParams.set('resource', canonicalResource);
           logger.debug(
@@ -911,6 +1003,7 @@ export class MCPOAuthHandler {
           clientSource: 'configured',
           metadata,
           resourceMetadata,
+          ...(!sendResourceParameter && { sendResourceParameter: false }),
           ...(allowedDomains !== undefined && { allowedDomains }),
           ...(allowedAddresses !== undefined && { allowedAddresses }),
           ...(Object.keys(oauthHeaders).length > 0 && { oauthHeaders }),
@@ -1067,7 +1160,12 @@ export class MCPOAuthHandler {
         authorizationUrl.searchParams.set('state', state);
         logger.debug(`[MCPOAuth] Added state parameter to authorization URL`);
 
-        if (resourceMetadata?.resource) {
+        if (!sendResourceParameter) {
+          this.stripInheritedResourceParameter(authorizationUrl, serverName);
+          logger.debug(
+            `[MCPOAuth] Omitting resource parameter from authorization URL for ${serverName}; disabled by send_resource_parameter`,
+          );
+        } else if (resourceMetadata?.resource) {
           /**
            * `resource` was already canonicalized and bound to `serverUrl` inside
            * {@link discoverMetadata} via {@link assertResourceBoundToServer}, so `new URL`
@@ -1117,6 +1215,7 @@ export class MCPOAuthHandler {
         clientSource,
         metadata,
         resourceMetadata,
+        ...(!sendResourceParameter && { sendResourceParameter: false }),
         ...(allowedDomains !== undefined && { allowedDomains }),
         ...(allowedAddresses !== undefined && { allowedAddresses }),
         ...(Object.keys(oauthHeaders).length > 0 && { oauthHeaders }),
@@ -1194,6 +1293,7 @@ export class MCPOAuthHandler {
       }
 
       let resource: URL | undefined;
+      const sendResourceParameter = metadata.sendResourceParameter !== false;
       if (metadata.resourceMetadata) {
         /**
          * Defense-in-depth: re-assert the RFC 9728 §3.3 binding against the flow's stored
@@ -1203,15 +1303,31 @@ export class MCPOAuthHandler {
          * teams to flush flow state on deploy (GHSA-gvpj-vm2f-2m23).
          */
         this.assertResourceBoundToServer(metadata.serverUrl, metadata.resourceMetadata);
-        if (metadata.resourceMetadata.resource) {
+        if (!sendResourceParameter) {
+          logger.debug(
+            `[MCPOAuth] Omitting resource parameter from token exchange for flow ${flowId}; disabled by send_resource_parameter`,
+          );
+        } else if (metadata.resourceMetadata.resource) {
           resource = new URL(metadata.resourceMetadata.resource);
           logger.debug(`[MCPOAuth] Resource URL for flow ${flowId}: ${resource.toString()}`);
         }
       }
 
+      const exchangeMetadata =
+        sendResourceParameter || typeof metadata.metadata.token_endpoint !== 'string'
+          ? metadata.metadata
+          : {
+              ...metadata.metadata,
+              token_endpoint: this.withoutResourceParameter(
+                metadata.metadata.token_endpoint,
+                false,
+                metadata.serverName,
+              ) as string,
+            };
+
       const tokens = await exchangeAuthorization(metadata.serverUrl, {
         redirectUri: metadata.clientInfo.redirect_uris?.[0] || this.getDefaultRedirectUri(),
-        metadata: metadata.metadata as unknown as SDKOAuthMetadata,
+        metadata: exchangeMetadata as unknown as SDKOAuthMetadata,
         clientInformation: metadata.clientInfo,
         codeVerifier: metadata.codeVerifier,
         authorizationCode,
@@ -1237,7 +1353,10 @@ export class MCPOAuthHandler {
         ...tokens,
         credential_set_id: randomBytes(16).toString('hex'),
         obtained_at: Date.now(),
-        expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+        expires_at:
+          typeof tokens.expires_in === 'number' && Number.isFinite(tokens.expires_in)
+            ? Date.now() + tokens.expires_in * 1000
+            : undefined,
       };
 
       /**
@@ -1360,9 +1479,13 @@ export class MCPOAuthHandler {
     };
   }
 
-  /** Same shape as `generateFlowId`; kept distinct so token-fetch flows can diverge from OAuth flows */
+  /**
+   * Token readers using typed retryable outcomes cannot share pending work with legacy readers,
+   * which reconstruct every serialized failure as an untyped Error and initiate consent. Keep
+   * OAuth callback IDs stable, but isolate this version of the token-read protocol in its own key.
+   */
   public static generateTokenFlowId(userId: string, serverName: string, tenantId?: string): string {
-    return this.generateFlowId(userId, serverName, tenantId);
+    return `tokens-v2:${this.generateFlowId(userId, serverName, tenantId)}`;
   }
 
   /**
@@ -1591,8 +1714,27 @@ export class MCPOAuthHandler {
       ...tokens,
       obtained_at: Date.now(),
       expires_at:
-        typeof tokens.expires_in === 'number' ? Date.now() + tokens.expires_in * 1000 : undefined,
+        typeof tokens.expires_in === 'number' && Number.isFinite(tokens.expires_in)
+          ? Date.now() + tokens.expires_in * 1000
+          : undefined,
     } as MCPOAuthTokens;
+  }
+
+  /** HTTP outage/rate-limit status is authoritative, even if a proxy body names a bad grant. */
+  private static async assertRefreshEndpointAvailable(
+    response: Response,
+    serverName: string,
+  ): Promise<void> {
+    if (!(response.status === 408 || response.status === 429 || response.status >= 500)) {
+      return;
+    }
+    // Do not feed an outage body into the legacy invalid_client/invalid_grant message classifiers,
+    // or log provider-controlled text that may contain credentials. No automatic redemption retry.
+    await response.body?.cancel().catch(() => undefined);
+    throw new MCPTokenRefreshUnavailableError(
+      serverName,
+      new Error(`Token refresh temporarily unavailable (HTTP ${response.status})`),
+    );
   }
 
   /**
@@ -1614,8 +1756,15 @@ export class MCPOAuthHandler {
     body: URLSearchParams,
     serverName: string,
     signal?: AbortSignal,
+    config?: MCPOptions['oauth'],
   ): Promise<Response> {
+    tokenUrl = this.withoutResourceParameter(
+      tokenUrl,
+      this.shouldSendResourceParameter(config),
+      serverName,
+    );
     const response = await oauthFetch(tokenUrl, { method: 'POST', headers, body, signal });
+    await this.assertRefreshEndpointAvailable(response, serverName);
     if (response.ok || !body.has('scope')) {
       return response;
     }
@@ -1632,7 +1781,9 @@ export class MCPOAuthHandler {
       `[MCPOAuth] ${serverName} rejected the scope parameter on token refresh (HTTP ${response.status}); retrying without scope per RFC 6749 §6`,
     );
     body.delete('scope');
-    return oauthFetch(tokenUrl, { method: 'POST', headers, body, signal });
+    const retried = await oauthFetch(tokenUrl, { method: 'POST', headers, body, signal });
+    await this.assertRefreshEndpointAvailable(retried, serverName);
+    return retried;
   }
 
   /**
@@ -1819,7 +1970,7 @@ export class MCPOAuthHandler {
         if (metadata.clientInfo.scope) {
           body.append('scope', metadata.clientInfo.scope);
         }
-        this.appendResourceParameter(body, metadata.resource);
+        this.appendResourceParameter(body, metadata.resource, config);
 
         /**
          * Forward Auth0-style `audience` on refresh by default — Auth0 strips the
@@ -1892,6 +2043,7 @@ export class MCPOAuthHandler {
           body,
           metadata.serverName,
           signal,
+          config,
         );
 
         if (!response.ok) {
@@ -1924,7 +2076,7 @@ export class MCPOAuthHandler {
         if (config.scope) {
           body.append('scope', config.scope);
         }
-        this.appendResourceParameter(body, metadata.resource);
+        this.appendResourceParameter(body, metadata.resource, config);
 
         const headers: HeadersInit = {
           Accept: 'application/json',
@@ -1980,6 +2132,7 @@ export class MCPOAuthHandler {
           body,
           metadata.serverName,
           signal,
+          config,
         );
 
         if (!response.ok) {
@@ -2029,7 +2182,7 @@ export class MCPOAuthHandler {
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       });
-      this.appendResourceParameter(body, metadata.resource);
+      this.appendResourceParameter(body, metadata.resource, config);
 
       const headers: HeadersInit = {
         Accept: 'application/json',
@@ -2038,13 +2191,21 @@ export class MCPOAuthHandler {
       };
 
       const oauthFetch = createHardenedOAuthFetch({ allowedDomains, allowedAddresses });
-      const response = await oauthFetch(tokenUrl, {
-        method: 'POST',
-        headers,
-        body,
-        signal,
-      });
+      const response = await oauthFetch(
+        this.withoutResourceParameter(
+          tokenUrl,
+          this.shouldSendResourceParameter(config),
+          metadata.serverName,
+        ),
+        {
+          method: 'POST',
+          headers,
+          body,
+          signal,
+        },
+      );
 
+      await this.assertRefreshEndpointAvailable(response, metadata.serverName);
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(

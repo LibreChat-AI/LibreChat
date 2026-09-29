@@ -58,6 +58,9 @@ jest.mock('~/server/services/GraphTokenService', () => ({
 jest.mock('~/cache', () => ({
   getLogStores: jest.fn(() => ({})),
 }));
+jest.mock('~/server/services/Schedules', () => ({
+  recordMCPToolAuthFailure: jest.fn(async () => true),
+}));
 
 const { reinitMCPServer, loadMCPServerCatalogs } = require('./mcp');
 
@@ -314,6 +317,7 @@ describe('reinitMCPServer — customUserVars gating (issue #10969)', () => {
   });
 
   it('preserves cached tools when live recovery returns an incomplete snapshot', async () => {
+    const signal = new AbortController().signal;
     const fetchOrderedToolsSnapshot = jest.fn().mockResolvedValue({
       tools: [{ name: 'partial', inputSchema: { type: 'object' } }],
       complete: false,
@@ -325,11 +329,13 @@ describe('reinitMCPServer — customUserVars gating (issue #10969)', () => {
     const result = await reinitMCPServer({
       user,
       serverName,
+      signal,
       serverConfig: { type: 'streamable-http', url: 'https://thingy.example.com/mcp' },
     });
 
     expect(result.tools).toBeNull();
     expect(fetchOrderedToolsSnapshot).toHaveBeenCalledTimes(1);
+    expect(fetchOrderedToolsSnapshot).toHaveBeenCalledWith(undefined, signal);
     expect(mockUpdateMCPServerTools).not.toHaveBeenCalled();
   });
 
@@ -533,6 +539,75 @@ describe('reinitMCPServer — recovery of a server that failed inspection', () =
   });
 });
 
+describe('scheduled MCP connection initialization', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('records a typed missing OBO provider before any tool instance exists', async () => {
+    const { OboTokenResolutionError } = require('@librechat/api');
+    const failure = new OboTokenResolutionError('missing_upstream_provider', 'Provider missing');
+    const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+    mockGetConnection.mockRejectedValueOnce(failure);
+
+    await expect(
+      reinitMCPServer({
+        user: { id: 'owner' },
+        serverName: 'Graph',
+        serverConfig: {
+          type: 'streamable-http',
+          url: 'https://mcp.example.com',
+          source: 'yaml',
+          obo: { scopes: 'api://graph/.default' },
+        },
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+      }),
+    ).rejects.toBe(failure);
+    expect(receipt).toHaveBeenCalledTimes(1);
+    expect(receipt).toHaveBeenCalledWith({
+      error: failure,
+      streamId: 'scheduled-conversation',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Graph',
+    });
+  });
+
+  it('preserves the connection error when the receipt store fails', async () => {
+    const { OboTokenResolutionError } = require('@librechat/api');
+    const failure = new OboTokenResolutionError('missing_upstream_provider', 'Provider missing');
+    const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+    receipt.mockRejectedValueOnce(new Error('Mongo unavailable'));
+    mockGetConnection.mockRejectedValueOnce(failure);
+
+    await expect(
+      reinitMCPServer({
+        user: { id: 'owner' },
+        serverName: 'Graph',
+        serverConfig: { type: 'streamable-http', url: 'https://mcp.example.com', source: 'yaml' },
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it('does not construct the schedule facade for unrelated typed OBO failures', async () => {
+    const { OboTokenResolutionError } = require('@librechat/api');
+    const failure = new OboTokenResolutionError('session_refresh_failed', 'Retry later', true);
+    const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+    mockGetConnection.mockRejectedValueOnce(failure);
+    await expect(
+      reinitMCPServer({
+        user: { id: 'owner' },
+        serverName: 'Graph',
+        serverConfig: { type: 'streamable-http', url: 'https://mcp.example.com', source: 'yaml' },
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+      }),
+    ).rejects.toBe(failure);
+    expect(receipt).not.toHaveBeenCalled();
+  });
+});
+
 describe('reinitMCPServer — direct bearer authentication outcomes', () => {
   it('preserves a typed rejection instead of reducing it to a generic result', async () => {
     const { MCPAuthenticationRejectedError } = require('@librechat/api');
@@ -552,6 +627,47 @@ describe('reinitMCPServer — direct bearer authentication outcomes', () => {
       }),
     ).rejects.toBe(rejection);
   });
+
+  it('propagates cancellation instead of hiding the server tool', async () => {
+    const abort = new DOMException('Stopped', 'AbortError');
+    const controller = new AbortController();
+    controller.abort(abort);
+    mockGetConnection.mockRejectedValue(abort);
+    await expect(
+      reinitMCPServer({
+        user: { id: 'user-123' },
+        serverName: 'example-mcp',
+        signal: controller.signal,
+        serverConfig: { type: 'streamable-http', url: 'https://mcp.example.com', source: 'yaml' },
+      }),
+    ).rejects.toBe(abort);
+  });
+
+  it.each([false, true])(
+    'preserves a typed OBO resolution failure (retryable=%s)',
+    async (retryable) => {
+      const { OboTokenResolutionError } = require('@librechat/api');
+      const rejection = new OboTokenResolutionError(
+        'session_refresh_failed',
+        'Sign-in expired.',
+        retryable,
+      );
+      mockGetConnection.mockRejectedValue(rejection);
+
+      await expect(
+        reinitMCPServer({
+          user: { id: 'user-123' },
+          serverName: 'private-mcp',
+          serverConfig: {
+            type: 'streamable-http',
+            url: 'https://mcp.example.com',
+            source: 'yaml',
+            obo: { scopes: 'api://mcp/.default' },
+          },
+        }),
+      ).rejects.toBe(rejection);
+    },
+  );
 });
 
 describe('reinitMCPServer — runtime BODY placeholder pre-check (issue #14074)', () => {

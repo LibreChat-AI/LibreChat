@@ -10,6 +10,115 @@ import {
   sendMessage,
 } from './helpers';
 
+type SelectionTarget = {
+  /** Needle whose first character begins the range. */
+  from: string;
+  /** Needle whose last character ends it, when the range spans two messages. */
+  to?: string;
+  /** Place the range on the document selection rather than only measuring it. */
+  select?: boolean;
+  /** Dispatch the `mouseup` `QuoteButton` listens for once the range is placed. */
+  emitMouseUp?: boolean;
+};
+
+/**
+ * Resolve a needle — or a pair of them spanning two messages — to a DOM Range
+ * inside the most recent `.message-render` containing it, optionally placing it
+ * on the document selection, and return the viewport midpoint of its first
+ * character.
+ *
+ * The lookup matches each message's *flattened* text rather than one text node,
+ * because a needle is routinely spread over several: while a reply streams, the
+ * smooth-streaming fade wraps every word of the animated message in its own
+ * `<span>`, so `E2E opening paragraph` lives in three sibling text nodes until
+ * the turn settles and the blocks re-render unwrapped. Flattening concatenates
+ * exactly what `textContent` reports — the string the host was located by — and
+ * the match's offsets are mapped back onto the nodes they came from, so every
+ * gesture here works in both DOMs instead of throwing for the entire window in
+ * which the reply is fully readable but not yet settled.
+ */
+function resolveSelection(page: Page, target: SelectionTarget) {
+  return page.evaluate(({ from, to, select, emitMouseUp }) => {
+    type TextRun = { node: Node; start: number };
+
+    /** Text nodes of `host` in document order, each with its offset into the
+     *  host's text — the concatenation is exactly `host.textContent`. */
+    const flatten = (host: Element) => {
+      const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+      const runs: TextRun[] = [];
+      let text = '';
+      for (let node = walker.nextNode(); node != null; node = walker.nextNode()) {
+        const value = node.nodeValue ?? '';
+        if (value === '') {
+          continue;
+        }
+        runs.push({ node, start: text.length });
+        text += value;
+      }
+      return { runs, text };
+    };
+
+    /** Range boundary for a flattened offset, by binary search: a streaming
+     *  paragraph carries one text node per word, so this is not a short list. */
+    const boundaryAt = (runs: TextRun[], offset: number) => {
+      let low = 0;
+      let high = runs.length - 1;
+      let found = 0;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        if (runs[mid].start <= offset) {
+          found = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      return { node: runs[found].node, offset: offset - runs[found].start };
+    };
+
+    const locate = (needle: string) => {
+      const renders = Array.from(document.querySelectorAll('.message-render'));
+      const host = [...renders].reverse().find((el) => (el.textContent ?? '').includes(needle));
+      if (!host) {
+        throw new Error(`No message contains: ${needle}`);
+      }
+      const { runs, text } = flatten(host);
+      const index = text.indexOf(needle);
+      if (index === -1) {
+        throw new Error(`No text node contains: ${needle}`);
+      }
+      return { runs, index };
+    };
+
+    const head = locate(from);
+    const tail = to == null ? head : locate(to);
+    const start = boundaryAt(head.runs, head.index);
+    const end = boundaryAt(tail.runs, tail.index + (to ?? from).length);
+
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    if (select === true) {
+      const selection = window.getSelection();
+      if (!selection) {
+        throw new Error('Selection API unavailable');
+      }
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (emitMouseUp === true) {
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      }
+    }
+
+    const afterFirst = boundaryAt(head.runs, head.index + 1);
+    const firstCharacter = document.createRange();
+    firstCharacter.setStart(start.node, start.offset);
+    firstCharacter.setEnd(afterFirst.node, afterFirst.offset);
+    const box = firstCharacter.getBoundingClientRect();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  }, target);
+}
+
 /**
  * Place a real DOM Selection over `needle` inside the most recent
  * `.message-render` that contains it, then dispatch `mouseup` so the
@@ -22,70 +131,18 @@ import {
  * needs a mouse-less path.
  */
 async function selectMessageText(page: Page, needle: string, emitMouseUp = true) {
-  await page.evaluate(
-    ({ text, emitMouseUp: withMouse }) => {
-      const renders = Array.from(document.querySelectorAll('.message-render'));
-      const host = [...renders].reverse().find((el) => (el.textContent ?? '').includes(text));
-      if (!host) {
-        throw new Error(`No message contains: ${text}`);
-      }
-      const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
-      let node = walker.nextNode();
-      while (node) {
-        const value = node.nodeValue ?? '';
-        const index = value.indexOf(text);
-        if (index !== -1) {
-          const range = document.createRange();
-          range.setStart(node, index);
-          range.setEnd(node, index + text.length);
-          const selection = window.getSelection();
-          if (!selection) {
-            throw new Error('Selection API unavailable');
-          }
-          selection.removeAllRanges();
-          selection.addRange(range);
-          if (withMouse) {
-            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-          }
-          return;
-        }
-        node = walker.nextNode();
-      }
-      throw new Error(`No text node contains: ${text}`);
-    },
-    { text: needle, emitMouseUp },
-  );
+  await resolveSelection(page, { from: needle, select: true, emitMouseUp });
 }
 
 /**
  * Viewport coordinates of the first character of `needle` inside the most
- * recent message containing it. Measuring the `needle` text node itself (not
- * the first text node in `.message-render`, which may be a `select-none`
+ * recent message containing it. Measuring the `needle` text itself (not the
+ * first text node in `.message-render`, which may be a `select-none`
  * screen-reader/model-label header) keeps the gesture on the actual reply word,
  * not metadata or whitespace.
  */
 function measureNeedle(page: Page, needle: string) {
-  return page.evaluate((text) => {
-    const renders = Array.from(document.querySelectorAll('.message-render'));
-    const host = [...renders].reverse().find((el) => (el.textContent ?? '').includes(text));
-    if (!host) {
-      throw new Error(`No message contains: ${text}`);
-    }
-    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
-    let node = walker.nextNode();
-    while (node && !(node.nodeValue ?? '').includes(text)) {
-      node = walker.nextNode();
-    }
-    if (!node) {
-      throw new Error(`No text node contains: ${text}`);
-    }
-    const index = (node.nodeValue ?? '').indexOf(text);
-    const range = document.createRange();
-    range.setStart(node, index);
-    range.setEnd(node, index + 1);
-    const r = range.getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  }, needle);
+  return resolveSelection(page, { from: needle });
 }
 
 /**
@@ -144,40 +201,28 @@ async function tripleClickText(page: Page, needle: string) {
  * block-overhang cases around it.
  */
 async function selectAcrossMessages(page: Page, fromNeedle: string, toNeedle: string) {
-  await page.evaluate(
-    ({ from, to }) => {
-      const findText = (text: string) => {
-        const renders = Array.from(document.querySelectorAll('.message-render'));
-        const host = [...renders].reverse().find((el) => (el.textContent ?? '').includes(text));
-        if (!host) {
-          throw new Error(`No message contains: ${text}`);
-        }
-        const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
-        let node = walker.nextNode();
-        while (node && !(node.nodeValue ?? '').includes(text)) {
-          node = walker.nextNode();
-        }
-        if (!node) {
-          throw new Error(`No text node contains: ${text}`);
-        }
-        return { node, index: (node.nodeValue ?? '').indexOf(text) };
-      };
+  await resolveSelection(page, { from: fromNeedle, to: toNeedle, select: true, emitMouseUp: true });
+}
 
-      const start = findText(from);
-      const end = findText(to);
-      const range = document.createRange();
-      range.setStart(start.node, start.index);
-      range.setEnd(end.node, end.index + to.length);
-      const selection = window.getSelection();
-      if (!selection) {
-        throw new Error('Selection API unavailable');
-      }
-      selection.removeAllRanges();
-      selection.addRange(range);
-      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-    },
-    { from: fromNeedle, to: toNeedle },
-  );
+/**
+ * How many messages the live selection actually covers.
+ *
+ * "No popup for a cross-message selection" only means anything while the
+ * selection is still crossing messages: a re-render that swaps out the nodes a
+ * range points at collapses it, and a collapsed selection keeps the popup away
+ * for a reason that has nothing to do with the boundary clamping under test.
+ */
+function selectedMessageCount(page: Page) {
+  return page.evaluate(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return 0;
+    }
+    const range = selection.getRangeAt(0);
+    return Array.from(document.querySelectorAll('.message-render')).filter((element) =>
+      range.intersectsNode(element),
+    ).length;
+  });
 }
 
 /** Viewport-relative bottom edge of the live selection. */
@@ -387,8 +432,26 @@ test.describe('quote references', () => {
 
     // Clamping the block-boundary overhang must not soften this: here visible
     // text from both the user's message and the reply is selected.
-    await selectAcrossMessages(page, PARAGRAPHS_PROMPT, OPENING_PARAGRAPH);
-    await expect(addToChat(page)).toBeHidden({ timeout: 5000 });
+    //
+    // Retried as a unit, and re-checked at the end: the reply's blocks
+    // re-render when the turn settles (the streaming fade unwraps its per-word
+    // spans), which swaps out the nodes the range points at and collapses it.
+    // An attempt only counts once the selection the popup judged was still the
+    // cross-message one, so a collapse cannot pass this test by default.
+    await expect(async () => {
+      await selectAcrossMessages(page, PARAGRAPHS_PROMPT, OPENING_PARAGRAPH);
+
+      // Sit out the settle interval before asserting. `toBeHidden` is satisfied
+      // by an element that has not been created *yet*, so checking straight away
+      // would pass before the timer had a chance to publish anything.
+      await page.waitForTimeout(SETTLE_OBSERVATION_MS);
+      expect(
+        await selectedMessageCount(page),
+        'the selection must outlive the settle wait, still crossing two messages',
+      ).toBeGreaterThan(1);
+      await expect(addToChat(page)).toBeHidden();
+      await expect(pendingChips(page)).toHaveCount(0);
+    }).toPass({ timeout: 30000 });
   });
 
   test('keeps the popup pinned to the selection while the chat scrolls', async ({ page }) => {

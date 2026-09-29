@@ -125,6 +125,9 @@ jest.mock('@librechat/api', () => {
     /** Grants both; these specs vary the capability set, not the role. */
     resolveToolRoleGrants: jest.fn(async () => ({ runCode: true, fileSearch: true })),
     parseText: jest.fn().mockResolvedValue({ text: '', bytes: 0 }),
+    /** Stores no fallback text unless a test opts in; its own rules are covered in packages/api. */
+    resolveUploadFallbackText: jest.fn(async () => undefined),
+    MAX_STORED_EXTRACTED_TEXT_BYTES: 15 * 1024 * 1024,
     processAudioFile: jest.fn(),
     extractInspectableFileText: jest.fn(async ({ extract }) => extract()),
     assertExtractedTextInspectable: jest.fn(),
@@ -168,6 +171,7 @@ jest.mock('@librechat/api', () => {
     }),
     sweepExpiredFiles: jest.fn().mockResolvedValue({ scanned: 0, deleted: 0, failed: 0 }),
     startExpiredFileSweep: jest.fn().mockReturnValue('sweep-interval'),
+    isLeader: jest.fn().mockResolvedValue(true),
   };
 });
 
@@ -2606,6 +2610,89 @@ describe('processDeleteRequest', () => {
     expect(result).toEqual({ deletedFileIds: [], failedFileIds: ['embedded-file'] });
   });
 
+  it('keeps a failed agent file attached so the delete can be retried', async () => {
+    const deleteFile = jest.fn().mockRejectedValue(new Error('rag unavailable'));
+    getStrategyFunctions.mockReturnValue({ deleteFile });
+    const req = {
+      body: { agent_id: 'agent_1', tool_resource: 'file_search' },
+      config: {},
+      user: { id: 'user-123', tenantId: 'tenant-a' },
+    };
+
+    const result = await processDeleteRequest({
+      req,
+      files: [
+        {
+          file_id: 'knowledge-file',
+          filepath: '/uploads/knowledge.txt',
+          source: FileSources.local,
+        },
+      ],
+    });
+
+    expect(result).toEqual({ deletedFileIds: [], failedFileIds: ['knowledge-file'] });
+    expect(db.deleteFiles).not.toHaveBeenCalled();
+    expect(db.removeAgentResourceFiles).not.toHaveBeenCalled();
+    expect(db.removeAgentResourceFilesFromAllAgents).not.toHaveBeenCalled();
+  });
+
+  it('strips agent references only for the files it deleted', async () => {
+    getStrategyFunctions.mockReturnValue({
+      deleteFile: jest
+        .fn()
+        .mockImplementation((_req, file) =>
+          file.file_id === 'kept-file'
+            ? Promise.reject(new Error('rag unavailable'))
+            : Promise.resolve(undefined),
+        ),
+    });
+    db.deleteFiles.mockResolvedValue({ deletedCount: 1 });
+    const req = {
+      body: { agent_id: 'agent_1', tool_resource: 'file_search' },
+      config: {},
+      user: { id: 'user-123', tenantId: 'tenant-a' },
+    };
+
+    const result = await processDeleteRequest({
+      req,
+      files: [
+        { file_id: 'gone-file', filepath: '/uploads/gone.txt', source: FileSources.local },
+        { file_id: 'kept-file', filepath: '/uploads/kept.txt', source: FileSources.local },
+      ],
+    });
+
+    expect(result).toEqual({ deletedFileIds: ['gone-file'], failedFileIds: ['kept-file'] });
+    expect(db.removeAgentResourceFilesFromAllAgents).toHaveBeenCalledWith({
+      file_ids: ['gone-file'],
+    });
+  });
+
+  it('keeps agent references when the metadata delete fails', async () => {
+    getStrategyFunctions.mockReturnValue({ deleteFile: jest.fn().mockResolvedValue(undefined) });
+    db.deleteFiles.mockRejectedValue(new Error('mongo unavailable'));
+    const req = {
+      body: { agent_id: 'agent_1', tool_resource: 'file_search' },
+      config: {},
+      user: { id: 'user-123', tenantId: 'tenant-a' },
+    };
+
+    await expect(
+      processDeleteRequest({
+        req,
+        files: [
+          {
+            file_id: 'knowledge-file',
+            filepath: '/uploads/knowledge.txt',
+            source: FileSources.local,
+          },
+        ],
+      }),
+    ).rejects.toThrow('mongo unavailable');
+
+    expect(db.removeAgentResourceFiles).not.toHaveBeenCalled();
+    expect(db.removeAgentResourceFilesFromAllAgents).not.toHaveBeenCalled();
+  });
+
   it('does not delete vector storage when primary embedded file deletion fails', async () => {
     const primaryDelete = jest.fn().mockRejectedValue(new Error('permission denied'));
     const vectorDelete = jest.fn().mockResolvedValue(undefined);
@@ -2750,6 +2837,7 @@ describe('startExpiredFileSweep', () => {
       expect.objectContaining({
         sweepExpiredFiles: expect.any(Function),
         runAsSystem: expect.any(Function),
+        isLeader: expect.any(Function),
         logger: expect.objectContaining({
           error: expect.any(Function),
           info: expect.any(Function),
@@ -3186,5 +3274,106 @@ describe('filterFile endpoint resolution', () => {
     req.body.endpoint = 'Disabled Provider';
 
     expect(() => filterFile({ req, image: true, isAvatar: true })).not.toThrow();
+  });
+});
+
+describe('fallback text for uploads left to tools', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRes.status.mockReturnThis();
+    mockRes.json.mockReturnValue({});
+    mergeFileConfig.mockReturnValue({
+      ...makeFileConfig(),
+      endpoints: {
+        'Custom Provider': {
+          defaultLLMDeliveryPath: { fallback: 'none' },
+          textFallbackWithoutTools: true,
+        },
+      },
+    });
+  });
+
+  const uploadCsv = (metadata) => {
+    const req = makeReq({ mimetype: 'text/csv', ocrConfig: null });
+    req.body.endpoint = EModelEndpoint.agents;
+    return {
+      req,
+      upload: processAgentFileUpload({
+        req,
+        res: mockRes,
+        metadata: {
+          agent_id: 'agent-abc',
+          message_file: 'true',
+          file_id: 'file-uuid-csv',
+          effectiveEndpoint: 'Custom Provider',
+          ...metadata,
+        },
+      }),
+    };
+  };
+
+  test('stores the text a turn without a reading tool can fall back to', async () => {
+    const { createFile } = require('~/models');
+    const { resolveUploadFallbackText } = require('@librechat/api');
+    setupStoredFileUpload();
+    resolveUploadFallbackText.mockResolvedValueOnce('region,total');
+
+    const { req, upload } = uploadCsv();
+    await upload;
+
+    expect(resolveUploadFallbackText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file: req.file,
+        fileId: 'file-uuid-csv',
+        deliveryPath: 'none',
+        destinationChosen: false,
+        isMessageAttachment: true,
+        endpointConfig: expect.objectContaining({ textFallbackWithoutTools: true }),
+      }),
+    );
+    expect(createFile).toHaveBeenCalledWith(
+      expect.objectContaining({ llmDeliveryPath: 'none', text: 'region,total' }),
+      true,
+    );
+  });
+
+  test('marks a legacy chooser upload as chosen, so no fallback text is extracted for it', async () => {
+    const { resolveUploadFallbackText } = require('@librechat/api');
+    mergeFileConfig.mockReturnValue({
+      ...makeFileConfig(),
+      endpoints: {
+        'Custom Provider': {
+          defaultLLMDeliveryPath: { fallback: 'none' },
+          textFallbackWithoutTools: true,
+          legacyFileUploadUX: true,
+        },
+      },
+    });
+    setupStoredFileUpload();
+
+    const { upload } = uploadCsv();
+    await upload;
+
+    expect(resolveUploadFallbackText).toHaveBeenCalledWith(
+      expect.objectContaining({ destinationChosen: true, isMessageAttachment: true }),
+    );
+  });
+
+  test('stores fallback text for an attachment filed under a tool a later turn may not run', async () => {
+    const { createFile } = require('~/models');
+    const { resolveUploadFallbackText } = require('@librechat/api');
+    setupStoredFileUpload();
+    resolveUploadFallbackText.mockResolvedValueOnce('region,total');
+
+    const { upload } = uploadCsv({ agentTools: [EToolResources.execute_code] });
+    await upload;
+
+    expect(resolveUploadFallbackText).toHaveBeenCalledWith(
+      expect.objectContaining({ destinationChosen: false, isMessageAttachment: true }),
+    );
+    expect(createFile).toHaveBeenCalledWith(
+      expect.objectContaining({ llmDeliveryPath: 'none', text: 'region,total' }),
+      true,
+    );
   });
 });

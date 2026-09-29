@@ -12,7 +12,7 @@ import {
 import { specialVariables } from '../src/config';
 import { EModelEndpoint, Providers } from '../src/schemas';
 import { ContentTypes } from '../src/types/runs';
-import type { TMessageContentParts } from '../src/types/assistants';
+import type { TMessageContentParts } from '../src/types/content';
 import type { TUser, TConversation } from '../src/types';
 
 // Mock dayjs module with consistent date/time values regardless of environment

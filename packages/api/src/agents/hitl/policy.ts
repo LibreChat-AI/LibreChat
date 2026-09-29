@@ -315,6 +315,42 @@ export function buildToolApprovalPayload(
   };
 }
 
+/** Require one uniquely identified review policy for every paused tool call. */
+export function isToolApprovalPayloadValid(payload: Agents.ToolApprovalInterruptPayload): boolean {
+  if (payload.action_requests.length !== payload.review_configs.length) {
+    return false;
+  }
+
+  const requestedIds = new Set<string>();
+  for (const request of payload.action_requests) {
+    if (
+      typeof request.tool_call_id !== 'string' ||
+      request.tool_call_id.length === 0 ||
+      requestedIds.has(request.tool_call_id)
+    ) {
+      return false;
+    }
+    requestedIds.add(request.tool_call_id);
+  }
+
+  const reviewedIds = new Set<string>();
+  for (const config of payload.review_configs) {
+    if (
+      typeof config.tool_call_id !== 'string' ||
+      config.tool_call_id.length === 0 ||
+      reviewedIds.has(config.tool_call_id)
+    ) {
+      return false;
+    }
+    if (!requestedIds.has(config.tool_call_id)) {
+      return false;
+    }
+    reviewedIds.add(config.tool_call_id);
+  }
+
+  return true;
+}
+
 /** Build an ask-user-question interrupt payload. */
 export function buildAskUserQuestionPayload(
   question: Agents.AskUserQuestionRequest,
@@ -792,6 +828,9 @@ export function buildPendingAction(
   payload: Agents.HumanInterruptPayload,
   ctx: PendingActionContext,
 ): Agents.PendingAction {
+  if (payload.type === 'tool_approval' && !isToolApprovalPayloadValid(payload)) {
+    throw new Error('Invalid tool approval payload');
+  }
   const createdAt = Date.now();
   const ttlExpiresAt = typeof ctx.ttlMs === 'number' ? createdAt + ctx.ttlMs : undefined;
   let absoluteExpiresAt: number | undefined;

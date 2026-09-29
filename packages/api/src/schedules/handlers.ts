@@ -387,9 +387,11 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     res: Response,
     signal: AbortSignal,
     limits: ScheduleLimits,
+    scheduleId: string,
   ): Promise<boolean> {
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
+        scheduleId,
         signal,
         concurrency: limits.mcpPreflightConcurrency,
         deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
@@ -705,9 +707,10 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       await respondToReplay(replayed);
       return;
     }
+    const id = `sched_${randomUUID()}`;
     if (
       parsed.data.enabled &&
-      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits))
+      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits, id))
     )
       return;
     // Project policy applies to a NEW insert only, and is therefore resolved AFTER every
@@ -751,7 +754,6 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     if (!withinIntervalFloor(res, parsed.data.cadence, parsed.data.timezone, limits)) {
       return;
     }
-    const id = `sched_${randomUUID()}`;
     const nextRunAt = parsed.data.enabled
       ? computeNextRunAt({
           cadence: parsed.data.cadence,
@@ -972,7 +974,14 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     }
     if (
       enabled &&
-      !(await validateMCP(parsed.data.agent_id ?? existing.agent_id, req, res, mcpSignal, limits))
+      !(await validateMCP(
+        parsed.data.agent_id ?? existing.agent_id,
+        req,
+        res,
+        mcpSignal,
+        limits,
+        existing.id,
+      ))
     )
       return;
     // The destination is re-resolved on every edit that leaves the schedule ENABLED,

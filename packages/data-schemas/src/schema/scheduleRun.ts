@@ -71,6 +71,7 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
           _id: false,
           server: { type: String, required: true },
           agentId: { type: String },
+          detail: { type: String, enum: ['unattended_auth_required'] },
           status: {
             type: String,
             required: true,

@@ -1,10 +1,13 @@
 import * as Ariakit from '@ariakit/react';
+import { useQueryClient } from '@tanstack/react-query';
+import { QueryKeys, Constants } from 'librechat-data-provider';
 import { TooltipAnchor, composerControlClasses } from '@librechat/client';
 import { Check, ChevronDown, FilePen, FileQuestionMark, FileTerminal } from 'lucide-react';
 import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
 import type { SetterOrUpdater } from 'recoil';
 import type { TranslationKeys } from '~/hooks';
+import { useCodeApprovalModePreference } from '~/hooks/Agents/codeApprovalPreference';
 import { useCodeApprovalMode, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -47,7 +50,9 @@ export default function CodeApprovalMenu({
   disabled: boolean;
 }) {
   const localize = useLocalize();
+  const queryClient = useQueryClient();
   const { available, modes, selected } = useCodeApprovalMode(conversation, addedConversation);
+  const preference = useCodeApprovalModePreference();
   const menuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
   const isOpen = menuStore.useState('open');
 
@@ -55,13 +60,30 @@ export default function CodeApprovalMenu({
     return null;
   }
 
+  /** Navigation and run recovery rebuild the conversation from its detail
+   *  cache, so the pick lands there too, seeding the record from the live
+   *  conversation when none exists yet (the resumable transport seeds the same
+   *  key optimistically). A chat that has no id yet keeps the pick in
+   *  conversation state alone until the run assigns one. The pick is also this
+   *  browser's remembered default, so the next chat opens on it rather than back
+   *  at `ask`; policy is re-checked before it is ever shown or submitted. */
   const selectMode = (mode: CodeApprovalMode) => {
     if (!modes.includes(mode)) {
       return;
     }
+    preference.remember(mode);
     setConversation((current) =>
       current == null ? current : { ...current, codeApprovalMode: mode },
     );
+    const record = conversation;
+    const conversationId = record?.conversationId;
+    if (record == null || conversationId == null || conversationId === Constants.NEW_CONVO) {
+      return;
+    }
+    queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (cached) => ({
+      ...(cached ?? record),
+      codeApprovalMode: mode,
+    }));
   };
 
   const SelectedIcon = modeOptions[selected].icon;

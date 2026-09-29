@@ -2,9 +2,12 @@ import type { TEndpointsConfig } from './types';
 import {
   allowedAddressesSchema,
   agentsEndpointSchema,
+  DEFAULT_RETAINED_ANSWER_TOKENS,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
   configSchema,
+  codeEnvironmentUserConfigSchema,
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
   resolveEndpointType,
   webSearchSchema,
@@ -22,6 +25,74 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('agent model response timeouts', () => {
+  it('ships finite defaults and accepts explicit overrides including disabled timeouts', () => {
+    expect(agentsEndpointSchema.parse({})).toMatchObject({
+      modelResponseBodyTimeoutMs: 900_000,
+      modelResponseHeadersTimeoutMs: 300_000,
+    });
+    expect(
+      agentsEndpointSchema.parse({
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 0,
+      }),
+    ).toMatchObject({
+      modelResponseBodyTimeoutMs: 1_800_000,
+      modelResponseHeadersTimeoutMs: 0,
+    });
+  });
+
+  it('rejects negative, fractional, and over-one-day values', () => {
+    for (const value of [-1, 1.5, 86_400_001]) {
+      expect(agentsEndpointSchema.safeParse({ modelResponseBodyTimeoutMs: value }).success).toBe(
+        false,
+      );
+      expect(agentsEndpointSchema.safeParse({ modelResponseHeadersTimeoutMs: value }).success).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('repository instruction configuration', () => {
+  it('defaults optional reads to two seconds and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).repositoryInstructions).toBeUndefined();
+    expect(
+      agentsEndpointSchema.parse({ repositoryInstructions: {} }).repositoryInstructions,
+    ).toEqual({ timeoutMs: 2000 });
+    expect(
+      agentsEndpointSchema.parse({ repositoryInstructions: { timeoutMs: 5000 } })
+        .repositoryInstructions,
+    ).toEqual({ timeoutMs: 5000 });
+    for (const timeoutMs of [0, 99, 30_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ repositoryInstructions: { timeoutMs } }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('ask user retained answers', () => {
+  it('leaves the block unconfigured by default and accepts an operator budget', () => {
+    expect(agentsEndpointSchema.parse({}).askUserQuestion).toBeUndefined();
+    expect(
+      agentsEndpointSchema.parse({
+        askUserQuestion: { retainedAnswers: { enabled: false, maxTokens: 2048 } },
+      }).askUserQuestion,
+    ).toEqual({ retainedAnswers: { enabled: false, maxTokens: 2048 } });
+    expect(DEFAULT_RETAINED_ANSWER_TOKENS).toBe(4096);
+  });
+
+  it('rejects a budget that is not a positive integer', () => {
+    for (const maxTokens of [0, -1, 1.5, '2048']) {
+      expect(
+        agentsEndpointSchema.safeParse({ askUserQuestion: { retainedAnswers: { maxTokens } } })
+          .success,
+      ).toBe(false);
+    }
+  });
+});
 
 describe('retained tool-count ceiling', () => {
   it('ships the exact-count budget a deployment can raise or lower', () => {
@@ -264,6 +335,121 @@ describe('Agent Management authentication config', () => {
     expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0].subject).toBe(subject);
   });
 
+  it('accepts Cognito access-token validation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_example',
+                tokenUse: 'access',
+                requiredScopes: ['agents-api/manage'],
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts audience-bound access-token validation without required scopes', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                audience: 'https://agents.example.com',
+                tokenUse: 'access',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects audience-less access-token validation without required scopes', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                tokenUse: 'access',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each(['agents-api/manage another-scope', 'agents-api/manage\tanother-scope'])(
+    'rejects a required scope containing whitespace: %j',
+    (requiredScope) => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: {
+            managementApi: {
+              auth: {
+                oidc: {
+                  enabled: true,
+                  issuer: 'https://issuer.example.com',
+                  tokenUse: 'access',
+                  requiredScopes: [requiredScope],
+                },
+                clients: [binding],
+              },
+            },
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it('rejects enabled management auth without an audience or access-token validation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('normalizes binding User ObjectIds', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -358,6 +544,145 @@ describe('Agent Management authentication config', () => {
 });
 
 describe('attached code environment user config schema', () => {
+  it.each([0, 1200, 300000])(
+    'preserves an admission budget of %i milliseconds',
+    (maxQueueWaitMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxQueueWaitMs } })).toEqual({
+        limits: { maxQueueWaitMs },
+      });
+    },
+  );
+
+  it.each([-1, 0.5, 300001, NaN, Infinity])(
+    'rejects an invalid admission budget of %s',
+    (maxQueueWaitMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxQueueWaitMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([60_000, 125_000, 610_000])(
+    'accepts a bounded %i ms workspace HTTP limit',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 610_001, NaN, Infinity])(
+    'rejects an invalid workspace HTTP limit of %s',
+    (maxRequestTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('keeps an omitted admission budget backward compatible', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
+  });
+
+  it.each([1_000, 15_000, CODE_ENVIRONMENT_ADMISSION_MAX_MS])(
+    'accepts a bounded %i ms command admission allowance',
+    (minCommandAdmissionMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs } })).toEqual({
+        limits: { minCommandAdmissionMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 999, CODE_ENVIRONMENT_ADMISSION_MAX_MS + 1, NaN, Infinity])(
+    'rejects an invalid command admission allowance of %s',
+    (minCommandAdmissionMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { minCommandAdmissionMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([20_001, 90_000])(
+    'preserves omission of the command admission allowance with a fitting %i ms budget',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([5_000, 10_002, 15_000, 20_000])(
+    'rejects an undersized %i ms request budget with the default command reserve',
+    (maxRequestTimeoutMs) => {
+      const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: ['limits', 'maxRequestTimeoutMs'] }),
+          ]),
+        );
+      }
+    },
+  );
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 79_999 },
+    { maxRequestTimeoutMs: 11_001, minCommandAdmissionMs: 1_000 },
+    { maxRequestTimeoutMs: 610_000, minCommandAdmissionMs: 300_000 },
+  ])('accepts an admission reserve with execution time left: %j', (limits) => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits })).toEqual({ limits });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 80_000 },
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 11_000, minCommandAdmissionMs: 1_000 },
+  ])('rejects a command reserve that cannot fit inside its request budget: %j', (limits) => {
+    const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ['limits', 'minCommandAdmissionMs'] }),
+        ]),
+      );
+    }
+  });
+
+  it('allows a command reserve without a request budget (the legacy per-attempt path)', () => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs: 300_000 } }),
+    ).toEqual({ limits: { minCommandAdmissionMs: 300_000 } });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 15_000 },
+  ])('rejects an impossible command reserve in the top-level deployment config: %j', (limits) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'personal-vm',
+                  name: 'Personal VM',
+                  type: 'attached',
+                  baseURL: 'https://code.example.com/v1',
+                  configSchema: { limits },
+                },
+              ],
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts typed permission controls exposed by the administrator', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -377,7 +702,11 @@ describe('attached code environment user config schema', () => {
                     fileWrite: { allowed: ['allow', 'ask', 'deny'], default: 'ask' },
                     commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
                   },
-                  limits: { maxCommandTimeoutMs: 120000 },
+                  limits: {
+                    maxCommandTimeoutMs: 120000,
+                    maxRequestTimeoutMs: 125_000,
+                    minCommandAdmissionMs: 15_000,
+                  },
                 },
               },
             ],
@@ -390,6 +719,21 @@ describe('attached code environment user config schema', () => {
       throw new Error(result.error.toString());
     }
     expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            environments: [
+              {
+                configSchema: {
+                  limits: { maxRequestTimeoutMs: 125_000, minCommandAdmissionMs: 15_000 },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
   });
 
   it('rejects an attached command timeout above the protocol hard cap', () => {
@@ -446,7 +790,54 @@ describe('attached code environment user config schema', () => {
   });
 });
 
+describe('agent background completion batch config', () => {
+  it('defaults and bounds automatic completion coalescing', () => {
+    const defaults = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: {} } },
+    });
+    expect(defaults.endpoints?.agents?.backgroundTasks?.completionResultBatchSize).toBe(8);
+
+    for (const completionResultBatchSize of [0, 17, 1.5]) {
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          endpoints: { agents: { backgroundTasks: { completionResultBatchSize } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
 describe('agent event runtime config', () => {
+  it('defaults and bounds durable-worker idle polling intervals', () => {
+    const parsed = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { eventDriven: { idlePolling: {} } } },
+    });
+    expect(parsed.endpoints?.agents?.eventDriven?.idlePolling).toEqual({
+      deliveryMaxIntervalMs: 15_000,
+      queuedTurnMaxIntervalMs: 120_000,
+      maintenanceMaxIntervalMs: 120_000,
+      completionWaitMaxIntervalMs: 60_000,
+    });
+    for (const [key, value] of [
+      ['deliveryMaxIntervalMs', 0],
+      ['queuedTurnMaxIntervalMs', 29_999],
+      ['maintenanceMaxIntervalMs', 300_001],
+      ['maintenanceMaxIntervalMs', 30_000.5],
+      ['completionWaitMaxIntervalMs', 4_999],
+      ['completionWaitMaxIntervalMs', 300_001],
+    ] as const) {
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          endpoints: { agents: { eventDriven: { idlePolling: { [key]: value } } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('accepts the routing choice and ignores removed rollout fields', () => {
     const result = configSchema.safeParse({
       version: '1.0',
@@ -513,8 +904,11 @@ describe('agent background task config', () => {
       return;
     }
     expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
       completionWakeups: true,
+      completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
     });
   });
 
@@ -529,8 +923,11 @@ describe('agent background task config', () => {
       return;
     }
     expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
       completionWakeups: false,
+      completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
     });
   });
 
@@ -545,9 +942,54 @@ describe('agent background task config', () => {
       return;
     }
     expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
       completionWakeups: true,
+      completionResultMaxChars: 24 * 1024,
       ordinaryToolCancellation: true,
+      shutdownInterruptGraceMs: 5_000,
     });
+  });
+
+  it('accepts a bounded shutdown interrupt grace', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: 0 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs).toBe(0);
+    }
+  });
+
+  it.each([-1, 60_001, 1.5])('rejects an unsafe shutdown interrupt grace: %s', (graceMs) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: graceMs } } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a bounded durable completion result limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { completionResultMaxChars: 4096 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.completionResultMaxChars).toBe(4096);
+    }
+  });
+
+  it.each([0, 64 * 1024 + 1])('rejects an unsafe completion result limit: %s', (limit) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { completionResultMaxChars: limit } } },
+      }).success,
+    ).toBe(false);
   });
 });
 

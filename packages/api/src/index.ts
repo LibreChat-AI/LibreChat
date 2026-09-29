@@ -26,6 +26,7 @@ export * from './mcp/oauth';
 export * from './mcp/auth';
 export * from './mcp/zod';
 export * from './mcp/errors';
+export * from './mcp/loading';
 export * from './mcp/openid';
 export * from './mcp/cache';
 export * from './mcp/tools';
@@ -39,6 +40,7 @@ export * from './mcp/reinitialize';
 export * from './mcp/icons';
 /* Utilities */
 export * from './mcp/utils';
+export * from './mcp/domainValidation';
 export * from './mcp/context';
 export * from './utils';
 export { default as Tokenizer, countTokens } from './utils/tokenizer';
@@ -106,6 +108,8 @@ export * from './traces';
 export * from './insights';
 /* Cache */
 export * from './cache';
+/* Cluster */
+export * from './cluster';
 /* Shared Links */
 export * from './shared-links/access';
 export * from './shared-links/service';
@@ -119,6 +123,9 @@ export * from './stream';
 export { memoryDiagnostics } from './utils/memory';
 /* RUM */
 export * from './rum/proxy';
+/* OpenAPI */
+export { createOpenApiRouter } from './openapi/router';
+export type { OpenApiRouterDeps } from './openapi/router';
 /* types */
 export type * from './mcp/types';
 export type * from './flow/types';

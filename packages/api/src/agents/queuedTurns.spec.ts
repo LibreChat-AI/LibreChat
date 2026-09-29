@@ -9,7 +9,11 @@ import type {
 } from '@librechat/data-schemas';
 import type { AgentQueuedTurnResolverDeps, AgentQueuedTurnSchedulerDeps } from './queuedTurns';
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
-import { AGENT_QUEUED_TURN_SOURCE, createAgentQueuedTurnLifecycle } from './queuedTurns';
+import {
+  createQueuedTurnDeliveryReservation,
+  AGENT_QUEUED_TURN_SOURCE,
+  createAgentQueuedTurnLifecycle,
+} from './queuedTurns';
 import { getAgentTriggerIdempotencyKey } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
 
@@ -161,6 +165,27 @@ function createAgentQueuedTurnScheduler(deps: AgentQueuedTurnSchedulerDeps) {
 }
 
 describe('Agent queued-turn continuation', () => {
+  it.each([undefined, 'ask', 'acceptEdits', 'fullAccess'] as const)(
+    'prepares only the snapshotted approval mode %s, not event or current conversation permissions',
+    async (mode) => {
+      const { methods, spies } = resolverMethods();
+      const saved = claim();
+      spies.claimNextAgentQueuedTurn.mockResolvedValue({
+        outcome: 'acquired',
+        claim: { ...saved, ...(mode != null && { codeApprovalMode: mode }) },
+      });
+      const resolve = createAgentQueuedTurnResolver({
+        methods,
+        getGenerationJob: async () => null,
+      });
+      const delivery = envelope();
+      delivery.event.payload = { queuedTurnId: 'queued-turn-1', codeApprovalMode: 'fullAccess' };
+      const prepared = await resolve(delivery, { idempotencyKey: 'delivery-1' } as never);
+      expect(prepared?.status).toBe('ready');
+      expect(prepared?.status === 'ready' && prepared.codeApprovalMode).toBe(mode);
+    },
+  );
+
   it('dead-letters a delivery while preserving an admission-indeterminate source', async () => {
     const deadLetterAgentQueuedTurn = jest.fn(async () => ({
       outcome: 'admission_indeterminate' as const,
@@ -843,6 +868,199 @@ describe('Agent queued-turn continuation', () => {
 });
 
 describe('Agent queued-turn delivery scheduling', () => {
+  it('can retry initialization after a transient index setup failure', async () => {
+    const ensureAgentQueuedTurnIndexes = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('mongo unavailable'))
+      .mockResolvedValue(undefined);
+    const scheduler = createAgentQueuedTurnScheduler({
+      methods: {
+        ensureAgentQueuedTurnIndexes,
+        findQueuedTurnsNeedingDelivery: jest.fn(async () => []),
+        claimQueuedTurnsForAdmissionReconciliation: jest.fn(async () => []),
+      } as unknown as AgentQueuedTurnMethods,
+      enqueue: jest.fn(),
+      getGenerationAdmissionEvidence: async () => null,
+    });
+    await expect(scheduler.initialize()).rejects.toThrow('mongo unavailable');
+    await expect(scheduler.initialize()).resolves.toBeUndefined();
+    expect(ensureAgentQueuedTurnIndexes).toHaveBeenCalledTimes(2);
+    await scheduler.stop();
+  });
+
+  it('does not back off when discovery repairs reservations but returns no deliveries', async () => {
+    jest.useFakeTimers();
+    const findQueuedTurnsNeedingDelivery = jest.fn(
+      async (_limit: number, activity: { found: boolean }) => {
+        activity.found = true;
+        return [];
+      },
+    );
+    const scheduler = createAgentQueuedTurnScheduler({
+      methods: {
+        ensureAgentQueuedTurnIndexes: jest.fn(async () => undefined),
+        findQueuedTurnsNeedingDelivery,
+        claimQueuedTurnsForAdmissionReconciliation: jest.fn(async () => []),
+      } as unknown as AgentQueuedTurnMethods,
+      enqueue: jest.fn(),
+      getGenerationAdmissionEvidence: async () => null,
+    });
+    try {
+      await scheduler.initialize();
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(2);
+    } finally {
+      await scheduler.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  it('waits for sibling lease discovery after an error before allowing shutdown or another scan', async () => {
+    jest.useFakeTimers();
+    let release!: (turns: AgentQueuedTurnRecord[]) => void;
+    const findQueuedTurnsNeedingDelivery = jest
+      .fn()
+      .mockRejectedValue(new Error('mongo unavailable'));
+    const claimQueuedTurnsForAdmissionReconciliation = jest.fn(
+      () =>
+        new Promise<AgentQueuedTurnRecord[]>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const scheduler = createAgentQueuedTurnScheduler({
+      methods: {
+        ensureAgentQueuedTurnIndexes: jest.fn(async () => undefined),
+        findQueuedTurnsNeedingDelivery,
+        claimQueuedTurnsForAdmissionReconciliation,
+      } as unknown as AgentQueuedTurnMethods,
+      enqueue: jest.fn(),
+      getGenerationAdmissionEvidence: async () => null,
+    });
+    try {
+      const starting = scheduler.initialize();
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(1);
+      let stopped = false;
+      const stopping = scheduler.stop().then(() => {
+        stopped = true;
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(stopped).toBe(false);
+      release([]);
+      await Promise.all([starting, stopping]);
+      expect(stopped).toBe(true);
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(1);
+      expect(claimQueuedTurnsForAdmissionReconciliation).toHaveBeenCalledTimes(1);
+    } finally {
+      await scheduler.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  it('reduces empty Mongo discovery reads without losing bounded fallback polling', async () => {
+    jest.useFakeTimers();
+    try {
+      const findQueuedTurnsNeedingDelivery = jest.fn(async () => []);
+      const claimQueuedTurnsForAdmissionReconciliation = jest.fn(async () => []);
+      const scheduler = createAgentQueuedTurnScheduler({
+        methods: {
+          ensureAgentQueuedTurnIndexes: jest.fn(async () => undefined),
+          findQueuedTurnsNeedingDelivery,
+          claimQueuedTurnsForAdmissionReconciliation,
+        } as unknown as AgentQueuedTurnMethods,
+        enqueue: jest.fn(),
+        getGenerationAdmissionEvidence: async () => null,
+      });
+      await scheduler.initialize();
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(3);
+      expect(claimQueuedTurnsForAdmissionReconciliation).toHaveBeenCalledTimes(3);
+      await scheduler.stop();
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not treat a deferred indeterminate admission as an empty queue', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(NOW));
+    try {
+      const turn = {
+        ...queuedTurn('queued-turn-deferred', 1),
+        status: 'dead' as const,
+        deliveryKey: 'delivery-deferred',
+        admissionId: 'delivery-deferred',
+        admissionProtocolVersion: 2 as const,
+        terminalReceipt: {
+          outcome: 'dead' as const,
+          settledAt: new Date(NOW),
+          failure: { code: 'ADMISSION_INDETERMINATE', message: 'pending evidence' },
+        },
+      };
+      const claimQueuedTurnsForAdmissionReconciliation = jest.fn(async (input) => [
+        {
+          ...turn,
+          reconciliationClaimId: input.claimId,
+          reconciliationClaimBy: input.claimBy,
+        },
+      ]);
+      const deferAgentQueuedTurnAdmissionReconciliation = jest.fn(async () => true);
+      const scheduler = createAgentQueuedTurnScheduler({
+        methods: {
+          ensureAgentQueuedTurnIndexes: jest.fn(async () => undefined),
+          findQueuedTurnsNeedingDelivery: jest.fn(async () => []),
+          claimQueuedTurnsForAdmissionReconciliation,
+          deferAgentQueuedTurnAdmissionReconciliation,
+        } as unknown as AgentQueuedTurnMethods,
+        enqueue: jest.fn(),
+        getGenerationAdmissionEvidence: async () => null,
+      });
+      await scheduler.initialize();
+      expect(deferAgentQueuedTurnAdmissionReconciliation).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(claimQueuedTurnsForAdmissionReconciliation).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(claimQueuedTurnsForAdmissionReconciliation).toHaveBeenCalledTimes(2);
+      await scheduler.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('wakes recovery after direct publication fails outside its own recovery pass', async () => {
+    jest.useFakeTimers();
+    try {
+      const findQueuedTurnsNeedingDelivery = jest.fn(async () => []);
+      const scheduler = createAgentQueuedTurnScheduler({
+        methods: {
+          ensureAgentQueuedTurnIndexes: jest.fn(async () => undefined),
+          findQueuedTurnsNeedingDelivery,
+          claimQueuedTurnsForAdmissionReconciliation: jest.fn(async () => []),
+          reserveAgentQueuedTurnDelivery: jest.fn(async () => {
+            throw new Error('mongo unavailable');
+          }),
+        } as unknown as AgentQueuedTurnMethods,
+        enqueue: jest.fn(),
+        getGenerationAdmissionEvidence: async () => null,
+      });
+      await scheduler.initialize();
+      await expect(scheduler.schedule(queuedTurn('queued-turn-1', 1))).rejects.toThrow(
+        'mongo unavailable',
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(2);
+      await scheduler.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   function queuedTurn(id: string, sequence: number): AgentQueuedTurnRecord {
     const { claimId: _claimId, claimBy: _claimBy, claimUntil: _claimUntil, ...record } = claim();
     return {
@@ -852,6 +1070,38 @@ describe('Agent queued-turn delivery scheduling', () => {
       status: 'queued',
     };
   }
+
+  it('publishes approval snapshots only with their precommitted v2 identity', async () => {
+    const input = { ...queuedTurn('seed', 1), codeApprovalMode: 'fullAccess' as const };
+    const reservation = createQueuedTurnDeliveryReservation(input);
+    const row = { ...input, ...reservation, deliveryState: 'publishing' as const };
+    const reserve = jest.fn().mockResolvedValue({ outcome: 'already_reserved', turn: row });
+    const enqueue = jest.fn(async (value: unknown) => ({
+      deliveryKey: getAgentTriggerIdempotencyKey(value as AgentContinueTriggerEnvelope),
+    }));
+    const scheduler = createAgentQueuedTurnScheduler({
+      methods: {
+        reserveAgentQueuedTurnDelivery: reserve,
+        markQueuedTurnScheduled: jest.fn(async () => ({ outcome: 'scheduled', turn: row })),
+      } as unknown as AgentQueuedTurnMethods,
+      enqueue,
+      getGenerationAdmissionEvidence: async () => null,
+    });
+    await scheduler.schedule(row);
+    expect(reserve).toHaveBeenLastCalledWith(
+      expect.objectContaining({ deliveryKey: reservation.deliveryKey }),
+    );
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ requiredWorkerCapability: 'agent_queued_turn_v2' }),
+    );
+    // An old worker computes the v1 identity from a projection lacking the mode.
+    const { codeApprovalMode: _mode, ...legacyProjection } = row;
+    reserve.mockResolvedValueOnce({ outcome: 'conflict', turn: row });
+    await expect(scheduler.schedule(legacyProjection)).rejects.toThrow();
+    expect(reserve.mock.calls[1]?.[0].deliveryKey).not.toBe(reservation.deliveryKey);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
 
   it('uses independent delivery lanes so publication order cannot invert queue order', async () => {
     const enqueue = jest.fn(async (value: unknown) => ({

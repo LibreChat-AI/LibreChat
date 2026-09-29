@@ -801,12 +801,7 @@ describe('getOpenAILLMConfig', () => {
       );
     });
 
-    /**
-     * Astra is not documented as available on Azure OpenAI, and Azure's
-     * first-party hosts do not satisfy the OpenAI-host check, so declaring it
-     * there would claim a surface this cannot verify.
-     */
-    it('does not declare it for Azure OpenAI', () => {
+    it('does not declare it for Azure serverless without Azure OpenAI configuration', () => {
       expect(configFor({ endpoint: EModelEndpoint.azureOpenAI }).llmConfig).not.toHaveProperty(
         'firstPartyEndpoint',
       );
@@ -822,6 +817,90 @@ describe('getOpenAILLMConfig', () => {
       expect(configFor({ endpoint: EModelEndpoint.custom }).llmConfig).not.toHaveProperty(
         'firstPartyEndpoint',
       );
+    });
+  });
+
+  describe('Azure Astra routing', () => {
+    const azure = {
+      azureOpenAIApiInstanceName: 'test-instance',
+      azureOpenAIApiDeploymentName: 'production-deployment',
+      azureOpenAIApiVersion: '2025-04-01-preview',
+      azureOpenAIApiKey: 'test-api-key',
+    };
+    const azureConfig = (overrides: Partial<Parameters<typeof getOpenAILLMConfig>[0]> = {}) =>
+      getOpenAILLMConfig({
+        azure,
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.azureOpenAI,
+        modelOptions: { model: 'gpt-6-astra', max_tokens: 2048 },
+        ...overrides,
+      });
+
+    it.each([
+      undefined,
+      'https://${INSTANCE_NAME}.openai.azure.com/openai/deployments/${DEPLOYMENT_NAME}',
+      'https://test-instance.openai.azure.com/openai/v1',
+      'https://test-instance.services.ai.azure.com/openai/v1',
+      'https://test-instance.cognitiveservices.azure.com/openai/v1',
+      'https://test-instance.openai.azure.us/openai/v1',
+      'https://test-instance.openai.azure.cn/openai/v1',
+    ])('routes Azure Astra to Responses at %s and retains its model identity', (baseURL) => {
+      expect(azureConfig({ baseURL }).llmConfig).toMatchObject({
+        model: 'gpt-6-astra',
+        useResponsesApi: true,
+        firstPartyEndpoint: true,
+        modelKwargs: { model: 'production-deployment', max_output_tokens: 2048 },
+      });
+    });
+
+    it.each([
+      { modelOptions: { model: 'gpt-6-astra-2026-09-03', max_tokens: 2048 } },
+      { modelOptions: { model: 'gpt-4.1', max_tokens: 2048 }, addParams: { model: 'gpt-6-astra' } },
+      { dropParams: ['reasoning_effort'] },
+      { reasoningFormat: ReasoningParameterFormat.disabled },
+    ])('routes using the effective model independently of reasoning: %j', (overrides) => {
+      expect(azureConfig(overrides).llmConfig.useResponsesApi).toBe(true);
+    });
+
+    it.each([
+      { modelOptions: { model: 'gpt-6-astra', max_tokens: 2048, useResponsesApi: false } },
+      { addParams: { useResponsesApi: false } },
+      { dropParams: ['useResponsesApi'] },
+    ])('keeps Astra constraints on an explicit Chat Completions opt-out: %j', (overrides) => {
+      const { llmConfig } = azureConfig(overrides);
+      expect(llmConfig.useResponsesApi).not.toBe(true);
+      expect(llmConfig).toMatchObject({
+        model: 'gpt-6-astra',
+        firstPartyEndpoint: true,
+        azureOpenAIApiDeploymentName: 'production-deployment',
+        modelKwargs: { model: 'production-deployment', max_completion_tokens: 2048 },
+      });
+    });
+
+    it.each([
+      { modelOptions: { model: 'gpt-5.4-mini' } },
+      { addParams: { model: 'gpt-5.4-mini' } },
+    ])('leaves other Azure models on the deployment name: %j', (overrides) => {
+      const { llmConfig } = azureConfig(overrides);
+      expect(llmConfig.useResponsesApi).not.toBe(true);
+      expect(llmConfig).toMatchObject({
+        model: 'production-deployment',
+        firstPartyEndpoint: true,
+      });
+      expect(llmConfig.modelKwargs?.model).toBeUndefined();
+    });
+
+    it.each([
+      'https://gateway.internal/openai/v1',
+      'https://test-instance.openai.azure.com.example.org/openai/v1',
+      'https://openai.azure.com/openai/v1',
+      'not-a-url',
+    ])('leaves gateway routing and request constraints unchanged: %s', (baseURL) => {
+      const { llmConfig } = azureConfig({ baseURL });
+      expect(llmConfig.useResponsesApi).not.toBe(true);
+      expect(llmConfig.firstPartyEndpoint).toBeUndefined();
+      expect(llmConfig.model).toBe('production-deployment');
     });
   });
 

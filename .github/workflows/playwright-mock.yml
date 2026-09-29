@@ -15,6 +15,13 @@ on:
         description: 'Reason for manual trigger'
         required: false
         default: 'Manual e2e run'
+      coverage:
+        description: 'Coverage profile: full suite on both stores, or the PR shards'
+        type: choice
+        options:
+          - full
+          - pr
+        default: full
 
 permissions:
   contents: read
@@ -29,7 +36,7 @@ env:
 
 jobs:
   # Stage 2 of codegraph gating (stage 1 = backend jest in backend-review.yml). The graph decides
-  # two matrix lanes whose relevance is a reachability question: the redis-transport lane (the ten
+  # two matrix lanes whose relevance is a reachability question: the redis-transport shards (the
   # stream-boundary specs under a real Redis round-trip) and the MCP list_changed lanes. Memory
   # shards always run. Monotone and fail-open: a lane is dropped ONLY on an explicit `false` from
   # the service; unavailable/unconfigured/non-synchronize events keep the full matrix. Lock
@@ -63,7 +70,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CHANGED: ${{ github.event.pull_request.changed_files }}
           E2E_SKIP_ARMED: ${{ vars.CODEGRAPH_E2E_SKIP }}
-          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/3","stream_store":"memory","redis_image":"","suite":"full","shard":"1/3","artifact":"memory-1-of-3"},{"name":"memory, shard 2/3","stream_store":"memory","redis_image":"","suite":"full","shard":"2/3","artifact":"memory-2-of-3"},{"name":"memory, shard 3/3","stream_store":"memory","redis_image":"","suite":"full","shard":"3/3","artifact":"memory-3-of-3"},{"name":"redis transport","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"","artifact":"redis-transport"}]}'
+          FULL_INCLUDE: '{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}'
         run: |
           set +e
           note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
@@ -112,7 +119,7 @@ jobs:
             INCLUDE="$FULL_INCLUDE"
             note "| redis transport | run |"
           fi
-          if ! echo "$INCLUDE" | jq -e '.include | length >= 3' >/dev/null 2>&1; then
+          if ! echo "$INCLUDE" | jq -e '.include | length >= 6' >/dev/null 2>&1; then
             note "_matrix assembly failed; running FULL_"
             exit 0
           fi
@@ -161,14 +168,16 @@ jobs:
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)))
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Separate runners isolate each shard's user, MongoDB, Redis and fixture state.
+    # Keep workers: 1 in Playwright; shared-user cleanup is not worker-safe.
     strategy:
       fail-fast: false
       matrix: >-
         ${{
           (github.event_name == 'pull_request' && needs.codegraph_select.outputs.e2e_include != '' &&
           fromJSON(needs.codegraph_select.outputs.e2e_include)) ||
-          (github.event_name == 'pull_request' &&
-          fromJSON('{"include":[{"name":"memory, shard 1/3","stream_store":"memory","redis_image":"","suite":"full","shard":"1/3","artifact":"memory-1-of-3"},{"name":"memory, shard 2/3","stream_store":"memory","redis_image":"","suite":"full","shard":"2/3","artifact":"memory-2-of-3"},{"name":"memory, shard 3/3","stream_store":"memory","redis_image":"","suite":"full","shard":"3/3","artifact":"memory-3-of-3"},{"name":"redis transport","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"","artifact":"redis-transport"}]}')) ||
+          ((github.event_name == 'pull_request' || inputs.coverage == 'pr') &&
+          fromJSON('{"include":[{"name":"memory, shard 1/6","stream_store":"memory","redis_image":"","suite":"full","shard":"1/6","artifact":"memory-1-of-6"},{"name":"memory, shard 2/6","stream_store":"memory","redis_image":"","suite":"full","shard":"2/6","artifact":"memory-2-of-6"},{"name":"memory, shard 3/6","stream_store":"memory","redis_image":"","suite":"full","shard":"3/6","artifact":"memory-3-of-6"},{"name":"memory, shard 4/6","stream_store":"memory","redis_image":"","suite":"full","shard":"4/6","artifact":"memory-4-of-6"},{"name":"memory, shard 5/6","stream_store":"memory","redis_image":"","suite":"full","shard":"5/6","artifact":"memory-5-of-6"},{"name":"memory, shard 6/6","stream_store":"memory","redis_image":"","suite":"full","shard":"6/6","artifact":"memory-6-of-6"},{"name":"redis transport, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"1/2","artifact":"redis-transport-1-of-2"},{"name":"redis transport, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"transport","shard":"2/2","artifact":"redis-transport-2-of-2"}]}')) ||
           fromJSON('{"include":[{"name":"memory, shard 1/2","stream_store":"memory","redis_image":"","suite":"full","shard":"1/2","artifact":"memory-1-of-2"},{"name":"memory, shard 2/2","stream_store":"memory","redis_image":"","suite":"full","shard":"2/2","artifact":"memory-2-of-2"},{"name":"redis, shard 1/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"1/2","artifact":"redis-1-of-2"},{"name":"redis, shard 2/2","stream_store":"redis","redis_image":"redis:7-alpine","suite":"full","shard":"2/2","artifact":"redis-2-of-2"}]}')
         }}
     services:
@@ -210,6 +219,9 @@ jobs:
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      - name: Test Playwright matrix selection
+        run: node --test .github/scripts/playwright-matrix.test.mjs
 
       - name: Restore data-provider build cache
         id: cache-data-provider
@@ -356,7 +368,7 @@ jobs:
 
       - name: Run Redis stream transport e2e
         if: matrix.suite == 'transport'
-        run: npx playwright test --config=e2e/playwright.config.redis.ts
+        run: npx playwright test --config=e2e/playwright.config.redis.ts --shard=${{ matrix.shard }}
         env:
           CI: 'true'
 

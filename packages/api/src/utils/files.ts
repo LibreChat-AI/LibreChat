@@ -2,6 +2,7 @@ import path from 'path';
 import crypto from 'node:crypto';
 import { createReadStream } from 'fs';
 import { readFile, stat } from 'fs/promises';
+import { UnsupportedProviderAudioError } from '~/files/upload/errors';
 
 const USER_FACING_UPLOAD_ERRORS = [
   ['Invalid file format', 'Invalid file format'],
@@ -98,6 +99,9 @@ export function resolveUploadErrorMessage(
   defaultMessage = 'Error processing file',
   redactDetails = false,
 ): string {
+  if (error instanceof UnsupportedProviderAudioError) {
+    return error.message;
+  }
   const errorMessage = error?.message;
   if (!errorMessage) {
     return defaultMessage;

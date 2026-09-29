@@ -1,3 +1,4 @@
+import type { ResponsesApiRouting } from './types';
 import {
   Verbosity,
   ImageDetail,
@@ -16,8 +17,9 @@ import {
   BedrockProviders,
   anthropicSettings,
 } from './types';
+import { hasAlwaysOnThinking, hasBetweenToolsThinkingFloor, supportsPromptCache } from './bedrock';
 import { SettingDefinition, SettingsConfiguration } from './generate';
-import { supportsPromptCache } from './bedrock';
+import { resolveEffectiveUseResponsesApi } from './file-config';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -550,6 +552,7 @@ const anthropic: Record<string, SettingDefinition> = {
       [ThinkingDisplay.auto]: 'com_ui_auto',
       [ThinkingDisplay.summarized]: 'com_ui_summarized',
       [ThinkingDisplay.omitted]: 'com_ui_omitted',
+      [ThinkingDisplay.updates]: 'com_ui_updates',
     },
     optionType: 'model',
     columnSpan: 4,
@@ -1315,9 +1318,66 @@ export function applyModelAwareDefaults(
   settings: SettingsConfiguration,
   endpoint: string,
   model?: string,
+  responsesApiRouting?: ResponsesApiRouting,
 ): SettingsConfiguration {
   if (!model) {
     return settings;
+  }
+  if (/^grok-4[.-]7(?:$|[-:])/.test(model.split('/').pop() ?? '')) {
+    return settings.map((setting) =>
+      setting.key === 'reasoning_effort'
+        ? {
+            ...setting,
+            options: [
+              ReasoningEffort.unset,
+              ReasoningEffort.low,
+              ReasoningEffort.medium,
+              ReasoningEffort.high,
+              ReasoningEffort.xhigh,
+            ],
+          }
+        : setting,
+    );
+  }
+  if (/^gpt-6-(?:sol|luna)(?:$|-)/i.test(model)) {
+    return settings.map((setting) => {
+      if (setting.key === 'reasoning_effort') {
+        return {
+          ...setting,
+          options: setting.options?.filter((effort) => effort !== ReasoningEffort.minimal),
+        };
+      }
+      /** Match the native backend's unset default without writing into stored
+       * settings. Explicit false still overrides this rendered default. */
+      if (setting.key === 'useResponsesApi') {
+        const route = (value?: boolean) =>
+          resolveEffectiveUseResponsesApi({ endpoint, model, routing: responsesApiRouting, value });
+        return {
+          ...setting,
+          default: route() ?? false,
+          enumMappings: { true: route(true) ?? true, false: route(false) ?? false },
+        };
+      }
+      return setting;
+    });
+  }
+  if (hasAlwaysOnThinking(model)) {
+    return settings.filter(
+      (setting) =>
+        !['thinking', 'thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+    );
+  }
+  /** Sonnet 5.5+ keeps the toggle: "off" maps to its `between_tools` floor. */
+  if (hasBetweenToolsThinkingFloor(model)) {
+    return settings
+      .map((setting) =>
+        setting.key === 'thinking'
+          ? { ...setting, description: 'com_endpoint_anthropic_thinking_between_tools' }
+          : setting,
+      )
+      .filter(
+        (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+      );
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google

@@ -20,6 +20,8 @@ import {
   applyPendingAction,
   carriedSteerContext,
   getBranchSiblingIndexesForTarget,
+  hydrateFileDeliveryMetadata,
+  isCompactionAnchorProjection,
 } from '~/utils';
 import {
   useStreamStatus,
@@ -36,7 +38,10 @@ import {
 } from '~/data-provider/SSE/protocol';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { revealedQueuedTurnFamily } from '~/store/steer';
+import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
 /**
@@ -81,13 +86,27 @@ function resumeStateMatchesSubmission(
   return !!responseMessageId && resumeState.responseMessageId === responseMessageId;
 }
 
+/**
+ * The row that names the branch a resumed run belongs to when its own response
+ * is not in the loaded history yet. A compaction's user-message slot is the leaf
+ * it summarizes up to and carries no parent (`projectCompactionAnchor`), so
+ * there the anchor itself names the branch — without this the pane restores no
+ * sibling selection and a compaction started on an older branch comes back on
+ * whichever branch the default lands on.
+ */
+function getResumeBranchFallbackMessageId(
+  resumeState: Agents.ResumeState,
+): string | null | undefined {
+  return resumeState.userMessage?.parentMessageId ?? resumeState.userMessage?.messageId;
+}
+
 function getResumeBranchTargetMessageId(
   resumeState: Agents.ResumeState,
   messages: TMessage[],
 ): string | null | undefined {
   const responseMessageId = resumeState.responseMessageId;
   if (!responseMessageId) {
-    return resumeState.userMessage?.parentMessageId;
+    return getResumeBranchFallbackMessageId(resumeState);
   }
 
   const unpaddedResponseMessageId = responseMessageId.replace(/_+$/, '');
@@ -113,7 +132,7 @@ function getResumeBranchTargetMessageId(
     return unpaddedResponseMessageId;
   }
 
-  return resumeState.userMessage?.parentMessageId;
+  return getResumeBranchFallbackMessageId(resumeState);
 }
 
 function preferDefinedString(value?: string | null, fallback?: string): string | undefined {
@@ -136,10 +155,22 @@ function buildSubmissionFromResumeState(
   const responseMessageId =
     resumeState.responseMessageId ?? `${userMessageData?.messageId ?? 'resume'}_`;
 
-  // Try to find existing user message in the messages array (from database)
-  const existingUserMessage = messages.find(
-    (m) => m.isCreatedByUser && m.messageId === userMessageData?.messageId,
-  );
+  /**
+   * The run's user-message slot as the loaded history already holds it. Message
+   * ids are unique per row, so a match is that row whoever wrote it: a
+   * compaction submits no user turn and puts the LEAF it summarizes up to in
+   * this slot (`useCompactConversation` client-side, `projectCompactionAnchor`
+   * server-side), which is usually the assistant answer. Adopting the row keeps
+   * the anchor's own identity — synthesizing an empty, parentless USER row over
+   * it rewrites that answer into a phantom root and folds the thread.
+   */
+  const existingSlotMessage = messages.find((m) => m.messageId === userMessageData?.messageId);
+  /** An anchored run — a compaction — created no user turn: the slot names a row
+   *  the transcript already holds. Judged from the projection's shape, never from
+   *  the anchor's author, which is a user message as often as an answer. Either
+   *  way the run is regenerate-shaped for every consumer: no user turn of its
+   *  own, the response parented onto an existing message. */
+  const isAnchoredRun = isCompactionAnchorProjection(userMessageData);
 
   // A trailing underscore distinguishes an in-flight regeneration from the persisted
   // response it replaces. Only the exact response id proves generation ownership.
@@ -154,7 +185,7 @@ function buildSubmissionFromResumeState(
       : undefined;
   const responseMetadataMessage = existingResponseMessage ?? persistedRegenerationResponse;
   const isRegenerateResume =
-    resumeState.isRegenerate === true || persistedRegenerationResponse != null;
+    resumeState.isRegenerate === true || persistedRegenerationResponse != null || isAnchoredRun;
   let regenerateMessages: TMessage[] | undefined;
   if (isRegenerateResume) {
     regenerateMessages =
@@ -163,9 +194,9 @@ function buildSubmissionFromResumeState(
         : messages.filter((message) => message.messageId !== responseMessageId);
   }
 
-  // Create or use existing user message
+  // Create or use the row the slot already names
   const userMessage: TMessage =
-    existingUserMessage ??
+    existingSlotMessage ??
     (userMessageData
       ? (tMessageSchema.parse({
           messageId: userMessageData.messageId,
@@ -226,6 +257,7 @@ function buildSubmissionFromResumeState(
     initialResponse,
     conversation,
     isRegenerate: isRegenerateResume,
+    ...(isAnchoredRun && { compact: true }),
     ...(regenerateMessages && { regenerateMessages }),
     isTemporary: false,
     endpointOption: {},
@@ -257,6 +289,7 @@ export default function useResumeOnLoad(
   runIndex = 0,
   messagesLoaded = true,
 ) {
+  const fileMap = useFileMapContext();
   const jotaiStore = useStore();
   const queryClient = useQueryClient();
   const setSubmission = useSetRecoilState(store.submissionByIndex(runIndex));
@@ -353,13 +386,18 @@ export default function useResumeOnLoad(
               const keepLocalPreempt =
                 (localChip?.preemptRevision ?? 0) > (steer.preemptRevision ?? 0);
               const chipGenerationCreatedAt = generationCreatedAt ?? localChip?.generationCreatedAt;
+              const restoredFiles = hydrateFileDeliveryMetadata(
+                steer.files,
+                localChip?.files,
+                fileMap,
+              );
               return {
                 steerId: steer.steerId,
                 ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
                 text: steer.text,
                 status: 'pending' as const,
                 createdAt: steer.createdAt ?? Date.now(),
-                ...(steer.files && steer.files.length > 0 && { files: steer.files }),
+                ...(restoredFiles && restoredFiles.length > 0 && { files: restoredFiles }),
                 ...((keepLocalPreempt ? localChip?.preempt : steer.preempt) === true && {
                   preempt: true,
                 }),
@@ -384,7 +422,7 @@ export default function useResumeOnLoad(
           ];
         });
       },
-    [],
+    [fileMap],
   );
 
   const settleAppliedSteerParts = useRecoilCallback(
@@ -754,6 +792,17 @@ export default function useResumeOnLoad(
            *  and finished inside a poll gap, its turns are on the server and
            *  nowhere else; one refetch is the whole repair, and marking an
            *  off-screen conversation stale costs nothing until it is opened. */
+          const revealFamily = revealedQueuedTurnFamily(owedConversationId);
+          const pendingReveal = jotaiStore.get(revealFamily);
+          if (
+            pendingReveal != null &&
+            Date.parse(pendingReveal.revealedAt) <= latch.quietSince! &&
+            !isQueuedTurnSuccessorOwed(
+              queryClient.getQueryData(agentQueuedTurnsQueryKey(owedConversationId)),
+            )
+          ) {
+            jotaiStore.set(revealFamily, null);
+          }
           queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, owedConversationId] });
         }, remaining),
       );
@@ -775,7 +824,7 @@ export default function useResumeOnLoad(
         clearTimeout(timer);
       }
     };
-  }, [owedSuccessors, owedIsReporting, conversationId, queryClient]);
+  }, [owedSuccessors, owedIsReporting, conversationId, queryClient, jotaiStore]);
 
   const shouldCheck =
     resumableEnabled &&
@@ -897,6 +946,30 @@ export default function useResumeOnLoad(
 
     if (!streamStatus.active || !streamStatus.streamId) {
       console.log('[ResumeOnLoad] No active job to resume for:', conversationId);
+      const revealFamily = revealedQueuedTurnFamily(conversationId);
+      const pendingReveal = jotaiStore.get(revealFamily);
+      /** A remounted pane may have missed attachment and the quiet-window
+       * timer. An expired job has no epoch; require a fresh inactive read
+       * after restored history before retiring its surviving handoff guard. */
+      const historyUpdatedAt = queryClient.getQueryState([
+        QueryKeys.messages,
+        conversationId,
+      ])?.dataUpdatedAt;
+      if (
+        pendingReveal != null &&
+        streamStatus.active === false &&
+        streamStatus.createdAt == null &&
+        historyUpdatedAt != null &&
+        streamStatusUpdatedAt >= historyUpdatedAt &&
+        streamStatusUpdatedAt > Date.parse(pendingReveal.revealedAt) &&
+        !isQueuedTurnSuccessorOwed(queuedTurnReceipts) &&
+        (getMessages() ?? []).some(
+          (message) => message.parentMessageId === pendingReveal.parentMessageId,
+        )
+      ) {
+        jotaiStore.set(revealFamily, null);
+      }
+
       // A terminal drain may have parked acknowledged steers no subscriber
       // received (tab closed / reload racing the final event) — the status
       // claim returns them exactly once; restore as queued follow-up chips.
@@ -1027,6 +1100,8 @@ export default function useResumeOnLoad(
     isFetching,
     streamStatus,
     streamStatusUpdatedAt,
+    queuedTurnReceipts,
+    queryClient,
     getMessages,
     setSubmission,
     setSubmissionStart,

@@ -9,6 +9,7 @@ const {
   sanitizeFileForTransmit,
   extractFileContext,
   getReferencedQuotes,
+  applyTurnDelivery,
   encodeAndFormatAudios,
   encodeAndFormatVideos,
   getTransactionsConfig,
@@ -20,7 +21,15 @@ const {
   collectModelBoundHistoricalFileIdState,
   projectModelBoundSourceFiles,
   isModelBoundAttachmentFile,
+  isToolOwnedAttachment,
   withBalanceReservations,
+  findCheckpointSummaryPart,
+  getSummaryPartText,
+  runAfterSeed,
+  saveTurnConversation,
+  seedTurnConversation,
+  needsRetentionConversation,
+  getConversationWriteContext,
 } = require('@librechat/api');
 const {
   Constants,
@@ -29,19 +38,14 @@ const {
   ErrorTypes,
   ContentTypes,
   isCompactedLeaf,
-  excludedKeys,
   EModelEndpoint,
-  mergeFileConfig,
   isParamEndpoint,
   isAgentsEndpoint,
-  isEphemeralAgentId,
   supportsBalanceCheck,
   isBedrockDocumentType,
   HITL_MESSAGE_FILTER_FIELDS,
-  getEndpointFileConfig,
   stripReasoningLabelMetadata,
-  resolveUploadLLMDeliveryPath,
-  isSpeechProviderConfigured,
+  resolveTurnLLMDeliveryPath,
   resolveUseResponsesApi,
 } = require('librechat-data-provider');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
@@ -239,10 +243,6 @@ class BaseClient {
     this.currentMessages = [];
     /** @type {import('librechat-data-provider').VisionModes | undefined} */
     this.visionMode;
-    /** @type {import('librechat-data-provider').FileConfig | undefined} */
-    this._mergedFileConfig;
-    /** @type {import('librechat-data-provider').EndpointFileConfig | undefined} */
-    this._endpointFileConfig;
   }
 
   setOptions() {
@@ -283,6 +283,12 @@ class BaseClient {
    * boundary is admitted. Generic clients preserve the historical eager
    * persistence behavior. */
   shouldDeferUserMessagePersistence() {
+    return false;
+  }
+
+  /** Whether a deferred parent write may still create a new conversation's row up front, so
+   * the conversation lists can return it while the run is in flight. */
+  shouldSeedDeferredConversation() {
     return false;
   }
 
@@ -829,9 +835,8 @@ class BaseClient {
     if (this.options.resendFiles !== false && this.authorizedHistoricalFiles == null) {
       const historicalFileState = collectModelBoundHistoricalFileIdState(modelBoundStoredMessages);
       this.modelBoundHistoricalFileIdsOverflowed ||= historicalFileState.overflowed;
-      const files = await getOwnerHistoricalFiles(
-        historicalFileState.fileIds,
-        this.options.req?.user,
+      const files = this.resolveTurnAttachments(
+        await getOwnerHistoricalFiles(historicalFileState.fileIds, this.options.req?.user),
       );
       this.authorizedHistoricalFiles = new Map(
         files
@@ -914,6 +919,18 @@ class BaseClient {
       if (this.shouldDeferUserMessagePersistence()) {
         let state = 'pending';
         let startPersistence = startUserMessagePersistence;
+        if (!this.skipSaveConvo && this.shouldSeedDeferredConversation()) {
+          const seed = seedTurnConversation(
+            db,
+            this.getTurnConversationFields(
+              this.options,
+              userMessage.conversationId,
+              saveOptions,
+              'api/app/clients/BaseClient.js - sendMessage #seedConversation',
+            ),
+          );
+          startPersistence = runAfterSeed(seed, startUserMessagePersistence);
+        }
         let resolvePersistence;
         let removeAbortListener = () => {};
         const persistencePromise = new Promise((resolve) => {
@@ -1244,6 +1261,9 @@ class BaseClient {
     }
 
     const messages = (await db.getMessages({ conversationId, user: this.user })) ?? [];
+    /** A client that reads beyond the walk below (which stops at a checkpoint
+     *  summary) receives every row here; the rest keep nothing. */
+    this.onHistoryLoaded?.(messages);
 
     if (messages.length === 0) {
       return [];
@@ -1266,11 +1286,11 @@ class BaseClient {
           continue;
         }
 
-        const summaryBlock = BaseClient.findSummaryContentBlock(msg);
+        const summaryBlock = findCheckpointSummaryPart(msg.content);
         if (summaryBlock) {
           this.previous_summary = {
             ...msg,
-            summary: BaseClient.getSummaryText(summaryBlock),
+            summary: getSummaryPartText(summaryBlock),
             summaryTokenCount: summaryBlock.tokenCount,
           };
           break;
@@ -1325,25 +1345,10 @@ class BaseClient {
 
     const hasAddedConvo = options?.req?.body?.addedConvo != null;
     const req = options?.req;
-    if (
-      req?.config?.interfaceConfig?.retentionMode === 'all' &&
-      req?.config?.interfaceConfig?.generalChatRetention !== undefined &&
-      !Object.prototype.hasOwnProperty.call(req, 'resolvedConversation')
-    ) {
+    if (needsRetentionConversation(req)) {
       req.resolvedConversation = await db.getConvo(req.user.id, message.conversationId);
     }
-    const hasResolvedConversation =
-      req != null && Object.prototype.hasOwnProperty.call(req, 'resolvedConversation');
-    const resolvedRetention = hasResolvedConversation ? req.resolvedConversation : null;
-    const reqCtx = {
-      userId: req?.user?.id,
-      isTemporary:
-        req?._agentEventBindingRetention?.isTemporary ??
-        resolvedRetention?.isTemporary ??
-        req?.body?.isTemporary,
-      expiredAt: req?._agentEventBindingRetention?.expiredAt ?? resolvedRetention?.expiredAt,
-      interfaceConfig: req?.config?.interfaceConfig,
-    };
+    const reqCtx = getConversationWriteContext(req);
     const savedMessage = await db.saveMessage(
       reqCtx,
       {
@@ -1360,70 +1365,41 @@ class BaseClient {
       return { message: savedMessage };
     }
 
-    const fieldsToKeep = {
-      conversationId: message.conversationId,
-      endpoint: options.endpoint,
-      endpointType: options.endpointType,
-      ...endpointOptions,
-    };
-    const conversationCreatedAt = options?.req?.conversationCreatedAt;
-    const createdAtOnInsert =
-      conversationCreatedAt != null ? new Date(conversationCreatedAt) : undefined;
-    const validCreatedAtOnInsert =
-      createdAtOnInsert && !Number.isNaN(createdAtOnInsert.getTime())
-        ? createdAtOnInsert
-        : undefined;
-
-    const skippedExistingConvoLookup = this.fetchedConvo === true;
-    let existingConvo = null;
-    if (!skippedExistingConvoLookup && hasResolvedConversation) {
-      existingConvo = req.resolvedConversation;
-    } else if (!skippedExistingConvoLookup) {
-      existingConvo = await db.getConvo(req?.user?.id, message.conversationId);
-    }
-    // Keep the authenticated conversation available for response, abort, and retry saves.
-    // fetchedConvo already prevents repeating the conversation initialization work.
-    const shouldSetCreatedAtOnInsert = !skippedExistingConvoLookup && existingConvo == null;
-
-    const unsetFields = {};
-    const exceptions = new Set(['spec', 'iconURL']);
-    const hasNonEphemeralAgent =
-      isAgentsEndpoint(options.endpoint) &&
-      endpointOptions?.agent_id &&
-      !isEphemeralAgentId(endpointOptions.agent_id);
-    if (hasNonEphemeralAgent) {
-      exceptions.add('model');
-    }
-    if (existingConvo != null) {
-      this.fetchedConvo = true;
-      for (const key in existingConvo) {
-        if (!key) {
-          continue;
-        }
-        if (excludedKeys.has(key) && !exceptions.has(key)) {
-          continue;
-        }
-
-        if (endpointOptions?.[key] === undefined) {
-          unsetFields[key] = 1;
-        }
-      }
-    }
-
-    const conversation = await db.saveConvo(reqCtx, fieldsToKeep, {
-      context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveConvo',
-      unsetFields,
-      noUpsert: req?._agentEventBindingParentConversationId != null,
-      initialAgentId: hasNonEphemeralAgent ? options.agent?.id : null,
-      createdAtOnInsert: shouldSetCreatedAtOnInsert ? validCreatedAtOnInsert : undefined,
-      ...(savedMessage?._id != null ? { appendMessageIds: [savedMessage._id] } : {}),
+    const { conversation, initialized } = await saveTurnConversation(db, {
+      ...this.getTurnConversationFields(
+        options,
+        message.conversationId,
+        endpointOptions,
+        'api/app/clients/BaseClient.js - saveMessageToDatabase #saveConvo',
+      ),
+      ctx: reqCtx,
+      initialized: this.fetchedConvo === true,
+      savedMessageId: savedMessage?._id,
     });
-
-    if (req != null && conversation != null) {
-      req.resolvedConversation = conversation;
+    if (initialized) {
+      this.fetchedConvo = true;
     }
 
     return { message: savedMessage, conversation };
+  }
+
+  /**
+   * The conversation fields a turn's writes share.
+   * @param {Object} options - The client options snapshot.
+   * @param {string} conversationId
+   * @param {Partial<TConversation>} endpointOptions
+   * @param {string} context - Names the write in the save log.
+   */
+  getTurnConversationFields(options, conversationId, endpointOptions, context) {
+    return {
+      req: options.req,
+      conversationId,
+      endpoint: options.endpoint,
+      endpointType: options.endpointType,
+      endpointOptions,
+      agentId: options.agent?.id,
+      context,
+    };
   }
 
   /**
@@ -1432,34 +1408,6 @@ class BaseClient {
    */
   async updateMessageInDatabase(message) {
     await db.updateMessage(this.options?.req?.user?.id, message);
-  }
-
-  /** Extracts text from a summary block (handles both legacy `text` field and new `content` array format). */
-  static getSummaryText(summaryBlock) {
-    if (Array.isArray(summaryBlock.content)) {
-      return summaryBlock.content.map((b) => b.text ?? '').join('');
-    }
-    if (typeof summaryBlock.content === 'string') {
-      return summaryBlock.content;
-    }
-    return summaryBlock.text ?? '';
-  }
-
-  /** Finds the last summary content block in a message's content array (last-summary-wins). */
-  static findSummaryContentBlock(message) {
-    if (!Array.isArray(message?.content)) {
-      return null;
-    }
-    let lastSummary = null;
-    for (const part of message.content) {
-      if (
-        part?.type === ContentTypes.SUMMARY &&
-        BaseClient.getSummaryText(part).trim().length > 0
-      ) {
-        lastSummary = part;
-      }
-    }
-    return lastSummary;
   }
 
   /**
@@ -1523,9 +1471,9 @@ class BaseClient {
       let resolved = message;
       let hasSummary = false;
       if (summary) {
-        const summaryBlock = BaseClient.findSummaryContentBlock(message);
+        const summaryBlock = findCheckpointSummaryPart(message.content);
         if (summaryBlock) {
-          const summaryText = BaseClient.getSummaryText(summaryBlock);
+          const summaryText = getSummaryPartText(summaryBlock);
           resolved = {
             ...message,
             role: 'system',
@@ -1806,8 +1754,8 @@ class BaseClient {
    * @param {MongoFile[]} attachments - Array of file attachments
    * @returns {Promise<void>}
    */
-  async addFileContextToMessage(message, attachments) {
-    const textAttachments = this.getTextContextAttachments(attachments);
+  async addFileContextToMessage(message, attachments, fileConsumers) {
+    const textAttachments = this.getTextContextAttachments(attachments, fileConsumers);
     const fileContext = await extractFileContext({
       attachments: textAttachments,
       req: this.options?.req,
@@ -1819,9 +1767,9 @@ class BaseClient {
     }
   }
 
-  getTextContextAttachments(attachments) {
+  getTextContextAttachments(attachments, fileConsumers) {
     return attachments.filter((file) => {
-      const deliveryPath = this.getAttachmentDeliveryPath(file);
+      const deliveryPath = this.getAttachmentDeliveryPath(file, fileConsumers);
       /* Records predating delivery paths keep legacy extraction. Current routing is
        * authoritative for inferred uploads, so native provider bytes are not also
        * injected as extracted text after a provider handoff. */
@@ -1829,35 +1777,19 @@ class BaseClient {
     });
   }
 
-  /** Re-resolves an inferred upload route against the provider handling this turn. */
-  getAttachmentDeliveryPath(file) {
-    if (!this._mergedFileConfig) {
-      this._mergedFileConfig = mergeFileConfig(this.options.req?.config?.fileConfig);
-      /* Agent file policy is configured under the endpoint it names, not the client
-       * family initialization may rewrite it to. */
-      const agentEndpoint = this.options.agent?.endpoint ?? this.options.agent?.provider;
-      this._deliveryEndpoint = agentEndpoint ?? this.options.endpoint;
-      this._endpointFileConfig = getEndpointFileConfig({
-        fileConfig: this._mergedFileConfig,
-        endpoint: this._deliveryEndpoint,
-        endpointType: agentEndpoint != null ? undefined : this.options.endpointType,
-      });
-    }
-
-    return file.llmDeliveryPath == null || file.metadata?.destinationChosen === true
-      ? file.llmDeliveryPath
-      : resolveUploadLLMDeliveryPath({
-          /* Conversion changes the stored type, so use the type routing originally saw. */
-          mimeType: file.metadata?.routingMimeType ?? file.type,
-          endpointConfig: this._endpointFileConfig,
-          fileConfig: this._mergedFileConfig,
-          endpoint: this._deliveryEndpoint,
-          useResponsesApi: this.usesResponsesApi(),
-          sttConfigured: isSpeechProviderConfigured(this.options.req?.config?.speech?.stt),
-        });
+  /** The turn's view of stored records, applied before admission at every load. */
+  resolveTurnAttachments(files, fileConsumers = this.options.agent?.fileConsumers) {
+    return applyTurnDelivery(files, {
+      routing: this.options.agent?.deliveryRouting,
+      consumers: fileConsumers,
+    });
   }
 
-  async processAttachments(message, attachments) {
+  getAttachmentDeliveryPath(file, fileConsumers = this.options.agent?.fileConsumers) {
+    return resolveTurnLLMDeliveryPath(this.options.agent?.deliveryRouting, file, fileConsumers);
+  }
+
+  async processAttachments(message, attachments, fileConsumers) {
     const categorizedAttachments = {
       images: [],
       videos: [],
@@ -1868,6 +1800,7 @@ class BaseClient {
     const allFiles = [];
     const provider = this.options.agent?.provider ?? this.options.endpoint;
     const isBedrock = provider === EModelEndpoint.bedrock;
+    const deliveryRouting = this.options.agent?.deliveryRouting;
 
     /* The stored path records what upload time inferred from the endpoint it saw, and this
      * turn may be running somewhere else: audio stored as `provider` under Google reaches
@@ -1881,7 +1814,7 @@ class BaseClient {
         allFiles.push(file);
         continue;
       }
-      const deliveryPath = this.getAttachmentDeliveryPath(file);
+      const deliveryPath = this.getAttachmentDeliveryPath(file, fileConsumers);
       if (deliveryPath === 'text' || deliveryPath === 'none') {
         allFiles.push(file);
         continue;
@@ -1889,13 +1822,7 @@ class BaseClient {
       /* An explicit `provider` path is authoritative: lazy provisioning stamps
        * `embedded`/`codeEnvRef` on files that are still meant for the model, so the
        * legacy tool-provisioning exclusion only applies to records without one. */
-      if (
-        deliveryPath !== 'provider' &&
-        (file.embedded === true ||
-          file.metadata?.codeEnvRef != null ||
-          file.metadata?.codeEnvRefs != null ||
-          file.metadata?.fileIdentifier != null)
-      ) {
+      if (deliveryPath !== 'provider' && isToolOwnedAttachment(file)) {
         allFiles.push(file);
         continue;
       }
@@ -1916,9 +1843,11 @@ class BaseClient {
         allFiles.push(file);
       } else if (
         file.type &&
-        this._mergedFileConfig &&
-        this._endpointFileConfig?.supportedMimeTypes &&
-        this._mergedFileConfig.checkType(file.type, this._endpointFileConfig.supportedMimeTypes)
+        deliveryRouting?.endpointConfig.supportedMimeTypes &&
+        deliveryRouting.fileConfig.checkType(
+          file.type,
+          deliveryRouting.endpointConfig.supportedMimeTypes,
+        )
       ) {
         categorizedAttachments.documents.push(file);
         allFiles.push(file);
@@ -1980,9 +1909,8 @@ class BaseClient {
     const historicalFileState = collectModelBoundHistoricalFileIdState(_messages);
     this.modelBoundHistoricalFileIdsOverflowed ||= historicalFileState.overflowed;
     const authorizedFilesById = new Map();
-    const files = await getOwnerHistoricalFiles(
-      historicalFileState.fileIds,
-      this.options.req?.user,
+    const files = this.resolveTurnAttachments(
+      await getOwnerHistoricalFiles(historicalFileState.fileIds, this.options.req?.user),
     );
     const nonSteerReplayFileIds = collectModelBoundHistoricalFileIdState(
       _messages.map((message) => ({

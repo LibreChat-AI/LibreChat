@@ -58,6 +58,7 @@ import { LIBRECHAT_CHECKPOINT_NAMESPACE_KEY } from '../checkpointer';
 import { AttachmentObjectNotFoundError } from '~/files/encode/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
 import { ContentFilterError } from '~/middleware/contentFilter';
+import { applyCheckpointDelivery } from '../files/delivery';
 import { hasActiveFilePolicy } from '~/protection/files';
 import { parseSkillMarkdown } from '../../skills/parse';
 import { inspectContent } from '~/protection/runtime';
@@ -1137,7 +1138,7 @@ export async function assertResumeRuntimeContentAllowed(
     );
     throw new AttachmentObjectNotFoundError(unresolvedFileId ?? 'unknown');
   }
-  return { resolvedFiles, checkpointFiles };
+  return { resolvedFiles, checkpointFiles: applyCheckpointDelivery(checkpointFiles) };
 }
 
 export function getUserFacingResumeError(

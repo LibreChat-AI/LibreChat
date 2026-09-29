@@ -28,6 +28,7 @@ import {
   OPENID_REFRESH_CANCELLED_BEFORE_GRANT,
   createOpenIDRefreshOwnershipError,
   isOpenIDRefreshOwnershipError,
+  reloadOpenIDSessionIfPersisted,
   toOpenIDLogArgument,
 } from './errors';
 
@@ -1239,12 +1240,7 @@ export function createOpenIDSessionRefreshService(
   }): Promise<MarkedOIDCTokens | null> {
     if (!resolvedTokens?.access_token) return null;
     if (assertLeaseOwned) await assertLeaseOwned();
-    if (typeof req.session?.reload === 'function') {
-      const reload = req.session.reload.bind(req.session);
-      await new Promise<void>((resolve, reject) => {
-        reload((error?: Error | null) => (error ? reject(error) : resolve()));
-      });
-    }
+    await reloadOpenIDSessionIfPersisted(req.session);
     if (assertLeaseOwned) await assertLeaseOwned();
     const requestTokens = cloneResolvedTokens(resolvedTokens);
     if (
@@ -1778,11 +1774,8 @@ export function createOpenIDSessionRefreshService(
     if (!req?.session || !resolvedTokens?.access_token) {
       return false;
     }
-    if (reloadSession && typeof req.session.reload === 'function') {
-      const reload = req.session.reload.bind(req.session);
-      await new Promise<void>((resolve, reject) => {
-        reload((error?: Error | null) => (error ? reject(error) : resolve()));
-      });
+    if (reloadSession) {
+      await reloadOpenIDSessionIfPersisted(req.session);
     }
     const existing = req.session.openidTokens ?? {};
     const generationDiffers = Boolean(

@@ -45,7 +45,12 @@ const agent = {
 };
 
 function makeRequest(params: Record<string, string>): Request {
-  return { user, params, headers: {} } as unknown as Request;
+  return {
+    user,
+    params,
+    headers: {},
+    file_id: '91a0f989-24cc-4161-a924-9de85c496633',
+  } as unknown as Request;
 }
 
 function makeResponse(): Response {
@@ -237,6 +242,7 @@ describe('Agent Management file handlers', () => {
 
       expect(deps.processUpload).toHaveBeenCalledWith(request, response);
       expect(request.body).toEqual({
+        file_id: '91a0f989-24cc-4161-a924-9de85c496633',
         endpoint: 'Moonshot',
         endpointType: 'custom',
         agent_id: 'agent-one',

@@ -1,4 +1,5 @@
 import { v4 } from 'uuid';
+import { useStore } from 'jotai';
 import { cloneDeep } from 'lodash';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -38,10 +39,12 @@ import {
 } from '~/utils';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
+import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import store, { useGetEphemeralAgent } from '~/store';
 import { startupConfigKey } from '~/data-provider';
 import useUserKey from '~/hooks/Input/useUserKey';
@@ -202,6 +205,7 @@ export default function useChatFunctions({
   isSubmitting,
   latestMessage,
   setSubmission,
+  setConversation,
   conversation: immutableConversation,
 }: {
   index?: number;
@@ -214,6 +218,9 @@ export default function useChatFunctions({
   files?: Map<string, ExtendedFile>;
   setFiles?: SetterOrUpdater<Map<string, ExtendedFile>>;
   setSubmission: SetterOrUpdater<TSubmission | null>;
+  /** Supplied by the host that owns the conversation atom, so a send records the decision it
+   *  established without this hook becoming a second writer of that state. */
+  setConversation: SetterOrUpdater<TConversation | null>;
 }) {
   const navigate = useNavigate();
   const getSender = useGetSender();
@@ -227,6 +234,7 @@ export default function useChatFunctions({
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(index));
   const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(index));
   const focusRegeneratedResponse = useFocusRegeneratedResponse();
+  const jotaiStore = useStore();
   const getConversation = useGetConversation(index);
   const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
   const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
@@ -320,6 +328,8 @@ export default function useChatFunctions({
     const regenerateShaped = isRegenerate || compact;
     if (
       !!isSubmitting ||
+      jotaiStore.get(revealedQueuedTurnFamily(immutableConversation?.conversationId ?? '')) !=
+        null ||
       (!regenerateShaped && !isSubmittableMessage(text, (files?.size ?? 0) + replayFileCount))
     ) {
       return false;
@@ -611,6 +621,7 @@ export default function useChatFunctions({
         filepath: file.filepath,
         filename: file.filename,
         type: file.type ?? '', // Ensure type is not undefined
+        llmDeliveryPath: file.llmDeliveryPath,
         height: file.height,
         width: file.width,
       }));
@@ -740,6 +751,7 @@ export default function useChatFunctions({
       conversation: {
         ...conversation,
         ...(chatProjectId ? { chatProjectId } : {}),
+        ...(latestCodeApprovalMode != null ? { codeApprovalMode: latestCodeApprovalMode } : {}),
         conversationId,
       },
       endpointOption,
@@ -777,6 +789,14 @@ export default function useChatFunctions({
       setMessages([...submissionMessages, currentMsg, initialResponse]);
     }
 
+    /** Carry the submitted choice through the first saved-chat event instead of re-deriving it
+     *  from agent defaults. This is optimistic: the SSE error path reconciles an existing chat
+     *  with its authoritative server decision if admission fails. */
+    setConversation((current) =>
+      current == null || current.conversationId !== conversation?.conversationId
+        ? current
+        : withSubmittedCodeDecision(current, workspaceSubmission),
+    );
     setSubmissionStart(Date.now());
     setSubmission(submission);
     logger.dir('message_stream', submission, { depth: null });

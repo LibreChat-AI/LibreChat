@@ -28,7 +28,12 @@
       }
     </style>
     <script>
-      const theme = localStorage.getItem('color-theme');
+      let theme = null;
+      try {
+        theme = localStorage.getItem('color-theme');
+      } catch (e) {
+        /* Web Storage denied by browser policy: the shell falls back to the system theme. */
+      }
       const loadingContainerStyle = document.createElement('style');
       let backgroundColor;
 

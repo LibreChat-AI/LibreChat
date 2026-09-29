@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, memo } from 'react';
 import { Copy, Check } from 'lucide';
+import { useAtomValue } from 'jotai';
 import { useRecoilState } from 'recoil';
 import { findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
 import {
@@ -14,6 +15,7 @@ import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider
 import { useGenerationsByLatest, useLocalize } from '~/hooks';
 import { useOptionalMessagesOperations } from '~/Providers';
 import { hasEditablePart } from './Content/editableParts';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import { Fork } from '~/components/Conversations';
 import { hoverButtonClasses } from './styles';
 import MessageAudio from './MessageAudio';
@@ -139,6 +141,7 @@ const HoverButtons = ({
   const [isCopied, setIsCopied] = useState(false);
   const [TextToSpeech] = useRecoilState<boolean>(store.textToSpeech);
   const { getMessages } = useOptionalMessagesOperations();
+  const pendingReveal = useAtomValue(revealedQueuedTurnFamily(conversation?.conversationId ?? ''));
 
   const endpoint = useMemo(() => {
     if (!conversation) {
@@ -171,9 +174,11 @@ const HoverButtons = ({
    *  inside parses markdown. */
   const getHasEditablePart = useCallback(() => hasEditablePart(message), [message]);
 
+  /** A pending queued follow-up is a generation about to start: no rerun or
+   *  continuation may race it, exactly as while a run is submitting. */
   const generationCapabilities = useGenerationsByLatest({
     isEditing,
-    isSubmitting,
+    isSubmitting: isSubmitting || pendingReveal != null,
     error: message.error,
     endpoint: endpoint ?? '',
     messageId: message.messageId,

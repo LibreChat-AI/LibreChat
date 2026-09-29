@@ -515,9 +515,8 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
       </div>
 
       <Collapse open={isExpanded}>
-        <div className="scrollbar-gutter-stable max-h-[42vh] overflow-y-auto pt-0.5">
-          {renderProjectsBody()}
-        </div>
+        {/* No scroll pane of its own: the sidebar scrolls as one surface. */}
+        <div className="pt-0.5">{renderProjectsBody()}</div>
       </Collapse>
 
       <ProjectCreateDialog

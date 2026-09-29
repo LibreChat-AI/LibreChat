@@ -3,6 +3,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import {
   sweepExpiredFiles,
   startExpiredFileSweep,
+  createClusteredFileSweep,
   getExpiredFileRetryDelay,
   getFileRetentionMaxAttempts,
   getFileRetentionSweepInterval,
@@ -308,6 +309,7 @@ describe('expired file sweep helpers', () => {
       {
         sweepExpiredFiles: jest.fn(),
         runAsSystem: jest.fn((fn) => fn()),
+        isLeader: jest.fn().mockResolvedValue(true),
         logger,
       },
     );
@@ -316,5 +318,108 @@ describe('expired file sweep helpers', () => {
     expect(logger.info).toHaveBeenCalledWith(
       '[sweepExpiredFiles] Disabled by FILE_RETENTION_SWEEP_INTERVAL_MS=0',
     );
+  });
+
+  it.each([true, false])('joins local assignment and config in either order: %s', (assignFirst) => {
+    const start = jest.fn().mockReturnValue(null);
+    const coordinator = createClusteredFileSweep(false, start);
+    const options = { appConfig: {} as AppConfig };
+    if (assignFirst) coordinator.assign();
+    else coordinator.configure(options);
+    expect(start).not.toHaveBeenCalled();
+    if (assignFirst) coordinator.configure(options);
+    else coordinator.assign();
+    coordinator.assign();
+    coordinator.configure(options);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith(options);
+  });
+
+  it('registers distributed candidates without primary assignment', () => {
+    const start = jest.fn().mockReturnValue(null);
+    const coordinator = createClusteredFileSweep(true, start);
+    expect(start).not.toHaveBeenCalled();
+    coordinator.configure({ appConfig: {} as AppConfig });
+    coordinator.assign();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overlap a slow sweep with the next interval', async () => {
+    jest.useFakeTimers();
+    process.env.FILE_RETENTION_SWEEP_INTERVAL_MS = '1000';
+    let finish!: () => void;
+    const sweep = jest.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const isLeader = jest.fn().mockResolvedValue(true);
+    const interval = startExpiredFileSweep(
+      {},
+      {
+        sweepExpiredFiles: sweep,
+        isLeader,
+        runAsSystem: (fn) => fn(),
+        logger,
+      },
+    );
+    await jest.advanceTimersByTimeAsync(3000);
+    expect(sweep).toHaveBeenCalledTimes(1);
+    expect(isLeader).toHaveBeenCalledTimes(1);
+    finish();
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(sweep).toHaveBeenCalledTimes(2);
+    finish();
+    clearInterval(interval ?? undefined);
+  });
+
+  it('fails closed on leadership errors and retries on the next interval', async () => {
+    jest.useFakeTimers();
+    process.env.FILE_RETENTION_SWEEP_INTERVAL_MS = '1000';
+    const sweep = jest.fn().mockResolvedValue({ scanned: 0, deleted: 0, failed: 0 });
+    const isLeader = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('redis down'))
+      .mockResolvedValue(true);
+    const interval = startExpiredFileSweep(
+      {},
+      {
+        sweepExpiredFiles: sweep,
+        isLeader,
+        runAsSystem: (fn) => fn(),
+        logger,
+      },
+    );
+    await jest.advanceTimersByTimeAsync(0);
+    expect(sweep).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(sweep).toHaveBeenCalledTimes(1);
+    clearInterval(interval ?? undefined);
+  });
+
+  it('runs the sweep only on the elected leader and permits follower takeover', async () => {
+    jest.useFakeTimers();
+    process.env.FILE_RETENTION_SWEEP_INTERVAL_MS = '1000';
+    const sweep = jest.fn().mockResolvedValue({ scanned: 0, deleted: 0, failed: 0 });
+    const runAsSystem = jest.fn((fn) => fn());
+    const isLeader = jest.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const interval = startExpiredFileSweep(
+      { appConfig: {} as AppConfig },
+      { sweepExpiredFiles: sweep, runAsSystem, isLeader, logger },
+    );
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(isLeader).toHaveBeenCalledTimes(1);
+    expect(runAsSystem).not.toHaveBeenCalled();
+    expect(sweep).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1000);
+
+    expect(isLeader).toHaveBeenCalledTimes(2);
+    expect(runAsSystem).toHaveBeenCalledTimes(1);
+    expect(sweep).toHaveBeenCalledTimes(1);
+    clearInterval(interval ?? undefined);
   });
 });

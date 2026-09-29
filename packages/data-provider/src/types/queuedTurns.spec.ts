@@ -11,7 +11,7 @@ const request = {
   parentMessageId: 'message-1',
   clientRequestId: 'request-1',
   text: 'Continue with this context',
-  files: [{ file_id: 'file-1', filename: 'context.txt' }],
+  files: [{ file_id: 'file-1', filename: 'context.txt', llmDeliveryPath: 'text' }],
   quotes: ['quoted context'],
   manualSkills: ['research'],
   expectedPredecessorCreatedAt: 42,
@@ -20,6 +20,18 @@ const request = {
 describe('agent queued turn schemas', () => {
   it('accepts the complete enqueue contract', () => {
     expect(enqueueAgentQueuedTurnSchema.parse(request)).toEqual(request);
+  });
+
+  it('accepts allowed modes without requiring them on legacy turns', () => {
+    for (const mode of ['ask', 'acceptEdits', 'fullAccess'] as const) {
+      expect(
+        enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: mode }).codeApprovalMode,
+      ).toBe(mode);
+    }
+    expect(enqueueAgentQueuedTurnSchema.parse(request).codeApprovalMode).toBeUndefined();
+    expect(() =>
+      enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: 'unrestricted' }),
+    ).toThrow();
   });
 
   it('allows attachment-only queued turns', () => {

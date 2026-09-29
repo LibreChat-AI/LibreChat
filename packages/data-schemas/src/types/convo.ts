@@ -12,6 +12,14 @@ export const MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS = 128;
 export const MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH = 512;
 export const MAX_AGENT_EVENT_ACTOR_SUMMARY_LENGTH = 1_000_000;
 export const MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH = 128;
+/**
+ * Provenance of a stored event-actor summary. States written before this
+ * version kept only `{ text, tokenCount }`, so a round that failed or never
+ * finished is indistinguishable from a checkpoint once persisted. A restore
+ * requires the current version, which is what lets a warm continuation trust
+ * the summary instead of rebuilding from durable history.
+ */
+export const AGENT_EVENT_ACTOR_SUMMARY_VERSION = 1;
 
 export interface ISubagentThreadLease {
   token: string;
@@ -48,6 +56,8 @@ export interface IAgentEventActorSkillIdentity {
 export interface IAgentEventActorSummary {
   text: string;
   tokenCount: number;
+  /** {@link AGENT_EVENT_ACTOR_SUMMARY_VERSION}; absent on pre-version states. */
+  version?: number;
 }
 
 /**
@@ -57,7 +67,8 @@ export interface IAgentEventActorSummary {
  * for prefix-based provider prompt caches. Graph messages stay canonical.
  */
 export interface IAgentFadingTier {
-  v: 1;
+  /** Version 1 is readable but must not seed a version 2 SDK run. */
+  v: 1 | 2;
   /** Token budget the caps derive from; never grows within a conversation. */
   budgetTokens: number;
   /** Whether observation masking has activated. */
@@ -271,6 +282,8 @@ export interface IConversation extends Document {
   imageDetail?: string;
   agent_id?: string;
   codeApprovalMode?: CodeApprovalMode;
+  /** Private fence advanced when an admitted generation reads its decision. */
+  codeEnvironmentRevision?: number;
   codeEnvironmentMode?: CodeEnvironmentMode;
   codeWorkspaces?: CodeWorkspaceSelection[];
   /** Immutable primary persisted-agent attribution for Insights. */

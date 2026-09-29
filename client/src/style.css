@@ -1225,16 +1225,10 @@ pre {
   margin-top: 0;
 }
 
-code,
-pre {
-  font-family:
-    Consolas,
-    Söhne Mono,
-    Monaco,
-    Andale Mono,
-    Ubuntu Mono,
-    monospace !important;
-}
+/* `code`, `kbd`, `samp` and `pre` take their font from Tailwind's preflight, which
+   reads `theme.fontFamily.mono` — see `tailwind.config.cjs`. Do not restate it here:
+   this file used to, with `!important`, which silently beat every `font-mono` class
+   in the app and pinned code to faces the repository does not ship. */
 code.language-text,
 code.language-txt,
 code.language-plaintext,

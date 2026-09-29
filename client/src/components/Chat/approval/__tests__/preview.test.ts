@@ -1,6 +1,16 @@
 import { buildApprovalPreview, buildApprovalPreviews } from '../preview';
 
 describe('buildApprovalPreview', () => {
+  test('shows named action arguments instead of an empty command', () => {
+    const preview = buildApprovalPreview({
+      name: 'bash_tool',
+      source: 'librechat_code',
+      tool_call_id: 'action-1',
+      arguments: { environmentAction: 'typecheck', timeoutMs: 120000 },
+    });
+    expect(preview.kind).toBe('generic');
+    expect(JSON.parse(preview.body)).toEqual({ environmentAction: 'typecheck', timeoutMs: 120000 });
+  });
   test('shows the exact effective command and reveals bidi control characters', () => {
     const preview = buildApprovalPreview({
       name: 'bash_tool',

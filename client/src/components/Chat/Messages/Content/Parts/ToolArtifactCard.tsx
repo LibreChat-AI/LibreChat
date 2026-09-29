@@ -1,5 +1,4 @@
 import { memo, useEffect, useId, useLayoutEffect, useRef } from 'react';
-import { Download } from 'lucide-react';
 import {
   useRecoilCallback,
   useRecoilState,
@@ -9,12 +8,10 @@ import {
 } from 'recoil';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
-import { isCodeOnlyArtifact } from '~/utils/artifacts';
+import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
-import { cn, getFileType } from '~/utils';
-import { useLocalize } from '~/hooks';
+import ArtifactRow from './ArtifactRow';
 import store from '~/store';
 
 interface ToolArtifactCardProps {
@@ -68,7 +65,6 @@ interface ToolArtifactCardProps {
  *     of context.
  */
 const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) => {
-  const localize = useLocalize();
   const claimKey = useId();
   const file = attachment as TFile & TAttachmentMetadata;
   const fileId = file.file_id;
@@ -212,61 +208,25 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
   };
 
   // Another card with the same artifact id has the active claim — render
-  // nothing here, that card is the canonical chip for this file.
+  // nothing here, that row is the canonical trigger for this file.
   if (claim != null && !isMyClaim) {
     return null;
   }
 
-  const fileType = getFileType('artifact');
-  const actionLabel = isSelected
-    ? localize('com_ui_click_to_close')
-    : localize('com_ui_artifact_click');
-  const visibleFilename = displayFilename(attachment.filename);
   // The artifact's stored `title` mirrors the on-disk `filename` for
   // tool artifacts, so re-derive the user-facing label rather than
   // showing the collision-suffixed name.
   const visibleTitle = displayFilename(artifact.title);
 
   return (
-    <div className="group relative my-2 inline-flex max-w-fit items-stretch gap-px overflow-hidden rounded-xl text-sm text-text-primary shadow-sm">
-      <button
-        type="button"
-        onClick={handleOpen}
-        aria-pressed={isSelected}
-        className={cn(
-          'relative overflow-hidden rounded-l-xl transition-all duration-200 hover:bg-surface-hover active:scale-[0.99]',
-          {
-            'border-border-medium bg-surface-hover': isSelected,
-            'border-border-light bg-surface-tertiary': !isSelected,
-          },
-        )}
-      >
-        <div className="w-fit p-2">
-          <div className="flex flex-row items-center gap-2">
-            <FilePreview fileType={fileType} className="relative" />
-            <div className="overflow-hidden text-left">
-              <div className="truncate font-medium" title={visibleFilename}>
-                {visibleTitle}
-              </div>
-              <div className="truncate text-xs text-text-secondary">{actionLabel}</div>
-            </div>
-          </div>
-        </div>
-      </button>
-      <button
-        type="button"
-        onClick={handleDownload}
-        aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-        title={localize('com_ui_download')}
-        className={cn(
-          'flex shrink-0 items-center justify-center px-3 transition-colors duration-200',
-          'rounded-r-xl bg-surface-tertiary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-          'border-l border-border-light focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy',
-        )}
-      >
-        <Download className="size-4" aria-hidden="true" />
-      </button>
-    </div>
+    <ArtifactRow
+      title={visibleTitle}
+      kind={artifactRowKind(artifact)}
+      isSelected={isSelected}
+      onOpen={handleOpen}
+      onDownload={handleDownload}
+      artifactId={artifact.id}
+    />
   );
 });
 

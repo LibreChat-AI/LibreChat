@@ -76,19 +76,15 @@ describe('useAppStartup: MCP permission gating', () => {
   beforeEach(() => {
     mockInstallCloudFrontImageRetry.mockClear();
     mockUseMCPServersQuery.mockReturnValue({ data: undefined, isLoading: false });
-    mockUseMCPToolsQuery.mockReturnValue({ data: undefined, isLoading: false });
     mockUseCatalogReady.mockReturnValue(true);
   });
 
   it('checks the MCP_SERVERS.USE permission via useHasAccess', () => {
     mockUseHasAccess.mockReturnValue(false);
 
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: true }),
-      {
-        wrapper,
-      },
-    );
+    renderHook(() => useAppStartup({ startupConfig: undefined, user: mockUser }), {
+      wrapper,
+    });
 
     expect(mockUseHasAccess).toHaveBeenCalledWith({
       permissionType: PermissionTypes.MCP_SERVERS,
@@ -96,122 +92,31 @@ describe('useAppStartup: MCP permission gating', () => {
     });
   });
 
-  it('suppresses all MCP queries when user lacks MCP_SERVERS.USE', () => {
+  it('suppresses the MCP server query when user lacks MCP_SERVERS.USE', () => {
     mockUseHasAccess.mockReturnValue(false);
 
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: true }),
-      { wrapper },
-    );
+    renderHook(() => useAppStartup({ startupConfig: undefined, user: mockUser }), { wrapper });
 
     expect(mockUseMCPServersQuery).toHaveBeenCalledWith({ enabled: false });
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: false });
   });
 
-  it('suppresses MCP queries while background catalog warmup has not released them', () => {
+  it('suppresses server metadata warmup until the catalog is released', () => {
     mockUseHasAccess.mockReturnValue(true);
     mockUseCatalogReady.mockReturnValue(false);
 
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: true }),
-      { wrapper },
-    );
+    renderHook(() => useAppStartup({ startupConfig: undefined, user: mockUser }), { wrapper });
 
     expect(mockUseCatalogReady).toHaveBeenCalledWith('mcpServers');
-    expect(mockUseCatalogReady).toHaveBeenCalledWith('mcpTools');
     expect(mockUseMCPServersQuery).toHaveBeenCalledWith({ enabled: false });
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: false });
   });
 
-  it('enables servers query and tools query when permission granted, servers loaded, and user present', () => {
+  it('warms server metadata without discovering MCP tools during app startup', () => {
     mockUseHasAccess.mockReturnValue(true);
-    mockUseMCPServersQuery.mockReturnValue({
-      data: { 'test-server': { url: 'http://test' } },
-      isLoading: false,
-    });
 
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: true }),
-      {
-        wrapper,
-      },
-    );
+    renderHook(() => useAppStartup({ startupConfig: undefined, user: mockUser }), { wrapper });
 
     expect(mockUseMCPServersQuery).toHaveBeenCalledWith({ enabled: true });
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: true });
-  });
-
-  it('waits for the host to allow MCP warmup', () => {
-    mockUseHasAccess.mockReturnValue(true);
-    mockUseMCPServersQuery.mockReturnValue({
-      data: { 'test-server': { url: 'http://test' } },
-      isLoading: false,
-    });
-
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: false }),
-      { wrapper },
-    );
-
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: false });
-  });
-
-  it('suppresses background tool discovery for an ephemeral agent conversation', () => {
-    mockUseHasAccess.mockReturnValue(true);
-    mockUseMCPServersQuery.mockReturnValue({
-      data: { 'test-server': { url: 'http://test' } },
-      isLoading: false,
-    });
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: false }),
-      {
-        wrapper,
-      },
-    );
-
-    expect(mockUseMCPServersQuery).toHaveBeenCalledWith({ enabled: true });
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: false });
-  });
-
-  it('suppresses tools query when permission granted but user prop is undefined', () => {
-    mockUseHasAccess.mockReturnValue(true);
-    mockUseMCPServersQuery.mockReturnValue({
-      data: { 'test-server': { url: 'http://test' } },
-      isLoading: false,
-    });
-
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: undefined, mcpWarmupAllowed: true }),
-      { wrapper },
-    );
-
-    expect(mockUseMCPServersQuery).toHaveBeenCalledWith({ enabled: true });
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: false });
-  });
-
-  it('suppresses tools query when permission granted but no servers loaded', () => {
-    mockUseHasAccess.mockReturnValue(true);
-    mockUseMCPServersQuery.mockReturnValue({ data: {}, isLoading: false });
-
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: true }),
-      { wrapper },
-    );
-
-    expect(mockUseMCPServersQuery).toHaveBeenCalledWith({ enabled: true });
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: false });
-  });
-
-  it('suppresses tools query while servers are still loading', () => {
-    mockUseHasAccess.mockReturnValue(true);
-    mockUseMCPServersQuery.mockReturnValue({ data: undefined, isLoading: true });
-
-    renderHook(
-      () => useAppStartup({ startupConfig: undefined, user: mockUser, mcpWarmupAllowed: true }),
-      { wrapper },
-    );
-
-    expect(mockUseMCPToolsQuery).toHaveBeenCalledWith({ enabled: false });
+    expect(mockUseMCPToolsQuery).not.toHaveBeenCalled();
   });
 
   it('installs CloudFront image retry from startup config', () => {
@@ -225,7 +130,7 @@ describe('useAppStartup: MCP permission gating', () => {
       },
     } as never;
 
-    renderHook(() => useAppStartup({ startupConfig, user: mockUser, mcpWarmupAllowed: true }), {
+    renderHook(() => useAppStartup({ startupConfig, user: mockUser }), {
       wrapper,
     });
 

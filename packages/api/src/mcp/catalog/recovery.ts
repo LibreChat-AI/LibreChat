@@ -682,6 +682,10 @@ async function discoverCandidate(
         deps.onOAuthCredentialsChanging,
         trackPublication,
       ),
+      onOAuthCredentialsAdopted: async (generation) => {
+        // Adoption changes the generation this flight serves without writing another fence.
+        await trackPublication?.(async () => generation);
+      },
       onDiscoveryDetached: onDetached,
     });
     /** Discovery can await work that ignores its budget — a token refresh persisting behind a

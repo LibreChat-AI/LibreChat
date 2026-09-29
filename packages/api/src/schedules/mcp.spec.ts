@@ -1,10 +1,53 @@
 import { AgentCapabilities, Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { IUser, IRole, AppConfig, AgentGraphNode } from '@librechat/data-schemas';
+import type { UpstreamTokenProvider } from '../mcp/oauth/obo';
 import type { ParsedServerConfig } from '../mcp/types';
-import { createScheduleMCPPreflight, ScheduleMCPError } from './mcp';
+import {
+  bindUpstreamTokenProviderResolver,
+  createScheduleMCPPreflight,
+  ScheduleMCPError,
+} from './mcp';
+import { OboTokenResolutionError, createLazyOboUpstreamTokenProvider } from '../mcp/oauth/obo';
 
 const principal = { id: 'owner', role: 'USER' };
 const server: ParsedServerConfig = { type: 'streamable-http', url: 'https://mcp.example.test/mcp' };
+
+it('retries through both run-bound and consumer lookup caches after failure', async () => {
+  const tokenProvider = jest.fn().mockResolvedValue({ access_token: 'fresh' });
+  const lookup = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('temporary unavailable'))
+    .mockResolvedValue(tokenProvider);
+  const bound = bindUpstreamTokenProviderResolver(principal as IUser, lookup)!;
+  const first = createLazyOboUpstreamTokenProvider(bound);
+  const second = createLazyOboUpstreamTokenProvider(bound);
+  const results = await Promise.allSettled([first(), second()]);
+  expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+  expect(lookup).toHaveBeenCalledTimes(1);
+  await expect(Promise.all([first(), second()])).resolves.toEqual([
+    { access_token: 'fresh' },
+    { access_token: 'fresh' },
+  ]);
+  expect(lookup).toHaveBeenCalledTimes(2);
+});
+
+it('shares credential lookup across sibling consumers without adopting child cancellation', async () => {
+  const owner = new AbortController();
+  const child = new AbortController();
+  child.abort();
+  const provider = jest.fn();
+  const lookup = jest.fn().mockResolvedValue(provider);
+  const resolve = bindUpstreamTokenProviderResolver(principal as IUser, lookup, owner.signal)!;
+  expect(lookup).not.toHaveBeenCalled();
+  await expect(Promise.all([resolve({ signal: child.signal }), resolve()])).resolves.toEqual([
+    provider,
+    provider,
+  ]);
+  expect(lookup).toHaveBeenCalledTimes(1);
+  expect(lookup).toHaveBeenCalledWith(principal, { signal: owner.signal });
+  owner.abort();
+  expect(() => resolve()).toThrow();
+});
 
 function graphNode(id: string, fields: Partial<AgentGraphNode> = {}): AgentGraphNode {
   return { id, provider: 'openAI', model: 'gpt-test', ...fields };
@@ -50,8 +93,13 @@ function setup(tools = ['search_mcp_docs']) {
     disconnect,
     check: (
       agentId: string,
-      user: typeof principal,
-      options?: { concurrency?: number; signal?: AbortSignal; deadlineMs?: number },
+      user: typeof principal & { tenantId?: string },
+      options?: {
+        concurrency?: number;
+        signal?: AbortSignal;
+        deadlineMs?: number;
+        scheduleId?: string;
+      },
     ) => preflight(agentId, user, { concurrency: 3, ...options }),
   };
 }
@@ -76,6 +124,136 @@ it('uses persisted identity with isolated connections and disposes them after di
     }),
   );
   expect(disconnect).toHaveBeenCalledTimes(1);
+});
+
+it('lazily resolves an upstream token provider for an OBO preflight', async () => {
+  const { check, deps } = setup();
+  deps.getServerConfigs = jest.fn(async () => ({
+    docs: { ...server, obo: { scopes: 'api://mcp/.default' } },
+  }));
+  const upstreamTokenProvider: UpstreamTokenProvider = jest.fn(async () => ({
+    access_token: 'current-token',
+  }));
+  deps.resolveUpstreamTokenProvider = jest.fn(async () => upstreamTokenProvider);
+  const connect = deps.connect;
+  deps.connect = jest.fn(async (options) => {
+    await options.upstreamTokenProviderResolver?.({ signal: options.signal });
+    return connect(options);
+  });
+
+  await check('agent', principal);
+
+  expect(deps.resolveUpstreamTokenProvider).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 'owner' }),
+    { signal: undefined },
+  );
+  expect(deps.connect).toHaveBeenCalledWith(
+    expect.objectContaining({ upstreamTokenProviderResolver: expect.any(Function) }),
+  );
+});
+
+it('reports missing unattended OBO credentials without offering a browser reconnect', async () => {
+  const { check, deps } = setup();
+  deps.getServerConfigs = jest.fn(async () => ({
+    docs: { ...server, obo: { scopes: 'api://mcp/.default' } },
+  }));
+  deps.resolveUpstreamTokenProvider = jest.fn(async () => undefined);
+  deps.connect = jest.fn(async (options) => {
+    const provider = createLazyOboUpstreamTokenProvider(
+      options.upstreamTokenProviderResolver!,
+      options.signal,
+      { mcpServer: options.serverName, scopes: options.serverConfig!.obo!.scopes },
+    );
+    await provider();
+    throw new Error('A missing provider must never connect');
+  });
+
+  await expect(check('agent', principal, { scheduleId: 'schedule' })).rejects.toMatchObject({
+    code: 'mcp_configuration_missing',
+    outcomes: [
+      { server: 'docs', status: 'mcp_configuration_missing', detail: 'unattended_auth_required' },
+    ],
+  });
+  expect(deps.resolveUpstreamTokenProvider).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 'owner' }),
+    {
+      signal: undefined,
+      context: {
+        scheduleId: 'schedule',
+        ownerId: 'owner',
+        agentId: 'agent',
+        invocationMode: 'delegated',
+      },
+      target: { mcpServer: 'docs', scopes: 'api://mcp/.default' },
+    },
+  );
+});
+
+it('does not resolve upstream credentials for non-OBO servers', async () => {
+  const { check, deps } = setup();
+  deps.resolveUpstreamTokenProvider = jest.fn(async () => {
+    throw new Error('credential service unavailable');
+  });
+
+  await expect(check('agent', principal)).resolves.toEqual([{ server: 'docs', status: 'ready' }]);
+  expect(deps.resolveUpstreamTokenProvider).not.toHaveBeenCalled();
+});
+
+it('passes admission identity to the host and rejects a changed tenant before connection', async () => {
+  const { check, deps } = setup();
+  const user = { ...principal, tenantId: 'tenant' };
+  deps.getUser = jest.fn(async () => user as IUser);
+  deps.resolveUpstreamTokenProvider = jest.fn(async () =>
+    jest.fn(async () => ({ access_token: 'token' })),
+  );
+  const connect = deps.connect;
+  deps.connect = jest.fn(async (options) => {
+    await options.upstreamTokenProviderResolver?.();
+    return connect(options);
+  });
+  await check('agent', user, { scheduleId: 'schedule' });
+  expect(deps.resolveUpstreamTokenProvider).toHaveBeenCalledWith(user, {
+    signal: undefined,
+    context: {
+      scheduleId: 'schedule',
+      ownerId: 'owner',
+      tenantId: 'tenant',
+      agentId: 'agent',
+      invocationMode: 'delegated',
+    },
+  });
+  jest.mocked(deps.connect).mockClear();
+  await expect(
+    check('agent', { ...user, tenantId: 'different' }, { scheduleId: 'schedule' }),
+  ).rejects.toBeInstanceOf(ScheduleMCPError);
+  expect(deps.connect).not.toHaveBeenCalled();
+});
+
+it('does not expose an OBO provider to a sibling direct-bearer server', async () => {
+  const { check, deps } = setup(['search_mcp_obo', 'search_mcp_direct']);
+  deps.getServerConfigs = jest.fn(async () => ({
+    obo: { ...server, obo: { scopes: 'api://mcp/.default' } },
+    direct: { ...server, headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' } },
+  }));
+  const upstreamTokenProvider: UpstreamTokenProvider = jest.fn(async () => ({
+    access_token: 'current-token',
+  }));
+  deps.resolveUpstreamTokenProvider = jest.fn(async () => upstreamTokenProvider);
+  const connect = deps.connect;
+  deps.connect = jest.fn(async (options) => {
+    if (options.serverConfig?.obo) {
+      await options.upstreamTokenProviderResolver?.({ signal: options.signal });
+    }
+    return connect(options);
+  });
+
+  await check('agent', principal);
+
+  expect(deps.resolveUpstreamTokenProvider).toHaveBeenCalledTimes(1);
+  const directOptions = (deps.connect as jest.Mock).mock.calls.find(
+    ([options]) => options.serverName === 'direct',
+  )?.[0];
+  expect(directOptions.upstreamTokenProvider).toBeUndefined();
 });
 
 it('rejects partial readiness and reports each server without exception details', async () => {
@@ -127,6 +305,41 @@ it('classifies a transport outage as retryable', async () => {
   await expect(check('agent', principal)).rejects.toMatchObject({
     code: 'mcp_unavailable',
     message: 'mcp_unavailable: [{"server":"docs","status":"mcp_unavailable"}]',
+  });
+});
+
+it('classifies absent OBO provider wiring as a permanent unattended-auth setup failure', async () => {
+  const { check, deps } = setup();
+  deps.connect = async () => {
+    throw new OboTokenResolutionError('missing_upstream_provider', 'Internal provider detail');
+  };
+
+  await expect(check('agent', principal)).rejects.toMatchObject({
+    code: 'mcp_configuration_missing',
+    message:
+      'mcp_configuration_missing: [{"server":"docs","status":"mcp_configuration_missing","detail":"unattended_auth_required"}]',
+  });
+});
+
+it('classifies a permanent OBO credential failure as requiring reauthentication', async () => {
+  const { check, deps } = setup();
+  deps.connect = async () => {
+    throw new OboTokenResolutionError('session_refresh_failed', 'Sign-in expired.');
+  };
+
+  await expect(check('agent', principal)).rejects.toMatchObject({
+    code: 'mcp_reauth_required',
+  });
+});
+
+it('classifies a retryable OBO credential failure as unavailable', async () => {
+  const { check, deps } = setup();
+  deps.connect = async () => {
+    throw new OboTokenResolutionError('session_refresh_failed', 'Refresh unavailable.', true);
+  };
+
+  await expect(check('agent', principal)).rejects.toMatchObject({
+    code: 'mcp_unavailable',
   });
 });
 
@@ -1382,4 +1595,19 @@ it('enforces the aggregate deadline while loading the agent graph', async () => 
   await expect(check('agent', principal, { deadlineMs: Date.now() + 20 })).rejects.toMatchObject({
     name: 'TimeoutError',
   });
+});
+
+it('admits a scheduled connection when request headers shadow an unused generated user key', async () => {
+  const { check, deps } = setup();
+  deps.getServerConfigs = async () => ({
+    docs: {
+      ...server,
+      apiKey: { source: 'user', authorization_type: 'custom', custom_header: 'X-Api-Key' },
+      headers: { 'X-Api-Key': '{{MCP_API_KEY}}' },
+      requestHeaders: { 'x-api-key': 'request-secret' },
+      customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Generated key' } },
+    },
+  });
+  await check('agent', principal);
+  expect(deps.connect).toHaveBeenCalledTimes(1);
 });

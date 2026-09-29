@@ -17,7 +17,7 @@ const db = require('~/models');
 
 const loadAddedAgent = (params) =>
   loadAddedAgentFn(params, {
-    getAgent: db.getAgent,
+    getAgent: db.getAgentWithVersionCount,
     getMCPServerTools,
     getAccessibleMCPServers,
   });
@@ -66,6 +66,7 @@ const loadAddedAgent = (params) =>
  *   `codeEnvAvailable`. @see InitializeAgentParams.fileSearchAvailable.
  * @param {boolean} [params.statefulSessionsAvailable] - `stateful_code_sessions`
  *   capability flag; forwarded verbatim alongside `codeEnvAvailable`.
+ * @param {AbortSignal} [params.signal] - Owning run cancellation signal.
  * @returns {Promise<{userMCPAuthMap: Object|undefined}>} The updated userMCPAuthMap
  */
 const processAddedConvo = async ({
@@ -97,6 +98,7 @@ const processAddedConvo = async ({
   toolIntentsAvailable,
   statefulSessionsAvailable,
   memoryAvailable,
+  signal,
 }) => {
   const addedConvo = endpointOption.addedConvo;
   if (addedConvo == null) {
@@ -200,6 +202,7 @@ const processAddedConvo = async ({
         memoryAvailable,
         skillStates,
         defaultActiveOnShare,
+        signal,
       },
       {
         getFiles: db.getFiles,
@@ -240,7 +243,7 @@ const processAddedConvo = async ({
 
     return { userMCPAuthMap };
   } catch (err) {
-    if (isFatalAgentInitializationError(err)) {
+    if (isFatalAgentInitializationError(err, { signal })) {
       throw err;
     }
     logger.error('[processAddedConvo] Error processing addedConvo for parallel agent', err);

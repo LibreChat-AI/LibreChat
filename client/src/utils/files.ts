@@ -16,13 +16,14 @@ import {
   EModelEndpoint,
   retrievalMimeTypes,
   isBedrockDocumentType,
-  isPermissiveMimeConfig,
+  isExplicitMimeConfig,
   codeInterpreterMimeTypes,
   isDocumentSupportedProvider,
   fileConfig as defaultFileConfig,
 } from 'librechat-data-provider';
 import type {
   TFile,
+  TMessage,
   DeleteFilesResponse,
   EndpointFileConfig,
   FileConfig,
@@ -33,6 +34,45 @@ import type { QueryClient } from '@tanstack/react-query';
 import type { ExtendedFile } from '~/common';
 
 export const partialTypes = ['text/x-'];
+
+/** Text-routed images use the file action so their extracted preview is reachable. */
+export function usesImagePreview(file: Partial<Pick<TFile, 'type' | 'llmDeliveryPath'>>): boolean {
+  return file.type?.startsWith('image/') === true && file.llmDeliveryPath !== 'text';
+}
+
+export type FileDeliveryMetadataMap = Readonly<
+  Record<string, Pick<TFile, 'llmDeliveryPath'> | undefined>
+>;
+
+/** Restores display-only delivery metadata that an older replica may have
+ * omitted from a persisted attachment ref. The persisted ref wins, followed
+ * by the matching process-local ref, then the owner-scoped stored file map. */
+export function hydrateFileDeliveryMetadata(
+  persistedFiles: TMessage['files'],
+  localFiles?: TMessage['files'],
+  storedFiles?: FileDeliveryMetadataMap,
+): TMessage['files'] {
+  if (persistedFiles == null || persistedFiles.length === 0) {
+    return persistedFiles;
+  }
+  const localById = new Map(
+    (localFiles ?? []).flatMap((file) =>
+      file.file_id != null ? [[file.file_id, file] as const] : [],
+    ),
+  );
+  let changed = false;
+  const hydrated = persistedFiles.map((file) => {
+    const local = file.file_id == null ? undefined : localById.get(file.file_id);
+    const stored = file.file_id == null ? undefined : storedFiles?.[file.file_id];
+    const llmDeliveryPath = local?.llmDeliveryPath ?? stored?.llmDeliveryPath;
+    if (file.llmDeliveryPath != null || llmDeliveryPath == null) {
+      return file;
+    }
+    changed = true;
+    return { ...file, llmDeliveryPath };
+  });
+  return changed ? hydrated : persistedFiles;
+}
 
 export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
   for (const file of files.values()) {
@@ -522,12 +562,12 @@ const isProviderAttachType = (type: string, ctx: UploadOptionContext): boolean =
     isDocumentSupportedProvider(currentProvider) ||
     isAzureWithResponsesApi
   ) {
-    /** Custom endpoints that the admin opened up (permissive config) honor that allowlist,
-     * matching the file picker; an inherited default config is not treated as opened up. */
+    /** Custom endpoints with an admin-configured allowlist honor it for direct attach (this is
+     * how video/audio get opted in for an OpenAI-compatible gateway), matching the file picker
+     * and the server-side encoders; an inherited default config is not treated as opened up. */
     if (
       ctx.endpointType === EModelEndpoint.custom &&
-      ctx.endpointSupportedMimeTypes != null &&
-      isPermissiveMimeConfig(ctx.endpointSupportedMimeTypes)
+      isExplicitMimeConfig(ctx.endpointSupportedMimeTypes)
     ) {
       return checkType(type, ctx.endpointSupportedMimeTypes);
     }

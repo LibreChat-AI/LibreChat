@@ -427,6 +427,33 @@ describe('File Routes - Agent Files Endpoint', () => {
       return testApp;
     };
 
+    it.each([
+      [false, 'application/json'],
+      [true, 'text/event-stream'],
+    ])(
+      'rejects unsupported provider audio before persistence (legacy=%s, accept=%s)',
+      async (legacyFileUploadUX, accept) => {
+        const testApp = createAppWithUser(
+          otherUserId,
+          SystemRoles.USER,
+          {
+            fileConfig: {
+              endpoints: { MyGateway: { supportedMimeTypes: ['audio/.*'], legacyFileUploadUX } },
+            },
+          },
+          { originalname: 'clip.wma', mimetype: 'audio/wma' },
+        );
+        const response = await request(testApp).post('/files').set('Accept', accept).send({
+          endpoint: 'MyGateway',
+          file_id: uuidv4(),
+        });
+        expect(response.status).toBe(415);
+        expect(response.body.message).toBe('com_error_files_provider_audio_format');
+        expect(processAgentFileUpload).not.toHaveBeenCalled();
+        expect(fs.unlink).toHaveBeenCalledWith('/tmp/test.txt');
+      },
+    );
+
     it('inspects the canonical sanitized filename used by upload processing', async () => {
       await createAgent({
         id: agentCustomId,

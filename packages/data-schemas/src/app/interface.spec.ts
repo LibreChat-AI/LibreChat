@@ -12,6 +12,54 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.autoSubmitFromUrl).toBe(true);
   });
 
+  it('uses the schema default for code highlight throttling when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.codeHighlightThrottleMs).toBe(300);
+  });
+
+  it('preserves a configured code highlight throttle interval', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        codeHighlightThrottleMs: 100,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.codeHighlightThrottleMs).toBe(100);
+  });
+
+  it('uses the schema default for the agent selector list cap when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(10);
+  });
+
+  it('forwards a configured agent selector list cap to the served interface', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        agentSelectorLimit: 4,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(4);
+  });
+
   it('preserves disabled URL auto-submit config', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {

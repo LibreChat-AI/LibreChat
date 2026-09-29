@@ -13,7 +13,6 @@ const {
   isUserSourced,
   createAuthIdentityContext,
   MCPConnection,
-  MCPErrorCodes,
   MCPCatalogCapacityError,
   splitMCPToolKey,
   normalizeServerName,
@@ -21,9 +20,7 @@ const {
   redactServerSecrets,
   sanitizeMcpIconPath,
   redactAllServerSecrets,
-  isMCPDomainNotAllowedError,
-  isMCPInspectionFailedError,
-  isMCPOAuthSecretReentryRequiredError,
+  getMCPErrorResponse,
   prepareMCPServerOAuthDeletion,
   cleanupDeletedMCPServerOAuthUsers,
 } = require('@librechat/api');
@@ -61,50 +58,8 @@ const db = require('~/models');
  * @returns {import('express').Response | null} Response if handled, null if not an MCP error
  */
 function handleMCPError(error, res) {
-  if (isMCPDomainNotAllowedError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  if (isMCPInspectionFailedError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  if (isMCPOAuthSecretReentryRequiredError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  // Fallback for legacy string-based error handling (backwards compatibility)
-  if (error.message?.startsWith(MCPErrorCodes.DOMAIN_NOT_ALLOWED)) {
-    return res.status(403).json({
-      error: MCPErrorCodes.DOMAIN_NOT_ALLOWED,
-      message: error.message.replace(/^MCP_DOMAIN_NOT_ALLOWED\s*:\s*/i, ''),
-    });
-  }
-
-  if (error.message?.startsWith(MCPErrorCodes.INSPECTION_FAILED)) {
-    return res.status(400).json({
-      error: MCPErrorCodes.INSPECTION_FAILED,
-      message: error.message,
-    });
-  }
-
-  if (error.message?.startsWith(MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED)) {
-    return res.status(400).json({
-      error: MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED,
-      message: error.message,
-    });
-  }
-
-  return null;
+  const response = getMCPErrorResponse(error);
+  return response ? res.status(response.statusCode).json(response.body) : null;
 }
 
 /** Disposes a stale local connection after its DB-backed config has changed. */

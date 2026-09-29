@@ -1,12 +1,16 @@
 import { useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { ChevronDown, CornerDownRight, Radio } from 'lucide-react';
+import { CornerDownRight, Radio } from 'lucide-react';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger } from '@librechat/client';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ChildConversationTurn } from './adapters';
 import type { TranslationKeys } from '~/hooks';
+import SystemEventHeader, {
+  SystemEventIcon,
+  systemEventHeaderClasses,
+} from '~/components/Chat/Messages/ui/SystemEvent';
 import { SubagentActivityContent, SubagentStatus } from './SubagentActivity';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { isAbnormalTerminalStatus, isLiveSubagentStatus } from './status';
@@ -29,9 +33,9 @@ const TRIGGER_LABELS = {
 function TriggerIcon({ kind }: { kind: ChildConversationTurn['trigger']['kind'] }) {
   const Icon = kind === 'external_event' ? Radio : CornerDownRight;
   return (
-    <span className="flex size-6 items-center justify-center rounded-full bg-surface-tertiary text-text-secondary">
-      <Icon size={14} aria-hidden />
-    </span>
+    <SystemEventIcon>
+      <Icon size={14} />
+    </SystemEventIcon>
   );
 }
 
@@ -49,34 +53,25 @@ function ExternalEventTrigger({
   let body: ReactNode;
   if (details == null) {
     body = (
-      <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
-        <TriggerIcon kind="external_event" />
-        <span>{label}</span>
+      <div className="flex items-center gap-2 py-1 text-sm text-text-secondary">
+        <SystemEventHeader icon={<TriggerIcon kind="external_event" />} label={label} />
       </div>
     );
   } else {
     body = (
       <Collapsible open={expanded} onOpenChange={setExpanded}>
         <CollapsibleTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-auto min-h-6 w-full justify-start gap-1.5 px-0 text-left text-xs font-medium text-text-secondary hover:bg-transparent hover:text-text-primary"
-          >
-            <TriggerIcon kind="external_event" />
-            <span>{label}</span>
-            <span className="min-w-0 truncate font-normal">
-              {details.eventType} · {details.sourceType}
-            </span>
-            <span className="sr-only">{details.occurredAt}</span>
-            <ChevronDown
-              size={14}
-              aria-hidden
-              className={`ml-auto shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          <Button type="button" variant="ghost" className={systemEventHeaderClasses}>
+            <SystemEventHeader
+              icon={<TriggerIcon kind="external_event" />}
+              label={label}
+              detail={`${details.eventType} · ${details.sourceType}`}
+              expanded={expanded}
             />
+            <span className="sr-only">{details.occurredAt}</span>
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="ml-8 border-l border-border-light py-1 pl-3 text-xs text-text-secondary">
+        <CollapsibleContent className="pb-1 pt-0.5 text-xs text-text-secondary">
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
             <dt>{localize('com_ui_subagent_event_type')}</dt>
             <dd className="break-words text-text-primary">{details.eventType}</dd>
@@ -107,6 +102,7 @@ function ExternalEventTrigger({
       ariaLabel={label}
       headerPrefix=""
       isCreatedByUser={true}
+      systemLabel={localize('com_ui_system_event')}
       fullWidth={fullWidth}
     >
       {body}
@@ -143,11 +139,11 @@ function TriggerMessage({ turn, fullWidth }: { turn: ChildConversationTurn; full
       ariaLabel={label}
       headerPrefix=""
       isCreatedByUser={true}
+      systemLabel={localize('com_ui_system_event')}
       fullWidth={fullWidth}
     >
-      <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-text-secondary">
-        <TriggerIcon kind={turn.trigger.kind} />
-        <span>{label}</span>
+      <div className="flex items-center gap-2 py-1 text-sm text-text-secondary">
+        <SystemEventHeader icon={<TriggerIcon kind={turn.trigger.kind} />} label={label} />
       </div>
       {content.length > 0 && (
         <ContentParts

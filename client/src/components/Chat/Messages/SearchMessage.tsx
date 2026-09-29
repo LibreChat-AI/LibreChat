@@ -58,6 +58,8 @@ export function areSearchMessagePropsEqual(
     a.iconURL === b.iconURL &&
     /** `SearchContent` renders an incomplete-response notice on `unfinished`. */
     a.unfinished === b.unfinished &&
+    /** `SearchContent` renders a failed row through the error dispatcher, not as markdown. */
+    a.error === b.error &&
     /** `SearchButtons` renders `title` and navigates by `conversationId`, so a
      *  rename/refetch that leaves the text and id intact must still re-render. */
     a.title === b.title &&

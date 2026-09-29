@@ -6,6 +6,9 @@ import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react
 import type { MCPReinitializeResponse } from 'librechat-data-provider';
 import { useMCPServerManager } from '../useMCPServerManager';
 
+const mockOpenInNewTab = jest.fn();
+jest.mock('~/utils', () => ({ openInNewTab: (...args: unknown[]) => mockOpenInNewTab(...args) }));
+
 const mockShowToast = jest.fn();
 const mockSetMCPValues = jest.fn();
 const mockReinitialize = jest.fn();
@@ -48,6 +51,68 @@ function deferred<T>() {
 }
 
 describe('useMCPServerManager initialization', () => {
+  it.each(['response', 'http'] as const)(
+    'clears the spinner after a transient %s failure and lets retry succeed without OAuth',
+    async (failure) => {
+      mockReinitialize.mockReset();
+      mockSetMCPValues.mockClear();
+      mockShowToast.mockClear();
+      mockOpenInNewTab.mockClear();
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const wrapper = ({ children }: { children: React.ReactNode }) => (
+        <Provider>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </Provider>
+      );
+      const { result, unmount } = renderHook(() => useMCPServerManager(), { wrapper });
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        if (failure === 'http') {
+          mockReinitialize.mockRejectedValueOnce(new Error('Service temporarily unavailable'));
+        } else {
+          mockReinitialize.mockResolvedValueOnce({
+            success: false,
+            serverName: 'test-server',
+            oauthRequired: false,
+            failureReason: 'initialization_failed',
+          });
+        }
+        await act(async () => {
+          await result.current.initializeServer('test-server');
+        });
+        expect(result.current.isInitializing('test-server')).toBe(false);
+        expect(result.current.isCancellable('test-server')).toBe(false);
+        expect(mockOpenInNewTab).not.toHaveBeenCalled();
+        expect(mockSetMCPValues).not.toHaveBeenCalled();
+        expect(mockShowToast).toHaveBeenLastCalledWith({
+          message: 'com_ui_mcp_init_failed',
+          status: 'error',
+        });
+
+        mockReinitialize.mockResolvedValueOnce({
+          success: true,
+          serverName: 'test-server',
+          oauthRequired: false,
+        });
+        await act(async () => {
+          await result.current.initializeServer('test-server');
+        });
+        expect(mockReinitialize).toHaveBeenCalledTimes(2);
+        expect(result.current.isInitializing('test-server')).toBe(false);
+        expect(mockOpenInNewTab).not.toHaveBeenCalled();
+        expect(mockSetMCPValues).toHaveBeenCalledWith(['test-server']);
+        expect(mockShowToast).toHaveBeenLastCalledWith({
+          message: 'com_ui_mcp_initialized_success',
+          status: 'success',
+        });
+      } finally {
+        consoleError.mockRestore();
+        unmount();
+        queryClient.clear();
+      }
+    },
+  );
+
   it('keeps passive authorization observers opt-in for shared hook callers', () => {
     const queryClient = new QueryClient();
     const wrapper = ({ children }: { children: React.ReactNode }) => (

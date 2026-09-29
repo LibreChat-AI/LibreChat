@@ -102,14 +102,21 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       return;
     }
     // Wrapped, the indicator also has to move vertically, so it carries its own
-    // height rather than stretching between the container's insets. INDICATOR_INSET
-    // reproduces the `inset-y-1` of the single-row default exactly, so switching a
-    // group to `wrap` does not change how it looks on a row that still fits.
+    // height rather than stretching between the container's insets, and it has to
+    // reproduce what `inset-y-1` produces for a row that still fits.
+    //
+    // That geometry depends on the container's own vertical padding, because the
+    // insets resolve against its padding box: a group styled `px-1` gets a pill
+    // inset inside its segment, while one styled `p-1` gets a pill that covers the
+    // segment exactly. The first row's `offsetTop` is that padding, so measuring it
+    // keeps both cases identical when a group turns `wrap` on; assuming zero shrank
+    // a padded group's pill by 8px and left it floating inside the segment.
+    const rowInset = buttonRefs.current[0]?.offsetTop ?? 0;
     setBackgroundStyle({
       width: `${selectedButton.offsetWidth}px`,
-      height: `${selectedButton.offsetHeight - INDICATOR_INSET * 2}px`,
+      height: `${selectedButton.offsetHeight + rowInset * 2 - INDICATOR_INSET * 2}px`,
       transform: `translate(${selectedButton.offsetLeft}px, ${
-        selectedButton.offsetTop + INDICATOR_INSET
+        selectedButton.offsetTop - rowInset + INDICATOR_INSET
       }px)`,
     });
   }, [currentValue, options, wrap]);

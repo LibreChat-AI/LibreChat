@@ -949,7 +949,11 @@ it('bounds MCP preflight by the claim lease and the stricter concurrency config'
   expect(preflightMCP).toHaveBeenCalledWith(
     'agent-1',
     OWNER,
-    expect.objectContaining({ concurrency: 2, deadlineMs: leaseUntil.getTime() }),
+    expect.objectContaining({
+      scheduleId: 'sched-1',
+      concurrency: 2,
+      deadlineMs: leaseUntil.getTime(),
+    }),
   );
 });
 

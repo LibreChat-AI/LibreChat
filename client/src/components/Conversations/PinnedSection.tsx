@@ -279,6 +279,7 @@ const FavoriteRow = ({
         item={{ model: favorite.model, endpoint: favorite.endpoint }}
         type="model"
         onSelectEndpoint={onSelectEndpoint}
+        endpointsConfig={endpointsConfig}
         onRemoveFocus={onRemoveFocus}
         keyShortcuts={keyShortcuts}
       />
@@ -736,10 +737,8 @@ const PinnedSection = ({
       </div>
 
       <Collapse open={isExpanded}>
-        {/* Projects above already claims up to 42vh; matching it here starved the
-            flex-growing Chats region on short viewports, so this keeps the
-            pre-existing budget. */}
-        <div className="scrollbar-gutter-stable max-h-[30vh] overflow-y-auto pt-0.5">
+        {/* No scroll pane of its own: the sidebar scrolls as one surface. */}
+        <div className="pt-0.5">
           {displayEntries.length === 0 && draggingConversation && (
             <div
               className={cn(

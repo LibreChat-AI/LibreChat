@@ -1,4 +1,4 @@
-import type { TMessageContentParts } from './types/assistants';
+import type { TMessageContentParts } from './types/content';
 import type { TFile } from './types/files';
 import type { TMessage } from './types';
 import { ContentTypes } from './types/runs';
@@ -228,7 +228,9 @@ export function isCompactedLeaf(message?: Pick<TMessage, 'content'> | null): boo
     if (part?.type !== ContentTypes.SUMMARY) {
       return false;
     }
-    if (part.summarizing === true || part.failed === true) {
+    /** No `boundary` means the round never completed: only the final summary
+     *  block carries one, so a part holding streamed deltas alone lacks it. */
+    if (part.summarizing === true || part.failed === true || part.boundary == null) {
       continue;
     }
     const hasText = (part.content ?? []).some(

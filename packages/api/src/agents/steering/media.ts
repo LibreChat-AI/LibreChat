@@ -1,8 +1,8 @@
 import { logger } from '@librechat/data-schemas';
 import { formatMessage } from '@librechat/agents';
 import { ContentTypes } from 'librechat-data-provider';
+import type { TFile, TurnFileConsumers } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { TFile } from 'librechat-data-provider';
 import type { SteerQueueItem } from '~/stream/interfaces/IJobStore';
 import type { SteerFileFetcher } from './request';
 import type { SteerMediaResult } from './runtime';
@@ -14,10 +14,17 @@ import { prependFileContext } from '../client';
 
 /** The BaseClient encode surface the steer media pipeline reuses. */
 export interface SteerMediaClient {
-  addFileContextToMessage(message: Record<string, unknown>, files: IMongoFile[]): Promise<void>;
+  /** The turn's view of stored records, which every check and encode below must share. */
+  resolveTurnAttachments(files: IMongoFile[], consumers?: TurnFileConsumers): IMongoFile[];
+  addFileContextToMessage(
+    message: Record<string, unknown>,
+    files: IMongoFile[],
+    consumers?: TurnFileConsumers,
+  ): Promise<void>;
   processAttachments(
     message: Record<string, unknown>,
     files: IMongoFile[],
+    consumers?: TurnFileConsumers,
   ): Promise<IMongoFile[] | undefined>;
 }
 
@@ -75,17 +82,19 @@ async function encodeSteerContent({
   quotes,
   steerId,
   fileDocs,
+  fileConsumers,
 }: {
   client: SteerMediaClient;
   text: string;
   quotes?: string[] | null;
   steerId: string;
   fileDocs: IMongoFile[];
+  fileConsumers?: TurnFileConsumers;
 }): Promise<SteerMediaResult> {
   const modelText = mergeSteerModelText(text, quotes);
   const pseudo: PseudoMessage = { messageId: `steer:${steerId}` };
-  await client.addFileContextToMessage(pseudo, fileDocs);
-  const validated = await client.processAttachments(pseudo, fileDocs);
+  await client.addFileContextToMessage(pseudo, fileDocs, fileConsumers);
+  const validated = await client.processAttachments(pseudo, fileDocs, fileConsumers);
   const formatted = formatMessage({
     message: {
       role: 'user',
@@ -139,9 +148,13 @@ export async function buildSteerMedia({
     return undefined;
   }
   const docsById = new Map(rawDocs.map((file) => [file.file_id, file]));
-  const fileDocs = ids
-    .map((id) => docsById.get(id))
-    .filter((doc): doc is IMongoFile => doc != null);
+  /* These files arrived after resource priming. A loaded tool is not evidence that
+   * it can access them; use the opted-in text fallback until a new turn provisions them. */
+  const fileConsumers: TurnFileConsumers = { executeCode: false, fileSearch: false };
+  const fileDocs = client.resolveTurnAttachments(
+    ids.map((id) => docsById.get(id)).filter((doc): doc is IMongoFile => doc != null),
+    fileConsumers,
+  );
   assertFilesAllowed?.(fileDocs);
   return encodeSteerContent({
     client,
@@ -149,6 +162,7 @@ export async function buildSteerMedia({
     quotes: item.quotes,
     steerId: item.steerId,
     fileDocs,
+    fileConsumers,
   });
 }
 
@@ -247,7 +261,9 @@ export async function stampSteerPartMedia({
     if (filter != null) {
       const fileDocs = await getFiles(filter, {}, {});
       if (Array.isArray(fileDocs) && fileDocs.length > 0) {
-        resolvedDocsById = new Map(fileDocs.map((file) => [file.file_id, file]));
+        resolvedDocsById = new Map(
+          client.resolveTurnAttachments(fileDocs).map((file) => [file.file_id, file]),
+        );
       }
     }
   }

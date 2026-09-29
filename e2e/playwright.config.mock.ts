@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 import { getLocalE2EEnv, getE2EBaseURL } from './setup/env';
+import { managementAuth } from './setup/agent-management';
 
 const rootPath = path.resolve(__dirname, '..');
 const replicaCount = Number(process.env.E2E_REPLICAS || '1');
@@ -186,6 +187,10 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  config = config.replace(
+    '  agents:\n',
+    `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,
+  );
   const dynamicMcpConfig = enableDynamicMcp
     ? {
         allowedDomain: '- http://127.0.0.1:8766',

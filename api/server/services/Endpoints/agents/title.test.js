@@ -340,4 +340,26 @@ describe('agents addTitle', () => {
     );
     expect(mockCache.delete).not.toHaveBeenCalled();
   });
+
+  /** An immediate-mode title saves while the turn is still running, so its write can
+   *  overlap the response's. Rebuilding `messages` from a pre-response snapshot would
+   *  erase the response's own appended id for good, so the title asks for the
+   *  metadata-only path: an empty append writes the title and touches nothing else. */
+  it('saves the title without rewriting the conversation message array', async () => {
+    const client = makeClient('Metadata Only');
+
+    await addTitle(makeReq(), {
+      text: 'hello',
+      client,
+      conversationId: 'cid-metadata',
+      immediate: true,
+      convoReady: Promise.resolve(),
+    });
+
+    expect(mockSaveConvo).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: 'cid-metadata', title: 'Metadata Only' }),
+      expect.objectContaining({ noUpsert: true, appendMessageIds: [] }),
+    );
+  });
 });

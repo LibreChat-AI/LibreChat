@@ -1,4 +1,3 @@
-import debounce from 'lodash/debounce';
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import { isPasteSubmitted } from './files';
 
@@ -288,13 +287,14 @@ const removeLocalStorageItem = (key: string): void => {
   }
 };
 
-export const clearDraft = debounce((id?: string | null) => {
+/** Navigation must clear before another visit can save replacement text under the same key. */
+export const clearDraft = (id?: string | null) => {
   const key = id ?? '';
   if (!mayClearComposerDrafts(key)) {
     return;
   }
   removeLocalStorageItem(`${LocalStorageKeys.TEXT_DRAFT}${key}`);
-}, 2500);
+};
 
 /** Synchronously removes both text and file drafts for a conversation (or NEW_CONVO fallback).
  * A record another live tab owns is left alone, attachment or not: every key here is reachable
@@ -889,6 +889,17 @@ export const setFilesDraft = (id: string, draft: FilesDraft): void => {
     pendingPasteEntries.length === 0 &&
     (draft.pastedTextIds?.length ?? 0) === 0
   ) {
+    /** Nothing attached, but on a shared key this record is also the only thing saying whose text
+     * is stored there, and dropping it leaves that text unowned for another tab to clear.
+     * `useAutoSave` rewrites the draft with an empty file map on every reset and every composer
+     * mount, so a claim that did not survive this branch barely survived at all. The text itself
+     * is the condition, exactly as in `releaseComposerDraftTab`: with none, the claim is residue
+     * and the record still goes. */
+    const holdsText = (getLocalStorageItem(`${LocalStorageKeys.TEXT_DRAFT}${id}`) ?? '') !== '';
+    if (tabId != null && holdsText && isSharedComposerDraftId(id)) {
+      setLocalStorageItem(key, JSON.stringify({ fileIds: [], tabId }));
+      return;
+    }
     removeLocalStorageItem(key);
     return;
   }
@@ -1203,18 +1214,8 @@ export const removePendingTextAttachmentDraft = ({
   });
 };
 
-export const setDraft = ({
-  id,
-  value,
-  persistExact = false,
-}: {
-  id: string;
-  value?: string;
-  persistExact?: boolean;
-}) => {
-  const shouldPersist = persistExact
-    ? value != null && value.length > 0
-    : value && value.length > 1;
+export const setDraft = ({ id, value }: { id: string; value?: string }) => {
+  const shouldPersist = value != null && value.length > 0;
   if (shouldPersist) {
     /** A refused key belongs to another open tab holding it against attachments it still has.
      * This tab could not restore what it wrote there anyway, so the write would only destroy that
@@ -1245,6 +1246,21 @@ export const setDraft = ({
 
 export const getDraft = (id?: string): string | null =>
   decodeBase64((getLocalStorageItem(`${LocalStorageKeys.TEXT_DRAFT}${id ?? ''}`) ?? '') || '');
+
+/** Discards a key's attachments while leaving its text where it is. New Chat deletes the uploads
+ * the draft was holding, so restoring those chips would put back a file the server no longer has;
+ * a typed message has no such resource behind it, and losing it is what made an unsaved chat the
+ * one composer whose draft did not survive leaving and coming back.
+ *
+ * Written as an empty draft rather than a direct delete so the claim rule lives in one place:
+ * `setFilesDraft` keeps a shared key's stamp while text is stored under it and drops the record
+ * otherwise, which is also what the autosave write that follows this one has to do. */
+export const clearFilesDraft = (id: string): void => {
+  if (!mayClearComposerDrafts(id)) {
+    return;
+  }
+  setFilesDraft(id, { fileIds: [], pendingPastes: {} });
+};
 
 /**
  * Draft-key prefix for a live `ask_user_question` answer phase. While the

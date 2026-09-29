@@ -543,14 +543,39 @@ describe('classification.ts', () => {
 
     it.each(
       [false, true].flatMap((definitionsOnly) => [
-        { definitionsOnly, statefulWorkspace: false, runtimes: ['bash'], supported: false },
-        { definitionsOnly, statefulWorkspace: true, runtimes: ['py'], supported: false },
-        { definitionsOnly, statefulWorkspace: true, runtimes: ['bash'], supported: false },
+        {
+          definitionsOnly,
+          statefulWorkspace: false,
+          runtimes: ['bash'],
+          supported: false,
+          selected: false,
+        },
+        {
+          definitionsOnly,
+          statefulWorkspace: true,
+          runtimes: ['py'],
+          supported: false,
+          selected: false,
+        },
+        {
+          definitionsOnly,
+          statefulWorkspace: true,
+          runtimes: ['bash'],
+          supported: false,
+          selected: false,
+        },
+        {
+          definitionsOnly,
+          statefulWorkspace: false,
+          runtimes: [],
+          supported: true,
+          selected: true,
+        },
       ]),
     )(
       'gates attached PTC: definitionsOnly=$definitionsOnly stateful=$statefulWorkspace runtimes=$runtimes',
-      async ({ definitionsOnly, statefulWorkspace, runtimes, supported }) => {
-        const workerId = `worker-${definitionsOnly}-${statefulWorkspace}-${runtimes[0]}`;
+      async ({ definitionsOnly, statefulWorkspace, runtimes, supported, selected }) => {
+        const workerId = `worker-${definitionsOnly}-${statefulWorkspace}-${runtimes[0]}-${selected}`;
         process.env.TEST_CODE_CAPABILITY_TOKEN = 'capability-test-token';
         const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
           new Response(
@@ -564,6 +589,16 @@ describe('classification.ts', () => {
                 statefulWorkspace,
                 sandboxProfile: 'native-srt',
                 runtimes,
+                ...(selected
+                  ? {
+                      workspaceTools: {
+                        protocolVersion: 1,
+                        operations: ['execute_command'],
+                        programmaticLanguages: ['bash'],
+                        workspaces: [{ id: 'project-a', operations: ['execute_command'] }],
+                      },
+                    }
+                  : {}),
               },
             }),
           ),
@@ -602,6 +637,15 @@ describe('classification.ts', () => {
               environmentType: 'attached',
               environmentId: 'attached',
               bridgeWorkerId: workerId,
+              ...(selected
+                ? {
+                    codeWorkspace: {
+                      environmentId: 'attached',
+                      workspaceId: 'project-a',
+                      operations: ['execute_command' as const],
+                    },
+                  }
+                : {}),
             },
             codeEnvironments,
             getAppConfig: jest.fn().mockResolvedValue({
@@ -620,7 +664,13 @@ describe('classification.ts', () => {
             'direct',
             'code_execution',
           ]);
-          expect(fetchSpy).not.toHaveBeenCalled();
+          if (selected) {
+            expect(fetchSpy).toHaveBeenCalledTimes(1);
+            expect(
+              result.toolDefinitions.find((tool) => tool.name === 'run_tools_with_bash')
+                ?.description,
+            ).toContain('selected persistent workspace');
+          } else expect(fetchSpy).not.toHaveBeenCalled();
         } finally {
           fetchSpy.mockRestore();
           delete process.env.TEST_CODE_CAPABILITY_TOKEN;

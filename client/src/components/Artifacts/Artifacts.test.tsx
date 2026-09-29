@@ -65,7 +65,7 @@ jest.mock('./ArtifactVersion', () => ({
 
 jest.mock('./DownloadArtifact', () => ({
   __esModule: true,
-  default: () => null,
+  default: () => <div data-testid="download-artifact" />,
 }));
 
 jest.mock('./Mermaid/Export', () => ({
@@ -135,9 +135,63 @@ describe('Artifacts panel accessibility', () => {
     await screen.findByRole('region', { name: 'Diagram' });
     expect(screen.queryByRole('button', { name: 'com_ui_refresh' })).not.toBeInTheDocument();
     expect(screen.getByTestId('mermaid-export')).toBeInTheDocument();
+    /* The export menu owns SVG, PNG and the source, so a second download
+     * control beside it would be a fourth, unlabelled way to save the same
+     * diagram. */
+    expect(screen.queryByTestId('download-artifact')).not.toBeInTheDocument();
   });
 
-  it('hides the Mermaid export action outside the preview tab', async () => {
+  it('opens a preview-capable artifact on its preview tab after a code-only one', async () => {
+    /* A code-only artifact forces the Code tab. That constraint used to be
+     * written back into the panel's shared `activeTab`, so the next HTML or
+     * diagram row opened on Code while announcing a rendered preview. */
+    const setActiveTab = jest.fn();
+    const codeOnly = {
+      activeTab: 'code',
+      setActiveTab,
+      currentIndex: 0,
+      currentArtifact: {
+        id: 'code-artifact-1',
+        type: 'application/vnd.code',
+        title: 'ingest.py',
+        content: 'print(1)',
+        lastUpdateTime: 1,
+      },
+      orderedArtifactIds: ['code-artifact-1', 'html-artifact-1'],
+      setCurrentArtifactId: jest.fn(),
+    };
+    mockUseArtifacts.mockReturnValue(codeOnly);
+
+    const { rerender } = render(
+      <RecoilRoot>
+        <Artifacts />
+      </RecoilRoot>,
+    );
+    await screen.findByRole('region', { name: 'ingest.py' });
+    /* Nothing to reset while the constrained artifact is the open one. */
+    expect(setActiveTab).not.toHaveBeenCalledWith('preview');
+
+    mockUseArtifacts.mockReturnValue({
+      ...codeOnly,
+      currentIndex: 1,
+      currentArtifact: {
+        id: 'html-artifact-1',
+        type: 'text/html',
+        title: 'dashboard.html',
+        content: '<h1>hi</h1>',
+        lastUpdateTime: 2,
+      },
+    });
+    rerender(
+      <RecoilRoot>
+        <Artifacts />
+      </RecoilRoot>,
+    );
+
+    await waitFor(() => expect(setActiveTab).toHaveBeenCalledWith('preview'));
+  });
+
+  it('keeps the Mermaid export action on the code tab', async () => {
     render(
       <RecoilRoot>
         <Artifacts />
@@ -145,6 +199,36 @@ describe('Artifacts panel accessibility', () => {
     );
 
     await screen.findByRole('region', { name: 'Diagram' });
+    /* Saving the source never needed a rendered preview, and a download
+     * control that disappears when the user switches tabs reads as a bug. */
+    expect(screen.getByTestId('mermaid-export')).toBeInTheDocument();
+    expect(screen.queryByTestId('download-artifact')).not.toBeInTheDocument();
+  });
+
+  it('keeps the generic download control for non-Mermaid artifacts', async () => {
+    mockUseArtifacts.mockReturnValue({
+      activeTab: 'preview',
+      setActiveTab: jest.fn(),
+      currentIndex: 0,
+      currentArtifact: {
+        id: 'html-artifact-1',
+        type: 'text/html',
+        title: 'Page',
+        content: '<h1>Hi</h1>',
+        lastUpdateTime: 1,
+      },
+      orderedArtifactIds: ['html-artifact-1'],
+      setCurrentArtifactId: jest.fn(),
+    });
+
+    render(
+      <RecoilRoot>
+        <Artifacts />
+      </RecoilRoot>,
+    );
+
+    await screen.findByRole('region', { name: 'Page' });
+    expect(screen.getByTestId('download-artifact')).toBeInTheDocument();
     expect(screen.queryByTestId('mermaid-export')).not.toBeInTheDocument();
   });
 

@@ -72,10 +72,12 @@ export default function useSubmitMessage() {
   const submitPrompt = useCallback(
     (text: string) => {
       const parsedText = replaceSpecialVars({ text, user });
-      if (autoSendPrompts) {
-        submitMessage({ text: parsedText });
+      if (autoSendPrompts && submitMessage({ text: parsedText }) !== false) {
         return;
       }
+      /** A refused auto-send still belongs to the user. Stage it exactly like
+       * a non-auto-sent prompt so every picker, including variable dialogs,
+       * preserves the text for the composer's guarded submit route. */
 
       const textarea = document.getElementById(mainTextareaId) as HTMLTextAreaElement | null;
       const currentText = textarea?.value ?? methods.getValues('text');

@@ -329,5 +329,5 @@ export type FireableSchedule = ISchedule;
 export type ScheduleMCPPreflight = (
   agentId: string,
   user: ScheduleUserContext,
-  options: { concurrency: number; signal?: AbortSignal; deadlineMs?: number },
+  options: { concurrency: number; signal?: AbortSignal; deadlineMs?: number; scheduleId?: string },
 ) => Promise<ScheduleMCPOutcome[]>;

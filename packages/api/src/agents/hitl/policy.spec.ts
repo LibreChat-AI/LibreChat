@@ -9,6 +9,7 @@ import {
   buildToolApprovalPayload,
   buildAskUserQuestionPayload,
   buildPendingAction,
+  isToolApprovalPayloadValid,
   toClientPendingAction,
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
@@ -308,6 +309,54 @@ describe('buildPendingAction', () => {
     expect(action.responseMessageId).toBe('msg-1');
     expect(action.payload).toBe(toolApprovalPayload);
     expect(typeof action.createdAt).toBe('number');
+  });
+
+  test('rejects duplicate tool-call ids before the approval is persisted', () => {
+    const duplicatePayload: Agents.ToolApprovalInterruptPayload = {
+      type: 'tool_approval',
+      action_requests: [
+        { name: 'shell', arguments: { command: 'rm marker' }, tool_call_id: 'duplicate' },
+        { name: 'shell', arguments: { command: 'ls' }, tool_call_id: 'duplicate' },
+      ],
+      review_configs: [
+        {
+          action_name: 'shell',
+          tool_call_id: 'duplicate',
+          allowed_decisions: ['approve', 'reject'],
+        },
+        {
+          action_name: 'shell',
+          tool_call_id: 'duplicate',
+          allowed_decisions: ['approve', 'reject'],
+        },
+      ],
+    };
+
+    expect(isToolApprovalPayloadValid(duplicatePayload)).toBe(false);
+    expect(() => buildPendingAction(duplicatePayload, ctx)).toThrow(
+      'Invalid tool approval payload',
+    );
+  });
+
+  test('rejects review policies that do not map one-to-one to the requested calls', () => {
+    const mismatchedPayload: Agents.ToolApprovalInterruptPayload = {
+      type: 'tool_approval',
+      action_requests: [
+        { name: 'read_file', arguments: { path: 'safe.txt' }, tool_call_id: 'call-1' },
+      ],
+      review_configs: [
+        {
+          action_name: 'read_file',
+          tool_call_id: 'call-2',
+          allowed_decisions: ['approve', 'reject'],
+        },
+      ],
+    };
+
+    expect(isToolApprovalPayloadValid(mismatchedPayload)).toBe(false);
+    expect(() => buildPendingAction(mismatchedPayload, ctx)).toThrow(
+      'Invalid tool approval payload',
+    );
   });
 
   test('wraps an ask_user_question payload with the same envelope', () => {

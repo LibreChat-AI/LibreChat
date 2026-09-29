@@ -1,13 +1,21 @@
 import {
+  Providers,
+  EModelEndpoint,
   EToolResources,
   mergeFileConfig,
+  isExplicitMimeConfig,
+  isOpenAILikeProvider,
+  isKnownProviderIdentifier,
   isAssistantsEndpoint,
   isResponsesApiUpload,
   getEndpointFileConfig,
   resolveUploadLLMDeliveryPath,
   isSpeechProviderConfigured,
+  getCustomEndpointProvider,
 } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
+import { UnsupportedProviderAudioError } from './errors';
+import { getAudioFormat } from '~/files/encode/utils';
 
 /** The subset of an agent record this module reads. */
 export interface UploadAgent {
@@ -27,6 +35,7 @@ export interface UploadMetadata {
 /** The uploaded file fields routing depends on. */
 export interface UploadFile {
   mimetype: string;
+  originalname?: string;
 }
 
 export type GetUploadAgent = (params: { id: string }) => Promise<UploadAgent | null>;
@@ -112,14 +121,35 @@ export async function resolveEffectiveToolResource({
   const fileConfig = mergeFileConfig(req.config?.fileConfig);
   const endpoint = await resolveUploadEndpoint({ req, metadata, getAgent });
   const endpointConfig = getEndpointFileConfig({ fileConfig, endpoint });
+  const endpointProvider = getCustomEndpointProvider(req.config?.endpoints?.custom, endpoint);
+  const file = req.file as UploadFile;
   const path = resolveUploadLLMDeliveryPath({
     toolResource: metadata.tool_resource,
-    mimeType: (req.file as UploadFile).mimetype,
+    mimeType: file.mimetype,
     endpointConfig,
     fileConfig,
     endpoint,
+    endpointProvider,
     useResponsesApi: isResponsesApiUpload(metadata.useResponsesApi),
     sttConfigured: isSpeechProviderConfigured(req.config?.speech?.stt),
   });
+  const provider =
+    endpointProvider ?? (isKnownProviderIdentifier(endpoint) ? endpoint : EModelEndpoint.openAI);
+  const usesInputAudio =
+    provider?.toLowerCase() === Providers.OPENROUTER ||
+    (isOpenAILikeProvider(provider) &&
+      isExplicitMimeConfig(endpointConfig.supportedMimeTypes) &&
+      fileConfig.checkType?.(file.mimetype, endpointConfig.supportedMimeTypes));
+  if (
+    path === 'provider' &&
+    endpoint != null &&
+    endpoint !== EModelEndpoint.agents &&
+    !isAssistantsEndpoint(endpoint) &&
+    file.mimetype.startsWith('audio/') &&
+    usesInputAudio &&
+    !getAudioFormat(file.mimetype, file.originalname ?? '')
+  ) {
+    throw new UnsupportedProviderAudioError();
+  }
   return path === 'text' ? EToolResources.context : undefined;
 }

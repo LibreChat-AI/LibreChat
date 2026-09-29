@@ -10,9 +10,11 @@ import {
   CONFIG_CACHE_NAMESPACE,
 } from './cache/ServerConfigsCacheFactory';
 import { MCPInspectionFailedError, isMCPDomainNotAllowedError } from '~/mcp/errors';
+import { normalizeLegacyHeaderMaps, normalizeLegacyHeaderMapsIn } from './compat';
 import { canBackfillSharedServerInstructions, isUserSourced } from '~/mcp/utils';
 import { ReadThroughAllCache } from './cache/ReadThroughAllCache';
 import { isPluginSourced, MCP_PLUGIN_SOURCE } from '~/utils/env';
+import { requireApiKeyReentryForRebinding } from './binding';
 import { ReadThroughCache } from './cache/ReadThroughCache';
 import { MCPServerInspector } from './MCPServerInspector';
 import { ServerConfigsDB } from './db/ServerConfigsDB';
@@ -28,11 +30,19 @@ export class MCPConfigInitializationCanceledError extends Error {}
 
 /** Cached configs carry decrypted oauth/apiKey credentials, so the shared
  *  stores only ever see ciphertext; plaintext stays in process memory,
- *  exactly where it lived before these caches became shared. */
-function encryptedStoreTransforms<T>(): ReadThroughTransforms<T> {
+ *  exactly where it lived before these caches became shared.
+ *
+ *  Decoding also normalizes legacy header maps, because a replica running older
+ *  code fills these stores from its own database reads: without it, a rolling
+ *  deployment would keep serving a config the runtime schemas reject, from a
+ *  cache hit that never reaches the repository's own normalization. */
+function serverMapStoreTransforms(): ReadThroughTransforms<Record<string, t.ParsedServerConfig>> {
   return {
     encode: async (value) => encryptV2(JSON.stringify(value)),
-    decode: async (raw) => JSON.parse(await decryptV2(raw)),
+    decode: async (raw) =>
+      normalizeLegacyHeaderMapsIn(
+        JSON.parse(await decryptV2(raw)) as Record<string, t.ParsedServerConfig>,
+      ),
   };
 }
 
@@ -45,7 +55,7 @@ function perServerStoreTransforms(): ReadThroughTransforms<t.ParsedServerConfig 
       const decoded = JSON.parse(await decryptV2(raw)) as {
         config: t.ParsedServerConfig | null;
       };
-      return decoded.config ?? undefined;
+      return decoded.config == null ? undefined : normalizeLegacyHeaderMaps(decoded.config);
     },
   };
 }
@@ -106,6 +116,7 @@ const ADMIN_CONFIGURABLE_FIELDS = [
   'stderr',
   'url',
   'headers',
+  'requestHeaders',
   'proxy',
   'requiresOAuth',
   'apiKey',
@@ -121,6 +132,9 @@ const ADMIN_CONFIGURABLE_FIELDS = [
   'customUserVars',
   'timeout',
   'sseReadTimeout',
+  'oauthRefreshWaitTimeout',
+  'oauthRefreshCoordination',
+  'oauthPersistenceWaitTimeout',
   'initTimeout',
 ] as const;
 
@@ -279,7 +293,7 @@ export class MCPServersRegistry {
     this.readThroughCacheAll = new ReadThroughAllCache<Record<string, t.ParsedServerConfig>>(
       'mcp-registry-read-through-all',
       ttl,
-      encryptedStoreTransforms<Record<string, t.ParsedServerConfig>>(),
+      serverMapStoreTransforms(),
     );
   }
 
@@ -926,11 +940,12 @@ export class MCPServersRegistry {
     const configRepo = this.getConfigRepository(storageLocation);
     const source = resolveServerSource(config, storageLocation === 'CACHE' ? 'yaml' : 'user');
 
-    // Merge existing admin API key if not provided in update (needed for inspection)
+    // Merge an equivalent update's existing admin API key for inspection.
     let configForInspection = { ...config };
     if (config.apiKey?.source === 'admin' && !config.apiKey?.key) {
       const existingConfig = await configRepo.get(serverName, userId);
       if (existingConfig?.apiKey?.key) {
+        requireApiKeyReentryForRebinding(existingConfig, config);
         configForInspection = {
           ...configForInspection,
           apiKey: {

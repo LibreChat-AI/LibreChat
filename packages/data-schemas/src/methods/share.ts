@@ -176,6 +176,12 @@ const SNAPSHOT_STREAMABLE_SOURCES = new Set<string>([
   FileSources.text,
 ]);
 
+function isLlmDeliveryPath(
+  value: unknown,
+): value is NonNullable<t.SharedFileSnapshot['llmDeliveryPath']> {
+  return value === 'provider' || value === 'text' || value === 'none';
+}
+
 /** Collect `file_id`s from a message's `files`/`attachments` array into `target`. */
 function collectFileIds(items: unknown, target: Set<string>): void {
   if (!Array.isArray(items)) {
@@ -238,12 +244,24 @@ async function buildFileSnapshots(
     collectSteerFileIds(message.content, fileIds);
   }
 
+  return readFileSnapshots(mongoose, fileIds, ownerId);
+}
+
+async function readFileSnapshots(
+  mongoose: typeof import('mongoose'),
+  fileIds: Set<string>,
+  ownerId: string,
+): Promise<t.SharedFileSnapshot[]> {
   if (fileIds.size === 0) {
     return [];
   }
 
   const File = mongoose.models.File as Model<t.IMongoFile>;
-  const files = await File.find({ file_id: { $in: Array.from(fileIds) }, user: ownerId }).lean();
+  const files = await File.find({ file_id: { $in: Array.from(fileIds) }, user: ownerId })
+    .select(
+      'file_id source storageKey filepath type filename bytes width height model llmDeliveryPath previewRevision metadata.sourceDispatchedAt tenantId',
+    )
+    .lean();
 
   const snapshots: t.SharedFileSnapshot[] = [];
   for (const file of files) {
@@ -262,6 +280,7 @@ async function buildFileSnapshots(
       width: file.width,
       height: file.height,
       model: file.model,
+      llmDeliveryPath: isLlmDeliveryPath(file.llmDeliveryPath) ? file.llmDeliveryPath : 'provider',
       previewRevision: file.previewRevision,
       sourceDispatchedAt: file.metadata?.sourceDispatchedAt,
       tenantId: file.tenantId,
@@ -394,6 +413,65 @@ async function persistBackfilledSnapshots(
   return current.fileSnapshots ?? [];
 }
 
+function snapshotMatchesCurrentVersion(
+  snapshot: t.SharedFileSnapshot,
+  current: t.SharedFileSnapshot,
+): boolean {
+  const revisionChanged = (snapshot.previewRevision ?? null) !== (current.previewRevision ?? null);
+  const sourceGenerationChanged =
+    snapshot.sourceDispatchedAt != null &&
+    snapshot.sourceDispatchedAt !== (current.sourceDispatchedAt ?? null);
+  const bytesChanged =
+    snapshot.bytes != null && current.bytes != null && snapshot.bytes !== current.bytes;
+  return !revisionChanged && !sourceGenerationChanged && !bytesChanged;
+}
+
+/**
+ * Add the delivery marker introduced after file snapshots shipped without changing
+ * what an existing link authorizes. Each marker is copied only when the live file
+ * still passes the same revision checks as the public file route. The caller persists
+ * after public-projection preflight with the full prior snapshot as a compare-and-set
+ * guard. A legacy file with no explicit marker used provider delivery, which remains
+ * the compatible fallback.
+ */
+async function enrichSnapshotDeliveryPaths(
+  mongoose: typeof import('mongoose'),
+  share: t.ISharedLink & { messages: t.IMessage[] },
+): Promise<{ snapshots: t.SharedFileSnapshot[]; changed: boolean }> {
+  const existing = share.fileSnapshots ?? [];
+  const missingIds = new Set(
+    existing
+      .filter((snapshot) => snapshot.llmDeliveryPath === undefined)
+      .map((snapshot) => snapshot.file_id),
+  );
+  if (missingIds.size === 0 || share._id == null || !share.user) {
+    return { snapshots: existing, changed: false };
+  }
+
+  const currentById = new Map(
+    (await readFileSnapshots(mongoose, missingIds, share.user)).map((snapshot) => [
+      snapshot.file_id,
+      snapshot,
+    ]),
+  );
+  let changed = false;
+  const enriched = existing.map((snapshot) => {
+    if (snapshot.llmDeliveryPath !== undefined) {
+      return snapshot;
+    }
+    const current = currentById.get(snapshot.file_id);
+    changed = true;
+    if (current == null || !snapshotMatchesCurrentVersion(snapshot, current)) {
+      return { ...snapshot, llmDeliveryPath: null };
+    }
+    return { ...snapshot, llmDeliveryPath: current.llmDeliveryPath ?? ('provider' as const) };
+  });
+  if (!changed) {
+    return { snapshots: existing, changed: false };
+  }
+  return { snapshots: enriched, changed: true };
+}
+
 /** Share-scoped file route that serves a snapshotted file independent of owner ACL. */
 function shareFileRoute(shareId: string, fileId: string): string {
   return `/api/share/${shareId}/files/${encodeURIComponent(fileId)}`;
@@ -408,6 +486,7 @@ function applyShareFileRoute(
   shareId: string,
   snapshotIds: Set<string>,
   textSourceIds?: Set<string>,
+  deliveryPathById?: ReadonlyMap<string, t.SharedFileSnapshot['llmDeliveryPath']>,
 ): t.SharedFile {
   const fileId = file.file_id;
   if (typeof fileId === 'string' && snapshotIds.has(fileId)) {
@@ -418,6 +497,9 @@ function applyShareFileRoute(
       // General storage sources stay private, but `text` is a render semantic:
       // clients must preview the database-backed payload as text, not the original MIME.
       ...(textSourceIds?.has(fileId) && { source: FileSources.text }),
+      ...(deliveryPathById?.get(fileId) != null && {
+        llmDeliveryPath: deliveryPathById.get(fileId),
+      }),
     };
     for (const key of ['preview', 'uri', 'url'] as const) {
       if (file[key] !== undefined) {
@@ -450,6 +532,7 @@ export function anonymizeSharedContent(
     shareId: string;
     snapshotIds: Set<string>;
     textSourceIds?: Set<string>;
+    deliveryPathById?: ReadonlyMap<string, t.SharedFileSnapshot['llmDeliveryPath']>;
     includeFiles: boolean;
     sanitizeUIResourceMarkers?: boolean;
   },
@@ -481,6 +564,7 @@ export function anonymizeSharedContent(
             params.shareId,
             params.snapshotIds,
             params.textSourceIds,
+            params.deliveryPathById,
           ),
         )
       : undefined;
@@ -518,6 +602,7 @@ function anonymizeMessages(
   shareId: string,
   snapshotIds: Set<string>,
   textSourceIds: Set<string>,
+  deliveryPathById: ReadonlyMap<string, t.SharedFileSnapshot['llmDeliveryPath']>,
   includeFiles: boolean,
   anonymizeMessageId: (id: string) => string,
   anonymizeAssistantId: (id: string) => string,
@@ -548,6 +633,7 @@ function anonymizeMessages(
             shareId,
             snapshotIds,
             textSourceIds,
+            deliveryPathById,
           ),
         )
       : undefined;
@@ -564,6 +650,7 @@ function anonymizeMessages(
             shareId,
             snapshotIds,
             textSourceIds,
+            deliveryPathById,
           ),
         )
       : undefined;
@@ -586,6 +673,7 @@ function anonymizeMessages(
         shareId,
         snapshotIds,
         textSourceIds,
+        deliveryPathById,
         includeFiles,
         sanitizeUIResourceMarkers: message.isCreatedByUser !== true,
       }),
@@ -904,10 +992,16 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const perLinkEnabled = share.snapshotFiles !== false;
       const includeFiles = adminEnabled && perLinkEnabled;
       let fileSnapshots = share.fileSnapshots;
+      const originalFileSnapshots = share.fileSnapshots;
+      let shouldPersistEnrichedDeliveryPaths = false;
       const shouldPersistFileSnapshots =
         includeFiles && fileSnapshots === undefined && share._id != null;
       if (shouldPersistFileSnapshots) {
         fileSnapshots = await buildFileSnapshots(mongoose, messagesToShare, share.user);
+      } else if (includeFiles && fileSnapshots !== undefined) {
+        const enriched = await enrichSnapshotDeliveryPaths(mongoose, share);
+        fileSnapshots = enriched.snapshots;
+        shouldPersistEnrichedDeliveryPaths = enriched.changed;
       }
 
       const snapshotIds = includeFiles
@@ -920,6 +1014,15 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
               .map((snapshot) => snapshot.file_id),
           )
         : new Set<string>();
+      const deliveryPathById = includeFiles
+        ? new Map(
+            (fileSnapshots ?? []).flatMap((snapshot) =>
+              snapshot.llmDeliveryPath == null
+                ? []
+                : [[snapshot.file_id, snapshot.llmDeliveryPath] as const],
+            ),
+          )
+        : new Map<string, t.SharedFileSnapshot['llmDeliveryPath']>();
       /** The share view has no conversation in scope, so whether this link may reveal a
        *  model travels in the payload — read off the very messages being returned. */
       const { messages, hasConfiguredSender } = anonymizeMessages(
@@ -928,6 +1031,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         resolvedShareId,
         snapshotIds,
         textSourceIds,
+        deliveryPathById,
         includeFiles,
         anonymizeMessageId,
         anonymizeAssistantId,
@@ -951,6 +1055,20 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
 
       if (shouldPersistFileSnapshots) {
         await persistBackfilledSnapshots(SharedLink, { _id: share._id }, fileSnapshots ?? []);
+      } else if (
+        shouldPersistEnrichedDeliveryPaths &&
+        share._id != null &&
+        originalFileSnapshots !== undefined
+      ) {
+        await SharedLink.updateOne(
+          {
+            _id: share._id,
+            fileSnapshots: originalFileSnapshots,
+            snapshotFiles: { $ne: false },
+          },
+          { $set: { fileSnapshots } },
+          { timestamps: false },
+        );
       }
 
       return result;

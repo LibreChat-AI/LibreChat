@@ -25,6 +25,7 @@ const {
   isMessageFileUpload,
   isResponsesApiUpload,
   isSpeechProviderConfigured,
+  getCustomEndpointProvider,
 } = require('librechat-data-provider');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
@@ -35,7 +36,9 @@ const {
   assertExtractedTextInspectable,
   getFileExtractionLogDetails,
   getUploadExtractedTextPlan,
+  resolveUploadFallbackText,
   UPLOAD_EXTRACTED_TEXT_PLANS,
+  MAX_STORED_EXTRACTED_TEXT_BYTES,
   inspectContent,
   extractFileContent,
   hasActiveFileFieldPolicy,
@@ -48,6 +51,7 @@ const {
   createCodeApiRateLimitBudget,
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
+  isLeader,
 } = require('@librechat/api');
 const {
   convertImage,
@@ -261,16 +265,8 @@ const processDeleteRequest = async ({ req, files }) => {
     await initializeClients();
   }
 
-  const agentFiles = [];
-
   for (const file of files) {
     const source = file.source ?? FileSources.local;
-    if (req.body.agent_id && req.body.tool_resource) {
-      agentFiles.push({
-        tool_resource: req.body.tool_resource,
-        file_id: file.file_id,
-      });
-    }
 
     if (source === FileSources.text) {
       resolvedFileIds.add(file.file_id);
@@ -309,15 +305,6 @@ const processDeleteRequest = async ({ req, files }) => {
     });
   }
 
-  if (agentFiles.length > 0) {
-    promises.push(
-      db.removeAgentResourceFiles({
-        agent_id: req.body.agent_id,
-        files: agentFiles,
-      }),
-    );
-  }
-
   await Promise.allSettled(promises);
   const deletedFileIds = [...resolvedFileIds];
   let metadataDeletedFileIds = deletedFileIds;
@@ -330,6 +317,9 @@ const processDeleteRequest = async ({ req, files }) => {
       metadataDeletedFileIds = [];
       throw error;
     }
+    /* The only place a delete removes agent references, and it runs after the metadata delete
+       succeeded: a file that kept its storage, its chunks or its record keeps its references too,
+       so the agent it was removed from can be asked again (see issue #12776). */
     if (metadataDeletedFileIds.length > 0) {
       try {
         await db.removeAgentResourceFilesFromAllAgents({ file_ids: metadataDeletedFileIds });
@@ -371,6 +361,7 @@ function startExpiredFileSweep(options = {}) {
   return startExpiredFileSweepWithDeps(options, {
     sweepExpiredFiles,
     runAsSystem,
+    isLeader,
     logger,
   });
 }
@@ -492,6 +483,7 @@ const processImageFile = async ({ req, res, metadata, returnFile = false, sseStr
     endpointConfig,
     fileConfig,
     endpoint: configEndpoint,
+    endpointProvider: getCustomEndpointProvider(appConfig?.endpoints?.custom, configEndpoint),
     useResponsesApi: isResponsesApiUpload(metadata.useResponsesApi ?? req.body?.useResponsesApi),
     sttConfigured: isSpeechProviderConfigured(appConfig?.speech?.stt),
   });
@@ -808,6 +800,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     endpointConfig,
     fileConfig,
     endpoint,
+    endpointProvider: getCustomEndpointProvider(appConfig?.endpoints?.custom, endpoint),
     useResponsesApi: isResponsesApiUpload(metadata.useResponsesApi ?? req.body?.useResponsesApi),
     sttConfigured: isSpeechProviderConfigured(appConfig?.speech?.stt),
   });
@@ -937,9 +930,9 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
         });
       }
       const textBytes = Buffer.byteLength(text, 'utf8');
-      if (textBytes > 15 * megabyte) {
+      if (textBytes > MAX_STORED_EXTRACTED_TEXT_BYTES) {
         throw new Error(
-          `Extracted text from "${file.originalname}" exceeds the 15MB storage limit (${Math.round(textBytes / megabyte)}MB). Try a shorter document.`,
+          `Extracted text from "${file.originalname}" exceeds the ${MAX_STORED_EXTRACTED_TEXT_BYTES / megabyte}MB storage limit (${Math.round(textBytes / megabyte)}MB). Try a shorter document.`,
         );
       }
       if (
@@ -1147,6 +1140,17 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     return await createTextFile({ text });
   }
 
+  /* Extracted before storage, which may move the temporary upload the extractors read. */
+  const fallbackText = await resolveUploadFallbackText({
+    file,
+    fileId: file_id,
+    deliveryPath: llmDeliveryPath,
+    destinationChosen: uploadChoiceMetadata.destinationChosen,
+    isMessageAttachment: messageAttachment,
+    endpointConfig,
+    filters: appConfig?.filters,
+  });
+
   // Dual storage pattern for RAG files: Storage + Vector DB
   let storageResult, embeddingResult;
   let storedType = file.mimetype;
@@ -1343,6 +1347,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
       width,
       tenantId: req.user.tenantId,
       llmDeliveryPath,
+      text: fallbackText,
     }),
     ...retentionExpiry,
   };

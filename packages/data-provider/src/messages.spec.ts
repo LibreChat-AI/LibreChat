@@ -1,4 +1,4 @@
-import type { SummaryContentPart } from './types/assistants';
+import type { SummaryContentPart } from './types/content';
 import type { ParentMessage } from './messages';
 import type { TFile } from './types/files';
 import type { TMessage } from './types';
@@ -203,6 +203,7 @@ describe('isCompactedLeaf', () => {
   const summary = (overrides: Record<string, unknown> = {}) => ({
     type: ContentTypes.SUMMARY,
     content: [{ type: ContentTypes.TEXT, text: 'checkpoint' }],
+    boundary: { messageId: 'step_summary', contentIndex: 0 },
     ...overrides,
   });
 
@@ -216,6 +217,7 @@ describe('isCompactedLeaf', () => {
     ['a summary next to text', [summary(), { type: ContentTypes.TEXT, text: 'reply' }]],
     ['a summary still streaming', [summary({ summarizing: true })]],
     ['a failed summary', [summary({ failed: true })]],
+    ['a streamed summary that never recorded a boundary', [summary({ boundary: undefined })]],
     ['an empty summary', [summary({ content: [] })]],
   ])('is false for %s', (_label, content) => {
     expect(isCompactedLeaf({ content } as TMessage)).toBe(false);

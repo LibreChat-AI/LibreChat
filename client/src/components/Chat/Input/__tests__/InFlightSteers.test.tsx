@@ -20,6 +20,11 @@ const mockRestoreToComposer = jest.fn();
 let convertSteersForTest: ReturnType<typeof useSteerConvert>;
 let observedQueueForTest: QueuedMessage[];
 let setSteersForTest: (updater: (prev: PendingSteer[]) => PendingSteer[]) => void;
+let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
+
+jest.mock('~/Providers', () => ({
+  useFileMapContext: () => mockFileMap,
+}));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -81,8 +86,20 @@ jest.mock('~/components/Chat/Input/Files/ImagePreview', () => ({
 
 jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileName }: { open: boolean; fileName: string }) =>
-    open ? <div data-testid="steer-file-preview">{fileName}</div> : null,
+  default: ({
+    open,
+    fileName,
+    deliveryPath,
+  }: {
+    open: boolean;
+    fileName: string;
+    deliveryPath?: string;
+  }) =>
+    open ? (
+      <div data-testid="steer-file-preview" data-delivery-path={deliveryPath}>
+        {fileName}
+      </div>
+    ) : null,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
@@ -173,6 +190,7 @@ async function clickMenuItem(label: string) {
 describe('InFlightSteers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockFileMap = {};
     mockCancelMutateAsync.mockResolvedValue({ removed: true });
     mockRestoreToComposer.mockReturnValue(true);
     observedQueueForTest = [];
@@ -633,6 +651,29 @@ describe('InFlightSteers', () => {
     fireEvent.click(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
   });
+
+  it.each(['application/pdf', 'image/png'])(
+    'hydrates %s preview metadata after the steer',
+    (type) => {
+      const steer: PendingSteer = {
+        steerId: 's1',
+        text: 'see attached',
+        status: 'pending',
+        createdAt: 1,
+        files: [{ file_id: 'f1', filename: 'notes.pdf', type }],
+      };
+      const rendered = renderSteers([steer]);
+
+      mockFileMap = { f1: { llmDeliveryPath: 'text' } };
+      rendered.rerender(steersElement([steer]));
+
+      fireEvent.click(screen.getByTestId('steer-file'));
+      expect(screen.getByTestId('steer-file-preview')).toHaveAttribute(
+        'data-delivery-path',
+        'text',
+      );
+    },
+  );
 
   it('renders markdown the same way the applied part will, so text does not reflow on apply', () => {
     renderSteers([{ steerId: 's1', text: '**bold** steer', status: 'pending', createdAt: 1 }], {

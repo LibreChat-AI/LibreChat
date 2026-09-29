@@ -25,6 +25,7 @@ const summaryPart = (overrides: Record<string, unknown> = {}): ContentPart =>
   ({
     type: ContentTypes.SUMMARY,
     content: [{ type: ContentTypes.TEXT, text: 'checkpoint' }],
+    boundary: { messageId: 'step_summary', contentIndex: 0 },
     ...overrides,
   }) as ContentPart;
 
@@ -110,6 +111,7 @@ describe('useCompactConversation', () => {
   it.each([
     ['still streaming', summaryPart({ summarizing: true })],
     ['failed', summaryPart({ failed: true })],
+    ['stored without a boundary', summaryPart({ boundary: undefined })],
   ])('lets an interrupted compaction (summary %s) be retried', (_label, part) => {
     mockLatestMessage = leaf({ text: '', content: [part] });
     const { result } = renderHook(() => useCompactConversation());

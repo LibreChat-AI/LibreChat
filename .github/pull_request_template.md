@@ -1,39 +1,46 @@
-# Pull Request Template
+# Pull Request
 
-⚠️ Before Submitting a PR, Please Review:
-- Please ensure that you have thoroughly read and understood the [Contributing Docs](https://github.com/danny-avila/LibreChat/blob/main/.github/CONTRIBUTING.md) before submitting your Pull Request.
-
-⚠️ Documentation Updates Notice:
-- Kindly note that documentation updates are managed in this repository: [librechat.ai](https://github.com/LibreChat-AI/librechat.ai)
+> Before submitting, please review the [Contributing Guide](https://github.com/LibreChat-AI/LibreChat/blob/main/.github/CONTRIBUTING.md).
+>
+> Documentation changes belong in the [LibreChat documentation repository](https://github.com/LibreChat-AI/librechat.ai).
 
 ## Summary
 
 <!--
-Say what breaks or is missing today, what triggers it, and how it behaves after this
-change. Link the issue with `Fixes #N`, and list any dependency your change needs.
-Two or three sentences is usually enough:
+Briefly explain:
+- What problem or limitation exists today?
+- What triggers it (input, state, or configuration)?
+- What does this PR change?
+- What is the resulting behavior?
 
-"Pasting an image while the composer had focus left Send disabled until the user
-clicked back into the textarea: the upload dialog took focus and never returned it.
-Focus now returns to the composer as soon as the attachment mounts."
+Write each paragraph as one unbroken line and let the browser wrap it. A single
+newline inside a paragraph renders as a line break here, so a hand-wrapped
+paragraph arrives as ragged short lines that never reflow to the reader's window.
+That holds for every section below, and for list items and table cells too. The
+only intentional breaks are the blank lines between paragraphs.
 
-Describe the code as it stands. A reader who has not followed the branch has no
-context for what earlier commits tried or what a review round changed. Naming the
-merged pull request that caused the bug is different — that is history the reader
-needs.
+Keep this focused on the final state of the code rather than the history of the
+branch or previous review iterations. Naming the merged pull request that
+introduced a regression is the exception: that is history the reader needs.
+
+Link related issues, and name any dependency this change needs:
+Fixes #123
+Related to #123
+Depends on LibreChat-AI/agents#123
 -->
 
 ## How it works
 
 <!--
-Optional. Delete this section when the summary already explains the change.
+Optional. Remove this section if the implementation is already obvious from the
+summary and diff.
 
-Pick one or two views that make the change reviewable, and put a sentence beside
-each. These show the format, not a required implementation pattern — replace them
-with real names from your change. Do not paste the whole diff or list every file
-you touched.
+Explain the mechanism reviewers need to understand. Pick one or two of the views
+below, whichever make the change reviewable, and put a sentence beside each rather
+than describing every changed file. Show a whole block instead of a diff when most
+of it is new, or when the omitted context would hide execution order or ownership.
 
-The mechanism, as a focused diff, when the surrounding shape already exists:
+Focused diff:
 
 ```diff
 -const parts = content.filter(isText);
@@ -41,7 +48,7 @@ The mechanism, as a focused diff, when the surrounding shape already exists:
 +const { parts, files } = splitContent(content);
 ```
 
-Runtime order, as a call tree, keeping only the calls that carry the change:
+Runtime flow:
 
 ```text
 submitMessage
@@ -50,16 +57,16 @@ submitMessage
     setSubmission   # opens the SSE stream
 ```
 
-Ownership, as a shallow file tree, for a new module or a broad refactor:
+Ownership:
 
 ```text
 packages/api/src/agents/
-├── run.ts      # builds the run and its callbacks
+├── run.ts      # builds the run and callbacks
 ├── tools.ts    # resolves tools for the request
-└── client.ts   # streams provider output back to the route
+└── client.ts   # streams provider output
 ```
 
-Client/server or cross-service flow, as Mermaid:
+Cross-service flow:
 
 ```mermaid
 sequenceDiagram
@@ -72,41 +79,136 @@ sequenceDiagram
     API->>Client: SSE events
 ```
 
-Editing this file: keep the arrows in the example above solid (`->>`). A dashed
-Mermaid arrow spells the comment terminator, so it would close this comment early
-and spill the rest of the guidance into every description. Your own diagram sits
-outside the comment, where dashed arrows are fine.
-
-Show a whole block instead of a diff when most of it is new, or when the omitted
-context would hide execution order or ownership.
+Keep the arrows in this example solid (`->>`). A dashed Mermaid arrow spells the
+HTML comment terminator, so it would close this block early and spill the rest of
+the guidance into every description. Diagrams you write outside this comment can
+use dashed arrows freely.
 -->
 
-## Change Type
+## Type of change
 
-Please delete any irrelevant options.
+<!--
+Check every type that applies, then delete the lines that do not. The section
+should end up listing only the types this pull request actually is.
+-->
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] This change requires a documentation update
-- [ ] Translation update
+* [ ] Bug fix
+* [ ] Feature
+* [ ] Refactor
+* [ ] Performance improvement
+* [ ] Breaking change
+* [ ] Documentation
+* [ ] Translation
+* [ ] Tests / tooling / CI
 
 ## Testing
 
-Please describe your test process and include instructions so that we can reproduce your test. If there are any important variables for your testing configuration, list them here.
+<!--
+Describe how you verified the change.
 
-### **Test Configuration**:
+Include only the configuration that matters for reproducing the test.
+
+Example:
+
+1. Start LibreChat with Agents enabled.
+2. Create an agent using an Ollama endpoint.
+3. Add the Ask User tool.
+4. Send a message that triggers the tool.
+5. Confirm the question is rendered and the conversation continues after answering.
+-->
+
+**Tested environments/configuration:**
+
+<!--
+Examples:
+- Browser:
+- Provider/model:
+- Database:
+- Feature flags:
+- OS:
+-->
+
+**Automated tests:**
+
+<!--
+Examples:
+- `npm run test:client`
+- `npm run test:api`
+- Added tests in `foo.spec.ts`
+
+Write "Not applicable" when appropriate.
+-->
+
+## Screenshots / recordings
+
+<!--
+Required whenever the change alters something a user can see: a new, removed or
+restyled component, layout, spacing, copy, icons, empty/loading/error states,
+theming, or motion. The diff shows what the code says; only a screenshot shows
+what the screen looks like.
+
+Capture from the running app, never a mockup, and take the "before" from the
+base revision and the "after" from this branch, so the pair shows the change
+rather than the new state twice. Post them at the same size on the same screen,
+and label which is which.
+A brand new surface has no "before", so say that instead of leaving a cell
+blank. Include light and dark mode whenever the change touches color or theming.
+Use a recording rather than a still whenever the behavior is motion or
+interaction dependent, such as a transition, drag, hover or streaming state,
+where a frozen frame proves nothing.
+
+Upload the files with `gh` (v2.99.0 or newer). Write the body with ordinary
+relative image links, pass the same paths to `--attach`, and each link is
+rewritten to the uploaded asset:
+
+| Before | After |
+| --- | --- |
+| ![Before](./sidebar-before.png) | ![After](./sidebar-after.png) |
+
+    gh pr create --base dev --body-file ./pr-body.md \
+      --attach ./sidebar-before.png --attach ./sidebar-after.png
+
+    gh pr edit 123 --attach './sidebar-after.png#Sidebar after the change'
+
+`--attach` repeats, up to 50 files per command, and works on `gh pr create`,
+`gh pr edit` and `gh pr comment`. Alt text follows the path after `#`; a link
+already in the body keeps the alt text written there, and a file the body never
+references is appended to the end instead. PNG, JPEG, GIF, WebP, SVG, MP4, MOV
+and WebM are accepted, images and GIFs up to 10 MB.
+
+An asset URL only ever comes back from a real upload, whether that is `--attach`
+or dragging the file into the web editor. Do not commit screenshots to
+the repository or push them to a branch, do not link a path on the machine that
+captured them, do not host them on a gist or an image site, and never write a
+`user-attachments` link by hand: an invented link renders as a broken image and
+costs a review round.
+
+Write "No user-facing change" rather than removing this section, so reviewers can
+see the question was answered.
+-->
+
+## Risk / compatibility
+
+<!--
+Optional for small changes.
+
+Call out anything reviewers should pay particular attention to, such as:
+- migrations or schema changes
+- API/configuration changes
+- provider-specific behavior
+- backwards compatibility
+- performance implications
+- security-sensitive behavior
+
+Write "None" when there are no notable risks.
+-->
 
 ## Checklist
 
-Please delete any irrelevant options.
-
-- [ ] My code adheres to this project's style guidelines
-- [ ] I have performed a self-review of my own code
-- [ ] I have commented in any complex areas of my code
-- [ ] I have made pertinent documentation changes
-- [ ] My changes do not introduce new warnings
-- [ ] I have written tests demonstrating that my changes are effective or that my feature works
-- [ ] Local unit tests pass with my changes
-- [ ] Any changes dependent on mine have been merged and published in downstream modules.
-- [ ] A pull request for updating the documentation has been submitted.
+* [ ] I reviewed my own changes
+* [ ] Relevant tests have been added or updated
+* [ ] Existing relevant tests pass
+* [ ] The change does not introduce new warnings or errors
+* [ ] User-facing or complex behavior is documented where necessary
+* [ ] Required dependency changes have been merged/published
+* [ ] Required documentation PR: <!-- link or N/A -->

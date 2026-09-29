@@ -1,6 +1,6 @@
 {
   "name": "@librechat/api",
-  "version": "1.7.48",
+  "version": "1.7.49",
   "type": "commonjs",
   "description": "MCP services for LibreChat",
   "main": "dist/index.cjs",
@@ -27,10 +27,11 @@
   },
   "scripts": {
     "clean": "rimraf dist",
-    "build": "npm run clean && tsdown",
-    "build:dev": "npm run clean && tsdown",
-    "build:watch": "tsdown --watch",
-    "build:watch:prod": "tsdown --watch",
+    "build": "npm run clean && tsdown && npm run openapi:copy",
+    "build:dev": "npm run clean && tsdown && npm run openapi:copy",
+    "build:watch": "npm run openapi:copy && tsdown --watch",
+    "build:watch:prod": "npm run openapi:copy && tsdown --watch",
+    "openapi:copy": "node -e \"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.copyFileSync('openapi/agents.openapi.json','dist/agents.openapi.json')\"",
     "test": "jest --coverage --watch --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",
     "test:ci": "jest --coverage --ci --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",
     "test:cache-integration:core": "jest --testPathPatterns=\"src/(cache|middleware)/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false",
@@ -43,8 +44,11 @@
     "test:agents-integration": "jest --testPathPatterns=\"src/agents/.*\\.integration\\.spec\\.ts$\" --coverage=false --runInBand --forceExit",
     "verify": "npm run test:ci",
     "b:clean": "bun run rimraf dist",
-    "b:build": "bun run b:clean && bun run tsdown",
-    "b:build:dev": "bun run b:clean && bun run tsdown",
+    "b:build": "bun run b:clean && bun run tsdown && bun run openapi:copy",
+    "b:build:dev": "bun run b:clean && bun run tsdown && bun run openapi:copy",
+    "openapi:generate": "cross-env TS_NODE_PROJECT=tsconfig.openapi.json ts-node -r tsconfig-paths/register src/openapi/generate.ts --write",
+    "openapi:test": "node openapi/router.smoke.cjs",
+    "openapi:check": "cross-env TS_NODE_PROJECT=tsconfig.openapi.json ts-node -r tsconfig-paths/register src/openapi/generate.ts --check",
     "start:everything-sse": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/examples/everything/sse.ts",
     "start:everything": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/demo/everything.ts",
     "start:filesystem": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/demo/filesystem.ts",
@@ -52,12 +56,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danny-avila/LibreChat.git"
+    "url": "git+https://github.com/LibreChat-AI/LibreChat.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
   "devDependencies": {
@@ -97,7 +101,8 @@
     "typescript": "^5.9.3",
     "winston": "^3.17.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
-    "yauzl": "^3.2.1"
+    "yauzl": "^3.2.1",
+    "zod-openapi": "^4.2.4"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
@@ -115,7 +120,7 @@
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^3.8.6",
+    "@librechat/agents": "^3.9.7",
     "@librechat/data-schemas": "*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@opentelemetry/api": "^1.9.0",

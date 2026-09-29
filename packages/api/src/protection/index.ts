@@ -1,5 +1,6 @@
 export * from './types';
 export * from './runtime';
+export * from './transform';
 export * from './title';
 export * from './legacy';
 export * from './provenance';

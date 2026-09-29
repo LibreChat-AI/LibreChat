@@ -1,10 +1,15 @@
 import { ErrorTypes } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
-import { getSafeErrorMetadata, isAbortError } from '../../utils/errors';
+import {
+  resolveLangChainError,
+  getModelStreamFailure,
+  resolveModelStreamError,
+  getProviderErrorMessage,
+} from '../errors';
+import { getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
 import { traceIdForMessage } from '../../langfuse/trace';
 import { createModelErrorTracker } from './tracker';
-import { resolveLangChainError } from '../errors';
 
 const UPSTREAM_MODEL_ERROR_CODE = 'UPSTREAM_MODEL_ERROR';
 const UPSTREAM_MODEL_ERROR_ORIGIN = 'model_provider';
@@ -36,9 +41,21 @@ export interface TerminalRunErrorObserver {
   readonly getUserFacingError: (error: unknown, fallback: () => string) => string;
 }
 
-/** A run cancellation requires both host-owned abort state and an abort-shaped rejection. */
+/** A run cancellation requires host-owned abort state plus its own reason or an abort shape. */
 export function isAgentRunCancellation(error: unknown, signal?: AbortSignal): boolean {
-  return signal?.aborted === true && isAbortError(error);
+  return isOwnedAbortError(error, signal);
+}
+
+/** Preserve rejection status; a successful status can still precede a broken response body. */
+function getUpstreamErrorType(error: unknown, status?: number): string {
+  if (status != null && status >= 400) {
+    return String(status);
+  }
+  const streamFailure = getModelStreamFailure(error);
+  if (streamFailure != null) {
+    return `stream_${streamFailure}`;
+  }
+  return status == null ? UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE : String(status);
 }
 
 export function getUpstreamModelErrorMetadata(
@@ -50,8 +67,7 @@ export function getUpstreamModelErrorMetadata(
     ...safeMetadata,
     errorCode: UPSTREAM_MODEL_ERROR_CODE,
     errorOrigin: UPSTREAM_MODEL_ERROR_ORIGIN,
-    errorType:
-      safeMetadata.status != null ? String(safeMetadata.status) : UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE,
+    errorType: getUpstreamErrorType(error, safeMetadata.status),
     ...(typeof responseMessageId === 'string' && responseMessageId !== ''
       ? { traceId: traceIdForMessage(responseMessageId) }
       : {}),
@@ -63,11 +79,21 @@ export function createTerminalRunErrorObserver({
   logger,
   responseMessageId,
   source,
+  protectionEnabled,
+  maxProviderErrorChars,
   genericMessage = `${source} Error:`,
 }: {
   logger: TerminalRunErrorLogger;
   responseMessageId?: string;
   source: string;
+  /**
+   * Whether a content policy inspects this deployment's traffic. A provider error body may echo
+   * submitted content, so its text stays out of the failure a reader sees while one is active —
+   * the same condition every other user-facing failure text is decided by. Omission fails closed
+   * for JavaScript callers and older integrations.
+   */
+  protectionEnabled?: boolean;
+  maxProviderErrorChars?: number;
   genericMessage?: string;
 }): TerminalRunErrorObserver {
   const modelErrorTracker = createModelErrorTracker();
@@ -79,16 +105,29 @@ export function createTerminalRunErrorObserver({
         return fallback();
       }
 
+      const { status } = getSafeErrorMetadata(upstreamModelError);
       const classifiedError =
-        safelyResolveLangChainError(error) ?? safelyResolveLangChainError(upstreamModelError);
+        safelyResolveLangChainError(error) ??
+        safelyResolveLangChainError(upstreamModelError) ??
+        (status == null || status < 400
+          ? (resolveModelStreamError(upstreamModelError) ?? resolveModelStreamError(error))
+          : undefined);
       if (classifiedError != null) {
         return classifiedError;
       }
 
-      const { status } = getSafeErrorMetadata(upstreamModelError);
+      /** Unclassified: the provider's own explanation is the only account of what happened, and a
+       *  rejection from a gateway or proxy carries it as the whole point of the 400. The status
+       *  headlines it either way, so a deployment withholding provider text loses no taxonomy. */
+      const providerMessage =
+        protectionEnabled !== false
+          ? undefined
+          : (getProviderErrorMessage(upstreamModelError, maxProviderErrorChars) ??
+            getProviderErrorMessage(error, maxProviderErrorChars));
       return `${UPSTREAM_MODEL_ERROR_FALLBACK}\n${JSON.stringify({
         type: ErrorTypes.UPSTREAM_MODEL_ERROR,
         ...(status != null ? { status } : {}),
+        ...(providerMessage != null ? { message: providerMessage } : {}),
       })}`;
     },
     log(error: unknown, signal?: AbortSignal) {

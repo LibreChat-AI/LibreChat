@@ -11,6 +11,7 @@ import {
   extractEnvVariable,
   providerEndpointMap,
   normalizeEndpointName,
+  mapModelToAzureConfig,
   resolveUseResponsesApi,
 } from 'librechat-data-provider';
 import type {
@@ -37,6 +38,7 @@ import type {
 import type {
   Agent,
   ImageDetail,
+  TAzureConfig,
   CodeApprovalMode,
   TAgentsEndpoint,
   AgentModelParameters,
@@ -81,6 +83,12 @@ import {
   usesSubagentCompletionWakeups,
 } from '~/agents/subagentDelivery';
 import {
+  resolveStreamLimits,
+  resolveModelTransportTimeouts,
+  resolveSubagentMaxTurns,
+  resolveRecursionLimit,
+} from '~/agents/config';
+import {
   isSteeringSupported,
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
@@ -99,18 +107,15 @@ import {
   eventOnlyRunFileTools,
   isRunFileSharingSupported,
 } from './files/runtime';
-import {
-  resolveStreamLimits,
-  resolveSubagentMaxTurns,
-  resolveRecursionLimit,
-} from '~/agents/config';
 import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPromptKeyCompatibility';
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
+import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
-import { resolveConfigHeaders, resolveModelHeaders } from '~/utils/headers';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
+import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
+import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -413,6 +418,7 @@ export function shouldReplayReasoningContent(
 }
 
 type RunAgent = Omit<Agent, 'tools'> & {
+  azureOptions?: t.AzureOptions;
   tools?: GenericTool[];
   maxContextTokens?: number;
   /** Pre-ratio context budget from initializeAgent. */
@@ -577,18 +583,66 @@ function normalizeAgentModelParameters(
  * Merges user-supplied summarization parameters on top of endpoint-resolved
  * overrides. User params win for top-level keys; `configuration` is
  * deep-merged so user additions (e.g. `defaultQuery`) don't wipe out the
- * resolved `baseURL`/`defaultHeaders`/`fetchOptions`.
+ * resolved `baseURL`/`defaultHeaders`/`fetchOptions`. When transport resolution already
+ * consumed the user's URL, retain its normalized form instead of restoring the raw template.
  */
 function mergeParameters(
   overrides: SummarizationClientOverrides,
   userParams: SummarizationConfig['parameters'],
+  resolvedTransport = false,
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...overrides, ...(userParams ?? {}) };
   const userConfiguration = (userParams as Record<string, unknown> | undefined)?.configuration;
   if (isPlainObject(overrides.configuration) && isPlainObject(userConfiguration)) {
-    merged.configuration = { ...overrides.configuration, ...userConfiguration };
+    merged.configuration = {
+      ...overrides.configuration,
+      ...userConfiguration,
+      ...(resolvedTransport ? { baseURL: overrides.configuration.baseURL } : {}),
+      defaultHeaders: mergeHeaders(
+        overrides.configuration.defaultHeaders as Record<string, string> | undefined,
+        userConfiguration.defaultHeaders as Record<string, string> | undefined,
+      ),
+      defaultQuery: {
+        ...(isPlainObject(overrides.configuration.defaultQuery)
+          ? overrides.configuration.defaultQuery
+          : {}),
+        ...(isPlainObject(userConfiguration.defaultQuery) ? userConfiguration.defaultQuery : {}),
+      },
+    };
   }
   return merged;
+}
+
+/** `model_parameters` is the agent's resolved `llmConfig`, whose kwargs the schema type omits. */
+function agentModelKwargs(
+  modelParameters: AgentModelParameters | undefined,
+): Record<string, unknown> | undefined {
+  if (modelParameters == null || !('modelKwargs' in modelParameters)) {
+    return undefined;
+  }
+  return isPlainObject(modelParameters.modelKwargs) ? modelParameters.modelKwargs : undefined;
+}
+
+/**
+ * `getOpenAILLMConfig` carries an Azure Astra deployment alias in
+ * `modelKwargs.model`, which langchain spreads after `model`. The SDK's
+ * same-provider summarizer copies the agent's client options and overrides only
+ * `model`, so a summarizer on another model would still reach the agent's
+ * deployment. Hand it the agent's kwargs without the alias.
+ */
+function summarizationModelKwargs(
+  agentKwargs: Record<string, unknown> | undefined,
+  agentModel: string | undefined,
+  summarizationModel: string | undefined,
+): Record<string, unknown> | undefined {
+  if (agentKwargs == null || !('model' in agentKwargs)) {
+    return undefined;
+  }
+  if (!isNonEmptyString(summarizationModel) || summarizationModel === agentModel) {
+    return undefined;
+  }
+  const { model: _alias, ...kwargs } = agentKwargs;
+  return kwargs;
 }
 
 /**
@@ -649,11 +703,9 @@ function summarizationReasoningEffort(
  * defaults its model-specific constraints off without that declaration
  * (LibreChat#15598).
  *
- * Credentials and transport are deliberately not returned. A built-in provider
- * has no configured key here, so the client resolves one the way it does today;
- * emitting an empty `apiKey` would break that. The admin-configured base URL is
- * still passed *in*, because whether the endpoint is first-party is exactly what
- * `OPENAI_REVERSE_PROXY` decides.
+ * Credentials and base URLs are not returned: the SDK still resolves them as
+ * before. Cross-provider OpenAI-family clients do receive the Agent transport
+ * timeout policy, even when a URL override prevents built-in request shaping.
  */
 function resolveBuiltInClientOverrides(
   provider: string,
@@ -662,11 +714,9 @@ function resolveBuiltInClientOverrides(
     parameters?: SummarizationConfig['parameters'];
     agentProvider?: string;
   },
+  appConfig: AppConfig,
 ): SummarizationClientOverrides | undefined {
   const { model, parameters } = target;
-  if (!isNonEmptyString(model) || hasBaseURLOverride(parameters)) {
-    return undefined;
-  }
   /**
    * Mirrors the SDK's own condition: when the summarization provider matches the
    * agent's, `buildSummarizationClientConfig` spreads the agent's resolved client
@@ -678,10 +728,22 @@ function resolveBuiltInClientOverrides(
   if (provider === target.agentProvider) {
     return undefined;
   }
+  let transportOverrides: SummarizationClientOverrides | undefined;
+  if (provider === Providers.OPENAI || provider === Providers.AZURE) {
+    const timeouts = resolveModelTransportTimeouts(appConfig.endpoints?.agents);
+    transportOverrides = {
+      configuration: {
+        fetchOptions: {
+          dispatcher:
+            getProxyDispatcher(process.env.PROXY, timeouts) ?? getDirectDispatcher(timeouts),
+        },
+      },
+    };
+  }
   const baseURL = getBuiltInBaseURL(provider);
-  /** Resolving a user-provided base URL needs a database read this path avoids. */
-  if (isUserProvided(baseURL)) {
-    return undefined;
+  /** URL overrides still get timeouts, but must not inherit first-party request shaping. */
+  if (!isNonEmptyString(model) || hasBaseURLOverride(parameters) || isUserProvided(baseURL)) {
+    return transportOverrides;
   }
   const { llmConfig } = getOpenAIConfig(
     '',
@@ -698,7 +760,375 @@ function resolveBuiltInClientOverrides(
     streaming: _streaming,
     ...shaping
   } = llmConfig;
-  return Object.keys(shaping).length > 0 ? shaping : undefined;
+  return Object.keys(shaping).length > 0
+    ? { ...shaping, ...transportOverrides }
+    : transportOverrides;
+}
+
+/**
+ * Memory bound for the warning deduplication below, not an operator setting: it only decides when a
+ * warning for one of more than this many distinct, concurrently recurring problems is logged again.
+ */
+const MAX_UNRESOLVED_SUMMARIZATION_WARNINGS = 256;
+/** Reported summarization misconfigurations per tenant, least recently seen first. */
+const unresolvedSummarizationWarnings = new Set<string>();
+
+function warnUnresolvedSummarization(message: string, tenantId?: string): void {
+  const key = `${tenantId ?? ''}\n${message}`;
+  if (unresolvedSummarizationWarnings.delete(key)) {
+    unresolvedSummarizationWarnings.add(key);
+    return;
+  }
+  if (unresolvedSummarizationWarnings.size >= MAX_UNRESOLVED_SUMMARIZATION_WARNINGS) {
+    const [leastRecentlySeen] = unresolvedSummarizationWarnings;
+    unresolvedSummarizationWarnings.delete(leastRecentlySeen);
+  }
+  unresolvedSummarizationWarnings.add(key);
+  if (tenantId == null) {
+    logger.warn(`[createRun] ${message}`);
+    return;
+  }
+  logger.warn(`[createRun] ${message}`, { tenantId });
+}
+
+/** Azure base URL templates the client fills from its own options rather than the environment. */
+const AZURE_URL_TEMPLATE = /(\$\{(?:INSTANCE_NAME|DEPLOYMENT_NAME)\})/;
+
+/** The URL's segments around Azure's reserved templates, which sit at the odd indexes. */
+function splitAzureURLTemplates(url: string): string[] {
+  return url.split(AZURE_URL_TEMPLATE);
+}
+
+/** Expands environment references in a URL, leaving Azure's reserved templates for an Azure client. */
+function expandTransportURL(url: string, targetsAzure: boolean): string {
+  if (!targetsAzure) {
+    return extractEnvVariable(url);
+  }
+  return splitAzureURLTemplates(url)
+    .map((segment, index) => (index % 2 === 1 ? segment : extractEnvVariable(segment)))
+    .join('');
+}
+
+/**
+ * Admin-authored transport values may reference environment variables, as endpoint credentials
+ * do. Expanded once, before resolution and before the parameters are layered over the client.
+ */
+function expandSummarizationTransport(
+  parameters: SummarizationConfig['parameters'],
+  targetsAzure: boolean,
+): SummarizationConfig['parameters'] {
+  if (!isPlainObject(parameters)) {
+    return parameters;
+  }
+  const params = parameters as Record<string, unknown>;
+  const expanded: Record<string, unknown> = { ...params };
+  if (typeof params.apiKey === 'string') {
+    expanded.apiKey = extractEnvVariable(params.apiKey);
+  }
+  if (typeof params.baseURL === 'string') {
+    expanded.baseURL = expandTransportURL(params.baseURL, targetsAzure);
+  }
+  if (isPlainObject(params.configuration) && typeof params.configuration.baseURL === 'string') {
+    expanded.configuration = {
+      ...params.configuration,
+      baseURL: expandTransportURL(params.configuration.baseURL, targetsAzure),
+    };
+  }
+  return expanded as SummarizationConfig['parameters'];
+}
+
+/** The base URL and API key a summarization target's own parameters set, which replace the resolved ones. */
+function summarizationTransportOverrides(parameters: SummarizationConfig['parameters']): {
+  baseURL?: string;
+  apiKey?: string;
+} {
+  const configuration = (parameters as Record<string, unknown> | undefined)?.configuration;
+  const configurationBaseURL =
+    isPlainObject(configuration) && typeof configuration.baseURL === 'string'
+      ? configuration.baseURL
+      : undefined;
+  return {
+    baseURL:
+      configurationBaseURL ??
+      (typeof parameters?.baseURL === 'string' ? parameters.baseURL : undefined),
+    apiKey: typeof parameters?.apiKey === 'string' ? parameters.apiKey : undefined,
+  };
+}
+
+/** Reject unusable transports while shaping the run, before a compaction client can fail it. */
+function isSummarizationURLAvailable(baseURL: string | undefined, azure?: t.AzureOptions): boolean {
+  if (baseURL == null) {
+    return azure == null || isNonEmptyString(azure.azureOpenAIApiInstanceName);
+  }
+  try {
+    const url = new URL(constructAzureURL({ baseURL, azureOptions: azure }));
+    return (
+      (url.protocol === 'https:' || url.protocol === 'http:') && !hasUnresolvedPlaceholder(url.href)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Azure Responses shares OpenAI's SDK provider, so switching endpoints must replace its transport.
+ * Returns `undefined` when the OpenAI credentials cannot be resolved without a per-user lookup.
+ */
+function resolveOpenAISummarization(
+  model: string,
+  appConfig: AppConfig | undefined,
+  parameters: SummarizationConfig['parameters'],
+  headerContext: { user?: IUser; tenantId?: string; requestBody?: t.RequestBody },
+): { provider: string; clientOverrides: SummarizationClientOverrides } | undefined {
+  const overrides = summarizationTransportOverrides(parameters);
+  const baseURL = overrides.baseURL ?? getBuiltInBaseURL(EModelEndpoint.openAI);
+  const apiKey = overrides.apiKey ?? process.env.OPENAI_API_KEY;
+  if (
+    !apiKey ||
+    !isSummarizationURLAvailable(baseURL) ||
+    isUserProvided(baseURL) ||
+    isUserProvided(apiKey) ||
+    hasUnresolvedPlaceholder(apiKey) ||
+    (baseURL != null && hasUnresolvedPlaceholder(baseURL))
+  ) {
+    warnUnresolvedSummarization(
+      `Summarization with OpenAI model "${model}" is disabled for Azure OpenAI agents: it needs a server-configured OpenAI API key and base URL.`,
+      headerContext.tenantId,
+    );
+    return undefined;
+  }
+  const headers = mergeHeaders(
+    appConfig?.endpoints?.all?.headers,
+    appConfig?.endpoints?.openAI?.headers,
+  );
+  const { llmConfig, configOptions } = getOpenAIConfig(
+    apiKey,
+    {
+      modelOptions: {
+        model,
+        reasoning_effort: summarizationReasoningEffort(parameters),
+        useResponsesApi:
+          typeof parameters?.useResponsesApi === 'boolean' ? parameters.useResponsesApi : undefined,
+      },
+      reverseProxyUrl: baseURL,
+      proxy: process.env.PROXY ?? undefined,
+      headers: resolveModelHeaders({
+        headers: headers ?? {},
+        user: createSafeUser(headerContext.user),
+        tenantId: headerContext.tenantId,
+        body: headerContext.requestBody,
+      }),
+      transportTimeouts: resolveModelTransportTimeouts(appConfig?.endpoints?.agents),
+    },
+    EModelEndpoint.openAI,
+  );
+  return {
+    provider: Providers.OPENAI,
+    clientOverrides: {
+      ...llmConfig,
+      apiKey,
+      useResponsesApi: llmConfig.useResponsesApi ?? false,
+      firstPartyEndpoint: llmConfig.firstPartyEndpoint ?? false,
+      reasoning: llmConfig.reasoning,
+      modelKwargs: llmConfig.modelKwargs ?? {},
+      configuration: configOptions,
+    },
+  };
+}
+
+type AzureSummarizationTarget = Omit<ReturnType<typeof mapModelToAzureConfig>, 'azureOptions'> & {
+  azureOptions: t.AzureOptions;
+  group?: TAzureConfig['groupMap'][string];
+};
+
+/**
+ * The summary model's Azure credentials, resolved the way `initializeOpenAI` resolves an agent's:
+ * the `azureOpenAI` configuration when present, otherwise the legacy environment credentials.
+ * Returns `undefined` (reported once) when the configuration does not define the model.
+ */
+function resolveAzureSummarizationTarget(
+  model: string,
+  azureConfig: TAzureConfig | undefined,
+  tenantId: string | undefined,
+): AzureSummarizationTarget | undefined {
+  if (!azureConfig) {
+    return { azureOptions: getAzureCredentials() };
+  }
+  try {
+    const groupName = azureConfig.modelGroupMap[model]?.group;
+    return {
+      ...mapModelToAzureConfig({
+        modelName: model,
+        modelGroupMap: azureConfig.modelGroupMap,
+        groupMap: azureConfig.groupMap,
+      }),
+      group: groupName ? azureConfig.groupMap[groupName] : undefined,
+    };
+  } catch (error) {
+    warnUnresolvedSummarization(
+      `Summarization with Azure OpenAI model "${model}" is disabled: ${(error as Error).message}`,
+      tenantId,
+    );
+    return undefined;
+  }
+}
+
+/** Reuse request-resolved credentials for self-summaries, including user-provided Azure keys. */
+function azureSummarizationSource(agent: RunAgent): AzureSummarizationTarget {
+  const options = agent.model_parameters as Partial<t.OAIClientOptions> & t.AzureOptions;
+  const configuration = options.configuration;
+  const baseURL = configuration?.baseURL ?? options.azureOpenAIBasePath;
+  const deployment = agentModelKwargs(agent.model_parameters)?.model;
+  return {
+    serverless: agent.useLegacyContent === true,
+    baseURL: baseURL ?? undefined,
+    azureOptions: {
+      azureOpenAIApiKey:
+        options.azureOpenAIApiKey ??
+        (typeof options.apiKey === 'string' ? options.apiKey : undefined),
+      azureOpenAIApiInstanceName:
+        options.azureOpenAIApiInstanceName ?? agent.azureOptions?.azureOpenAIApiInstanceName,
+      azureOpenAIApiDeploymentName:
+        options.azureOpenAIApiDeploymentName ??
+        (typeof deployment === 'string' ? deployment : options.model),
+      azureOpenAIApiVersion:
+        options.azureOpenAIApiVersion ??
+        agent.azureOptions?.azureOpenAIApiVersion ??
+        configuration?.defaultQuery?.['api-version'] ??
+        undefined,
+    },
+  };
+}
+
+/**
+ * Resolve the summary model's deployment and transport before the SDK inherits agent options.
+ * A same-provider summarizer layers these over the agent's client options, so a summary group
+ * without a base path clears the agent's instead of sending its deployment to that resource.
+ * Returns `undefined` when the model cannot be resolved without a per-user lookup.
+ */
+function resolveAzureSummarization(
+  model: string,
+  appConfig: AppConfig | undefined,
+  parameters: SummarizationConfig['parameters'],
+  headerContext: { user?: IUser; tenantId?: string; requestBody?: t.RequestBody },
+  source?: RunAgent,
+): { provider: string; clientOverrides: SummarizationClientOverrides } | undefined {
+  const sourceOptions = source?.model_parameters as Partial<t.OAIClientOptions> | undefined;
+  const target = source
+    ? azureSummarizationSource(source)
+    : resolveAzureSummarizationTarget(
+        model,
+        appConfig?.endpoints?.[EModelEndpoint.azureOpenAI],
+        headerContext.tenantId,
+      );
+  if (!target) {
+    return undefined;
+  }
+  const { baseURL, headers, serverless, group } = target;
+  const overrides = summarizationTransportOverrides(parameters);
+  const azureOptions: t.AzureOptions = {
+    ...target.azureOptions,
+    azureOpenAIApiKey: overrides.apiKey ?? target.azureOptions.azureOpenAIApiKey,
+  };
+  const resolvedBaseURL =
+    overrides.baseURL ?? baseURL ?? getBuiltInBaseURL(EModelEndpoint.azureOpenAI);
+  if (
+    !azureOptions.azureOpenAIApiKey ||
+    !isSummarizationURLAvailable(resolvedBaseURL, serverless ? undefined : azureOptions) ||
+    Object.values(azureOptions).some(
+      (value) =>
+        typeof value === 'string' && (isUserProvided(value) || hasUnresolvedPlaceholder(value)),
+    ) ||
+    isUserProvided(resolvedBaseURL) ||
+    (resolvedBaseURL != null &&
+      splitAzureURLTemplates(resolvedBaseURL).some(
+        (segment, index) => index % 2 === 0 && hasUnresolvedPlaceholder(segment),
+      ))
+  ) {
+    warnUnresolvedSummarization(
+      `Summarization with Azure OpenAI model "${model}" is disabled: it needs a server-configured Azure OpenAI API key and base URL.`,
+      headerContext.tenantId,
+    );
+    return undefined;
+  }
+  const resolvedHeaders = sourceOptions
+    ? (sourceOptions.configuration?.defaultHeaders as Record<string, string> | undefined)
+    : resolveModelHeaders({
+        headers: mergeHeaders(appConfig?.endpoints?.all?.headers, headers) ?? {},
+        user: createSafeUser(headerContext.user),
+        tenantId: headerContext.tenantId,
+        body: headerContext.requestBody,
+      });
+  const { llmConfig, configOptions } = getOpenAIConfig(
+    azureOptions.azureOpenAIApiKey,
+    {
+      azure: serverless ? undefined : azureOptions,
+      reverseProxyUrl: resolvedBaseURL,
+      proxy: process.env.PROXY ?? undefined,
+      headers:
+        serverless || sourceOptions != null
+          ? { ...resolvedHeaders, 'api-key': azureOptions.azureOpenAIApiKey }
+          : resolvedHeaders,
+      defaultQuery:
+        serverless && azureOptions.azureOpenAIApiVersion
+          ? { 'api-version': azureOptions.azureOpenAIApiVersion }
+          : undefined,
+      modelOptions: {
+        model: source?.model ?? model,
+        reasoning_effort: summarizationReasoningEffort(parameters),
+        useResponsesApi:
+          typeof parameters?.useResponsesApi === 'boolean'
+            ? parameters.useResponsesApi
+            : sourceOptions?.useResponsesApi,
+      },
+      addParams: {
+        ...group?.addParams,
+        ...(typeof parameters?.useResponsesApi === 'boolean'
+          ? { useResponsesApi: parameters.useResponsesApi }
+          : {}),
+      },
+      dropParams: group?.dropParams?.filter(
+        (key) => key !== 'useResponsesApi' || typeof parameters?.useResponsesApi !== 'boolean',
+      ),
+      transportTimeouts: resolveModelTransportTimeouts(appConfig?.endpoints?.agents),
+    },
+    EModelEndpoint.azureOpenAI,
+  );
+  const sourceKwargs = agentModelKwargs(source?.model_parameters);
+  const preservesApiMode = !!sourceOptions?.useResponsesApi === !!llmConfig.useResponsesApi;
+  const sourceTokenLimit = sourceKwargs?.max_output_tokens ?? sourceKwargs?.max_completion_tokens;
+  const inheritedTokenLimit =
+    typeof sourceTokenLimit === 'number'
+      ? {
+          [llmConfig.useResponsesApi ? 'max_output_tokens' : 'max_completion_tokens']:
+            sourceTokenLimit,
+        }
+      : {};
+  return {
+    provider: !serverless && !llmConfig.useResponsesApi ? Providers.AZURE : Providers.OPENAI,
+    clientOverrides: {
+      ...sourceOptions,
+      azureOpenAIBasePath: undefined,
+      azureOpenAIApiKey: undefined,
+      azureOpenAIApiInstanceName: undefined,
+      azureOpenAIApiDeploymentName: undefined,
+      azureOpenAIApiVersion: undefined,
+      ...llmConfig,
+      apiKey: azureOptions.azureOpenAIApiKey,
+      useResponsesApi: llmConfig.useResponsesApi ?? false,
+      firstPartyEndpoint: llmConfig.firstPartyEndpoint ?? false,
+      reasoning: llmConfig.reasoning ?? (preservesApiMode ? sourceOptions?.reasoning : undefined),
+      modelKwargs: {
+        ...(preservesApiMode ? sourceKwargs : undefined),
+        ...inheritedTokenLimit,
+        ...llmConfig.modelKwargs,
+        model: llmConfig.modelKwargs?.model ?? llmConfig.model,
+      },
+      configuration: sourceOptions
+        ? { ...sourceOptions.configuration, ...configOptions }
+        : configOptions,
+    },
+  };
 }
 
 /**
@@ -734,7 +1164,7 @@ function resolveSummarizationProvider(
     if (!customEndpointConfig) {
       return {
         provider: overrideProvider,
-        clientOverrides: resolveBuiltInClientOverrides(overrideProvider, target),
+        clientOverrides: resolveBuiltInClientOverrides(overrideProvider, target, appConfig),
       };
     }
     const rawApiKey = customEndpointConfig.apiKey ?? '';
@@ -835,6 +1265,7 @@ function resolveSummarizationProvider(
         dropParams: customEndpointConfig.dropParams,
         customParams: customEndpointConfig.customParams,
         directEndpoint: customEndpointConfig.directEndpoint,
+        transportTimeouts: resolveModelTransportTimeouts(appConfig?.endpoints?.agents),
       },
       rawProvider,
     );
@@ -861,10 +1292,19 @@ function resolveSummarizationProvider(
      * agent flow builds for that endpoint (`initializeAgent` applies the same
      * precedence).
      */
-    return {
-      provider: detectedProvider ?? overrideProvider,
-      clientOverrides,
-    };
+    const provider = detectedProvider ?? overrideProvider;
+    /**
+     * On the agent's provider the SDK layers these over the agent's own client options, so this
+     * different endpoint replaces the agent's API mode, first-party declaration, reasoning and
+     * request kwargs (an Azure Astra agent's Responses routing, for one) instead of inheriting them.
+     */
+    if (provider === target.agentProvider) {
+      clientOverrides.useResponsesApi ??= false;
+      clientOverrides.firstPartyEndpoint ??= false;
+      clientOverrides.modelKwargs ??= {};
+      clientOverrides.reasoning ??= undefined;
+    }
+    return { provider, clientOverrides };
   } catch (error) {
     logger.warn(
       `[resolveSummarizationProvider] failed to resolve "${rawProvider}"; falling back to raw provider`,
@@ -882,6 +1322,7 @@ function shapeSummarizationConfig(
   appConfig: AppConfig | undefined,
   agentEndpoint: string | undefined,
   headerContext: { user?: IUser; tenantId?: string; requestBody?: t.RequestBody },
+  agent?: RunAgent,
 ) {
   const rawProvider = config?.provider ?? fallbackProvider;
   /**
@@ -897,14 +1338,61 @@ function shapeSummarizationConfig(
     normalizeEndpointName(rawProvider) === normalizeEndpointName(agentEndpoint);
 
   const model = config?.model ?? fallbackModel;
+  const targetsAzure =
+    rawProvider === EModelEndpoint.azureOpenAI ||
+    (agentEndpoint === EModelEndpoint.azureOpenAI && config?.provider == null);
+  const userParameters = expandSummarizationTransport(config?.parameters, targetsAzure);
 
-  const { provider, clientOverrides } = isSameEndpointAsAgent
-    ? { provider: fallbackProvider, clientOverrides: undefined }
-    : resolveSummarizationProvider(rawProvider, appConfig, headerContext, {
+  const selfAzureModel =
+    agentEndpoint === EModelEndpoint.azureOpenAI &&
+    (model === fallbackModel || model === agent?.model);
+  const transportOverrides = summarizationTransportOverrides(userParameters);
+  const overridesAzureTransport =
+    transportOverrides.baseURL != null ||
+    transportOverrides.apiKey != null ||
+    typeof userParameters?.useResponsesApi === 'boolean';
+  const selectsAzureDeployment =
+    targetsAzure &&
+    isNonEmptyString(model) &&
+    config?.enabled !== false &&
+    (agentEndpoint !== EModelEndpoint.azureOpenAI ||
+      model !== fallbackModel ||
+      overridesAzureTransport);
+  const azureOverrides = selectsAzureDeployment
+    ? resolveAzureSummarization(
         model,
-        parameters: config?.parameters,
-        agentProvider: fallbackProvider,
-      });
+        appConfig,
+        userParameters,
+        headerContext,
+        selfAzureModel ? agent : undefined,
+      )
+    : undefined;
+  const selectsOpenAIForAzureAgent =
+    agentEndpoint === EModelEndpoint.azureOpenAI &&
+    config?.provider === EModelEndpoint.openAI &&
+    config.enabled !== false &&
+    isNonEmptyString(model);
+  const openAIOverrides = selectsOpenAIForAzureAgent
+    ? resolveOpenAISummarization(model, appConfig, userParameters, headerContext)
+    : undefined;
+  /**
+   * A target resolved here is not handed to another client when resolution fails. Azure Responses
+   * shares the `openAI` provider, so the SDK would summarize an OpenAI target through the agent's
+   * Azure resource, and would send an unmapped Azure model name where a deployment belongs.
+   */
+  const targetUnavailable =
+    (selectsAzureDeployment && azureOverrides == null) ||
+    (selectsOpenAIForAzureAgent && openAIOverrides == null);
+  const { provider, clientOverrides } =
+    openAIOverrides ??
+    azureOverrides ??
+    (isSameEndpointAsAgent
+      ? { provider: fallbackProvider, clientOverrides: undefined }
+      : resolveSummarizationProvider(rawProvider, appConfig, headerContext, {
+          model,
+          parameters: userParameters,
+          agentProvider: fallbackProvider,
+        }));
   const trigger =
     config?.trigger?.type && typeof config?.trigger?.value === 'number'
       ? { type: config.trigger.type, value: config.trigger.value }
@@ -913,9 +1401,8 @@ function shapeSummarizationConfig(
   /**
    * Custom-endpoint overrides are merged into `parameters` so the SDK's
    * `buildSummarizationClientConfig` spreads them onto the summarization
-   * client options. Only applied when summarization targets a *different*
-   * custom endpoint than the main agent; the same-endpoint case leaves
-   * `parameters` untouched so `agentContext.clientOptions` wins.
+   * client options. Azure self-summaries with explicit transport overrides also resolve here,
+   * using the initialized agent's identity and credentials instead of a new configuration lookup.
    *
    * Order matters: `clientOverrides` supplies endpoint defaults (baseURL,
    * apiKey, headers, transforms), then explicit user `summarization.parameters`
@@ -926,18 +1413,56 @@ function shapeSummarizationConfig(
    */
   const mergedParameters =
     clientOverrides != null
-      ? mergeParameters(clientOverrides, config?.parameters)
-      : config?.parameters;
+      ? mergeParameters(
+          clientOverrides,
+          userParameters,
+          azureOverrides != null || openAIOverrides != null,
+        )
+      : userParameters;
+  /** Placed first so an explicit user `modelKwargs` still replaces the agent's wholesale. */
+  const modelKwargs =
+    provider === fallbackProvider
+      ? summarizationModelKwargs(agentModelKwargs(agent?.model_parameters), fallbackModel, model)
+      : undefined;
   /**
    * A scalar `reasoning_effort` — the only reasoning shape the yaml schema
    * accepts — is inert as a client option and leaves the summarizer running at
    * whatever effort the main agent resolved. Translate it the way the main
    * flow's `getOpenAIConfig` would for the summarization target.
    */
-  const parameters = resolveReasoningParams({ provider, model, parameters: mergedParameters });
+  let parameters = resolveReasoningParams({
+    provider,
+    model,
+    parameters: modelKwargs != null ? { modelKwargs, ...mergedParameters } : mergedParameters,
+  });
+
+  /** The SDK sets maxTokens for this cap, but LangChain spreads modelKwargs after it. */
+  const parameterTokenCap = userParameters?.maxSummaryTokens;
+  const summaryTokenCap =
+    typeof parameterTokenCap === 'number' && parameterTokenCap > 0
+      ? parameterTokenCap
+      : config?.maxSummaryTokens;
+  const inheritedKwargs =
+    provider === fallbackProvider ? agentModelKwargs(agent?.model_parameters) : undefined;
+  const effectiveKwargs = isPlainObject(parameters?.modelKwargs)
+    ? parameters.modelKwargs
+    : inheritedKwargs;
+  if (typeof summaryTokenCap === 'number' && effectiveKwargs != null) {
+    const {
+      max_tokens: _maxTokens,
+      max_completion_tokens: _maxCompletionTokens,
+      max_output_tokens: _maxOutputTokens,
+      ...kwargs
+    } = effectiveKwargs;
+    parameters = { ...parameters, modelKwargs: kwargs };
+  }
 
   return {
-    enabled: config?.enabled !== false && isNonEmptyString(provider) && isNonEmptyString(model),
+    enabled:
+      !targetUnavailable &&
+      config?.enabled !== false &&
+      isNonEmptyString(provider) &&
+      isNonEmptyString(model),
     config: {
       trigger,
       provider,
@@ -1579,6 +2104,7 @@ export async function createRun({
   compactionSemanticIndex,
   initialSummary,
   modelCallbacks,
+  clientToolNames,
   calibrationRatio,
   fadingTier,
   fadingTiers,
@@ -1645,16 +2171,18 @@ export async function createRun({
   initialSummary?: { text: string; tokenCount: number };
   /** Model callbacks inherited by root, summary, fallback, and subagent clients. */
   modelCallbacks?: readonly RunModelCallback[];
+  /** Caller-executed tools must never run eagerly before handoff is decided. */
+  clientToolNames?: ReadonlySet<string>;
   /** Calibration ratio from previous run's contextMeta, seeds the pruner EMA */
   calibrationRatio?: number;
   /**
    * Default agent's latched context-fading tier from the previous run's
    * contextMeta. It seeds the pruner so the provider-only projection of
    * historical tool results keeps the same bytes across runs; graph messages
-   * stay canonical. Ships in `@librechat/agents` after 3.7.13; older SDK
-   * versions ignore it.
+   * stay canonical. Legacy v1 tiers are not passed to the v2 SDK; it derives
+   * them afresh using the current-turn exchange width.
    */
-  fadingTier?: IAgentFadingTier | null;
+  fadingTier?: (IAgentFadingTier & { v: 2 }) | null;
   /**
    * Latched tiers keyed by agent ID from the previous run's contextMeta, so
    * every agent of a multi-agent run restores its own tier. Same SDK
@@ -1720,10 +2248,9 @@ export async function createRun({
   /**
    * Whether the caller implements the HITL pause/resume lifecycle (inspects
    * `run.getInterrupt()`, persists a pending action, exposes a resume route). Gates the
-   * tool-approval wiring: only AgentClient (chat + resume) sets this. The OpenAI-compatible
-   * and Responses controllers leave it false, so an approval-gated tool can't pause on a
-   * route that has no approval surface or resume endpoint (it would otherwise emit a normal
-   * final response / `[DONE]` with the tool call left unresolved).
+   * approval pause and checkpointer: only AgentClient (chat + resume) sets this.
+   * All callers still enforce an enabled tool policy; without this flag the SDK
+   * blocks `ask` decisions rather than pausing a run with no resume surface.
    */
   hitlCapable?: boolean;
   /**
@@ -1820,6 +2347,21 @@ export async function createRun({
       ] as unknown as Providers) ?? agent.provider;
     const selfModel = agent.model_parameters?.model ?? (agent.model as string | undefined);
 
+    /**
+     * Resolve request-based headers across provider-specific header locations
+     * (OpenAI `configuration.defaultHeaders`, Anthropic `clientOptions.defaultHeaders`,
+     * Google `customHeaders`). Done at this step because the request body may
+     * contain dynamic values (e.g. conversationId) that are only known after
+     * agent initialization. Resolve before a self-summary snapshots this configuration.
+     */
+    resolveConfigHeaders({
+      llmConfig: agent.model_parameters as Partial<t.RunLLMConfig>,
+      user: createSafeUser(user),
+      tenantId,
+      body: requestBody,
+    });
+
+    const modelParameters = normalizeAgentModelParameters(agent.model_parameters);
     const shapedSummarization = shapeSummarizationConfig(
       agent.summarization ?? summarizationConfig,
       provider as string,
@@ -1827,6 +2369,7 @@ export async function createRun({
       appConfig,
       agent.endpoint ?? undefined,
       { user, tenantId, requestBody },
+      agent,
     );
     const summarization = modelCallbacks?.length
       ? {
@@ -1841,7 +2384,6 @@ export async function createRun({
         }
       : shapedSummarization;
 
-    const modelParameters = normalizeAgentModelParameters(agent.model_parameters);
     const hasExplicitStreamUsage = Object.prototype.hasOwnProperty.call(
       modelParameters ?? {},
       'streamUsage',
@@ -1872,20 +2414,6 @@ export async function createRun({
     const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
       .join('\n')
       .trim();
-
-    /**
-     * Resolve request-based headers across provider-specific header locations
-     * (OpenAI `configuration.defaultHeaders`, Anthropic `clientOptions.defaultHeaders`,
-     * Google `customHeaders`). Done at this step because the request body may
-     * contain dynamic values (e.g. conversationId) that are only known after
-     * agent initialization.
-     */
-    resolveConfigHeaders({
-      llmConfig,
-      user: createSafeUser(user),
-      tenantId,
-      body: requestBody,
-    });
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2158,12 +2686,10 @@ export async function createRun({
   const enableToolOutputReferences = anyAgentHasCodeEnv(agents);
 
   /**
-   * Human-in-the-loop tool approval — OFF by default. When the agents endpoint
-   * opts in (`toolApproval.enabled`), attach the `PreToolUse` policy hook + the
-   * `humanInTheLoop` switch, and bind a durable checkpointer so a run that pauses
-   * for review can be rebuilt and resumed on any worker (see `agents/checkpointer.ts`
-   * and the resume route). When disabled, nothing attaches and the run is identical
-   * to before this feature shipped.
+   * Endpoint tool approval is off by default. An enabled policy installs the
+   * `PreToolUse` hooks for every run. Only callers with a resume surface also
+   * enable real HITL interrupts and a durable checkpointer; on headless runs
+   * the SDK blocks both `deny` and `ask` before executing the tool.
    */
   // Resolve the effective policy through the single seam so BYOM defaults and
   // future persisted per-agent / per-skill sources do not leak into this call site.
@@ -2171,12 +2697,9 @@ export async function createRun({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
   });
-  // Gate HITL to callers that actually implement the pause/resume lifecycle. The
-  // OpenAI-compatible + Responses controllers also call createRun/processStream but never
-  // inspect `run.getInterrupt()` or persist a pending action — so an approval-gated tool
-  // would pause with no approval surface or resume endpoint, and the route would emit a
-  // normal final response / `[DONE]` with the tool call dangling. Only AgentClient (chat +
-  // resume) passes `hitlCapable`; without it the run is identical to the no-HITL path.
+  // Every caller needs the policy hooks, including API-key ingresses. Only
+  // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
+  // Keep the checkpointer and humanInTheLoop switch exclusive to those callers.
   /** Both-direction key-spelling aliases collected from every eagerly known
    *  agent, including explicit and graph subagents. Lazy subagents report
    *  theirs through `registerResolvedMCPToolAliases` below. */
@@ -2189,45 +2712,44 @@ export async function createRun({
       healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
       ASK_USER_QUESTION_TOOL_NAME,
     );
-  const hitl = hitlCapable
-    ? buildHITLRunWiring(
-        // The ask tool is exempt from the approval prompt (unless explicitly
-        // listed by the admin) — approving the right to ask a question is a
-        // pure double-pause; the tool has no side effects to gate. Pattern
-        // lists are healed against the tools' other key spellings first, so
-        // admin globs written for pre-strip upstream names keep applying (a
-        // non-matching deny would fail OPEN), and rules written against
-        // current catalog names reach legacy-named instances.
-        effectiveToolApprovalPolicy(),
-        {
+  const approvalWiring = buildHITLRunWiring(
+    // The ask tool is exempt from the approval prompt (unless explicitly
+    // listed by the admin) — approving the right to ask a question is a
+    // pure double-pause; the tool has no side effects to gate. Pattern
+    // lists are healed against the tools' other key spellings first, so
+    // admin globs written for pre-strip upstream names keep applying (a
+    // non-matching deny would fail OPEN), and rules written against
+    // current catalog names reach legacy-named instances.
+    effectiveToolApprovalPolicy(),
+    {
+      userId: user?.id,
+      conversationId: requestBody?.conversationId,
+      tenantId: tenantId ?? user?.tenantId,
+      appConfig,
+    },
+    mcpToolAliases,
+    [
+      ...(resolvedToolApprovalHooks ??
+        buildToolApprovalHooks({
           userId: user?.id,
           conversationId: requestBody?.conversationId,
           tenantId: tenantId ?? user?.tenantId,
           appConfig,
-        },
-        mcpToolAliases,
-        [
-          ...(resolvedToolApprovalHooks ??
-            buildToolApprovalHooks({
-              userId: user?.id,
-              conversationId: requestBody?.conversationId,
-              tenantId: tenantId ?? user?.tenantId,
-              appConfig,
-            })),
-          ...(attachedCodeEnvironmentAgentIds.size > 0
-            ? [
-                {
-                  hook: createAttachedCodeEnvironmentPolicyHook(
-                    attachedCodeEnvironmentAgentIds,
-                    attachedCodeEnvironmentSettings,
-                    codeApprovalMode,
-                  ),
-                },
-              ]
-            : []),
-        ],
-      )
-    : undefined;
+        })),
+      ...(attachedCodeEnvironmentAgentIds.size > 0
+        ? [
+            {
+              hook: createAttachedCodeEnvironmentPolicyHook(
+                attachedCodeEnvironmentAgentIds,
+                attachedCodeEnvironmentSettings,
+                codeApprovalMode,
+              ),
+            },
+          ]
+        : []),
+    ],
+  );
+  const hitl = hitlCapable ? approvalWiring : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
     if (resolvedAgent.codeExecutionContext?.environmentType === 'attached') {
       // The admission hook closes over these collections. A lazily resolved agent
@@ -2254,7 +2776,7 @@ export async function createRun({
       return;
     }
     mcpToolAliases.push(...discoveredAliases);
-    hitl?.addMCPToolAliases(discoveredAliases, effectiveToolApprovalPolicy());
+    approvalWiring?.addMCPToolAliases(discoveredAliases, effectiveToolApprovalPolicy());
   };
   /**
    * The `ask_user_question` tool pauses via LangGraph `interrupt()` from inside its own
@@ -2274,14 +2796,14 @@ export async function createRun({
   }
 
   /**
-   * The run's hook registry: the HITL policy hooks (when approval is enabled)
+   * The run's hook registry: tool policy hooks (when approval is enabled)
    * plus the steer-drain PostToolBatch hook. Steering registers independently
    * of the approval policy and requires no checkpointer, but is hard-gated on
    * SDK support — draining on an SDK that ignores `injectedMessages` would
    * silently drop the user's words (the steer controller 501s in that case;
    * this guard is defense in depth).
    */
-  let hooks = hitl?.hooks;
+  let hooks = approvalWiring?.hooks;
   if (usesSubagentCompletionWakeups(activeSubagentTasks)) {
     hooks = hooks ?? new HookRegistry();
     hooks.register('PostToolUse', {
@@ -2421,6 +2943,7 @@ export async function createRun({
          */
         CHECK_BACKGROUND_TASK_NAME,
         ...agents.flatMap((agent) => agent.backgroundToolNames ?? []),
+        ...(clientToolNames ?? []),
       ],
     },
     // Let host file tools share the code-execution sandbox session so a file
@@ -2459,9 +2982,8 @@ export async function createRun({
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },
     }),
-    // HITL opt-in: the `humanInTheLoop` switch + the PreToolUse policy hook. Spread
-    // here (not just `compileOptions.checkpointer` above) so an `ask` decision raises
-    // a real interrupt — without these the run would never pause. Absent when disabled.
+    // Only resumable callers enable real approval interrupts. The PreToolUse policy
+    // hook stays in `hooks` for headless callers, where `ask` fails closed.
     // The steer-drain hook rides the same registry but independently of the approval
     // policy: a PostToolBatch-only registry keeps the SDK's eager execution fast paths
     // (it gates on result-altering hooks, not registry presence).

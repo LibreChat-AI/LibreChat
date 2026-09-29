@@ -100,6 +100,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
                   value={value != null ? value : ''}
                   onChange={onChange}
                   pattern={REGEXP_ONLY_DIGITS}
+                  aria-label={localize('com_ui_2fa_verification_required')}
                 >
                   <InputOTPGroup>
                     <InputOTPSlot index={0} />
@@ -131,6 +132,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
                   value={value != null ? value : ''}
                   onChange={onChange}
                   pattern={REGEXP_ONLY_DIGITS_AND_CHARS}
+                  aria-label={localize('com_ui_backup_code_verification_required')}
                 >
                   <InputOTPGroup>
                     <InputOTPSlot index={0} />
@@ -154,7 +156,6 @@ const TwoFactorScreen: React.FC = React.memo(() => {
           <Button
             type="submit"
             variant="submit"
-            aria-label={localize('com_auth_continue')}
             data-testid="login-button"
             disabled={isLoading}
             className="w-full rounded-2xl px-4 py-3 text-sm font-medium disabled:opacity-80"

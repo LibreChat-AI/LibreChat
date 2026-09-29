@@ -208,6 +208,46 @@ describe('AttachFileMenu', () => {
     });
   });
 
+  describe('Upload to Provider picker filter', () => {
+    /** `accept` is reset right after `click()`, so capture it at click time. */
+    const captureAcceptOnClick = () => {
+      const seen: string[] = [];
+      const spy = jest.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (
+        this: HTMLInputElement,
+      ) {
+        seen.push(this.accept);
+      });
+      return { seen, spy };
+    };
+
+    it('keeps images and PDFs only for a custom endpoint with the inherited default config', () => {
+      const { seen, spy } = captureAcceptOnClick();
+      setupMocks({ provider: 'MyGateway' });
+      renderMenu({ endpointType: EModelEndpoint.custom, endpointFileConfig: {} });
+      openMenu();
+      fireEvent.click(screen.getByText('Upload to Provider'));
+      expect(seen).toEqual(['image/*,.heif,.heic,.pdf,application/pdf']);
+      spy.mockRestore();
+    });
+
+    it('adds video when a custom endpoint config explicitly allows it', () => {
+      const { seen, spy } = captureAcceptOnClick();
+      setupMocks({ provider: 'MyGateway' });
+      renderMenu({
+        endpointType: EModelEndpoint.custom,
+        endpointFileConfig: {
+          supportedMimeTypes: [/^image\/.*$/, /^application\/pdf$/, /^video\/.*$/],
+        },
+      });
+      openMenu();
+      fireEvent.click(screen.getByText('Upload to Provider'));
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toContain('video/*');
+      expect(seen[0]).not.toContain('audio/*');
+      spy.mockRestore();
+    });
+  });
+
   describe('Upload to Provider vs Upload Image', () => {
     it('shows "Upload to Provider" when endpointType is custom (resolved from agent provider)', () => {
       setupMocks({ provider: 'Moonshot' });

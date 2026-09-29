@@ -143,6 +143,25 @@ describe('AgentDetailContent', () => {
     expect(screen.queryByText('Owner User')).not.toBeInTheDocument();
   });
 
+  it('renders sanitized HTML descriptions with safe links', () => {
+    renderWithClient(
+      <AgentDetailContent
+        agent={{
+          ...baseAgent,
+          description:
+            '<span onclick="alert(1)">Assistant. <a href="https://example.com">Read the guide</a><script>alert(1)</script></span>',
+        }}
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: 'Read the guide' });
+    expect(link).toHaveAttribute('href', 'https://example.com');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(document.querySelector('[onclick]')).not.toBeInTheDocument();
+    expect(document.querySelector('script')).not.toBeInTheDocument();
+  });
+
   it('falls back to owner contact when support contact is missing', () => {
     renderWithClient(
       <AgentDetailContent

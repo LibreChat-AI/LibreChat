@@ -42,7 +42,8 @@ jest.mock('~/server/services/MCP', () => ({
 }));
 
 jest.mock('~/server/services/ToolService', () => ({
-  isFatalAgentInitializationError: (error) =>
+  isFatalAgentInitializationError: (error, { signal } = {}) =>
+    (signal?.aborted === true && (error === signal.reason || error?.name === 'AbortError')) ||
     ['AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE', 'resource_recovery_required'].includes(error?.code),
 }));
 
@@ -171,6 +172,19 @@ describe('processAddedConvo', () => {
     mockInitializeAgent.mockRejectedValueOnce(toolError);
 
     await expect(processAddedConvo(baseParams())).rejects.toBe(toolError);
+  });
+
+  it('forwards and propagates owning-run cancellation from added-agent initialization', async () => {
+    const controller = new AbortController();
+    const reason = new Error('parallel agent stopped');
+    controller.abort(reason);
+    mockInitializeAgent.mockRejectedValueOnce(reason);
+
+    await expect(processAddedConvo(baseParams({ signal: controller.signal }))).rejects.toBe(reason);
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal }),
+      expect.anything(),
+    );
   });
 
   it('keeps deployment-aware skill metadata on a persisted added-agent config', async () => {

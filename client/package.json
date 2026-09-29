@@ -1,6 +1,6 @@
 {
   "name": "@librechat/frontend",
-  "version": "v0.8.8-rc3",
+  "version": "v0.8.8-rc4",
   "description": "",
   "type": "module",
   "scripts": {
@@ -19,13 +19,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danny-avila/LibreChat.git"
+    "url": "git+https://github.com/LibreChat-AI/LibreChat.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
   "dependencies": {

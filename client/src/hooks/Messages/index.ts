@@ -12,6 +12,7 @@ export { default as useSubmitMessage } from './useSubmitMessage';
 export type { ContentMetadataResult } from './useContentMetadata';
 export { default as useExpandCollapse } from './useExpandCollapse';
 export { default as useLazyCollapseBody } from './useLazyCollapseBody';
+export { default as useThrottledValue } from './useThrottledValue';
 export {
   RowMountProvider,
   useRowMountWindow,

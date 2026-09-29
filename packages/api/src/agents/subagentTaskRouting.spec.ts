@@ -549,9 +549,24 @@ describe('RedisSubagentTaskControlTransport', () => {
     await liveOwner.registerTask('scope-1', liveTask.taskId, 20);
     await deadOwner.destroy();
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 35));
-
-    await expect(requester.list('scope-1')).resolves.toEqual([liveTask]);
+    /** The dead owner's entry lapses on its own TTL while the live owner's heartbeat
+     * re-registers its entry against that same TTL, so a runner that stalls past 20ms
+     * can find both gone for one beat. Poll until the directory settles rather than
+     * asserting on a single sleep. */
+    let listed: SubagentTaskSnapshot[] = [];
+    for (let attempt = 0; attempt < 100 && listed.length === 0; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      try {
+        listed = await requester.list('scope-1');
+      } catch (error) {
+        /** The dead owner is still registered, so the request routes to a process that
+         * answers nothing. Anything else is a real failure. */
+        if (!(error instanceof SubagentTaskOwnerUnavailableError)) {
+          throw error;
+        }
+      }
+    }
+    expect(listed).toEqual([liveTask]);
     await Promise.all([liveOwner.destroy(), requester.destroy()]);
   });
 

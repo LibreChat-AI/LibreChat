@@ -45,6 +45,7 @@ import {
 import { useGetStartupConfig, useMCPServersQuery, useMCPToolsQuery } from '~/data-provider';
 import { mcpServerInitStatesAtom, getServerInitState } from '~/store/mcp';
 import { getMCPReinitializeErrorMessage } from './errors';
+import { openInNewTab } from '~/utils';
 
 export interface MCPServerDefinition {
   serverName: string;
@@ -514,7 +515,7 @@ export function useMCPServerManager({
           });
 
           if (autoOpenOAuth) {
-            window.open(response.oauthUrl, '_blank', 'noopener,noreferrer');
+            openInNewTab(response.oauthUrl);
           }
 
           startServerPolling(serverName, response.flowId, response.oauthTimeout);

@@ -45,6 +45,7 @@ import {
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
+import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
@@ -285,6 +286,41 @@ export interface ConversationMethods {
     conversationId: string,
     pinned: boolean,
   ): Promise<IConversation | null>;
+  appendConvoMessageReference(
+    user: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<IConversation | null>;
+  getConvoCodeEnvironmentDecision(
+    user: string,
+    conversationId: string,
+  ): Promise<Pick<
+    IConversation,
+    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
+  > | null>;
+  readAdmittedConvoCodeEnvironmentDecision(
+    user: string,
+    conversationId: string,
+  ): Promise<Pick<
+    IConversation,
+    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces'
+  > | null>;
+  replaceConvoCodeEnvironmentDecision(
+    params: {
+      user: string;
+      conversationId: string;
+      expected: Pick<
+        IConversation,
+        'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
+      >;
+    } & (
+      | {
+          codeEnvironmentMode: 'attached';
+          codeWorkspaces: NonNullable<IConversation['codeWorkspaces']>;
+        }
+      | { codeEnvironmentMode: 'without_attached'; codeWorkspaces?: undefined }
+    ),
+  ): Promise<IConversation | null>;
   bulkSaveConvos(conversations: Array<Record<string, unknown>>): Promise<unknown>;
   getConvosByCursor(
     user: string,
@@ -438,7 +474,11 @@ export interface ConversationMethods {
   getAgentEventActorReconciliationStorageMetrics(
     now: Date,
   ): Promise<AgentEventActorReconciliationStorageMetrics>;
-  expireLegacyAgentEventActorReceipts(now: Date, limit?: number): Promise<number>;
+  expireLegacyAgentEventActorReceipts(
+    now: Date,
+    limit?: number,
+    activity?: { found: boolean },
+  ): Promise<number>;
   reserveSubagentThread(input: {
     user: string;
     conversationId: string;
@@ -505,6 +545,14 @@ export interface ConversationMethodDeps
   deleteAgentQueuedTurns?: (
     user: string,
     conversations: Array<{ conversationId: string; tenantId?: string; allTenants?: true }>,
+  ) => Promise<void>;
+  eraseAgentTriggerDeliveryConversationResults?: (
+    user: string,
+    conversationIds: string[],
+  ) => Promise<void>;
+  prepareAgentTriggerConversationResultErasure?: (
+    user: string,
+    conversationIds: string[],
   ) => Promise<void>;
 }
 
@@ -1763,7 +1811,11 @@ export function createConversationMethods(
   /** Bounded mixed-version cleanup for terminal receipts embedded by older
    * builds. New receipts expire through the delivery collection TTL index,
    * but dormant legacy conversations need an independent retirement path. */
-  async function expireLegacyAgentEventActorReceipts(now: Date, limit = 100): Promise<number> {
+  async function expireLegacyAgentEventActorReceipts(
+    now: Date,
+    limit = 100,
+    activity?: { found: boolean },
+  ): Promise<number> {
     if (Number.isNaN(now.getTime())) {
       throw new TypeError('now must be a valid date');
     }
@@ -1802,6 +1854,9 @@ export function createConversationMethods(
       return 0;
     }
     legacyReceiptExpiryCursor = candidates[candidates.length - 1]._id;
+    // A full page is not an empty sweep: later conversations may contain
+    // expired receipts. Keep scanning at base cadence until the page walk ends.
+    if (activity != null && candidates.length === boundedLimit) activity.found = true;
     const expiredInvocationIds = [
       ...new Set(
         candidates.flatMap((candidate) =>
@@ -1811,6 +1866,8 @@ export function createConversationMethods(
         ),
       ),
     ];
+    if (expiredInvocationIds.length === 0) return 0;
+    if (activity != null) activity.found = true;
     const protectedInvocationIds = new Set(
       await Delivery.find({
         deliveryKey: { $in: expiredInvocationIds },
@@ -2175,6 +2232,16 @@ export function createConversationMethods(
       delete update.isTemporary;
       delete update.expiredAt;
       delete update.initial_agent_id;
+      /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
+      const decisionOnInsert = {
+        ...(convo.codeEnvironmentMode != null && {
+          codeEnvironmentMode: convo.codeEnvironmentMode,
+        }),
+        ...(convo.codeWorkspaces != null && { codeWorkspaces: convo.codeWorkspaces }),
+      };
+      delete update.codeEnvironmentRevision;
+      delete update.codeEnvironmentMode;
+      delete update.codeWorkspaces;
       stripActorCheckpointFields(update);
       if (appendMessageIds == null) {
         update.messages = await getMessages({ conversationId, user: userId }, '_id');
@@ -2183,6 +2250,9 @@ export function createConversationMethods(
       }
       const unsetFields: Record<string, number> = { ...(metadata?.unsetFields ?? {}) };
       delete unsetFields.initial_agent_id;
+      delete unsetFields.codeEnvironmentRevision;
+      delete unsetFields.codeEnvironmentMode;
+      delete unsetFields.codeWorkspaces;
       stripActorCheckpointFields(unsetFields);
 
       if (Object.prototype.hasOwnProperty.call(update, 'chatProjectId') && update.chatProjectId) {
@@ -2312,6 +2382,7 @@ export function createConversationMethods(
           : createdAtOnInsert;
         operation.$setOnInsert = {
           initial_agent_id: initialAgentId,
+          ...decisionOnInsert,
           ...retentionOnInsert,
           ...(createdAtForInsert ? { createdAt: createdAtForInsert } : {}),
         };
@@ -2397,6 +2468,31 @@ export function createConversationMethods(
       if (!conversation) {
         logger.debug('[saveConvo] Conversation not found, skipping update');
         return null;
+      }
+
+      /** `$setOnInsert` only reaches a chat this save creates, yet a chat whose earlier turns never
+       * involved a code-capable agent holds no decision either: without this fill its first
+       * workspace choice is dropped and the next turn starts undecided again. The filter repeats
+       * that absence, so a concurrent writer that decided first keeps its decision and a chat that
+       * already holds one is never touched. Only a whole decision seeds a row, never bare
+       * selections. */
+      if (
+        decisionOnInsert.codeEnvironmentMode != null &&
+        conversation.codeEnvironmentMode == null &&
+        (conversation.codeWorkspaces?.length ?? 0) === 0
+      ) {
+        const seeded = await Conversation.updateOne(
+          {
+            _id: conversation._id,
+            codeEnvironmentMode: { $in: [null] },
+            $or: [{ codeWorkspaces: { $in: [null] } }, { codeWorkspaces: { $size: 0 } }],
+          },
+          { $set: decisionOnInsert },
+          { timestamps: false },
+        );
+        if (seeded.modifiedCount > 0) {
+          Object.assign(conversation, decisionOnInsert);
+        }
       }
 
       /** Reuse the saved row's chat type when callers omit it, preserving existing deadlines. */
@@ -2532,6 +2628,121 @@ export function createConversationMethods(
   }
 
   /**
+   * Adds one message's id to a conversation's message list, and nothing else.
+   *
+   * A message write that failed, or that resolved falsy on a duplicate key it could not
+   * re-read, leaves its row out of `messages`, and the bare `saveMessage` retries that
+   * restore the row never add it. Going direct keeps the repair to what it is: no
+   * `getMessages` round trip, no rewrite of the whole array, and no `$set` of fields the
+   * caller never meant to touch. `timestamps: false` because repairing a reference is not
+   * activity and must not reorder the sidebar.
+   *
+   * Takes the id as a string so callers stay free of the storage engine's own id type; the
+   * cast to it happens here. Returns null when no conversation matched, so a repair can
+   * never insert one.
+   */
+  async function appendConvoMessageReference(
+    user: string,
+    conversationId: string,
+    messageId: string,
+  ) {
+    if (!isValidObjectIdString(messageId)) {
+      logger.warn('[appendConvoMessageReference] Ignoring an unusable message id');
+      return null;
+    }
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      return await Conversation.findOneAndUpdate(
+        { conversationId, user },
+        { $addToSet: { messages: new mongoose.Types.ObjectId(messageId) } },
+        { new: true, timestamps: false },
+      ).lean<IConversation>();
+    } catch (error) {
+      logger.error('[appendConvoMessageReference] Error appending the message reference', error);
+      throw new Error('Error appending the message reference');
+    }
+  }
+
+  /** Internal snapshot for a transition. The revision is never exposed in ordinary chat reads. */
+  async function getConvoCodeEnvironmentDecision(user: string, conversationId: string) {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    return Conversation.findOne({ user, conversationId })
+      .select('conversationId codeEnvironmentMode codeWorkspaces +codeEnvironmentRevision')
+      .lean<IConversation>();
+  }
+
+  /**
+   * Call only AFTER publishing the generation's active job. Atomically advance the fence and
+   * return the post-update decision in one round trip. A run that wins invalidates an in-flight
+   * transition's revision; a transition that wins is observed by this read.
+   */
+  async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    return withoutMeiliIndexing(
+      Conversation.findOneAndUpdate(
+        { user, conversationId },
+        { $inc: { codeEnvironmentRevision: 1 } },
+        { new: true, timestamps: false },
+      ),
+    )
+      .select('conversationId codeEnvironmentMode codeWorkspaces')
+      .lean<IConversation>();
+  }
+
+  /**
+   * Compare-and-swap for an owner's explicit replacement of a code-environment decision, whether
+   * that attaches an environment, moves to another, or leaves attached execution behind.
+   * The filter repeats the stored decision being replaced, so a writer that changed it first
+   * leaves this update unmatched rather than overwritten. A missing and a null mode both
+   * describe a legacy decision inferred from its selections. Leaving attached execution clears
+   * the selections outright: a decision that kept them would read as attached again.
+   */
+  async function replaceConvoCodeEnvironmentDecision({
+    user,
+    conversationId,
+    expected,
+    codeEnvironmentMode,
+    codeWorkspaces,
+  }: {
+    user: string;
+    conversationId: string;
+    expected: Pick<
+      IConversation,
+      'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
+    >;
+  } & (
+    | {
+        codeEnvironmentMode: 'attached';
+        codeWorkspaces: NonNullable<IConversation['codeWorkspaces']>;
+      }
+    | { codeEnvironmentMode: 'without_attached'; codeWorkspaces?: undefined }
+  )) {
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      return await Conversation.findOneAndUpdate(
+        {
+          conversationId,
+          user,
+          codeEnvironmentMode: expected.codeEnvironmentMode ?? { $in: [null] },
+          codeWorkspaces: expected.codeWorkspaces ?? { $in: [null] },
+          codeEnvironmentRevision: expected.codeEnvironmentRevision ?? { $in: [null] },
+        },
+        codeEnvironmentMode === 'attached'
+          ? { $set: { codeEnvironmentMode, codeWorkspaces }, $inc: { codeEnvironmentRevision: 1 } }
+          : {
+              $set: { codeEnvironmentMode },
+              $unset: { codeWorkspaces: 1 },
+              $inc: { codeEnvironmentRevision: 1 },
+            },
+        { new: true, timestamps: false },
+      ).lean<IConversation>();
+    } catch (error) {
+      logger.error('[replaceConvoCodeEnvironmentDecision] Error moving code environment', error);
+      throw new Error('Error moving code environment');
+    }
+  }
+
+  /**
    * Saves multiple conversations in bulk.
    */
   async function bulkSaveConvos(conversations: Array<Record<string, unknown>>) {
@@ -2601,8 +2812,9 @@ export function createConversationMethods(
 
       const affectedProjectStats = new Map<string, { user: string; projectId: string }>();
       const bulkOps = conversations.map((convo) => {
-        const sanitized = { ...convo };
+        const { codeEnvironmentMode, codeWorkspaces, ...sanitized } = convo;
         delete sanitized.initial_agent_id;
+        delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
           if (ownedProjects.has(`${sanitized.user}:${sanitized.chatProjectId}`)) {
@@ -2635,7 +2847,11 @@ export function createConversationMethods(
             },
             update: {
               $set: sanitized,
-              $setOnInsert: { initial_agent_id: null },
+              $setOnInsert: {
+                initial_agent_id: null,
+                ...(codeEnvironmentMode != null && { codeEnvironmentMode }),
+                ...(codeWorkspaces != null && { codeWorkspaces }),
+              },
             },
             upsert: true,
             timestamps: false,
@@ -3153,7 +3369,18 @@ export function createConversationMethods(
           })),
         );
         await options?.beforeDelete?.(waveIds);
+        await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        if (result.deletedCount > 0) {
+          /** Result erasure is irreversible. Keep receipts intact when a
+           * pre-delete hook or the conversation delete itself fails, so a
+           * retained conversation cannot lose a receipt-only completion. */
+          try {
+            await deps?.eraseAgentTriggerDeliveryConversationResults?.(user, waveIds);
+          } catch (error) {
+            logger.error('[deleteConvos] Receipt erasure deferred to durable cleanup', error);
+          }
+        }
         acknowledged &&= result.acknowledged;
         deletedCount += result.deletedCount;
         await reconcileDeletedWave(wave, result.deletedCount);
@@ -3184,6 +3411,11 @@ export function createConversationMethods(
             allTenants: true,
           })),
         );
+        try {
+          await deps?.eraseAgentTriggerDeliveryConversationResults?.(user, recoveryConversationIds);
+        } catch (error) {
+          logger.error('[deleteConvos] Receipt erasure deferred to durable cleanup', error);
+        }
       }
 
       const deleteConvoResult: DeleteResult = { acknowledged, deletedCount };
@@ -3348,6 +3580,10 @@ export function createConversationMethods(
     deleteNullOrEmptyConversations,
     saveConvo,
     setConvoPinned,
+    appendConvoMessageReference,
+    getConvoCodeEnvironmentDecision,
+    readAdmittedConvoCodeEnvironmentDecision,
+    replaceConvoCodeEnvironmentDecision,
     bulkSaveConvos,
     getConvosByCursor,
     getConvosQueried,

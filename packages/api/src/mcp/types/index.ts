@@ -20,7 +20,12 @@ import type {
 import type { SearchResultData, UIResource, TPlugin } from 'librechat-data-provider';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type { LCTool } from '@librechat/agents';
-import type { OboTokenResolver, OboTrustChecker, UpstreamTokenProvider } from '~/mcp/oauth/obo';
+import type {
+  OboTokenResolver,
+  OboTrustChecker,
+  UpstreamTokenProvider,
+  UpstreamTokenProviderResolver,
+} from '~/mcp/oauth/obo';
 import type { AuthIdentityContext } from '~/utils/identity';
 import type { GraphTokenResolver } from '~/utils/graph';
 import type { FlowStateManager } from '~/flow/manager';
@@ -253,6 +258,8 @@ export interface UserConnectionContext {
   graphTokenResolver?: GraphTokenResolver;
   /** Live OpenID session credential source for trusted direct bearer and OBO configurations. */
   upstreamTokenProvider?: UpstreamTokenProvider;
+  /** Deferred credential source used only after a server is confirmed to require OBO. */
+  upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
   connectionTimeout?: number;
   /** Cancels the connection's SDK requests when the caller itself is cancelled; previously only
    *  OAuth connections could carry a signal, leaving non-OAuth discovery uncancellable. */
@@ -290,7 +297,7 @@ export interface UserConnectionContext {
    * invalidated its cached token flow. A caller leasing a generation captured earlier re-captures
    * it here, ahead of the read, so a rotation that follows the read still fences the build.
    */
-  onOAuthCredentialsInvalidated?: () => Promise<void>;
+  onOAuthCredentialsInvalidated?: () => Promise<string | void>;
 }
 
 export interface RequestScopedMCPConnectionStore {
@@ -356,12 +363,15 @@ export interface ToolDiscoveryOptions {
   deadlineMs?: number;
   onOAuthCredentialsChanged?: (scope: { userId: string; serverName: string }) => Promise<void>;
   onOAuthCredentialsChanging?: UserConnectionContext['onOAuthCredentialsChanging'];
+  /** Updates the discovery flight when it adopts credentials published by a peer. */
+  onOAuthCredentialsAdopted?: (generation: string) => Promise<void>;
   onDiscoveryDetached?: UserConnectionContext['onDiscoveryDetached'];
   /** Pre-resolved config-source servers for tenant-scoped lookup */
   configServers?: Record<string, ParsedServerConfig>;
   oboTokenResolver?: OboTokenResolver;
   oboTrustChecker?: OboTrustChecker;
   upstreamTokenProvider?: UpstreamTokenProvider;
+  upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
   oboIdentityContext?: AuthIdentityContext;
 }
 

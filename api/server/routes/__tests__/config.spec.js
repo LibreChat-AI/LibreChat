@@ -354,6 +354,41 @@ describe('GET /api/config', () => {
       expect(response.body.codeEnvironmentDecisionVersion).toBeUndefined();
     });
 
+    it('does not advertise conversation moves unless the effective policy enables them', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.codeEnvironmentMoveVersion).toBeUndefined();
+      expect(response.body.codeWorkspaceRecoveryVersion).toBeUndefined();
+    });
+
+    it('advertises enabled conversation moves regardless of decision activation', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              conversationMoves: { enabled: true, allowAttachDetach: true },
+            },
+          },
+        },
+      });
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.codeEnvironmentDecisionVersion).toBeUndefined();
+      // An already-open V1 client compares this value against its compiled literal 1.
+      expect(response.body.codeEnvironmentMoveVersion).toBe(1);
+      /** Attach and detach ride the same policy on their own number. */
+      expect(response.body.codeEnvironmentTransitionVersion).toBe(2);
+      expect(response.body.codeWorkspaceRecoveryVersion).toBe(1);
+    });
+
     it('advertises code environment decisions only after deployment-wide activation', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';

@@ -1,4 +1,5 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -9,6 +10,8 @@ import type {
   QueuedMessage,
   SettledQueuedTurnReceipt,
 } from '~/store/families';
+import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';
 
@@ -24,6 +27,7 @@ const CONVO_ID = 'convo-drain';
 function setup(
   initialize?: (snapshot: MutableSnapshot) => void,
   activeConversationId: string | undefined = CONVO_ID,
+  revealQueuedTurn?: jest.Mock,
 ) {
   const ask = jest.fn();
   const setters: {
@@ -54,7 +58,7 @@ function setup(
     setters.newConvoQueue = useRecoilValue(store.queuedMessagesByConvoId(Constants.NEW_CONVO));
     setters.settledReceipts = useRecoilValue(store.settledQueuedTurnReceiptsByConvoId(CONVO_ID));
     setters.runEnd = useRecoilValue(store.runEndByIndex(INDEX));
-    useQueueDrain(INDEX, activeConversationId, ask);
+    useQueueDrain(INDEX, activeConversationId, ask, revealQueuedTurn);
     return null;
   }
 
@@ -98,8 +102,82 @@ const runEnd = (overrides: Partial<RunEnd> = {}): RunEnd => ({
 
 describe('useQueueDrain', () => {
   beforeEach(() => {
+    getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), {});
     mockMarkFilesUsage.mockClear();
   });
+
+  it('moves a held new-conversation head without spending its terminal boundary', async () => {
+    getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), { source: 'blocked' });
+    const held: QueuedMessage = {
+      id: 'held',
+      text: 'review before sending',
+      createdAt: 1,
+      recoverySteerId: 'source',
+    };
+    const next: QueuedMessage = { id: 'ordinary', text: 'send after review', createdAt: 2 };
+    const { ask, setters } = setup(({ set }) => {
+      set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), [held]);
+      set(store.queuedMessagesByConvoId(CONVO_ID), [next]);
+      set(store.isSubmittingFamily(INDEX), false);
+    });
+    const end = runEnd({ startedAsNewConvo: true });
+    act(() => setters.setRunEnd!(end));
+    await waitFor(() => expect(setters.newConvoQueue).toEqual([]));
+    expect(setters.queue).toEqual([held, next]);
+    expect(setters.runEnd).toEqual(end);
+    expect(ask).not.toHaveBeenCalled();
+
+    act(() => setters.setQueue!([next]));
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(ask).toHaveBeenCalledWith({ text: next.text }, emptyOverrides);
+    expect(setters.queue).toEqual([]);
+    expect(setters.runEnd).toBeNull();
+  });
+
+  it('does not turn an aborted run into a send after a held row is dismissed', async () => {
+    getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), { source: 'blocked' });
+    const held: QueuedMessage = {
+      id: 'held',
+      text: 'review me',
+      createdAt: 1,
+      recoverySteerId: 'source',
+    };
+    const next: QueuedMessage = { id: 'ordinary', text: 'wait for next run', createdAt: 2 };
+    const { ask, setters } = setup(({ set }) => {
+      set(store.queuedMessagesByConvoId(CONVO_ID), [held, next]);
+      set(store.isSubmittingFamily(INDEX), false);
+    });
+    act(() => setters.setRunEnd!(runEnd({ outcome: 'aborted' })));
+    await waitFor(() => expect(setters.runEnd).toBeNull());
+    act(() => setters.setQueue!([next]));
+    expect(ask).not.toHaveBeenCalled();
+    expect(setters.queue).toEqual([next]);
+  });
+
+  it.each(['blocked', 'cancelling', 'cancelled', 'dismissed'] as const)(
+    'does not drain a %s recovery while its run-end boundary remains available',
+    async (disposition) => {
+      getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), { source: disposition });
+      const item = {
+        id: 'leftover',
+        text: 'original words',
+        createdAt: 1,
+        recoverySteerId: 'source',
+        clientRequestId: 'same-attempt',
+      };
+      const firstEnd = runEnd();
+      const { ask, setters } = setup(({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [item]);
+        set(store.isSubmittingFamily(INDEX), false);
+        set(store.runEndByIndex(INDEX), firstEnd);
+      });
+      await waitFor(() => expect(setters.runEnd).toEqual(firstEnd));
+      act(() => setters.setRunEnd?.(runEnd({ generationCreatedAt: 42 })));
+      expect(setters.runEnd).toEqual(firstEnd);
+      expect(ask).not.toHaveBeenCalled();
+      expect(setters.queue).toEqual([item]);
+    },
+  );
 
   it('drains exactly one queued message on clean completion', async () => {
     const { ask, setters } = setup(({ set }) => {
@@ -138,6 +216,135 @@ describe('useQueueDrain', () => {
     expect(mockMarkFilesUsage).not.toHaveBeenCalledWith({
       file_ids: ['server-held-file'],
     });
+  });
+
+  it('hands the server-owned head to the reveal on clean completion and keeps the boundary', async () => {
+    const reveal = jest.fn();
+    const head = {
+      ...queuedMessage('q-server', 'the server starts this turn'),
+      clientRequestId: 'client-request-1',
+      server: { id: 'server-queue-1', status: 'queued' as const, revision: 1 },
+    };
+    const { ask, setters } = setup(
+      ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [head]);
+      },
+      CONVO_ID,
+      reveal,
+    );
+
+    const end = runEnd({ responseMessageId: 'response-1' });
+    act(() => {
+      setters.setRunEnd!(end);
+    });
+
+    await waitFor(() => expect(reveal).toHaveBeenCalled());
+    expect(reveal).toHaveBeenCalledWith(head, expect.objectContaining(end));
+    expect(ask).not.toHaveBeenCalled();
+    expect(setters.runEnd).toEqual(expect.objectContaining(end));
+    expect(setters.queue).toEqual([head]);
+  });
+
+  it('re-selects the next server-owned row once the revealed head settles', async () => {
+    const reveal = jest.fn();
+    const first = {
+      ...queuedMessage('q-first', 'first server turn'),
+      clientRequestId: 'client-request-1',
+      server: { id: 'server-queue-1', status: 'queued' as const, revision: 1 },
+    };
+    const second = {
+      ...queuedMessage('q-second', 'second server turn'),
+      clientRequestId: 'client-request-2',
+      server: { id: 'server-queue-2', status: 'queued' as const, revision: 2 },
+    };
+    const { setters } = setup(
+      ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [first, second]);
+      },
+      CONVO_ID,
+      reveal,
+    );
+
+    act(() => {
+      setters.setRunEnd!(runEnd({ responseMessageId: 'response-1' }));
+    });
+    await waitFor(() => expect(reveal).toHaveBeenCalled());
+    expect(reveal.mock.calls[0][0]).toEqual(first);
+    act(() => {
+      getDefaultStore().set(revealedQueuedTurnFamily(CONVO_ID), {
+        clientRequestId: 'client-request-1',
+        parentMessageId: 'response-1',
+        text: first.text,
+        revealedAt: '2026-09-14T00:00:00.000Z',
+      });
+    });
+    reveal.mockClear();
+
+    /** The first row is cancelled before admission: its reveal ends and the
+     *  row leaves the queue, while the boundary stays server-owned. */
+    act(() => {
+      getDefaultStore().set(revealedQueuedTurnFamily(CONVO_ID), null);
+      setters.setQueue!([second]);
+    });
+
+    await waitFor(() => expect(reveal).toHaveBeenCalled());
+    expect(reveal.mock.calls[reveal.mock.calls.length - 1][0]).toEqual(second);
+    expect(setters.runEnd).toEqual(expect.objectContaining({ responseMessageId: 'response-1' }));
+  });
+
+  it('reveals the server-owned row behind a migrated local head', async () => {
+    const reveal = jest.fn();
+    const local = queuedMessage('q-local', 'queued before the id arrived');
+    const serverRow = {
+      ...queuedMessage('q-server', 'queued after the id arrived'),
+      clientRequestId: 'client-request-2',
+      server: { id: 'server-queue-2', status: 'queued' as const, revision: 1 },
+    };
+    const { ask, setters } = setup(
+      ({ set }) => {
+        set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), [local]);
+        set(store.queuedMessagesByConvoId(CONVO_ID), [serverRow]);
+      },
+      CONVO_ID,
+      reveal,
+    );
+
+    act(() => {
+      setters.setRunEnd!(runEnd({ startedAsNewConvo: true, responseMessageId: 'response-1' }));
+    });
+
+    await waitFor(() => expect(reveal).toHaveBeenCalled());
+    expect(reveal.mock.calls[0][0]).toEqual(serverRow);
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('reveals nothing on a stop, or when the completed run carries no response id', async () => {
+    const reveal = jest.fn();
+    const { setters } = setup(
+      ({ set }) => {
+        set(store.queuedMessagesByConvoId(CONVO_ID), [
+          {
+            ...queuedMessage('q-server', 'the server starts this turn'),
+            clientRequestId: 'client-request-1',
+            server: { id: 'server-queue-1', status: 'queued', revision: 1 },
+          },
+        ]);
+      },
+      CONVO_ID,
+      reveal,
+    );
+
+    act(() => {
+      setters.setRunEnd!(runEnd({ outcome: 'aborted', responseMessageId: 'response-1' }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    act(() => {
+      setters.setRunEnd!(null);
+      setters.setRunEnd!(runEnd());
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(reveal).not.toHaveBeenCalled();
   });
 
   it('retains the terminal boundary until server authority releases a local successor', async () => {

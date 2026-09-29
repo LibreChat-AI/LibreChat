@@ -1,13 +1,59 @@
 import type { TDefaultLLMDeliveryPath, TDefaultLLMDeliveryPathConfig } from './file-config';
-import type { EndpointFileConfig, FileConfig } from './types/files';
+import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
+import type { CodeEnvReferenceSet } from './codeEnvRef';
+import type { TEndpoint } from './config';
+import {
+  retrievalMimeTypes,
+  isExplicitMimeConfig,
+  isBedrockDocumentType,
+  codeInterpreterMimeTypes,
+  fileConfig as baseFileConfig,
+} from './file-config';
 import {
   EModelEndpoint,
-  isDocumentSupportedProvider,
+  isOpenAILikeProvider,
   isKnownProviderIdentifier,
   isMediaSupportedProvider,
+  isDocumentSupportedProvider,
 } from './schemas';
-import { retrievalMimeTypes, isBedrockDocumentType, codeInterpreterMimeTypes } from './file-config';
-import { EToolResources } from './types/assistants';
+import { normalizeEndpointName } from './utils';
+import { EToolResources } from './types/tools';
+import { getCodeEnvRefs } from './codeEnvRef';
+
+/**
+ * The native provider a custom endpoint declares, when it declares one. A custom endpoint
+ * speaks OpenAI's API unless its config names another dialect, and the upload route needs
+ * that answer for the same reason request initialization does: the media encoders emit
+ * OpenAI-format parts, so a custom endpoint running as Anthropic receives none.
+ */
+export function getCustomEndpointProvider(
+  customEndpoints: Array<Partial<Pick<TEndpoint, 'name' | 'provider'>>> | undefined,
+  endpoint?: string | null,
+): string | undefined {
+  if (!customEndpoints || !endpoint) {
+    return undefined;
+  }
+  const normalized = normalizeEndpointName(endpoint);
+  return customEndpoints.find((config) => normalizeEndpointName(config.name ?? '') === normalized)
+    ?.provider;
+}
+
+/** A custom endpoint emits OpenAI-format media parts only for the types the admin listed
+ *  in its `supportedMimeTypes`; the inherited default list is not an opt-in. A name that
+ *  is not a known provider is a custom endpoint. Mirrors `isConfiguredProviderMediaType`
+ *  on the encoder side, so the route and the encoder agree on which uploads the provider
+ *  actually receives; the built-in endpoints are left out because the client offers no
+ *  media for them. */
+const isConfiguredMediaEndpoint = (
+  mimeType: string,
+  endpoint: string,
+  supportedMimeTypes?: RegexLike[],
+): boolean => {
+  if (!isExplicitMimeConfig(supportedMimeTypes) || isKnownProviderIdentifier(endpoint)) {
+    return false;
+  }
+  return baseFileConfig.checkType(mimeType, supportedMimeTypes);
+};
 
 /** Audio and video reach the model only through the media encoders, which support a
  *  narrower provider set than documents. Images use the broadly supported vision
@@ -16,9 +62,13 @@ const isProviderCapable = (
   mimeType: string,
   endpoint: string,
   useResponsesApi?: boolean,
+  supportedMimeTypes?: RegexLike[],
 ): boolean => {
   if (mimeType.startsWith('audio/') || mimeType.startsWith('video/')) {
-    return isMediaSupportedProvider(endpoint);
+    return (
+      isMediaSupportedProvider(endpoint) ||
+      isConfiguredMediaEndpoint(mimeType, endpoint, supportedMimeTypes)
+    );
   }
   if (mimeType === 'application/pdf') {
     /* Azure is out of the document set because it needs the Responses API for native
@@ -104,6 +154,7 @@ export function resolveDefaultLLMDeliveryPath(
   endpoint?: string,
   useResponsesApi?: boolean,
   sttConfigured?: boolean,
+  supportedMimeTypes?: RegexLike[],
 ): TDefaultLLMDeliveryPath {
   const wildcard = mimeType.split('/')[0] + '/*';
 
@@ -149,10 +200,11 @@ export function resolveDefaultLLMDeliveryPath(
   const namedEndpoint = endpoint != null && endpoint !== EModelEndpoint.agents;
   const providerKnown = namedEndpoint && isKnownProviderIdentifier(endpoint);
   /* Media is judged for any named endpoint, identified or not. The media encoders emit a
-   * payload only for the providers they name, so a custom endpoint gets nothing whatever
-   * it proxies to, and leaving it on the provider path delivers neither media nor text.
-   * Documents keep the narrower rule: an unidentified endpoint is usually OpenAI- or
-   * Anthropic-compatible, both of which do carry them. */
+   * payload only for the providers they name, or for an OpenAI-compatible endpoint whose
+   * admin listed the type in its `supportedMimeTypes`; any other custom endpoint gets
+   * nothing whatever it proxies to, and leaving it on the provider path delivers neither
+   * media nor text. Documents keep the narrower rule: an unidentified endpoint is usually
+   * OpenAI- or Anthropic-compatible, both of which do carry them. */
   const isMedia = mimeType.startsWith('audio/') || mimeType.startsWith('video/');
   /* Audio's text path is transcription, so on a deployment with no speech provider it is
    * not recoverable at all. Routing it to text there sends the upload to a service that
@@ -164,7 +216,7 @@ export function resolveDefaultLLMDeliveryPath(
   if (
     systemDefault === 'provider' &&
     canJudgeCapability &&
-    !isProviderCapable(mimeType, endpoint as string, useResponsesApi)
+    !isProviderCapable(mimeType, endpoint as string, useResponsesApi, supportedMimeTypes)
   ) {
     /* Downgrading is only useful where text can actually be recovered. Video has no
      * extraction step: speech-to-text covers audio, and the default text matcher accepts
@@ -206,6 +258,7 @@ export function resolveDefaultUploadLLMDeliveryPath({
   endpointConfig,
   fileConfig,
   endpoint,
+  endpointProvider,
   useResponsesApi,
   sttConfigured,
 }: {
@@ -213,12 +266,19 @@ export function resolveDefaultUploadLLMDeliveryPath({
   endpointConfig?: EndpointFileConfig;
   fileConfig?: FileConfig;
   endpoint?: string;
+  /** The provider the endpoint runs as, when the caller knows it: a custom endpoint's
+   *  declared dialect at upload time, the agent's resolved provider at turn time. */
+  endpointProvider?: string | null;
   useResponsesApi?: boolean;
   sttConfigured?: boolean;
 }): TDefaultLLMDeliveryPath {
   if (endpointConfig?.legacyFileUploadUX === true) {
     return 'provider';
   }
+  /* The media opt-in exists for OpenAI-format parts, so an endpoint known to run as
+   * something else — a custom endpoint declaring `provider: anthropic` — keeps the
+   * capability gate it had, where audio still reaches transcription. */
+  const runsAsOpenAI = endpointProvider == null || isOpenAILikeProvider(endpointProvider);
   return resolveDefaultLLMDeliveryPath(
     mimeType,
     endpointConfig?.defaultLLMDeliveryPath,
@@ -226,6 +286,7 @@ export function resolveDefaultUploadLLMDeliveryPath({
     endpoint,
     useResponsesApi,
     sttConfigured,
+    runsAsOpenAI ? endpointConfig?.supportedMimeTypes : undefined,
   );
 }
 
@@ -237,6 +298,7 @@ export function resolveUploadLLMDeliveryPath({
   fileConfig,
   endpoint,
   useResponsesApi,
+  endpointProvider,
   sttConfigured,
 }: {
   toolResource?: string | null;
@@ -244,6 +306,7 @@ export function resolveUploadLLMDeliveryPath({
   endpointConfig?: EndpointFileConfig;
   fileConfig?: FileConfig;
   endpoint?: string;
+  endpointProvider?: string | null;
   useResponsesApi?: boolean;
   sttConfigured?: boolean;
 }): TDefaultLLMDeliveryPath {
@@ -258,6 +321,7 @@ export function resolveUploadLLMDeliveryPath({
     endpointConfig,
     fileConfig,
     endpoint,
+    endpointProvider,
     useResponsesApi,
     sttConfigured,
   });
@@ -290,6 +354,140 @@ export function canToolResourceConsume(toolResource: string, mimeType: string): 
 
 const matchesMimeList = (mimeType: string, patterns: RegExp[]): boolean =>
   patterns.some((pattern) => pattern.test(mimeType));
+
+/**
+ * The file-reading tools one agent's turn runs. Each flag requires deployment capability,
+ * the caller's role grant, and a reader in the final loaded tool set.
+ */
+export interface TurnFileConsumers {
+  executeCode: boolean;
+  fileSearch: boolean;
+}
+
+/**
+ * Whether the record shows this file reached a tool's own store: vectors for file search, a
+ * sandbox pointer for code execution. Nothing else writes either, so their presence is proof
+ * the file was provisioned and their absence proof it was not. The same evidence deferred
+ * provisioning reads before queueing a file, so a turn cannot withhold content for a tool that
+ * provisioning has yet to serve.
+ */
+export function hasToolResourceProvisioning(file: TurnDeliveryFile, toolResource: string): boolean {
+  if (toolResource === EToolResources.execute_code) {
+    return getCodeEnvRefs(file.metadata).length > 0;
+  }
+  return file.embedded === true || (file.metadata?.embeddedEntities?.length ?? 0) > 0;
+}
+
+/**
+ * Whether a tool this turn runs can read a file of this type.
+ *
+ * Passing the record asks the stricter question a delivery decision needs where a tool serves
+ * only what it already holds. File search reads the vector store, and an upload that named no
+ * destination is filed under no tool at all, so an enabled search tool is a reader only once
+ * the record shows the store holds the file. Run Code needs no copy in advance: its first call
+ * uploads every attachment it can read to the sandbox, so enabling it is enough. Requiring a
+ * copy there would hand the file's text to the prompt on every turn before the first code run,
+ * and a turn that refuses that text never runs code, so the file would never become held.
+ */
+export function hasTurnFileConsumer(
+  mimeType: string,
+  consumers: TurnFileConsumers,
+  file?: TurnDeliveryFile,
+): boolean {
+  const searchHolds = file == null || hasToolResourceProvisioning(file, EToolResources.file_search);
+  return (
+    (consumers.executeCode && canToolResourceConsume(EToolResources.execute_code, mimeType)) ||
+    (consumers.fileSearch &&
+      canToolResourceConsume(EToolResources.file_search, mimeType) &&
+      searchHolds)
+  );
+}
+
+/**
+ * The inputs that route every attachment for the agent running a turn. Initialization
+ * settles them once, after the provider swap and the Responses API decision, and every
+ * reader of a turn route consumes this value rather than deriving one from the agent.
+ */
+export interface TurnDeliveryRouting {
+  fileConfig: FileConfig;
+  endpointConfig: EndpointFileConfig;
+  /** The endpoint the file policy is configured under: a custom endpoint's own name, not
+   *  the client family initialization runs it as. */
+  endpoint: string;
+  /** The dialect a custom endpoint declares, which decides whether it receives OpenAI-format
+   *  media; undefined for a built-in or OpenAI-compatible endpoint. */
+  endpointProvider?: string;
+  useResponsesApi?: boolean;
+  sttConfigured: boolean;
+}
+
+/** The fields of an attachment record that decide its delivery on a turn. */
+export interface TurnDeliveryFile {
+  type?: string;
+  text?: string | null;
+  /** Stored as an upload-time inference, so any string may be read back. */
+  llmDeliveryPath?: string | null;
+  /** Whether a vector store holds this file, which is what lets file search serve it.
+   *  Records predating namespace tracking carry only this flag. */
+  embedded?: boolean | null;
+  metadata?:
+    | ({
+        routingMimeType?: string;
+        destinationChosen?: boolean;
+        /** Vector namespaces holding this file, written as each embedding succeeds. */
+        embeddedEntities?: string[];
+      } & CodeEnvReferenceSet)
+    | null;
+}
+
+const isLLMDeliveryPath = (value: unknown): value is TDefaultLLMDeliveryPath =>
+  value === 'provider' || value === 'text' || value === 'none';
+
+/** Whether a record's stored route was inferred at upload, so each turn resolves it again. */
+export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
+  return file.llmDeliveryPath != null && file.metadata?.destinationChosen !== true;
+}
+
+/**
+ * Delivery path for one attachment on one agent's turn.
+ *
+ * A record predating routing and a destination the user chose keep what they stored. An
+ * inferred route re-resolves against the endpoint handling the turn. A `none` route leaves
+ * the file for a tool; where the endpoint enables `textFallbackWithoutTools` and no tool this
+ * turn runs can read the file, the text extracted at upload is delivered rather than the file
+ * reaching nothing. Consumers left undefined are unknown and not judged, as in
+ * {@link resolveUploadDestination}.
+ *
+ * For file search, reading is asked of the record rather than of the tool set, because the two
+ * disagree for the upload that needs the fallback most: one that named no destination is filed
+ * under no tool, so enabling file search would otherwise withhold the text for a vector store
+ * that never received the file. Run Code is judged by the tool set: see
+ * {@link hasTurnFileConsumer}.
+ */
+export function resolveTurnLLMDeliveryPath(
+  routing: Partial<TurnDeliveryRouting> | undefined,
+  file: TurnDeliveryFile,
+  consumers?: TurnFileConsumers,
+): TDefaultLLMDeliveryPath | undefined {
+  if (routing == null || !hasInferredLLMDeliveryPath(file)) {
+    return isLLMDeliveryPath(file.llmDeliveryPath) ? file.llmDeliveryPath : undefined;
+  }
+  const { endpointConfig } = routing;
+  /* Conversion changes the stored type, so use the type routing originally saw. */
+  const mimeType = file.metadata?.routingMimeType ?? file.type ?? '';
+  const path = resolveUploadLLMDeliveryPath({ mimeType, ...routing });
+  const hasFallbackText = typeof file.text === 'string' && file.text.length > 0;
+  if (
+    path === 'none' &&
+    endpointConfig?.textFallbackWithoutTools === true &&
+    consumers != null &&
+    hasFallbackText &&
+    !hasTurnFileConsumer(mimeType, consumers, file)
+  ) {
+    return 'text';
+  }
+  return path;
+}
 
 /** Why an upload cannot be accepted, when nothing would be able to read it. */
 export type UploadRejection = 'no-agent-resource' | 'context-disabled' | 'no-consumer';

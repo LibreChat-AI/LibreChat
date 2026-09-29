@@ -116,7 +116,12 @@ export function buildApprovalPreview(
   let target: string | undefined;
   let rawBody = stringifyArguments(request.arguments);
 
-  if (request.source === 'librechat_code' && request.name === 'bash_tool' && parsed) {
+  if (
+    request.source === 'librechat_code' &&
+    request.name === 'bash_tool' &&
+    parsed &&
+    parsed.environmentAction === undefined
+  ) {
     kind = 'command';
     rawBody = stringField(parsed, 'command');
   } else if (request.source === 'librechat_code' && request.name === 'create_file' && parsed) {

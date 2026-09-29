@@ -15,6 +15,7 @@ import {
   useDefaultToggleEntry,
   useInterruptToggleEntry,
 } from './SteerMenu';
+import { carriedSteerContext, cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
 import { supportsGenerationProtocolV2, useArmSteerMutation } from '~/data-provider';
 import { steerOverlayHeightFamily, escalatingSteerFamily } from '~/store/steer';
@@ -25,7 +26,7 @@ import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { useSteerCancel, useSteerReclaim, useLocalize } from '~/hooks';
 import ImagePreview from '~/components/Chat/Input/Files/ImagePreview';
 import SteerReceipt from '~/components/Chat/Steering/Receipt';
-import { carriedSteerContext, cn } from '~/utils';
+import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
 /** Restores a message's text into the composer, or refuses (false) when the
@@ -42,7 +43,7 @@ const splitFiles = (files?: TMessage['files']) => {
   const images: NonNullable<TMessage['files']> = [];
   const others: NonNullable<TMessage['files']> = [];
   for (const file of files ?? []) {
-    (file.type?.startsWith('image/') === true ? images : others).push(file);
+    (usesImagePreview(file) ? images : others).push(file);
   }
   return { images, others };
 };
@@ -460,7 +461,7 @@ const InFlightSteer = memo(function InFlightSteer({
       /* pointer-events-auto: the overlay container disables events so wheeling
        * over the gaps reaches the messages behind; each bubble re-enables them
        * for its own controls and internal scroll. */
-      className="group pointer-events-auto flex flex-col items-end gap-1.5"
+      className="group pointer-events-auto flex max-w-full flex-col items-end gap-1.5"
     >
       {(images.length > 0 || others.length > 0) && (
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -609,6 +610,7 @@ const InFlightSteer = memo(function InFlightSteer({
           fileType={selectedFile?.type ?? undefined}
           fileSource={selectedFile?.source}
           fileSize={(selectedFile as TFile | null)?.bytes}
+          deliveryPath={selectedFile?.llmDeliveryPath}
         />
       )}
     </div>
@@ -632,7 +634,17 @@ const InFlightSteers = memo(function InFlightSteers({
 }) {
   const localize = useLocalize();
   const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
-  const inFlight = useMemo(() => steers.filter((steer) => steer.status !== 'failed'), [steers]);
+  const fileMap = useFileMapContext();
+  const inFlight = useMemo(
+    () =>
+      steers
+        .filter((steer) => steer.status !== 'failed')
+        .map((steer) => {
+          const files = hydrateFileDeliveryMetadata(steer.files, undefined, fileMap);
+          return files === steer.files ? steer : { ...steer, files };
+        }),
+    [fileMap, steers],
+  );
   /** Mirrors `PendingSteerChips`: while one interrupt is unresolved, every
    *  other escalation control disables rather than arming a second seal. The
    *  escalating flag covers an arm request's round trip, before its chip

@@ -21,16 +21,19 @@ import type {
   CodeEnvironmentUserSettings,
   TAgentsEndpoint,
 } from './config';
-import type { Agent, EToolResources, StatefulCodeEnvironment } from './types/assistants';
+import type { StatefulCodeEnvironment } from './stateful-code';
 import type { CodeApprovalMode } from './code/approval';
+import type { EToolResources } from './types/tools';
 import type { RefillIntervalUnit } from './balance';
 import type { SettingDefinition } from './generate';
 import type { TMinimalFeedback } from './feedback';
 import type { ContentTypes } from './types/runs';
 import type { ProviderId } from './providers';
+import type { Agent } from './types/agents';
 
 export * from './schemas';
 export * from './types/subagents';
+export * from './types/background';
 
 export type TMessages = TMessage[];
 
@@ -612,7 +615,37 @@ export type TCodeEnvironmentStatusResponse = {
   workspaces?: CodeWorkspaceDescriptor[];
 };
 
+/**
+ * Replaces a conversation's sealed code-environment decision: a move onto the environments its
+ * agents now use, an attach for a chat running without one, or a detach off an attached machine.
+ */
+export type TCodeEnvironmentMoveRequest = {
+  conversationId: string;
+  /** The persisted selections being replaced, empty for a chat without an attached environment;
+   *  a mismatch rejects the change as stale. */
+  from: CodeWorkspaceSelection[];
+  /** Empty to continue without an attached environment. */
+  to: CodeWorkspaceSelection[];
+};
+
+export type TCodeEnvironmentMoveResponse = {
+  conversationId: string;
+  codeEnvironmentMode: CodeEnvironmentMode;
+  /** Absent once the conversation continues without an attached environment. */
+  codeWorkspaces?: CodeWorkspaceSelection[];
+};
+
+/** Sanitized results of server request shaping for each saved toggle state. */
+export type ResponsesApiRoute = {
+  default: boolean;
+  on: boolean;
+  off: boolean;
+  withWebSearch?: { default: boolean; on: boolean; off: boolean };
+};
+export type ResponsesApiRouting = Record<string, ResponsesApiRoute>;
+
 export type TConfig = {
+  responsesApiRouting?: ResponsesApiRouting;
   order: number;
   type?: EModelEndpoint;
   azure?: boolean;

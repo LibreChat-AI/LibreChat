@@ -13,15 +13,12 @@ const {
   GenerationJobManager,
   GENERATION_RECOVERY_FAILED_ERROR,
   isPendingActionStale,
-  mapToolApprovalResolutions,
+  resolveToolApprovalResume,
   resolveAskUserQuestionResume,
   buildResolvedAskUserQuestion,
   appendResolvedAskUserQuestion,
   attachAskUserQuestionAnswers,
   findAskUserQuestionContentIndex,
-  findUndecidedToolCalls,
-  findDisallowedDecisions,
-  findIncompleteDecisions,
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
   captureAgentCheckpointGeneration,
@@ -50,6 +47,8 @@ const {
   findAgentEventAppliedAction,
   assertCodeExecutionApprovalBinding,
   collectReachableAgents,
+  restoreScheduledTokenContext,
+  recoverTurnMessageReference,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const { decryptMetadata } = require('~/server/services/ActionService');
@@ -79,6 +78,7 @@ const {
   reserveAgentEventActorDetachedAction,
   markAgentEventActorDetachedActionRunning,
   settleAgentEventActorDetachedAction,
+  appendConvoMessageReference,
 } = require('~/models');
 const {
   acquireEventChildGenerationLease,
@@ -269,6 +269,28 @@ async function resolveAccumulatedAttachments({ client, conversationId, responseM
   return mergeAttachments(existing, resolved);
 }
 
+/**
+ * A resumed turn persists its response with a bare `saveMessage`, which writes the row and
+ * never tells the conversation about it. The title write used to rebuild that array in
+ * passing; it no longer does, so each resumed save carries its own reference. Nothing else
+ * in a resumed turn could have appended it, so there is no prior write to consult.
+ */
+const recoverResumedResponseReference = (
+  { userId, conversationId, client, savedResponseMessage },
+  context,
+) =>
+  recoverTurnMessageReference(
+    { appendConvoMessageReference },
+    {
+      userId,
+      conversationId,
+      messageId: savedResponseMessage?._id == null ? undefined : String(savedResponseMessage._id),
+      alreadyRecorded: false,
+      managesConversation: !client?.skipSaveConvo,
+      context,
+    },
+  );
+
 /** Resolve the segment's content for an unfinished save (mirrors finalize's source). */
 async function resolveSegmentContent(client, streamId, expectedCreatedAt) {
   const liveContent = Array.isArray(client?.contentParts) ? client.contentParts : [];
@@ -335,6 +357,10 @@ async function persistRePauseProgress({ req, client, job, streamId, conversation
   if (!savedResponseMessage) {
     throw new Error('Re-pause response progress could not be persisted');
   }
+  await recoverResumedResponseReference(
+    { userId, conversationId, client, savedResponseMessage },
+    'api/server/controllers/agents/resume.js - recovered re-paused response reference',
+  );
 }
 
 /** Untenanted jobs (pre-multi-tenancy) remain accessible if the userId check passes. */
@@ -351,27 +377,7 @@ function resolveResumeValue(pendingAction, body) {
   const payload = pendingAction.payload;
   if (payload?.type === 'tool_approval') {
     const resolutions = Array.isArray(body.decisions) ? body.decisions : [];
-    const undecided = findUndecidedToolCalls(payload, resolutions);
-    if (undecided.length > 0) {
-      return { status: 400, error: 'Every paused tool call must be decided', undecided };
-    }
-    // Enforce the policy's per-tool allowed_decisions — a crafted POST must not
-    // approve a tool the policy restricted to (e.g.) reject/respond.
-    const disallowed = findDisallowedDecisions(payload, resolutions);
-    if (disallowed.length > 0) {
-      return { status: 403, error: 'Decision not permitted for one or more tools', disallowed };
-    }
-    // `edit`/`respond` must carry their payload — otherwise toSdkDecision's defensive
-    // defaults ({} / '') would resume with an empty input/result the user didn't approve.
-    const incomplete = findIncompleteDecisions(resolutions);
-    if (incomplete.length > 0) {
-      return {
-        status: 400,
-        error: 'edit requires editedArguments and respond requires responseText',
-        incomplete,
-      };
-    }
-    return { resumeValue: mapToolApprovalResolutions(resolutions) };
+    return resolveToolApprovalResume(payload, resolutions);
   }
   if (payload?.type === 'ask_user_question') {
     return resolveAskUserQuestionResume(payload, body);
@@ -551,6 +557,10 @@ async function finalizeResumedTurn({
     if (!savedResponseMessage) {
       throw new Error('Resumed response could not be persisted before terminal publication');
     }
+    await recoverResumedResponseReference(
+      { userId, conversationId, client, savedResponseMessage },
+      'api/server/controllers/agents/resume.js - recovered resumed response reference',
+    );
     if (appliedEventActor != null) {
       const recorded = await recordAgentEventActorReconciliation({
         user: userId,
@@ -1835,6 +1845,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         parentMessageId: job.metadata.userMessage?.messageId ?? Constants.NO_PARENT,
       });
     const result = await initializeClient({
+      scheduledTokenContext: restoreScheduledTokenContext(req, job.metadata),
       req,
       res,
       endpointOption: req.body.endpointOption,

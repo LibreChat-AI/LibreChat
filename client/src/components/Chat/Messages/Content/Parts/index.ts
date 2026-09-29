@@ -3,7 +3,12 @@ export * from './OpenAIImageGen';
 
 export { default as Text } from './Text';
 export { default as CollapsibleText } from './CollapsibleText';
-export { default as Reasoning, ReasoningMarker, ReasoningCompact } from './Reasoning';
+export {
+  default as Reasoning,
+  ReasoningMarker,
+  ReasoningCompact,
+  StreamingThoughtPeek,
+} from './Reasoning';
 export { default as EmptyText } from './EmptyText';
 export { default as LogContent } from './LogContent';
 export { default as ExecuteCode } from './ExecuteCode';
@@ -18,3 +23,4 @@ export { default as PtcToolTrace } from './PtcToolTrace';
 export { default as SubagentCall } from './SubagentCall';
 export { default as SteerPart } from './SteerPart';
 export { default as AuthorHeader } from './AuthorHeader';
+export { default as ResumeAuthorHeader } from './ResumeAuthorHeader';

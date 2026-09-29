@@ -64,6 +64,7 @@ describe('Share Methods', () => {
         textFormat: { type: String, enum: ['html', 'text'] },
         status: { type: String, enum: ['pending', 'ready', 'failed'] },
         previewError: String,
+        llmDeliveryPath: { type: String, enum: ['provider', 'text', 'none'] },
         metadata: mongoose.Schema.Types.Mixed,
         tenantId: String,
       },
@@ -1112,6 +1113,7 @@ describe('Share Methods', () => {
         source: 'local',
         type: 'image/png',
         bytes: 2048,
+        llmDeliveryPath: 'text',
       });
 
       const message = await Message.create({
@@ -1157,6 +1159,7 @@ describe('Share Methods', () => {
       // share-scoped route, storage/identity internals stripped, ids anonymized.
       expect(steerFile.filepath).toBe(`/api/share/${shareId}/files/steer-file-2`);
       expect(steerFile).toMatchObject({ filename: 'steer.png', type: 'image/png' });
+      expect(steerFile.llmDeliveryPath).toBe('text');
       expect(steerFile).not.toHaveProperty('storageKey');
       expect(steerFile).not.toHaveProperty('user');
       expect(steerFile.conversationId).toBe(result?.conversationId);
@@ -1164,6 +1167,7 @@ describe('Share Methods', () => {
 
       const share = await SharedLink.findOne({ shareId }).lean();
       expect(share?.fileSnapshots?.map((snapshot) => snapshot.file_id)).toContain('steer-file-2');
+      expect(share?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
     });
 
     test('leaves safe non-steer content untouched (same array reference)', () => {
@@ -3319,6 +3323,123 @@ describe('Share Methods', () => {
       // viewer's fork is validated against.
       expect(saved?.updatedAt?.getTime()).toBe(published?.updatedAt?.getTime());
       expect(result?.updatedAt?.getTime()).toBe(published?.updatedAt?.getTime());
+    });
+
+    test('enriches delivery metadata in existing revision-matching snapshots', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await seedConversation(userId, conversationId);
+      const docId = await createFile(userId, { llmDeliveryPath: 'text' });
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: '',
+        isCreatedByUser: false,
+        content: [
+          {
+            type: 'steer',
+            steerId: 'legacy-steer',
+            steer: 'read this',
+            files: [{ file_id: docId, filename: 'report.pdf', type: 'application/pdf' }],
+          },
+        ],
+      });
+      const shareId = `share_${nanoid()}`;
+      await SharedLink.create({
+        shareId,
+        conversationId,
+        user: userId,
+        messages: [message._id],
+        fileSnapshots: [
+          {
+            file_id: docId,
+            source: 'local',
+            filepath: `/uploads/${userId}/${docId}`,
+            filename: 'report.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+          },
+        ],
+      });
+      const published = await SharedLink.findOne({ shareId }).lean();
+
+      await expect(
+        shareMethods.getSharedMessages(shareId, undefined, {
+          preflight: async () => {
+            throw new Error('policy rejected');
+          },
+        }),
+      ).rejects.toThrow('policy rejected');
+      const afterRejectedPreflight = await SharedLink.findOne({ shareId }).lean();
+      expect(afterRejectedPreflight?.fileSnapshots?.[0].llmDeliveryPath).toBeUndefined();
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      const content = result?.messages[0].content as Array<Record<string, unknown>>;
+      const file = (content[0].files as Array<Record<string, unknown>>)[0];
+      expect(file.llmDeliveryPath).toBe('text');
+
+      const saved = await SharedLink.findOne({ shareId }).lean();
+      expect(saved?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
+      expect(saved?.updatedAt?.getTime()).toBe(published?.updatedAt?.getTime());
+      const find = jest.spyOn(File, 'find');
+      await shareMethods.getSharedMessages(shareId);
+      expect(find).not.toHaveBeenCalled();
+      find.mockRestore();
+
+      await SharedLink.updateOne({ shareId }, { $unset: { 'fileSnapshots.0.llmDeliveryPath': 1 } });
+      await shareMethods.getSharedMessages(shareId, undefined, {
+        preflight: async () => {
+          await SharedLink.updateOne({ shareId }, { $set: { fileSnapshots: [] } });
+        },
+      });
+      const republished = await SharedLink.findOne({ shareId }).lean();
+      expect(republished?.fileSnapshots).toEqual([]);
+    });
+
+    test('does not enrich an existing snapshot after its file revision changes', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await seedConversation(userId, conversationId);
+      const docId = await createFile(userId, {
+        llmDeliveryPath: 'text',
+        previewRevision: 'current-revision',
+      });
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: 'legacy file',
+        isCreatedByUser: true,
+        files: [{ file_id: docId, filename: 'report.pdf', type: 'application/pdf' }],
+      });
+      const shareId = `share_${nanoid()}`;
+      await SharedLink.create({
+        shareId,
+        conversationId,
+        user: userId,
+        messages: [message._id],
+        fileSnapshots: [
+          {
+            file_id: docId,
+            source: 'local',
+            filepath: `/uploads/${userId}/${docId}`,
+            filename: 'report.pdf',
+            type: 'application/pdf',
+            bytes: 1024,
+            previewRevision: 'published-revision',
+          },
+        ],
+      });
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result?.messages[0].files?.[0].llmDeliveryPath).toBeUndefined();
+      const saved = await SharedLink.findOne({ shareId }).lean();
+      expect(saved?.fileSnapshots?.[0].llmDeliveryPath).toBeNull();
+      const find = jest.spyOn(File, 'find');
+      await shareMethods.getSharedMessages(shareId);
+      expect(find).not.toHaveBeenCalled();
+      find.mockRestore();
     });
 
     test('runs public projection preflight before persisting a legacy backfill', async () => {

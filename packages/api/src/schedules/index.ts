@@ -1,5 +1,6 @@
 export * from './access';
 export * from './cadence';
+export * from './context';
 export * from './engine';
 export * from './erasure';
 export * from './fire';

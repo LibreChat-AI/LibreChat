@@ -1,8 +1,11 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.8-rc3",
+  "version": "v0.8.8-rc4",
   "description": "",
   "packageManager": "npm@11.13.0",
+  "scarfSettings": {
+    "enabled": false
+  },
   "workspaces": [
     "api",
     "client",
@@ -36,6 +39,7 @@
     "ban-user": "node config/ban-user.js",
     "delete-user": "node config/delete-user.js",
     "reset-meili-sync": "node config/reset-meili-sync.js",
+    "create-error-convo": "node config/create-error-convo.js",
     "update-banner": "node config/update-banner.js",
     "delete-banner": "node config/delete-banner.js",
     "backend": "cross-env NODE_ENV=production node api/server/index.js",
@@ -88,6 +92,8 @@
     "e2e:bombadil:steering:run": "cross-env BOMBADIL_SPECIFICATION=steering-lifecycle.specification.ts BOMBADIL_TIME_LIMIT=75s playwright test --config=e2e/playwright.config.bombadil.ts",
     "e2e:mock:enforce": "npm run e2e:prepare && cross-env E2E_MODEL_SPECS_ENFORCE=true playwright test --config=e2e/playwright.config.mock.ts enforced-model-specs.spec.ts",
     "e2e:mock:ci": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.mock.ts",
+    "e2e:deployed": "playwright test --config=e2e/playwright.config.deployed.ts",
+    "e2e:deployed:headed": "cross-env E2E_HEADED=true playwright test --config=e2e/playwright.config.deployed.ts",
     "e2e:debug": "npm run e2e:prepare && cross-env PWDEBUG=1 playwright test --config=e2e/playwright.config.local.ts",
     "e2e:record": "npm run e2e:prepare && cross-env E2E_BASE_URL=http://localhost:3333 node e2e/setup/record.js",
     "e2e:record:local": "npm run e2e:prepare && node e2e/setup/record.js --profile=local",
@@ -150,12 +156,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danny-avila/LibreChat.git"
+    "url": "git+https://github.com/LibreChat-AI/LibreChat.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai/",
   "devDependencies": {
@@ -210,9 +216,10 @@
     "baseline-browser-mapping": "^2.11.0",
     "browserslist": "^4.28.7",
     "elliptic": "^6.6.1",
-    "fast-uri": "^3.1.6",
+    "fast-uri": "^3.1.7",
     "fflate": "^0.8.3",
     "form-data": "^4.0.6",
+    "ip-address": "^10.5.1",
     "langsmith": "^0.6.0",
     "postcss": "^8.5.18",
     "postcss-selector-parser@6": "^6.1.3",

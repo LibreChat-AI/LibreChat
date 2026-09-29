@@ -7,6 +7,7 @@ import SteerPart from '../SteerPart';
 import store from '~/store';
 
 let mockShareContext: { isSharedConvo?: boolean; shareId?: string } = {};
+let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -14,6 +15,7 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/Providers', () => ({
   useShareContext: () => mockShareContext,
+  useFileMapContext: () => mockFileMap,
 }));
 
 jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
@@ -37,8 +39,20 @@ jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
 
 jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileName }: { open: boolean; fileName: string }) =>
-    open ? <div data-testid="steer-file-preview">{fileName}</div> : null,
+  default: ({
+    open,
+    fileName,
+    deliveryPath,
+  }: {
+    open: boolean;
+    fileName: string;
+    deliveryPath?: string;
+  }) =>
+    open ? (
+      <div data-testid="steer-file-preview" data-delivery-path={deliveryPath}>
+        {fileName}
+      </div>
+    ) : null,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({
@@ -66,6 +80,7 @@ function renderPart(
 describe('SteerPart author label', () => {
   beforeEach(() => {
     mockShareContext = {};
+    mockFileMap = {};
   });
 
   it('labels with the logged-in user name in the owner view (username display on)', () => {
@@ -138,6 +153,7 @@ describe('SteerPart author label', () => {
 describe('SteerPart presentation', () => {
   beforeEach(() => {
     mockShareContext = {};
+    mockFileMap = {};
   });
 
   it('presents the steer as a compact user bubble with accessible attribution', () => {
@@ -163,22 +179,38 @@ describe('SteerPart presentation', () => {
     expect(part).not.toHaveClass('md:-ml-9', '-ml-9');
   });
 
-  it('renders steer attachments', () => {
+  it('keeps multiple steer images together at the right while file chips stay at the start', () => {
     renderPart([
       { file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' },
       { file_id: 'f2', filename: 'shot.png', type: 'image/png', filepath: '/images/shot.png' },
+      { file_id: 'f3', filename: 'second.png', type: 'image/png', filepath: '/images/second.png' },
     ]);
+    const images = screen.getAllByTestId('steer-image');
+    const imageGroup = images[0].parentElement;
+
+    expect(images).toHaveLength(2);
+    expect(imageGroup).toContainElement(images[1]);
+    expect(imageGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
+    expect(imageGroup?.parentElement).toHaveClass('w-full');
+    expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
-    expect(screen.getByTestId('steer-image')).toBeInTheDocument();
   });
 
-  it('opens the file preview dialog when a non-image steer attachment is clicked', () => {
-    renderPart([{ file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' }]);
-    expect(screen.queryByTestId('steer-file-preview')).toBeNull();
+  it.each(['application/pdf', 'image/png'])(
+    'opens extracted previews for %s attachments',
+    (type) => {
+      mockFileMap = { f1: { llmDeliveryPath: 'text' } };
+      renderPart([{ file_id: 'f1', filename: 'notes.pdf', type }]);
+      expect(screen.queryByTestId('steer-file-preview')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('steer-file'));
-    expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
-  });
+      fireEvent.click(screen.getByTestId('steer-file'));
+      expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
+      expect(screen.getByTestId('steer-file-preview')).toHaveAttribute(
+        'data-delivery-path',
+        'text',
+      );
+    },
+  );
 
   it('renders quoted excerpts as reference blocks inside the bubble', () => {
     render(

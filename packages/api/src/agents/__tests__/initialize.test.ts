@@ -33,6 +33,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 import { Providers } from '@librechat/agents';
+import { createHash } from 'node:crypto';
+import { createRepositoryInstructionLoader } from '../../code/instructions';
 import {
   Tools,
   Constants,
@@ -133,6 +135,7 @@ jest.mock('../../middleware/modelBoundContent', () => {
 });
 
 import { initializeAgent } from '../initialize';
+import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
@@ -284,6 +287,121 @@ function countUrlContextTools(tools: unknown[] | undefined): number {
 describe('initializeAgent — execution context', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it.each(['prefer', 'defer', 'off'] as const)(
+    'uses saved repository instruction mode %s in definitions-only initialization',
+    async (mode) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.instructions = 'Agent conventions';
+      agent.repositoryInstructions = mode;
+      const content = 'Repository conventions';
+      const authHeaders = jest.fn(async () => ({}));
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            operation: 'read_file',
+            workspaceId: 'primary',
+            path: 'AGENTS.md',
+            content,
+            startLine: 1,
+            endLine: 1,
+            truncated: false,
+          }),
+        ),
+      );
+      loadTools.mockResolvedValue({
+        toolDefinitions: [],
+        repositoryInstructionSource: {
+          load: createRepositoryInstructionLoader(),
+          enabled: true,
+          principalId: `test-${mode}`,
+          context: {
+            environmentType: 'attached',
+            baseUrl: 'https://code.example/v1',
+            codeWorkspace: {
+              workspaceId: 'primary',
+              operations: ['read_file'],
+              instructions: [
+                {
+                  path: 'AGENTS.md',
+                  bytes: Buffer.byteLength(content),
+                  sha256: createHash('sha256').update(content).digest('hex'),
+                  truncated: false,
+                },
+              ],
+            },
+          },
+          authHeaders,
+        },
+      });
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+      if (mode === 'off') {
+        expect(result.instructions).toBe('Agent conventions');
+        expect(authHeaders).not.toHaveBeenCalled();
+        expect(fetchSpy).not.toHaveBeenCalled();
+      } else {
+        expect(result.instructions).toContain('Repository conventions');
+        expect(result.instructions).toMatch(/^Agent conventions\n\nRepository-provided/);
+        expect(result.instructions).toContain(
+          mode === 'defer' ? 'unless they conflict' : 'prefer these instructions',
+        );
+      }
+      expect(result.additional_instructions ?? '').not.toContain('Repository conventions');
+      fetchSpy.mockRestore();
+    },
+  );
+
+  it('carries request-resolved Azure identity to the run without changing persisted agent fields', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-astra',
+    });
+    const azureOptions = {
+      azureOpenAIApiKey: 'request-key',
+      azureOpenAIApiInstanceName: 'request-instance',
+      azureOpenAIApiDeploymentName: 'deployment',
+      azureOpenAIApiVersion: '2024-10-21',
+    };
+    mockGetProviderConfig.mockReturnValue({
+      overrideProvider: Providers.AZURE,
+      getOptions: jest.fn().mockResolvedValue({
+        azureOptions,
+        llmConfig: {
+          model: 'gpt-6-astra',
+          useResponsesApi: true,
+          apiKey: 'request-key',
+          modelKwargs: { model: 'deployment' },
+        },
+      }),
+    });
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([EModelEndpoint.azureOpenAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    expect(result.azureOptions).toEqual(azureOptions);
+    expect(result.model_parameters).not.toHaveProperty('azureOpenAIApiInstanceName');
+    expect(agent).not.toHaveProperty('azureOptions');
   });
 
   it('initializes without Express request or response objects', async () => {
@@ -1615,7 +1733,7 @@ describe('initializeAgent — attachment scoping', () => {
     expect(db.updateFilesUsage).not.toHaveBeenCalled();
     expect(primeResources).not.toHaveBeenCalled();
     expect(loadTools).not.toHaveBeenCalled();
-    expect(mockGetProviderConfig).not.toHaveBeenCalled();
+    expect(mockGetProviderConfig).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1623,6 +1741,35 @@ describe('initializeAgent — maxContextTokens', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
+
+  it.each(['us.openai.gpt-6-sol', 'global.openai.gpt-6-astra', 'us.openai.gpt-5.6-terra'])(
+    'budgets %s using the Bedrock context window',
+    async (model) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: Providers.BEDROCK,
+        model,
+        maxOutputTokens: 4096,
+        useRealTokenLookup: true,
+      });
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.BEDROCK]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(mockGetModelMaxTokens).toHaveBeenCalledWith(model, EModelEndpoint.bedrock, undefined);
+      expect(result.maxContextTokens).toBe(Math.round((950000 - 4096) * 0.95));
+      expect(result.maxContextTokens).toBeGreaterThan(38079);
+    },
+  );
 
   it('uses user-configured maxContextTokens when provided via model_parameters', async () => {
     const userValue = 50000;
@@ -2236,6 +2383,49 @@ describe('initializeAgent — skill `allowed-tools` union (Phase 6)', () => {
     expect(definedNames).not.toContain('mcp__broken__tool');
   });
 
+  it.each([
+    ['Error', new Error('run cancelled')],
+    ['string', 'run cancelled'],
+  ])(
+    'does not retry skill-added tools when the owning signal aborts with an %s reason',
+    async (_, reason) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.tools = ['web_search'];
+      const { Types } = await import('mongoose');
+      const skillId = new Types.ObjectId();
+      const controller = new AbortController();
+      controller.abort(reason);
+      loadTools.mockRejectedValue(reason);
+
+      const getSkillByName = buildGetSkillByName(
+        'cancelled-tool-skill',
+        ['mcp__warehouse__query'],
+        skillId,
+        req.user!.id,
+      );
+
+      await expect(
+        initializeAgent(
+          {
+            req,
+            res,
+            agent,
+            loadTools,
+            signal: controller.signal,
+            endpointOption: { endpoint: EModelEndpoint.agents },
+            allowedProviders: new Set([Providers.OPENAI]),
+            isInitialAgent: true,
+            accessibleSkillIds: [skillId],
+            manualSkills: ['cancelled-tool-skill'],
+          },
+          { ...db, listSkillsByAccess: emptyListSkillsByAccess, getSkillByName },
+        ),
+      ).rejects.toBe(reason);
+
+      expect(loadTools).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('does not retry a resource recovery failure when execute_code is skill-added', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = ['web_search'];
@@ -2361,10 +2551,12 @@ describe('initializeAgent — skill `allowed-tools` union (Phase 6)', () => {
 
     /* Two attempts (initial + retry), both undefined. Registry-backed tools
        fall away, but read/create/edit_file are registered by the initializer
-       so skill authoring still works. */
+       so skill authoring still works — and `skill` comes with them, so a
+       skill authored in this run can still be invoked despite the empty
+       catalog. */
     expect(loadTools).toHaveBeenCalledTimes(2);
     const definedNames = result.toolDefinitions?.map((d) => d.name) ?? [];
-    expect(definedNames).toEqual(['read_file', 'create_file', 'edit_file']);
+    expect(definedNames).toEqual(['read_file', 'create_file', 'edit_file', 'skill']);
   });
 
   it('propagates the error when loadTools fails AND there are no skill-added extras to drop', async () => {
@@ -2453,7 +2645,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
        but never appears in the tool definitions the LLM sees. */
     expect(names).not.toContain('execute_code');
     const readFile = result.toolDefinitions?.find((d) => d.name === 'read_file');
-    expect(readFile?.description).toContain('code-execution sandbox');
+    expect(readFile?.description).toContain('code-sandbox');
     expect(readFile?.description).not.toContain('{skillName}');
     expect(readFile?.description).not.toContain('SKILL.md');
     const createFile = result.toolDefinitions?.find((d) => d.name === 'create_file');
@@ -2827,6 +3019,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
           environmentId: 'personal-vm',
           workspaceId: 'project-a',
           operations: ['read_file', 'list_files', 'execute_command'],
+          environment: { fingerprint: 'a'.repeat(64), repo: 'owner/project', actions: ['check'] },
         },
       };
       if (protectedEdit) codeExecutionContext.codeWorkspace!.operations.push('edit_file');
@@ -2861,6 +3054,11 @@ describe('initializeAgent — execute_code capability expansion', () => {
         'read_file',
       ]);
       const bashTool = result.toolDefinitions?.find(({ name }) => name === 'bash_tool');
+      expect(bashTool?.parameters).toMatchObject({
+        properties: { environmentAction: { enum: ['check'] } },
+        required: [],
+      });
+      expect(bashTool?.description).toContain('owner/project');
       expect(
         (bashTool?.parameters as { properties?: { timeoutMs?: { maximum?: number } } })?.properties
           ?.timeoutMs?.maximum,
@@ -4408,5 +4606,382 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({});
 
     expect(result.tools).toContainEqual(OPENAI_SEARCH);
+  });
+});
+
+describe('initializeAgent tool-routed text fallback', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const routedCsv = () =>
+    ({
+      file_id: 'csv-file',
+      filename: 'sales.csv',
+      type: 'text/csv',
+      text: 'region,total',
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+    }) as IMongoFile;
+
+  /** A tool serves a file only once it holds it, so these carry the evidence provisioning
+   *  writes: vectors for file search, a sandbox pointer for code execution. */
+  const embeddedCsv = () => ({ ...routedCsv(), embedded: true }) as IMongoFile;
+  const sandboxCsv = () =>
+    ({
+      ...routedCsv(),
+      metadata: {
+        destinationChosen: false,
+        codeEnvRef: {
+          kind: 'user',
+          id: 'user_1',
+          storage_session_id: 'session_1',
+          file_id: 'sandbox_file_1',
+        },
+      },
+    }) as IMongoFile;
+
+  async function initializeWith({
+    tools,
+    csv,
+    textFallbackWithoutTools = true,
+    provider = Providers.OPENAI,
+    overrideProvider,
+    supportedMimeTypes,
+    softFailure = false,
+    fileSearchAvailable = true,
+    fileContextCharLimit,
+    useResponsesApi,
+  }: {
+    tools: string[];
+    csv: IMongoFile;
+    textFallbackWithoutTools?: boolean;
+    provider?: string;
+    overrideProvider?: string;
+    supportedMimeTypes?: string[];
+    softFailure?: boolean;
+    fileSearchAvailable?: boolean;
+    fileContextCharLimit?: number;
+    useResponsesApi?: boolean;
+  }) {
+    const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
+      filterFilesByEndpointRuntimeConfig: jest.Mock;
+    };
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider,
+      overrideProvider,
+      loadedToolDefinitions: tools.includes(EToolResources.file_search)
+        ? [{ name: EToolResources.file_search }]
+        : [],
+    });
+    if (useResponsesApi != null) {
+      mockGetProviderConfig.mockReturnValue({
+        overrideProvider: overrideProvider ?? provider,
+        getOptions: jest
+          .fn()
+          .mockResolvedValue({ llmConfig: { model: agent.model, useResponsesApi } }),
+      });
+    }
+    (primeResources as jest.Mock).mockImplementationOnce(async ({ attachments }) => {
+      const files = await attachments;
+      return {
+        attachments: files,
+        requestAttachments: files,
+        agentContextAttachments: [],
+        tool_resources: {},
+      };
+    });
+    agent.tools = tools;
+    if (softFailure) loadTools.mockResolvedValue(undefined);
+    req.config = {
+      fileConfig: {
+        fileContextCharLimit,
+        endpoints: {
+          [provider]: {
+            defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
+            textFallbackWithoutTools,
+            ...(supportedMimeTypes != null && { supportedMimeTypes }),
+          },
+        },
+      },
+    } as unknown as ServerRequest['config'];
+    (db.getFiles as jest.Mock).mockResolvedValueOnce([csv]);
+    filterFilesByEndpointRuntimeConfig.mockImplementationOnce(
+      (_config: ServerRequest['config'], { files }: { files: IMongoFile[] }) => files,
+    );
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        requestFiles: [csv],
+        codeEnvAvailable: true,
+        fileSearchAvailable,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([provider]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    return { result, filterFilesByEndpointRuntimeConfig };
+  }
+
+  it.each([true, false])(
+    'admits Azure PDFs with the final Responses mode %s',
+    async (useResponsesApi) => {
+      const pdf = { ...routedCsv(), type: 'application/pdf', text: undefined };
+      const { result, filterFilesByEndpointRuntimeConfig } = await initializeWith({
+        tools: [],
+        csv: pdf,
+        provider: EModelEndpoint.azureOpenAI,
+        overrideProvider: Providers.OPENAI,
+        useResponsesApi,
+      });
+      expect(result.deliveryRouting.useResponsesApi).toBe(useResponsesApi);
+      expect(filterFilesByEndpointRuntimeConfig).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          files: [{ ...pdf, llmDeliveryPath: useResponsesApi ? 'provider' : 'text' }],
+        }),
+      );
+    },
+  );
+
+  it('keeps fallback out of the prompt when file search loads and holds the file', async () => {
+    const csv = embeddedCsv();
+    const { result } = await initializeWith({ tools: [EToolResources.file_search], csv });
+    expect(result.fileConsumers).toEqual({ executeCode: false, fileSearch: true });
+    expect(result.requestAttachments).toEqual([csv]);
+  });
+
+  it('delivers fallback text when file search runs but never received the file', async () => {
+    /* The plain-chat File Search toggle: the upload names no destination, so nothing files it
+     * under a tool resource and the vector store stays empty. Withholding the text for the
+     * toggle alone left the attachment readable by neither the model nor the tool. */
+    const csv = routedCsv();
+    const { result } = await initializeWith({ tools: [EToolResources.file_search], csv });
+    expect(result.fileConsumers).toEqual({ executeCode: false, fileSearch: true });
+    expect(result.requestAttachments).toEqual([{ ...csv, llmDeliveryPath: 'text' }]);
+    expect(csv.llmDeliveryPath).toBe('none');
+  });
+
+  it('falls back after file search soft-fails and admits the returned text copy', async () => {
+    const csv = routedCsv();
+    const { result } = await initializeWith({
+      tools: [EToolResources.file_search],
+      csv,
+      softFailure: true,
+    });
+    expect(result.fileConsumers).toEqual({ executeCode: false, fileSearch: false });
+    expect(result.requestAttachments).toEqual([{ ...csv, llmDeliveryPath: 'text' }]);
+    expect(csv.llmDeliveryPath).toBe('none');
+  });
+
+  it('rejects fallback text that exceeds admission after a reader soft-fails', async () => {
+    await expect(
+      initializeWith({
+        tools: [EToolResources.file_search],
+        csv: routedCsv(),
+        softFailure: true,
+        fileContextCharLimit: 3,
+      }),
+    ).rejects.toMatchObject({ name: 'AgentAttachmentLimitError' });
+  });
+
+  it('hands endpoint filtering a text copy when the agent runs no tool that can read the file', async () => {
+    const csv = routedCsv();
+
+    const { result, filterFilesByEndpointRuntimeConfig } = await initializeWith({ tools: [], csv });
+
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ files: [{ ...csv, llmDeliveryPath: 'text' }] }),
+    );
+    expect(result.fileConsumers).toEqual({ executeCode: false, fileSearch: false });
+    expect(csv.llmDeliveryPath).toBe('none');
+  });
+
+  it('hands endpoint filtering the provider route a tool-routed file takes on this turn', async () => {
+    /* Admission reads the route, so a record left for tools that this endpoint sends to the
+     * provider must reach filtering, limits and inspection as a provider file. */
+    const image = {
+      file_id: 'image-file',
+      filename: 'chart.png',
+      type: 'image/png',
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+    } as IMongoFile;
+
+    const { filterFilesByEndpointRuntimeConfig } = await initializeWith({
+      tools: [],
+      csv: image,
+    });
+
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ files: [{ ...image, llmDeliveryPath: 'provider' }] }),
+    );
+    expect(image.llmDeliveryPath).toBe('none');
+  });
+
+  it('keeps media a custom endpoint opted into on its provider route before the provider swap', async () => {
+    /* The encoders send OpenAI-format media to a custom endpoint that lists the type, so the
+     * route has to read that endpoint's dialect from config, not the name still in `provider`. */
+    const video = {
+      file_id: 'video-file',
+      filename: 'clip.mp4',
+      type: 'video/mp4',
+      llmDeliveryPath: 'provider',
+      metadata: { destinationChosen: false },
+    } as IMongoFile;
+
+    const { filterFilesByEndpointRuntimeConfig } = await initializeWith({
+      tools: [],
+      csv: video,
+      provider: 'MyGateway',
+      overrideProvider: Providers.OPENAI,
+      supportedMimeTypes: ['video/mp4'],
+    });
+
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ files: [video] }),
+    );
+  });
+
+  it('resolves a custom endpoint agent under the endpoint its upload was routed by', async () => {
+    /* Uploads resolve the agent's saved provider, which for a custom endpoint is its name.
+     * Initialization later swaps the provider for the backing client, so an opt-in set only
+     * on the custom endpoint must still be read under that name, here and after the swap. */
+    const csv = routedCsv();
+
+    const { result, filterFilesByEndpointRuntimeConfig } = await initializeWith({
+      tools: [],
+      csv,
+      provider: 'MyGateway',
+      overrideProvider: Providers.OPENAI,
+    });
+
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ files: [{ ...csv, llmDeliveryPath: 'text' }] }),
+    );
+    expect(result.provider).toBe(Providers.OPENAI);
+    expect(result.endpoint).toBe('MyGateway');
+  });
+
+  it('leaves the file on its tool route where the endpoint has not enabled the fallback', async () => {
+    const csv = routedCsv();
+
+    const { filterFilesByEndpointRuntimeConfig } = await initializeWith({
+      tools: [],
+      csv,
+      textFallbackWithoutTools: false,
+    });
+
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ files: [csv] }),
+    );
+  });
+
+  it('leaves the file to Run Code when the sandbox already holds it', async () => {
+    const csv = sandboxCsv();
+
+    const { result, filterFilesByEndpointRuntimeConfig } = await initializeWith({
+      tools: [EToolResources.execute_code],
+      csv,
+    });
+
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ files: [csv] }),
+    );
+    expect(result.fileConsumers).toEqual({ executeCode: true, fileSearch: false });
+  });
+});
+
+describe('initializeAgent turn delivery routing', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('settles the routing once, after the provider swap and the Responses API decision', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({ provider: 'MyClaude' });
+    req.config = {
+      fileConfig: { endpoints: { MyClaude: { supportedMimeTypes: ['video/mp4'] } } },
+      endpoints: { custom: [{ name: 'MyClaude', provider: 'anthropic' }] },
+    } as unknown as ServerRequest['config'];
+    mockGetProviderConfig.mockReturnValue({
+      overrideProvider: Providers.ANTHROPIC,
+      getOptions: jest
+        .fn()
+        .mockResolvedValue({ llmConfig: { model: 'test-model', useResponsesApi: true } }),
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set(['MyClaude']),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.provider).toBe(Providers.ANTHROPIC);
+    expect(result.deliveryRouting).toMatchObject({
+      endpoint: 'MyClaude',
+      endpointProvider: 'anthropic',
+      useResponsesApi: true,
+      sttConfigured: false,
+    });
+    expect(result.deliveryRouting.endpointConfig.supportedMimeTypes).toEqual([/video\/mp4/]);
+  });
+
+  it('resolves the provider and its options before any attachment is loaded', async () => {
+    const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
+      filterFilesByEndpointRuntimeConfig: jest.Mock;
+    };
+    const { agent, req, res, loadTools, db } = createMocks();
+    const getOptions = jest.fn().mockResolvedValue({ llmConfig: { model: 'test-model' } });
+    mockGetProviderConfig.mockReturnValue({ overrideProvider: Providers.OPENAI, getOptions });
+    const file = {
+      file_id: 'file-1',
+      filename: 'notes.txt',
+      type: 'text/plain',
+      bytes: 10,
+      text: 'notes',
+      llmDeliveryPath: 'text',
+    } as IMongoFile;
+    (db.getFiles as jest.Mock).mockResolvedValueOnce([file]);
+    filterFilesByEndpointRuntimeConfig.mockImplementationOnce(
+      (_config: ServerRequest['config'], { files }: { files: IMongoFile[] }) => files,
+    );
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        requestFiles: [file],
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    const [optionsOrder] = getOptions.mock.invocationCallOrder;
+    const [filesOrder] = (db.getFiles as jest.Mock).mock.invocationCallOrder;
+    const [toolsOrder] = loadTools.mock.invocationCallOrder;
+    expect(optionsOrder).toBeLessThan(filesOrder);
+    expect(filesOrder).toBeLessThan(toolsOrder);
   });
 });

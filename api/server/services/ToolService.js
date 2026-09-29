@@ -5,13 +5,13 @@ const {
   createToolSearch,
   createBashExecutionTool,
   Constants: AgentConstants,
-  createBashProgrammaticToolCallingTool,
 } = require('@librechat/agents');
 const {
   sendEvent,
   getToolkitKey,
   getUserMCPAuthMap,
   createAuthIdentityContext,
+  selectMCPUpstreamTokenProvider,
   loadToolDefinitions,
   GenerationJobManager,
   isActionDomainAllowed,
@@ -19,6 +19,7 @@ const {
   buildImageToolContext,
   buildToolClassification,
   supportsProgrammaticCodeExecution,
+  getCodeFileLocation,
   getMissingCustomUserVars,
   buildWebSearchDynamicContext,
   getCodeApiAuthHeaders,
@@ -48,8 +49,12 @@ const {
   isFatalAgentInitializationError,
   codeExecutionAuthHeaders,
   createAttachedWorkspaceBashTool,
+  createRepositoryInstructionSource,
+  createRepositoryInstructionLoader,
   resolveAttachedWorkspaceCommandTimeoutMax,
-  createGitIdentityProgrammaticBashTool,
+  resolveAttachedWorkspaceQueueWaitMs,
+  resolveAttachedWorkspaceRequestTimeoutMs,
+  createContextProgrammaticBashTool,
   resolveCodeExecutionContext,
   resolveCodeExecutionWorkspaceContext,
   resolveRunFileCodeExecutionContext,
@@ -104,6 +109,7 @@ const { processFileURL, uploadImageBuffer } = require('~/server/services/Files/p
 const { primeFiles: primeSearchFiles } = require('~/app/clients/tools/util/fileSearch');
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
 const { manifestToolMap, toolkits } = require('~/app/clients/tools/manifest');
+const repositoryInstructionLoader = createRepositoryInstructionLoader();
 const { createOnSearchResults } = require('~/server/services/Tools/search');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
 const {
@@ -783,6 +789,8 @@ const isBuiltInTool = (toolName) =>
  * @param {string|null} [params.streamId] - Stream ID for resumable mode
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted tool events
  * @param {AbortSignal} [params.signal] - Effective run cancellation signal
+ * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
+ * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
  * @returns {Promise<{
  *   toolDefinitions?: import('@librechat/api').LCTool[];
  *   toolRegistry?: Map<string, import('@librechat/api').LCTool>;
@@ -803,6 +811,8 @@ async function loadToolDefinitionsWrapper({
   codeExecutionContext,
   accessibleMcpServerNames,
   signal,
+  upstreamTokenProvider: suppliedUpstreamTokenProvider,
+  upstreamTokenProviderResolver,
 }) {
   if (!agent.tools || agent.tools.length === 0) {
     return { toolDefinitions: [] };
@@ -988,22 +998,21 @@ async function loadToolDefinitionsWrapper({
   /** @type {Record<string, import('@librechat/api').LCAvailableTools>} */
   const mcpAvailableTools = {};
   const requestScopedConnections = getMCPRequestContext(req, res);
-  /**
-   * Build the OBO upstream-token closure once at this request boundary and pass
-   * the function into MCP handling, so `reinitMCPServer` never receives the raw
-   * Express request. `res` is forwarded so a rotated refresh token can be
-   * mirrored to the `refreshToken` cookie when the response is still writable.
-   */
   const oboIdentityContext = createAuthIdentityContext({
     user: req.user,
     tenantId: getTenantId(),
   });
-  const upstreamTokenProvider = createOpenIDSessionTokenProvider({
-    req,
-    res,
-    user: req.user,
-    identityContext: oboIdentityContext,
-    tokenPreference: 'access_token',
+  const upstreamTokenProvider = selectMCPUpstreamTokenProvider({
+    upstreamTokenProvider: suppliedUpstreamTokenProvider,
+    upstreamTokenProviderResolver,
+    createSessionProvider: () =>
+      createOpenIDSessionTokenProvider({
+        req,
+        res,
+        user: req.user,
+        identityContext: oboIdentityContext,
+        tokenPreference: 'access_token',
+      }),
   });
   const rememberMCPAvailableTools = (serverName, availableTools) => {
     if (!availableTools || Object.keys(availableTools).length === 0) {
@@ -1182,7 +1191,10 @@ async function loadToolDefinitionsWrapper({
     };
 
     const result = await reinitMCPServer({
+      signal,
       user: req.user,
+      streamId,
+      jobCreatedAt,
       oauthStart,
       flowManager,
       serverName,
@@ -1191,6 +1203,7 @@ async function loadToolDefinitionsWrapper({
       requestBody: runtimeRequestBody,
       requestScopedConnections,
       upstreamTokenProvider,
+      upstreamTokenProviderResolver,
       oboIdentityContext,
       recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
     });
@@ -1211,7 +1224,10 @@ async function loadToolDefinitionsWrapper({
       }
     };
     const result = await reinitMCPServer({
+      signal,
       user: req.user,
+      streamId,
+      jobCreatedAt,
       forceNew: true,
       oauthStart,
       flowManager,
@@ -1221,6 +1237,7 @@ async function loadToolDefinitionsWrapper({
       requestBody: runtimeRequestBody,
       requestScopedConnections,
       upstreamTokenProvider,
+      upstreamTokenProviderResolver,
       oboIdentityContext,
       recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
     });
@@ -1361,7 +1378,10 @@ async function loadToolDefinitionsWrapper({
         }
 
         const result = await reinitMCPServer({
+          signal,
           user: req.user,
+          streamId,
+          jobCreatedAt,
           serverName,
           configServers,
           userMCPAuthMap,
@@ -1372,6 +1392,7 @@ async function loadToolDefinitionsWrapper({
           oauthEnd: createOAuthEndEmitter(serverName),
           connectionTimeout: Time.TWO_MINUTES,
           upstreamTokenProvider,
+          upstreamTokenProviderResolver,
           oboIdentityContext,
           recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
         });
@@ -1382,16 +1403,19 @@ async function loadToolDefinitionsWrapper({
           return { serverName, success: true };
         }
         return { serverName, success: false };
-      } catch {
+      } catch (error) {
+        if (isFatalAgentInitializationError(error, { signal })) {
+          throw error;
+        }
         logger.debug('[Tool Definitions] MCP OAuth wait failed for one server');
         return { serverName, success: false };
       }
     });
 
-    const results = await Promise.allSettled(oauthWaitPromises);
+    const results = await Promise.all(oauthWaitPromises);
     const successfulServers = results
-      .filter((r) => r.status === 'fulfilled' && r.value.success)
-      .map((r) => r.value.serverName);
+      .filter((result) => result.success)
+      .map((result) => result.serverName);
 
     if (successfulServers.length > 0) {
       logger.info(
@@ -1466,6 +1490,7 @@ async function loadToolDefinitionsWrapper({
         codeApiBaseUrl: resolvedCodeExecutionContext.baseUrl,
         executionProfile: resolvedCodeExecutionContext.executionProfile,
         executionRouteKey: resolvedCodeExecutionContext.executionRouteKey,
+        codeFileLocation: getCodeFileLocation(resolvedCodeExecutionContext),
         ...(resolvedCodeExecutionContext.bridgeWorkerId
           ? { bridgeWorkerId: resolvedCodeExecutionContext.bridgeWorkerId }
           : {}),
@@ -1477,7 +1502,7 @@ async function loadToolDefinitionsWrapper({
         primedCodeFiles = files;
       }
     } catch (error) {
-      if (isFatalAgentInitializationError(error)) {
+      if (isFatalAgentInitializationError(error, { signal })) {
         throw error;
       }
       logger.error(
@@ -1548,6 +1573,14 @@ async function loadToolDefinitionsWrapper({
     primedCodeFiles,
     oauthActionToolNames,
     codeExecutionContext: resolvedCodeExecutionContext,
+    repositoryInstructionSource: createRepositoryInstructionSource({
+      load: repositoryInstructionLoader,
+      enabled: codeExecutionEnabled,
+      context: resolvedCodeExecutionContext,
+      principalId: JSON.stringify([getTenantId(), req.user.id]),
+      codeApiMaxRetryWaitMs: req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+      getAuthHeaders: (workerId) => getCodeApiAuthHeaders(req, workerId),
+    }),
   };
 }
 
@@ -1567,6 +1600,8 @@ async function loadToolDefinitionsWrapper({
  * @param {boolean} [params.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances. Use for event-driven mode
  *   where tools are loaded on-demand during execution.
+ * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
+ * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
  */
 async function loadAgentTools({
   req,
@@ -1582,6 +1617,8 @@ async function loadAgentTools({
   definitionsOnly = true,
   codeExecutionContext: providedCodeExecutionContext,
   accessibleMcpServerNames,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
 }) {
   if (definitionsOnly) {
     try {
@@ -1597,10 +1634,12 @@ async function loadAgentTools({
         codeExecutionContext: providedCodeExecutionContext,
         accessibleMcpServerNames,
         signal,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
       });
     } catch (error) {
       if (
-        isFatalAgentInitializationError(error) ||
+        isFatalAgentInitializationError(error, { signal }) ||
         isContentFilterError(error) ||
         !agent.tools?.some(isExpectedMCPTool)
       ) {
@@ -1738,6 +1777,14 @@ async function loadAgentTools({
     getAppConfig,
   });
 
+  const repositoryInstructionSource = createRepositoryInstructionSource({
+    load: repositoryInstructionLoader,
+    enabled: codeExecutionEnabled,
+    context: codeExecutionContext,
+    principalId: JSON.stringify([getTenantId(), req.user.id]),
+    codeApiMaxRetryWaitMs: req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    getAuthHeaders: (workerId) => getCodeApiAuthHeaders(req, workerId),
+  });
   const { loadedTools, toolContextMap, dynamicToolContextMap, primedCodeFiles } = await loadTools({
     agent,
     signal,
@@ -1759,6 +1806,8 @@ async function loadAgentTools({
       returnMetadata: true,
       mcpPermissionContext,
       requestScopedConnections: getMCPRequestContext(req, res),
+      upstreamTokenProvider,
+      upstreamTokenProviderResolver,
       codeExecutionContext,
       [Tools.web_search]: webSearchCallbacks,
     },
@@ -1777,6 +1826,7 @@ async function loadAgentTools({
       agentId: agent.id,
       provider: agent.provider,
       agentToolOptions: agent.tool_options,
+      gitIdentity: agent.git_identity,
       deferredToolsEnabled,
       programmaticToolsEnabled,
       codeExecutionEnabled,
@@ -1838,6 +1888,7 @@ async function loadAgentTools({
 
   if (preparedActionSnapshot == null) {
     return {
+      repositoryInstructionSource,
       toolRegistry,
       requestScopedConnections: getMCPRequestContext(req, res),
       userMCPAuthMap,
@@ -1859,6 +1910,7 @@ async function loadAgentTools({
       logger.warn(`No tools found for ${_agentTools.length} specified tool call(s)`);
     }
     return {
+      repositoryInstructionSource,
       toolRegistry,
       requestScopedConnections: getMCPRequestContext(req, res),
       userMCPAuthMap,
@@ -1991,6 +2043,7 @@ async function loadAgentTools({
     toolRegistry,
     requestScopedConnections: getMCPRequestContext(req, res),
     toolContextMap,
+    repositoryInstructionSource,
     dynamicToolContextMap,
     userMCPAuthMap,
     toolDefinitions,
@@ -2023,6 +2076,8 @@ async function loadAgentTools({
  * @param {Record<string, import('@librechat/api').LCAvailableTools>} [params.mcpAvailableTools] - Run-scoped MCP tool definitions
  * @param {import('@librechat/api').RequestScopedMCPConnectionStore} [params.requestScopedConnections] - Run-scoped MCP connections
  * @param {Record<string, Record<string, string>>} [params.userMCPAuthMap] - User MCP auth map
+ * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
+ * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
  * @param {Object} [params.tool_resources] - Tool resources
  * @param {string|null} [params.streamId] - Stream ID for web search callbacks
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted tool events
@@ -2046,6 +2101,8 @@ async function loadToolsForExecution({
   mcpAvailableTools,
   requestScopedConnections,
   userMCPAuthMap,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
   tool_resources,
   streamId = null,
   jobCreatedAt,
@@ -2208,20 +2265,15 @@ async function loadToolsForExecution({
        * library so PTC calls share the same managed auth context.
        */
       for (const name of ptcToolNames) {
-        const ptcOptions = {
-          authHeaders: () =>
+        const ptcTool = createContextProgrammaticBashTool(
+          () =>
             codeExecutionAuthHeaders(
               (bridgeWorkerId) => getCodeApiAuthHeaders(req, bridgeWorkerId),
               codeExecutionContext,
             ),
-          baseUrl: codeExecutionContext.baseUrl,
-          executionProfile: codeExecutionContext.executionProfile,
-          runtimeSessionHint: codeExecutionContext.runtimeSessionHint,
-        };
-        const ptcTool =
-          codeExecutionContext.environmentType === 'attached'
-            ? createGitIdentityProgrammaticBashTool(ptcOptions, agent?.git_identity)
-            : createBashProgrammaticToolCallingTool(ptcOptions);
+          codeExecutionContext,
+          agent?.git_identity,
+        );
         ptcTool.name = name;
         allLoadedTools.push(ptcTool);
       }
@@ -2255,10 +2307,22 @@ async function loadToolsForExecution({
               authHeaders,
               baseUrl: codeExecutionContext.baseUrl,
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
+              workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
+              environment: codeExecutionContext.codeWorkspace.environment,
               gitIdentity: agent?.git_identity,
               maxTimeoutMs: resolveAttachedWorkspaceCommandTimeoutMax(
                 codeExecutionContext.codeEnvironmentConfigSchema,
+                codeExecutionContext.codeWorkspace?.maxCommandTimeoutMs,
               ),
+              maxQueueWaitMs: resolveAttachedWorkspaceQueueWaitMs(
+                codeExecutionContext.codeEnvironmentConfigSchema,
+              ),
+              codeApiMaxRetryWaitMs: req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+              maxRequestTimeoutMs: resolveAttachedWorkspaceRequestTimeoutMs(
+                codeExecutionContext.codeEnvironmentConfigSchema,
+              ),
+              minCommandAdmissionMs:
+                codeExecutionContext.codeEnvironmentConfigSchema?.limits?.minCommandAdmissionMs,
             })
           : createBashExecutionTool({
               authHeaders,
@@ -2355,6 +2419,8 @@ async function loadToolsForExecution({
          *  turn already advertised. */
         accessibleMcpServerNames,
         requestScopedConnections: mcpRequestScopedConnections,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
         [Tools.web_search]: webSearchCallbacks,
       },
       webSearch: appConfig?.webSearch,

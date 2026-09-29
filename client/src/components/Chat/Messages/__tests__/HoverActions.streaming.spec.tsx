@@ -31,13 +31,21 @@ jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   },
 }));
 
-jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
-  __esModule: true,
-  default: ({ content }: { content?: TMessage['content'] }) => {
-    mockContentRenderCount += 1;
-    return <div data-testid="structured-message-content">{JSON.stringify(content ?? [])}</div>;
-  },
-}));
+jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
+  const { useErrorSource } = jest.requireActual('~/components/Messages/Content/Error/source');
+  return {
+    __esModule: true,
+    default: function ContentParts({ content }: { content?: TMessage['content'] }) {
+      mockContentRenderCount += 1;
+      const errorSource = useErrorSource();
+      return (
+        <div data-testid="structured-message-content" data-error-source-model={errorSource?.model}>
+          {JSON.stringify(content ?? [])}
+        </div>
+      );
+    },
+  };
+});
 
 jest.mock('~/components/Chat/Messages/Content/Parts/AuthorHeader', () => ({
   __esModule: true,
@@ -212,11 +220,16 @@ function renderStreamingRow(
   submitting = true,
   siblingIdx = 1,
   row?: RowComponent,
+  assistantMessage?: TMessage,
 ) {
   const queryClient = createQueryClient();
   queryClient.setQueryData<TMessage[]>(
     [QueryKeys.messages, conversation.conversationId],
-    [userMessage, structured ? optimisticStructuredAssistantMessage : optimisticAssistantMessage],
+    [
+      userMessage,
+      assistantMessage ??
+        (structured ? optimisticStructuredAssistantMessage : optimisticAssistantMessage),
+    ],
   );
 
   const initializeState = ({ set }: MutableSnapshot) => {
@@ -347,6 +360,23 @@ describe('streaming hover actions', () => {
     }).parentElement;
 
     expect(footer?.firstElementChild).toContainElement(timer);
+  });
+
+  /** An error content part renders without its message, so its row supplies the identity. */
+  it.each([
+    ['a structured', StructuredMessage],
+    ['a flat-thread', MessageParts],
+  ])("hands the error parts of %s row that row's model", (_label, row) => {
+    renderStreamingRow(true, true, 1, row, {
+      ...optimisticStructuredAssistantMessage,
+      endpoint: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    });
+
+    expect(screen.getByTestId('structured-message-content')).toHaveAttribute(
+      'data-error-source-model',
+      'claude-sonnet-4-5',
+    );
   });
 
   it('renders no elapsed timer once the row is not submitting', () => {

@@ -33,3 +33,8 @@ export const MAX_GRAPH_SUBAGENT_MEMBERS = 32;
  *  context gauge can add an exact figure instead of an estimate. The schema default
  *  and the save path share it; tokenizing runs ~60 ms/MB, once per stopped turn. */
 export const DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS = 8 * 1024 * 1024;
+
+/** Token ceiling for the block of Ask User answers carried verbatim in an agent's
+ *  user context (`endpoints.agents.askUserQuestion.retainedAnswers.maxTokens`).
+ *  Older answers drop first once the block exceeds it; the newest set is always kept. */
+export const DEFAULT_RETAINED_ANSWER_TOKENS = 4096;

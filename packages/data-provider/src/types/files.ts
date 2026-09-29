@@ -1,6 +1,6 @@
 import type { TDefaultLLMDeliveryPathConfig } from '../file-config';
 import type { CodeEnvRef, CodeEnvRefMap } from '../codeEnvRef';
-import { EToolResources } from './assistants';
+import { EToolResources } from './tools';
 
 export enum FileSources {
   local = 'local',
@@ -52,6 +52,9 @@ export type EndpointFileConfig = {
   supportedMimeTypes?: RegexLike[];
   defaultLLMDeliveryPath?: TDefaultLLMDeliveryPathConfig;
   legacyFileUploadUX?: boolean;
+  /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
+   *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
+  textFallbackWithoutTools?: boolean;
 };
 
 export type FileConfig = {
@@ -59,6 +62,8 @@ export type FileConfig = {
     [key: string]: EndpointFileConfig;
   };
   skills?: {
+    /** Maximum concurrent blob deletions during failed archive import cleanup. */
+    importCleanupConcurrency?: number;
     fileSizeLimit?: number;
   };
   fileTokenLimit?: number;
@@ -88,6 +93,9 @@ export type FileConfig = {
   checkType?: (fileType: string, supportedTypes: RegexLike[]) => boolean;
   defaultLLMDeliveryPath?: TDefaultLLMDeliveryPathConfig;
   legacyFileUploadUX?: boolean;
+  /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
+   *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
+  textFallbackWithoutTools?: boolean;
 };
 
 export type FileConfigInput = {
@@ -95,6 +103,8 @@ export type FileConfigInput = {
     [key: string]: EndpointFileConfig;
   };
   skills?: {
+    /** Maximum concurrent blob deletions during failed archive import cleanup. */
+    importCleanupConcurrency?: number;
     fileSizeLimit?: number;
   };
   serverFileSizeLimit?: number;
@@ -119,6 +129,9 @@ export type FileConfigInput = {
   checkType?: (fileType: string, supportedTypes: RegexLike[]) => boolean;
   defaultLLMDeliveryPath?: TDefaultLLMDeliveryPathConfig;
   legacyFileUploadUX?: boolean;
+  /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
+   *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
+  textFallbackWithoutTools?: boolean;
 };
 
 /** The immutable origin of a file explicitly published from an agent execution. */

@@ -1,11 +1,12 @@
 import React from 'react';
 import { DndProvider } from 'react-dnd';
 import { BrowserRouter } from 'react-router-dom';
-import { render, act } from '@testing-library/react';
 import { HTML5Backend } from 'react-dnd-html5-backend';
+import { render, act, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { atom, RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import type { SetterOrUpdater } from 'recoil';
+import type { SearchState } from '~/store/search';
 
 /**
  * Real recoil atom used to force ConversationsSection to re-render on demand,
@@ -36,12 +37,15 @@ const mockUseTitleGeneration = jest.fn(() => {
  *  keeps referential stability mid-stream, which is what the memoized-children
  *  guarantee below depends on. */
 const mockConversationsResult = {
-  data: { pages: [{ conversations: [] as unknown[], nextCursor: null }] },
+  data: { pages: [{ conversations: [] as unknown[], nextCursor: null }] } as
+    | { pages: Array<{ conversations: unknown[]; nextCursor: string | null }> }
+    | undefined,
   fetchNextPage: jest.fn(),
   refetch: jest.fn(),
   isFetchingNextPage: false,
   isLoading: false,
   isFetching: false,
+  isPreviousData: false,
   isError: false,
 };
 
@@ -99,9 +103,33 @@ jest.mock('~/hooks/Input/useSelectMention', () => ({
 
 jest.mock('~/components/Conversations', () => {
   const { memo } = jest.requireActual('react');
-  const ConversationsStub = memo(function ConversationsStub() {
+  const ConversationsStub = memo(function ConversationsStub({
+    conversations,
+    isSearchLoading,
+    isError,
+    onRetry,
+  }: {
+    conversations: Array<{ conversationId: string; title: string }>;
+    isSearchLoading: boolean;
+    isError: boolean;
+    onRetry: () => void;
+  }) {
     mockConversationsRender();
-    return <div data-testid="conversations-stub" />;
+    const localize: (key: string) => string = jest.requireMock('~/hooks').useLocalize();
+    let body: React.ReactNode = conversations.map((convo) => (
+      <span key={convo.conversationId}>{convo.title}</span>
+    ));
+    if (isError && conversations.length === 0) {
+      body = (
+        <button type="button" onClick={onRetry}>
+          {localize('com_ui_retry')}
+        </button>
+      );
+    }
+    if (isSearchLoading) {
+      body = <div data-testid="search-spinner" />;
+    }
+    return <div data-testid="conversations-stub">{body}</div>;
   });
   return { __esModule: true, Conversations: ConversationsStub };
 });
@@ -135,11 +163,14 @@ jest.mock('~/components/Nav/Favorites/FavoriteItem', () => ({
 }));
 
 import ConversationsSection from '../ConversationsSection';
+import store from '~/store';
 
 let setStreamTick: SetterOrUpdater<number>;
+let setSearchState: SetterOrUpdater<SearchState>;
 
 function TickController() {
   setStreamTick = useSetRecoilState(streamTickAtom);
+  setSearchState = useSetRecoilState(store.search);
   return null;
 }
 
@@ -167,10 +198,22 @@ const settleRenders = async () => {
   }
 };
 
-const renderSection = () =>
+const renderSection = (searchQuery = '') =>
   render(
     <QueryClientProvider client={createQueryClient()}>
-      <RecoilRoot>
+      <RecoilRoot
+        initializeState={({ set }) => {
+          if (searchQuery) {
+            set(store.search, {
+              query: searchQuery,
+              debouncedQuery: searchQuery,
+              enabled: true,
+              isTyping: false,
+              isSearching: false,
+            });
+          }
+        }}
+      >
         <BrowserRouter>
           <DndProvider backend={HTML5Backend}>
             <TickController />
@@ -239,4 +282,195 @@ describe('ConversationsSection streaming re-renders', () => {
     },
     TEST_TIMEOUT,
   );
+});
+
+describe('ConversationsSection search refetch', () => {
+  it('does not display old matches as unfiltered chats while clearing the search', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Old search match' }],
+          nextCursor: null,
+        },
+      ],
+    };
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByText('Old search match')).toBeInTheDocument();
+
+      act(() => {
+        setSearchState({
+          query: '',
+          debouncedQuery: 'draft',
+          enabled: true,
+          isTyping: true,
+          isSearching: false,
+        });
+      });
+
+      expect(screen.getByTestId('projects-stub')).toBeInTheDocument();
+      expect(screen.queryByText('Old search match')).not.toBeInTheDocument();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+    }
+  });
+
+  it('shows progress while retrying a failed cached search with no results', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.isError = true;
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByRole('button', { name: 'com_ui_retry' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      expect(mockConversationsResult.refetch).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        mockConversationsResult.isFetching = true;
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+
+      act(() => {
+        mockConversationsResult.isFetching = false;
+        mockConversationsResult.isError = false;
+        mockConversationsResult.data = {
+          pages: [
+            {
+              conversations: [{ conversationId: 'chat-1', title: 'Found match' }],
+              nextCursor: null,
+            },
+          ],
+        };
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByText('Found match')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-spinner')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isError = false;
+      mockConversationsResult.isFetching = false;
+      mockConversationsResult.refetch.mockClear();
+    }
+  });
+
+  it('shows loading for an uncached search', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = undefined;
+    mockConversationsResult.isLoading = true;
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isLoading = false;
+    }
+  });
+
+  it('does not show results from the previous search while the next one loads', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Previous match' }],
+          nextCursor: null,
+        },
+      ],
+    };
+    mockConversationsResult.isPreviousData = true;
+
+    try {
+      renderSection('new term');
+      await settleRenders();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+      expect(screen.queryByText('Previous match')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isPreviousData = false;
+    }
+  });
+
+  it('keeps cached results visible when a message triggers a background list refetch', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Matching chat' }],
+          nextCursor: null,
+        },
+      ],
+    };
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByText('Matching chat')).toBeInTheDocument();
+
+      act(() => {
+        mockConversationsResult.isFetching = true;
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByText('Matching chat')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-spinner')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.isFetching = false;
+      mockConversationsResult.data = previousData;
+    }
+  });
+});
+
+describe('ConversationsSection shared scroll surface', () => {
+  /** Searching swaps what the one surface holds — Projects and Pinned leave,
+   *  the chats become results — and a position kept from the previous contents
+   *  would open those results partway down. */
+  it('returns the surface to the top when a search replaces its contents', async () => {
+    let setSearch: SetterOrUpdater<SearchState>;
+
+    function SearchController() {
+      setSearch = useSetRecoilState(store.search);
+      return null;
+    }
+
+    const { container } = render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RecoilRoot>
+          <BrowserRouter>
+            <DndProvider backend={HTML5Backend}>
+              <SearchController />
+              <ConversationsSection />
+            </DndProvider>
+          </BrowserRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    await settleRenders();
+
+    const surface = container.querySelector<HTMLElement>('.overflow-y-auto');
+    expect(surface).not.toBeNull();
+    surface!.scrollTop = 420;
+
+    act(() => {
+      setSearch({
+        query: 'draft',
+        debouncedQuery: 'draft',
+        enabled: true,
+        isTyping: false,
+        isSearching: true,
+      });
+    });
+
+    expect(surface!.scrollTop).toBe(0);
+  });
 });

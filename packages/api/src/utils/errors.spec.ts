@@ -1,4 +1,4 @@
-import { getSafeErrorMetadata, getSafeErrorText, isAbortError } from './errors';
+import { getSafeErrorMetadata, getSafeErrorText, isAbortError, isOwnedAbortError } from './errors';
 
 describe('getSafeErrorMetadata', () => {
   it('keeps bounded diagnostic fields without serializing raw provider data', () => {
@@ -180,5 +180,24 @@ describe('isAbortError', () => {
   it('tolerates non-error values', () => {
     expect(isAbortError(undefined)).toBe(false);
     expect(isAbortError('aborted')).toBe(false);
+  });
+});
+
+describe('isOwnedAbortError', () => {
+  it.each([new Error('stopped'), 'stopped'])(
+    'recognizes the owning signal reason (%s)',
+    (reason) => {
+      const controller = new AbortController();
+      controller.abort(reason);
+
+      expect(isOwnedAbortError(reason, controller.signal)).toBe(true);
+    },
+  );
+
+  it('does not hide an unrelated failure that races cancellation', () => {
+    const controller = new AbortController();
+    controller.abort(new Error('stopped'));
+
+    expect(isOwnedAbortError(new Error('upstream failed'), controller.signal)).toBe(false);
   });
 });

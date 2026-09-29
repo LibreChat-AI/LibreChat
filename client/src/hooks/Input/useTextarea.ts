@@ -471,7 +471,7 @@ export default function useTextarea({
       if (saveDrafts && isFilesDraftOwnedByThisTab(getFilesDraft(draftId))) {
         addPastedTextDraftFile({ id: draftId, fileId: pendingFileId });
         try {
-          setDraft({ id: draftId, value: composerValue, persistExact: true });
+          setDraft({ id: draftId, value: composerValue });
           setPendingTextAttachmentDraft({
             id: draftId,
             fileId: pendingFileId,

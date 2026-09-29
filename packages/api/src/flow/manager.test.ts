@@ -48,6 +48,42 @@ describe('FlowStateManager', () => {
     jest.clearAllMocks();
   });
 
+  it.each([false, true])(
+    'preserves named failures across serialized stores (guarded: %s)',
+    async (guarded) => {
+      jest.useFakeTimers();
+      const keyv = new Keyv({ serialize: JSON.stringify, deserialize: JSON.parse });
+      const owner = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      const peer = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      try {
+        await owner.initFlow('refresh', 'mcp_get_tokens');
+        const flow = await owner.getFlowState('refresh', 'mcp_get_tokens');
+        const waiting = peer.createFlowWithHandler(
+          'refresh',
+          'mcp_get_tokens',
+          async () => 'unexpected',
+        );
+        const result = waiting.catch((error: Error) => error);
+        const expected = {
+          name: 'MCPTokenRefreshUnavailableError',
+          message: 'retry later',
+        };
+        await Promise.resolve();
+        const error = new Error('retry later');
+        error.name = 'MCPTokenRefreshUnavailableError';
+        if (guarded) {
+          await owner.failFlowIfCurrent('refresh', 'mcp_get_tokens', flow!.createdAt, '', error);
+        } else {
+          await owner.failFlow('refresh', 'mcp_get_tokens', error);
+        }
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(await result).toMatchObject(expected);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
   describe('Concurrency Tests', () => {
     it('atomically updates the default in-memory Keyv envelope', async () => {
       const keyv = new Keyv({

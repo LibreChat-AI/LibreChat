@@ -3,7 +3,7 @@ const { createContentAggregator, GraphNodeKeys } = require('@librechat/agents');
 const {
   resolveSender,
   resolveRunConversation,
-  resolveConversationCodeEnvironmentDecision,
+  resolveAdmittedCodeEnvironmentDecision,
   createConcurrencyLimiter,
   loadSkillStates,
   initializeAgent,
@@ -40,6 +40,7 @@ const {
   encodeAndFormatAudios,
   encodeAndFormatVideos,
   extractFileContext,
+  createScheduleUpstreamTokenProviderResolver,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -93,7 +94,9 @@ const { processAddedConvo } = require('./addedConvo');
 const subagentThreadTaskStore = require('./subagentThreadStore');
 const {
   preregisterBackgroundToolCompletion,
+  pendingBackgroundToolCompletions,
   createBackgroundToolResultPersistence,
+  claimBackgroundToolResult,
   createDeadBackgroundToolClaimRecovery,
 } = require('./backgroundCompletion');
 const { logViolation } = require('~/cache');
@@ -123,6 +126,8 @@ function createToolLoader(
   streamId = null,
   definitionsOnly = false,
   jobCreatedAt,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
 ) {
   /**
    * @param {object} params
@@ -164,9 +169,11 @@ function createToolLoader(
         codeExecutionContext,
         definitionsOnly,
         accessibleMcpServerNames,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
       });
     } catch (error) {
-      if (isFatalAgentInitializationError(error) || isContentFilterError(error)) {
+      if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
         throw error;
       }
       logger.error('Error loading tools for agent ' + agentId, error);
@@ -185,8 +192,10 @@ function createToolLoader(
  * @param {string} [params.checkpointNamespace] Immutable saver-level generation scope
  * @param {string} [params.foregroundRunId] Canonical response identity for foreground execution
  * @param {import('@librechat/api').MCPRuntimeRequestBody} [params.requestBody]
+ * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
+ * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
  */
-const initializeClient = async ({
+const initializeClientWithProvider = async ({
   req,
   res,
   signal,
@@ -195,6 +204,8 @@ const initializeClient = async ({
   checkpointNamespace,
   foregroundRunId,
   requestBody,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
 }) => {
   if (!endpointOption) {
     throw new Error('Endpoint option not provided');
@@ -206,6 +217,8 @@ const initializeClient = async ({
   const ordinaryToolCancellationEnabled =
     appConfig?.endpoints?.[EModelEndpoint.agents]?.backgroundTasks?.ordinaryToolCancellation ===
     true;
+  const backgroundCompletionResultMaxChars =
+    appConfig?.endpoints?.[EModelEndpoint.agents]?.backgroundTasks?.completionResultMaxChars;
   /** The normal controller resolves this once for timestamp anchoring. Reuse
    * that trusted document for child-thread execution policy; resume and direct
    * callers fall back to the same owner-scoped lookup. */
@@ -431,6 +444,7 @@ const initializeClient = async ({
     runSignal: signal,
     foregroundRunId,
     ordinaryToolCancellation: ordinaryToolCancellationEnabled,
+    backgroundCompletionResultMaxChars,
     loadTools: async (
       toolNames,
       agentId,
@@ -463,6 +477,8 @@ const initializeClient = async ({
         mcpAvailableTools: ctx.mcpAvailableTools,
         requestScopedConnections: ctx.requestScopedConnections,
         userMCPAuthMap: ctx.userMCPAuthMap,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
         tool_resources: ctx.tool_resources,
         actionsEnabled: ctx.actionsEnabled,
         accessibleMcpServerNames: ctx.accessibleMcpServerNames,
@@ -496,15 +512,19 @@ const initializeClient = async ({
     },
     persistBackgroundCodeResult: createBackgroundCodeResultHandler({
       req,
+      streamId,
+      jobCreatedAt,
       updateToolCallResult: db.updateToolCallResult,
     }),
     backgroundToolCompletion: {
       ...(completionWakeupsEnabled ? { preregister: preregisterBackgroundToolCompletion } : {}),
+      /** Deliveries admitted before wake-ups were disabled still drain and still count. */
+      pending: pendingBackgroundToolCompletions,
       persist: createBackgroundToolResultPersistence({
         req,
         updateToolCallResult: db.updateToolCallResult,
       }),
-      claim: db.claimBackgroundToolResults,
+      claim: (input) => claimBackgroundToolResult(db, input),
       recoverDeadClaim: createDeadBackgroundToolClaimRecovery(
         db.releaseBackgroundToolResultClaims,
         (conversationId) => GenerationJobManager.getJob(conversationId),
@@ -587,12 +607,16 @@ const initializeClient = async ({
   ]);
   /** Preserve the owner-scoped fallback for loaders that share this request. */
   req.resolvedConversation = requestConversation;
-  const codeEnvironmentDecision = resolveConversationCodeEnvironmentDecision({
-    conversationId,
-    requestedMode: runtimeRequestBody?.codeEnvironmentMode,
-    requestedSelections: runtimeRequestBody?.codeWorkspaces,
-    conversation: requestConversation,
-  });
+  const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
+    await resolveAdmittedCodeEnvironmentDecision({
+      appConfig,
+      conversation: requestConversation,
+      conversationId,
+      requestedMode: runtimeRequestBody?.codeEnvironmentMode,
+      requestedSelections: runtimeRequestBody?.codeWorkspaces,
+      readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(req.user.id, id),
+    });
+  req.resolvedConversation = admittedConversation;
   /** Trusted, normalized pair used by every persistence path, including init failures. */
   req._codeEnvironmentDecision = codeEnvironmentDecision;
   runtimeRequestBody = {
@@ -624,7 +648,16 @@ const initializeClient = async ({
   const allowedProviders = new Set(appConfig?.endpoints?.[EModelEndpoint.agents]?.allowedProviders);
 
   /** Event-driven mode: only load tool definitions, not full instances */
-  const loadTools = createToolLoader(req, res, signal, streamId, true, jobCreatedAt);
+  const loadTools = createToolLoader(
+    req,
+    res,
+    signal,
+    streamId,
+    true,
+    jobCreatedAt,
+    upstreamTokenProvider,
+    upstreamTokenProviderResolver,
+  );
   /** @type {Array<MongoFile>} */
   const requestFiles = req.body.files ?? [];
   /** @type {string | undefined} */
@@ -712,6 +745,7 @@ const initializeClient = async ({
       skillStates,
       defaultActiveOnShare,
       manualSkills,
+      signal,
     },
     {
       getFiles: db.getFiles,
@@ -760,6 +794,7 @@ const initializeClient = async ({
     {
       req,
       res,
+      signal,
       primaryConfig,
       agent_ids: primaryConfig.agent_ids,
       endpointOption,
@@ -884,6 +919,7 @@ const initializeClient = async ({
     toolIntentsAvailable,
     statefulSessionsAvailable,
     memoryAvailable,
+    signal,
   });
 
   if (updatedMCPAuthMap) {
@@ -1098,7 +1134,7 @@ const initializeClient = async ({
       ? await resolveCodeExecutionWorkspaceContext({
           context: baseCodeExecutionContext,
           requestedSelections: runtimeRequestBody?.codeWorkspaces,
-          persistedSelections: requestConversation?.codeWorkspaces,
+          persistedSelections: admittedConversation?.codeWorkspaces,
           environments: configuredCodeEnvironments,
           getAppConfig,
         })
@@ -1160,7 +1196,7 @@ const initializeClient = async ({
     try {
       return await loading;
     } catch (error) {
-      if (isFatalAgentInitializationError(error)) {
+      if (isFatalAgentInitializationError(error, { signal })) {
         throw error;
       }
       logger.error(`[initializeClient] Error loading subagent metadata ${agentId}:`, error);
@@ -1248,7 +1284,16 @@ const initializeClient = async ({
           req,
           res,
           agent,
-          loadTools: createToolLoader(req, res, context.signal, streamId, true, jobCreatedAt),
+          loadTools: createToolLoader(
+            req,
+            res,
+            context.signal,
+            streamId,
+            true,
+            jobCreatedAt,
+            upstreamTokenProvider,
+            upstreamTokenProviderResolver,
+          ),
           requestFiles,
           authorizedRunFiles: getAuthorizedRunFileSnapshot({
             policy: appConfig.endpoints?.agents?.fileSharing,
@@ -1277,6 +1322,7 @@ const initializeClient = async ({
           memoryAvailable,
           skillStates,
           defaultActiveOnShare,
+          signal: context.signal,
         },
         {
           getFiles: db.getFiles,
@@ -1461,7 +1507,7 @@ const initializeClient = async ({
       graphMemberConfigsById.set(memberId, config);
       return config;
     } catch (error) {
-      if (isFatalAgentInitializationError(error)) {
+      if (isFatalAgentInitializationError(error, { signal })) {
         throw error;
       }
       logger.error(`[initializeClient] Error initializing graph member ${memberId}:`, error);
@@ -1834,4 +1880,26 @@ const initializeClient = async ({
   return { client, userMCPAuthMap };
 };
 
-module.exports = { initializeClient };
+/**
+ * Creates an agent initializer whose host may resolve renewable credentials at
+ * the execution boundary. The resolver returns a provider closure rather than
+ * token material so refresh remains owned by the host integration.
+ *
+ * @param {object} [dependencies]
+ * @param {import('@librechat/api').HostUpstreamTokenProviderResolver} [dependencies.resolveUpstreamTokenProvider]
+ */
+function createInitializeClient(dependencies = {}) {
+  return async (params) => {
+    const upstreamTokenProviderResolver = createScheduleUpstreamTokenProviderResolver(
+      params.req,
+      dependencies.resolveUpstreamTokenProvider,
+      params.signal,
+      params.scheduledTokenContext,
+    );
+    return initializeClientWithProvider({ ...params, upstreamTokenProviderResolver });
+  };
+}
+
+const initializeClient = createInitializeClient();
+
+module.exports = { createInitializeClient, initializeClient };

@@ -178,23 +178,40 @@ export async function resolveCodeExecutionWorkspaceContext({
     codeWorkspace: {
       ...selection,
       operations: [...(workspace.operations ?? status.operations)],
+      ...(context.conversationWorkspaceInstanceId &&
+      workspace.workspaceInstances?.includes('git_worktree')
+        ? { workspaceInstanceId: context.conversationWorkspaceInstanceId }
+        : {}),
+      ...(status.maxCommandTimeoutMs == null
+        ? {}
+        : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),
+      ...(workspace.instructions ? { instructions: workspace.instructions } : {}),
+      ...(workspace.environment ? { environment: workspace.environment } : {}),
     },
   };
 }
 
-/** Attached workers must confirm both a stateful workspace and the Bash runtime. */
+/** Require explicit capability support for the selected execution route. */
 export async function supportsProgrammaticCodeExecution(
   context?: CodeExecutionContext,
   environments?: readonly CodeEnvironmentConfig[],
   getAppConfig?: CodeCapabilityConfigLoader,
 ): Promise<boolean> {
   if (context?.environmentType !== 'attached') return true;
-  /** Programmatic Bash uses Code API's generic exec endpoint, which has no
-   * workspace identifier. A fully resolved attached context therefore cannot
-   * use it until that protocol can preserve the selected-root boundary. */
-  if (context.codeWorkspace != null) return false;
   try {
     const status = await readAuthorizedAttachedWorkerStatus(context, environments, getAppConfig);
+    if (context.codeWorkspace != null) {
+      const selected = context.codeWorkspace;
+      const workspace = status.workspaces?.find(({ id }) => id === selected.workspaceId);
+      return (
+        status.status === 'ready' &&
+        selected.environmentId === context.environmentId &&
+        selected.operations.includes('execute_command') &&
+        workspace != null &&
+        (workspace.operations ?? status.operations)?.includes('execute_command') === true &&
+        status.programmaticLanguages?.includes('bash') === true
+      );
+    }
     return (
       status.status === 'ready' &&
       status.statefulWorkspace === true &&
