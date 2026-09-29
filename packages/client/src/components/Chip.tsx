@@ -26,7 +26,7 @@ const chipVariants: (props?: ChipVariantProps & ClassProp) => string = cva(
       size: {
         sm: 'min-h-6 px-2 py-0.5',
         md: 'min-h-8 px-2.5 py-1',
-        theme: 'h-theme-control gap-theme-compact px-theme-normal',
+        theme: 'h-theme-control gap-theme-control-gap px-theme-control-x',
       },
       shape: {
         round: 'rounded-full',

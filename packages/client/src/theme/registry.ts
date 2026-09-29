@@ -135,6 +135,8 @@ export const themeAppearanceProperties: Readonly<
   radius2xl: '--theme-radius-2xl',
   radius3xl: '--theme-radius-3xl',
   controlHeight: '--theme-control-height',
+  controlPaddingX: '--theme-control-padding-x',
+  controlGap: '--theme-control-gap',
   switchWidth: '--theme-switch-width',
   switchHeight: '--theme-switch-height',
   tableCellSpaceY: '--theme-table-cell-space-y',
@@ -184,6 +186,8 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   radius2xl: '1rem',
   radius3xl: '1.5rem',
   controlHeight: '2.25rem',
+  controlPaddingX: '0.75rem',
+  controlGap: '0.375rem',
   ...defaultSwitchSize,
   tableCellSpaceY: '1rem',
   tableRowStroke: '0px',
@@ -355,16 +359,24 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
 }
 
 /**
- * Headings drew the UI family before the display role existed, so a theme that
- * names its own `fontFamily` and no display family keeps its headings in it.
+ * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
+ * family before the display role existed, and theme-sized controls were padded by the shared
+ * spacing, so a theme that names the broader role and not the split one keeps what it drew.
  */
-function withDisplayFamily(appearance?: Partial<IThemeAppearance>): IThemeAppearance {
+const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAppearance]> = [
+  ['displayFontFamily', 'fontFamily'],
+  ['controlPaddingX', 'spaceNormal'],
+  ['controlGap', 'spaceCompact'],
+];
+
+function withInheritedRoles(appearance?: Partial<IThemeAppearance>): IThemeAppearance {
   const known = knownAppearance(appearance);
-  const display =
-    known.displayFontFamily === undefined && known.fontFamily !== undefined
-      ? { displayFontFamily: known.fontFamily }
-      : {};
-  return { ...defaultAppearance, ...known, ...display };
+  const inherited = Object.fromEntries(
+    inheritedAppearance
+      .filter(([role, source]) => known[role] === undefined && known[source] !== undefined)
+      .map(([role, source]) => [role, known[source]]),
+  );
+  return { ...defaultAppearance, ...known, ...inherited };
 }
 
 export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedThemeDefinition {
@@ -544,7 +556,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,
-    appearance: withComposableShadows(withDisplayFamily(definition?.appearance)),
+    appearance: withComposableShadows(withInheritedRoles(definition?.appearance)),
     /** Mode last: a mode override is more specific than the theme-wide set. */
     brands: {
       ...defaultBrands,

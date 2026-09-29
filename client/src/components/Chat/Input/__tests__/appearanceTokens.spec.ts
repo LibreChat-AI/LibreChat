@@ -15,7 +15,7 @@ const themedControls = [
   ['InterruptSteerButton.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   ['TokenUsage/index.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   ['Files/AttachFile.tsx', ['size-theme-control', 'rounded-theme-control-round']],
-  ['CodeApprovalMenu.tsx', ['composerControlClasses()', 'md:px-theme-normal']],
+  ['CodeApprovalMenu.tsx', ['composerControlClasses()', 'md:px-theme-control-x']],
 ] as const;
 
 describe('Composer appearance tokens', () => {

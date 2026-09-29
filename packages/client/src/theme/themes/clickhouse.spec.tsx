@@ -359,6 +359,8 @@ describe('clickhouse theme definition', () => {
       'shadow2xl',
       'elevationSurface',
       'controlHeight',
+      'controlPaddingX',
+      'controlGap',
       'motionFast',
     ] as const;
     expect(
@@ -366,12 +368,17 @@ describe('clickhouse theme definition', () => {
     ).toEqual([]);
   });
 
-  /** Click UI's control height and `transition.default`. The spacing roles keep LibreChat's
-   *  values: they also pad message bubbles and the composer's send button, and 0.75rem is
-   *  already Click UI's field padding. */
+  /** Click UI's control height, button padding and gap, and `transition.default`. The shared
+   *  spacing roles keep LibreChat's values: they also pad message bubbles and the composer's send
+   *  button, and 0.75rem is already Click UI's field padding. */
   it('sizes theme controls from Click UI and leaves the shared spacing alone', () => {
     const { appearance } = resolveTheme(clickHouseTheme, 'light');
-    expect(appearance).toMatchObject({ controlHeight: '2rem', motionFast: '100ms' });
+    expect(appearance).toMatchObject({
+      controlHeight: '2rem',
+      controlPaddingX: '1rem',
+      controlGap: '0.5rem',
+      motionFast: '100ms',
+    });
     expect(appearance.spaceCompact).toBe(defaultAppearance.spaceCompact);
     expect(appearance.spaceNormal).toBe(defaultAppearance.spaceNormal);
   });

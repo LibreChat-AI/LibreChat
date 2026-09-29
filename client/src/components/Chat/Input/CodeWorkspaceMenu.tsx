@@ -374,7 +374,7 @@ export default function CodeWorkspaceMenu({
             }
             className={cn(
               composerControlClasses(),
-              'md:px-theme-normal max-w-full min-w-0 px-2.5',
+              'md:px-theme-control-x max-w-full min-w-0 px-2.5',
               isOpen && 'bg-surface-hover',
               buttonDisabled && 'cursor-not-allowed opacity-50',
             )}

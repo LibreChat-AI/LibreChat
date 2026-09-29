@@ -314,6 +314,8 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   shadow2xl: 'shadow.1',
   elevationSurface: 'shadow.1',
   controlHeight: 'click.genericMenu.panel.size.height',
+  controlPaddingX: 'click.button.basic.space.x',
+  controlGap: 'click.button.basic.space.gap',
   scrimOpacity: 'click.dialog.color.opaqueBackground.default',
   alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
@@ -448,7 +450,7 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
  * every decision; the floors below only move up.
  */
 type ParityKind = 'color' | 'shape';
-type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'w' | 'h' | 'py';
+type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'w' | 'h' | 'py' | 'px' | 'gap';
 
 interface ParityProbe {
   /** The Click UI component token the primitive should reproduce. */
@@ -523,6 +525,10 @@ const dropdownProbe = () =>
 const buttonProbe = (variant: 'default' | 'outline') => () =>
   mount(createElement(Button, { variant }, 'Save'), 'button');
 
+/** A button on the theme's control metrics, the size that reads the control spacing roles. */
+const themeButtonProbe = () =>
+  mount(createElement(Button, { size: 'theme', shape: 'theme' }, 'Save'), 'button');
+
 const parityProbes: Record<string, ParityProbe> = {
   'Button primary fill': {
     token: 'click.button.basic.color.primary.background.default',
@@ -547,6 +553,18 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'shape',
     utility: 'rounded',
     element: buttonProbe('default'),
+  },
+  'Button inline padding': {
+    token: 'click.button.basic.space.x',
+    kind: 'shape',
+    utility: 'px',
+    element: themeButtonProbe,
+  },
+  'Button gap': {
+    token: 'click.button.basic.space.gap',
+    kind: 'shape',
+    utility: 'gap',
+    element: themeButtonProbe,
   },
   'Field fill': {
     token: 'click.field.color.background.default',
@@ -733,8 +751,8 @@ const parityProbes: Record<string, ParityProbe> = {
 
 /** The fewest decisions per mode that must match; raise a floor when a change closes a gap. */
 const parityFloors: Record<ThemeMode, Record<ParityKind, number>> = {
-  light: { color: 9, shape: 10 },
-  dark: { color: 10, shape: 10 },
+  light: { color: 9, shape: 12 },
+  dark: { color: 10, shape: 12 },
 };
 
 const radiusRoles: Record<string, keyof IThemeAppearance> = {
@@ -752,12 +770,14 @@ const radiusRoles: Record<string, keyof IThemeAppearance> = {
 
 const fixedRadii: Record<string, string> = { full: '9999px', none: '0px' };
 
-type SizeUtility = 'w' | 'h' | 'py';
+type SizeUtility = 'w' | 'h' | 'py' | 'px' | 'gap';
 
 const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
   w: { 'theme-switch': 'switchWidth' },
   h: { 'theme-switch': 'switchHeight', 'theme-control': 'controlHeight' },
   py: { 'theme-table-cell': 'tableCellSpaceY' },
+  px: { 'theme-control-x': 'controlPaddingX' },
+  gap: { 'theme-control-gap': 'controlGap' },
 };
 
 /** The compact and dense table sizes divide the cell space, as the preset does. */
@@ -766,8 +786,7 @@ const derivedSizes: Record<string, [keyof IThemeAppearance, number]> = {
   'theme-table-cell-dense': ['tableCellSpaceY', 4],
 };
 
-const isSizeUtility = (utility: Utility): utility is SizeUtility =>
-  utility === 'w' || utility === 'h' || utility === 'py';
+const isSizeUtility = (utility: Utility): utility is SizeUtility => utility in sizeRoles;
 
 /** A `border`, `border-2` or one-sided `border-b` class, or a theme stroke role that is not
  *  zero: the width a border color needs to show. */
@@ -781,7 +800,7 @@ const drawsBorder = (classes: string[], resolved: Resolved) =>
 
 type Resolved = ReturnType<typeof resolveTheme>;
 
-/** A `w-*`, `h-*` or `py-*` step: a theme role, or Tailwind's 0.25rem spacing scale. */
+/** A `w-*`, `h-*`, `py-*`, `px-*` or `gap-*` step: a theme role, or Tailwind's 0.25rem scale. */
 function sizeValue(utility: SizeUtility, name: string, resolved: Resolved): string | undefined {
   const role = sizeRoles[utility][name];
   if (role !== undefined) {

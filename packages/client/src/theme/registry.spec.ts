@@ -591,6 +591,52 @@ describe('theme registry', () => {
     expect(bundled.appearance.displayFontFamily).toBe(defaultAppearance.fontFamily);
   });
 
+  it('pads theme-sized controls with the shared spacing by default', () => {
+    expect(defaultAppearance.controlPaddingX).toBe(defaultAppearance.spaceNormal);
+    expect(defaultAppearance.controlGap).toBe(defaultAppearance.spaceCompact);
+  });
+
+  it('keeps the controls of a theme that names only the shared spacing on it', () => {
+    const { appearance } = resolveTheme(compactTheme, 'light');
+
+    expect(appearance).toMatchObject({ controlPaddingX: '0.5rem', controlGap: '0.25rem' });
+  });
+
+  it('spaces controls apart from message rows when a theme names the control roles', () => {
+    const { appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'roomy-controls-reference',
+        modes: {
+          light: {
+            appearance: { spaceNormal: '0.5rem', controlPaddingX: '2rem', controlGap: '1rem' },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(appearance).toMatchObject({
+      spaceNormal: '0.5rem',
+      spaceCompact: defaultAppearance.spaceCompact,
+      controlPaddingX: '2rem',
+      controlGap: '1rem',
+    });
+  });
+
+  it('rejects a control spacing role that is not a length', () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'bad-controls',
+        modes: { light: { appearance } },
+      });
+
+    expect(issues({ controlPaddingX: '1rem', controlGap: 'calc(1rem - 2px)' })).toEqual([]);
+    expect(issues({ controlPaddingX: '12' })).toHaveLength(1);
+    expect(issues({ controlGap: '1rem; color: red' })).toHaveLength(1);
+  });
+
   it('reproduces Tailwind’s own type scale by default', () => {
     const tailwind = readFileSync(
       join(__dirname, '..', '..', '..', '..', 'node_modules', 'tailwindcss', 'theme.css'),

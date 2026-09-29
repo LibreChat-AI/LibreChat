@@ -52,7 +52,7 @@ export const composerSubmitClasses = (): string =>
  */
 export const composerControlClasses = (): string =>
   cn(
-    'group relative inline-flex items-center justify-center gap-theme-compact',
+    'group relative inline-flex items-center justify-center gap-theme-control-gap',
     'h-theme-control rounded-theme-control-round border border-border-medium',
     'bg-transparent text-sm font-medium text-text-primary transition-all',
     /** No elevation: a row of raised pills inside the composer competes with the

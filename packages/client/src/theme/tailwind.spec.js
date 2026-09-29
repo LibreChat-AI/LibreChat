@@ -144,7 +144,13 @@ describe('LibreChat Tailwind preset', () => {
       ['duration-theme-normal', '--theme-motion-normal', defaultAppearance.motionNormal],
     ];
 
-    const css = await generate([...roles.map(([candidate]) => candidate), 'font-sans', 'p-4']);
+    const css = await generate([
+      ...roles.map(([candidate]) => candidate),
+      'px-theme-control-x',
+      'gap-theme-control-gap',
+      'font-sans',
+      'p-4',
+    ]);
 
     roles.forEach(([candidate, property, fallback]) => {
       expect(css).toContain(`.${candidate}`);
@@ -155,6 +161,15 @@ describe('LibreChat Tailwind preset', () => {
      *  rather than only the control-height variable it is built from. */
     expect(css).toContain(
       `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem)`,
+    );
+
+    /** A stylesheet that predates the control spacing roles pads controls with the shared
+     *  spacing they read before. */
+    expect(css).toContain(
+      `var(--theme-control-padding-x, var(--theme-space-normal, ${defaultAppearance.spaceNormal}))`,
+    );
+    expect(css).toContain(
+      `var(--theme-control-gap, var(--theme-space-compact, ${defaultAppearance.spaceCompact}))`,
     );
 
     /** The preset extends the default theme rather than replacing it. */

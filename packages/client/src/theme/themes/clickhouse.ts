@@ -358,6 +358,8 @@ const clickHouseShape = {
   shadowXs: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   controlHeight: '2rem', // genericMenu.panel.size.height
+  controlPaddingX: '1rem', // button.basic.space.x
+  controlGap: '0.5rem', // button.basic.space.gap
   scrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   alertScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   modalScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha

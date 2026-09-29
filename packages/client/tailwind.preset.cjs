@@ -22,6 +22,10 @@ module.exports = {
         'theme-compact': 'var(--theme-space-compact, 0.375rem)',
         'theme-normal': 'var(--theme-space-normal, 0.75rem)',
         'theme-control': 'var(--theme-control-height, 2.25rem)',
+        /** A theme-sized control's inline padding and gap, falling back to the shared spacing it
+         *  read before, for a stylesheet that predates the roles. */
+        'theme-control-x': 'var(--theme-control-padding-x, var(--theme-space-normal, 0.75rem))',
+        'theme-control-gap': 'var(--theme-control-gap, var(--theme-space-compact, 0.375rem))',
         /**
          * The comfortable tap target (2.75rem / 44px), held against the theme's
          * own control height with `max()` so a theme that already draws larger

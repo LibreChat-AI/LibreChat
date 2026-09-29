@@ -308,6 +308,10 @@ const appearanceValidators = {
   radius2xl: isLength,
   radius3xl: isLength,
   controlHeight: isLength,
+  /** The inline padding and icon-to-label gap of a theme-sized control, apart from the shared
+   *  spacing that also pads message rows. */
+  controlPaddingX: isLength,
+  controlGap: isLength,
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
   tableCellSpaceY: isTableLength,

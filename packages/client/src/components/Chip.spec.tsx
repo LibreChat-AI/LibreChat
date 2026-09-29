@@ -50,7 +50,8 @@ describe('Chip', () => {
     expect(screen.getByText('Themeable').parentElement).toHaveClass(
       'h-theme-control',
       'rounded-theme-control',
-      'gap-theme-compact',
+      'gap-theme-control-gap',
+      'px-theme-control-x',
     );
     expect(screen.getByRole('button', { name: 'Remove theme' })).toHaveClass(
       'rounded-theme-control-round',

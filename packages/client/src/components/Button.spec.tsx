@@ -14,7 +14,8 @@ describe('Button', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toHaveClass(
       'h-theme-control',
       'rounded-theme-control',
-      'gap-theme-compact',
+      'gap-theme-control-gap',
+      'px-theme-control-x',
     );
   });
 

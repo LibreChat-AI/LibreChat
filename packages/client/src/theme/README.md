@@ -207,7 +207,7 @@ v4 loads no config file on its own, so without the directive the preset, the `co
 and class-based dark mode are all silently absent.
 
 The published preset supplies the semantic appearance utilities used by theme-aware component
-variants, including `h-theme-control`, `rounded-theme-control`, `gap-theme-compact`, and
+variants, including `h-theme-control`, `rounded-theme-control`, `px-theme-control-x`, `gap-theme-control-gap`, and
 `duration-theme-fast`. Keep the preset enabled even when defining additional project utilities.
 
 The published stylesheet and preset preserve the host's standard Tailwind color palettes.

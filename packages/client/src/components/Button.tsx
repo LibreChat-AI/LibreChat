@@ -150,7 +150,7 @@ const buttonVariantRecipe = cva(
          * line up with them.
          */
         'icon-theme': 'size-theme-control p-0',
-        theme: 'h-theme-control gap-theme-compact px-theme-normal',
+        theme: 'h-theme-control gap-theme-control-gap px-theme-control-x',
         /** The padding of a list row that is itself the click target. */
         row: 'h-auto gap-3 px-3.5 py-3',
         /** The padding of a tile that reserves a corner for an overflow menu. */
