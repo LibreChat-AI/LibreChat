@@ -82,11 +82,11 @@ describe('getSafeErrorText', () => {
     expect(text).toContain('at send (/app/api/s3.js:1:1)');
   });
 
-  it('keeps file:// stack frames readable', () => {
+  it.each(['file', 'FILE'])('keeps %s:// stack frames readable', (scheme) => {
     const error = new Error('boom');
-    error.stack = 'Error: boom\n    at run (file:///app/api/server.js:10:5)';
+    error.stack = `Error: boom\n    at run (${scheme}:///app/api/server.js:10:5)`;
 
-    expect(getSafeErrorText(error)).toContain('file:///app/api/server.js:10:5');
+    expect(getSafeErrorText(error)).toContain(`${scheme}:///app/api/server.js:10:5`);
   });
 
   it('redacts bearer credentials echoed into a message', () => {
@@ -161,6 +161,47 @@ describe('getSafeErrorText', () => {
 
     expect(getSafeErrorText(`${scheme}://example.com/private?signature=secret`)).toBe(
       `${scheme}://example.com/[redacted]`,
+    );
+  });
+
+  it.each([33, 64, 1900])('redacts the entire URL tail for a %i-character scheme', (length) => {
+    const scheme = 'a'.repeat(length);
+    const input = `${scheme}://user:password@example.com/private?signature=secret`;
+
+    expect(getSafeErrorText(input)).toBe(`${scheme}[url]`);
+  });
+
+  it.each(['1+.-', '+file', '.FILE', '-file'])(
+    'does not mistake an overlength scheme suffix (%s) for a separate URL',
+    (suffix) => {
+      const scheme = `${'a'.repeat(33)}${suffix}`;
+      const input = `${scheme}://example.com/private?signature=secret`;
+
+      expect(getSafeErrorText(input)).toBe(`${scheme}[url]`);
+    },
+  );
+
+  it.each([
+    { kind: 'stack', createError: (text: string) => ({ stack: text }), prefix: '' },
+    { kind: 'name', createError: (text: string) => ({ name: text }), prefix: '' },
+    {
+      kind: 'message',
+      createError: (text: string) => ({ message: text }),
+      prefix: 'UnknownError: ',
+    },
+  ])('redacts overlength URL schemes in $kind input', ({ createError, prefix }) => {
+    const scheme = 'a'.repeat(33);
+    const input = `${scheme}://example.com/private?signature=secret`;
+
+    expect(getSafeErrorText(createError(input))).toBe(`${prefix}${scheme}[url]`);
+  });
+
+  it('redacts an overlength URL scheme that crosses the input limit', () => {
+    const prefix = `${'x'.repeat(1940)} `;
+    const scheme = 'a'.repeat(33);
+
+    expect(getSafeErrorText(`${prefix}${scheme}://example.com/private?signature=secret`)).toBe(
+      `${prefix}${scheme}[url]`,
     );
   });
 

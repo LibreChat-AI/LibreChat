@@ -41,7 +41,14 @@ export function getSafeErrorMetadata(error: unknown): SafeErrorMetadata {
 
 const MAX_SAFE_ERROR_TEXT = 2000;
 
-function redactUrl(match: string): string {
+function redactUrl(match: string, scheme?: string): string {
+  if (scheme == null) {
+    return '[url]';
+  }
+  if (scheme.toLowerCase() === 'file') {
+    return match;
+  }
+
   try {
     const url = new URL(match);
     return `${url.protocol}//${url.host}/[redacted]`;
@@ -53,16 +60,17 @@ function redactUrl(match: string): string {
 function redactSecrets(value: string): string {
   return value
     .slice(0, MAX_SAFE_ERROR_TEXT)
-    .replace(/\b(?!file:)[a-z][a-z0-9+.-]{0,31}:\/\/\S+/gi, redactUrl)
+    .replace(/\b(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}):\/\/\S+|:\/\/\S+/gi, redactUrl)
     .replace(/\b(bearer|basic)\s+\S+/gi, '$1 [redacted]')
     .slice(0, MAX_SAFE_ERROR_TEXT);
 }
 
 /**
  * The request-boundary counterpart to {@link getSafeErrorMetadata}: the error's own
- * description and stack, with every URL reduced to its origin and bearer credentials
- * removed. A signed storage URL carries the object path and signature in the parts
- * that are dropped, while the origin is what an operator needs to place the failure.
+ * description and stack, with recognized URLs reduced to their origins, unrecognized
+ * URL tails removed, and bearer credentials removed. A signed storage URL carries its
+ * object path and signature in the parts that are dropped, while the origin is what
+ * an operator needs to place the failure.
  *
  * Returned as text because the caller must log it inside the message and pass no
  * winston metadata: metadata arms `format.splat()` and promotes an SDK error's own
