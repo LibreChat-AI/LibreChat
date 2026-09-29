@@ -215,7 +215,7 @@
   },
   "client/src/components/Chat/Input/Files/DragDropOverlay.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 4
+      "count": 3
     },
     "shadcn/no-raw-colors": {
       "count": 5
@@ -406,14 +406,6 @@
   "client/src/components/Chat/Menus/PresetsMenu.tsx": {
     "shadcn/no-restyle": {
       "count": 4
-    }
-  },
-  "client/src/components/Chat/Messages/Content/ActionIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 13
-    },
-    "shadcn/no-raw-colors": {
-      "count": 9
     }
   },
   "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
@@ -660,11 +652,6 @@
       "count": 6
     }
   },
-  "client/src/components/Chat/Messages/Content/ProgressCircle.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/ProgressText.tsx": {
     "shadcn/no-inline-styles": {
       "count": 2
@@ -679,14 +666,6 @@
     },
     "shadcn/no-inline-styles": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/RetrievalIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 5
-    },
-    "shadcn/no-raw-colors": {
-      "count": 7
     }
   },
   "client/src/components/Chat/Messages/Content/SearchContent.tsx": {
@@ -766,14 +745,6 @@
     },
     "shadcn/no-restyle": {
       "count": 16
-    }
-  },
-  "client/src/components/Chat/Messages/Content/WrenchIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-raw-colors": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/animate.tsx": {
