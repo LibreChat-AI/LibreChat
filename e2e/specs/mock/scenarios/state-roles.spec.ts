@@ -146,13 +146,15 @@ async function disabledLook(page: Page) {
   const wrapper = await page.evaluate(() => {
     const box = document.createElement('div');
     box.className =
-      'bg-transparent text-text-primary theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled';
+      'bg-transparent text-text-primary theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-within:[&_*]:border-border-disabled';
     const field = document.createElement('input');
     field.disabled = true;
-    box.append(field);
+    const slot = document.createElement('div');
+    slot.className = 'border border-border-control';
+    box.append(field, slot);
     document.body.append(box);
     const style = getComputedStyle(box);
-    const result = `${style.backgroundColor} ${getComputedStyle(field).color}`;
+    const result = `${style.backgroundColor} ${getComputedStyle(field).color} ${getComputedStyle(slot).borderTopColor}`;
     box.remove();
     return result;
   });
@@ -207,7 +209,7 @@ const CASES: Array<{
       opacity: '0.5',
       placeholder: 'rgb(66, 66, 66)',
       part: 'rgb(255, 255, 255)',
-      wrapper: 'rgba(0, 0, 0, 0) rgb(33, 33, 33)',
+      wrapper: 'rgba(0, 0, 0, 0) rgb(33, 33, 33) rgb(227, 227, 227)',
       items: 'rgb(180, 83, 9) rgb(66, 66, 66)',
     },
   },
@@ -222,7 +224,7 @@ const CASES: Array<{
       opacity: '0.5',
       placeholder: 'rgb(205, 205, 205)',
       part: 'rgb(13, 13, 13)',
-      wrapper: 'rgba(0, 0, 0, 0) rgb(236, 236, 236)',
+      wrapper: 'rgba(0, 0, 0, 0) rgb(236, 236, 236) rgb(33, 33, 33)',
       items: 'rgb(252, 211, 77) rgb(205, 205, 205)',
     },
   },
@@ -238,7 +240,7 @@ const CASES: Array<{
       opacity: '1',
       placeholder: 'rgb(160, 160, 160)',
       part: 'rgb(223, 223, 223)',
-      wrapper: 'rgb(223, 223, 223) rgb(160, 160, 160)',
+      wrapper: 'rgb(223, 223, 223) rgb(160, 160, 160) rgb(223, 223, 223)',
       items: 'rgb(160, 160, 160) rgb(160, 160, 160)',
     },
   },
@@ -254,7 +256,7 @@ const CASES: Array<{
       opacity: '1',
       placeholder: 'rgb(128, 128, 128)',
       part: 'rgb(65, 65, 65)',
-      wrapper: 'rgb(65, 65, 65) rgb(128, 128, 128)',
+      wrapper: 'rgb(65, 65, 65) rgb(128, 128, 128) rgb(65, 65, 65)',
       items: 'rgb(128, 128, 128) rgb(128, 128, 128)',
     },
   },
@@ -276,12 +278,18 @@ test.describe('pressed and disabled state roles', () => {
   test('a theme that names the state roles presses and disables in them, in both modes @scenario:state-roles-follow-reference-theme', async ({
     page,
   }) => {
-    const expected: Record<Mode, { pressed: string; fill: string; ink: string }> = {
-      light: { pressed: 'rgb(150, 60, 20)', fill: 'rgb(20, 150, 60)', ink: 'rgb(60, 20, 150)' },
+    const expected: Record<Mode, { pressed: string; fill: string; ink: string; edge: string }> = {
+      light: {
+        pressed: 'rgb(150, 60, 20)',
+        fill: 'rgb(20, 150, 60)',
+        ink: 'rgb(60, 20, 150)',
+        edge: 'rgb(227, 227, 227)',
+      },
       dark: {
         pressed: 'rgb(240, 160, 120)',
         fill: 'rgb(120, 240, 160)',
         ink: 'rgb(160, 120, 240)',
+        edge: 'rgb(57, 57, 57)',
       },
     };
     /** One page per mode: a page's init scripts accumulate, and their order is not guaranteed. */
@@ -299,7 +307,7 @@ test.describe('pressed and disabled state roles', () => {
         opacity: '1',
         placeholder: expected[mode].ink,
         part: expected[mode].fill,
-        wrapper: `${expected[mode].fill} ${expected[mode].ink}`,
+        wrapper: `${expected[mode].fill} ${expected[mode].ink} ${expected[mode].edge}`,
         items: `${expected[mode].ink} ${expected[mode].ink}`,
       });
     }
