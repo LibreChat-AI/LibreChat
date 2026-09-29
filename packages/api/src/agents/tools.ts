@@ -439,6 +439,8 @@ export interface RegisterCodeExecutionToolsParams {
   /** Deployment ceiling advertised on attached Bash tool definitions. */
   workspaceCommandTimeoutMaxMs?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
+  /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
+  workspaceLinkedWorktrees?: boolean;
   /**
    * When `true`, the registered `bash_tool` description includes the
    * LLM-facing `{{tool<idx>turn<turn>}}` reference syntax guide so the
@@ -1040,6 +1042,7 @@ function createBashToolDef(
   workspaceTools = false,
   workspaceCommandTimeoutMaxMs?: number,
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'],
+  workspaceLinkedWorktrees = false,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1052,7 +1055,11 @@ function createBashToolDef(
       ? buildAttachedWorkspaceBashDescription(enableToolOutputReferences, workspaceEnvironment)
       : buildBashExecutionToolDescription(descriptionOpts),
     parameters: (workspaceTools
-      ? buildAttachedWorkspaceBashSchema(workspaceCommandTimeoutMaxMs, workspaceEnvironment)
+      ? buildAttachedWorkspaceBashSchema(
+          workspaceCommandTimeoutMaxMs,
+          workspaceEnvironment,
+          workspaceLinkedWorktrees,
+        )
       : BashExecutionToolDefinition.schema) as unknown as LCTool['parameters'],
   }) as LCTool;
 }
@@ -1066,6 +1073,8 @@ function buildBashToolDef(opts: {
   workspaceTools?: boolean;
   workspaceCommandTimeoutMaxMs?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
+  /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
+  workspaceLinkedWorktrees?: boolean;
 }): LCTool {
   /* Stateful defs are built on demand: the stateless pair covers the
    * default path, and per-run construction is negligible next to init. */
@@ -1076,6 +1085,7 @@ function buildBashToolDef(opts: {
       opts.workspaceTools === true,
       opts.workspaceCommandTimeoutMaxMs,
       opts.workspaceEnvironment,
+      opts.workspaceLinkedWorktrees === true,
     );
   }
   return opts.enableToolOutputReferences
@@ -1109,6 +1119,7 @@ export function registerCodeExecutionTools(
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
     workspaceEnvironment,
+    workspaceLinkedWorktrees,
     enableToolOutputReferences = false,
     statefulSessions = false,
   } = params;
@@ -1129,6 +1140,7 @@ export function registerCodeExecutionTools(
         workspaceTools,
         workspaceCommandTimeoutMaxMs,
         workspaceEnvironment,
+        workspaceLinkedWorktrees,
       }),
     );
   }

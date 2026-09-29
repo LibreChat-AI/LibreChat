@@ -2176,3 +2176,72 @@ describe('executeWorkspaceTool', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('linked worktree lanes', () => {
+  const listing = (paths: string[]) =>
+    new Response(
+      JSON.stringify({
+        protocolVersion: 1,
+        operation: 'list_files',
+        workspaceId: 'librechat',
+        paths,
+        truncated: false,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  const request: WorkspaceToolRequest = {
+    protocolVersion: 1,
+    operation: 'list_files',
+    workspaceId: 'librechat',
+    path: '.worktrees/fix-a/src',
+  };
+
+  test('sends a worktree request and reports paths relative to the checkout', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(listing(['src/a.ts']));
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request,
+        linkedWorktrees: true,
+      }),
+    ).resolves.toMatchObject({ paths: ['.worktrees/fix-a/src/a.ts'] });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({
+      protocolVersion: 1,
+      operation: 'list_files',
+      workspaceId: 'librechat',
+      path: 'src',
+      worktree: 'fix-a',
+    });
+  });
+
+  test('keeps the checkout-scoped request when the worker has no lanes', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(listing(['.worktrees/fix-a/src/a.ts']));
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request,
+      }),
+    ).resolves.toMatchObject({ paths: ['.worktrees/fix-a/src/a.ts'] });
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual(request);
+  });
+
+  test('rejects lane results that escape the requested worktree scope', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(listing(['lib/a.ts']));
+
+    await expect(
+      executeWorkspaceTool({
+        baseURL: 'https://code.example/v1',
+        authHeaders: {},
+        fetchImpl,
+        request,
+        linkedWorktrees: true,
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+  });
+});

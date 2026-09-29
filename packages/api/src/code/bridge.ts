@@ -282,6 +282,7 @@ function validWorkspaceCapabilities(value: unknown): value is {
           key !== 'name' &&
           key !== 'operations' &&
           key !== 'workspaceInstances' &&
+          key !== 'workspaceScopes' &&
           key !== 'environment' &&
           key !== 'instructions',
       ) ||
@@ -297,6 +298,10 @@ function validWorkspaceCapabilities(value: unknown): value is {
         (!Array.isArray(workspace.workspaceInstances) ||
           workspace.workspaceInstances.length !== 1 ||
           workspace.workspaceInstances[0] !== 'git_worktree')) ||
+      (workspace.workspaceScopes !== undefined &&
+        (!Array.isArray(workspace.workspaceScopes) ||
+          workspace.workspaceScopes.length !== 1 ||
+          workspace.workspaceScopes[0] !== 'git_linked_worktree')) ||
       (workspace.name !== undefined &&
         (typeof workspace.name !== 'string' ||
           workspace.name.trim().length === 0 ||

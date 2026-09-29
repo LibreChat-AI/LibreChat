@@ -173,9 +173,15 @@ export function resolveAttachedWorkspaceRequestTimeoutMs(
   return configured;
 }
 
+const linkedWorktreeWorkingDirectorySchema: BoundedWorkingDirectorySchema = {
+  ...attachedWorkingDirectorySchema,
+  description: `${attachedWorkingDirectorySchema.description} To work in a linked worktree, pass its directory here (for example ".worktrees/fix-auth") instead of running cd inside the command: commands in different .worktrees/<name> directories then run in parallel, while a cd from the workspace root waits for all of them.`,
+};
+
 export function buildAttachedWorkspaceBashSchema(
   maxTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   environment?: CodeWorkspaceDescriptor['environment'],
+  linkedWorktrees = false,
 ): NonNullable<LCTool['parameters']> {
   const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
   return {
@@ -183,7 +189,10 @@ export function buildAttachedWorkspaceBashSchema(
     properties: {
       ...bashSchema.properties,
       command: attachedCommandSchema,
-      cwd: attachedWorkingDirectorySchema,
+      cwd:
+        linkedWorktrees === true
+          ? linkedWorktreeWorkingDirectorySchema
+          : attachedWorkingDirectorySchema,
       timeoutMs: buildAttachedTimeoutSchema(effectiveMaxTimeoutMs),
       ...(environment?.actions.length
         ? {
@@ -322,12 +331,15 @@ export function createAttachedWorkspaceBashTool({
   codeApiMaxRetryWaitMs,
   maxRequestTimeoutMs,
   minCommandAdmissionMs,
+  linkedWorktrees = false,
   fetchImpl,
 }: {
   baseUrl: string;
   authHeaders: () => Promise<Record<string, string>> | Record<string, string>;
   workspaceId: string;
   workspaceInstanceId?: string;
+  /** The worker runs each `.worktrees/<name>` in its own lane; a matching `cwd` is routed there. */
+  linkedWorktrees?: boolean;
   environment?: CodeWorkspaceDescriptor['environment'];
   gitIdentity?: AgentGitIdentity | null;
   /** Effective admin/upstream ceiling already intersected with the protocol hard cap. */
@@ -347,7 +359,7 @@ export function createAttachedWorkspaceBashTool({
     minCommandAdmissionMs,
   );
   const schema = structuredClone(
-    buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment),
+    buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment, linkedWorktrees),
   );
   const actions = environment?.actions ?? [];
   return tool(
@@ -405,6 +417,7 @@ export function createAttachedWorkspaceBashTool({
           baseURL: baseUrl,
           /** Passed as a supplier: a queued call outlives its minted token. */
           authHeaders,
+          linkedWorktrees,
           request: {
             protocolVersion: 1,
             operation: 'execute_command',

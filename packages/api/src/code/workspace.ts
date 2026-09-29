@@ -858,6 +858,142 @@ function getWorkspaceAuthHeaders(
   });
 }
 
+/** Linked worktrees live at `.worktrees/<name>` beneath a registered checkout. */
+const LINKED_WORKTREE_DIRECTORY = '.worktrees/';
+/** Mirrors Code API's single-segment worktree name rule. */
+const LINKED_WORKTREE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export type LinkedWorktreeRequest = WorkspaceToolRequest & { worktree: string };
+
+interface LinkedWorktreePath {
+  worktree: string;
+  /** Path relative to the worktree root; empty for the worktree root itself. */
+  rest: string;
+}
+
+function splitLinkedWorktreePath(path: string | undefined): LinkedWorktreePath | undefined {
+  if (path == null || !path.startsWith(LINKED_WORKTREE_DIRECTORY)) return undefined;
+  const remainder = path.slice(LINKED_WORKTREE_DIRECTORY.length);
+  const slash = remainder.indexOf('/');
+  const worktree = slash === -1 ? remainder : remainder.slice(0, slash);
+  if (!LINKED_WORKTREE_NAME_PATTERN.test(worktree) || worktree.endsWith('.lock')) {
+    return undefined;
+  }
+  return { worktree, rest: slash === -1 ? '' : remainder.slice(slash + 1) };
+}
+
+function prefixed(worktree: string, path: string): string {
+  return `${LINKED_WORKTREE_DIRECTORY}${worktree}/${path}`;
+}
+
+/**
+ * Route a request that targets `.worktrees/<name>/…` into that worktree's own
+ * scheduling lane, so work in sibling worktrees runs concurrently. Only
+ * structural targets are routed: a file path, a search or listing scope, or a
+ * command `cwd`. Anything else, including a command that `cd`s into a worktree
+ * from the root, stays root-scoped because its reach cannot be bounded.
+ */
+export function toLinkedWorktreeRequest(
+  request: WorkspaceToolRequest,
+): { request: LinkedWorktreeRequest; worktree: string } | undefined {
+  if (request.workspaceInstanceId != null) return undefined;
+  switch (request.operation) {
+    case 'read_file':
+    case 'write_file':
+    case 'edit_file':
+    case 'preview_edit': {
+      if (request.operation === 'read_file' && request.instructionSha256 != null) return undefined;
+      const target = splitLinkedWorktreePath(request.path);
+      if (target == null || target.rest === '') return undefined;
+      return {
+        worktree: target.worktree,
+        request: { ...request, path: target.rest, worktree: target.worktree },
+      };
+    }
+    case 'search_text': {
+      const target = splitLinkedWorktreePath(request.path);
+      if (target == null) return undefined;
+      const { path: _path, ...rest } = request;
+      return {
+        worktree: target.worktree,
+        request: {
+          ...rest,
+          ...(target.rest === '' ? {} : { path: target.rest }),
+          worktree: target.worktree,
+        },
+      };
+    }
+    case 'list_files': {
+      const target = splitLinkedWorktreePath(request.path);
+      if (target == null) return undefined;
+      const after =
+        request.afterPath == null ? undefined : splitLinkedWorktreePath(request.afterPath);
+      if (
+        request.afterPath != null &&
+        (after == null || after.worktree !== target.worktree || after.rest === '')
+      ) {
+        return undefined;
+      }
+      const { path: _path, afterPath: _afterPath, ...rest } = request;
+      return {
+        worktree: target.worktree,
+        request: {
+          ...rest,
+          ...(target.rest === '' ? {} : { path: target.rest }),
+          ...(after == null ? {} : { afterPath: after.rest }),
+          worktree: target.worktree,
+        },
+      };
+    }
+    case 'execute_command': {
+      if (request.environmentAction != null) return undefined;
+      const target = splitLinkedWorktreePath(request.cwd);
+      if (target == null) return undefined;
+      const { cwd: _cwd, ...rest } = request;
+      return {
+        worktree: target.worktree,
+        request: {
+          ...rest,
+          ...(target.rest === '' ? {} : { cwd: target.rest }),
+          worktree: target.worktree,
+        },
+      };
+    }
+  }
+}
+
+/** Restore the `.worktrees/<name>/` prefix on every path a lane result reports. */
+export function fromLinkedWorktreeResult(
+  result: WorkspaceToolResult,
+  worktree: string,
+): WorkspaceToolResult {
+  switch (result.operation) {
+    case 'read_file':
+    case 'write_file':
+    case 'edit_file':
+    case 'preview_edit':
+      return { ...result, path: prefixed(worktree, result.path) };
+    case 'search_text':
+      return {
+        ...result,
+        matches: result.matches.map((match) => ({
+          ...match,
+          path: prefixed(worktree, match.path),
+        })),
+      };
+    case 'list_files':
+      return {
+        ...result,
+        paths: result.paths.map((path) => prefixed(worktree, path)),
+        ...(result.nextAfterPath == null
+          ? {}
+          : { nextAfterPath: prefixed(worktree, result.nextAfterPath) }),
+      };
+    case 'execute_command':
+      return result;
+  }
+}
+
 export async function executeWorkspaceTool({
   baseURL,
   authHeaders,
@@ -868,6 +1004,7 @@ export async function executeWorkspaceTool({
   codeApiMaxRetryWaitMs = CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS,
   maxRequestTimeoutMs,
   deadlineAtMs,
+  linkedWorktrees = false,
 }: {
   baseURL: string;
   authHeaders: WorkspaceToolAuthHeaders;
@@ -881,6 +1018,8 @@ export async function executeWorkspaceTool({
   maxRequestTimeoutMs?: number;
   /** Optional earlier caller deadline; a signal alone has no remaining-time value. */
   deadlineAtMs?: number;
+  /** The worker runs each `.worktrees/<name>` in its own lane; route matching requests there. */
+  linkedWorktrees?: boolean;
 }): Promise<WorkspaceToolResult> {
   if (
     !isValidRequest(request) ||
@@ -898,16 +1037,18 @@ export async function executeWorkspaceTool({
   ) {
     throw new WorkspaceToolHttpError('invalid');
   }
-  const executionBudgetMs = getWorkspaceExecutionBudgetMs(request);
+  const lane = linkedWorktrees === true ? toLinkedWorktreeRequest(request) : undefined;
+  const wireRequest: WorkspaceToolRequest = lane?.request ?? request;
+  const executionBudgetMs = getWorkspaceExecutionBudgetMs(wireRequest);
   const completionReserveMs = executionBudgetMs + WORKSPACE_COMMAND_TRANSPORT_GRACE_MS;
-  const perAttemptTimeoutMs = maxRequestTimeoutMs ?? getWorkspaceToolTimeoutMs(request);
+  const perAttemptTimeoutMs = maxRequestTimeoutMs ?? getWorkspaceToolTimeoutMs(wireRequest);
   const callerDeadlineAt = Math.min(
     deadlineAtMs ?? Infinity,
     maxRequestTimeoutMs == null ? Infinity : Date.now() + maxRequestTimeoutMs,
   );
   const queueDeadlineAt = Date.now() + maxQueueWaitMs;
   const callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
-  const body = JSON.stringify(request);
+  const body = JSON.stringify(wireRequest);
   let lastAdmissionRejection: WorkspaceToolHttpError | undefined;
   let lastRetryDeadlineAt = Infinity;
   let rateLimitWaitedMs = 0;
@@ -1011,10 +1152,10 @@ export async function executeWorkspaceTool({
         continue;
       }
       const result = await readBoundedJson(response, requestSignal);
-      if (!isValidResult(request, result)) {
+      if (!isValidResult(wireRequest, result)) {
         throw new WorkspaceToolHttpError('invalid');
       }
-      return result;
+      return lane ? fromLinkedWorktreeResult(result, lane.worktree) : result;
     } catch (error) {
       if (error instanceof WorkspaceToolHttpError) throw error;
       if (

@@ -563,6 +563,7 @@ export interface ToolExecuteOptions {
     file_path: string;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     start_line: number;
     max_lines: number;
     codeApiBaseUrl: string;
@@ -579,6 +580,7 @@ export interface ToolExecuteOptions {
     query: string;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     path?: string;
     max_results: number;
     codeApiBaseUrl: string;
@@ -594,6 +596,7 @@ export interface ToolExecuteOptions {
   listWorkspaceFiles?: (params: {
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     path?: string;
     after_path?: string;
     max_results: number;
@@ -613,6 +616,7 @@ export interface ToolExecuteOptions {
     overwrite: boolean;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     codeApiBaseUrl: string;
     executionProfile: CodeExecutionContext['executionProfile'];
     bridgeWorkerId?: string;
@@ -628,6 +632,7 @@ export interface ToolExecuteOptions {
     edits: Array<{ oldText: string; newText: string }>;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     codeApiBaseUrl: string;
     executionProfile: CodeExecutionContext['executionProfile'];
     bridgeWorkerId?: string;
@@ -644,6 +649,7 @@ export interface ToolExecuteOptions {
     expected_base_sha256?: string;
     workspace_id: string;
     workspace_instance_id?: string;
+    linked_worktrees?: boolean;
     codeApiBaseUrl: string;
     executionProfile: CodeExecutionContext['executionProfile'];
     bridgeWorkerId?: string;
@@ -2474,6 +2480,7 @@ async function handleWorkspaceFileRead(
       ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
         ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
         : {}),
+      ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
       start_line: startLine,
       max_lines: maxLines,
       codeApiBaseUrl: codeExecutionContext.baseUrl,
@@ -2580,6 +2587,7 @@ async function handleWorkspaceSearchCall(
       ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
         ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
         : {}),
+      ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
       ...(typeof args.path === 'string' && args.path.length > 0 ? { path: args.path } : {}),
       max_results: Number(maxResults),
       codeApiBaseUrl: codeExecutionContext.baseUrl,
@@ -2668,6 +2676,7 @@ async function handleWorkspaceListCall(
       ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
         ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
         : {}),
+      ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
       ...(typeof args.path === 'string' && args.path.length > 0 ? { path: args.path } : {}),
       ...(typeof args.after_path === 'string' && args.after_path.length > 0
         ? { after_path: args.after_path }
@@ -3939,6 +3948,7 @@ function attachedWorkspaceMutationParams(
 ): {
   workspace_id: string;
   workspace_instance_id?: string;
+  linked_worktrees?: boolean;
   codeApiBaseUrl: string;
   executionProfile: CodeExecutionContext['executionProfile'];
   bridgeWorkerId?: string;
@@ -3954,6 +3964,7 @@ function attachedWorkspaceMutationParams(
     ...(codeExecutionContext.codeWorkspace?.workspaceInstanceId
       ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
       : {}),
+    ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
     codeApiBaseUrl: codeExecutionContext.baseUrl,
     ...limits,
     ...(limits.maxRequestTimeoutMs == null
