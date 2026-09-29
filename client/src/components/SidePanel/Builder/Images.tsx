@@ -45,7 +45,7 @@ export const AssistantAvatar = ({
       <div className="relative h-20 w-20 overflow-hidden rounded-full">
         <img
           src={url}
-          className="bg-surface-secondary dark:bg-surface-tertiary h-full w-full rounded-full object-cover"
+          className="bg-avatar-placeholder h-full w-full rounded-full object-cover"
           alt="GPT"
           width="80"
           height="80"

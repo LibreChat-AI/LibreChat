@@ -369,6 +369,40 @@ describe('theme registry', () => {
     });
   });
 
+  it('keeps the avatar backdrop on the surface each mode drew it on before the role existed', () => {
+    const colors = { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' };
+    const theme = {
+      version: 1 as const,
+      name: 'legacy-avatar-placeholder',
+      modes: { light: { colors }, dark: { colors } },
+    };
+
+    expect(resolveTheme(theme, 'light').colors['rgb-avatar-placeholder']).toBe('20 21 22');
+    expect(resolveTheme(theme, 'dark').colors['rgb-avatar-placeholder']).toBe('30 31 32');
+  });
+
+  it('preserves an explicit avatar backdrop and falls back to the bundled one otherwise', () => {
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-avatar-placeholder',
+        modes: {
+          dark: {
+            colors: { 'rgb-surface-tertiary': '30 31 32', 'rgb-avatar-placeholder': '1 2 3' },
+          },
+        },
+      },
+      'dark',
+    );
+    const untouched = resolveTheme(
+      { version: 1, name: 'no-surface', modes: { dark: { colors: {} } } },
+      'dark',
+    );
+
+    expect(explicit.colors['rgb-avatar-placeholder']).toBe('1 2 3');
+    expect(untouched.colors['rgb-avatar-placeholder']).toBe(darkTheme['rgb-avatar-placeholder']);
+  });
+
   it('keeps the switch thumb on the surface a theme repainted before the role existed', () => {
     const resolved = resolveTheme(
       {

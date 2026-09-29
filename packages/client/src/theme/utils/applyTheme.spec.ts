@@ -19,6 +19,7 @@ const semanticProperties = [
   '--chart-widget-surface',
   '--chart-widget-stroke',
   '--switch-thumb',
+  '--avatar-placeholder',
   '--table-header-text',
   '--table-header-fill',
   '--border-destructive',
@@ -379,6 +380,30 @@ describe('applyTheme', () => {
     applyResolvedTheme(resolveTheme(fill, 'light'), root);
     clearAppliedTheme(root);
     expect(root.hasAttribute(THEME_DISABLED_ATTRIBUTE)).toBe(false);
+  });
+
+  it("keeps a legacy theme's avatar backdrop on the surface its mode drew it on", () => {
+    const root = document.documentElement;
+    const colors = { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' };
+
+    applyTheme(colors, root);
+    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('20 21 22');
+
+    applyTheme(colors, root, undefined, 'dark');
+    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
+  });
+
+  it('leaves an explicit avatar backdrop alone', () => {
+    const root = document.documentElement;
+
+    applyTheme(
+      { 'rgb-surface-tertiary': '30 31 32', 'rgb-avatar-placeholder': '1 2 3' },
+      root,
+      undefined,
+      'dark',
+    );
+
+    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('1 2 3');
   });
 
   it('keeps the switch knob of a legacy theme on the surface it repainted', () => {

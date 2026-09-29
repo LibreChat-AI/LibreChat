@@ -465,6 +465,18 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-link-prose'] === undefined && proseLinkSource !== undefined
       ? { 'rgb-link-prose': proseLinkSource }
       : {};
+  /**
+   * Agent and assistant avatars sat on `surface-secondary` in light and `surface-tertiary` in dark
+   * before they had a role, so a theme that repaints the one its mode used keeps that backdrop.
+   */
+  const avatarPlaceholderSource =
+    mode === 'dark'
+      ? customColors?.['rgb-surface-tertiary']
+      : customColors?.['rgb-surface-secondary'];
+  const avatarPlaceholderFallback =
+    customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
+      ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
+      : {};
   const chartWidgetSurfaceFallback =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
@@ -561,6 +573,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...shimmerBaseFallback,
       ...textMutedFallback,
       ...proseLinkFallback,
+      ...avatarPlaceholderFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,

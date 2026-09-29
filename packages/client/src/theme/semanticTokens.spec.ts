@@ -531,6 +531,22 @@ describe('verified fill defaults', () => {
   });
 });
 
+/** The default avatar's glyph is a graphical object under WCAG 1.4.11, so it needs 3:1 on its fill. */
+describe.each([
+  ['default', defaultTheme],
+  ['dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s default avatar', (_name, theme: IThemeRGB) => {
+  it('keeps the glyph at the 3:1 mark floor against its fill', () => {
+    expect(
+      contrast(toRgb(theme, 'rgb-avatar-text'), toRgb(theme, 'rgb-avatar-fill')),
+    ).toBeGreaterThanOrEqual(WCAG_MARK_MIN);
+  });
+});
+
 /** The shared `Switch` paints this track, so it travels with the package rather
  *  than the app stylesheet. It is a UI component boundary under WCAG 1.4.11 and
  *  has to stay distinct from the `switch-thumb` knob on it and from the

@@ -132,6 +132,12 @@ export interface IThemeRGB {
   // Brand colors
   'rgb-brand-purple'?: string;
 
+  /** The default user avatar's fill and glyph, drawn when a user has no image. */
+  'rgb-avatar-fill'?: string;
+  'rgb-avatar-text'?: string;
+  /** Behind an agent or assistant avatar while its image loads or where it is transparent. */
+  'rgb-avatar-placeholder'?: string;
+
   /**
    * Code syntax highlighting. Declared here rather than left as literals in the
    * stylesheet so a palette stays in one place, is covered by the registry's
@@ -273,6 +279,9 @@ export interface IThemeVariables {
   '--status-verified': string;
   '--text-on-status': string;
   '--brand-purple': string;
+  '--avatar-fill': string;
+  '--avatar-text': string;
+  '--avatar-placeholder': string;
 
   '--syntax-text': string;
   '--syntax-comment': string;
@@ -389,6 +398,9 @@ export interface IThemeColors {
   'status-verified'?: string;
   'text-on-status'?: string;
   'brand-purple'?: string;
+  'avatar-fill'?: string;
+  'avatar-text'?: string;
+  'avatar-placeholder'?: string;
 
   'series-1'?: string;
   'series-2'?: string;

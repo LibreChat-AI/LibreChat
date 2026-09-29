@@ -22,6 +22,9 @@
 @theme inline {
   /* brand and surfaces */
   --color-brand-purple: rgb(var(--brand-purple));
+  --color-avatar-fill: rgb(var(--avatar-fill));
+  --color-avatar-text: rgb(var(--avatar-text));
+  --color-avatar-placeholder: rgb(var(--avatar-placeholder));
   --color-presentation: rgb(var(--presentation));
   --color-accent-primary: rgb(var(--accent-primary));
   --color-accent-primary-hover: rgb(var(--accent-primary-hover));

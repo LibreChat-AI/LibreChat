@@ -316,6 +316,12 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 ### Other Colors
 
 - `bg-brand-purple` - Brand purple color
+- `bg-avatar-fill` / `text-avatar-text` - The default user avatar drawn when a
+  user has no image, and its glyph
+- `bg-avatar-placeholder` - Behind an agent or assistant avatar while its image
+  loads or where it is transparent. A theme that sets only its surfaces keeps it
+  on `surface-secondary` in light and `surface-tertiary` in dark, where it sat
+  before the role existed.
 - `bg-presentation` - Presentation background
 - `ring-ring-primary` - Decorative ring color (selection and hover rings)
 - `focus-outline` - The app-wide keyboard focus outline. Defaults to black in

@@ -110,6 +110,9 @@ export const defaultTheme: IThemeRGB = {
 
   // Brand colors
   'rgb-brand-purple': '126 34 206', // #7e22ce (purple-700)
+  'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
+  'rgb-avatar-text': '255 255 255', // #ffffff
+  'rgb-avatar-placeholder': '247 247 248', // #f7f7f8 (gray-50, matching surface-secondary)
 
   /** Code syntax highlighting, measured against the `surface-code` and `surface-code-body` fills. */
   'rgb-syntax-text': '33 33 33', // #212121 (gray-800)

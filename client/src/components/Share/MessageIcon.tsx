@@ -68,12 +68,11 @@ export default function MessageIcon(
     return (
       <div
         style={{
-          backgroundColor: 'rgb(121, 137, 255)',
           width: '20px',
           height: '20px',
           boxShadow: 'rgba(240, 246, 252, 0.1) 0px 0px 0px 1px',
         }}
-        className="relative flex h-9 w-9 items-center justify-center rounded-sm p-1 text-white"
+        className="bg-avatar-fill text-avatar-text relative flex h-9 w-9 items-center justify-center rounded-sm p-1"
       >
         <UserIcon />
       </div>

@@ -1,4 +1,10 @@
-import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
+import type {
+  ResolvedThemeDefinition,
+  IThemeAppearance,
+  IThemeBrands,
+  IThemeRGB,
+  ThemeMode,
+} from '../types';
 import {
   controlBorderFallback,
   focusFallbacks,
@@ -29,7 +35,11 @@ function validateRGB(rgb: string): boolean {
 /** `base` is the bundled palette for the mode being applied. The adapter writes
  *  only the keys a theme names, so a derivation whose source the theme inherits
  *  rather than restates has nothing to read without it. */
-function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]> {
+function mapColors(
+  colors: IThemeRGB,
+  base?: IThemeRGB,
+  mode: ThemeMode = 'light',
+): Array<[string, string]> {
   const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
     const value = colors[token];
     if (value !== undefined) {
@@ -61,6 +71,13 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
 
   if (colors['rgb-text-muted'] === undefined && colors['rgb-text-tertiary'] !== undefined) {
     variables.push(['--text-muted', colors['rgb-text-tertiary']]);
+  }
+
+  /** The avatar backdrop was the mode's secondary or tertiary surface, as in `resolveTheme`. */
+  const avatarPlaceholder =
+    mode === 'dark' ? colors['rgb-surface-tertiary'] : colors['rgb-surface-secondary'];
+  if (colors['rgb-avatar-placeholder'] === undefined && avatarPlaceholder !== undefined) {
+    variables.push(['--avatar-placeholder', avatarPlaceholder]);
   }
 
   if (
@@ -191,12 +208,13 @@ export default function applyTheme(
   themeRGB?: IThemeRGB,
   root: HTMLElement = document.documentElement,
   base?: IThemeRGB,
+  mode?: ThemeMode,
 ): void {
   if (!themeRGB) {
     return;
   }
 
-  mapColors(themeRGB, base).forEach(([property, value]) => {
+  mapColors(themeRGB, base, mode).forEach(([property, value]) => {
     if (!validateRGB(value)) {
       console.error(`Invalid RGB value for ${property}: ${value}`);
       return;

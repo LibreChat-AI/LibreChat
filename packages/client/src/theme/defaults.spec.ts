@@ -63,7 +63,7 @@ describe.each([
   const tokens = Object.keys(theme) as Array<keyof IThemeRGB>;
 
   it('covers every registry color', () => {
-    expect(tokens).toHaveLength(108);
+    expect(tokens).toHaveLength(111);
   });
 
   it('resolves every registry color to the runtime theme value', () => {

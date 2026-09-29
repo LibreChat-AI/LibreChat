@@ -133,6 +133,9 @@ export const clickHouseLightTheme: IThemeRGB = {
 
   // Brand colors
   'rgb-brand-purple': '136 0 204', // #8800cc (palette.violet.600)
+  'rgb-avatar-fill': '105 110 121', // #696e79 (avatar.color.background.default)
+  'rgb-avatar-text': '255 255 255', // #ffffff (avatar.color.text.default)
+  'rgb-avatar-placeholder': '246 247 250', // #f6f7fa (background.muted)
 
   // Code syntax
   'rgb-syntax-text': '40 40 40', // #282828 (codeblock.lightMode.color.text.default)
@@ -272,6 +275,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
 
   // Brand colors
   'rgb-brand-purple': '204 102 255', // #cc66ff (palette.violet.300)
+  'rgb-avatar-fill': '128 134 145', // #808691 (avatar.color.background.default)
+  'rgb-avatar-text': '31 31 28', // #1f1f1c (avatar.color.text.default)
+  'rgb-avatar-placeholder': '40 40 40', // #282828 (background.muted)
 
   // Code syntax
   'rgb-syntax-text': '255 255 255', // #ffffff (codeblock.darkMode.color.text.default)
