@@ -4,6 +4,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import Attachment, { AttachmentGroup } from '../Attachment';
+import { MessageContext } from '~/Providers/MessageContext';
 import store from '~/store';
 
 jest.mock('~/hooks', () => ({
@@ -85,12 +86,20 @@ const baseAttachment = (overrides: Partial<TAttachment> = {}): TAttachment =>
  * the way each test expects. Default `streaming: true` matches the
  * legacy SSE-arrival flow that the bulk of these tests exercise.
  */
+const inMessage = (ui: React.ReactElement, isSubmitting: boolean) => (
+  <MessageContext.Provider value={{ messageId: 'test-response', isExpanded: true, isSubmitting }}>
+    {ui}
+  </MessageContext.Provider>
+);
+
 const renderWith = (ui: React.ReactElement, opts: { streaming?: boolean } = {}) => {
   const streaming = opts.streaming ?? true;
   const initializeState = (snapshot: MutableSnapshot) => {
     snapshot.set(store.isSubmittingFamily(0), streaming);
   };
-  return render(<RecoilRoot initializeState={initializeState}>{ui}</RecoilRoot>);
+  return render(
+    <RecoilRoot initializeState={initializeState}>{inMessage(ui, streaming)}</RecoilRoot>,
+  );
 };
 
 interface ArtifactsSnapshot {
@@ -130,7 +139,7 @@ const renderWithProbe = (ui: React.ReactElement, opts: { streaming?: boolean } =
           snapshot = snap;
         }}
       />
-      {ui}
+      {inMessage(ui, streaming)}
     </RecoilRoot>,
   );
   return {
@@ -443,6 +452,154 @@ describe('ToolArtifactCard click behaviour', () => {
     expect(snap.currentArtifactId).toBeNull();
   });
 
+  it('does not open a historical artifact remounted while another response regenerates', () => {
+    const html = baseAttachment({
+      file_id: 'previous-answer',
+      filename: 'previous.html',
+      text: '<h1>previous answer</h1>',
+    });
+    const initializeState = (snap: MutableSnapshot) => {
+      snap.set(store.isSubmittingFamily(0), true);
+      snap.set(store.artifactsVisibility, false);
+    };
+    let snapshot: ArtifactsSnapshot = {
+      visibility: false,
+      currentArtifactId: null,
+      artifactIds: [],
+    };
+    render(
+      <RecoilRoot initializeState={initializeState}>
+        <StateProbe onSnapshot={(next) => (snapshot = next)} />
+        <MessageContext.Provider
+          value={{ messageId: 'previous-response', isExpanded: true, isSubmitting: false }}
+        >
+          <Attachment attachment={html} />
+        </MessageContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(snapshot.artifactIds).toContain('tool-artifact-previous-answer');
+    expect(snapshot.currentArtifactId).toBeNull();
+    expect(snapshot.visibility).toBe(false);
+  });
+
+  it('auto-opens when a reused artifact row changes from a historical to a live response', () => {
+    const oldFile = baseAttachment({
+      file_id: 'reused-file',
+      filename: 'output.html',
+      text: '<p>previous</p>',
+      messageId: 'previous-response',
+    });
+    const state = { currentArtifactId: null as string | null, visibility: false };
+    const renderRow = (messageId: string, isSubmitting: boolean, attachment: TAttachment) => (
+      <RecoilRoot initializeState={({ set }) => set(store.artifactsVisibility, false)}>
+        <StateProbe
+          onSnapshot={(snapshot) => {
+            state.currentArtifactId = snapshot.currentArtifactId;
+            state.visibility = snapshot.visibility;
+          }}
+        />
+        <MessageContext.Provider value={{ messageId, isSubmitting, isExpanded: true }}>
+          <Attachment attachment={attachment} />
+        </MessageContext.Provider>
+      </RecoilRoot>
+    );
+
+    const { rerender } = render(renderRow('previous-response', false, oldFile));
+    expect(state.currentArtifactId).toBeNull();
+    rerender(
+      renderRow('new-response', true, {
+        ...oldFile,
+        messageId: 'new-response',
+        text: '<p>new result</p>',
+      }),
+    );
+    expect(state.currentArtifactId).toBe('tool-artifact-reused-file');
+    expect(state.visibility).toBe(true);
+  });
+
+  it('does not reopen a reused live artifact when its new owner is historical', () => {
+    const liveFile = baseAttachment({
+      file_id: 'reused-live-file',
+      filename: 'output.html',
+      text: '<p>live</p>',
+      messageId: 'live-response',
+    });
+    const state = { currentArtifactId: null as string | null, visibility: false };
+    const renderRow = (messageId: string, isSubmitting: boolean, attachment: TAttachment) => (
+      <RecoilRoot>
+        <StateProbe
+          onSnapshot={(snapshot) => {
+            state.currentArtifactId = snapshot.currentArtifactId;
+            state.visibility = snapshot.visibility;
+          }}
+        />
+        <MessageContext.Provider value={{ messageId, isSubmitting, isExpanded: true }}>
+          <Attachment attachment={attachment} />
+        </MessageContext.Provider>
+      </RecoilRoot>
+    );
+
+    const { rerender } = render(renderRow('live-response', true, liveFile));
+    expect(state.currentArtifactId).toBe('tool-artifact-reused-live-file');
+    fireEvent.click(screen.getByRole('button', { expanded: true }));
+    expect(state.currentArtifactId).toBeNull();
+    rerender(
+      renderRow('older-response', false, {
+        ...liveFile,
+        messageId: 'older-response',
+        text: '<p>historic</p>',
+      }),
+    );
+    expect(state.currentArtifactId).toBeNull();
+    expect(state.visibility).toBe(false);
+  });
+
+  it('does not consume a deferred preview from a different response with the same file ID', () => {
+    const fileId = 'shared-preview';
+    const activeMessageId = 'current-response';
+    const file = baseAttachment({
+      file_id: fileId,
+      filename: 'chart.xlsx',
+      text: '<table>resolved</table>',
+      textFormat: 'html',
+    });
+    const state = { currentArtifactId: null as string | null, visibility: false };
+    const renderRows = (includeActive: boolean) => (
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(store.artifactsVisibility, false);
+          set(store.previewJustResolved([activeMessageId, fileId]), true);
+        }}
+      >
+        <StateProbe
+          onSnapshot={(snapshot) => {
+            state.currentArtifactId = snapshot.currentArtifactId;
+            state.visibility = snapshot.visibility;
+          }}
+        />
+        <MessageContext.Provider
+          value={{ messageId: 'previous-response', isExpanded: true, isSubmitting: false }}
+        >
+          <Attachment attachment={{ ...file, messageId: 'previous-response' }} />
+        </MessageContext.Provider>
+        {includeActive && (
+          <MessageContext.Provider
+            value={{ messageId: activeMessageId, isExpanded: true, isSubmitting: false }}
+          >
+            <Attachment attachment={{ ...file, messageId: activeMessageId }} />
+          </MessageContext.Provider>
+        )}
+      </RecoilRoot>
+    );
+
+    const { rerender } = render(renderRows(false));
+    expect(state.currentArtifactId).toBeNull();
+    expect(state.visibility).toBe(false);
+    rerender(renderRows(true));
+    expect(state.currentArtifactId).toBe('tool-artifact-shared-preview');
+    expect(state.visibility).toBe(true);
+  });
+
   it('does NOT auto-open a streaming CODE artifact (test.py is click-to-open)', () => {
     // Source-code artifacts are excluded from streaming auto-open even
     // when isSubmitting=true. The agent often emits supporting `.py` /
@@ -470,7 +627,7 @@ describe('ToolArtifactCard click behaviour', () => {
             snapshot = snap;
           }}
         />
-        <Attachment attachment={py} />
+        {inMessage(<Attachment attachment={py} />, true)}
       </RecoilRoot>,
     );
     // Artifact registered (so the panel can find it on click)…
@@ -507,7 +664,7 @@ describe('ToolArtifactCard click behaviour', () => {
             snapshot = snap;
           }}
         />
-        <Attachment attachment={html} />
+        {inMessage(<Attachment attachment={html} />, true)}
       </RecoilRoot>,
     );
     expect(snapshot.visibility).toBe(true);
@@ -552,7 +709,7 @@ describe('ToolArtifactCard click behaviour', () => {
      * (`isSubmitting=false`), the freshly resolved chip would render in
      * place but never auto-open the panel — the legacy auto-open path
      * is gated only on streaming. `useAttachmentPreviewSync` flips the
-     * `previewJustResolved(file_id)` flag on the pending→ready edge to
+     * `previewJustResolved([messageId, file_id])` flag on the pending→ready edge to
      * bridge that gap; `ToolArtifactCard` consumes it on mount and
      * auto-opens regardless of submission state. The flag is one-shot:
      * a subsequent re-mount (panel close/reopen, history scroll) must
@@ -566,7 +723,7 @@ describe('ToolArtifactCard click behaviour', () => {
     const initializeState = (snap: MutableSnapshot) => {
       snap.set(store.isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
-      snap.set(store.previewJustResolved('just-resolved-xlsx'), true);
+      snap.set(store.previewJustResolved(['test-response', 'just-resolved-xlsx']), true);
     };
     let snapshot: ArtifactsSnapshot = {
       visibility: false,
@@ -580,7 +737,7 @@ describe('ToolArtifactCard click behaviour', () => {
             snapshot = snap;
           }}
         />
-        <Attachment attachment={xlsx} />
+        {inMessage(<Attachment attachment={xlsx} />, false)}
       </RecoilRoot>,
     );
     expect(snapshot.currentArtifactId).toBe('tool-artifact-just-resolved-xlsx');
@@ -601,7 +758,7 @@ describe('ToolArtifactCard click behaviour', () => {
     const initializeState = (snap: MutableSnapshot) => {
       snap.set(store.isSubmittingFamily(0), false);
       snap.set(store.artifactsVisibility, false);
-      snap.set(store.previewJustResolved('one-shot-xlsx'), true);
+      snap.set(store.previewJustResolved(['test-response', 'one-shot-xlsx']), true);
     };
     let snapshot: ArtifactsSnapshot = {
       visibility: false,
@@ -615,7 +772,7 @@ describe('ToolArtifactCard click behaviour', () => {
             snapshot = snap;
           }}
         />
-        <Attachment attachment={xlsx} />
+        {inMessage(<Attachment attachment={xlsx} />, false)}
       </RecoilRoot>,
     );
     /* First mount auto-opened. Now simulate a fresh Recoil tree with the
@@ -637,7 +794,7 @@ describe('ToolArtifactCard click behaviour', () => {
             snapshot = snap;
           }}
         />
-        <Attachment attachment={xlsx} />
+        {inMessage(<Attachment attachment={xlsx} />, false)}
       </RecoilRoot>,
     );
     expect(snapshot.currentArtifactId).toBeNull();
