@@ -118,36 +118,93 @@ test.describe('appearance tokens this build does not know', () => {
 });
 
 /**
- * The same holds for a color role added after this build: a well-formed `rgb-` name with a valid
- * triplet is dropped with a warning, so a newer definition keeps every color this build paints.
+ * The same holds for a color token this build does not know, whether it is a role added later
+ * or a misspelling: a plain token name with a valid triplet is dropped with a warning, so the
+ * definition keeps every color this build paints. A bad value still rejects the definition.
  */
 test.describe('color tokens this build does not know', () => {
   const NEWER_COLORS = {
     version: 1,
     name: 'e2e-newer-colors',
     modes: {
-      light: { colors: { 'rgb-surface-primary': '240 244 255', 'rgb-future-role': '1 2 3' } },
-      dark: { colors: { 'rgb-surface-primary': '12 16 32', 'rgb-future-role': '1 2 3' } },
+      light: {
+        colors: {
+          'rgb-surface-primary': '240 244 255',
+          'rgb-future-role': '1 2 3',
+          'surface-future': '7 8 9',
+        },
+      },
+      dark: {
+        colors: {
+          'rgb-surface-primary': '12 16 32',
+          'rgb-future-role': '1 2 3',
+          'surface-future': '7 8 9',
+        },
+      },
     },
   };
 
-  test('a stored theme with an unknown color role keeps the colors this build paints @scenario:stored-theme-unknown-color-token-applies-rest', async ({
-    page,
-  }) => {
+  async function expectNewerColorsApplied(page: Page) {
+    await expect(page.locator('html')).toHaveAttribute('data-theme', NEWER_COLORS.name);
+    const dark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+    expect(await themeValue(page, '--surface-primary')).toBe(dark ? '12 16 32' : '240 244 255');
+    expect(await themeValue(page, '--future-role')).toBe('');
+    const style = (await page.locator('html').getAttribute('style')) ?? '';
+    expect(style).not.toContain('future');
+    expect(style).not.toContain('7 8 9');
+  }
+
+  const collectWarnings = (page: Page): string[] => {
     const warnings: string[] = [];
     page.on('console', (message) => {
       if (message.type() === 'warning') {
         warnings.push(message.text());
       }
     });
+    return warnings;
+  };
+
+  test('a stored theme with an unknown color token keeps the colors this build paints @scenario:stored-theme-unknown-color-token-applies-rest', async ({
+    page,
+  }) => {
+    const warnings = collectWarnings(page);
     await storeTheme(page, NEWER_COLORS);
 
     await openChat(page);
 
-    await expect(page.locator('html')).toHaveAttribute('data-theme', NEWER_COLORS.name);
-    const dark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
-    expect(await themeValue(page, '--surface-primary')).toBe(dark ? '12 16 32' : '240 244 255');
-    expect(await themeValue(page, '--future-role')).toBe('');
+    await expectNewerColorsApplied(page);
     expect(warnings.join('\n')).toContain('color token ignored: rgb-future-role');
+    expect(warnings.join('\n')).toContain('color token ignored: surface-future');
+  });
+
+  test('a deployment theme with an unknown color token keeps the colors this build paints @scenario:deployment-theme-unknown-color-token-applies-rest', async ({
+    page,
+  }) => {
+    const warnings = collectWarnings(page);
+    await serveTheme(page, NEWER_COLORS);
+
+    await openChat(page);
+
+    await expectNewerColorsApplied(page);
+    expect(warnings.join('\n')).toContain('color token ignored: surface-future');
+  });
+
+  test('a stored theme whose unknown color token has an invalid value is still rejected @scenario:stored-theme-unknown-color-invalid-value-rejected', async ({
+    page,
+  }) => {
+    const theme = {
+      version: 1,
+      name: 'e2e-invalid-unknown-color',
+      modes: {
+        light: { colors: { 'rgb-surface-primary': '240 244 255', 'surface-future': 'red' } },
+        dark: { colors: { 'rgb-surface-primary': '12 16 32', 'surface-future': 'red' } },
+      },
+    };
+    await storeTheme(page, theme);
+
+    await openChat(page);
+
+    await expect(page.locator('html')).not.toHaveAttribute('data-theme', theme.name);
+    expect(await themeValue(page, '--surface-primary')).not.toBe('240 244 255');
   });
 });
