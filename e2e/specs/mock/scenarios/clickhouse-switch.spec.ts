@@ -46,13 +46,12 @@ async function settingsSwitch(page: Page): Promise<Locator> {
 }
 
 async function measure(control: Locator) {
-  return control.evaluate((node) => {
-    const track = node.getBoundingClientRect();
+  /** Layout sizes, not client rects: the dialog is still zooming in when this reads. */
+  return control.evaluate((node: HTMLElement) => {
     const thumb = node.firstElementChild as HTMLElement;
-    const knob = thumb.getBoundingClientRect();
     return {
-      track: [Math.round(track.width), Math.round(track.height)],
-      thumb: Math.round(knob.width),
+      track: [node.offsetWidth, node.offsetHeight],
+      thumb: thumb.offsetWidth,
       thumbColor: getComputedStyle(thumb).backgroundColor,
     };
   });
