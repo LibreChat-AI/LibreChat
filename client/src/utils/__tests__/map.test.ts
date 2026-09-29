@@ -103,4 +103,69 @@ describe('mapAttachments', () => {
     const map = mapAttachments([null, att({ toolCallId: 'call_0' }), undefined]);
     expect(map['call_0']).toHaveLength(1);
   });
+
+  it('keeps the newer write when copies are already in chronological order', () => {
+    const older = att({ toolCallId: 'call_0', file_id: 'f1', updatedAt: '2024-01-01T00:00:00Z' });
+    const newer = att({ toolCallId: 'call_1', file_id: 'f1', updatedAt: '2024-01-02T00:00:00Z' });
+    const map = mapAttachments([older, newer]);
+    expect(map['call_0']).toBeUndefined();
+    expect(map['call_1']).toEqual([newer]);
+  });
+
+  it('keeps the newer write when an older duplicate sits at a higher array index', () => {
+    const newer = att({ toolCallId: 'call_1', file_id: 'f1', updatedAt: '2024-01-02T00:00:00Z' });
+    const older = att({ toolCallId: 'call_0', file_id: 'f1', updatedAt: '2024-01-01T00:00:00Z' });
+    const map = mapAttachments([newer, older]);
+    expect(map['call_0']).toBeUndefined();
+    expect(map['call_1']).toEqual([newer]);
+  });
+
+  it('breaks a tie in write time by keeping the higher array index', () => {
+    const first = att({ toolCallId: 'call_0', file_id: 'f1', updatedAt: '2024-01-01T00:00:00Z' });
+    const second = att({ toolCallId: 'call_1', file_id: 'f1', updatedAt: '2024-01-01T00:00:00Z' });
+    const map = mapAttachments([first, second]);
+    expect(map['call_0']).toBeUndefined();
+    expect(map['call_1']).toEqual([second]);
+  });
+
+  it('keeps the linked copy when an unlinked duplicate of the same file follows it', () => {
+    const linked = att({ toolCallId: 'call_0', file_id: 'f1' });
+    const unlinked = att({ toolCallId: '', file_id: 'f1' });
+    const map = mapAttachments([linked, unlinked]);
+    expect(map['call_0']).toEqual([linked]);
+  });
+
+  it('keeps two id-less attachments with the same filename but different filepaths', () => {
+    const first = att({
+      toolCallId: 'call_0',
+      file_id: undefined,
+      filename: 'data.zip',
+      filepath: '/uploads/session-a/data.zip',
+    });
+    const second = att({
+      toolCallId: 'call_1',
+      file_id: undefined,
+      filename: 'data.zip',
+      filepath: '/uploads/session-b/data.zip',
+    });
+    const map = mapAttachments([first, second]);
+    expect(map['call_0']).toEqual([first]);
+    expect(map['call_1']).toEqual([second]);
+  });
+
+  it('drops an earlier id-less duplicate at the same filepath', () => {
+    const first = att({
+      toolCallId: 'call_0',
+      file_id: undefined,
+      filepath: '/uploads/session-a/data.zip',
+    });
+    const second = att({
+      toolCallId: 'call_1',
+      file_id: undefined,
+      filepath: '/uploads/session-a/data.zip',
+    });
+    const map = mapAttachments([first, second]);
+    expect(map['call_0']).toBeUndefined();
+    expect(map['call_1']).toEqual([second]);
+  });
 });
