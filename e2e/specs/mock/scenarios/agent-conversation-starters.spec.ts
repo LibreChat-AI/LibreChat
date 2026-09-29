@@ -217,4 +217,61 @@ test.describe('agent conversation starters', () => {
       await cleanupAgent(page, agentId);
     }
   });
+
+  test('an unsent draft survives a trip to the model panel @scenario:starter-draft-survives-panel-switch', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const name = uniqueAgentName('E2E Starters Panel');
+    let agentId: string | undefined;
+
+    try {
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      const agent = await createAgentViaApi(page, name, []);
+      agentId = agent.id;
+
+      let form = await selectAgentInBuilder(page, name);
+      await form.getByPlaceholder(DRAFT_PLACEHOLDER).fill('Typed before opening the model panel');
+      await form.getByRole('button', { name: /^Model/ }).click();
+      await builderForm(page).getByRole('button', { name: 'Back to builder' }).click();
+      form = builderForm(page);
+
+      await expect(form.getByPlaceholder(DRAFT_PLACEHOLDER)).toHaveValue(
+        'Typed before opening the model panel',
+      );
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
+
+  test('after saving, the builder shows the starters that were stored @scenario:saved-starters-replace-edited-rows', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const name = uniqueAgentName('E2E Starters Sync');
+    const stored = ['One', 'Two', 'Three', 'Four'];
+    let agentId: string | undefined;
+
+    try {
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      const agent = await createAgentViaApi(page, name, stored);
+      agentId = agent.id;
+
+      const form = await selectAgentInBuilder(page, name);
+      const rows = form.getByRole('textbox', { name: /^Conversation Starters \d+$/ });
+      await expect(
+        form.getByPlaceholder('Max number of conversation starters reached'),
+      ).toBeDisabled();
+      await rows.nth(1).fill('   ');
+      await rows.nth(2).fill('  Three padded  ');
+      await saveAgent(form, agentId);
+
+      expect(await fetchStarters(page, agentId)).toEqual(['One', 'Three padded', 'Four']);
+      await expect(rows).toHaveCount(3);
+      await expect(rows.nth(1)).toHaveValue('Three padded');
+      await expect(form.getByPlaceholder(DRAFT_PLACEHOLDER)).toBeEnabled();
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
 });

@@ -1,7 +1,6 @@
-import { useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import { Constants } from 'librechat-data-provider';
-import { Controller, useWatch, useFormContext } from 'react-hook-form';
+import { Controller, useFormContext } from 'react-hook-form';
 import { Input, Label, Button, TooltipAnchor } from '@librechat/client';
 import type { AgentForm } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -11,12 +10,15 @@ const MAX_STARTER_LENGTH = 64;
 function StartersField({
   value,
   onChange,
+  draft,
+  setDraft,
 }: {
   value: string[];
   onChange: (value: string[]) => void;
+  draft: string;
+  setDraft: (draft: string) => void;
 }) {
   const localize = useLocalize();
-  const [draft, setDraft] = useState('');
   const hasReachedMax = value.length >= Constants.MAX_CONVO_STARTERS;
   const canAdd = !hasReachedMax && draft.trim() !== '';
   const addLabel = hasReachedMax
@@ -49,6 +51,10 @@ function StartersField({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key !== 'Enter') {
+              return;
+            }
+            /** Enter also commits an IME candidate; Safari reports it only through keyCode 229 */
+            if (e.nativeEvent.isComposing || e.keyCode === 229) {
               return;
             }
             /** Enter would otherwise submit the whole agent form */
@@ -114,22 +120,29 @@ function StartersField({
 export default function Starters() {
   const localize = useLocalize();
   const { control } = useFormContext<AgentForm>();
-  /** Keyed by agent so an unsent draft never follows the user to another agent. */
-  const agentId = useWatch({ control, name: 'id' });
 
+  /** The draft is form state rather than component state: it survives switching to the
+   *  Model or Advanced panel, and the reset that loads another agent clears it. */
   return (
     <div className="mb-3 flex flex-col">
       <Label variant="section" className="mb-1 block" htmlFor="conversation-starters">
         {localize('com_assistants_conversation_starters')}
       </Label>
       <Controller
-        name="conversation_starters"
+        name="conversation_starter_draft"
         control={control}
-        render={({ field }) => (
-          <StartersField
-            key={agentId || 'new'}
-            value={field.value ?? []}
-            onChange={field.onChange}
+        render={({ field: draftField }) => (
+          <Controller
+            name="conversation_starters"
+            control={control}
+            render={({ field }) => (
+              <StartersField
+                value={field.value ?? []}
+                onChange={field.onChange}
+                draft={draftField.value ?? ''}
+                setDraft={draftField.onChange}
+              />
+            )}
           />
         )}
       />

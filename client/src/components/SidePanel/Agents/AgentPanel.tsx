@@ -247,7 +247,7 @@ export async function persistAvatarChanges({
 }
 
 const AVATAR_ONLY_DIRTY_FIELDS = new Set(['avatar_action', 'avatar_file', 'avatar_preview']);
-const IGNORED_DIRTY_FIELDS = new Set(['agent']);
+const IGNORED_DIRTY_FIELDS = new Set(['agent', 'conversation_starter_draft']);
 
 const isNestedDirtyField = (
   value: FieldNamesMarkedBoolean<AgentForm>[keyof AgentForm],
@@ -407,8 +407,15 @@ export default function AgentPanel() {
     reset,
     getValues,
     setValue,
+    resetField,
     formState: { dirtyFields },
   } = methods;
+  /** The save may trim or drop starters; show what was stored, not what was typed. */
+  const syncSavedStarters = useCallback(
+    (saved: Agent) =>
+      resetField('conversation_starters', { defaultValue: saved.conversation_starters ?? [] }),
+    [resetField],
+  );
   const [isAvatarUploadInFlight, setIsAvatarUploadInFlight] = useState(false);
 
   const uploadAvatarMutation = useUploadAgentAvatarMutation({
@@ -560,6 +567,8 @@ export default function AgentPanel() {
         showToast({ message: toastMessage, status: noVersionChange ? 'info' : undefined });
       }
 
+      syncSavedStarters(data);
+
       const agentOption = getValues('agent');
       if (agentOption && typeof agentOption !== 'string') {
         setValue('agent', { ...agentOption, ...data }, { shouldDirty: false });
@@ -599,6 +608,7 @@ export default function AgentPanel() {
 
   const create = useCreateAgentMutation({
     onSuccess: async (data) => {
+      syncSavedStarters(data);
       setCurrentAgentId(data.id);
       showToast({
         message: `${localize('com_assistants_create_success')} ${

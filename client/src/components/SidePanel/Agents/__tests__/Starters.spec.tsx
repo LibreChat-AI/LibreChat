@@ -1,7 +1,7 @@
 import userEvent from '@testing-library/user-event';
 import { Constants } from 'librechat-data-provider';
 import { FormProvider, useForm } from 'react-hook-form';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import type { AgentForm } from '~/common';
 import Starters from '../Starters';
 
@@ -27,6 +27,14 @@ function StartersHarness({ initial = [] }: { initial?: string[] }) {
       </form>
     </FormProvider>
   );
+}
+
+/** Mirrors AgentPanel: the form outlives the builder section, which unmounts for other panels. */
+function PanelHarness({ showBuilder }: { showBuilder: boolean }) {
+  const methods = useForm<AgentForm>({
+    defaultValues: { id: 'agent_a', conversation_starters: [] },
+  });
+  return <FormProvider {...methods}>{showBuilder ? <Starters /> : <div />}</FormProvider>;
 }
 
 const draftInput = () =>
@@ -91,6 +99,32 @@ describe('Agent conversation starters', () => {
     const remove = screen.getByRole('button', { name: 'com_ui_delete: First' });
     expect(remove.parentElement).toBe(input.parentElement);
     expect(input.parentElement).toHaveClass('flex', 'items-center');
+  });
+
+  it('does not add a starter when Enter commits an IME composition', () => {
+    render(<StartersHarness />);
+
+    const input = draftInput();
+    fireEvent.change(input, { target: { value: '会話' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+
+    expect(latest).toEqual([]);
+    expect(input).toHaveValue('会話');
+  });
+
+  it('keeps the draft when the section unmounts for another builder panel', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<PanelHarness showBuilder />);
+
+    await user.type(draftInput(), 'Keep me');
+    rerender(<PanelHarness showBuilder={false} />);
+    expect(
+      screen.queryByPlaceholderText('com_assistants_conversation_starters_placeholder'),
+    ).toBeNull();
+    rerender(<PanelHarness showBuilder />);
+
+    expect(draftInput()).toHaveValue('Keep me');
   });
 
   it('locks the draft input at the maximum', () => {

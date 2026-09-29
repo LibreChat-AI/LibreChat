@@ -108,6 +108,7 @@ function AgentSelect({
         // Make sure support_contact is properly loaded
         support_contact: fullAgent.support_contact,
         conversation_starters: fullAgent.conversation_starters ?? [],
+        conversation_starter_draft: '',
         avatar_file: null,
         avatar_preview: fullAgent.avatar?.filepath ?? '',
         avatar_action: null,
