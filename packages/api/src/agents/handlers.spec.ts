@@ -5277,7 +5277,7 @@ describe('createToolExecuteHandler', () => {
           args: {
             path: 'skills/dense-skill/references/a.md',
             old_text: 'a',
-            new_text: '',
+            new_text: 'bc',
             replace_all: true,
           },
         },
@@ -5286,7 +5286,7 @@ describe('createToolExecuteHandler', () => {
       expect(result.errorMessage).toBeUndefined();
       expect(result.artifact).toMatchObject({ strategies: ['exact x10001'] });
       expect(saveSkillFileContent).toHaveBeenCalledWith(
-        expect.objectContaining({ content: '\n'.repeat(10_001) }),
+        expect.objectContaining({ content: 'bc\n'.repeat(10_001) }),
       );
     });
 

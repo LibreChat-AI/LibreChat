@@ -1719,6 +1719,37 @@ function normalizeEditArgs(args: {
  */
 const MAX_EDIT_MATCHES = 10_000;
 
+/** Pieces buffered before they are flattened into one bounded output chunk. */
+const REPLACE_ALL_FLUSH_PIECES = 1_024;
+const REPLACE_ALL_FLUSH_CHARS = 16 * 1024;
+
+/**
+ * `content.split(needle).join(replacement)` without one array entry per match: pieces are
+ * flattened into chunks of bounded size, so memory tracks the output, not the match count.
+ */
+function replaceAllExact(content: string, needle: string, replacement: string): string {
+  const chunks: string[] = [];
+  let pieces: string[] = [];
+  let pendingChars = 0;
+  const flush = () => {
+    chunks.push(pieces.join(''));
+    pieces = [];
+    pendingChars = 0;
+  };
+  let cursor = 0;
+  for (let index = content.indexOf(needle); index !== -1; index = content.indexOf(needle, cursor)) {
+    pieces.push(content.slice(cursor, index), replacement);
+    pendingChars += index - cursor + replacement.length;
+    cursor = index + needle.length;
+    if (pieces.length >= REPLACE_ALL_FLUSH_PIECES || pendingChars >= REPLACE_ALL_FLUSH_CHARS) {
+      flush();
+    }
+  }
+  pieces.push(content.slice(cursor));
+  flush();
+  return chunks.join('');
+}
+
 /** Non-overlapping exact occurrences, counted without retaining their positions. */
 function countExactMatches(content: string, needle: string): number {
   let count = 0;
@@ -1950,7 +1981,7 @@ function applyTextEdits(
           `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
         );
       }
-      working = working.split(edit.old_text).join(edit.new_text);
+      working = replaceAllExact(working, edit.old_text, edit.new_text);
       strategies.push(exactCount > 1 ? `exact x${exactCount}` : 'exact');
       continue;
     }
