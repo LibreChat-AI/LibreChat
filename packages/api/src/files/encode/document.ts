@@ -3,6 +3,7 @@ import {
   isOpenAILikeProvider,
   isBedrockDocumentType,
   bedrockDocumentFormats,
+  isNativelyReadableText,
   isAnthropicDocumentType,
   isDocumentSupportedProvider,
   isAnthropicTextDocumentType,
@@ -88,11 +89,12 @@ const textPartApplicationTypes = new Set([
 /**
  * Whether a document goes as a text part because the endpoint's own `supportedMimeTypes`
  * does not list it. Gemini accepts `text/*` inline but rejects every textual
- * `application/*` type (JSON, YAML, XML, SQL).
+ * `application/*` type (JSON, YAML, XML, SQL, CoffeeScript). "Textual" is the same
+ * classification that routes a file to the provider (`isNativelyReadableText`).
  */
 function sendsAsTextWithoutOptIn(provider: Providers, mimeType: string, model?: string): boolean {
   if (usesGeminiDocumentCapabilities(provider, model)) {
-    return !mimeType.startsWith('text/') && isAnthropicTextDocumentType(mimeType);
+    return !mimeType.startsWith('text/') && isNativelyReadableText(mimeType);
   }
   return textPartApplicationTypes.has(mimeType);
 }
@@ -210,7 +212,10 @@ function filterProviderDocumentFiles(
     isSupported = (file) => isAnthropicDocumentType(file.type);
   } else if (usesGeminiDocumentCapabilities(provider, model)) {
     label = 'Gemini';
-    isSupported = (file) => isAnthropicDocumentType(file.type) || isOptedIn(file.type ?? '');
+    isSupported = (file) =>
+      file.type === 'application/pdf' ||
+      isNativelyReadableText(file.type ?? '') ||
+      isOptedIn(file.type ?? '');
   } else {
     return files;
   }

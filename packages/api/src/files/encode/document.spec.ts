@@ -1344,6 +1344,28 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
         expect(result.documents).toEqual([{ type: 'text', text: 'File: "data.json"\n\n{"a":1}' }]);
       });
+
+      it.each([
+        [Providers.GOOGLE, undefined],
+        [Providers.OPENAI, 'gemini-auto-latest'],
+      ])(
+        'sends inherited application/vnd.coffeescript to Gemini (%s) as a text part',
+        async (provider, model) => {
+          const req = createMockRequest(30, provider) as ServerRequest;
+          const file = createMockDocFile(1, 'application/vnd.coffeescript', 'app.coffee');
+          const content = Buffer.from('x = 1').toString('base64');
+          mockedGetFileStream.mockResolvedValue({ file, content, metadata: file });
+
+          const result = await encodeAndFormatDocuments(
+            req,
+            [file],
+            { provider, model },
+            mockStrategyFunctions,
+          );
+
+          expect(result.documents).toEqual([{ type: 'text', text: 'File: "app.coffee"\n\nx = 1' }]);
+        },
+      );
     });
 
     it('should skip non-Bedrock-document types for Bedrock provider', async () => {
