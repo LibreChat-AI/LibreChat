@@ -1290,6 +1290,15 @@ export const codeEnvironmentUserConfigSchema = z
         });
       })
       .optional(),
+    workspaces: z
+      .object({
+        /** Run requests aimed at `.worktrees/<name>` in that worktree's own lane when the
+         * worker advertises linked-worktree lanes. Omission keeps every request scoped to
+         * its checkout. */
+        linkedWorktrees: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
