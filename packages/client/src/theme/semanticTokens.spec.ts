@@ -546,12 +546,9 @@ describe('switch track defaults', () => {
   });
 
   it('declares the stock thumb the registry paints', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    const declared = [...appStyles.matchAll(/--switch-thumb:\s*([^;]+);/g)].map((match) =>
+    const declared = [...stockStyles.matchAll(/--switch-thumb:\s*([^;]+);/g)].map((match) =>
       match[1].trim(),
     );
 
