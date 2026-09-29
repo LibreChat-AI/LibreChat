@@ -8,12 +8,17 @@ const {
   PermissionBits,
   hasPermissions,
   AgentCapabilities,
+  ContentTypes,
 } = require('librechat-data-provider');
 const {
   createRun,
   applyContextToAgent,
   buildInitialToolSessions,
   buildRunToolSet,
+  stampMcpServerIdentities,
+  stampMcpServerIdentitiesOnMessages,
+  createMcpServerNameResolver,
+  stampLiveMcpToolCallIdentities,
   AgentRunEnvelopeError,
   createAgentRunEnvelope,
   createAgentExecutionContext,
@@ -413,6 +418,7 @@ async function saveResponseOutput(
   response,
   agentId,
   visibleOutputTokens,
+  contentParts,
 ) {
   // Extract text content from output items
   let responseText = '';
@@ -438,6 +444,7 @@ async function saveResponseOutput(
       isCreatedByUser: false,
       ...langfuseTraceFields,
       text: responseText,
+      ...(Array.isArray(contentParts) && contentParts.length > 0 && { content: contentParts }),
       sender: 'Agent',
       endpoint: EModelEndpoint.agents,
       model: agentId,
@@ -446,6 +453,33 @@ async function saveResponseOutput(
     },
     { context: 'Responses API - save assistant response' },
   );
+}
+
+/**
+ * Builds LibreChat content parts for a stored Responses turn and stamps MCP
+ * server identities so chat-UI continuation can resolve delimiter-bearing names.
+ * @param {{ text?: string, toolCalls?: Iterable<{ id?: string, call_id?: string, name?: string, arguments?: string }>, roots: object[] }} params
+ */
+function buildStampedResponseContentParts({ text, toolCalls, roots }) {
+  const contentParts = [];
+  for (const tc of toolCalls ?? []) {
+    if (tc == null || typeof tc.name !== 'string') {
+      continue;
+    }
+    contentParts.push({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: tc.id ?? tc.call_id,
+        name: tc.name,
+        args: typeof tc.arguments === 'string' ? tc.arguments : '',
+      },
+    });
+  }
+  if (typeof text === 'string' && text.length > 0) {
+    contentParts.push({ type: ContentTypes.TEXT, text });
+  }
+  stampMcpServerIdentities({ contentParts, roots });
+  return contentParts;
 }
 
 /**
@@ -1145,12 +1179,20 @@ const executeResponse = async (envelope, { req, res }) => {
       primaryConfig.toolDefinitions = clientTools.toolDefinitions;
       context.tools = clientTools.appliedTools;
 
+      const identityRoots = [primaryConfig, ...handoffAgentConfigs.values()];
+      /** Stamp MCP identities onto history before the allowlist runs so Responses
+       * turns match the chat path (no ambiguous names without identity). */
+      stampMcpServerIdentitiesOnMessages({
+        messages: allMessages,
+        roots: identityRoots,
+      });
+      const resolveMcpServerName = createMcpServerNameResolver(agentToolContexts);
+
       const toolSet = buildRunToolSet(
         primaryConfig,
         handoffAgentConfigs.values(),
         undefined,
         allMessages,
-        true,
       );
       const formatted = formatAgentMessages(
         stripUnusableSummaryParts(stripActivityLabelParts(allMessages)),
@@ -1301,11 +1343,26 @@ const executeResponse = async (envelope, { req, res }) => {
           ...getSkillToolDeps(),
         };
 
+        const stampRunStepIdentities = (handler) => ({
+          handle: (event, data, metadata, ...rest) => {
+            stampLiveMcpToolCallIdentities(
+              data?.stepDetails?.tool_calls,
+              resolveMcpServerName,
+              metadata?.agent_id ?? metadata?.agentId,
+            );
+            return typeof handler?.handle === 'function'
+              ? handler.handle(event, data, metadata, ...rest)
+              : undefined;
+          },
+        });
+
         // Combine handlers
         const handlers = {
           on_message_delta: responsesHandlers.on_message_delta,
           on_reasoning_delta: responsesHandlers.on_reasoning_delta,
-          on_run_step: clientTools.wrapRunStep(responsesHandlers.on_run_step),
+          on_run_step: clientTools.wrapRunStep(
+            stampRunStepIdentities(responsesHandlers.on_run_step),
+          ),
           on_run_step_delta: responsesHandlers.on_run_step_delta,
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
@@ -1446,6 +1503,11 @@ const executeResponse = async (envelope, { req, res }) => {
 
             // Build response for saving (use tracker with buildResponse for streaming)
             const finalResponse = buildResponse(context, tracker, 'completed');
+            const stampedContent = buildStampedResponseContentParts({
+              text: tracker?.accumulatedText,
+              toolCalls: tracker?.functionCalls?.values?.() ?? [],
+              roots: identityRoots,
+            });
             const savedResponse = await saveResponseOutput(
               req,
               conversationId,
@@ -1453,6 +1515,7 @@ const executeResponse = async (envelope, { req, res }) => {
               finalResponse,
               agentId,
               tracker.usage.outputTokens,
+              stampedContent,
             );
             await announceReply(db, {
               userId: req?.user?.id,
@@ -1544,10 +1607,25 @@ const executeResponse = async (envelope, { req, res }) => {
           ...getSkillToolDeps(),
         };
 
+        const stampRunStepIdentities = (handler) => ({
+          handle: (event, data, metadata, ...rest) => {
+            stampLiveMcpToolCallIdentities(
+              data?.stepDetails?.tool_calls,
+              resolveMcpServerName,
+              metadata?.agent_id ?? metadata?.agentId,
+            );
+            return typeof handler?.handle === 'function'
+              ? handler.handle(event, data, metadata, ...rest)
+              : undefined;
+          },
+        });
+
         const handlers = {
           on_message_delta: aggregatorHandlers.on_message_delta,
           on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
-          on_run_step: clientTools.wrapRunStep(aggregatorHandlers.on_run_step),
+          on_run_step: clientTools.wrapRunStep(
+            stampRunStepIdentities(aggregatorHandlers.on_run_step),
+          ),
           on_run_step_delta: aggregatorHandlers.on_run_step_delta,
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
@@ -1686,6 +1764,11 @@ const executeResponse = async (envelope, { req, res }) => {
 
             await saveInputMessages(req, conversationId, inputMessages, agentId);
 
+            const stampedContent = buildStampedResponseContentParts({
+              text: typeof aggregator?.getText === 'function' ? aggregator.getText() : '',
+              toolCalls: aggregator?.toolCalls?.values?.() ?? [],
+              roots: identityRoots,
+            });
             const savedResponse = await saveResponseOutput(
               req,
               conversationId,
@@ -1693,6 +1776,7 @@ const executeResponse = async (envelope, { req, res }) => {
               response,
               agentId,
               aggregator.usage.outputTokens,
+              stampedContent,
             );
             await announceReply(db, {
               userId: req?.user?.id,
