@@ -282,6 +282,39 @@ describe('composeAgentUpdatePayload', () => {
 
     expect(payload.model_parameters).toEqual(form.model_parameters);
   });
+
+  it('trims starters, drops blanks and caps them at the rendered maximum', () => {
+    const form = createForm();
+    form.conversation_starters = [
+      '  Plan my week ',
+      '',
+      '   ',
+      'Summarize',
+      'Draft',
+      'Review',
+      'Extra',
+    ];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.conversation_starters).toEqual(['Plan my week', 'Summarize', 'Draft', 'Review']);
+    expect(payload.conversation_starters).toHaveLength(Constants.MAX_CONVO_STARTERS);
+  });
+
+  it('sends an empty list so removing every starter clears them', () => {
+    const form = createForm();
+    form.conversation_starters = [];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.conversation_starters).toEqual([]);
+  });
+
+  it('omits starters when the form never loaded them', () => {
+    const { payload } = composeAgentUpdatePayload(createForm(), 'agent_123');
+
+    expect(payload.conversation_starters).toBeUndefined();
+  });
 });
 
 describe('persistAvatarChanges', () => {
