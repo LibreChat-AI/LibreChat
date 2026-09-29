@@ -541,6 +541,20 @@ export const megabyte = 1024 * 1024;
 /** Helper function to get megabytes value */
 export const mbToBytes = (mb: number): number => mb * megabyte;
 
+/** Present in a stored office preview whose data slot the viewer fills from file storage. */
+export const OFFICE_FILE_SHELL_MARKER = '<meta name="lc-doc-source" content="file">';
+/** The empty data slot a shell carries; filled once, client-side, with the file's base64. */
+export const OFFICE_DOC_DATA_SLOT =
+  '<script id="lc-doc-data" type="application/octet-stream;base64"></script>';
+
+export const isOfficeFileShell = (html: string): boolean => html.includes(OFFICE_FILE_SHELL_MARKER);
+
+export const fillOfficeFileShell = (html: string, base64: string): string =>
+  html.replace(
+    OFFICE_DOC_DATA_SLOT,
+    () => `<script id="lc-doc-data" type="application/octet-stream;base64">${base64}</script>`,
+  );
+
 const defaultSizeLimit = mbToBytes(512);
 const defaultSkillImportSizeLimit = mbToBytes(50);
 const defaultTokenLimit = 100000;
@@ -589,6 +603,10 @@ export const fileConfig = {
     maxHeight: 1900,
     quality: 0.92,
     enforced: false,
+  },
+  officePreview: {
+    enabled: true,
+    fileSizeLimit: mbToBytes(25),
   },
   ocr: {
     supportedMimeTypes: defaultOCRMimeTypes,
@@ -666,6 +684,12 @@ export const fileConfigSchema = z.object({
       maxWidth: z.number().min(1).optional(),
       maxHeight: z.number().min(1).optional(),
       quality: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
+  officePreview: z
+    .object({
+      enabled: z.boolean().optional(),
+      fileSizeLimit: z.number().min(0).optional(),
     })
     .optional(),
   ocr: z
@@ -1289,6 +1313,17 @@ export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | unde
       ...mergedConfig.clientImageResize,
       ...dynamic.clientImageResize,
       enforced: dynamic.clientImageResize.enabled !== undefined,
+    };
+  }
+
+  if (dynamic.officePreview !== undefined) {
+    const { fileSizeLimit, enabled } = dynamic.officePreview;
+    mergedConfig.officePreview = {
+      enabled: enabled ?? mergedConfig.officePreview?.enabled,
+      fileSizeLimit:
+        fileSizeLimit !== undefined
+          ? mbToBytes(fileSizeLimit)
+          : mergedConfig.officePreview?.fileSizeLimit,
     };
   }
 

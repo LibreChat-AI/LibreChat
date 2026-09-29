@@ -18,6 +18,10 @@ import {
   applicationMimeTypes,
   defaultOCRMimeTypes,
   supportedMimeTypes,
+  OFFICE_FILE_SHELL_MARKER,
+  OFFICE_DOC_DATA_SLOT,
+  fillOfficeFileShell,
+  isOfficeFileShell,
   mergeFileConfig,
   inferMimeType,
   textMimeTypes,
@@ -2195,4 +2199,55 @@ it('selects web-search routing without changing stored route selection', () => {
       routing,
     }),
   ).toBe(false);
+});
+
+describe('office file shell', () => {
+  const shell = `<html><head>${OFFICE_FILE_SHELL_MARKER}</head><body>${OFFICE_DOC_DATA_SLOT}<p>fallback</p></body></html>`;
+
+  it('recognizes a shell by its marker', () => {
+    expect(isOfficeFileShell(shell)).toBe(true);
+    expect(isOfficeFileShell('<html><body>plain</body></html>')).toBe(false);
+  });
+
+  it('fills the data slot with the base64 payload', () => {
+    const filled = fillOfficeFileShell(shell, 'QUJD');
+    expect(filled).toBe(
+      `<html><head>${OFFICE_FILE_SHELL_MARKER}</head><body><script id="lc-doc-data" type="application/octet-stream;base64">QUJD</script><p>fallback</p></body></html>`,
+    );
+  });
+
+  it('inserts the payload literally, without interpreting replacement patterns', () => {
+    const filled = fillOfficeFileShell(shell, "$&$'$`");
+    expect(filled).toContain('base64">$&$\'$`</script>');
+  });
+
+  it('fills only the first slot', () => {
+    const twice = `${OFFICE_DOC_DATA_SLOT}${OFFICE_DOC_DATA_SLOT}`;
+    const filled = fillOfficeFileShell(twice, 'QQ==');
+    expect(filled.split('QQ==')).toHaveLength(2);
+    expect(filled.endsWith(OFFICE_DOC_DATA_SLOT)).toBe(true);
+  });
+});
+
+describe('officePreview setting', () => {
+  it('defaults to enabled at 25 MB', () => {
+    const merged = mergeFileConfig(undefined);
+    expect(merged.officePreview).toEqual({ enabled: true, fileSizeLimit: 25 * 1024 * 1024 });
+  });
+
+  it('converts a configured size from MB to bytes', () => {
+    const merged = mergeFileConfig({ officePreview: { fileSizeLimit: 10 } });
+    expect(merged.officePreview).toEqual({ enabled: true, fileSizeLimit: 10 * 1024 * 1024 });
+  });
+
+  it('honors enabled: false and keeps the default size', () => {
+    const merged = mergeFileConfig({ officePreview: { enabled: false } });
+    expect(merged.officePreview).toEqual({ enabled: false, fileSizeLimit: 25 * 1024 * 1024 });
+  });
+
+  it('rejects a negative size naming the field', () => {
+    const result = fileConfigSchema.safeParse({ officePreview: { fileSizeLimit: -1 } });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues[0].path)).toBe('["officePreview","fileSizeLimit"]');
+  });
 });
