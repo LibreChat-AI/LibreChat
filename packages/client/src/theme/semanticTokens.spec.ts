@@ -528,6 +528,21 @@ describe.each([
   });
 });
 
+describe.each([
+  ['default', defaultTheme],
+  ['dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s table header', (_name, theme: IThemeRGB) => {
+  it('keeps column names readable on the header fill', () => {
+    expect(
+      contrast(toRgb(theme, 'rgb-table-header-text'), toRgb(theme, 'rgb-surface-secondary')),
+    ).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
 describe('switch track defaults', () => {
   /** The app stylesheet only restates the registry now: the contrast modes used
    *  to carry their own `html.high-contrast` overrides here, which the published
@@ -543,6 +558,25 @@ describe('switch track defaults', () => {
       defaultTheme['rgb-switch-unchecked'],
       darkTheme['rgb-switch-unchecked'],
     ]);
+  });
+
+  it('declares table column names on the secondary text they were before the role', () => {
+    const appStyles = readFileSync(
+      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
+      'utf8',
+    );
+
+    expect([...appStyles.matchAll(/--table-header-text:\s*([^;]+);/g)].map((m) => m[1])).toEqual([
+      'var(--text-secondary)',
+    ]);
+    expect(defaultTheme['rgb-table-header-text']).toBe(defaultTheme['rgb-text-secondary']);
+    expect(darkTheme['rgb-table-header-text']).toBe(darkTheme['rgb-text-secondary']);
+  });
+
+  it('ships the no-rule table default with the package', () => {
+    const controls = readFileSync(join(__dirname, 'controls.css'), 'utf8');
+
+    expect(controls).toContain(`--theme-table-row-stroke: ${defaultAppearance.tableRowStroke};`);
   });
 
   it('declares the stock thumb the registry paints', () => {

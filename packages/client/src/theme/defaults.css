@@ -199,6 +199,8 @@ html {
   --theme-control-height: 2.25rem;
   --theme-switch-width: 2.75rem;
   --theme-switch-height: 1.5rem;
+  --theme-table-cell-space-y: 1rem;
+  --theme-table-row-stroke: 0px;
   --theme-space-compact: 0.375rem;
   --theme-space-normal: 0.75rem;
   --theme-disabled-style: dim;
@@ -240,6 +242,8 @@ html {
   --theme-motion-normal: 200ms;
   --switch-unchecked: 148 148 148;
   --switch-thumb: 255 255 255;
+  /* Follows the secondary text it was before it had a role, in every mode. */
+  --table-header-text: var(--text-secondary);
   --provider-openai: #19c37d;
   --provider-openai-gpt4: #ab68ff;
   --provider-openai-reasoning: #000000;

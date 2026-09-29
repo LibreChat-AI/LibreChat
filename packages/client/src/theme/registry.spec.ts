@@ -386,6 +386,30 @@ describe('theme registry', () => {
     expect(untouched.colors['rgb-switch-thumb']).toBe(darkTheme['rgb-switch-thumb']);
   });
 
+  it('keeps table column names on the secondary text a theme repainted', () => {
+    const legacy = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-table-header',
+        modes: { light: { colors: { 'rgb-text-secondary': '20 21 22' } } },
+      },
+      'light',
+    );
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-table-header',
+        modes: {
+          light: { colors: { 'rgb-text-secondary': '20 21 22', 'rgb-table-header-text': '1 2 3' } },
+        },
+      },
+      'light',
+    );
+
+    expect(legacy.colors['rgb-table-header-text']).toBe('20 21 22');
+    expect(explicit.colors['rgb-table-header-text']).toBe('1 2 3');
+  });
+
   it('keeps the light border a legacy theme drew its controls with', () => {
     const resolved = resolveTheme(
       {

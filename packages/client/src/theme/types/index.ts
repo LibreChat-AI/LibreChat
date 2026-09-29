@@ -165,6 +165,8 @@ export interface IThemeRGB {
   'rgb-switch-unchecked'?: string;
   /** The switch's knob in both states, painted over the unchecked track and the checked fill. */
   'rgb-switch-thumb'?: string;
+  /** Column names in a table header, over its `surface-secondary` fill. */
+  'rgb-table-header-text'?: string;
 
   // Presentation
   'rgb-presentation'?: string;
@@ -284,6 +286,7 @@ export interface IThemeVariables {
 
   '--switch-unchecked': string;
   '--switch-thumb': string;
+  '--table-header-text': string;
 
   '--presentation': string;
 }
@@ -385,6 +388,7 @@ export interface IThemeColors {
   'series-7'?: string;
   'switch-unchecked'?: string;
   'switch-thumb'?: string;
+  'table-header-text'?: string;
   'series-8'?: string;
   presentation?: string;
 
@@ -416,6 +420,8 @@ export interface IThemeAppearance {
   controlHeight: string;
   switchWidth: string;
   switchHeight: string;
+  tableCellSpaceY: string;
+  tableRowStroke: string;
   spaceCompact: string;
   spaceNormal: string;
   /** `dim` fades a disabled control to half opacity; `fill` paints it in the disabled roles. */

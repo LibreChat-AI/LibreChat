@@ -155,6 +155,9 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-switch-unchecked': '128 134 145', // #808691 (palette.slate.500)
   'rgb-switch-thumb': '255 255 255', // #ffffff (switch.color.indicator.default)
 
+  // Table
+  'rgb-table-header-text': '22 21 23', // #161517 (table.header.color.title.default)
+
   // Presentation
   'rgb-presentation': '255 255 255', // #ffffff (background.default)
 };
@@ -288,6 +291,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-switch-unchecked': '128 128 128', // #808080 (palette.neutral.500)
   'rgb-switch-thumb': '21 21 21', // #151515 (switch.color.indicator.default)
 
+  // Table
+  'rgb-table-header-text': '249 249 249', // #f9f9f9 (table.header.color.title.default, rgb(97.5% 97.5% 97.5%))
+
   // Presentation
   'rgb-presentation': '31 31 28', // #1f1f1c (background.default)
 };
@@ -357,6 +363,8 @@ const clickHouseShape = {
   disabledStyle: 'fill' as const,
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
+  tableCellSpaceY: '0.5rem', // table.body.cell.space.sm.y, the size Click UI tables default to
+  tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
   motionNormal: '150ms', // transition.duration.smooth
 };

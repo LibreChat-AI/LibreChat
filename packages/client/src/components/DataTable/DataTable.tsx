@@ -602,7 +602,9 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           className="shrink-0 table-auto border-separate border-spacing-0"
           unwrapped={true}
         >
-          <TableHeader>
+          {/* Each header cell carries its own opaque fill (see below), and a column being
+              resized drops to a translucent one, so the header row itself stays clear. */}
+          <TableHeader className="bg-transparent">
             {headerGroups.map((headerGroup) => (
               <TableRow key={headerGroup.id} className="border-0 hover:bg-transparent">
                 {headerGroup.headers.map((header) => {

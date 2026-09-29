@@ -26,10 +26,11 @@ interface TableHeaderProps extends React.HTMLAttributes<HTMLTableSectionElement>
   sticky?: boolean;
 }
 
-const tableHeaderVariants = cva('', {
+/** Every header carries the fill, sticky or not, so a column row reads as a header in any theme. */
+const tableHeaderVariants = cva('bg-surface-secondary', {
   variants: {
     sticky: {
-      true: 'bg-surface-secondary sticky top-0 z-50',
+      true: 'sticky top-0 z-50',
       false: '',
     },
   },
@@ -80,6 +81,13 @@ const TableRow: React.ForwardRefExoticComponent<
 );
 TableRow.displayName = 'TableRow';
 
+/**
+ * The rule a theme may draw under each row, 0px by default. It sits on the cells rather than the
+ * row: a table with separated borders, which is how the tables that round their hover rows are
+ * laid out, never draws a border on a `<tr>`.
+ */
+const tableCellRule = 'border-b-(length:--theme-table-row-stroke) border-border-light';
+
 /** A compact table's header: a side panel lists records rather than presenting
  *  a grid, and a full-height, full-size heading over two text lines reads as
  *  scaffolding rather than as the column names those rows sit under. */
@@ -103,7 +111,8 @@ const TableHead: React.ForwardRefExoticComponent<
   <th
     ref={ref}
     className={cn(
-      'text-text-secondary h-12 px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
+      tableCellRule,
+      'text-table-header-text h-theme-table-head px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
       tableHeadVariants({ size }),
       className,
     )}
@@ -118,7 +127,11 @@ const TableCell: React.ForwardRefExoticComponent<
   ({ className, ...props }, ref) => (
     <td
       ref={ref}
-      className={cn('p-4 align-middle [&:has([role=checkbox])]:pr-0', className)}
+      className={cn(
+        tableCellRule,
+        'py-theme-table-cell px-4 align-middle [&:has([role=checkbox])]:pr-0',
+        className,
+      )}
       {...props}
     />
   ),
@@ -133,7 +146,8 @@ const TableRowHeader: React.ForwardRefExoticComponent<
       ref={ref}
       scope="row"
       className={cn(
-        'p-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
+        tableCellRule,
+        'py-theme-table-cell px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
         className,
       )}
       {...props}

@@ -8,6 +8,8 @@ module.exports = {
       height: {
         'theme-control': 'var(--theme-control-height, 2.25rem)',
         'theme-switch': 'var(--theme-switch-height, 1.5rem)',
+        /** A header cell: the table's vertical cell space on both sides of one text line. */
+        'theme-table-head': 'calc(var(--theme-table-cell-space-y, 1rem) * 2 + 1rem)',
       },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */
@@ -28,6 +30,7 @@ module.exports = {
         'theme-switch-thumb': 'max(0px, calc(var(--theme-switch-height, 1.5rem) - 4px))',
         'theme-switch-travel':
           'max(0px, calc(var(--theme-switch-width, 2.75rem) - var(--theme-switch-height, 1.5rem)))',
+        'theme-table-cell': 'var(--theme-table-cell-space-y, 1rem)',
       },
       keyframes: {
         /** Discord-style "connecting" dots: each dot lifts and brightens in

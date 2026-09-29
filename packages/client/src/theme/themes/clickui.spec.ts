@@ -146,6 +146,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-8': 'global.color.chart.default.teal',
     'rgb-switch-unchecked': 'palette.slate.500',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
+    'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-presentation': 'global.color.background.default',
   },
   dark: {
@@ -251,6 +252,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-8': 'global.color.chart.default.teal',
     'rgb-switch-unchecked': 'palette.neutral.500',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
+    'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-presentation': 'global.color.background.default',
   },
 };
@@ -315,6 +317,8 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   switchWidth: 'click.switch.size.width',
   switchHeight: 'click.switch.size.height',
+  tableCellSpaceY: 'click.table.body.cell.space.sm.y',
+  tableRowStroke: 'click.table.cell.stroke',
   motionFast: 'transition.duration.medium',
   motionNormal: 'transition.duration.smooth',
 };
@@ -442,7 +446,7 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
  * every decision; the floors below only move up.
  */
 type ParityKind = 'color' | 'shape';
-type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'w' | 'h';
+type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'w' | 'h' | 'py';
 
 interface ParityProbe {
   /** The Click UI component token the primitive should reproduce. */
@@ -665,13 +669,20 @@ const parityProbes: Record<string, ParityProbe> = {
     token: 'click.table.row.color.stroke.default',
     kind: 'color',
     utility: 'border',
-    element: tableProbe('tbody tr'),
+    element: tableProbe('td'),
+  },
+  'Table cell space': {
+    token: 'click.table.body.cell.space.sm.y',
+    kind: 'shape',
+    utility: 'py',
+    element: tableProbe('td'),
   },
   'Table corner': {
     token: 'click.table.radii.all',
     kind: 'shape',
     utility: 'rounded',
     element: tableProbe('div'),
+    deviation: 'the table has no frame of its own; each consumer draws the panel it sits in',
   },
   'Badge fill': {
     token: 'click.badge.opaque.color.background.default',
@@ -701,8 +712,8 @@ const parityProbes: Record<string, ParityProbe> = {
 
 /** The fewest decisions per mode that must match; raise a floor when a change closes a gap. */
 const parityFloors: Record<ThemeMode, Record<ParityKind, number>> = {
-  light: { color: 6, shape: 8 },
-  dark: { color: 7, shape: 8 },
+  light: { color: 9, shape: 9 },
+  dark: { color: 10, shape: 9 },
 };
 
 const radiusRoles: Record<string, keyof IThemeAppearance> = {
@@ -720,19 +731,31 @@ const radiusRoles: Record<string, keyof IThemeAppearance> = {
 
 const fixedRadii: Record<string, string> = { full: '9999px', none: '0px' };
 
-const sizeRoles: Record<'w' | 'h', Record<string, keyof IThemeAppearance>> = {
+type SizeUtility = 'w' | 'h' | 'py';
+
+const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
   w: { 'theme-switch': 'switchWidth' },
   h: { 'theme-switch': 'switchHeight', 'theme-control': 'controlHeight' },
+  py: { 'theme-table-cell': 'tableCellSpaceY' },
 };
 
-/** A `border`, `border-2` or one-sided `border-b` class, the width a border color needs to show. */
-const drawsBorder = (classes: string[]) =>
-  classes.some((name) => /^border(-[0-9]+|-[xytblrse](-[0-9]+)?)?$/.test(name));
+const isSizeUtility = (utility: Utility): utility is SizeUtility =>
+  utility === 'w' || utility === 'h' || utility === 'py';
+
+/** A `border`, `border-2` or one-sided `border-b` class, or a theme stroke role that is not
+ *  zero: the width a border color needs to show. */
+const drawsBorder = (classes: string[], resolved: Resolved) =>
+  classes.some(
+    (name) =>
+      /^border(-[0-9]+|-[xytblrse](-[0-9]+)?)?$/.test(name) ||
+      (/^border(-[xytblrse])?-\(length:--theme-table-row-stroke\)$/.test(name) &&
+        parseFloat(resolved.appearance.tableRowStroke) > 0),
+  );
 
 type Resolved = ReturnType<typeof resolveTheme>;
 
-/** A `w-*` or `h-*` step: a theme role, or Tailwind's 0.25rem spacing scale. */
-function sizeValue(utility: 'w' | 'h', name: string, resolved: Resolved): string | undefined {
+/** A `w-*`, `h-*` or `py-*` step: a theme role, or Tailwind's 0.25rem spacing scale. */
+function sizeValue(utility: SizeUtility, name: string, resolved: Resolved): string | undefined {
   const role = sizeRoles[utility][name];
   if (role !== undefined) {
     return resolved.appearance[role];
@@ -763,11 +786,15 @@ function paintedRole(element: Element, probe: ParityProbe, resolved: Resolved): 
   if (probe.utility === 'rounded') {
     return names.find((name) => name in radiusRoles || name in fixedRadii);
   }
-  if (probe.utility === 'w' || probe.utility === 'h') {
+  if (isSizeUtility(probe.utility)) {
     const utility = probe.utility;
-    return names.find((name) => sizeValue(utility, name, resolved) !== undefined);
+    /** `p-4` pads every side, so it answers a `py` probe too. */
+    const padding = utility === 'py' ? classes.filter((name) => /^p-[0-9.]+$/.test(name)) : [];
+    return [...names, ...padding.map((name) => name.slice(2))].find(
+      (name) => sizeValue(utility, name, resolved) !== undefined,
+    );
   }
-  if (probe.utility === 'border' && !drawsBorder(classes)) {
+  if (probe.utility === 'border' && !drawsBorder(classes, resolved)) {
     return undefined;
   }
   return names.find((name) => roleColor(resolved, name) !== undefined);
@@ -795,7 +822,7 @@ function shapeValue(utility: Utility, role: string | undefined, resolved: Resolv
   if (role === undefined) {
     return utility === 'rounded' ? '0px' : 'auto';
   }
-  if (utility === 'w' || utility === 'h') {
+  if (isSizeUtility(utility)) {
     return sizeValue(utility, role, resolved) ?? 'auto';
   }
   return fixedRadii[role] ?? resolved.appearance[radiusRoles[role]];
