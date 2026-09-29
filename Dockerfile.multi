@@ -98,7 +98,7 @@ COPY packages/api ./packages/api
 COPY --from=data-provider-build /app/packages/data-provider/dist /app/packages/data-provider/dist
 COPY --from=data-schemas-build /app/packages/data-schemas/dist /app/packages/data-schemas/dist
 RUN npx jest --coverage=false --config packages/api/jest.config.mjs --rootDir packages/api \
-      --testPathPatterns="(src/bedrock-kb/|src/files/rag\.spec\.ts$|src/storage/s3/)" \
+  --testPathPatterns="(src/files/rag\.spec\.ts$|src/storage/s3/)" \
     && touch /tmp/api-test
 
 FROM scratch AS api-test
@@ -139,7 +139,6 @@ RUN npx cross-env NODE_ENV=test jest \
 
 FROM scratch AS cognito-login-test
 COPY --from=cognito-login-test-run /tmp/cognito-login-test /cognito-login-test
-
 # Build `client` package
 FROM base AS client-package-build
 WORKDIR /app/packages/client

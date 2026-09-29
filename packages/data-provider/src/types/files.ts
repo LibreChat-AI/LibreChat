@@ -11,7 +11,6 @@ export enum FileSources {
   s3 = 's3',
   cloudfront = 'cloudfront',
   vectordb = 'vectordb',
-  bedrock_kb = 'bedrock_kb',
   execute_code = 'execute_code',
   mistral_ocr = 'mistral_ocr',
   azure_mistral_ocr = 'azure_mistral_ocr',
@@ -204,19 +203,6 @@ export type TFile = {
     routingMimeType?: string;
   };
   llmDeliveryPath?: 'provider' | 'text' | 'none';
-  /**
-   * Bedrock Knowledge Base ingestion lifecycle. `embedded` stays the field
-   * read sites branch on; it is `true` iff `ingestionStatus === 'ingested'`.
-   */
-  ingestionStatus?: 'pending' | 'ingesting' | 'ingested' | 'failed' | 'deleted';
-  /** Key of the object (plus its `.metadata.json` sidecar) under the KB's S3 data source. */
-  s3DataSourceKey?: string;
-  /** Metadata `entity_id` values this file was tagged with at ingestion time. */
-  kbEntityIds?: string[];
-  kbIngestionJobId?: string;
-  kbIngestionRequestedAt?: string | Date;
-  kbIngestionCompletedAt?: string | Date;
-  kbIngestionError?: string;
   createdAt?: string | Date;
   updatedAt?: string | Date;
 };

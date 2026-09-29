@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import { GetKnowledgeBaseCommand } from '@aws-sdk/client-bedrock-agent';
 import { logger, webSearchKeys } from '@librechat/data-schemas';
 import { Constants, extractVariableName } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
@@ -13,8 +12,6 @@ import {
   getCredentialRuntimeState,
   getLegacyCredentialNames,
 } from '~/credentials';
-import { resolveBedrockKbConfig } from '~/bedrock-kb/service';
-import { initializeBedrockAgent } from '~/bedrock-kb/client';
 import { isEnabled, checkEmailConfig } from '~/utils';
 import { handleRateLimits } from './limits';
 
@@ -263,47 +260,15 @@ export async function checkCredentialDatabase(): Promise<void> {
  * Checks the health of auxiliary API's by attempting a fetch request to their respective `/health` endpoints.
  * Logs information or warning based on the API's availability and response.
  */
-// export async function checkHealth(): Promise<void> {
-//   try {
-//     const response = await fetch(`${process.env.RAG_API_URL}/health`);
-//     if (response?.ok && response?.status === 200) {
-//       logger.info(`RAG API is running and reachable at ${process.env.RAG_API_URL}.`);
-//     }
-//   } catch {
-//     logger.warn(
-//       `RAG API is either not running or not reachable at ${process.env.RAG_API_URL}, you may experience errors with file uploads.`,
-//     );
-//   }
-// }
-/**
- * Checks the health of the configured Bedrock Knowledge Base by fetching its status.
- * Unlike the legacy `RAG_API_URL` check, this early-returns when unconfigured instead
- * of always attempting the request. Logs information or warning based on availability.
- */
 export async function checkHealth(): Promise<void> {
-  const config = await resolveBedrockKbConfig();
-  if (!config) {
-    return;
-  }
-  const client = initializeBedrockAgent();
-  if (!client) {
-    return;
-  }
   try {
-    const result = await client.send(
-      new GetKnowledgeBaseCommand({ knowledgeBaseId: config.knowledgeBaseId }),
-    );
-    if (result.knowledgeBase?.status === 'ACTIVE') {
-      logger.info(`Bedrock Knowledge Base ${config.knowledgeBaseId} is active and reachable.`);
-    } else {
-      logger.warn(
-        `Bedrock Knowledge Base ${config.knowledgeBaseId} status is ${result.knowledgeBase?.status}, you may experience errors with file uploads.`,
-      );
+    const response = await fetch(`${process.env.RAG_API_URL}/health`);
+    if (response?.ok && response?.status === 200) {
+      logger.info(`RAG API is running and reachable at ${process.env.RAG_API_URL}.`);
     }
-  } catch (error) {
+  } catch {
     logger.warn(
-      `Bedrock Knowledge Base ${config.knowledgeBaseId} is not reachable, you may experience errors with file uploads.`,
-      error,
+      `RAG API is either not running or not reachable at ${process.env.RAG_API_URL}, you may experience errors with file uploads.`,
     );
   }
 }

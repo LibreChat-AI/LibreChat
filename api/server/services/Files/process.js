@@ -48,7 +48,6 @@ const {
   createCodeApiRateLimitBudget,
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
-  isBedrockKbConfigured,
 } = require('@librechat/api');
 const {
   convertImage,
@@ -187,14 +186,9 @@ const getDeleteMethod = ({ source, deletionMethods }) => {
 const createDeleteFileWithSecondaryStorage = ({ source, deleteFile, deletionMethods }) => {
   return async (req, file, openai) => {
     const secondaryDeleteMethods = [];
-    // if (file.embedded === true && source !== FileSources.vectordb) {
-    //   secondaryDeleteMethods.push(
-    //     getDeleteMethod({ source: FileSources.vectordb, deletionMethods }),
-    //   );
-    // }
-    if (file.embedded === true && source !== FileSources.bedrock_kb) {
+    if (file.embedded === true && source !== FileSources.vectordb) {
       secondaryDeleteMethods.push(
-        getDeleteMethod({ source: FileSources.bedrock_kb, deletionMethods }),
+        getDeleteMethod({ source: FileSources.vectordb, deletionMethods }),
       );
     }
     if (hasCodeEnvRef(file) && source !== FileSources.execute_code) {
@@ -1029,8 +1023,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
       mimeType: file.mimetype,
       fileConfig,
       ocrConfigured: appConfig?.ocr != null,
-      // ragConfigured: !!process.env.RAG_API_URL,
-      ragConfigured: isBedrockKbConfigured(),
+      ragConfigured: !!process.env.RAG_API_URL,
     });
     const shouldUseConfiguredOCR = extractedTextPlan === UPLOAD_EXTRACTED_TEXT_PLANS.configuredOCR;
     const shouldUseConfiguredText = extractedTextPlan === UPLOAD_EXTRACTED_TEXT_PLANS.configuredRAG;
@@ -1176,10 +1169,9 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     });
 
     // SECOND: Upload to Vector DB
-    // const { uploadVectors } = require('./VectorDB/crud');
-    const { ingestToKnowledgeBase } = require('./BedrockKB/crud');
+    const { uploadVectors } = require('./VectorDB/crud');
 
-    embeddingResult = await ingestToKnowledgeBase({
+    embeddingResult = await uploadVectors({
       req,
       file,
       file_id,
@@ -1299,16 +1291,12 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
   } = storageResult;
   // For RAG files, use embedding result; for others, use storage result
   let embedded = storageResult.embedded;
-  let ingestionStatus, s3DataSourceKey, kbIngestionRequestedAt;
   if (
     effectiveToolResource === EToolResources.file_search &&
     tool_resource === EToolResources.file_search
   ) {
     embedded = embeddingResult?.embedded;
     filename = embeddingResult?.filename || filename;
-    ingestionStatus = embeddingResult?.ingestionStatus;
-    s3DataSourceKey = embeddingResult?.s3DataSourceKey;
-    kbIngestionRequestedAt = embeddingResult?.kbIngestionRequestedAt;
   }
 
   let filepath = _filepath;
@@ -1350,9 +1338,6 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
       },
       type: storedType,
       embedded,
-      ingestionStatus,
-      s3DataSourceKey,
-      kbIngestionRequestedAt,
       source,
       height,
       width,

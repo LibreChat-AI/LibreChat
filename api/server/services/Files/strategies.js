@@ -73,8 +73,7 @@ const {
 } = require('./Azure');
 const { uploadOpenAIFile, deleteOpenAIFile, getOpenAIFileStream } = require('./OpenAI');
 const { deleteCodeEnvFile, getCodeOutputDownloadStream, uploadCodeEnvFile } = require('./Code');
-// const { uploadVectors, deleteVectors } = require('./VectorDB');
-const { ingestToKnowledgeBase, deleteFromKnowledgeBase } = require('./BedrockKB');
+const { uploadVectors, deleteVectors } = require('./VectorDB');
 
 /**
  * Firebase Storage Strategy Functions
@@ -159,33 +158,10 @@ const azureStrategy = () => ({
 });
 
 /**
- * VectorDB Storage Strategy Functions (legacy rag_api, superseded by bedrockKbStrategy below)
+ * VectorDB Storage Strategy Functions
  *
  * */
-// const vectorStrategy = () => ({
-//   /** @type {typeof saveFileFromURL | null} */
-//   saveURL: null,
-//   /** @type {typeof getLocalFileURL | null} */
-//   getFileURL: null,
-//   /** @type {typeof saveLocalBuffer | null} */
-//   saveBuffer: null,
-//   /** @type {typeof processLocalAvatar | null} */
-//   processAvatar: null,
-//   /** @type {typeof uploadLocalImage | null} */
-//   handleImageUpload: null,
-//   /** @type {typeof prepareImagesLocal | null} */
-//   prepareImagePayload: null,
-//   /** @type {typeof getLocalFileStream | null} */
-//   getDownloadStream: null,
-//   handleFileUpload: uploadVectors,
-//   deleteFile: deleteVectors,
-// });
-
-/**
- * Bedrock Knowledge Base Storage Strategy Functions
- *
- * */
-const bedrockKbStrategy = () => ({
+const vectorStrategy = () => ({
   /** @type {typeof saveFileFromURL | null} */
   saveURL: null,
   /** @type {typeof getLocalFileURL | null} */
@@ -200,8 +176,8 @@ const bedrockKbStrategy = () => ({
   prepareImagePayload: null,
   /** @type {typeof getLocalFileStream | null} */
   getDownloadStream: null,
-  handleFileUpload: ingestToKnowledgeBase,
-  deleteFile: deleteFromKnowledgeBase,
+  handleFileUpload: uploadVectors,
+  deleteFile: deleteVectors,
 });
 
 /**
@@ -342,10 +318,8 @@ const getStrategyFunctions = (fileSource) => {
     return openAIStrategy();
   } else if (fileSource === FileSources.azure_blob) {
     return azureStrategy();
-    // } else if (fileSource === FileSources.vectordb) {
-    //   return vectorStrategy();
-  } else if (fileSource === FileSources.bedrock_kb) {
-    return bedrockKbStrategy();
+  } else if (fileSource === FileSources.vectordb) {
+    return vectorStrategy();
   } else if (fileSource === FileSources.s3) {
     return s3Strategy();
   } else if (fileSource === FileSources.cloudfront) {

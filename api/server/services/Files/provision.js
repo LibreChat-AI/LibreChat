@@ -1,7 +1,6 @@
 const { createProvisionService } = require('@librechat/api');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
-// const { uploadVectors } = require('./VectorDB/crud');
-const { ingestToKnowledgeBase: uploadVectors } = require('./BedrockKB/crud');
+const { uploadVectors } = require('./VectorDB/crud');
 const { getStrategyFunctions } = require('./strategies');
 
 /* Wiring only: the provisioning logic lives in packages/api, where it is type checked.

@@ -26,13 +26,11 @@ services:
     #   mongodb:
     #     condition: service_started
     depends_on: !override
-      # rag_api:
-      #   condition: service_started
+      rag_api:
+        condition: service_started
       ministack:
         condition: service_healthy
       s3-init:
-        condition: service_completed_successfully
-      bedrock-kb-init:
         condition: service_completed_successfully
     environment:
       # Legacy runtime value inherited from docker-compose.yml:
@@ -40,8 +38,7 @@ services:
       MONGO_URI: ""
       # Legacy runtime value inherited from docker-compose.yml:
       # RAG_API_URL: http://rag_api:${RAG_PORT:-8000}
-      # Blank so document text extraction uses the native parser instead of rag_api's /text.
-      RAG_API_URL: ""
+  RAG_API_URL: http://rag_api:${RAG_PORT:-8000}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION}
@@ -98,7 +95,7 @@ services:
       GATEWAY_PORT: ${MINISTACK_PORT}
       AWS_DEFAULT_REGION: ${AWS_REGION}
       MINISTACK_BEDROCK_PROXY_URL: http://ollama:${OLLAMA_PORT}
-      MINISTACK_BEDROCK_PROXY_TIMEOUT_SECONDS: 300
+      MINISTACK_BEDROCK_PROXY_TIMEOUT_SECONDS: 120
       PERSIST_STATE: "1"
       STATE_DIR: /var/lib/ministack/state
     volumes:
@@ -107,6 +104,7 @@ services:
         source: ${MINISTACK_STATE_PATH}
         target: /var/lib/ministack/state
     healthcheck:
+      # test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:${MINISTACK_PORT}/_ministack/health"]
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${MINISTACK_PORT}/_ministack/health')"]
       interval: 5s
       timeout: 5s
@@ -129,49 +127,6 @@ services:
     depends_on:
       ministack:
         condition: service_healthy
-    restart: "no"
-    networks:
-      - infra-network
-
-  # Idempotently provisions the shared Bedrock Knowledge Base + S3 data source.
-  # ministack's CreateKnowledgeBase returns a server-generated id with no way to pin
-  # it from compose, so — like the app's own resolveBedrockKbConfig() — this looks the
-  # id up by name first (list-then-create), using the same idempotent pattern as the
-  # the table.
-  bedrock-kb-init:
-    image: amazon/aws-cli:2.36.44
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        until aws --endpoint-url "http://ministack:${MINISTACK_PORT}" bedrock-agent list-knowledge-bases >/dev/null 2>&1; do sleep 2; done
-        kb_id=$(aws --endpoint-url "http://ministack:${MINISTACK_PORT}" bedrock-agent list-knowledge-bases \
-          --query "knowledgeBaseSummaries[?name=='${BEDROCK_KB_NAME}'].knowledgeBaseId | [0]" --output text)
-        if [ "$$kb_id" = "None" ] || [ -z "$$kb_id" ]; then
-          kb_id=$(aws --endpoint-url "http://ministack:${MINISTACK_PORT}" bedrock-agent create-knowledge-base \
-            --name "${BEDROCK_KB_NAME}" \
-            --role-arn "arn:aws:iam::000000000000:role/ministack-kb-role" \
-            --knowledge-base-configuration '{"type":"MANAGED","managedKnowledgeBaseConfiguration":{"embeddingModelType":"MANAGED"}}' \
-            --query 'knowledgeBase.knowledgeBaseId' --output text)
-        fi
-        ds_id=$(aws --endpoint-url "http://ministack:${MINISTACK_PORT}" bedrock-agent list-data-sources \
-          --knowledge-base-id "$$kb_id" \
-          --query "dataSourceSummaries[?name=='${BEDROCK_KB_DATA_SOURCE_NAME}'].dataSourceId | [0]" --output text)
-        if [ "$$ds_id" = "None" ] || [ -z "$$ds_id" ]; then
-          aws --endpoint-url "http://ministack:${MINISTACK_PORT}" bedrock-agent create-data-source \
-            --knowledge-base-id "$$kb_id" \
-            --name "${BEDROCK_KB_DATA_SOURCE_NAME}" \
-            --data-source-configuration "{\"type\":\"S3\",\"s3Configuration\":{\"bucketArn\":\"arn:aws:s3:::plastic-ai-files\",\"inclusionPrefixes\":[\"${BEDROCK_KB_DATA_SOURCE_PREFIX}\"]}}" \
-            >/dev/null
-        fi
-    environment:
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-      AWS_DEFAULT_REGION: ${AWS_REGION}
-    depends_on:
-      ministack:
-        condition: service_healthy
-      s3-init:
-        condition: service_completed_successfully
     restart: "no"
     networks:
       - infra-network
@@ -224,8 +179,7 @@ services:
       - legacy-mongodb
 
   rag_api:
-    # Legacy service remains declared in docker-compose.yml but is inactive by default,
-    # superseded by the Bedrock Knowledge Base (bedrock-kb-init + ministack's bedrock-agent).
+    # Legacy service remains declared in docker-compose.yml but is inactive by default.
     profiles:
       - legacy-rag
 

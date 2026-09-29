@@ -2808,23 +2808,6 @@ export const openIdDiscoverySchema = z.object({
 
 export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
 
-export const bedrockKnowledgeBaseSchema = z.object({
-  /** Results returned per `Retrieve` call from the file_search tool. */
-  topK: z.number().int().positive().max(100).default(10),
-  /** Minimum Bedrock relevance score to keep a result; omit to keep all results. */
-  scoreThreshold: z.number().min(0).max(1).optional(),
-  /** Debounce window collapsing upload/delete bursts into one ingestion job — Bedrock
-   *  rejects a second `StartIngestionJob` while one is already running for the data source. */
-  ingestionDebounceSeconds: z.number().int().positive().max(300).default(8),
-  /** How `RAG_USE_FULL_CONTEXT`'s "inject the whole document" mode is approximated now
-   *  that Bedrock KB has no equivalent retrieval mode: `'stored-text'` reads the File
-   *  record's already-extracted `text` directly, `'chunked-high-k'` falls back to a
-   *  high-`topK` Retrieve call, `'deprecated'` disables the full-context branch entirely. */
-  fullContextMode: z.enum(['deprecated', 'chunked-high-k', 'stored-text']).default('stored-text'),
-});
-
-export type TBedrockKnowledgeBaseConfig = z.infer<typeof bedrockKnowledgeBaseSchema>;
-
 export const configSchema = z.object({
   version: z.string(),
   cache: z.boolean().default(true),
@@ -2833,7 +2816,6 @@ export const configSchema = z.object({
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),
-  bedrockKnowledgeBase: bedrockKnowledgeBaseSchema.optional(),
   skillSync: skillSyncConfigSchema,
   secureImageLinks: z.boolean().optional(),
   imageOutputType: z.nativeEnum(EImageOutputType).default(EImageOutputType.PNG),

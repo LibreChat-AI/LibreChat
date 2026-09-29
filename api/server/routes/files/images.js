@@ -13,7 +13,6 @@ const {
   hasActiveFilePolicy,
   sanitizeFilename,
   checkToolResourceUploadPermission,
-  isBedrockKbConfigured,
 } = require('@librechat/api');
 const {
   isAssistantsEndpoint,
@@ -140,7 +139,7 @@ router.post('/', async (req, res) => {
       toolResource: effectiveToolResource,
       fileConfig,
       ocrConfigured: req.config?.ocr != null,
-      ragConfigured: isBedrockKbConfigured(),
+      ragConfigured: !!process.env.RAG_API_URL,
       rawFileMode: 'opaque',
     });
 

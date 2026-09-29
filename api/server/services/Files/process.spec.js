@@ -57,9 +57,6 @@ jest.mock('@librechat/api', () => {
       return upload(await openSource());
     }
   });
-  const isBedrockKbConfigured = jest.fn(() =>
-    Boolean(process.env.BEDROCK_KB_ID || process.env.BEDROCK_KB_NAME),
-  );
   const UPLOAD_EXTRACTED_TEXT_PLANS = {
     configuredOCR: 'configured_ocr',
     configuredRAG: 'configured_rag',
@@ -157,7 +154,6 @@ jest.mock('@librechat/api', () => {
     createCodeApiRateLimitBudget,
     getCodeApiUploadOptions,
     withCodeApiUploadRecovery,
-    isBedrockKbConfigured,
     getAgentFileRetentionExpiry: jest.fn(({ req, messageAttachment, toolResource }) => {
       const interfaceConfig = req?.config?.interfaceConfig;
       if (
@@ -225,17 +221,14 @@ jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn(),
 }));
 
-jest.mock('./BedrockKB/crud', () => ({
-  ingestToKnowledgeBase: jest.fn().mockResolvedValue({
+jest.mock('./VectorDB/crud', () => ({
+  uploadVectors: jest.fn().mockResolvedValue({
     bytes: 42,
     filename: 'upload.bin',
-    filepath: 'bedrock_kb',
+    filepath: 'vectordb',
     embedded: true,
-    ingestionStatus: 'pending',
-    s3DataSourceKey: 'kb/file/upload.bin',
-    kbIngestionRequestedAt: '2024-01-01T00:00:00.000Z',
   }),
-  deleteFromKnowledgeBase: jest.fn(),
+  deleteVectors: jest.fn(),
 }));
 
 jest.mock('~/server/utils', () => ({
@@ -246,8 +239,8 @@ jest.mock('~/server/services/Files/Audio/STTService', () => ({
   STTService: { getInstance: jest.fn() },
 }));
 
-jest.mock('./BedrockKB/crud', () => ({
-  ingestToKnowledgeBase: jest.fn().mockResolvedValue({ embedded: true, filename: 'embedded-upload.bin' }),
+jest.mock('./VectorDB/crud', () => ({
+  uploadVectors: jest.fn().mockResolvedValue({ embedded: true, filename: 'embedded-upload.bin' }),
 }));
 
 const {
@@ -268,7 +261,7 @@ const { mergeFileConfig } = require('librechat-data-provider');
 const { checkCapability } = require('~/server/services/Config');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const { ingestToKnowledgeBase } = require('./BedrockKB/crud');
+const { uploadVectors } = require('./VectorDB/crud');
 const { logger } = require('@librechat/data-schemas');
 const db = require('~/models');
 const {
@@ -467,7 +460,7 @@ describe('processAgentFileUpload', () => {
     mockRes.json.mockReturnValue({});
     checkCapability.mockResolvedValue(true);
     loadAuthValues.mockResolvedValue({ CODE_API_KEY: 'code-key' });
-    ingestToKnowledgeBase.mockResolvedValue({ embedded: true, filename: 'embedded-upload.bin' });
+    uploadVectors.mockResolvedValue({ embedded: true, filename: 'embedded-upload.bin' });
     getStrategyFunctions.mockReturnValue({
       handleFileUpload: jest
         .fn()
@@ -927,22 +920,22 @@ describe('processAgentFileUpload', () => {
     const DOCX_TEXT_REGEX = [
       /^application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$/,
     ];
-    let originalKbId;
+    let originalRagUrl;
 
     beforeEach(() => {
-      originalKbId = process.env.BEDROCK_KB_ID;
+      originalRagUrl = process.env.RAG_API_URL;
     });
 
     afterEach(() => {
-      if (originalKbId === undefined) {
-        delete process.env.BEDROCK_KB_ID;
+      if (originalRagUrl === undefined) {
+        delete process.env.RAG_API_URL;
       } else {
-        process.env.BEDROCK_KB_ID = originalKbId;
+        process.env.RAG_API_URL = originalRagUrl;
       }
     });
 
     test('routes a document type to RAG /text (no native fallback) when admin narrows text config and RAG is set', async () => {
-      process.env.BEDROCK_KB_ID = 'kb-test';
+      process.env.RAG_API_URL = 'http://rag-api.test';
       mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockResolvedValueOnce({ text: 'rag extracted', bytes: 13 });
@@ -957,7 +950,7 @@ describe('processAgentFileUpload', () => {
     });
 
     test('keeps the built-in document parser when text config is the permissive default', async () => {
-      process.env.BEDROCK_KB_ID = 'kb-test';
+      process.env.RAG_API_URL = 'http://rag-api.test';
       mergeFileConfig.mockReturnValue(
         makeFileConfig({ textSupportedMimeTypes: [/^[\w.-]+\/[\w.-]+$/] }),
       );
@@ -970,8 +963,8 @@ describe('processAgentFileUpload', () => {
       expect(parseText).not.toHaveBeenCalled();
     });
 
-    test('keeps the built-in document parser when BEDROCK_KB_ID is not configured', async () => {
-      delete process.env.BEDROCK_KB_ID;
+    test('keeps the built-in document parser when RAG_API_URL is not configured', async () => {
+      delete process.env.RAG_API_URL;
       mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       const req = makeReq({ mimetype: DOCX_MIME, ocrConfig: null });
@@ -983,7 +976,7 @@ describe('processAgentFileUpload', () => {
     });
 
     test('falls back to the built-in document parser (not native text) when RAG is unavailable', async () => {
-      process.env.BEDROCK_KB_ID = 'kb-test';
+      process.env.RAG_API_URL = 'http://rag-api.test';
       mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockRejectedValueOnce(new Error('native fallback is disabled'));
@@ -1000,7 +993,7 @@ describe('processAgentFileUpload', () => {
     });
 
     test('fails closed when RAG and its document-parser fallback cannot extract text', async () => {
-      process.env.BEDROCK_KB_ID = 'kb-test';
+      process.env.RAG_API_URL = 'http://rag-api.test';
       mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockRejectedValueOnce(new Error('PRIVATE RAG failure'));
@@ -1038,7 +1031,7 @@ describe('processAgentFileUpload', () => {
     });
 
     test('surfaces a persistence failure without retrying via the document parser', async () => {
-      process.env.BEDROCK_KB_ID = 'kb-test';
+      process.env.RAG_API_URL = 'http://rag-api.test';
       mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockResolvedValueOnce({ text: 'rag extracted', bytes: 13 });
@@ -1238,7 +1231,7 @@ describe('processAgentFileUpload', () => {
         metadata: { ...makeMetadata(), tool_resource: EToolResources.file_search },
       });
 
-      expect(ingestToKnowledgeBase).toHaveBeenCalled();
+      expect(uploadVectors).toHaveBeenCalled();
       expect(getRetentionExpiry).not.toHaveBeenCalled();
       expect(db.createFile).toHaveBeenCalledWith(expect.not.objectContaining({ expiredAt }), true);
       expect(db.addAgentResourceFile).toHaveBeenCalledWith(
@@ -1265,7 +1258,7 @@ describe('processAgentFileUpload', () => {
         metadata: { ...makeMetadata(), tool_resource: EToolResources.file_search },
       });
 
-      expect(ingestToKnowledgeBase).toHaveBeenCalled();
+      expect(uploadVectors).toHaveBeenCalled();
       expect(getRetentionExpiry).toHaveBeenCalledTimes(1);
       expect(getRetentionExpiry.mock.calls[0][0]).toBe(req);
       expect(db.createFile).toHaveBeenCalledWith(
@@ -1409,7 +1402,7 @@ describe('processAgentFileUpload', () => {
     });
 
     it('defers an inferred file-search destination until tool execution', async () => {
-      const { ingestToKnowledgeBase } = require('~/server/services/Files/BedrockKB/crud');
+      const { uploadVectors } = require('~/server/services/Files/VectorDB/crud');
       setupStoredFileUpload();
       const req = makeReq({
         mimetype: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -1427,7 +1420,7 @@ describe('processAgentFileUpload', () => {
         },
       });
 
-      expect(ingestToKnowledgeBase).not.toHaveBeenCalled();
+      expect(uploadVectors).not.toHaveBeenCalled();
       expect(db.createFile).toHaveBeenCalledWith(
         expect.objectContaining({
           llmDeliveryPath: 'none',
@@ -2558,10 +2551,10 @@ describe('processDeleteRequest', () => {
 
   it('deletes vector storage before removing embedded file metadata', async () => {
     const primaryDelete = jest.fn().mockResolvedValue(undefined);
-    const kbDelete = jest.fn().mockResolvedValue(undefined);
+    const vectorDelete = jest.fn().mockResolvedValue(undefined);
     getStrategyFunctions.mockImplementation((source) =>
-      source === FileSources.bedrock_kb
-        ? { deleteFile: kbDelete }
+      source === FileSources.vectordb
+        ? { deleteFile: vectorDelete }
         : { deleteFile: primaryDelete },
     );
     db.deleteFiles.mockResolvedValue({ deletedCount: 1 });
@@ -2580,17 +2573,17 @@ describe('processDeleteRequest', () => {
     const result = await processDeleteRequest({ req, files: [file] });
 
     expect(primaryDelete).toHaveBeenCalledWith(req, file, undefined);
-    expect(kbDelete).toHaveBeenCalledWith(req, file);
+    expect(vectorDelete).toHaveBeenCalledWith(req, file);
     expect(db.deleteFiles).toHaveBeenCalledWith(['embedded-file']);
     expect(result).toEqual({ deletedFileIds: ['embedded-file'], failedFileIds: [] });
   });
 
   it('keeps embedded file metadata when vector deletion fails', async () => {
     const primaryDelete = jest.fn().mockResolvedValue(undefined);
-    const kbDelete = jest.fn().mockRejectedValue(new Error('bedrock kb unavailable'));
+    const vectorDelete = jest.fn().mockRejectedValue(new Error('rag unavailable'));
     getStrategyFunctions.mockImplementation((source) =>
-      source === FileSources.bedrock_kb
-        ? { deleteFile: kbDelete }
+      source === FileSources.vectordb
+        ? { deleteFile: vectorDelete }
         : { deleteFile: primaryDelete },
     );
     const req = {
@@ -2608,17 +2601,17 @@ describe('processDeleteRequest', () => {
     const result = await processDeleteRequest({ req, files: [file] });
 
     expect(primaryDelete).toHaveBeenCalledWith(req, file, undefined);
-    expect(kbDelete).toHaveBeenCalledWith(req, file);
+    expect(vectorDelete).toHaveBeenCalledWith(req, file);
     expect(db.deleteFiles).not.toHaveBeenCalled();
     expect(result).toEqual({ deletedFileIds: [], failedFileIds: ['embedded-file'] });
   });
 
   it('does not delete vector storage when primary embedded file deletion fails', async () => {
     const primaryDelete = jest.fn().mockRejectedValue(new Error('permission denied'));
-    const kbDelete = jest.fn().mockResolvedValue(undefined);
+    const vectorDelete = jest.fn().mockResolvedValue(undefined);
     getStrategyFunctions.mockImplementation((source) =>
-      source === FileSources.bedrock_kb
-        ? { deleteFile: kbDelete }
+      source === FileSources.vectordb
+        ? { deleteFile: vectorDelete }
         : { deleteFile: primaryDelete },
     );
     const req = {
@@ -2636,7 +2629,7 @@ describe('processDeleteRequest', () => {
     const result = await processDeleteRequest({ req, files: [file] });
 
     expect(primaryDelete).toHaveBeenCalledWith(req, file, undefined);
-    expect(kbDelete).not.toHaveBeenCalled();
+    expect(vectorDelete).not.toHaveBeenCalled();
     expect(db.deleteFiles).not.toHaveBeenCalled();
     expect(result).toEqual({ deletedFileIds: [], failedFileIds: ['embedded-file'] });
   });
@@ -2644,10 +2637,10 @@ describe('processDeleteRequest', () => {
   it('still deletes vector storage when primary embedded file storage is already missing', async () => {
     const missingError = Object.assign(new Error('no such file'), { code: 'ENOENT' });
     const primaryDelete = jest.fn().mockRejectedValue(missingError);
-    const kbDelete = jest.fn().mockResolvedValue(undefined);
+    const vectorDelete = jest.fn().mockResolvedValue(undefined);
     getStrategyFunctions.mockImplementation((source) =>
-      source === FileSources.bedrock_kb
-        ? { deleteFile: kbDelete }
+      source === FileSources.vectordb
+        ? { deleteFile: vectorDelete }
         : { deleteFile: primaryDelete },
     );
     db.deleteFiles.mockResolvedValue({ deletedCount: 1 });
@@ -2666,7 +2659,7 @@ describe('processDeleteRequest', () => {
     const result = await processDeleteRequest({ req, files: [file] });
 
     expect(primaryDelete).toHaveBeenCalledWith(req, file, undefined);
-    expect(kbDelete).toHaveBeenCalledWith(req, file);
+    expect(vectorDelete).toHaveBeenCalledWith(req, file);
     expect(db.deleteFiles).toHaveBeenCalledWith(['embedded-file']);
     expect(result).toEqual({ deletedFileIds: ['embedded-file'], failedFileIds: [] });
   });
