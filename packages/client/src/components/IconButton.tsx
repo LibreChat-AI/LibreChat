@@ -2,6 +2,7 @@ import * as React from 'react';
 import { cva } from 'class-variance-authority';
 import type { ClassProp } from 'class-variance-authority/types';
 import { composerSubmitClasses } from '~/utils/composer';
+import { disabledFillClasses } from '~/utils/theme';
 import { cn } from '~/utils';
 
 type IconButtonVariantProps = {
@@ -19,7 +20,10 @@ type IconButtonVariantProps = {
 };
 
 const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string = cva(
-  'inline-flex shrink-0 items-center justify-center text-text-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary disabled:pointer-events-none disabled:opacity-50 theme-disabled:text-text-disabled theme-disabled:bg-surface-disabled theme-disabled:opacity-100',
+  [
+    'inline-flex shrink-0 items-center justify-center text-text-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary disabled:pointer-events-none disabled:opacity-50',
+    disabledFillClasses,
+  ],
   {
     variants: {
       variant: {
@@ -27,7 +31,7 @@ const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string
         primary:
           'bg-surface-inverted text-text-inverted hover:bg-surface-inverted-hover hover:active:bg-surface-inverted-pressed',
         secondary:
-          'border border-border-light bg-surface-secondary hover:bg-surface-hover hover:active:bg-surface-pressed theme-disabled:border-border-disabled',
+          'border border-border-light bg-surface-secondary hover:bg-surface-hover hover:active:bg-surface-pressed',
         ghost: 'bg-transparent hover:bg-surface-hover hover:active:bg-surface-pressed',
         /** An action inside a list row whose highlight is already `surface-hover`,
          *  so its own hover takes the active fill to stay visible on top of it. */

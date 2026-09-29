@@ -126,5 +126,7 @@
  * disabled roles instead of fading it; `ThemeProvider` mirrors that choice as
  * `data-theme-disabled` on the root. The default `dim` style keeps the
  * `disabled:opacity-50` every primitive already carries. `:is()` carries the
- * attribute's weight, so the fill outranks a checked or variant fill. */
-@custom-variant theme-disabled (&:is([data-theme-disabled='fill'] *):disabled);
+ * attribute's weight, so the fill outranks a checked or variant fill. Radix
+ * marks a disabled part that is not a form control (a slider thumb) with
+ * `data-disabled`, which counts too. */
+@custom-variant theme-disabled (&:is([data-theme-disabled='fill'] *):is(:disabled, [data-disabled]));

@@ -1,3 +1,12 @@
+/**
+ * The disabled appearance a `fill` theme paints (`disabledStyle: 'fill'`): the
+ * disabled fill, ink, placeholder and edge at full opacity. Every shared control
+ * composes it beside its own `disabled:opacity-*`, which stays the default `dim`
+ * treatment, so a theme's choice reaches every primitive at once.
+ */
+export const disabledFillClasses =
+  'theme-disabled:border-border-disabled theme-disabled:bg-surface-disabled theme-disabled:text-text-disabled theme-disabled:placeholder:text-text-disabled theme-disabled:opacity-100';
+
 export const applyFontSize = (val: string): void => {
   const root = document.documentElement;
   const size = val.split('-')[1]; // This will be 'xs', 'sm', 'base', 'lg', or 'xl'

@@ -1,3 +1,5 @@
+import { disabledFillClasses } from '~/utils/theme';
+
 /**
  * The shared appearance of a form control: border, radius, type scale and focus
  * treatment. Owned here so `Input`, `Textarea`, and the select/combobox triggers
@@ -6,8 +8,7 @@
  * border is `border-control` because it is the only edge the control has, so a
  * palette can raise it to the 3:1 non-text floor without touching separators.
  */
-export const fieldBase: string =
-  'lc-field flex w-full rounded-lg border border-border-control px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control disabled:cursor-not-allowed disabled:opacity-50 theme-disabled:border-border-disabled theme-disabled:text-text-disabled theme-disabled:placeholder:text-text-disabled theme-disabled:bg-surface-disabled theme-disabled:opacity-100';
+export const fieldBase: string = `lc-field flex w-full rounded-lg border border-border-control px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control disabled:cursor-not-allowed disabled:opacity-50 ${disabledFillClasses}`;
 
 /** A single-line control sized to sit in a form row, matching `Input`. */
 export const fieldControl: string = `${fieldBase} h-10 bg-transparent`;

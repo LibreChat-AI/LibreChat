@@ -132,7 +132,17 @@ async function disabledLook(page: Page) {
     field.remove();
     return color;
   }, PLACEHOLDER_CLASSES);
-  return { ...look, placeholder };
+  /** Radix marks a disabled part that is not a form control, a slider thumb, with `data-disabled`. */
+  const part = await page.evaluate(() => {
+    const thumb = document.createElement('span');
+    thumb.className = 'bg-surface-primary theme-disabled:bg-surface-disabled';
+    thumb.setAttribute('data-disabled', '');
+    document.body.append(thumb);
+    const fill = getComputedStyle(thumb).backgroundColor;
+    thumb.remove();
+    return fill;
+  });
+  return { ...look, placeholder, part };
 }
 
 /** Each tag is written out whole: the runner finds a scenario by its literal tag. */
@@ -141,7 +151,7 @@ const CASES: Array<{
   mode: Mode;
   definition?: { name: string };
   pressed: string;
-  disabled: { fill: string; ink: string; opacity: string; placeholder: string };
+  disabled: { fill: string; ink: string; opacity: string; placeholder: string; part: string };
 }> = [
   {
     title:
@@ -153,6 +163,7 @@ const CASES: Array<{
       ink: 'rgb(33, 33, 33)',
       opacity: '0.5',
       placeholder: 'rgb(66, 66, 66)',
+      part: 'rgb(255, 255, 255)',
     },
   },
   {
@@ -165,6 +176,7 @@ const CASES: Array<{
       ink: 'rgb(236, 236, 236)',
       opacity: '0.5',
       placeholder: 'rgb(205, 205, 205)',
+      part: 'rgb(13, 13, 13)',
     },
   },
   {
@@ -178,6 +190,7 @@ const CASES: Array<{
       ink: 'rgb(160, 160, 160)',
       opacity: '1',
       placeholder: 'rgb(160, 160, 160)',
+      part: 'rgb(223, 223, 223)',
     },
   },
   {
@@ -191,6 +204,7 @@ const CASES: Array<{
       ink: 'rgb(128, 128, 128)',
       opacity: '1',
       placeholder: 'rgb(128, 128, 128)',
+      part: 'rgb(65, 65, 65)',
     },
   },
 ];
@@ -233,6 +247,7 @@ test.describe('pressed and disabled state roles', () => {
         ink: expected[mode].ink,
         opacity: '1',
         placeholder: expected[mode].ink,
+        part: expected[mode].fill,
       });
     }
   });

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as SliderPrimitive from '@radix-ui/react-slider';
-import { cn } from '~/utils';
+import { cn, disabledFillClasses } from '~/utils';
 
 type SliderProps = React.ComponentPropsWithoutRef<typeof SliderPrimitive.Root> & {
   className?: string;
@@ -47,8 +47,10 @@ const Slider: React.ForwardRefExoticComponent<SliderProps & React.RefAttributes<
         </SliderPrimitive.Track>
         <SliderPrimitive.Thumb
           {...{
-            className:
+            className: cn(
               'block h-5 w-5 rounded-full border-2 border-border-xheavy bg-surface-primary ring-offset-surface-primary transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+              disabledFillClasses,
+            ),
             'aria-labelledby': ariaLabelledBy,
             'aria-label': ariaLabel,
             'aria-describedby': ariaDescribedBy,

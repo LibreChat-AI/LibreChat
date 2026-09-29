@@ -150,7 +150,7 @@ test.describe('deployment theme from librechat.yaml', () => {
     });
     await serveTheme(page, {
       ...INLINE_THEME,
-      modes: { light: { colors: { 'rgb-not-a-token': '1 2 3' } } },
+      modes: { light: { colors: { 'rgb-not-a-token': 'red' } } },
     });
 
     await openLogin(page);

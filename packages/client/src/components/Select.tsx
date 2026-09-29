@@ -2,7 +2,7 @@ import * as React from 'react';
 import * as SelectPrimitive from '@radix-ui/react-select';
 import { CaretSortIcon, CheckIcon, ChevronDownIcon, ChevronUpIcon } from '@radix-ui/react-icons';
 import { useNestedPopoverStyle } from './OriginalDialog';
-import { cn } from '~/utils';
+import { cn, disabledFillClasses } from '~/utils';
 
 // @ts-ignore - Radix UI type conflicts with React types
 const Select: React.FC<SelectPrimitive.SelectProps> = SelectPrimitive.Root;
@@ -28,6 +28,7 @@ const SelectTrigger: React.ForwardRefExoticComponent<
     ref={ref}
     className={cn(
       'border-border-control ring-offset-surface-primary placeholder:text-text-secondary flex h-9 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+      disabledFillClasses,
       'hover:bg-surface-hover rounded-lg',
       className,
     )}

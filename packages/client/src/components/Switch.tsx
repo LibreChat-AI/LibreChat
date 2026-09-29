@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as SwitchPrimitives from '@radix-ui/react-switch';
-import { cn } from '~/utils';
+import { cn, disabledFillClasses } from '~/utils';
 
 type BaseSwitchProps = Omit<
   React.ComponentPropsWithoutRef<typeof SwitchPrimitives.Root>,
@@ -23,7 +23,8 @@ const Switch: React.ForwardRefExoticComponent<
   ({ className, ...props }, ref) => (
     <SwitchPrimitives.Root
       className={cn(
-        'peer focus-visible:ring-focus-control focus-visible:ring-offset-surface-primary data-[state=checked]:bg-surface-inverted data-[state=unchecked]:bg-switch-unchecked theme-disabled:bg-surface-disabled theme-disabled:opacity-100 inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+        'peer focus-visible:ring-focus-control focus-visible:ring-offset-surface-primary data-[state=checked]:bg-surface-inverted data-[state=unchecked]:bg-switch-unchecked inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+        disabledFillClasses,
         className,
       )}
       {...props}
