@@ -450,7 +450,6 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '~': path.join(import.meta.dirname, 'src/'),
-      $fonts: path.resolve(import.meta.dirname, 'public/fonts'),
       'micromark-extension-math': 'micromark-extension-llm-math',
     },
   },
@@ -479,9 +478,10 @@ export function sourcemapExclude(opts?: SourcemapExclude): Plugin {
  * Production builds set `publicDir: false`, so nothing under public/ reaches dist on its
  * own. This copies what the server actually has to serve: all of public/assets (the PWA
  * icons plus the endpoint, tool and language logos referenced at runtime) and robots.txt.
- * The font files in public/fonts are emitted as bundle assets through the `$fonts` alias,
- * so only their licence texts are copied, next to them in assets/fonts: the SIL OFL lets a
- * font be redistributed only with its licence.
+ * The font files live in the component library (`packages/client/src/theme/fonts`) and are
+ * emitted as bundle assets through the `@font-face` rules `tokens.css` imports, so only their
+ * licence texts are copied, next to them in assets/fonts: the SIL OFL lets a font be
+ * redistributed only with its licence.
  *
  * The copy MUST happen inside the build. vite-plugin-pwa globs dist/ for
  * `workbox.globPatterns` from its `closeBundle` hook, which runs after every plugin's
@@ -492,6 +492,7 @@ export function sourcemapExclude(opts?: SourcemapExclude): Plugin {
  */
 export function copyPublicAssets(): Plugin {
   const publicDir = path.resolve(import.meta.dirname, 'public');
+  const fontsDir = path.resolve(import.meta.dirname, '../packages/client/src/theme/fonts');
   let outDir = path.resolve(import.meta.dirname, 'dist');
   return {
     name: 'copy-public-assets',
@@ -507,14 +508,14 @@ export function copyPublicAssets(): Plugin {
         path.join(publicDir, 'robots.txt'),
         path.join(outDir, 'robots.txt'),
       );
-      const licences = (await fs.promises.readdir(path.join(publicDir, 'fonts'))).filter((name) =>
+      const licences = (await fs.promises.readdir(fontsDir)).filter((name) =>
         name.endsWith('.txt'),
       );
       await fs.promises.mkdir(path.join(outDir, 'assets', 'fonts'), { recursive: true });
       await Promise.all(
         licences.map((name) =>
           fs.promises.copyFile(
-            path.join(publicDir, 'fonts', name),
+            path.join(fontsDir, name),
             path.join(outDir, 'assets', 'fonts', name),
           ),
         ),

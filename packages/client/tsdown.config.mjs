@@ -30,9 +30,12 @@ export default defineConfig({
     // the destination directory, not the file, pointing it at `dist/theme.css` produced a
     // directory of that name holding `tokens.css`, and the export resolved to a folder, so the
     // file keeps its name in `dist` and the export maps `./theme.css` onto it. It imports the stock
-    // values beside it by relative path, so the two ship side by side.
+    // values and the font faces beside it by relative path, and the faces load `fonts/`, so all of
+    // them ship side by side.
     { from: 'src/theme/tokens.css', to: 'dist' },
     { from: 'src/theme/defaults.css', to: 'dist' },
+    { from: 'src/theme/fonts.css', to: 'dist' },
+    { from: 'src/theme/fonts', to: 'dist' },
   ],
   // Extract all component CSS into a single `dist/style.css` (no import left in the JS, so the
   // CJS output stays valid CommonJS). Consumers import `@librechat/client/style.css` once.

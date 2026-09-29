@@ -44,11 +44,13 @@ The defaults reproduce the scale those utilities had before, so a theme that nam
 changes nothing. The mapping lives in `tokens.css`, which the app stylesheet imports and
 `@librechat/client/theme.css` publishes, so a consumer's utilities are the app's.
 
-The stock families name Inter (`font-sans`, `font-theme-ui`) and Roboto Mono (`font-mono`), which
-the LibreChat app self-hosts with its own `@font-face` rules; the package does not ship the font
-files. A consumer that does not load them renders the next family in each stack (`sans-serif`, then
-`ui-monospace` and the platform monospace fonts), or sets `fontFamily` and `monoFontFamily`, or the
-`--theme-font-family` and `--theme-mono-font-family` properties, to families it does load.
+The stock families name Inter (`font-sans`, `font-theme-ui`) and Roboto Mono (`font-mono`), and
+the ClickHouse theme names Inconsolata. `theme.css` ships all three: `fonts.css` declares their
+`@font-face` rules against the woff2 files in `fonts/` beside it, Tailwind rewrites those URLs
+against the stylesheet that imports `theme.css`, and the host's bundler emits the files, exactly as
+the app's build does. A face downloads only once text renders in it. The SIL Open Font License of
+each family ships beside its files (`fonts/*-OFL.txt`); keep it with the files when redistributing
+them.
 
 > **Breaking change:** the preset used to pin `rounded-sm`, `rounded-md` and `rounded-lg` to
 > `--radius` (0.125rem, 0.375rem and 0.5rem by default). They now read `--theme-radius-sm`,
@@ -228,14 +230,13 @@ below are never compiled and the import fails with Tailwind's direct-plugin erro
 Tailwind 4 does not look for a JavaScript config on its own, so writing the file above is not
 enough: the stylesheet has to load it, next to the import that pulls Tailwind in. Without the
 directive the preset, the package content glob and the `high-contrast:` variant are absent,
-and the published components render with most of their classes ungenerated. A consumer uses the same import order as the SPA's `client/src/style.css`:
+and the published components render with most of their classes ungenerated. A consumer uses the same import order as the SPA's `client/src/style.css`, with the package stylesheet among the imports: every `@import` has to precede `@config`, or Vite's CSS pipeline drops the ones after it.
 
 ```css
 @import 'tailwindcss';
 @import '@librechat/client/theme.css';
-@config '../tailwind.config.js';
-
 @import '@librechat/client/style.css';
+@config '../tailwind.config.js';
 ```
 
 The package stylesheet carries the component CSS and the one preflight rule the primitives

@@ -23,6 +23,7 @@
     "./tailwind-preset": "./tailwind.preset.cjs",
     "./theme.css": "./dist/tokens.css",
     "./style.css": "./dist/style.css",
+    "./fonts/*": "./dist/fonts/*",
     "./package.json": "./package.json"
   },
   "files": [

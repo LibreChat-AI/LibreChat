@@ -10,12 +10,14 @@
  * modifier on top through color-mix.
  *
  * client/src/style.css imports this file, and `@librechat/client/theme.css` publishes it, with the
- * stock value of every property it reads (`defaults.css`, imported below).
+ * stock value of every property it reads (`defaults.css`) and the font faces those values name
+ * (`fonts.css`), both imported below.
  * Declaring a token here is what makes `bg-<token>` exist; @shadcn/lint reads these
  * declarations, so a name that is not here is reported rather than silently rendering
  * nothing.
  */
 @import './defaults.css';
+@import './fonts.css';
 
 @theme inline {
   /* brand and surfaces */

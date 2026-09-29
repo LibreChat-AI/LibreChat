@@ -1591,7 +1591,8 @@ function designMetadataIsFresh(): boolean {
  * every string leaf of `exports`, kept to the ones inside `dist`. These are what
  * a caller — and so the design rules, resolving `@librechat/client` — actually
  * loads, which is what makes their absence a build that did not happen rather
- * than a build that is merely old.
+ * than a build that is merely old. A subpath pattern (`./dist/fonts/*`) names no
+ * single file, so it stands for the directory it maps into.
  */
 function declaredBundleFiles(): string[] {
   let manifest: Record<string, unknown>;
@@ -1605,7 +1606,7 @@ function declaredBundleFiles(): string[] {
   const declared: string[] = [];
   const collect = (value: unknown): void => {
     if (typeof value === 'string') {
-      const path = value.replace(/^\.\//, '');
+      const path = value.replace(/^\.\//, '').replace(/\/[^/]*\*.*$/, '');
       if (path.startsWith('dist/')) declared.push(path);
       return;
     }
