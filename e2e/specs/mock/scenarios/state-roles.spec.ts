@@ -112,12 +112,27 @@ async function pressedFill(page: Page): Promise<string | null> {
   return fill;
 }
 
+/** The ink an empty disabled field shows is its placeholder, which `Field` colors on its own. */
+const PLACEHOLDER_CLASSES =
+  'placeholder:text-text-secondary disabled:opacity-50 theme-disabled:placeholder:text-text-disabled';
+
 async function disabledLook(page: Page) {
   const probe = await addProbe(page, 'state-disabled-probe', DISABLED_CLASSES, true);
-  return probe.evaluate((node) => {
+  const look = await probe.evaluate((node) => {
     const style = getComputedStyle(node);
     return { fill: style.backgroundColor, ink: style.color, opacity: style.opacity };
   });
+  const placeholder = await page.evaluate((classes) => {
+    const field = document.createElement('input');
+    field.className = classes;
+    field.placeholder = 'Disabled field';
+    field.disabled = true;
+    document.body.append(field);
+    const color = getComputedStyle(field, '::placeholder').color;
+    field.remove();
+    return color;
+  }, PLACEHOLDER_CLASSES);
+  return { ...look, placeholder };
 }
 
 /** Each tag is written out whole: the runner finds a scenario by its literal tag. */
@@ -126,21 +141,31 @@ const CASES: Array<{
   mode: Mode;
   definition?: { name: string };
   pressed: string;
-  disabled: { fill: string; ink: string; opacity: string };
+  disabled: { fill: string; ink: string; opacity: string; placeholder: string };
 }> = [
   {
     title:
       'the default light theme presses in its hover fill and dims disabled controls @scenario:state-roles-default-light-unchanged',
     mode: 'light',
     pressed: 'rgb(227, 227, 227)',
-    disabled: { fill: 'rgba(0, 0, 0, 0)', ink: 'rgb(33, 33, 33)', opacity: '0.5' },
+    disabled: {
+      fill: 'rgba(0, 0, 0, 0)',
+      ink: 'rgb(33, 33, 33)',
+      opacity: '0.5',
+      placeholder: 'rgb(66, 66, 66)',
+    },
   },
   {
     title:
       'the default dark theme presses in its hover fill and dims disabled controls @scenario:state-roles-default-dark-unchanged',
     mode: 'dark',
     pressed: 'rgb(57, 57, 57)',
-    disabled: { fill: 'rgba(0, 0, 0, 0)', ink: 'rgb(236, 236, 236)', opacity: '0.5' },
+    disabled: {
+      fill: 'rgba(0, 0, 0, 0)',
+      ink: 'rgb(236, 236, 236)',
+      opacity: '0.5',
+      placeholder: 'rgb(205, 205, 205)',
+    },
   },
   {
     title:
@@ -148,7 +173,12 @@ const CASES: Array<{
     mode: 'light',
     definition: clickHouseTheme,
     pressed: 'rgb(221, 222, 225)',
-    disabled: { fill: 'rgb(223, 223, 223)', ink: 'rgb(160, 160, 160)', opacity: '1' },
+    disabled: {
+      fill: 'rgb(223, 223, 223)',
+      ink: 'rgb(160, 160, 160)',
+      opacity: '1',
+      placeholder: 'rgb(160, 160, 160)',
+    },
   },
   {
     title:
@@ -156,7 +186,12 @@ const CASES: Array<{
     mode: 'dark',
     definition: clickHouseTheme,
     pressed: 'rgb(36, 36, 36)',
-    disabled: { fill: 'rgb(65, 65, 65)', ink: 'rgb(128, 128, 128)', opacity: '1' },
+    disabled: {
+      fill: 'rgb(65, 65, 65)',
+      ink: 'rgb(128, 128, 128)',
+      opacity: '1',
+      placeholder: 'rgb(128, 128, 128)',
+    },
   },
 ];
 
@@ -197,6 +232,7 @@ test.describe('pressed and disabled state roles', () => {
         fill: expected[mode].fill,
         ink: expected[mode].ink,
         opacity: '1',
+        placeholder: expected[mode].ink,
       });
     }
   });

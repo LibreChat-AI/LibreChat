@@ -35,7 +35,10 @@ const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string
         destructive:
           'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
         /** The composer's submit slot: send, stop and the during-run send share it. */
-        submit: cn('hover:bg-surface-inverted-hover', composerSubmitClasses()),
+        submit: cn(
+          'hover:bg-surface-inverted-hover hover:active:bg-surface-inverted-pressed',
+          composerSubmitClasses(),
+        ),
       },
       size: {
         xs: 'size-6',
