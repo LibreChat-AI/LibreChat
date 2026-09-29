@@ -51,3 +51,10 @@ is a role, not an exception.
 | `client/src/utils/mermaid.ts`                                                 | The mermaid artifact document and its zoom controls render in a sandboxed iframe without theme variables; the token reads' fallbacks and the luminance repair ink are literals by necessity.                                                     |
 | `client/src/utils/richtext.ts`                                                | Inline styles on HTML copied to the clipboard for pasting into other apps, which must not carry the sender's theme.                                                                                                                              |
 | `client/src/utils/officePreview.ts`, `client/src/hooks/ScreenshotContext.tsx` | Fallbacks for a theme role read at runtime, used only when the variable is unset.                                                                                                                                                                |
+
+## Panels: media and third-party surfaces
+
+| File                                                        | Why                                                                                                                                       |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `client/src/components/Nav/SettingsTabs/Account/Avatar.tsx` | The move hint drawn over the user's photo in the avatar cropper: a media scrim with white ink, independent of the theme around the image. |
+| `client/src/hooks/Files/useSharePointPicker.ts`             | Background of Microsoft's SharePoint file picker iframe, matched to that third party's own surface.                                       |

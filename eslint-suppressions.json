@@ -1730,11 +1730,8 @@
     }
   },
   "client/src/components/SidePanel/Agents/Tools/CategoryFilter.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 4
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ItemDialog/ItemDialog.tsx": {
@@ -2085,9 +2082,6 @@
   "client/src/components/Skills/tree/SkillFilePreview.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 3
-    },
-    "shadcn/no-raw-colors": {
-      "count": 1
     },
     "shadcn/no-restyle": {
       "count": 5
