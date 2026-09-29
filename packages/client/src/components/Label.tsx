@@ -2,7 +2,7 @@ import * as React from 'react';
 import * as LabelPrimitive from '@radix-ui/react-label';
 import { ClassProp } from 'class-variance-authority/types';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { cn } from '~/utils';
+import { cn, peerDisabledInkClasses } from '~/utils';
 
 type LabelVariantOptions =
   | ({ variant?: 'default' | 'section' | null | undefined } & ClassProp)
@@ -45,6 +45,7 @@ const Label: React.ForwardRefExoticComponent<
     {...{
       className: cn(
         'block w-full break-all peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+        peerDisabledInkClasses,
         labelVariants({ variant }),
         className,
       ),

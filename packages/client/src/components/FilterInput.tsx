@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { cn, disabledFillClasses } from '~/utils';
+import { cn, disabledFillClasses, peerDisabledInkClasses } from '~/utils';
 
 export interface FilterInputProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'placeholder'> {
@@ -55,7 +55,10 @@ const FilterInput: React.ForwardRefExoticComponent<
         />
         <label
           htmlFor={inputId}
-          className="text-text-secondary pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm transition-all duration-200 peer-focus:top-0 peer-focus:bg-inherit peer-focus:px-1 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:bg-inherit peer-[:not(:placeholder-shown)]:px-1 peer-[:not(:placeholder-shown)]:text-xs"
+          className={cn(
+            peerDisabledInkClasses,
+            'text-text-secondary pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm transition-all duration-200 peer-focus:top-0 peer-focus:bg-inherit peer-focus:px-1 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:bg-inherit peer-[:not(:placeholder-shown)]:px-1 peer-[:not(:placeholder-shown)]:text-xs',
+          )}
         >
           {label}
         </label>

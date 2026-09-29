@@ -12,7 +12,7 @@ import {
 } from '@ariakit/react';
 import './AnimatePopover.css';
 import { JSX } from 'react/jsx-runtime';
-import { cn } from '~/utils';
+import { cn, disabledFillClasses } from '~/utils';
 
 type MultiSelectItem<T extends string> = T | { label: string; value: T };
 
@@ -147,6 +147,7 @@ export default function MultiSelect<T extends string>({
             'flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-sm',
             'bg-surface-tertiary text-text-primary hover:bg-surface-hover shadow-xs hover:cursor-pointer',
             'disabled:hover:bg-surface-tertiary disabled:cursor-not-allowed disabled:opacity-60',
+            disabledFillClasses,
             'focus-visible:ring-focus-control outline-hidden focus-visible:ring-2 focus-visible:outline-hidden',
             selectClassName,
             selectedValues.length > 0 && selectItemsClassName != null && selectItemsClassName,

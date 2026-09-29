@@ -1,6 +1,7 @@
 import * as Ariakit from '@ariakit/react';
 import type { ReactElement, ReactNode } from 'react';
 import type { JSX } from 'react/jsx-runtime';
+import { cn, disabledInkClasses } from '~/utils';
 
 /** One alternate way to submit, offered from the send control rather than
  *  standing beside the field. */
@@ -16,8 +17,10 @@ export interface SendAction {
   onClick: () => void;
 }
 
-const ROW_CLASS =
-  'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-text-primary hover:bg-surface-tertiary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy aria-disabled:cursor-not-allowed aria-disabled:opacity-50';
+const ROW_CLASS = cn(
+  'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-text-primary hover:bg-surface-tertiary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+  disabledInkClasses,
+);
 
 function Kbd({ children }: { children: ReactNode }): JSX.Element {
   return (

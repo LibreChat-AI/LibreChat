@@ -2,9 +2,9 @@ import * as React from 'react';
 import { X } from 'lucide-react';
 import { JSX } from 'react/jsx-runtime';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
+import { cn, disabledFillClasses } from '~/utils';
 import { Button, ButtonProps } from './Button';
 import { useMediaQuery } from '~/hooks';
-import { cn } from '~/utils';
 
 const Dialog: React.FC<DialogPrimitive.DialogProps> = DialogPrimitive.Root;
 
@@ -145,6 +145,7 @@ const DialogClose: React.ForwardRefExoticComponent<
     ref={ref}
     className={cn(
       'border-border-light text-text-primary hover:bg-surface-hover mt-2 inline-flex h-10 items-center justify-center rounded-lg border bg-transparent px-4 py-2 text-sm font-semibold transition-colors focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0',
+      disabledFillClasses,
       className ?? '',
       /* Important: for accessibility */
       'focus:ring-focus-control focus:ring-2 focus:ring-offset-2',
@@ -166,6 +167,7 @@ const DialogButton: React.ForwardRefExoticComponent<
     variant="outline"
     className={cn(
       'border-border-light text-text-primary hover:bg-surface-hover focus:ring-focus-control mt-2 inline-flex h-10 items-center justify-center rounded-lg border bg-transparent px-4 py-2 text-sm font-semibold transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0',
+      disabledFillClasses,
       className ?? '',
       /* Important: for accessibility */
       'focus:ring-focus-control focus:ring-2 focus:ring-offset-2',

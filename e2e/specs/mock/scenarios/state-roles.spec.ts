@@ -156,7 +156,24 @@ async function disabledLook(page: Page) {
     box.remove();
     return result;
   });
-  return { ...look, placeholder, part, wrapper };
+  /** A menu item keeps its surface and grays its text; a label follows its control through `peer`. */
+  const items = await page.evaluate(() => {
+    const item = document.createElement('div');
+    item.className = 'text-text-primary theme-disabled:text-text-disabled';
+    item.setAttribute('data-disabled', '');
+    const field = document.createElement('input');
+    field.className = 'peer';
+    field.disabled = true;
+    const label = document.createElement('label');
+    label.className = 'text-text-secondary peer-theme-disabled:text-text-disabled';
+    document.body.append(item, field, label);
+    const result = `${getComputedStyle(item).color} ${getComputedStyle(label).color}`;
+    item.remove();
+    field.remove();
+    label.remove();
+    return result;
+  });
+  return { ...look, placeholder, part, wrapper, items };
 }
 
 /** Each tag is written out whole: the runner finds a scenario by its literal tag. */
@@ -172,6 +189,7 @@ const CASES: Array<{
     placeholder: string;
     part: string;
     wrapper: string;
+    items: string;
   };
 }> = [
   {
@@ -186,6 +204,7 @@ const CASES: Array<{
       placeholder: 'rgb(66, 66, 66)',
       part: 'rgb(255, 255, 255)',
       wrapper: 'rgba(0, 0, 0, 0) rgb(33, 33, 33)',
+      items: 'rgb(33, 33, 33) rgb(66, 66, 66)',
     },
   },
   {
@@ -200,6 +219,7 @@ const CASES: Array<{
       placeholder: 'rgb(205, 205, 205)',
       part: 'rgb(13, 13, 13)',
       wrapper: 'rgba(0, 0, 0, 0) rgb(236, 236, 236)',
+      items: 'rgb(236, 236, 236) rgb(205, 205, 205)',
     },
   },
   {
@@ -215,6 +235,7 @@ const CASES: Array<{
       placeholder: 'rgb(160, 160, 160)',
       part: 'rgb(223, 223, 223)',
       wrapper: 'rgb(223, 223, 223) rgb(160, 160, 160)',
+      items: 'rgb(160, 160, 160) rgb(160, 160, 160)',
     },
   },
   {
@@ -230,6 +251,7 @@ const CASES: Array<{
       placeholder: 'rgb(128, 128, 128)',
       part: 'rgb(65, 65, 65)',
       wrapper: 'rgb(65, 65, 65) rgb(128, 128, 128)',
+      items: 'rgb(128, 128, 128) rgb(128, 128, 128)',
     },
   },
 ];
@@ -274,6 +296,7 @@ test.describe('pressed and disabled state roles', () => {
         placeholder: expected[mode].ink,
         part: expected[mode].fill,
         wrapper: `${expected[mode].fill} ${expected[mode].ink}`,
+        items: `${expected[mode].ink} ${expected[mode].ink}`,
       });
     }
   });
