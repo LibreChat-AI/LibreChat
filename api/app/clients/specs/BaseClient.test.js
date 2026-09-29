@@ -3607,6 +3607,40 @@ describe('BaseClient', () => {
         }
       });
 
+      test('recovers a conversation whose earlier message holds an archive', async () => {
+        /* The archive that 400s on every later turn arrives through history, not this turn's
+         * upload, so the replay path has to skip it too. */
+        withSupportedMimeTypes(undefined);
+        TestClient.options.req.user = { id: 'user1' };
+        TestClient.options.resendFiles = true;
+        TestClient.addFileContextToMessage = jest.fn();
+        TestClient.assertHistoricalAttachmentLimits = undefined;
+        TestClient.checkVisionRequest = jest.fn();
+        TestClient.message_file_map = undefined;
+        const { logger } = require('@librechat/data-schemas');
+        const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+        const zip = providerFile('archive.zip', 'application/zip');
+        const pdf = providerFile('report.pdf', 'application/pdf');
+        getFiles.mockResolvedValueOnce([zip, pdf]);
+
+        try {
+          const [message] = await TestClient.addPreviousAttachments([
+            {
+              messageId: 'msg-earlier',
+              text: 'Here are the files',
+              files: [{ file_id: 'archive.zip' }, { file_id: 'report.pdf' }],
+            },
+          ]);
+
+          expect(TestClient.addDocuments).toHaveBeenCalledTimes(1);
+          expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [pdf]);
+          expect(TestClient.message_file_map['msg-earlier']).toEqual([pdf]);
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('"archive.zip"'));
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
       test('sends a binary type the endpoint lists explicitly', async () => {
         withSupportedMimeTypes(['^application/zip$']);
         const zip = providerFile('archive.zip', 'application/zip');
