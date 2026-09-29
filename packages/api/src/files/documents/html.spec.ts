@@ -1212,10 +1212,14 @@ describe('office shell size and head', () => {
     const pptx = await padded('sample.pptx', 'ppt/media/padding.bin', 4 * megabyte);
     expect(pptx.length).toBeGreaterThanOrEqual(4 * megabyte);
     const html = await pptxToHtml(pptx, { fileShell: true });
+    expect(html).toContain('class="lc-pptx-list"');
     const bare = html.replace(
       /(<div id="lc-fallback" hidden>)[\s\S]*?(<\/div>\s*<script id="lc-doc-data")/,
       '$1$2',
     );
+    expect(bare.length).toBeLessThan(html.length);
+    expect(bare).toContain('<div id="lc-fallback" hidden></div>');
+    expect(bare).not.toContain('class="lc-pptx-list"');
     expect(isOfficeFileShell(bare)).toBe(true);
     expect(Buffer.byteLength(bare, 'utf-8')).toBeLessThanOrEqual(16 * 1024);
     expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(512 * 1024);
