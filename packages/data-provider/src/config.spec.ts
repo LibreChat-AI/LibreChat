@@ -584,7 +584,7 @@ describe('attached code environment user config schema', () => {
     expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
   });
 
-  it.each([1, 15_000, CODE_ENVIRONMENT_ADMISSION_MAX_MS])(
+  it.each([1_000, 15_000, CODE_ENVIRONMENT_ADMISSION_MAX_MS])(
     'accepts a bounded %i ms command admission allowance',
     (minCommandAdmissionMs) => {
       expect(codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs } })).toEqual({
@@ -593,7 +593,7 @@ describe('attached code environment user config schema', () => {
     },
   );
 
-  it.each([0, -1, 0.5, CODE_ENVIRONMENT_ADMISSION_MAX_MS + 1, NaN, Infinity])(
+  it.each([0, -1, 0.5, 999, CODE_ENVIRONMENT_ADMISSION_MAX_MS + 1, NaN, Infinity])(
     'rejects an invalid command admission allowance of %s',
     (minCommandAdmissionMs) => {
       expect(
@@ -613,7 +613,7 @@ describe('attached code environment user config schema', () => {
 
   it.each([
     { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 79_999 },
-    { maxRequestTimeoutMs: 10_002, minCommandAdmissionMs: 1 },
+    { maxRequestTimeoutMs: 11_001, minCommandAdmissionMs: 1_000 },
     { maxRequestTimeoutMs: 610_000, minCommandAdmissionMs: 300_000 },
   ])('accepts an admission reserve with execution time left: %j', (limits) => {
     expect(codeEnvironmentUserConfigSchema.parse({ limits })).toEqual({ limits });
@@ -622,7 +622,7 @@ describe('attached code environment user config schema', () => {
   it.each([
     { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 80_000 },
     { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
-    { maxRequestTimeoutMs: 10_001, minCommandAdmissionMs: 1 },
+    { maxRequestTimeoutMs: 11_000, minCommandAdmissionMs: 1_000 },
   ])('rejects a command reserve that cannot fit inside its request budget: %j', (limits) => {
     const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits });
     expect(parsed.success).toBe(false);

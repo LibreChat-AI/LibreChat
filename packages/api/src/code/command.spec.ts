@@ -420,10 +420,10 @@ describe('createAttachedWorkspaceBashTool', () => {
         limits: {
           maxCommandTimeoutMs: 80_000,
           maxRequestTimeoutMs: 90_000,
-          minCommandAdmissionMs: 1,
+          minCommandAdmissionMs: 1_000,
         },
       }),
-    ).toBe(79_999);
+    ).toBe(79_000);
     expect(
       resolveAttachedWorkspaceCommandTimeoutMax(
         { limits: { maxCommandTimeoutMs: 120_000, maxRequestTimeoutMs: 125_000 } },
@@ -493,6 +493,32 @@ describe('createAttachedWorkspaceBashTool', () => {
       bashTool.func({ command: 'npm test', timeoutMs: 80_000 }, undefined, {}),
     ).rejects.toThrow('deployment limit of 65000 milliseconds');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    jest.restoreAllMocks();
+  });
+
+  test('still dispatches at the smallest supported reserve after credential-signing time', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => {
+        now.mockReturnValue(1_200);
+        return {};
+      },
+      workspaceId: 'project-a',
+      maxTimeoutMs: 80_000,
+      maxRequestTimeoutMs: 90_000,
+      minCommandAdmissionMs: 1_000,
+      fetchImpl,
+    });
+
+    await bashTool.invoke(
+      { command: 'npm test' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+    const [, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toMatchObject({ timeoutMs: 79_000 });
+    expect(init?.headers['X-LibreChat-Workspace-Queue-Wait-Ms']).toBe('800');
     jest.restoreAllMocks();
   });
 

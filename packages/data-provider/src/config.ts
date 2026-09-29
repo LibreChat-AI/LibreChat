@@ -1262,12 +1262,12 @@ export const codeEnvironmentUserConfigSchema = z
           .min(1)
           .max(CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS)
           .optional(),
-        /** Minimum admission time left for a Bash command inside maxRequestTimeoutMs.
-         * Omission reserves ten seconds; ignored without a total HTTP budget. */
+        /** Admission allowance before local dispatch overhead for a Bash command inside
+         * maxRequestTimeoutMs. Omission reserves ten seconds; ignored without a total HTTP budget. */
         minCommandAdmissionMs: z
           .number()
           .int()
-          .min(1)
+          .min(1_000)
           .max(CODE_ENVIRONMENT_ADMISSION_MAX_MS)
           .optional(),
       })
