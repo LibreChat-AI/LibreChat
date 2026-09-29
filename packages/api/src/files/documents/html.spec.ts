@@ -1,7 +1,13 @@
 import path from 'path';
 import * as fs from 'fs';
 import JSZip from 'jszip';
-import { megabyte } from 'librechat-data-provider';
+import { randomBytes } from 'crypto';
+import {
+  megabyte,
+  isOfficeFileShell,
+  OFFICE_DOC_DATA_SLOT,
+  OFFICE_FILE_SHELL_MARKER,
+} from 'librechat-data-provider';
 import {
   _internal,
   bufferToOfficeHtml,
@@ -1023,5 +1029,68 @@ describe('Office HTML producers', () => {
       expect(out).not.toMatch(/<iframe\b/i);
       expect(out).not.toContain('evil.test');
     });
+  });
+});
+
+describe('office file shells', () => {
+  const padded = async (fixture: string, entry: string, bytes: number): Promise<Buffer> => {
+    const zip = await JSZip.loadAsync(readFixture(fixture));
+    zip.file(entry, randomBytes(bytes), { compression: 'STORE' });
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+  const cap = _internal.OFFICE_HTML_OUTPUT_CAP;
+
+  test('builds a pptx shell with an empty slot', async () => {
+    const pptx = await padded('sample.pptx', 'ppt/media/padding.bin', megabyte);
+    const html = await pptxToHtml(pptx, { fileShell: true });
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain(OFFICE_FILE_SHELL_MARKER);
+    expect(html.split(OFFICE_DOC_DATA_SLOT)).toHaveLength(2);
+    expect(html).toContain('class="lc-pptx-list"');
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
+  });
+
+  test('builds a docx shell with an empty slot', async () => {
+    const docx = await padded('sample.docx', 'word/media/padding.bin', megabyte);
+    const html = await wordDocToHtml(docx, { fileShell: true });
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain(OFFICE_FILE_SHELL_MARKER);
+    expect(html.split(OFFICE_DOC_DATA_SLOT)).toHaveLength(2);
+    expect(html).toContain('<article class="lc-docx">');
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
+  });
+
+  test('keeps small files inline', async () => {
+    const pptx = readFixture('sample.pptx');
+    const docx = readFixture('sample.docx');
+    const pptxHtml = await pptxToHtml(pptx);
+    const docxHtml = await wordDocToHtml(docx);
+    expect(isOfficeFileShell(pptxHtml)).toBe(false);
+    expect(isOfficeFileShell(docxHtml)).toBe(false);
+    expect(pptxHtml).toContain(pptx.toString('base64'));
+    expect(docxHtml).toContain(docx.toString('base64'));
+  });
+
+  test('trims an oversized fallback in a shell', async () => {
+    const zip = await JSZip.loadAsync(readFixture('sample.pptx'));
+    const line = 'x'.repeat(3000);
+    const slideXml = (n: number) =>
+      `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Slide ${n}</a:t></a:r></a:p><a:p><a:r><a:t>${line}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`;
+    Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .forEach((name) => zip.remove(name));
+    for (let n = 1; n <= 300; n++) {
+      zip.file(`ppt/slides/slide${n}.xml`, slideXml(n));
+    }
+    const pptx = await zip.generateAsync({ type: 'nodebuffer' });
+    const untrimmed = await pptxToSlideListHtml(pptx);
+    expect(Buffer.byteLength(untrimmed, 'utf-8')).toBeGreaterThan(cap);
+
+    const html = await pptxToHtml(pptx, { fileShell: true });
+    expect(isOfficeFileShell(html)).toBe(true);
+    expect(html).toContain('id="lc-fallback-notice"');
+    expect(html).not.toContain('class="lc-pptx-list"');
+    expect(html).not.toContain(line);
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(cap);
   });
 });

@@ -1,6 +1,8 @@
+import path from 'path';
+import * as fs from 'fs';
 import { JSDOM } from 'jsdom';
 import type { DOMWindow } from 'jsdom';
-import { _internal } from './html';
+import { _internal, pptxToHtml, wordDocToHtml } from './html';
 
 /**
  * Options `pptxPreview.init` is called with, captured by the fake below so
@@ -495,5 +497,48 @@ describe('pptx CDN bootstrap — reserves the scrollbar gutter', () => {
       .getComputedStyle(window.document.documentElement)
       .getPropertyValue('scrollbar-gutter');
     expect(gutter).toBe('stable');
+  });
+});
+
+describe('office file shell bootstrap', () => {
+  const fixture = (name: string): Buffer => fs.readFileSync(path.join(__dirname, name));
+
+  const runShell = async (
+    html: string,
+    globalName: 'pptxPreview' | 'docx',
+    method: 'init' | 'renderAsync',
+  ): Promise<{ document: Document; rendererCalls: number }> => {
+    let rendererCalls = 0;
+    const { window } = new JSDOM(html, {
+      runScripts: 'dangerously',
+      beforeParse(parsedWindow) {
+        Object.assign(parsedWindow, {
+          [globalName]: {
+            [method]: () => {
+              rendererCalls += 1;
+              return Promise.resolve({ slides: [] });
+            },
+          },
+        });
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { document: window.document, rendererCalls };
+  };
+
+  test('shows the fallback at once for an empty slot (pptx)', async () => {
+    const html = await pptxToHtml(fixture('sample.pptx'), { fileShell: true });
+    const { document, rendererCalls } = await runShell(html, 'pptxPreview', 'init');
+    expect(rendererCalls).toBe(0);
+    expect(document.getElementById('lc-fallback')?.hidden).toBe(false);
+    expect(document.getElementById('lc-fallback')?.title).toBe('no-data');
+  });
+
+  test('shows the fallback at once for an empty slot (docx)', async () => {
+    const html = await wordDocToHtml(fixture('sample.docx'), { fileShell: true });
+    const { document, rendererCalls } = await runShell(html, 'docx', 'renderAsync');
+    expect(rendererCalls).toBe(0);
+    expect(document.getElementById('lc-fallback')?.hidden).toBe(false);
+    expect(document.getElementById('lc-fallback')?.title).toBe('no-data');
   });
 });
