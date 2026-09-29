@@ -128,7 +128,9 @@ export const MemoizedTableRow: React.MemoExoticComponent<(props: GenericRowProps
     (prev: GenericRowProps, next: GenericRowProps) =>
       prev.row.original === next.row.original &&
       prev.selected === next.selected &&
-      prev.cellsVersion === next.cellsVersion,
+      prev.cellsVersion === next.cellsVersion &&
+      /** The row height follows the theme, so a theme switch has to reach mounted rows. */
+      prev.style?.height === next.style?.height,
   );
 
 export const SkeletonRows: React.MemoExoticComponent<
