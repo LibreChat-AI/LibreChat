@@ -41,6 +41,9 @@ export interface ResolveChatProjectContextDeps {
 
 export const CHAT_PROJECT_CONTEXT_UNAVAILABLE = 'Project context unavailable';
 
+/** The context key of a turn outside any project. */
+export const NO_CHAT_PROJECT_CONTEXT_KEY = 'chat-project:none';
+
 export interface ChatProjectTenantSource {
   user: { id: string; tenantId?: string | null };
   _agentEventBindingParentConversationId?: string | null;
@@ -270,7 +273,7 @@ export function getChatProjectContextKey(
   context: ResolvedChatProjectContext | null | undefined,
 ): string {
   if (context == null) {
-    return 'chat-project:none';
+    return NO_CHAT_PROJECT_CONTEXT_KEY;
   }
   const resourceKey = context.resources.map((resource) => [
     resource.file_id,
