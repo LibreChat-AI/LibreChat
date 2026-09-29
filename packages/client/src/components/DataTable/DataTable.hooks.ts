@@ -171,12 +171,13 @@ function readRootLength(property: string, fallbackRem: number): number {
   return Number(match[1]) * (match[2] === 'rem' ? rootSize : 1);
 }
 
-type TableRowKind = 'dense' | 'titled';
+type TableRowKind = 'dense' | 'compact' | 'titled';
 
 /**
  * A row's height in px. A dense row holds 2rem of controls between a quarter of the cell space
- * above and below; a titled row is as tall as its title cell, a header-sized cell of twice the
- * space around a 1rem line. Both carry the row rule under them.
+ * above and below; a compact row a 1.25rem text line between half the space above and below (its
+ * size from `sm` up); a titled row is as tall as its title cell, a header-sized cell of twice the
+ * space around a 1rem line. Each carries the row rule under it.
  */
 function readTableRowHeight(kind: TableRowKind): number {
   const rootSize =
@@ -185,7 +186,12 @@ function readTableRowHeight(kind: TableRowKind): number {
       : parseFloat(getComputedStyle(document.documentElement).fontSize) || DEFAULT_CELL_SPACE_PX;
   const space = readRootLength('--theme-table-cell-space-y', 1);
   const stroke = readRootLength('--theme-table-row-stroke', 0);
-  return kind === 'dense' ? 2 * rootSize + space / 2 + stroke : 2 * space + rootSize + stroke;
+  const heights: Record<TableRowKind, number> = {
+    dense: 2 * rootSize + space / 2,
+    compact: 1.25 * rootSize + space,
+    titled: rootSize + 2 * space,
+  };
+  return heights[kind] + stroke;
 }
 
 /** The theme paints its appearance onto the root's inline style and class, so those are the
@@ -203,13 +209,13 @@ function subscribeToGeometry(onChange: () => void): () => void {
 }
 
 /**
- * A table row's height in px (dense 40px and titled 48px by default), for geometry JavaScript has
+ * A table row's height in px (dense 40px, compact 36px, titled 48px by default), for geometry JavaScript has
  * to know, such as a virtualized row. Follows a theme switch.
  */
 export function useTableRowHeight(kind: TableRowKind): number {
   return useSyncExternalStore(
     subscribeToGeometry,
     () => readTableRowHeight(kind),
-    () => (kind === 'dense' ? 40 : 48),
+    () => ({ dense: 40, compact: 36, titled: 48 })[kind],
   );
 }

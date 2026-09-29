@@ -476,8 +476,9 @@ describe('useTableRowHeight', () => {
     document.documentElement.style.removeProperty('--theme-table-row-stroke');
   });
 
-  it('is 40px dense and 48px titled without a theme, the heights the tables always drew', () => {
+  it('is 40px dense, 36px compact and 48px titled without a theme, the heights the tables drew', () => {
     expect(renderHook(() => useTableRowHeight('dense')).result.current).toBe(40);
+    expect(renderHook(() => useTableRowHeight('compact')).result.current).toBe(36);
     expect(renderHook(() => useTableRowHeight('titled')).result.current).toBe(48);
   });
 

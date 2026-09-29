@@ -82,12 +82,15 @@ const TableRowComponent = <TData, TValue>({
   onSelectionChange,
   index,
   isSearching,
+  measureRef,
 }: {
   row: Row<TData>;
   isSmallScreen: boolean;
   onSelectionChange?: (rowId: string, selected: boolean) => void;
   index: number;
   isSearching: boolean;
+  /** Lets the virtualizer measure the row it rendered, whatever cells it carries. */
+  measureRef?: (node: HTMLTableRowElement | null) => void;
 }) => {
   const handleSelection = useCallback(
     (value: boolean) => {
@@ -99,6 +102,8 @@ const TableRowComponent = <TData, TValue>({
 
   return (
     <TableRow
+      ref={measureRef}
+      data-index={index}
       data-state={row.getIsSelected() ? 'selected' : undefined}
       className="motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out"
       style={{
@@ -291,8 +296,18 @@ export default function DataTable<TData, TValue>({
 
   const { rows } = table.getRowModel();
 
-  /** Each row is as tall as its title cell, which follows the theme's cell space and row rule. */
-  const rowHeight = useTableRowHeight('titled');
+  /** The first guess for a row that has not rendered yet, from the columns it will carry: a
+   *  title cell's height when there is one, a compact row otherwise. Both follow the theme's cell
+   *  space and row rule, and rendered rows are measured. */
+  const hasTitleColumn = useMemo(
+    () =>
+      columns.some(
+        (column) =>
+          column.id === 'title' || ('accessorKey' in column && column.accessorKey === 'title'),
+      ),
+    [columns],
+  );
+  const rowHeight = useTableRowHeight(hasTitleColumn ? 'titled' : 'compact');
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => tableContainerRef.current,
@@ -496,6 +511,7 @@ export default function DataTable<TData, TValue>({
                   isSmallScreen={isSmallScreen}
                   index={virtualRow.index}
                   isSearching={isSearching}
+                  measureRef={rowVirtualizer.measureElement}
                 />
               );
             })}
