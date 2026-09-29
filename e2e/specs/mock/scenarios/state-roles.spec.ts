@@ -162,7 +162,7 @@ async function disabledLook(page: Page) {
   const items = await page.evaluate(() => {
     const item = document.createElement('div');
     item.className =
-      'text-text-primary theme-disabled:text-text-disabled theme-disabled:[&_svg]:text-text-disabled';
+      'text-text-primary theme-disabled:text-text-disabled theme-disabled:[&_*]:text-text-disabled';
     item.setAttribute('data-disabled', '');
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     icon.setAttribute('class', 'text-status-warning');
