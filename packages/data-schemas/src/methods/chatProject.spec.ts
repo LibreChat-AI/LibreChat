@@ -808,6 +808,40 @@ describe('persistent Project context', () => {
     expect((await File.findOne({ file_id: 'held-fail' }).lean())?.expiresAt).toEqual(expiresAt);
   });
 
+  it('attaches nothing when the file is deleted while the attach is in flight', async () => {
+    const project = await methods.createChatProject(owner, { name: 'Racing' });
+    const id = project._id!.toString();
+    await createReference('gone-before-release');
+    await createReference('gone-before-attach');
+
+    const release = File.updateOne.bind(File);
+    const releaseSpy = jest.spyOn(File, 'updateOne').mockImplementationOnce(((
+      ...args: Parameters<typeof File.updateOne>
+    ) => {
+      return File.deleteOne({ file_id: 'gone-before-release' }).then(() => release(...args));
+    }) as unknown as typeof File.updateOne);
+    await expect(methods.addChatProjectFile(owner, id, 'gone-before-release')).rejects.toThrow(
+      'Project file unavailable',
+    );
+    releaseSpy.mockRestore();
+
+    const attach = ChatProject.findOneAndUpdate.bind(ChatProject);
+    const attachSpy = jest.spyOn(ChatProject, 'findOneAndUpdate').mockImplementationOnce(((
+      ...args: Parameters<typeof ChatProject.findOneAndUpdate>
+    ) => {
+      const query = attach(...args);
+      const exec = query.exec.bind(query);
+      query.exec = () => File.deleteOne({ file_id: 'gone-before-attach' }).then(() => exec());
+      return query;
+    }) as unknown as typeof ChatProject.findOneAndUpdate);
+    await expect(methods.addChatProjectFile(owner, id, 'gone-before-attach')).rejects.toThrow(
+      'Project file unavailable',
+    );
+    attachSpy.mockRestore();
+
+    expect((await methods.getChatProject(owner, id))?.file_ids).toEqual([]);
+  });
+
   it('rejects unauthorized, agent-scoped, unindexed, missing and expired references', async () => {
     const project = await methods.createChatProject(owner, { name: 'Private' });
     const id = project._id!.toString();

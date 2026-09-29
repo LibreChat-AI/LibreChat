@@ -577,11 +577,14 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       throw new Error('Project file unavailable');
     }
 
-    await File.updateOne(
+    const released = await File.updateOne(
       { _id: file._id, file_id: fileId, user, tenantId: project.tenantId ?? null },
       { $unset: { expiresAt: '', temp_file_id: '' } },
       { timestamps: false },
     );
+    if (released.matchedCount === 0) {
+      throw new Error('Project file unavailable');
+    }
     const restoreTemporaryHold = async (): Promise<void> => {
       const hold = {
         ...(file.expiresAt != null ? { expiresAt: file.expiresAt } : {}),
@@ -598,6 +601,18 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     };
 
     const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    /** A file deleted between the release and the attach has already run its project
+     *  cleanup, so the reference added after it would dangle; take it back out. */
+    const dropIfFileDeleted = async (attached: IChatProject): Promise<IChatProject> => {
+      if (await File.exists({ _id: file._id })) {
+        return attached;
+      }
+      await ChatProject.updateOne(
+        { _id: project._id, user, file_ids: fileId },
+        { $pull: { file_ids: fileId }, $inc: { contextRevision: 1 } },
+      );
+      throw new Error('Project file unavailable');
+    };
     try {
       const updated = await ChatProject.findOneAndUpdate(
         {
@@ -610,7 +625,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         { new: true, runValidators: true },
       ).lean<IChatProject>();
       if (updated) {
-        return updated;
+        return await dropIfFileDeleted(updated);
       }
       const current = await getChatProject(user, projectId);
       if (current?.file_ids?.includes(fileId)) {
