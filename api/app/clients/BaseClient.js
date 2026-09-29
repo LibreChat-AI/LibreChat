@@ -1890,7 +1890,7 @@ class BaseClient {
         allFiles.push(file);
       } else if (deliveryPath === 'provider') {
         logger.warn(
-          `[BaseClient] Not sending "${file.filename}" (${file.type}) to the provider: list this type in the endpoint's own supportedMimeTypes to send it`,
+          `[BaseClient] Not sending "${file.filename}" (${file.type}) to the provider: this type is not an inline document for this endpoint`,
         );
       }
     }
