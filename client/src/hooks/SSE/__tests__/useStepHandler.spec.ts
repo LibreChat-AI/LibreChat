@@ -1895,6 +1895,7 @@ describe('useStepHandler', () => {
       expect(latest()).toMatchObject({
         runStepStatus: 'completed',
         runStepDurationMs: 247_340,
+        runStepClosedAt: 248_340,
         toolPreparationDurationMs: 247_000,
         toolExecutionDurationMs: 340,
       });
@@ -2242,6 +2243,47 @@ describe('useStepHandler', () => {
         (c: TMessageContentParts) => c.type === ContentTypes.TOOL_CALL,
       );
       expect(toolCallContent?.tool_call?.auth).toEqual('oauth-token-123');
+    });
+  });
+
+  describe('on_run_step_closed event', () => {
+    it('stamps the failure time onto the visible tool call', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      const closedAt = Date.now() - 1000;
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-tool-1',
+              index: 0,
+              type: StepTypes.TOOL_CALLS,
+              status: 'failed',
+              created_at: closedAt - 3000,
+              closed_at: closedAt,
+            } as Agents.RunStepClosedEvent,
+          },
+          submission,
+        );
+      });
+
+      const messages = mockSetMessages.mock.lastCall?.[0] as TMessage[];
+      const response = messages.find((message) => message.messageId === 'response-msg-1');
+      expect(response?.content?.[0]).toMatchObject({
+        type: ContentTypes.TOOL_CALL,
+        tool_call: {
+          runStepStatus: 'failed',
+          runStepDurationMs: 3000,
+          runStepClosedAt: closedAt,
+        },
+      });
     });
   });
 

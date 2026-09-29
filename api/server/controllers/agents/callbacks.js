@@ -9,6 +9,7 @@ const {
   ErrorTypes,
   UsageEvents,
   getRunStepDurationMs,
+  getRunStepCloseMetadata,
 } = require('librechat-data-provider');
 const {
   GraphEvents,
@@ -606,6 +607,7 @@ function getDefaultHandlers({
           if (part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
             Object.assign(part.tool_call, toolTiming.take(part.tool_call.id, stepId));
             part.tool_call.runStepStatus = data.status;
+            Object.assign(part.tool_call, getRunStepCloseMetadata(data));
             /**
              * The raw derivable duration, left unset rather than zeroed when
              * the event cannot support a trustworthy one — no `created_at`,

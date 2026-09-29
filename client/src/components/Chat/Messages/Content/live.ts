@@ -42,13 +42,15 @@ export type LiveActivity = {
   isBackgroundTaskCheck?: boolean;
   /** Failed and stopped calls anywhere in the span, not just the newest line. */
   outcome: SpanOutcome;
+  /** All calls in the span, including ones still running. */
+  total: number;
 };
 
 type Localize = (phraseKey: TranslationKeys, options?: TOptions) => string;
 
 type LiveToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] } & Pick<
     PartMetadata,
-    'runStepStatus'
+    'runStepStatus' | 'runStepClosedAt' | 'backgrounded'
   > & { progress?: number };
 
 /**
@@ -393,6 +395,7 @@ export function getLiveActivity(
   return {
     ...newestLine(parts, localize, serverNames, span, preferLabels),
     outcome: { failed: span.failed, cancelled: span.cancelled },
+    total: span.total,
     iconNames: getSpanIconNames(parts),
   };
 }
@@ -403,6 +406,8 @@ export type FailedLine = {
   /** The first line of what the tool returned, with the error prefix removed. */
   detail: string;
   iconName: string;
+  /** The failure time, if the host recorded it. Detached tasks use settlement, not dispatch. */
+  failedAt?: number | Date;
 };
 
 const PROCESSING_PREFIX = /^Error processing tool:?\s*/i;
@@ -456,10 +461,14 @@ export function getFailedLines(
     const subject =
       getToolCallIntent(toolCall.args) ??
       (parsed.mcpServer ? parsed.toolName : getToolDisplayLabel(parsed.raw, localize, serverNames));
+    const failedAt =
+      toolCall.backgroundTask?.settledAt ??
+      (meta.background != null || toolCall.backgrounded ? undefined : toolCall.runStepClosedAt);
     lines.push({
       text: subject ? localize('com_ui_failed_subject', { 0: subject }) : localize('com_ui_failed'),
       detail: firstErrorLine(toolCall.output),
       iconName: meta.iconName,
+      ...(failedAt != null && { failedAt }),
     });
   }
   return lines;

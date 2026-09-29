@@ -295,7 +295,7 @@ describe('live fold parity with the cards it hides', () => {
     mount([earlier, later], [artifact], true);
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1 failed');
+    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
     expect(button).not.toHaveTextContent(/^Failed/);
   });
 
@@ -364,7 +364,7 @@ describe('live fold parity with the cards it hides', () => {
   });
 
   it.each([
-    ['error', 'Failed: Background tasks · 1 failed'],
+    ['error', 'Failed: Background tasks · 1/1 failed'],
     ['cancelled', 'Cancelled · 1 cancelled'],
   ])('keeps the %s verdict of a polled background task in the live fold', (status, label) => {
     const output = JSON.stringify({
@@ -466,13 +466,13 @@ describe('live fold parity with the cards it hides', () => {
     const outcome = screen.getByTestId('live-phase-outcome');
 
     expect(combo).toHaveTextContent('×2');
-    expect(outcome).toHaveTextContent('1 failed');
+    expect(outcome).toHaveTextContent('1/2 failed');
     /** The count reads with the line; the verdict stays where the row ends. */
     expect(combo.compareDocumentPosition(outcome) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(combo.parentElement).not.toContainElement(outcome);
     expect(
       within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
-    ).toHaveAccessibleName(/×2 · 1 failed$/);
+    ).toHaveAccessibleName(/×2 · 1\/2 failed$/);
   });
 
   it('changes the multiplier with the throttled status line', () => {
@@ -552,7 +552,7 @@ describe('live fold parity with the cards it hides', () => {
      *  the tool, because "Failed lookup ×2" would blame both calls. */
     expect(header).toHaveAccessibleName(/^Failed: lookup/);
     expect(screen.queryByTestId('live-phase-combo')).toBeNull();
-    expect(screen.getByTestId('live-phase-outcome')).toHaveTextContent('1 failed');
+    expect(screen.getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
   });
 
   it('resets the multiplier across an agent handoff', () => {
@@ -815,8 +815,8 @@ describe('live fold parity with the cards it hides', () => {
         true,
       );
       fireEvent.click(screen.getByRole('button', { name: 'Reviewed the work' }));
-      const group = screen.getByRole('button', { name: /Ran 2 actions.*1 failed/ });
-      expect(group).toHaveAccessibleName(/1 failed/);
+      const group = screen.getByRole('button', { name: /Ran 2 actions.*1\/2 failed/ });
+      expect(group).toHaveAccessibleName(/1\/2 failed/);
       expect(group.querySelector('.lucide-triangle-alert')).not.toBeNull();
     });
 
@@ -883,8 +883,8 @@ describe('live fold parity with the cards it hides', () => {
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
     expect(button).toHaveTextContent('Querying the graph');
-    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1 failed');
-    expect(button).toHaveAccessibleName(/Querying the graph.*1 failed/);
+    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
+    expect(button).toHaveAccessibleName(/Querying the graph.*1\/2 failed/);
   });
 
   it('announces a failure on the SAME call at once, without waiting for another source', () => {
@@ -914,7 +914,7 @@ describe('live fold parity with the cards it hides', () => {
       jest.advanceTimersByTime(500);
     });
 
-    expect(announcer()).toHaveTextContent('1 failed');
+    expect(announcer()).toHaveTextContent('1/1 failed');
     expect(announcer().closest('button')).toBeNull();
   });
 
@@ -1284,7 +1284,7 @@ describe('live activity hardening transitions', () => {
         jest.advanceTimersByTime(500);
       });
       const expected = {
-        error: /Failed.*1 failed/,
+        error: /Failed.*1\/1 failed/,
         cancelled: /Cancelled.*1 cancelled/,
         completed: 'Finished in background',
       }[status];
@@ -1313,8 +1313,10 @@ describe('live activity hardening transitions', () => {
         ...calls.slice(1),
       ]),
     );
-    expect(screen.getAllByRole('button')[0]).toHaveAccessibleName(/Looking up item 1023.*1 failed/);
-    expect(screen.getByTestId('activity-phase-announcer')).toHaveTextContent('1 failed');
+    expect(screen.getAllByRole('button')[0]).toHaveAccessibleName(
+      /Looking up item 1023.*1\/1024 failed/,
+    );
+    expect(screen.getByTestId('activity-phase-announcer')).toHaveTextContent('1/1024 failed');
   });
 
   it('owns exactly one polite region across live-to-settled replacement', () => {

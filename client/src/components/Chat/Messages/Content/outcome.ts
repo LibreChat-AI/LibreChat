@@ -215,6 +215,8 @@ export function getOutcomeStatus({
 }
 
 export type SpanSummary = SpanOutcome & {
+  /** Actual tool calls, excluding reasoning, labels and sparse slots. */
+  total: number;
   /** Consecutive uses of the last tool, reset by another tool or an agent handoff.
    *  Reasoning and labels describe the work without breaking its sequence. */
   trailingToolCount: number;
@@ -295,6 +297,7 @@ export function summarizeSpan(
   };
   let failed = 0;
   let cancelled = 0;
+  let total = 0;
   let trailingToolCount = 0;
   let trailingTool: string | undefined;
   for (const part of parts) {
@@ -304,6 +307,7 @@ export function summarizeSpan(
     }
     const meta = part == null ? null : metaOf(part);
     if (meta != null) {
+      total += 1;
       /** iconName retains full tool identity (including MCP names), with Bash
        *  wrappers already normalized by the cached metadata resolver. */
       trailingToolCount = meta.iconName === trailingTool ? trailingToolCount + 1 : 1;
@@ -316,5 +320,5 @@ export function summarizeSpan(
       cancelled += 1;
     }
   }
-  return { failed, cancelled, trailingToolCount, metaOf };
+  return { failed, cancelled, total, trailingToolCount, metaOf };
 }

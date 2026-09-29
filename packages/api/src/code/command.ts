@@ -302,6 +302,7 @@ export function createAttachedWorkspaceBashTool({
   gitIdentity,
   maxTimeoutMs = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   maxQueueWaitMs,
+  codeApiMaxRetryWaitMs,
   maxRequestTimeoutMs,
   fetchImpl,
 }: {
@@ -315,6 +316,7 @@ export function createAttachedWorkspaceBashTool({
   maxTimeoutMs?: number;
   /** Retry horizon across typed queue expirations, not an admission budget. */
   maxQueueWaitMs?: number;
+  codeApiMaxRetryWaitMs?: number;
   /** Verified total HTTP budget; omission keeps the legacy per-attempt timeout. */
   maxRequestTimeoutMs?: number;
   fetchImpl?: CodeBridgeFetch;
@@ -395,6 +397,7 @@ export function createAttachedWorkspaceBashTool({
           signal,
           fetchImpl,
           ...(maxQueueWaitMs == null ? {} : { maxQueueWaitMs }),
+          ...(codeApiMaxRetryWaitMs == null ? {} : { codeApiMaxRetryWaitMs }),
           ...(maxRequestTimeoutMs == null ? {} : { maxRequestTimeoutMs }),
         });
         if (result.operation !== 'execute_command') {

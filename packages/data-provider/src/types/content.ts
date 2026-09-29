@@ -160,6 +160,8 @@ export type PartMetadata = {
    * at render time.
    */
   runStepDurationMs?: number;
+  /** Host-reported close time in epoch milliseconds, when valid. Absent on older content. */
+  runStepClosedAt?: number;
   /** First observed argument fragment, while this tool call is still being prepared. */
   toolPreparationStartedAt?: number;
   /** SDK handoff to direct invocation or host dispatch, not the MCP round trip. */

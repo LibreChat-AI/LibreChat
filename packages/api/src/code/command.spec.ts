@@ -164,6 +164,24 @@ function commandResponse(overrides: Record<string, unknown> = {}): Response {
 }
 
 describe('createAttachedWorkspaceBashTool', () => {
+  test('honors a zero Code API rate-limit retry budget', async () => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(
+      async () => new Response(JSON.stringify({ error: 'rate_limited' }), { status: 429 }),
+    );
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      codeApiMaxRetryWaitMs: 0,
+      fetchImpl,
+    });
+
+    await expect(bashTool.invoke({ command: 'pwd' })).rejects.toThrow(
+      'The operation was not started',
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test('dispatches commands to the resolved conversation workspace instance', async () => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
     const workspaceInstanceId = 'e'.repeat(64);

@@ -1384,6 +1384,7 @@ describe('tool dispatch timing', () => {
     );
     expect(contentParts[0].tool_call).toMatchObject({
       runStepDurationMs: 247_340,
+      runStepClosedAt: 248_340,
       toolPreparationDurationMs: 247_000,
       toolExecutionDurationMs: 340,
     });

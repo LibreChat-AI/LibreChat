@@ -9,6 +9,7 @@ import {
   ToolCallTypes,
   getNonEmptyValue,
   getRunStepDurationMs,
+  getRunStepCloseMetadata,
   getToolTimingDurations,
 } from 'librechat-data-provider';
 import type {
@@ -1536,6 +1537,7 @@ export default function useStepHandler({
           [ContentTypes.TOOL_CALL]: {
             ...existingToolCall,
             runStepStatus: closed.status,
+            ...getRunStepCloseMetadata(closed),
             ...(durationMs != null && { runStepDurationMs: durationMs }),
             ...timing,
           },

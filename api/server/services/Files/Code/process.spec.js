@@ -2033,6 +2033,28 @@ describe('Code Process', () => {
   });
 
   describe('readWorkspaceFile', () => {
+    it('forwards the configured rate-limit budget to the workspace transport', async () => {
+      const req = {
+        ...mockReq,
+        config: { ...mockReq.config, endpoints: { agents: { codeApiMaxRetryWaitMs: 0 } } },
+      };
+      mockExecuteWorkspaceTool.mockResolvedValueOnce({ operation: 'read_file' });
+
+      await readWorkspaceFile({
+        file_path: 'src/app.ts',
+        workspace_id: 'primary',
+        start_line: 1,
+        max_lines: 10,
+        codeApiBaseUrl: 'https://attached-code.example.com/v1',
+        executionProfile: 'stateful',
+        req,
+      });
+
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
+        expect.objectContaining({ codeApiMaxRetryWaitMs: 0 }),
+      );
+    });
+
     it('forwards authenticated reads to the selected attached worker', async () => {
       const controller = new AbortController();
       const result = {
@@ -2083,6 +2105,7 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
         maxRequestTimeoutMs: 125_000,
         deadlineAtMs: 160_000,
         request: {
@@ -2144,6 +2167,7 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
         maxRequestTimeoutMs: undefined,
         deadlineAtMs: undefined,
         request: {
@@ -2204,6 +2228,7 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
         maxRequestTimeoutMs: undefined,
         deadlineAtMs: undefined,
         request: {
@@ -2266,6 +2291,7 @@ describe('Code Process', () => {
         baseURL: 'https://attached-code.example.com/v1',
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
         maxRequestTimeoutMs: undefined,
         deadlineAtMs: undefined,
         request: {
