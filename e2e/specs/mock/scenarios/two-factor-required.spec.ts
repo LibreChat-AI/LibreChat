@@ -227,6 +227,34 @@ test.describe('required two-factor enrollment · authenticated arrival', () => {
     await expect(page.getByRole('button', { name: 'Generate QR Code' })).toBeVisible();
   });
 
+  test('a tab still moves into setup after a sibling tab started its hand-off @scenario:required-2fa-sibling-tab-hands-off-setup', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    let releaseEnforcement!: () => void;
+    const enforcementReleased = new Promise<void>((resolve) => {
+      releaseEnforcement = resolve;
+    });
+    /** Held until the sibling tab's navigation marker is in the shared storage. */
+    await page.route('**/api/convos**', async (route) => {
+      await enforcementReleased;
+      await json(route, ENFORCEMENT_PAYLOAD, 403);
+    });
+    await page.route('**/api/auth/refresh', (route) => json(route, ENFORCEMENT_PAYLOAD));
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+    await page.evaluate(() =>
+      window.localStorage.setItem('librechat.auth.redirect.startedAt', String(Date.now())),
+    );
+    releaseEnforcement();
+
+    await expect(page).toHaveURL(SETUP_URL_PATTERN, { timeout: 15000 });
+    expect(
+      await page.evaluate((key) => window.sessionStorage.getItem(key), SETUP_TOKEN_STORAGE_KEY),
+    ).toBe('scenario-setup-token');
+    await expect(page.getByRole('button', { name: 'Generate QR Code' })).toBeVisible();
+  });
+
   test('a refresh hand-off moves a loaded app into setup @scenario:required-2fa-refresh-response-hands-off-setup', async ({
     page,
   }) => {

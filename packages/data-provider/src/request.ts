@@ -225,15 +225,20 @@ const getTwoFactorSetupToken = (payload: unknown): string | null => {
   return response.tempToken.trim();
 };
 
+/**
+ * The setup token and the bearer it replaces are both tab-scoped, so a hand-off another tab
+ * started does nothing for this one: once the bearer is dropped, 401s skip recovery and the tab
+ * would stay on the app until reloaded. Only this tab's own navigation dedupes the hand-off.
+ */
+const isTabRedirectInProgress = () => {
+  const startedAt = getAuthRecoveryState().lastRedirectStartedAt;
+  return startedAt > 0 && Date.now() - startedAt < AUTH_REDIRECT_DEDUPE_MS;
+};
+
 const redirectToTwoFactorSetupOnce = (tempToken: string) => {
-  /**
-   * The setup token lives in tab-scoped session storage. A sibling tab can already have
-   * written the shared localStorage navigation marker, so persist and drop this tab's
-   * retired bearer before that marker can skip the rest of the hand-off.
-   */
   const isDurable = persistTwoFactorSetupToken(tempToken);
   setTokenHeader(undefined);
-  if (isAuthRedirectInProgress()) {
+  if (isTabRedirectInProgress()) {
     return;
   }
 

@@ -131,11 +131,10 @@ describe('two-factor enrollment responses outside the interceptors', () => {
   });
 
   /**
-   * Another tab writes the shared navigation marker first. This tab still has to keep its own
-   * setup token and drop the retired bearer; skipping those leaves it on the app with failing
-   * requests until the marker expires.
+   * Another tab writes the shared navigation marker first. This tab holds its own setup token and
+   * drops its own bearer, so it has to navigate too: without a bearer its 401s skip recovery.
    */
-  it('persists the setup token when another tab already started a redirect', () => {
+  it('still navigates when another tab already started a redirect', () => {
     window.localStorage.setItem('librechat.auth.redirect.startedAt', String(Date.now()));
     setTokenHeader('retired-bearer');
 
@@ -143,7 +142,6 @@ describe('two-factor enrollment responses outside the interceptors', () => {
 
     expect(readTwoFactorSetupToken()).toBe('setup-token');
     expect(getTokenHeader()).toBeUndefined();
-    expect(pushState).not.toHaveBeenCalled();
-    expect(redirectEvents).toHaveLength(0);
+    expect(redirectEvents).toHaveLength(1);
   });
 });
