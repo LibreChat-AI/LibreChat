@@ -1,4 +1,5 @@
 import React, { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
+import { disabledInkClasses } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 /** Matches the `inset-y-1` the single-row indicator uses. */
@@ -190,7 +191,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
           disabled={disabled}
           className={`focus-visible:ring-focus-control relative z-10 flex h-[34px] items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden ${
             currentValue === option.value ? 'text-text-primary' : 'text-text-secondary'
-          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
+          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${disabledInkClasses} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
         >
           {option.icon && (
             <span className="shrink-0" aria-hidden="true">

@@ -2,7 +2,7 @@ import React from 'react';
 import * as Ariakit from '@ariakit/react';
 import type * as t from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
-import { cn } from '~/utils';
+import { cn, disabledInkClasses } from '~/utils';
 import './Dropdown.css';
 
 interface DropdownProps {
@@ -113,6 +113,7 @@ const Menu: React.FC<MenuProps> = ({
                 <Ariakit.MenuButton
                   className={cn(
                     'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+                    disabledInkClasses,
                     itemClassName,
                   )}
                   disabled={item.disabled}
@@ -148,6 +149,7 @@ const Menu: React.FC<MenuProps> = ({
               id={item.id}
               className={cn(
                 'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+                disabledInkClasses,
                 itemClassName,
                 item.className,
               )}

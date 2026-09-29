@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useState, useCallback } from 'react';
 import { Eye, EyeOff, Copy, Check } from 'lucide';
-import { cn, disabledFillClasses } from '~/utils';
+import { cn, disabledFillClasses, disabledInkClasses } from '~/utils';
 import { MorphIcon } from './MorphIcon';
 
 export interface SecretInputProps
@@ -120,6 +120,7 @@ const SecretInput: React.ForwardRefExoticComponent<
                 disabled || !value
                   ? 'cursor-not-allowed opacity-50'
                   : 'hover:bg-surface-hover hover:text-text-primary',
+                disabledInkClasses,
                 buttonClassName,
               )}
               aria-label={isCopied ? 'Copied' : 'Copy to clipboard'}
@@ -136,6 +137,7 @@ const SecretInput: React.ForwardRefExoticComponent<
               disabled
                 ? 'cursor-not-allowed opacity-50'
                 : 'hover:bg-surface-hover hover:text-text-primary',
+              disabledInkClasses,
               buttonClassName,
             )}
             aria-label={isVisible ? 'Hide secret' : 'Show secret'}
