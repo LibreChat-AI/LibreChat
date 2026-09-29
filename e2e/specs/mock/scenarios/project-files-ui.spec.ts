@@ -349,7 +349,7 @@ test.describe('project file workspace UI', () => {
     }
   });
 
-  test("a rejected file association shows the server's reason and a retry succeeds @scenario:rejected-file-association-shows-reason-and-retry-succeeds", async ({
+  test('a rejected file association shows a localized reason and a retry succeeds @scenario:rejected-file-association-shows-reason-and-retry-succeeds', async ({
     page,
     request,
   }) => {
@@ -364,7 +364,7 @@ test.describe('project file workspace UI', () => {
 
       const fileName = `${uniqueName('retry-file')}.txt`;
       const uploadPath = `/api/projects/${encodeURIComponent(projectId)}/files`;
-      const failureBody = { error: 'Error adding project file' };
+      const failureBody = { error: 'Project file limit reached' };
       const associationMatcher = (url: URL) => url.pathname === uploadPath;
       const failAssociation = async (route: Route) => {
         if (route.request().method() !== 'POST') {
@@ -372,7 +372,7 @@ test.describe('project file workspace UI', () => {
           return;
         }
         await route.fulfill({
-          status: 500,
+          status: 409,
           contentType: 'application/json',
           body: JSON.stringify(failureBody),
         });
@@ -390,7 +390,11 @@ test.describe('project file workspace UI', () => {
       filenames.push(fileName);
 
       const row = page.getByRole('listitem').filter({ hasText: fileName });
-      await expect(row.getByRole('alert')).toHaveText(failureBody.error, { timeout: 30000 });
+      await expect(row.getByRole('alert')).toHaveText(
+        /This project can use up to \d+ reference files\./,
+        { timeout: 30000 },
+      );
+      await expect(row.getByText(failureBody.error)).toHaveCount(0);
       await expect(row.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
       await page.unroute(associationMatcher, failAssociation);
 
