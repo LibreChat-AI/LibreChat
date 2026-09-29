@@ -46,9 +46,10 @@ changes nothing. The mapping lives in `tokens.css`, which the app stylesheet imp
 
 The stock families name Inter (`font-sans`, `font-theme-ui`) and Roboto Mono (`font-mono`), and
 the ClickHouse theme names Inconsolata. `theme.css` ships all three: `fonts.css` declares their
-`@font-face` rules against the woff2 files in `fonts/` beside it, Tailwind rewrites those URLs
-against the stylesheet that imports `theme.css`, and the host's bundler emits the files, exactly as
-the app's build does. A face downloads only once text renders in it. The SIL Open Font License of
+`@font-face` rules against the package's own files by export (`@librechat/client/fonts/*`), and
+the host's bundler (Vite, webpack's css-loader, esbuild) resolves and emits them, exactly as the
+app's build does. A pipeline that serves the compiled CSS without a bundler has to serve those
+paths itself. A face downloads only once text renders in it. The SIL Open Font License of
 each family ships beside its files (`fonts/*-OFL.txt`); keep it with the files when redistributing
 them.
 
