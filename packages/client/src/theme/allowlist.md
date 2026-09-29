@@ -23,15 +23,16 @@ is a role, not an exception.
 
 ## Brand marks and artwork
 
-| File                                                                          | Why                                                                                                                                |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/client/src/svgs/GoogleIcon.tsx`                                     | Google's multicolour mark, fixed by its brand guidelines.                                                                          |
-| `packages/client/src/svgs/FacebookIcon.tsx`                                   | Facebook's mark, fixed by its brand guidelines.                                                                                    |
-| `packages/client/src/svgs/DiscordIcon.tsx`                                    | Discord's mark, fixed by its brand guidelines.                                                                                     |
-| `packages/client/src/svgs/GeminiIcon.tsx`                                     | Gemini's gradient mark, fixed by its brand guidelines.                                                                             |
-| `packages/client/src/svgs/PaLMIcon.tsx`                                       | PaLM's multicolour mark, fixed by its brand guidelines.                                                                            |
-| `packages/client/src/svgs/BirthdayIcon.tsx`                                   | A multicolour illustration; the palette is artwork, not a UI role.                                                                 |
-| `packages/client/src/icons/provider/registry.ts`, `icons/provider/Avatar.tsx` | Provider brand colours, each already behind a `--provider-*` variable a deployment can override; the literal is only the fallback. |
+| File                                                                          | Why                                                                                                                                                                    |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/client/src/svgs/GoogleIcon.tsx`                                     | Google's multicolour mark, fixed by its brand guidelines.                                                                                                              |
+| `packages/client/src/svgs/FacebookIcon.tsx`                                   | Facebook's mark, fixed by its brand guidelines.                                                                                                                        |
+| `packages/client/src/svgs/DiscordIcon.tsx`                                    | Discord's mark, fixed by its brand guidelines.                                                                                                                         |
+| `packages/client/src/svgs/GeminiIcon.tsx`                                     | Gemini's gradient mark, fixed by its brand guidelines.                                                                                                                 |
+| `packages/client/src/svgs/PaLMIcon.tsx`                                       | PaLM's multicolour mark, fixed by its brand guidelines.                                                                                                                |
+| `packages/client/src/svgs/BirthdayIcon.tsx`                                   | A multicolour illustration; the palette is artwork, not a UI role.                                                                                                     |
+| `packages/client/src/components/PixelCard.tsx`                                | The `blue`, `yellow` and `pink` presets are decorative palettes a caller opts into, like the `colors` prop; the app renders only the default, which reads theme roles. |
+| `packages/client/src/icons/provider/registry.ts`, `icons/provider/Avatar.tsx` | Provider brand colours, each already behind a `--provider-*` variable a deployment can override; the literal is only the fallback.                                     |
 
 ## Elevation ink in library stylesheets
 
