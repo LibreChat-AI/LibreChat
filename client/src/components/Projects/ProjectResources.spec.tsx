@@ -100,6 +100,7 @@ jest.mock('~/hooks', () => ({
       com_ui_project_file_unavailable: 'Unavailable',
       com_ui_project_file_attach_error: 'Could not add this file',
       com_ui_project_file_remove_error: 'Could not remove this file',
+      com_ui_project_file_limit: 'This project can use up to {{count}} reference files.',
       com_ui_project_file_excess: `Could not add ${options?.count ?? ''} selected file(s)`,
       com_ui_project_files_error: 'Could not load project files',
       com_ui_project_no_files: 'No reference files yet',
@@ -240,13 +241,16 @@ describe('ProjectResources', () => {
     mockUploadMutateAsync.mockResolvedValue(uploadedFile);
     mockAddMutateAsync.mockRejectedValueOnce({
       message: 'unsafe association detail',
-      response: { data: { error: 'Project file limit reached' } },
+      response: { status: 409, data: { error: 'Project file limit reached' } },
     });
     renderResources();
     fireEvent.change(screen.getByTestId('project-upload-input'), {
       target: { files: [new File(['x'], 'reference.txt')] },
     });
-    expect(await screen.findByRole('alert')).toHaveTextContent('Project file limit reached');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This project can use up to 50 reference files.',
+    );
+    expect(screen.queryByText('Project file limit reached')).not.toBeInTheDocument();
     expect(screen.queryByText('unsafe association detail')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByText('Upload failed')).not.toBeInTheDocument());

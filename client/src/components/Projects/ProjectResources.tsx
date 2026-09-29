@@ -71,11 +71,18 @@ const getUploadErrorMessage = (error: unknown, localize: LocalizeFunction): stri
   if (typeof responseData?.message === 'string' && responseData.message.trim().length > 0) {
     return responseData.message;
   }
-  const associationError = responseData && 'error' in responseData ? responseData.error : undefined;
-  return typeof associationError === 'string' && associationError.trim().length > 0
-    ? associationError
-    : localize('com_error_files_upload');
+  return localize('com_error_files_upload');
 };
+
+/** Attaching answers 409 only when the project is full; every other failure reads the same. */
+const getAssociationErrorMessage = (
+  error: unknown,
+  localize: LocalizeFunction,
+  fileLimit: number,
+): string =>
+  (error as TError | undefined)?.response?.status === 409
+    ? localize('com_ui_project_file_limit', { count: fileLimit })
+    : localize('com_ui_project_file_attach_error');
 function statusLabel(localize: LocalizeFunction, availability: TChatProjectFile['availability']) {
   return availability === 'ready'
     ? localize('com_ui_project_file_ready')
@@ -213,6 +220,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
   };
 
   const runUpload = async (item: UploadState) => {
+    let uploaded = false;
     try {
       let fileId = item.fileId;
       if (!fileId) {
@@ -233,6 +241,7 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
           ),
         );
       }
+      uploaded = true;
       await addFile.mutateAsync({ projectId: project._id, file_id: fileId });
       pendingUploadIdsRef.current.delete(item.id);
       optimisticAttachedIdsRef.current.add(fileId);
@@ -240,7 +249,9 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
       setUploading((current) => current.filter((candidate) => candidate.id !== item.id));
     } catch (error: unknown) {
       pendingUploadIdsRef.current.delete(item.id);
-      const errorMessage = getUploadErrorMessage(error, localize);
+      const errorMessage = uploaded
+        ? getAssociationErrorMessage(error, localize, projectFileLimit)
+        : getUploadErrorMessage(error, localize);
       setUploading((current) =>
         current.map((candidate) =>
           candidate.id === item.id ? { ...candidate, errorMessage, status: 'failed' } : candidate,
