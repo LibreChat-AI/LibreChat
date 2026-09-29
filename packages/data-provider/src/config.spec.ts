@@ -580,6 +580,19 @@ describe('attached code environment user config schema', () => {
     },
   );
 
+  it('accepts an explicit tolerant-matching opt-in and nothing else under edits', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ edits: { tolerantMatching: true } })).toEqual({
+      edits: { tolerantMatching: true },
+    });
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(
+      codeEnvironmentUserConfigSchema.safeParse({ edits: { tolerantMatching: 'yes' } }).success,
+    ).toBe(false);
+    expect(codeEnvironmentUserConfigSchema.safeParse({ edits: { fuzzy: true } }).success).toBe(
+      false,
+    );
+  });
+
   it('keeps an omitted admission budget backward compatible', () => {
     expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
   });

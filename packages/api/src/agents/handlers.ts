@@ -133,6 +133,7 @@ import {
 } from './intent';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
+import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -1711,10 +1712,17 @@ function normalizeEditArgs(args: {
   return typeof normalized === 'string' ? normalized : [normalized];
 }
 
+/**
+ * Matches any strategy collects before it stops looking. Ambiguity only needs a
+ * second match and `replace_all` refuses anything larger, so a short needle in a
+ * large repetitive file never materializes millions of ranges.
+ */
+const MAX_EDIT_MATCHES = 10_000;
+
 function countExactOccurrences(content: string, needle: string): number[] {
   const indexes: number[] = [];
   let start = 0;
-  while (start <= content.length) {
+  while (start <= content.length && indexes.length <= MAX_EDIT_MATCHES) {
     const index = content.indexOf(needle, start);
     if (index === -1) {
       break;
@@ -1788,7 +1796,11 @@ function findLineWindowMatch(
       : stripCommonIndent(needle);
   const matches: Array<{ index: number; length: number }> = [];
 
-  for (let i = 0; i <= contentLines.length - needleLines.length; i++) {
+  for (
+    let i = 0;
+    i <= contentLines.length - needleLines.length && matches.length <= MAX_EDIT_MATCHES;
+    i++
+  ) {
     const windowLines = contentLines.slice(i, i + needleLines.length);
     const candidate =
       strategy === 'line-trimmed'
@@ -1825,7 +1837,7 @@ function findWhitespaceNormalizedMatch(content: string, needle: string): MatchSt
   const regex = new RegExp(pattern, 'g');
   const matches: Array<{ index: number; length: number }> = [];
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(content)) != null) {
+  while (matches.length <= MAX_EDIT_MATCHES && (match = regex.exec(content)) != null) {
     matches.push({ index: match.index, length: match[0].length });
     if (match[0].length === 0) {
       regex.lastIndex += 1;
@@ -1873,6 +1885,29 @@ function nonOverlapping(matches: readonly MatchedRange[]): MatchedRange[] {
   return kept;
 }
 
+function describeMatchCount(count: number): string {
+  return count > MAX_EDIT_MATCHES ? `more than ${MAX_EDIT_MATCHES}` : String(count);
+}
+
+/**
+ * The size `replace_all` would produce, computed before any replacement text is
+ * built so an oversized result is refused without allocating it.
+ */
+function projectedReplaceAllBytes(
+  content: string,
+  matches: readonly MatchedRange[],
+  text: string,
+): number {
+  const replacementBytes = Buffer.byteLength(text, 'utf8');
+  let bytes = Buffer.byteLength(content, 'utf8');
+  for (const match of matches) {
+    bytes +=
+      replacementBytes -
+      Buffer.byteLength(content.slice(match.index, match.index + match.length), 'utf8');
+  }
+  return bytes;
+}
+
 function replaceMatches(content: string, matches: readonly MatchedRange[], text: string): string {
   let result = '';
   let cursor = 0;
@@ -1897,11 +1932,21 @@ function applyTextEdits(
     }
     if (match.status === 'ambiguous' && edit.replace_all !== true) {
       throw new Error(
-        `old_text matched ${match.count} locations with ${match.strategy}; make it unique or set replace_all before retrying.`,
+        `old_text matched ${describeMatchCount(match.count)} locations with ${match.strategy}; make it unique or set replace_all before retrying.`,
       );
     }
     if (match.status === 'ambiguous') {
+      if (match.count > MAX_EDIT_MATCHES) {
+        throw new Error(
+          `replace_all is limited to ${MAX_EDIT_MATCHES} locations, and old_text matched more; narrow old_text before retrying.`,
+        );
+      }
       const matches = nonOverlapping(match.matches);
+      if (projectedReplaceAllBytes(working, matches, edit.new_text) > MAX_AUTHORING_BYTES) {
+        throw new Error(
+          `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
+        );
+      }
       working = replaceMatches(working, matches, edit.new_text);
       strategies.push(`${match.strategy} x${matches.length}`);
       continue;
@@ -4121,18 +4166,20 @@ function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): st
 }
 
 /**
- * Current workers explain a rejected edit themselves: every failing edit, why, and where. Older
- * workers only say it must match exactly once, and a file that changed mid-edit is its own case.
+ * A worker is outside LibreChat's trust boundary, so its conflict text is never forwarded: only the
+ * facts a strict parse recovers from it (which edits failed, how, and on which lines) reach the
+ * model, in LibreChat's own words. Anything else gets the generic retry guidance.
  */
 function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttpError): string {
   const conflict = error.editConflict;
   if (conflict?.startsWith('Workspace file changed')) {
     return `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`;
   }
-  if (conflict && conflict !== 'Workspace edit must match exactly once') {
-    return `workspace/${filePath}: ${conflict}`;
+  const report = conflict == null ? undefined : parseEditConflict(conflict);
+  if (report) {
+    return formatEditConflict(`workspace/${filePath}`, report);
   }
-  return `${error.message}; The requested text did not match exactly once in "workspace/${filePath}". Re-read the file and retry.`;
+  return `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`;
 }
 
 async function handleAttachedWorkspaceEditFileCall({
@@ -4184,9 +4231,11 @@ async function handleAttachedWorkspaceEditFileCall({
       'replace_all needs a newer LibreChat Code worker on this machine. Make each old_text unique instead.',
     );
   }
-  const matching: WorkspaceEditMatching | undefined = editFeatures.includes('tolerant_match')
-    ? 'tolerant'
-    : undefined;
+  const matching: WorkspaceEditMatching | undefined =
+    codeExecutionContext.codeEnvironmentConfigSchema?.edits?.tolerantMatching === true &&
+    editFeatures.includes('tolerant_match')
+      ? 'tolerant'
+      : undefined;
 
   try {
     const workspaceEdits: WorkspaceTextEdit[] = edits.map((edit) => ({
