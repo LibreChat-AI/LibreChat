@@ -24,13 +24,22 @@ Table.displayName = 'Table';
 
 interface TableHeaderProps extends React.HTMLAttributes<HTMLTableSectionElement> {
   sticky?: boolean;
+  /**
+   * The header row's fill, on by default so column names read as a header in any theme. A table
+   * whose header cells paint their own opaque fill turns it off, so a translucent cell state
+   * (a column being resized) still shows the surface behind the table.
+   */
+  filled?: boolean;
 }
 
-/** Every header carries the fill, sticky or not, so a column row reads as a header in any theme. */
-const tableHeaderVariants = cva('bg-surface-secondary', {
+const tableHeaderVariants = cva('', {
   variants: {
     sticky: {
       true: 'sticky top-0 z-50',
+      false: '',
+    },
+    filled: {
+      true: 'bg-surface-secondary',
       false: '',
     },
   },
@@ -39,8 +48,12 @@ const tableHeaderVariants = cva('bg-surface-secondary', {
 const TableHeader: React.ForwardRefExoticComponent<
   TableHeaderProps & React.RefAttributes<HTMLTableSectionElement>
 > = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
-  ({ className, sticky = false, ...props }, ref) => (
-    <thead ref={ref} className={cn(tableHeaderVariants({ sticky }), className)} {...props} />
+  ({ className, sticky = false, filled = true, ...props }, ref) => (
+    <thead
+      ref={ref}
+      className={cn(tableHeaderVariants({ sticky, filled }), className)}
+      {...props}
+    />
   ),
 );
 TableHeader.displayName = 'TableHeader';
