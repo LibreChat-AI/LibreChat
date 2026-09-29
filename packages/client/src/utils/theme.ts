@@ -10,12 +10,14 @@ export const disabledFillClasses =
 /**
  * The disabled ink alone, for a menu item, tab or row whose surface stays as it
  * is while disabled (Click UI's `genericMenu.item.color.*.disabled` keeps the
- * item's background and grays its text), and for a label that follows its
- * control through `peer`.
+ * item's background and grays its text, icons included, since a row's icon
+ * often owns its own color), and for a label that follows its control through
+ * `peer`.
  */
-export const disabledInkClasses = 'theme-disabled:text-text-disabled theme-disabled:opacity-100';
+export const disabledInkClasses =
+  'theme-disabled:text-text-disabled theme-disabled:opacity-100 theme-disabled:[&_svg]:text-text-disabled';
 export const peerDisabledInkClasses =
-  'peer-theme-disabled:text-text-disabled peer-theme-disabled:opacity-100';
+  'peer-theme-disabled:text-text-disabled peer-theme-disabled:opacity-100 peer-theme-disabled:[&_svg]:text-text-disabled';
 
 /** The same recipe for a wrapper around the disabled control rather than the control itself; the
  *  control inherits the ink and shows the fill through its transparent background. */

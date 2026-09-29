@@ -159,15 +159,19 @@ async function disabledLook(page: Page) {
   /** A menu item keeps its surface and grays its text; a label follows its control through `peer`. */
   const items = await page.evaluate(() => {
     const item = document.createElement('div');
-    item.className = 'text-text-primary theme-disabled:text-text-disabled';
+    item.className =
+      'text-text-primary theme-disabled:text-text-disabled theme-disabled:[&_svg]:text-text-disabled';
     item.setAttribute('data-disabled', '');
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('class', 'text-status-warning');
+    item.append(icon);
     const field = document.createElement('input');
     field.className = 'peer';
     field.disabled = true;
     const label = document.createElement('label');
     label.className = 'text-text-secondary peer-theme-disabled:text-text-disabled';
     document.body.append(item, field, label);
-    const result = `${getComputedStyle(item).color} ${getComputedStyle(label).color}`;
+    const result = `${getComputedStyle(icon).color} ${getComputedStyle(label).color}`;
     item.remove();
     field.remove();
     label.remove();
@@ -204,7 +208,7 @@ const CASES: Array<{
       placeholder: 'rgb(66, 66, 66)',
       part: 'rgb(255, 255, 255)',
       wrapper: 'rgba(0, 0, 0, 0) rgb(33, 33, 33)',
-      items: 'rgb(33, 33, 33) rgb(66, 66, 66)',
+      items: 'rgb(180, 83, 9) rgb(66, 66, 66)',
     },
   },
   {
@@ -219,7 +223,7 @@ const CASES: Array<{
       placeholder: 'rgb(205, 205, 205)',
       part: 'rgb(13, 13, 13)',
       wrapper: 'rgba(0, 0, 0, 0) rgb(236, 236, 236)',
-      items: 'rgb(236, 236, 236) rgb(205, 205, 205)',
+      items: 'rgb(252, 211, 77) rgb(205, 205, 205)',
     },
   },
   {
