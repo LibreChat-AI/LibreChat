@@ -1,0 +1,369 @@
+# compose.harness.yml — the two-container-test-harness topology (Layer B).
+#
+# Runs the single LibreChat image as two containers — the Auth_Surface and the API_Container —
+# behind a Caddy Front_Proxy, against a MongoDB with access control enabled and the two grants
+# from scripts/container-split/provision.mongo.js applied. It composes existing artifacts: it adds
+# no application code, changes no route mount, and edits neither container-split script (NG1, NG2).
+# It is a NEW file distinct from deploy-compose.yml and utils/docker/test-compose.yml, which stay
+# byte-for-byte on mongod --noauth (NG3, Req 1.1, 4.1).
+#
+# The three things this file makes structural rather than a thing to remember:
+#
+#   1. Both container services derive `image` from the SAME ${HARNESS_IMAGE} variable, so the two
+#      cannot drift into different images (Req 1.2 / TOPO-IMAGE-13).
+#   2. Every service-level difference between the two containers is confined to `env_file` and
+#      `MONGO_URI` — the three difference categories scripts/container-split/env-matrix.md records:
+#      environment values, the MongoDB credential, and the routed paths the proxy resolves
+#      (Req 1.3). Everything else (image, volumes, networks, Redis block) is shared.
+#   3. One librechat.yaml bind mount is referenced by both services, so byte-identity is a property
+#      of this file rather than an assertion about two files (Req 1.6 / TOPO-YAML-15). The mounted
+#      file is the harness's own committed fixture (./librechat.harness.yaml), NOT the untracked,
+#      gitignored repository-root librechat.yaml — a harness whose verdict depends on a file that is
+#      not in the repository reproduces nothing. See the x-librechat-yaml anchor below.
+#
+# Ordering lives here, not in the runner (Req 2.10): the provisioning step waits on mongodb being
+# healthy, and both containers wait on the provisioning step completing successfully. A hand-run
+# `docker compose up` inherits the ordering instead of depending on run.mjs to enforce it.
+#
+# The only new addresses this file introduces are harness machinery outside the image: the proxy's
+# ingress (127.0.0.1:8080) and the loopback observation plane on which /health, /livez and /readyz
+# are published for the Test_Runner's out-of-band observer. No route mount or HTTP path is added,
+# removed, reordered or renamed (Req 1.12 / NG1).
+#
+# Secrets are supplied per run by e2e/container-split/run.mjs, which generates them with
+# crypto.randomBytes and writes the resolved env files under env/. No secret value is committed
+# (Req 5.6). The ${...} references below have no defaults so an unset variable fails loudly.
+
+# ---------------------------------------------------------------------------------------------
+# Anchors — the shared shape both containers inherit, so a difference can only appear by being
+# written into a per-service override below, never by omission.
+# ---------------------------------------------------------------------------------------------
+
+x-librechat-yaml: &librechat-yaml
+  # The one librechat.yaml, mounted read-only into both containers so it is byte-identical across
+  # them (Req 1.6). env-matrix.md requires secureImageLinks: true; that lives in the file, asserted
+  # by TOPO-YAML-15, not here.
+  #
+  # The source is the harness's OWN COMMITTED FIXTURE, deliberately NOT the repository-root
+  # ../../librechat.yaml. That file is untracked and gitignored (.gitignore: `librechat.yaml`) — it is
+  # each developer's local operator config — so mounting it made the harness outcome a function of
+  # local state: a key the config schema does not recognize makes loadCustomConfig.js call
+  # process.exit(1) and both containers die at every boot, so the harness cannot boot on one machine,
+  # boots on another, and a green run reproduces nothing. DO NOT point this back at
+  # ../../librechat.yaml. See librechat.harness.yaml's own header for why it is named that rather than
+  # librechat.yaml (the bare-name .gitignore rule would silently ignore the fixture too) and why it
+  # carries only `version` and `secureImageLinks`.
+  #
+  # ONE mount, inherited by both container services through this anchor, so byte-identity across the
+  # two containers stays structural rather than asserted (Req 1.6). Do not give the two services
+  # separate mounts.
+  type: bind
+  source: ./librechat.harness.yaml
+  target: /app/librechat.yaml
+  read_only: true
+
+x-container-common: &container-common
+  # Both containers ARE the same image. ${HARNESS_IMAGE} is referenced once here and inherited by
+  # both services, so they resolve to one image identity with no per-service image difference
+  # (Req 1.2). run.mjs sets HARNESS_IMAGE to the tag it brings up.
+  image: ${HARNESS_IMAGE}
+  restart: "no"
+  networks:
+    - harness
+  volumes:
+    - *librechat-yaml
+
+services:
+  # -------------------------------------------------------------------------------------------
+  # Auth_Enabled_MongoDB — access control ON (Req 2.1), a deliberate departure from both existing
+  # compose files, which run mongod --noauth and stay that way (NG3).
+  # -------------------------------------------------------------------------------------------
+  mongodb:
+    image: mongo:8.0.20
+    container_name: harness-mongodb
+    profiles: ["split", "collapsed"]
+    command: ["mongod", "--auth", "--bind_ip_all"]
+    environment:
+      # Root bootstrap. The mongo image creates this root user on first start when the data
+      # directory is empty; run.mjs passes both values per run (no committed secret, Req 5.6).
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+    ports:
+      # Published on the loopback observation plane for the read-only observer credential ONLY —
+      # deliberately not 27017 or 27018, which the two existing compose files bind (design:
+      # Auth_Enabled_MongoDB service). The containers reach mongod over the internal network on
+      # 27017; nothing external needs the container credentials.
+      - "127.0.0.1:27019:27017"
+    healthcheck:
+      # An AUTHENTICATED ping, so "healthy" means accepting authenticated connections rather than
+      # merely listening (Req 2.2, design). The provisioning step's `service_healthy` dependency
+      # therefore fires only once mongod will accept the root credential the script needs.
+      test:
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "-u"
+        - "${MONGO_ROOT_USERNAME}"
+        - "-p"
+        - "${MONGO_ROOT_PASSWORD}"
+        - "--authenticationDatabase"
+        - "admin"
+        - "--eval"
+        - "db.adminCommand('ping').ok"
+      interval: 3s
+      timeout: 5s
+      # ~60s readiness budget (Req 2.3) before the provisioning step is allowed to run.
+      retries: 20
+      start_period: 5s
+    tmpfs:
+      # Ephemeral storage: every run provisions from a clean database, so a leftover data volume
+      # would carry a stale root credential or stale grants into the next run. run.mjs sizes
+      # system.profile itself after bring-up (design: Boot-Write Observation).
+      - /data/db
+    networks:
+      - harness
+
+  # -------------------------------------------------------------------------------------------
+  # Provisioning step — applies the two grants by running the UNMODIFIED provision.mongo.js
+  # (Req 2.2, NG2). One-shot mongo:8.0.20 container, which carries mongosh, so Layer B needs no
+  # host mongosh (design: Provisioning step).
+  # -------------------------------------------------------------------------------------------
+  provision:
+    image: mongo:8.0.20
+    container_name: harness-provision
+    profiles: ["split", "collapsed"]
+    depends_on:
+      mongodb:
+        # Waits until mongod accepts authenticated connections (Req 2.10). The runner's own
+        # readiness check agrees with this rather than replacing it.
+        condition: service_healthy
+    volumes:
+      # scripts/container-split mounted READ-ONLY (NG2) — the step runs the script, it does not
+      # edit it. Connected to the LibreChat database, never admin: provision.mongo.js throws on
+      # admin because db.getName() is what scopes every privilege. Roles and users still land on
+      # admin (design: MongoDB Setup And The Two Grants).
+      - type: bind
+        source: ../../scripts/container-split
+        target: /scripts/container-split
+        read_only: true
+    entrypoint:
+      - "mongosh"
+      - "mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongodb:27017/${MONGO_DB}?authSource=admin"
+      - "--norc"
+      - "--quiet"
+      - "--eval"
+      - "var AUTH_PASSWORD = '${AUTH_MONGO_PASSWORD}'; var API_PASSWORD = '${API_MONGO_PASSWORD}';"
+      - "--file"
+      - "/scripts/container-split/provision.mongo.js"
+    networks:
+      - harness
+
+  # -------------------------------------------------------------------------------------------
+  # Redis — one instance, one keyspace, shared by both containers. The Redis block resolves
+  # identically on both (Req 1.8); it is carried in env/common.env, which both containers load
+  # first, so the identity is structural. This service is the single instance they point at.
+  # -------------------------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: harness-redis
+    profiles: ["split", "collapsed"]
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+    networks:
+      - harness
+
+  # -------------------------------------------------------------------------------------------
+  # MeiliSearch — reachable from the API_Container ONLY (Req 1.4, env-matrix.md). MEILI_HOST and
+  # MEILI_MASTER_KEY are absent from env/auth-surface.env, so the Auth_Surface never attaches the
+  # search plugin. This service is on the internal network with no external publication.
+  # -------------------------------------------------------------------------------------------
+  meilisearch:
+    image: getmeili/meilisearch:v1.35.1
+    container_name: harness-meilisearch
+    profiles: ["split", "collapsed"]
+    environment:
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_ENV=development
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7700/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks:
+      - harness
+
+  # -------------------------------------------------------------------------------------------
+  # Auth_Surface — Container 1. Same image, env/auth-surface.env per the env matrix, MONGO_URI
+  # carrying the Container_1_Grant with authSource=admin (Req 2.4, 2.5). Reused unchanged by the
+  # collapsed profile: same service definition, same ${HARNESS_IMAGE} reference, same volumes,
+  # rather than a third service definition that could drift (Req 4.2 / PARITY-COLLAPSE-29). The
+  # collapse is an env overlay run.mjs applies to env/*.env, not a new service.
+  # -------------------------------------------------------------------------------------------
+  auth-surface:
+    <<: *container-common
+    container_name: harness-auth-surface
+    profiles: ["split", "collapsed"]
+    depends_on:
+      provision:
+        # Both containers wait on the grants being applied (Req 2.10). Puts the ordering in compose
+        # so a hand-run `docker compose up` gets it too.
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    env_file:
+      # common.env first: everything Req 1.5 requires identical (CREDS_KEY, the six
+      # OPENID_ROLE_SYNC_*, USE_ENTRA_ID_FOR_PEOPLE_SEARCH, JWT_SECRET, JWT_REFRESH_SECRET) plus the
+      # shared Redis block. The per-service file then carries ONLY what differs, so the identity is
+      # structural. This env_file list plus MONGO_URI below are the only service-level differences
+      # between the two containers (Req 1.3).
+      - env/common.env
+      - env/auth-surface.env
+    environment:
+      # The Container_1_Grant. Default database is the LibreChat database; authSource names admin,
+      # where provision.mongo.js created the two roles and two users (Req 2.5). run.mjs fails setup
+      # before bring-up if this omits authSource or names anything but admin (Req 2.6).
+      - MONGO_URI=mongodb://${AUTH_MONGO_USERNAME}:${AUTH_MONGO_PASSWORD}@mongodb:27017/${MONGO_DB}?authSource=admin
+    ports:
+      # Loopback observation plane ONLY (design: Container Attribution). /health, /livez and /readyz
+      # are infra-only on this container and not externally routed; the Test_Runner's observation
+      # client reaches them here. External request traffic reaches the container only through the
+      # Front_Proxy. This publication carries health/log observation and nothing else.
+      - "127.0.0.1:3091:3080"
+    healthcheck:
+      # On /livez per the design (Auth_Surface service). "healthy" means the process is live.
+      #
+      # wget, never curl: the application image is Alpine and ships BusyBox wget at /usr/bin/wget
+      # with no curl at all, so `curl -fsS` fails at exec on every probe and compose calls the
+      # container unhealthy after start_period + retries × interval regardless of what the
+      # application is doing. Verified: `docker run --rm --entrypoint sh ${HARNESS_IMAGE} -c
+      # 'command -v curl || echo NO curl; command -v wget'` → NO curl, /usr/bin/wget.
+      #
+      # 127.0.0.1, never localhost: /etc/hosts in this image maps localhost to both 127.0.0.1 and
+      # ::1, BusyBox wget takes ::1 and does not fall back to IPv4, and the server binds 0.0.0.0
+      # (IPv4 only) — so http://localhost:3080/livez is refused while the port is serving. The
+      # Caddy probes below can use localhost because Caddy binds dual-stack; this image cannot.
+      #
+      # `wget -qO-` still fails when it should: it exits 0 only on a 2xx, and non-zero on 4xx, 5xx
+      # and connection refusal alike. A probe that could not fail would be worse than one that
+      # always fails, because a dead container would read as healthy.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3080/livez"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # -------------------------------------------------------------------------------------------
+  # API_Container — Container 2. Same image, env/api-container.env, MONGO_URI carrying the
+  # Container_2_Grant (Req 2.4). Present in the split profile only: the collapsed topology is one
+  # container (the reused auth-surface above), so the API_Container does not participate in it.
+  #
+  # Published on NEITHER the ingress address NOR any other external address — reachable from
+  # outside only through the Front_Proxy (Req 1.9, 1.10 / TOPO-INGRESS-17). Its only external
+  # publication is the loopback observation plane for /livez and /readyz, which is health/log
+  # observation, not an ingress (design: the observation-plane rule).
+  # -------------------------------------------------------------------------------------------
+  api-container:
+    <<: *container-common
+    container_name: harness-api-container
+    profiles: ["split"]
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    env_file:
+      - env/common.env
+      - env/api-container.env
+    environment:
+      # The Container_2_Grant. Same authSource=admin, different credential — neither container holds
+      # the other's. That is the enforcement boundary; the routing partition is a second, weaker
+      # boundary layered on top of it.
+      - MONGO_URI=mongodb://${API_MONGO_USERNAME}:${API_MONGO_PASSWORD}@mongodb:27017/${MONGO_DB}?authSource=admin
+    ports:
+      # Loopback observation plane ONLY — /livez and /readyz for the Test_Runner. NOT the ingress
+      # address (127.0.0.1:8080) and not any other external address (Req 1.10).
+      - "127.0.0.1:3092:3080"
+    healthcheck:
+      # Same probe as the Auth_Surface, same two reasons — see the comment there. wget because the
+      # Alpine application image ships no curl, so `curl -fsS` fails at exec on every probe and the
+      # container is declared unhealthy while it is serving; 127.0.0.1 because localhost resolves to
+      # ::1 first here and BusyBox wget does not retry on IPv4 against a 0.0.0.0 listener.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3080/livez"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # -------------------------------------------------------------------------------------------
+  # Front_Proxy — Caddy 2, split profile. Published on the ingress address (Req 1.9); every
+  # external request reaches a container only through it. Partitions routed paths via the
+  # Auth_Surface_Allowlist and performs NO credential validation of any kind (NG6). See
+  # Caddyfile.split.
+  # -------------------------------------------------------------------------------------------
+  proxy:
+    image: caddy:2-alpine
+    container_name: harness-proxy
+    profiles: ["split"]
+    depends_on:
+      auth-surface:
+        condition: service_healthy
+      api-container:
+        condition: service_healthy
+    ports:
+      # The ingress address. This is the sole external door into the topology in the split profile.
+      - "127.0.0.1:8080:80"
+    volumes:
+      - type: bind
+        source: ./Caddyfile.split
+        target: /etc/caddy/Caddyfile
+        read_only: true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/__harness/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks:
+      - harness
+
+  # -------------------------------------------------------------------------------------------
+  # Front_Proxy — collapsed profile. One unconditional upstream, no allowlist (see
+  # Caddyfile.collapsed). Points at the reused auth-surface service, which in the collapsed
+  # configuration runs with startup tasks on and the full-access credential (run.mjs's env
+  # overlay). Same ingress address, so the collapsed run is reached the same way as the split run.
+  # -------------------------------------------------------------------------------------------
+  proxy-collapsed:
+    image: caddy:2-alpine
+    container_name: harness-proxy-collapsed
+    profiles: ["collapsed"]
+    depends_on:
+      auth-surface:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - type: bind
+        source: ./Caddyfile.collapsed
+        target: /etc/caddy/Caddyfile
+        read_only: true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/__harness/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks:
+      - harness
+
+networks:
+  harness:
+    driver: bridge

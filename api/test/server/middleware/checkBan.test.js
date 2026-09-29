@@ -40,6 +40,7 @@ jest.mock('@librechat/api', () => ({
     return false;
   },
   keyvMongo: {},
+  keyvMongoBans: {},
   removePorts: jest.fn((req) => req.ip),
   redirectToAuthFailure: (res, { clientDomain, authFailedError }) =>
     res.redirect(`${clientDomain}/login?redirect=false&error=${authFailedError}`),

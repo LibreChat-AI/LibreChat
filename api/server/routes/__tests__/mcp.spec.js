@@ -8,6 +8,7 @@ const {
   PENDING_STALE_MS,
   MCPApiKeyReentryRequiredError,
   MCPOAuthSecretReentryRequiredError,
+  setOAuthSessionCookie,
 } = require('@librechat/api');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
@@ -17,6 +18,24 @@ function generateTestCsrfToken(flowId) {
     .update(flowId)
     .digest('hex')
     .slice(0, 32);
+}
+
+/**
+ * Mints the value the `oauth_session` cookie now carries for `userId`: a signed
+ * HS256 `{ id, exp }` token, produced by the same `setOAuthSessionCookie` the
+ * application uses so the value is exactly what the callback route's
+ * `validateOAuthSession` accepts. Captures the value from a `res.cookie` call
+ * rather than reconstructing the digest inline, which the old form did.
+ */
+function mintOAuthSessionCookie(userId) {
+  let value = '';
+  const res = {
+    cookie: (_name, cookieValue) => {
+      value = cookieValue;
+    },
+  };
+  setOAuthSessionCookie(res, userId);
+  return value;
 }
 
 const mockRegistryInstance = {
@@ -682,7 +701,7 @@ describe('MCP Routes', () => {
         require('~/config').getFlowStateManager.mockReturnValueOnce(mockFlowManager);
         MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(flowId);
 
-        const sessionToken = generateTestCsrfToken('test-user-id');
+        const sessionToken = mintOAuthSessionCookie('test-user-id');
         const response = await request(app)
           .get('/api/mcp/test-server/oauth/callback')
           .set('Cookie', [`oauth_session=${sessionToken}`])

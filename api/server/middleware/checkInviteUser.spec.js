@@ -5,10 +5,15 @@ jest.mock('@librechat/api', () => ({
   getInvite: (...args) => mockGetInvite(...args),
 }));
 
+/** The middleware reaches the auth-token method set through the `authTokens` namespace key, so the
+ * mock must nest it the same way; a flat shape leaves `authTokens` undefined and every case fails
+ * inside `getInvite` rather than on its assertion. */
 jest.mock('~/models', () => ({
-  createToken: jest.fn(),
-  findToken: jest.fn(),
-  deleteTokens: (...args) => mockDeleteTokens(...args),
+  authTokens: {
+    createToken: jest.fn(),
+    findToken: jest.fn(),
+    deleteTokens: (...args) => mockDeleteTokens(...args),
+  },
 }));
 
 const checkInviteUser = require('./checkInviteUser');

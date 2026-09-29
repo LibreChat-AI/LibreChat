@@ -1,0 +1,88 @@
+# Caddyfile.split — Front_Proxy for the two-container-test-harness split topology.
+#
+# Property 5, load-balancer half: the routed path partition. This file expresses the
+# Auth_Surface_Allowlist as an ordered, full-path allowlist and resolves everything else to
+# the API_Container. The Auth_Surface is never a default target (Req 3.11); a path the allowlist
+# forgets fails closed at the API_Container default rather than landing on the anonymous-facing
+# container.
+#
+# The proxy performs NO credential validation of any kind — no bearer check, no cookie exemption,
+# no crypto at the edge (NG6). It stands in for the Load_Balancer only, partitioning routed paths
+# and attributing which container served each request. It does not emulate the Auth_Gate.
+#
+# The allowlist below is transcribed from the parent auth-api-container-split design's container-1
+# routing table without re-derivation (NG4). Do not edit an entry to "fix" routing here: moving a
+# path between the two sets requires recomputing the Container_1_Grant from the moved path's
+# collection needs (Req 2.11), which this file cannot do.
+
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	# JSON access log to stdout. Records each request's response headers, X-Harness-Upstream
+	# among them, which corroborates the routing decision the header carries.
+	log {
+		output stdout
+		format json
+	}
+
+	# `route` preserves written order. A bare `handle` set would be reordered by Caddy's own
+	# specificity heuristic — exactly the decision this file must not delegate. The allowlist
+	# comes first; the unconditional API_Container default comes last.
+	route {
+		# Auth_Surface_Allowlist. Full-path matchers only.
+		#
+		# Both forms of every prefix: Caddy's `path` matcher is exact unless it carries `*`, so
+		# `/api/auth/*` does not match `/api/auth`. Each prefix is listed twice.
+		#
+		# No bare-suffix wildcards: `/api/admin/login*` would also match
+		# `/api/admin/logins-anything`. The pair `/api/admin/login` + `/api/admin/login/*`
+		# matches the mount and nothing wider.
+		#
+		# NEVER the `/api/admin` prefix. `app.use('/api/admin', routes.adminAuth)` is registered
+		# before `/api/admin/config` and its siblings, and Express prefix-matches. A rule on the
+		# `/api/admin` prefix would not merely misroute `GET /api/admin/roles` — it would make it
+		# SUCCEED, because the Auth_Surface's grant holds `roles` read. The write then fails at the
+		# database layer and the operator sees a working list view with a save button that errors:
+		# an application bug to all appearances, with nothing pointing at routing. Matchers are
+		# full paths.
+		#
+		# The SPA document routes are enumerated explicitly, never expressed as a default (Req
+		# 3.11). A document route left off this list lands on the API_Container, which serves the
+		# SAME `index.html` from the same image via the same `createSpaFallback` — so the page
+		# loads and nothing looks wrong. An SPA load is therefore not evidence of routing in either
+		# direction; only X-Harness-Upstream is.
+		@auth_surface path /oauth /oauth/* \
+			/api/auth /api/auth/* \
+			/api/user/verify /api/user/verify/resend \
+			/api/admin/login /api/admin/login/* \
+			/api/admin/oauth /api/admin/oauth/* \
+			/api/admin/verify \
+			/api/config /api/banner /health \
+			/assets/* /fonts/* /dist/* /images/favicon* \
+			/ /login /register /forgot-password /reset-password /verify /oauth/success
+
+		# X-Harness-Upstream is set inside the SAME handle block that picks the upstream, so the
+		# header and the routing decision are one directive pair and cannot disagree. `header`
+		# replaces rather than appends, so the value is the proxy's regardless of what the upstream
+		# emitted.
+		handle @auth_surface {
+			header X-Harness-Upstream "auth-surface"
+			reverse_proxy auth-surface:3080
+		}
+
+		# Unconditional default. Everything absent from the allowlist above — including the whole
+		# /api/admin data family — resolves here (Req 3.11).
+		handle {
+			header X-Harness-Upstream "api-container"
+			reverse_proxy api-container:3080
+		}
+	}
+
+	# Harness liveness probe for the proxy itself. Not part of the routed partition.
+	handle /__harness/health {
+		respond "OK" 200
+	}
+}

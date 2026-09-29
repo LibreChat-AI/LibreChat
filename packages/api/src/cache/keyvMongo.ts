@@ -271,10 +271,18 @@ class KeyvMongoCustom extends EventEmitter {
   }
 }
 
-const keyvMongo: KeyvMongoCustom = new KeyvMongoCustom({
-  collection: 'logs',
-});
+const createStore = (collection: string): KeyvMongoCustom => {
+  const store = new KeyvMongoCustom({ collection });
+  store.on('error', (err) => logger.error(`KeyvMongo connection error (${collection}):`, err));
+  return store;
+};
 
-keyvMongo.on('error', (err) => logger.error('KeyvMongo connection error:', err));
+const keyvMongo: KeyvMongoCustom = createStore('logs');
+
+/**
+ * Ban-namespace store, split off `logs` so the auth surface never reaches that collection.
+ * Carries the `ban` and `BANS` namespaces; `ENCODED_DOMAINS` stays on `keyvMongo`.
+ */
+export const keyvMongoBans: KeyvMongoCustom = createStore('bans');
 
 export default keyvMongo;

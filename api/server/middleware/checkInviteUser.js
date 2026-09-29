@@ -1,8 +1,11 @@
 const { getInvite: getInviteFn } = require('@librechat/api');
-const { createToken, findToken } = require('~/models');
+const { authTokens } = require('~/models');
 
 const getInvite = (encodedToken, email) =>
-  getInviteFn(encodedToken, email, { createToken, findToken });
+  getInviteFn(encodedToken, email, {
+    createToken: authTokens.createToken,
+    findToken: authTokens.findToken,
+  });
 
 async function checkInviteUser(req, res, next) {
   const token = req.body.token;

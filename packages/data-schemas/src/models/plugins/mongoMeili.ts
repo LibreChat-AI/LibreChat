@@ -107,6 +107,22 @@ const meiliEnabled =
   process.env.MEILI_HOST != null && process.env.MEILI_MASTER_KEY != null && searchEnabled;
 
 /**
+ * Whether this container skips the startup work that initializes shared deployment state, read
+ * here to suppress the index-provisioning block that runs when this plugin is attached to a
+ * schema. Evaluated per call rather than frozen at module load, so it reflects the value of
+ * `DISABLE_STARTUP_TASKS` at plugin-attach time.
+ *
+ * This deliberately mirrors `areStartupTasksDisabled` in `packages/api/src/app/startup.ts`, which
+ * every other flag read site consumes. It cannot import that predicate: `packages/data-schemas`
+ * does not depend on `@librechat/api` — the dependency runs the other way, and this package takes
+ * api-layer collaborators by injection instead. The two readers must therefore stay semantically
+ * identical, agreeing on every value the variable can hold, or one value of the flag would gate
+ * the entrypoints while leaving this block running. Change one and change the other.
+ */
+const areStartupTasksDisabledLocal = (): boolean =>
+  process.env.DISABLE_STARTUP_TASKS?.toLowerCase().trim() === 'true';
+
+/**
  * Get sync configuration from environment variables
  */
 const getSyncConfig = () => ({
@@ -1046,52 +1062,63 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
   /** Create index only if it doesn't exist */
   const index = client.index<MeiliIndexable>(indexName);
 
-  (async () => {
-    try {
-      await index.getRawInfo();
-      logger.debug(`[mongoMeili] Index ${indexName} already exists`);
-    } catch (error) {
-      const errorCode = (error as { code?: string })?.code;
-      if (errorCode === 'index_not_found') {
-        try {
-          logger.info(`[mongoMeili] Creating new index: ${indexName}`);
-          const enqueued = await client.createIndex(indexName, { primaryKey });
-          const task = await client.waitForTask(enqueued.taskUid, {
-            timeOutMs: 10000,
-            intervalMs: 100,
-          });
-          logger.debug(`[mongoMeili] Index ${indexName} creation task:`, task);
-          if (task.status !== 'succeeded') {
-            const taskError = task.error as MeiliSearchErrorInfo | null;
-            if (taskError?.code === 'index_already_exists') {
-              logger.debug(`[mongoMeili] Index ${indexName} was created by another instance`);
+  /**
+   * The provisioning block below runs at attach time — that is, during model registration — rather
+   * than on save, and the attach condition tests only `MEILI_HOST` and `MEILI_MASTER_KEY`, so
+   * neither `searchEnabled` nor `meiliEnabled` reaches it. The guard sits outside the async
+   * function so nothing is scheduled when startup tasks are disabled, rather than an early return
+   * that has already queued a microtask. The client and the index handle above stay unguarded:
+   * both are needed by the document hooks and by the statics `loadClass` installs, and neither
+   * issues network I/O.
+   */
+  if (!areStartupTasksDisabledLocal()) {
+    (async () => {
+      try {
+        await index.getRawInfo();
+        logger.debug(`[mongoMeili] Index ${indexName} already exists`);
+      } catch (error) {
+        const errorCode = (error as { code?: string })?.code;
+        if (errorCode === 'index_not_found') {
+          try {
+            logger.info(`[mongoMeili] Creating new index: ${indexName}`);
+            const enqueued = await client.createIndex(indexName, { primaryKey });
+            const task = await client.waitForTask(enqueued.taskUid, {
+              timeOutMs: 10000,
+              intervalMs: 100,
+            });
+            logger.debug(`[mongoMeili] Index ${indexName} creation task:`, task);
+            if (task.status !== 'succeeded') {
+              const taskError = task.error as MeiliSearchErrorInfo | null;
+              if (taskError?.code === 'index_already_exists') {
+                logger.debug(`[mongoMeili] Index ${indexName} was created by another instance`);
+              } else {
+                logger.warn(`[mongoMeili] Index ${indexName} creation failed:`, taskError);
+              }
             } else {
-              logger.warn(`[mongoMeili] Index ${indexName} creation failed:`, taskError);
+              logger.info(`[mongoMeili] Successfully created index: ${indexName}`);
             }
-          } else {
-            logger.info(`[mongoMeili] Successfully created index: ${indexName}`);
+          } catch (createError) {
+            if (createError instanceof MeiliSearchTimeOutError) {
+              logger.warn(`[mongoMeili] Timed out waiting for index ${indexName} creation`);
+            } else {
+              logger.warn(`[mongoMeili] Error creating index ${indexName}:`, createError);
+            }
           }
-        } catch (createError) {
-          if (createError instanceof MeiliSearchTimeOutError) {
-            logger.warn(`[mongoMeili] Timed out waiting for index ${indexName} creation`);
-          } else {
-            logger.warn(`[mongoMeili] Error creating index ${indexName}:`, createError);
-          }
+        } else {
+          logger.error(`[mongoMeili] Error checking index ${indexName}:`, error);
         }
-      } else {
-        logger.error(`[mongoMeili] Error checking index ${indexName}:`, error);
       }
-    }
 
-    try {
-      await index.updateSettings({
-        filterableAttributes: ['user'],
-      });
-      logger.debug(`[mongoMeili] Updated index ${indexName} settings to make 'user' filterable`);
-    } catch (settingsError) {
-      logger.error(`[mongoMeili] Error updating index settings for ${indexName}:`, settingsError);
-    }
-  })();
+      try {
+        await index.updateSettings({
+          filterableAttributes: ['user'],
+        });
+        logger.debug(`[mongoMeili] Updated index ${indexName} settings to make 'user' filterable`);
+      } catch (settingsError) {
+        logger.error(`[mongoMeili] Error updating index settings for ${indexName}:`, settingsError);
+      }
+    })();
+  }
 
   // Collect attributes from the schema that should be indexed
   const attributesToIndex: string[] = [

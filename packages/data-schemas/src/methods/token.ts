@@ -3,7 +3,10 @@ import { IToken, TokenCreateData, TokenQuery, TokenUpdateData, TokenDeleteResult
 import logger from '~/config/winston';
 
 // Factory function that takes mongoose instance and returns the methods
-export function createTokenMethods(mongoose: typeof import('mongoose')): {
+export function createTokenMethods(
+  mongoose: typeof import('mongoose'),
+  modelName: string = 'Token',
+): {
   findToken: (query: TokenQuery, options?: QueryOptions) => Promise<IToken | null>;
   createToken: (tokenData: TokenCreateData) => Promise<IToken>;
   updateToken: (query: TokenQuery, updateData: TokenUpdateData) => Promise<IToken | null>;
@@ -14,7 +17,7 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
    */
   async function createToken(tokenData: TokenCreateData): Promise<IToken> {
     try {
-      const Token = mongoose.models.Token;
+      const Token = mongoose.models[modelName];
       const currentTime = new Date();
       const expiresAt = new Date(currentTime.getTime() + tokenData.expiresIn * 1000);
 
@@ -39,7 +42,7 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
     updateData: TokenUpdateData,
   ): Promise<IToken | null> {
     try {
-      const Token = mongoose.models.Token;
+      const Token = mongoose.models[modelName];
       const { metadataCredentialSetId, ...tokenQuery } = query;
       const dbQuery: Record<string, unknown> = { ...tokenQuery };
       if (metadataCredentialSetId !== undefined) {
@@ -61,7 +64,7 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
   /** Deletes all Token documents matching every provided field (AND semantics). */
   async function deleteTokens(query: TokenQuery): Promise<TokenDeleteResult> {
     try {
-      const Token = mongoose.models.Token;
+      const Token = mongoose.models[modelName];
       const conditions = [];
 
       if (query.userId !== undefined) {
@@ -103,7 +106,7 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
    */
   async function findToken(query: TokenQuery, options?: QueryOptions): Promise<IToken | null> {
     try {
-      const Token = mongoose.models.Token;
+      const Token = mongoose.models[modelName];
       const conditions = [];
 
       if (query.userId) {

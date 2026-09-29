@@ -85,6 +85,14 @@ librechat.yml
 my.secrets
 !**/.env.example
 !**/.env.test.example
+
+# Container-split harness: per-run output (env files and context carry secrets)
+/e2e/container-split/env/*.env
+!/e2e/container-split/env/*.env.example
+/e2e/container-split/run-report.json
+/e2e/container-split/path-outcomes.json
+/e2e/container-split/harness-context.json
+/e2e/container-split/coverage/
 cache.json
 api/data/
 owner.yml

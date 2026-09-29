@@ -36,6 +36,8 @@ const {
   handleJsonParseError,
   initializeFileStorage,
   loadToolApprovalHooks,
+  areStartupTasksDisabled,
+  startupTasksDisabledWarning,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
   preAuthTenantMiddleware,
@@ -436,10 +438,34 @@ if (cluster.isMaster) {
     }
   });
   const startServer = async () => {
+    /* `DISABLE_STARTUP_TASKS` suppresses exactly this set at this entrypoint: database
+     * seeding, interface-permission derivation from `librechat.yaml`, migration checks, the
+     * orphaned-preview sweep, the expired-file sweep, GitHub skill sync, subagent task
+     * routing configuration, the code-environment lifecycle reconciler, MCP initialization,
+     * the OAuth reconnect manager, the agent-trigger service, the RAG health probe, the
+     * credential-database check, the search index sync, and the search plugin's
+     * index-provisioning block. This set differs from `index.js`: this clustered entrypoint
+     * arms no schedule engine (it runs the erasure-only schedule sweep unconditionally, so
+     * no schedule-engine arming or expired-approval callback is gated here), and it has no
+     * deployment-plugin or deployment-skill initialization to gate. Four members of the set
+     * are not gated at this site. The RAG health probe and the credential-database check are
+     * gated inside `performStartupChecks` (`packages/api/src/app/checks.ts`), which otherwise
+     * runs its environment and configuration validation on every container regardless of the
+     * flag. The search index sync is gated inside `indexSync()` (`api/db/indexSync.js`),
+     * beside its existing `SEARCH` guard, so both entrypoints inherit the suppression from
+     * one place. The plugin's index-provisioning block is gated inside
+     * `packages/data-schemas/src/models/plugins/mongoMeili.ts`, because it runs when the
+     * plugin is attached to a schema during model registration rather than at a call made
+     * here. Readiness signalling, `index.html` loading, file-storage
+     * initialization, and every request path stay on the normal path in both flag states. */
+    const startupTasksDisabled = areStartupTasksDisabled();
+
     logger.info(`Worker ${process.pid} initializing...`);
 
     await waitForKeyvRedisClient();
-    await configureSubagentTaskRouting();
+    if (!startupTasksDisabled) {
+      await configureSubagentTaskRouting();
+    }
 
     if (typeof Bun !== 'undefined') {
       axios.defaults.headers.common['Accept-Encoding'] = 'gzip';
@@ -448,7 +474,9 @@ if (cluster.isMaster) {
     /** Connect to MongoDB */
     await connectDb();
     logger.info(`Worker ${process.pid}: Connected to MongoDB`);
-    startCodeEnvironmentLifecycleReconciler({ mongoose });
+    if (!startupTasksDisabled) {
+      startCodeEnvironmentLifecycleReconciler({ mongoose });
+    }
 
     /** Background index sync (non-blocking) */
     indexSync().catch((err) => {
@@ -484,17 +512,23 @@ if (cluster.isMaster) {
     }
 
     /** Seed database (idempotent) */
-    await runAsSystem(seedDatabase);
+    if (!startupTasksDisabled) {
+      await runAsSystem(seedDatabase);
+    }
 
     /* Mirrors `server/index.js`; `runAsSystem` for tenant-isolated File. */
-    runAsSystem(sweepOrphanedPreviews).catch((err) => {
-      logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
-    });
+    if (!startupTasksDisabled) {
+      runAsSystem(sweepOrphanedPreviews).catch((err) => {
+        logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
+      });
+    }
 
     /** Initialize app configuration */
     const appConfig = await getAppConfig();
     initializeFileStorage(appConfig);
-    initializeGitHubSkillSync(appConfig);
+    if (!startupTasksDisabled) {
+      initializeGitHubSkillSync(appConfig);
+    }
     // Register configured tool-approval policy hooks (mirrors the standard startup path).
     // Honors the `enabled` kill switch; hooks are base-config-only, registered process-wide.
     // Read from the BASE config specifically — `appConfig` above (getAppConfig() with no
@@ -510,11 +544,21 @@ if (cluster.isMaster) {
     await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
       basePath: path.resolve(__dirname, '../..'),
     });
-    expiredFileSweep.configure({ appConfig, loadAppConfig: getAppConfig });
+    /* Leaving the sweep unconfigured is what gates the IPC-triggered path too: this is the
+     * only place `configure()` is called, so without it a `file-retention-sweep-worker`
+     * message still finds the coordinator's `assign()` a no-op (it only starts once options
+     * are set). Keeping the guard preserves the DISABLE_STARTUP_TASKS suppression. */
+    if (!startupTasksDisabled) {
+      expiredFileSweep.configure({ appConfig, loadAppConfig: getAppConfig });
+    }
     await runAsSystem(async () => {
       await performStartupChecks(appConfig);
-      await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
     });
+    if (!startupTasksDisabled) {
+      await runAsSystem(async () => {
+        await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
+      });
+    }
 
     /* Route modules build their rate limiters as they load, so they load only after the
      * startup checks have applied `rateLimits` from librechat.yaml. */
@@ -703,15 +747,26 @@ if (cluster.isMaster) {
        */
       try {
         /** Initialize MCP servers and OAuth reconnection for this worker */
-        await initializeMCPs();
-        await initializeOAuthReconnectManager();
-        await checkMigrations();
-        await initializeAgentTriggerService({
-          address: server.address(),
-          completionResultBatchSize:
-            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
-          idlePolling: baseAppConfig?.endpoints?.agents?.eventDriven?.idlePolling,
-        });
+        if (!startupTasksDisabled) {
+          await initializeMCPs();
+        }
+        if (!startupTasksDisabled) {
+          await initializeOAuthReconnectManager();
+        }
+        if (!startupTasksDisabled) {
+          await checkMigrations();
+        }
+        if (!startupTasksDisabled) {
+          await initializeAgentTriggerService({
+            address: server.address(),
+            completionResultBatchSize:
+              baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+            idlePolling: baseAppConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+          });
+        }
+        if (startupTasksDisabled) {
+          logger.warn(startupTasksDisabledWarning);
+        }
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);
         process.exit(1);

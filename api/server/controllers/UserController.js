@@ -221,6 +221,18 @@ const deleteUserMcpServers = async (userId) => {
   }
 };
 
+/**
+ * Sweeps one user's auth-flow tokens out of `authtokens`: the typed
+ * `password_reset` and `email_verification` documents, plus the legacy shape whose
+ * `email`, `identifier`, and `type` are all null. `tokens` is swept separately —
+ * the two collections carry separate method sets.
+ */
+const deleteUserAuthTokens = (userId) =>
+  Promise.all([
+    db.authTokens.deleteTokens({ userId }),
+    db.authTokens.deleteTokens({ userId, email: null, identifier: null, type: null }),
+  ]);
+
 const updateUserPluginsController = async (req, res) => {
   const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
   const { user } = req;
@@ -522,6 +534,7 @@ const deleteUserController = async (req, res) => {
     await deleteUserMcpServers(user.id);
     await db.deleteActions({ user: user.id });
     await db.deleteTokens({ userId: user.id });
+    await deleteUserAuthTokens(user.id);
     await db.removeUserFromAllGroups(user.id);
     await db.deleteAclEntries({ principalId: user._id });
     await db.deleteSchedulesByUser(user.id);

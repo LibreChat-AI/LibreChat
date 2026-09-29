@@ -25,6 +25,35 @@ const USE_REDIS_STREAMS =
     ? isEnabled(process.env.USE_REDIS_STREAMS)
     : USE_REDIS;
 
+const DEFAULT_FORCED_IN_MEMORY_CACHE_NAMESPACES: string[] = [
+  CacheKeys.CONFIG_STORE,
+  CacheKeys.APP_CONFIG,
+];
+
+/**
+ * Warns that the default per-container namespace list has been replaced. Keyed on presence rather
+ * than on truthiness, matching the parse's own `!== undefined` gate: an empty value is a deliberate
+ * opt-out that yields an empty list, not a fallback to the default. A supplied list that omits
+ * either default namespace leaves the version-sensitive, YAML-derived config payload shared across
+ * containers, so it draws a second line. Neither warning fails startup.
+ */
+const warnOnSuppliedNamespaces = (suppliedValue: string, namespaces: string[]): void => {
+  logger.warn(
+    `[cacheConfig] FORCED_IN_MEMORY_CACHE_NAMESPACES is present in the environment ('${suppliedValue}'), replacing the default '${DEFAULT_FORCED_IN_MEMORY_CACHE_NAMESPACES.join(',')}'. That default keeps the YAML-derived config payload per-container, which matters for blue/green deployments where two versions run concurrently against one Redis keyspace. Startup continues.`,
+  );
+
+  const missing = DEFAULT_FORCED_IN_MEMORY_CACHE_NAMESPACES.filter(
+    (namespace) => !namespaces.includes(namespace),
+  );
+  if (missing.length === 0) {
+    return;
+  }
+
+  logger.warn(
+    `[cacheConfig] FORCED_IN_MEMORY_CACHE_NAMESPACES omits ${missing.join(', ')}: the config payload for ${missing.join(' and ')} is shared through Redis across every container and version pointed at this keyspace. Include both ${DEFAULT_FORCED_IN_MEMORY_CACHE_NAMESPACES.join(' and ')} to keep it per-container. Startup continues.`,
+  );
+};
+
 // Comma-separated list of cache namespaces that should be forced to use in-memory storage
 // even when Redis is enabled. This allows selective performance optimization for specific caches.
 // Defaults to CONFIG_STORE,APP_CONFIG so YAML-derived config stays per-container.
@@ -34,7 +63,14 @@ const FORCED_IN_MEMORY_CACHE_NAMESPACES =
     ? process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES.split(',')
         .map((key) => key.trim())
         .filter(Boolean)
-    : [CacheKeys.CONFIG_STORE, CacheKeys.APP_CONFIG];
+    : [...DEFAULT_FORCED_IN_MEMORY_CACHE_NAMESPACES];
+
+if (process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES !== undefined) {
+  warnOnSuppliedNamespaces(
+    process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES,
+    FORCED_IN_MEMORY_CACHE_NAMESPACES,
+  );
+}
 
 // Validate against CacheKeys enum
 if (FORCED_IN_MEMORY_CACHE_NAMESPACES.length > 0) {

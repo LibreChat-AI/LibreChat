@@ -4,7 +4,7 @@ const { checkEmailConfig, createInvite } = require('@librechat/api');
 const { User } = require('@librechat/data-schemas').createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const { askQuestion, silentExit, coloredConsole } = require('./helpers');
-const { createToken, findToken } = require('../api/models');
+const { authTokens } = require('../api/models');
 const { sendEmail } = require('../api/server/utils');
 const connect = require('./connect');
 
@@ -53,7 +53,10 @@ const connect = require('./connect');
     silentExit(1);
   }
 
-  const token = await createInvite(email, { createToken, findToken });
+  const token = await createInvite(email, {
+    createToken: authTokens.createToken,
+    findToken: authTokens.findToken,
+  });
   if (typeof token !== 'string') {
     coloredConsole.red('Error: Failed to create the invite token!');
     silentExit(1);

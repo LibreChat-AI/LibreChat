@@ -51,6 +51,10 @@ jest.mock('./utils', () => ({
 jest.mock('@librechat/api', () => ({
   isEnabled: mockIsEnabled,
   FlowStateManager: jest.fn(),
+  // `indexSync()` reads the startup task gate on every call. The double mirrors the real predicate,
+  // which is `isEnabled(process.env.DISABLE_STARTUP_TASKS)`, so the gate is open in this suite,
+  // where the flag is absent.
+  areStartupTasksDisabled: () => mockIsEnabled(process.env.DISABLE_STARTUP_TASKS),
 }));
 
 jest.mock('~/cache', () => ({

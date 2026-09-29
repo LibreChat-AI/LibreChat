@@ -25,7 +25,7 @@ const {
   getUserById,
   findSession,
   updateUser,
-  deleteTokens,
+  authTokens,
 } = require('~/models');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const { getRefreshTokenBridge } = require('~/server/services/RefreshTokenBridge');
@@ -66,7 +66,7 @@ const registrationController = async (req, res) => {
      * whose account was just created that registration failed, which is not. */
     if (response.userCreated === true && req.invite?.token != null) {
       try {
-        await deleteTokens({ token: req.invite.token });
+        await authTokens.deleteTokens({ token: req.invite.token });
       } catch (error) {
         logger.error('[registrationController] Failed to consume invite after registration', error);
       }

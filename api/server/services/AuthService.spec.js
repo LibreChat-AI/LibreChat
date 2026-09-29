@@ -112,6 +112,12 @@ jest.mock('~/models', () => ({
   generateToken: jest.fn(),
   deleteUserById: jest.fn(),
   generateRefreshToken: jest.fn(),
+  authTokens: {
+    findToken: jest.fn(),
+    createToken: jest.fn(),
+    updateToken: jest.fn(),
+    deleteTokens: jest.fn(),
+  },
 }));
 jest.mock('~/strategies/validators', () => ({
   registerSchema: {
@@ -144,6 +150,7 @@ let logger;
 let getTenantId;
 let findUser;
 let findToken;
+let authTokens;
 let createUser;
 let updateUser;
 let countUsers;
@@ -184,19 +191,18 @@ jest.isolateModules(() => {
   ({ logger, getTenantId } = require('@librechat/data-schemas'));
   ({
     findUser,
-    findToken,
     createUser,
     updateUser,
     countUsers,
+    authTokens,
     getUserById,
     generateToken,
     generateRefreshToken,
     createSession,
     upsertSession,
     deleteSession,
-    createToken,
-    deleteTokens,
   } = require('~/models'));
+  ({ findToken, createToken, deleteTokens } = authTokens);
   ({ getAppConfig } = require('~/server/services/Config'));
   ({ sendEmail } = require('~/server/utils'));
   bcrypt = require('bcryptjs');

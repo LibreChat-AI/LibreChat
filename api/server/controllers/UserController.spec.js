@@ -63,6 +63,9 @@ jest.mock('~/models', () => {
     deleteToolCalls: jest.fn().mockResolvedValue(undefined),
     deleteUserAgents: jest.fn().mockResolvedValue(undefined),
     deleteTokens: jest.fn().mockResolvedValue(undefined),
+    authTokens: {
+      deleteTokens: jest.fn().mockResolvedValue(undefined),
+    },
     deleteConvos: jest.fn().mockResolvedValue(undefined),
     deleteFiles: jest.fn().mockResolvedValue(undefined),
     updateUser: jest.fn(),

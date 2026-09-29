@@ -2,7 +2,12 @@ const mongoose = require('mongoose');
 const { MeiliSearch } = require('meilisearch');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
-const { isEnabled, FlowStateManager, evalKeyvRedisScript } = require('@librechat/api');
+const {
+  isEnabled,
+  FlowStateManager,
+  evalKeyvRedisScript,
+  areStartupTasksDisabled,
+} = require('@librechat/api');
 const { getLogStores } = require('~/cache');
 const { batchResetMeiliFlags } = require('./utils');
 
@@ -357,7 +362,14 @@ async function performSync(flowManager, flowId, flowType) {
  * Main index sync function that uses FlowStateManager to prevent concurrent execution
  */
 async function indexSync() {
-  if (!searchEnabled) {
+  /** The two guards are independent and both apply: the startup task gate suppresses the sync on a
+   * container that has declared its role with `DISABLE_STARTUP_TASKS` whatever `SEARCH` says, and
+   * `SEARCH` suppresses it wherever search is off, flag or no flag. The gate is read here rather
+   * than at the call sites in `api/server/index.js` and `api/server/experimental.js` because
+   * `searchEnabled` is frozen at require time, so a call-site guard would have to be duplicated in
+   * each entrypoint; `areStartupTasksDisabled()` reads `process.env` on every call, keeping the
+   * suppression per-call and covering both entrypoints from one place. */
+  if (areStartupTasksDisabled() || !searchEnabled) {
     return;
   }
 

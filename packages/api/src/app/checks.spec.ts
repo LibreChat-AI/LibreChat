@@ -7,14 +7,16 @@ jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     debug: jest.fn(),
+    info: jest.fn(),
     warn: jest.fn(),
   },
 }));
 
 import { handleRateLimits } from './limits';
-import { checkWebSearchConfig } from './checks';
 import { logger } from '@librechat/data-schemas';
-import { extractVariableName as extract } from 'librechat-data-provider';
+import { checkWebSearchConfig, performStartupChecks } from './checks';
+import { FileSources, extractVariableName as extract } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 
 const extractVariableName = extract as jest.MockedFunction<typeof extract>;
 
@@ -366,5 +368,170 @@ describe('handleRateLimits', () => {
 
     expect(process.env.AGENT_EVENT_USER_MAX).toEqual('80');
     expect(process.env.AGENT_EVENT_USER_WINDOW).toEqual('2');
+  });
+});
+
+describe('performStartupChecks', () => {
+  const publishedDefaultJwtSecret =
+    '16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef';
+
+  let originalEnv: NodeJS.ProcessEnv;
+  let fetchSpy: jest.SpyInstance<Promise<Response>, Parameters<typeof fetch>>;
+
+  const buildAppConfig = (): AppConfig => ({
+    config: {
+      version: '0.0.0',
+      rateLimits: {
+        fileUploads: {
+          ipMax: 111,
+          ipWindowInMinutes: 22,
+        },
+      },
+      webSearch: {
+        serperApiKey: 'sk-an-actual-key-not-a-reference',
+      },
+    },
+    fileStrategy: FileSources.local,
+    imageOutputType: 'png',
+    modelSpecs: {
+      enforce: true,
+      prioritize: false,
+      list: [],
+    },
+    endpoints: {
+      azureOpenAI: {
+        modelNames: [],
+        groupMap: {},
+        modelGroupMap: {},
+        isValid: true,
+        errors: [],
+      },
+    },
+  });
+
+  const warnings = (): string[] =>
+    (logger.warn as jest.Mock).mock.calls.map(([message]) => String(message));
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = process.env;
+    process.env = { ...originalEnv };
+
+    process.env.RAG_API_URL = 'http://rag.internal:8000';
+    process.env.JWT_SECRET = publishedDefaultJwtSecret;
+    process.env.ALLOW_PASSWORD_RESET = 'true';
+    process.env.AZURE_API_KEY = 'azure-key';
+    delete process.env.EMAIL_FROM;
+    delete process.env.EMAIL_HOST;
+    delete process.env.EMAIL_SERVICE;
+    delete process.env.MAILGUN_API_KEY;
+    delete process.env.FILE_UPLOAD_IP_MAX;
+    delete process.env.FILE_UPLOAD_IP_WINDOW;
+
+    extractVariableName.mockReturnValue(null);
+    fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    process.env = originalEnv;
+  });
+
+  describe('when DISABLE_STARTUP_TASKS is unset', () => {
+    beforeEach(() => {
+      delete process.env.DISABLE_STARTUP_TASKS;
+    });
+
+    it('probes the RAG health endpoint', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledWith('http://rag.internal:8000/health');
+    });
+
+    it('warns that RAG is unreachable when the probe rejects', async () => {
+      fetchSpy.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await performStartupChecks(buildAppConfig());
+
+      expect(warnings()).toEqual(
+        expect.arrayContaining([expect.stringContaining('RAG API is either not running')]),
+      );
+    });
+  });
+
+  describe('when DISABLE_STARTUP_TASKS is set', () => {
+    beforeEach(() => {
+      process.env.DISABLE_STARTUP_TASKS = 'true';
+    });
+
+    it('issues no outbound request to the RAG health endpoint', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('emits no RAG-unreachability warning', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(warnings()).not.toEqual(expect.arrayContaining([expect.stringContaining('RAG API')]));
+    });
+
+    it('still emits the default-valued-secret warning from checkVariables', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Legacy default value for JWT_SECRET is being used'),
+      );
+    });
+
+    it('still emits the password-reset-without-email-service warning', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(warnings()).toEqual(
+        expect.arrayContaining([expect.stringContaining('Password reset is enabled')]),
+      );
+    });
+
+    it('still emits the deprecated Azure variable warning', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(warnings()).toEqual(
+        expect.arrayContaining([expect.stringContaining('`AZURE_API_KEY` environment variable')]),
+      );
+    });
+
+    it('still emits the interface config warning', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(warnings()).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Enforcing model specs without prioritizing them'),
+        ]),
+      );
+    });
+
+    it('still reports an outdated config version', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Outdated Config version'));
+    });
+
+    it('still emits the web search configuration warning', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(warnings()).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('Web search configuration error: serperApiKey'),
+        ]),
+      );
+    });
+
+    it('still applies the configured rate limits', async () => {
+      await performStartupChecks(buildAppConfig());
+
+      expect(process.env.FILE_UPLOAD_IP_MAX).toEqual('111');
+      expect(process.env.FILE_UPLOAD_IP_WINDOW).toEqual('22');
+    });
   });
 });

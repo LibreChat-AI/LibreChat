@@ -34,6 +34,8 @@ const mockCancelAndDrainSubagentThreads = jest.fn();
 const mockQuiesceUserSchedules = jest.fn();
 const mockDeleteSchedulesByUser = jest.fn();
 const mockRevokeUserCodeEnvironmentWorkers = jest.fn();
+const mockDeleteTokens = jest.fn();
+const mockDeleteAuthTokens = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), info: jest.fn() },
@@ -107,7 +109,10 @@ jest.mock('~/models', () => ({
   deleteConversationTags: jest.fn(),
   deleteAllUserMemories: jest.fn(),
   deleteActions: jest.fn(),
-  deleteTokens: jest.fn(),
+  deleteTokens: (...args) => mockDeleteTokens(...args),
+  authTokens: {
+    deleteTokens: (...args) => mockDeleteAuthTokens(...args),
+  },
   removeUserFromAllGroups: jest.fn(),
   deleteAclEntries: jest.fn(),
   deleteSchedulesByUser: (...args) => mockDeleteSchedulesByUser(...args),
@@ -214,6 +219,8 @@ function stubDeletionMocks() {
   mockQuiesceUserSchedules.mockResolvedValue(true);
   mockDeleteSchedulesByUser.mockResolvedValue();
   mockRevokeUserCodeEnvironmentWorkers.mockResolvedValue(0);
+  mockDeleteTokens.mockResolvedValue({ deletedCount: 0 });
+  mockDeleteAuthTokens.mockResolvedValue({ deletedCount: 0 });
 }
 
 beforeEach(() => {
@@ -457,5 +464,36 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith({ message: 'User deleted' });
     expect(mockDeleteMessages).toHaveBeenCalled();
+  });
+});
+
+describe('deleteUserController - token cleanup', () => {
+  it('sweeps both tokens and authtokens for the deleted user', async () => {
+    const req = { user: { id: 'user1', _id: 'user1', email: 'a@b.com' }, body: {} };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+
+    await deleteUserController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mockDeleteTokens).toHaveBeenCalledWith({ userId: 'user1' });
+    expect(mockDeleteAuthTokens).toHaveBeenCalledWith({ userId: 'user1' });
+    expect(mockDeleteAuthTokens).toHaveBeenCalledWith({
+      userId: 'user1',
+      email: null,
+      identifier: null,
+      type: null,
+    });
+  });
+
+  it('sweeps authtokens through its own method set, not the tokens one', async () => {
+    const req = { user: { id: 'user1', _id: 'user1', email: 'a@b.com' }, body: {} };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+
+    await deleteUserController(req, res);
+
+    expect(mockDeleteTokens).toHaveBeenCalledTimes(1);
+    expect(mockDeleteAuthTokens).toHaveBeenCalledTimes(2);
   });
 });

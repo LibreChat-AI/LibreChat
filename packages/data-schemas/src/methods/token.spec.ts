@@ -1190,3 +1190,111 @@ describe('Token email normalization', () => {
     expect(found).not.toBeNull();
   });
 });
+
+describe('createTokenMethods - model name parameter', () => {
+  const secondaryModelName = 'SecondaryToken';
+  let SecondaryToken: mongoose.Model<t.IToken>;
+  let secondaryMethods: ReturnType<typeof createTokenMethods>;
+
+  beforeAll(() => {
+    SecondaryToken =
+      (mongoose.models[secondaryModelName] as mongoose.Model<t.IToken>) ||
+      mongoose.model<t.IToken>(secondaryModelName, tokenSchema, 'secondarytokens');
+    secondaryMethods = createTokenMethods(mongoose, secondaryModelName);
+  });
+
+  test('should default to the Token model when no model name is supplied', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await methods.createToken({
+      token: 'default-model-token',
+      userId,
+      email: 'default@example.com',
+      expiresIn: 3600,
+    });
+
+    await expect(Token.countDocuments({ token: 'default-model-token' })).resolves.toBe(1);
+    await expect(SecondaryToken.countDocuments({ token: 'default-model-token' })).resolves.toBe(0);
+  });
+
+  test('should write only to the named model collection', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await secondaryMethods.createToken({
+      token: 'secondary-model-token',
+      userId,
+      email: 'secondary@example.com',
+      expiresIn: 3600,
+    });
+
+    await expect(SecondaryToken.countDocuments({ token: 'secondary-model-token' })).resolves.toBe(
+      1,
+    );
+    await expect(Token.countDocuments({ token: 'secondary-model-token' })).resolves.toBe(0);
+  });
+
+  test('should return no document from the other collection on read', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await methods.createToken({
+      token: 'only-in-tokens',
+      userId,
+      email: 'isolation@example.com',
+      expiresIn: 3600,
+    });
+
+    await expect(secondaryMethods.findToken({ token: 'only-in-tokens' })).resolves.toBeNull();
+    await expect(methods.findToken({ token: 'only-in-tokens' })).resolves.not.toBeNull();
+  });
+
+  test('should update and delete only within the named model collection', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const tokenData = {
+      token: 'shared-token-value',
+      userId,
+      email: 'shared@example.com',
+      expiresIn: 3600,
+    };
+    await methods.createToken(tokenData);
+    await secondaryMethods.createToken(tokenData);
+
+    const updated = await secondaryMethods.updateToken(
+      { token: 'shared-token-value' },
+      { identifier: 'secondary-identifier' },
+    );
+    expect(updated?.identifier).toBe('secondary-identifier');
+
+    const primary = await Token.findOne({ token: 'shared-token-value' });
+    expect(primary?.identifier).toBeUndefined();
+
+    const deleted = await secondaryMethods.deleteTokens({ token: 'shared-token-value' });
+    expect(deleted.deletedCount).toBe(1);
+    await expect(Token.countDocuments({ token: 'shared-token-value' })).resolves.toBe(1);
+  });
+
+  test('should keep an explicit null matchable through the named model', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await SecondaryToken.create({
+      token: 'legacy-shape-token',
+      userId,
+      email: null,
+      identifier: null,
+      type: null,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 3600000),
+    });
+
+    const found = await secondaryMethods.findToken({
+      userId: userId.toString(),
+      email: null,
+      identifier: null,
+      type: null,
+    });
+    expect(found).not.toBeNull();
+
+    const deleted = await secondaryMethods.deleteTokens({
+      userId: userId.toString(),
+      email: null,
+      identifier: null,
+      type: null,
+    });
+    expect(deleted.deletedCount).toBe(1);
+  });
+});

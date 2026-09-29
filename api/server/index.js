@@ -32,6 +32,8 @@ const {
   createStreamServices,
   agentStartupIngressMiddleware,
   agentStartupTelemetryMiddleware,
+  areStartupTasksDisabled,
+  startupTasksDisabledWarning,
   initializeFileStorage,
   initializeDeploymentSkills,
   initializeDeploymentPlugins,
@@ -170,7 +172,30 @@ const SHUTDOWN_TEARDOWN_RESERVE_MS = 10_000;
 
 const startServer = async () => {
   await waitForKeyvRedisClient();
-  await configureSubagentTaskRouting();
+  /* `DISABLE_STARTUP_TASKS` suppresses exactly this set: database seeding,
+   * interface-permission derivation from `librechat.yaml`, migration checks, the
+   * orphaned-preview sweep, the expired-file sweep, deployment skill sync and GitHub skill
+   * sync, MCP initialization, the OAuth reconnect manager, deployment-plugin initialization
+   * and its hook registration, subagent task routing configuration, the code-environment
+   * lifecycle reconciler, the agent-trigger service, schedule-engine arming (with its
+   * expired-approval callback), the RAG health probe, the credential-database check, the
+   * search index sync, and the search plugin's index-provisioning block.
+   * Four members of that set are not gated at this site. The RAG health probe and the
+   * credential-database check are gated inside `performStartupChecks`
+   * (`packages/api/src/app/checks.ts`), which otherwise runs its environment and
+   * configuration validation on every container regardless of the flag. The search index
+   * sync is gated inside `indexSync()` (`api/db/indexSync.js`), beside its existing `SEARCH`
+   * guard, so both entrypoints inherit the suppression from one place. The plugin's
+   * index-provisioning block is gated inside
+   * `packages/data-schemas/src/models/plugins/mongoMeili.ts`, because it runs when the plugin
+   * is attached to a schema during model registration rather than at a call made here.
+   * Readiness signalling, `appConfig` resolution, `index.html` loading, file-storage
+   * initialization, and every request path stay on the normal path in both flag states. */
+  const startupTasksDisabled = areStartupTasksDisabled();
+  if (!startupTasksDisabled) {
+    await configureSubagentTaskRouting();
+  }
+
   const { metricsMiddleware, metricsRouter } = createMetrics({
     collectAgentEventActorStorageMetrics: () =>
       runAsSystem(async () => {
@@ -196,7 +221,9 @@ const startServer = async () => {
   await connectDb();
 
   logger.info('Connected to MongoDB');
-  startCodeEnvironmentLifecycleReconciler({ mongoose });
+  if (!startupTasksDisabled) {
+    startCodeEnvironmentLifecycleReconciler({ mongoose });
+  }
   indexSync().catch((err) => {
     logger.error('[indexSync] Background sync failed:', err);
   });
@@ -222,14 +249,18 @@ const startServer = async () => {
     );
   }
 
-  await runAsSystem(seedDatabase);
+  if (!startupTasksDisabled) {
+    await runAsSystem(seedDatabase);
+  }
   /* Recover stuck `status: 'pending'` records from a crash mid-render.
    * `runAsSystem` is required — `File` is tenant-isolated and strict
    * mode rejects unscoped queries. Lazy sweep in the preview endpoint
    * covers anything younger than the boot cutoff. */
-  runAsSystem(sweepOrphanedPreviews).catch((err) => {
-    logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
-  });
+  if (!startupTasksDisabled) {
+    runAsSystem(sweepOrphanedPreviews).catch((err) => {
+      logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
+    });
+  }
   const appConfig = await getAppConfig({ baseOnly: true });
   registerBackgroundTaskShutdown({
     interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
@@ -238,25 +269,33 @@ const startServer = async () => {
   warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
   const projectRoot = path.resolve(__dirname, '../..');
-  // Plugin hooks execute only when the operator opts in via DEPLOYMENT_PLUGIN_HOOKS;
-  // without it, declared hook documents load as parsed-but-inert with a warning.
-  await initializeDeploymentPlugins({
-    projectRoot,
-    hookCapabilities: getDeploymentPluginHookCapabilities(),
-  });
-  // Hand the run seam its plugin-hook source without a packages/api-internal
-  // agents -> plugins import (see agents/hooks/source.ts).
-  setPluginHookSource({
-    hasHooks: hasDeploymentPluginHooks,
-    hasToolApprovalHooks: hasDeploymentPluginToolApprovalHooks,
-    register: registerDeploymentPluginHooks,
-  });
-  await initializeDeploymentSkills({
-    projectRoot,
-    additionalSkills: getDeploymentPluginSkills(),
-  });
-  initializeGitHubSkillSync(appConfig);
-  startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
+  if (!startupTasksDisabled) {
+    // Plugin hooks execute only when the operator opts in via DEPLOYMENT_PLUGIN_HOOKS;
+    // without it, declared hook documents load as parsed-but-inert with a warning.
+    await initializeDeploymentPlugins({
+      projectRoot,
+      hookCapabilities: getDeploymentPluginHookCapabilities(),
+    });
+    // Hand the run seam its plugin-hook source without a packages/api-internal
+    // agents -> plugins import (see agents/hooks/source.ts).
+    setPluginHookSource({
+      hasHooks: hasDeploymentPluginHooks,
+      hasToolApprovalHooks: hasDeploymentPluginToolApprovalHooks,
+      register: registerDeploymentPluginHooks,
+    });
+  }
+  if (!startupTasksDisabled) {
+    await initializeDeploymentSkills({
+      projectRoot,
+      additionalSkills: getDeploymentPluginSkills(),
+    });
+  }
+  if (!startupTasksDisabled) {
+    initializeGitHubSkillSync(appConfig);
+  }
+  if (!startupTasksDisabled) {
+    startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
+  }
   // Register any programmatic tool-approval policy hooks declared in
   // `endpoints.agents.toolApproval.hooks`. Honor the `enabled` kill switch: when tool
   // approval is off we pass no hooks, so a disabled endpoint imports/runs nothing (and any
@@ -269,7 +308,9 @@ const startServer = async () => {
   });
   await runAsSystem(async () => {
     await performStartupChecks(appConfig);
-    await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+    if (!startupTasksDisabled) {
+      await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+    }
   });
 
   /* Route modules build their rate limiters as they load, so they load only after the
@@ -496,34 +537,47 @@ const startServer = async () => {
      */
     try {
       await runAsSystem(async () => {
-        await initializeMCPs();
-        await initializeOAuthReconnectManager();
+        if (!startupTasksDisabled) {
+          await initializeMCPs();
+        }
+        if (!startupTasksDisabled) {
+          await initializeOAuthReconnectManager();
+        }
       });
-      await checkMigrations();
+      if (!startupTasksDisabled) {
+        await checkMigrations();
+      }
 
       const inspectFlags = process.execArgv.some((arg) => arg.startsWith('--inspect'));
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
-      await initializeAgentTriggerService({
-        address: server.address(),
-        completionResultBatchSize:
-          appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
-        idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
-      });
-      const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
-      scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
-      if (!scheduleEngineArmed) {
-        // Terminal, not transient: arming is attempted once, so schedule writes are refused
-        // for the life of this process. Logged at error level because the only other signal
-        // an operator gets is a 503 on every write — every other health signal stays green.
-        logger.error(
-          '[schedules] write routes are PERMANENTLY unavailable in this process: the engine did not arm. ' +
-            'Resolve the cause logged above and restart.',
-        );
+      if (!startupTasksDisabled) {
+        await initializeAgentTriggerService({
+          address: server.address(),
+          completionResultBatchSize:
+            appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+          idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+        });
+      }
+      if (!startupTasksDisabled) {
+        const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
+        scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
+        if (!scheduleEngineArmed) {
+          // Terminal, not transient: arming is attempted once, so schedule writes are refused
+          // for the life of this process. Logged at error level because the only other signal
+          // an operator gets is a 503 on every write — every other health signal stays green.
+          logger.error(
+            '[schedules] write routes are PERMANENTLY unavailable in this process: the engine did not arm. ' +
+              'Resolve the cause logged above and restart.',
+          );
+        }
       }
       serverReady = true;
       logger.info('Server readiness checks passing.');
+      if (startupTasksDisabled) {
+        logger.warn(startupTasksDisabledWarning);
+      }
     } catch (initErr) {
       serverReady = false;
       logger.error('Post-listen initialization failed:', initErr);

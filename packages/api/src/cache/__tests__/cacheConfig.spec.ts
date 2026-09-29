@@ -26,6 +26,7 @@ describe('cacheConfig', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+    jest.restoreAllMocks();
     jest.resetModules();
   });
 
@@ -320,6 +321,93 @@ describe('cacheConfig', () => {
 
       const { cacheConfig } = await import('../cacheConfig');
       expect(cacheConfig.VIOLATION_SCORE_TTL).toBe(3600000);
+    });
+  });
+
+  describe('FORCED_IN_MEMORY_CACHE_NAMESPACES presence warning', () => {
+    const loadWithWarnSpy = async (): Promise<{
+      warnings: string[];
+      namespaces: string[];
+    }> => {
+      const { logger } = await import('@librechat/data-schemas');
+      const warnSpy = jest.spyOn(logger, 'warn');
+
+      const { cacheConfig } = await import('../cacheConfig');
+
+      return {
+        warnings: warnSpy.mock.calls.map(([message]) => String(message)),
+        namespaces: cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES,
+      };
+    };
+
+    const namespaceWarnings = (warnings: string[]): string[] =>
+      warnings.filter((message) => message.includes('FORCED_IN_MEMORY_CACHE_NAMESPACES'));
+
+    test('should not warn when the variable is absent from the environment', async () => {
+      const { warnings, namespaces } = await loadWithWarnSpy();
+
+      expect(namespaceWarnings(warnings)).toEqual([]);
+      expect(namespaces).toEqual(['CONFIG_STORE', 'APP_CONFIG']);
+    });
+
+    test('should warn once when the supplied list carries both default namespaces', async () => {
+      process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES = 'CONFIG_STORE,APP_CONFIG,ROLES';
+
+      const { warnings, namespaces } = await loadWithWarnSpy();
+      const matched = namespaceWarnings(warnings);
+
+      expect(matched).toHaveLength(1);
+      expect(matched[0]).toContain('is present in the environment');
+      expect(matched[0]).toContain('CONFIG_STORE,APP_CONFIG,ROLES');
+      expect(namespaces).toEqual(['CONFIG_STORE', 'APP_CONFIG', 'ROLES']);
+    });
+
+    test('should warn on presence and on omission when the value is empty', async () => {
+      process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES = '';
+
+      const { warnings, namespaces } = await loadWithWarnSpy();
+      const matched = namespaceWarnings(warnings);
+
+      expect(matched).toHaveLength(2);
+      expect(matched[0]).toContain('is present in the environment');
+      expect(matched[1]).toContain('omits');
+      expect(matched[1]).toContain('CONFIG_STORE');
+      expect(matched[1]).toContain('APP_CONFIG');
+      expect(namespaces).toEqual([]);
+    });
+
+    test('should warn on omission when the supplied list drops only APP_CONFIG', async () => {
+      process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES = 'CONFIG_STORE';
+
+      const { warnings, namespaces } = await loadWithWarnSpy();
+      const matched = namespaceWarnings(warnings);
+
+      expect(matched).toHaveLength(2);
+      expect(matched[1]).toContain('omits APP_CONFIG');
+      expect(namespaces).toEqual(['CONFIG_STORE']);
+    });
+
+    test('should warn on omission when the supplied list drops only CONFIG_STORE', async () => {
+      process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES = 'APP_CONFIG';
+
+      const { warnings, namespaces } = await loadWithWarnSpy();
+      const matched = namespaceWarnings(warnings);
+
+      expect(matched).toHaveLength(2);
+      expect(matched[1]).toContain('omits CONFIG_STORE');
+      expect(namespaces).toEqual(['APP_CONFIG']);
+    });
+
+    test('should resolve the rest of the cache configuration alongside the warning', async () => {
+      process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES = '';
+      process.env.USE_REDIS = 'true';
+      process.env.REDIS_URI = 'redis://localhost:6379';
+
+      const { cacheConfig } = await import('../cacheConfig');
+
+      expect(cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES).toEqual([]);
+      expect(cacheConfig.USE_REDIS).toBe(true);
+      expect(cacheConfig.REDIS_URI).toBe('redis://localhost:6379');
     });
   });
 });

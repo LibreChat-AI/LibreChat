@@ -1,0 +1,50 @@
+# librechat.harness.yaml — the harness's own committed librechat.yaml fixture (Req 1.6 / TOPO-YAML-15).
+#
+# compose.harness.yml mounts THIS file (read-only, through the one x-librechat-yaml anchor) into both
+# containers at /app/librechat.yaml. It deliberately does NOT mount the repository-root
+# librechat.yaml.
+#
+# == Why a committed fixture and not ../../librechat.yaml ==
+# The repository-root librechat.yaml is UNTRACKED and GITIGNORED (.gitignore: `librechat.yaml`). It is
+# each developer's local operator config, so mounting it made the harness outcome a function of local
+# state: a key the config schema does not recognize makes
+# api/server/services/Config/loadCustomConfig.js call process.exit(1), and both containers then die at
+# every boot — on one machine the harness cannot boot at all, on another it boots, and a green run on
+# the second machine reproduces nothing about the first. A test harness whose verdict depends on a
+# file that is not in the repository is not reproducible, and that is the whole defect this fixture
+# fixes.
+#
+# So: do NOT "helpfully" point the mount back at ../../librechat.yaml. The harness needs a config it
+# owns, that every checkout has, and that no local edit can change underneath it.
+#
+# == Why this file is named librechat.harness.yaml and not librechat.yaml ==
+# `.gitignore` ignores `librechat.yaml` by BARE NAME, so the pattern matches at any depth — a fixture
+# named exactly `librechat.yaml` here would be silently ignored and would never be committed, which
+# reintroduces the exact untracked-file defect above. A distinct name is immune to that rule rather
+# than depending on a negation line surviving future .gitignore edits, and the name says what the file
+# is. The compose MOUNT TARGET is still /app/librechat.yaml, which is the only name the application
+# reads, so the source name is invisible to the image.
+#
+# == Why it is this short ==
+# It carries exactly what the harness's checks need and nothing decorative:
+#
+#   * `version` — the one field configSchema requires (packages/data-provider/src/config.ts).
+#   * `secureImageLinks: true` — required by scripts/container-split/env-matrix.md and asserted by
+#     TOPO-YAML-15. With it false, createValidateImageRequest returns a pass-through and image
+#     ownership binding disappears with no error surfaced, so the harness must pin it on.
+#
+# Everything else the harness exercises — the split env matrix, both grants, the routed path
+# partition — is environment and topology, not YAML. Adding endpoints, interface permissions or
+# file strategies here would add configuration the checks do not read and a second place a default
+# lives.
+#
+# The fixture is validated against the REAL schema (`configSchema.strict()`, the same parse
+# loadCustomConfig.js performs) by api/test/container-split/harness-librechat-yaml.spec.js, so a
+# schema change that would kill the containers at boot fails a fast test instead of a 300-second
+# bring-up.
+#
+# Byte-identity across the two containers (Req 1.6) is structural, not asserted: compose.harness.yml
+# references ONE mount of this file through the x-librechat-yaml anchor, which both container services
+# inherit. There is no second mount to drift from.
+version: 1.3.16
+secureImageLinks: true

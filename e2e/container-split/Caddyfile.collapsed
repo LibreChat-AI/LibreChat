@@ -1,0 +1,53 @@
+# Caddyfile.collapsed — Front_Proxy for the two-container-test-harness collapsed topology.
+#
+# Property 4, single-container parity (Req 4.2 / PARITY-COLLAPSE-29). The collapsed run is the
+# same image, the same service definition, and the same volumes as the split run — it is an
+# env-and-config overlay run.mjs applies on top of the reused `auth-surface` service, NOT a third
+# topology. "No source change, no rebuild" is therefore a property of compose.harness.yml (one
+# ${HARNESS_IMAGE} reference, one reused service) rather than an assertion about this file. This
+# file's only job is to route every request to that one container.
+#
+# One unconditional upstream, NO allowlist. There is nothing to partition: the collapsed
+# configuration runs a single container with startup tasks on and the full-access credential
+# (run.mjs's env overlay), so every path resolves to it.
+#
+# It still sets X-Harness-Upstream, so the collapsed run reports attribution in the SAME shape as
+# the split run — the parity checks read one header on both topologies rather than a header on one
+# and its absence on the other.
+#
+# Like Caddyfile.split, the proxy performs NO credential validation of any kind — no bearer check,
+# no cookie exemption, no crypto at the edge (NG6). It stands in for the Load_Balancer only and does
+# not emulate the Auth_Gate.
+
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	# JSON access log to stdout, matching Caddyfile.split's shape so both topologies emit the same
+	# access-log records for the runner to read.
+	log {
+		output stdout
+		format json
+	}
+
+	# The collapsed upstream is the reused `auth-surface` service (compose.harness.yml's
+	# proxy-collapsed points here). Same upstream address/port shape as Caddyfile.split
+	# (auth-surface:3080). No `route`, no matcher, no allowlist — one unconditional handler for
+	# every path.
+	#
+	# X-Harness-Upstream is set in the same block that picks the upstream, so the header and the
+	# routing decision are one directive pair and cannot disagree. `header` replaces rather than
+	# appends, so the value is the proxy's regardless of what the upstream emitted.
+	handle /__harness/health {
+		# Harness liveness probe for the proxy itself. Not part of the routed traffic; matches
+		# Caddyfile.split's responder.
+		respond "OK" 200
+	}
+
+	handle {
+		header X-Harness-Upstream "auth-surface"
+		reverse_proxy auth-surface:3080
+	}
+}

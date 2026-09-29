@@ -5,6 +5,7 @@ export * from './metrics';
 export * from './permissions';
 export * from './cdn';
 export * from './checks';
+export * from './startup';
 export * from './resolve';
 export * from './shutdown';
 export * from './server';

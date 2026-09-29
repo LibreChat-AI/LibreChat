@@ -13,6 +13,7 @@ import {
   getLegacyCredentialNames,
 } from '~/credentials';
 import { isEnabled, checkEmailConfig } from '~/utils';
+import { areStartupTasksDisabled } from './startup';
 import { handleRateLimits } from './limits';
 
 interface CredentialMetadata {
@@ -344,11 +345,24 @@ export function checkInterfaceConfig(appConfig: AppConfig): void {
 /**
  * Performs startup checks including environment variable validation and health checks.
  * This should be called during application startup before initializing services.
+ *
+ * Every environment-variable and configuration check runs regardless of `DISABLE_STARTUP_TASKS`,
+ * since the two containers hold different environments and each must validate its own. The RAG
+ * health probe is the sole exception: RAG backs paths a gated container does not serve, so the
+ * probe tells it nothing while still costing an untimed outbound `fetch` and a per-boot
+ * unreachability warning against a `RAG_API_URL` that is typically unset there.
  * @param [appConfig] - The application configuration object.
  */
 export async function performStartupChecks(appConfig?: AppConfig): Promise<void> {
   checkVariables();
-  await checkCredentialDatabase();
+  // `checkCredentialDatabase()` reads `users` and the `librechatCredentialMetadata`
+  // collection and upserts fingerprints on a database with no users. That collection is
+  // outside the auth surface's grant, so on the gated container an ungated call logs an
+  // authorization error every boot and, on a fresh DB, attempts a write that violates the
+  // zero-boot-write invariant. Gating is the resolution, not widening the grant.
+  if (!areStartupTasksDisabled()) {
+    await checkCredentialDatabase();
+  }
   if (appConfig?.endpoints?.azureOpenAI) {
     checkAzureVariables();
   }
@@ -364,7 +378,9 @@ export async function performStartupChecks(appConfig?: AppConfig): Promise<void>
   if (appConfig?.config?.rateLimits) {
     handleRateLimits(appConfig.config.rateLimits);
   }
-  await checkHealth();
+  if (!areStartupTasksDisabled()) {
+    await checkHealth();
+  }
 }
 
 /**

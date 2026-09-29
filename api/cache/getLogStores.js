@@ -6,6 +6,7 @@ const {
   cacheConfig,
   sessionCache,
   standardCache,
+  keyvMongoBans,
   violationCache,
   userPrincipalsCache,
   registerShutdownTask,
@@ -37,7 +38,7 @@ const namespaces = {
   [ViolationTypes.RESET_PASSWORD_LIMIT]: violationCache(ViolationTypes.RESET_PASSWORD_LIMIT),
   [ViolationTypes.ILLEGAL_MODEL_REQUEST]: violationCache(ViolationTypes.ILLEGAL_MODEL_REQUEST),
   [ViolationTypes.BAN]: new Keyv({
-    store: keyvMongo,
+    store: keyvMongoBans,
     namespace: CacheKeys.BANS,
     ttl: cacheConfig.BAN_DURATION,
   }),
