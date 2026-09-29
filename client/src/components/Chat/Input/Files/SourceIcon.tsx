@@ -9,7 +9,7 @@ const sourceToEndpoint = {
 };
 
 const sourceToClassname = {
-  [FileSources.openai]: 'bg-surface-primary/75',
+  [FileSources.openai]: 'bg-white/75 dark:bg-black/65',
   [FileSources.azure]: 'azure-bg-color',
   [FileSources.azure_blob]: 'azure-bg-color',
   [FileSources.execute_code]: 'bg-black text-white opacity-85',
