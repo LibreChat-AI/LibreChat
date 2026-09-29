@@ -12,6 +12,8 @@ const twMerge = extendTailwindMerge({
     classGroups: {
       py: [{ py: ['theme-table-cell', 'theme-table-cell-compact', 'theme-table-cell-dense'] }],
       h: [{ h: ['theme-table-head', 'theme-table-head-compact'] }],
+      px: [{ px: ['theme-control-x'] }],
+      gap: [{ gap: ['theme-control-gap'] }],
     },
   },
 });
