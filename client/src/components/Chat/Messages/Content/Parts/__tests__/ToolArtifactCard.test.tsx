@@ -1,8 +1,9 @@
 import React from 'react';
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { render, screen } from '@testing-library/react';
 import { ContentTypes, Tools } from 'librechat-data-provider';
+import { render, screen, fireEvent } from '@testing-library/react';
 import type { TAttachment, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { Artifact } from '~/common';
 import SearchContent from '~/components/Chat/Messages/Content/SearchContent';
 import { AttachmentGroup } from '../Attachment';
 import { MessageContext } from '~/Providers';
@@ -222,6 +223,74 @@ describe('ToolArtifactCard message-scoped dedup and newest-version selection', (
       </RecoilRoot>,
     );
     expect(content).toBe('<h1>v2 (newer)</h1>');
+  });
+});
+
+describe('ToolArtifactCard file identity for id-less attachments (T011)', () => {
+  it('renders two card triggers for two id-less files sharing a filename but differing by filepath, each opening its own content', () => {
+    const first = baseAttachment({
+      file_id: undefined,
+      filename: 'index.html',
+      filepath: '/uploads/session-a/index.html',
+      text: '<h1>A</h1>',
+    });
+    const second = baseAttachment({
+      file_id: undefined,
+      filename: 'index.html',
+      filepath: '/uploads/session-b/index.html',
+      text: '<h1>B</h1>',
+    });
+
+    let snapshot: Record<string, Artifact | undefined> = {};
+    const ArtifactsSnapshotProbe = () => {
+      const artifacts = useRecoilValue(store.artifactsState);
+      React.useEffect(() => {
+        snapshot = artifacts ?? {};
+      });
+      return null;
+    };
+    let currentId: string | null = null;
+    const CurrentArtifactProbe = () => {
+      const id = useRecoilValue(store.currentArtifactId);
+      React.useEffect(() => {
+        currentId = id;
+      });
+      return null;
+    };
+
+    const { container } = render(
+      <RecoilRoot>
+        <ArtifactsSnapshotProbe />
+        <CurrentArtifactProbe />
+        <MessageContext.Provider value={messageScope('m1')}>
+          <AttachmentGroup attachments={[first, second]} />
+        </MessageContext.Provider>
+      </RecoilRoot>,
+    );
+
+    const triggers = container.querySelectorAll('[data-artifact-trigger]');
+    expect(triggers).toHaveLength(2);
+
+    const firstId = 'tool-artifact-/uploads/session-a/index.html';
+    const secondId = 'tool-artifact-/uploads/session-b/index.html';
+    const triggerIds = Array.from(triggers).map((el) => el.getAttribute('data-artifact-trigger'));
+    expect([...triggerIds].sort()).toEqual([firstId, secondId].sort());
+
+    // Both files' own content registers, keyed by their own identity —
+    // a colliding key would have one file's mount overwrite the other's.
+    expect(snapshot[firstId]?.content).toBe('<h1>A</h1>');
+    expect(snapshot[secondId]?.content).toBe('<h1>B</h1>');
+
+    const firstTrigger = container.querySelector(`[data-artifact-trigger="${firstId}"]`);
+    const secondTrigger = container.querySelector(`[data-artifact-trigger="${secondId}"]`);
+    expect(firstTrigger).not.toBeNull();
+    expect(secondTrigger).not.toBeNull();
+
+    fireEvent.click(firstTrigger as HTMLElement);
+    expect(currentId).toBe(firstId);
+
+    fireEvent.click(secondTrigger as HTMLElement);
+    expect(currentId).toBe(secondId);
   });
 });
 

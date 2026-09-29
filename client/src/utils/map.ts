@@ -4,19 +4,16 @@ import { toolArtifactKey } from './artifacts';
 
 /**
  * Identity for a file-backed attachment, or `null` for attachments (e.g. web
- * search) that aren't a file. A `file_id` uses `toolArtifactKey` (the design
- * contract); without one, key by the raw `filepath` — download-fallback
- * attachments share no `file_id` but get a unique per-session filepath, and
- * `toolArtifactKey` would otherwise fall back to `filename` and collapse two
- * different files that happen to share a display name.
+ * search) that aren't a file. Delegates to `toolArtifactKey` so this and the
+ * artifact card's identity are the same rule — `toolArtifactKey` already
+ * falls back `file_id` → `filepath` → `filename`, so an id-less attachment
+ * keys by its unique per-session filepath rather than a display name that
+ * two different files can share.
  */
 export const fileIdentity = (attachment: t.TAttachment): string | null => {
   const file = attachment as Partial<t.TFile>;
-  if (file.file_id != null) {
+  if (file.file_id != null || file.filepath != null) {
     return toolArtifactKey(file);
-  }
-  if (file.filepath != null) {
-    return file.filepath;
   }
   return null;
 };
