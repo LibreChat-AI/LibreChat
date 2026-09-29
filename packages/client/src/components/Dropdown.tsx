@@ -4,8 +4,8 @@ import { matchSorter } from 'match-sorter';
 import * as Select from '@ariakit/react/select';
 import * as Combobox from '@ariakit/react/combobox';
 import type { Option } from '~/common';
+import { cn, disabledFillClasses } from '~/utils';
 import { fieldControl } from './Field';
-import { cn } from '~/utils/';
 import './Dropdown.css';
 
 interface DropdownProps {
@@ -152,6 +152,7 @@ const Dropdown: React.FC<DropdownProps> = ({
         className={cn(
           'border-border-control text-text-primary hover:bg-surface-hover hover:text-text-primary relative inline-flex items-center justify-between rounded-xl border bg-transparent py-2 text-sm transition-all duration-200 ease-in-out',
           'disabled:hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
+          disabledFillClasses,
           /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */
           iconOnly ? 'size-10 justify-center px-0' : 'w-fit gap-2 px-3',
           variant === 'field' && fieldControl,

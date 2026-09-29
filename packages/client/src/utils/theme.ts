@@ -2,10 +2,11 @@
  * The disabled appearance a `fill` theme paints (`disabledStyle: 'fill'`): the
  * disabled fill, ink, placeholder and edge at full opacity. Every shared control
  * composes it beside its own `disabled:opacity-*`, which stays the default `dim`
- * treatment, so a theme's choice reaches every primitive at once.
+ * treatment, so a theme's choice reaches every primitive at once. The hover pair
+ * outranks a control's own `disabled:hover:*` reset.
  */
 export const disabledFillClasses =
-  'theme-disabled:border-border-disabled theme-disabled:bg-surface-disabled theme-disabled:text-text-disabled theme-disabled:placeholder:text-text-disabled theme-disabled:opacity-100';
+  'theme-disabled:border-border-disabled theme-disabled:bg-surface-disabled theme-disabled:text-text-disabled theme-disabled:placeholder:text-text-disabled theme-disabled:opacity-100 theme-disabled:hover:bg-surface-disabled theme-disabled:hover:text-text-disabled';
 
 /**
  * The disabled ink alone, for a menu item, tab or row whose surface stays as it
