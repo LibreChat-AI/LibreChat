@@ -55,11 +55,15 @@ describe('createCustomConfigLoader interface.theme', () => {
     expect(exit).not.toHaveBeenCalled();
   });
 
-  it('keeps a theme naming a color token this version does not know, warning for each', async () => {
+  it('keeps a theme naming a color token this version does not know, without that token', async () => {
     const config = await load('unknown-token');
 
     expect(exit).not.toHaveBeenCalled();
-    expect(config?.interface?.theme).toEqual(raw('unknown-token').interface?.theme);
+    expect(config?.interface?.theme).toEqual({
+      version: 1,
+      name: 'acme',
+      modes: { light: { colors: { 'rgb-surface-primary': '240 244 255' } } },
+    });
     expect(config?.interface?.modelSelect).toBe(true);
     expect(config?.cache).toBe(true);
     expect(warnings(warn)).toContain(

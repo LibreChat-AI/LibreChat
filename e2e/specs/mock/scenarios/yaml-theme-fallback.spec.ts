@@ -61,7 +61,11 @@ test.describe('interface.theme in librechat.yaml', () => {
 
     expect(outcome.exited).toBeUndefined();
     expect(outcome.interface?.modelSelect).toBe(true);
-    expect(outcome.interface?.theme).toMatchObject({ name: 'acme' });
+    expect(outcome.interface?.theme).toEqual({
+      version: 1,
+      name: 'acme',
+      modes: { light: { colors: { 'rgb-surface-primary': '240 244 255' } } },
+    });
     expect(log).not.toContain('the default theme applies instead');
     expect(log).toContain(
       'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown light color token ignored: rgb-surfce-secondary',
