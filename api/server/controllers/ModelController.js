@@ -1,5 +1,10 @@
 const { logger } = require('@librechat/data-schemas');
-const { loadDefaultModels, loadConfigModels } = require('~/server/services/Config');
+const {
+  loadDefaultModels,
+  loadConfigModels,
+  getConfigGenerationForConfig,
+} = require('~/server/services/Config');
+const { CONFIG_GENERATION_HEADER } = require('librechat-data-provider');
 
 const getModelsConfig = (req) => loadModels(req);
 
@@ -14,6 +19,7 @@ async function loadModels(req) {
 async function modelController(req, res) {
   try {
     const modelConfig = await loadModels(req);
+    res.set(CONFIG_GENERATION_HEADER, getConfigGenerationForConfig(req.config));
     res.send(modelConfig);
   } catch (error) {
     logger.error('Error fetching models:', error);

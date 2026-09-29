@@ -2,14 +2,17 @@ const mongoose = require('mongoose');
 const { CacheKeys } = require('librechat-data-provider');
 const { AppService, logger } = require('@librechat/data-schemas');
 const {
-  createAppConfigService,
+  createDeploymentConfigService,
+  createConfigGenerationTracker,
+  createRedisConfigGenerationStore,
   clearMcpConfigCache,
   createCodeEnvironmentRegistry,
   mergeAccessibleCodeEnvironments,
   cacheConfig,
+  ioredisClient,
   standardCache,
 } = require('@librechat/api');
-const { setCachedTools, invalidateCachedTools } = require('./getCachedTools');
+const { setCachedTools } = require('./getCachedTools');
 const { loadAndFormatTools } = require('~/server/services/start/tools');
 const loadCustomConfig = require('./loadCustomConfig');
 const getLogStores = require('~/cache/getLogStores');
@@ -33,9 +36,7 @@ async function invalidateCodeEnvironmentConfigCache(tenantId) {
   await getCodeEnvironmentRegistry().invalidateAccessibleConfigurations(tenantId);
 }
 
-const loadBaseConfig = async (mode) => {
-  /** @type {TCustomConfig} */
-  const config = (await loadCustomConfig(true, { mode })) ?? {};
+const buildBaseConfig = async (config) => {
   /** @type {Record<string, FunctionTool>} */
   const systemTools = loadAndFormatTools({
     adminFilter: config.filteredTools,
@@ -45,48 +46,59 @@ const loadBaseConfig = async (mode) => {
   return AppService({ config, paths, systemTools });
 };
 
-const { getAppConfig, clearAppConfigCache, clearOverrideCache } = createAppConfigService({
-  loadBaseConfig,
-  setCachedTools,
-  getCache: getLogStores,
-  cacheKeys: CacheKeys,
-  getApplicableConfigs: db.getApplicableConfigs,
-  getUserPrincipals: db.getUserPrincipals,
-  augmentConfig: ({ appConfig, baseConfig, principals, options }) => {
-    if (!options.userId) return appConfig;
-    return mergeAccessibleCodeEnvironments({
-      appConfig,
-      deploymentConfig: baseConfig,
-      actor: {
-        userId: options.userId,
-        role: options.role ?? null,
-        idOnTheSource: options.idOnTheSource ?? null,
-        principals,
-      },
-      registry: getCodeEnvironmentRegistry(),
-    });
+const configGeneration = createConfigGenerationTracker(
+  cacheConfig.USE_REDIS && ioredisClient ? createRedisConfigGenerationStore(ioredisClient) : null,
+  { bootstrapTimeoutMs: cacheConfig.REDIS_CONNECT_TIMEOUT },
+);
+
+const {
+  getAppConfig,
+  getConfigRefreshStatus,
+  getConfigGenerationForConfig,
+  clearAppConfigCache,
+  clearOverrideCache,
+  reloadCustomConfig,
+} = createDeploymentConfigService({
+  loadCustomConfig,
+  buildBaseConfig,
+  generation: configGeneration,
+  configService: {
+    setCachedTools,
+    getCache: getLogStores,
+    cacheKeys: CacheKeys,
+    getApplicableConfigs: db.getApplicableConfigs,
+    getUserPrincipals: db.getUserPrincipals,
+    augmentConfig: ({ appConfig, baseConfig, principals, options }) => {
+      if (!options.userId) return appConfig;
+      return mergeAccessibleCodeEnvironments({
+        appConfig,
+        deploymentConfig: baseConfig,
+        actor: {
+          userId: options.userId,
+          role: options.role ?? null,
+          idOnTheSource: options.idOnTheSource ?? null,
+          principals,
+        },
+        registry: getCodeEnvironmentRegistry(),
+      });
+    },
   },
 });
 
 /**
  * Invalidate all config-related caches after an admin config mutation.
- * Clears the base config, per-principal override caches, tool caches,
- * and the MCP config-source server cache.
+ * Clears the base config, per-principal overrides and MCP config-source cache.
+ * Global static tools remain startup-owned; clearing them here would leave them
+ * absent until a restart while live reload intentionally pins tool filters.
  * @param {string} [tenantId] - Optional tenant ID to scope override cache clearing.
  */
 async function invalidateConfigCaches(tenantId) {
   const results = await Promise.allSettled([
     clearAppConfigCache(),
     clearOverrideCache(tenantId),
-    invalidateCachedTools({ invalidateGlobal: true }),
     clearMcpConfigCache(),
   ]);
-  const labels = [
-    'clearAppConfigCache',
-    'clearOverrideCache',
-    'invalidateCachedTools',
-    'clearMcpConfigCache',
-  ];
+  const labels = ['clearAppConfigCache', 'clearOverrideCache', 'clearMcpConfigCache'];
   for (let i = 0; i < results.length; i++) {
     if (results[i].status === 'rejected') {
       logger.error(`[invalidateConfigCaches] ${labels[i]} failed:`, results[i].reason);
@@ -96,9 +108,12 @@ async function invalidateConfigCaches(tenantId) {
 
 module.exports = {
   getAppConfig,
+  getConfigRefreshStatus,
+  getConfigGenerationForConfig,
   clearAppConfigCache,
   clearOverrideCache,
   invalidateConfigCaches,
+  reloadCustomConfig,
   getCodeEnvironmentRegistry,
   invalidateCodeEnvironmentConfigCache,
 };

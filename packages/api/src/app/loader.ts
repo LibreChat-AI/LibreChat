@@ -22,12 +22,17 @@ export type CustomConfigLoadMode = 'startup' | 'reload';
 
 export interface CustomConfigLoadOptions {
   mode?: CustomConfigLoadMode;
+  remoteTimeoutMs?: number;
 }
 
 export interface CustomConfigLoaderOptions {
   defaultConfigPath: string;
   loadLocal: (configPath: string) => unknown;
-  fetchRemote?: (configPath: string) => Promise<unknown>;
+  fetchRemote?: (
+    configPath: string,
+    mode: CustomConfigLoadMode,
+    timeoutMs: number,
+  ) => Promise<unknown>;
   redactConfig: (config: TCustomConfig) => TCustomConfig;
 }
 
@@ -42,6 +47,8 @@ export class ConfigReloadError extends Error {
     this.validationErrors = validationErrors;
   }
 }
+
+const REMOTE_CONFIG_RELOAD_TIMEOUT_MS = 10_000;
 
 const OPENROUTER_PROMPT_CACHE_DEFAULT = {
   key: 'promptCache',
@@ -159,7 +166,16 @@ export function createCustomConfigLoader({
   defaultConfigPath,
   loadLocal,
   redactConfig,
-  fetchRemote = async (configPath: string): Promise<unknown> => (await axios.get(configPath)).data,
+  fetchRemote = async (
+    configPath: string,
+    mode: CustomConfigLoadMode,
+    timeoutMs: number,
+  ): Promise<unknown> =>
+    (
+      await (mode === 'reload'
+        ? axios.get(configPath, { timeout: timeoutMs })
+        : axios.get(configPath))
+    ).data,
 }: CustomConfigLoaderOptions): (
   printConfig?: boolean,
   options?: CustomConfigLoadOptions,
@@ -205,7 +221,11 @@ export function createCustomConfigLoader({
       let loadedConfig: unknown;
       if (isRemoteConfigPath(configPath)) {
         try {
-          loadedConfig = await fetchRemote(configPath);
+          loadedConfig = await fetchRemote(
+            configPath,
+            mode,
+            options.remoteTimeoutMs ?? REMOTE_CONFIG_RELOAD_TIMEOUT_MS,
+          );
         } catch (error) {
           return failSourceLoad(`Failed to fetch the remote config file from ${configPath}`, error);
         }
@@ -242,13 +262,20 @@ export function createCustomConfigLoader({
         }
       }
 
-      setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
+      if (mode === 'startup') setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
       const result = configSchema.strict().safeParse(loadedConfig);
       if (
         result.error?.errors.some(
           (error) => error.path != null && error.path.includes('imageOutputType'),
         )
       ) {
+        if (mode === 'reload') {
+          throw new ConfigReloadError(
+            'Invalid imageOutputType in custom config',
+            result.error,
+            result.error.errors,
+          );
+        }
         throw new Error(
           `\nPlease specify a correct \`imageOutputType\` value (case-sensitive).\n\n` +
             'The available options are:\n' +
@@ -301,7 +328,20 @@ export function createCustomConfigLoader({
       }
       for (const endpoint of customEndpoints) {
         if (endpoint.customParams) {
-          parseCustomParams(endpoint.name, endpoint.customParams);
+          try {
+            parseCustomParams(endpoint.name, endpoint.customParams);
+          } catch (error) {
+            if (mode !== 'reload') {
+              throw error;
+            }
+            throw new ConfigReloadError('Invalid custom endpoint parameters', error, [
+              {
+                code: 'custom',
+                path: ['endpoints', 'custom'],
+                message: error instanceof Error ? error.message : 'Invalid parameter definitions',
+              },
+            ]);
+          }
         }
       }
       if (result.data.modelSpecs) {
@@ -323,7 +363,7 @@ export function createCustomConfigLoader({
       }
       throw error;
     } finally {
-      if (!loadedSuccessfully) {
+      if (mode === 'reload' || !loadedSuccessfully) {
         setMaxSubagents(previousMaxSubagents);
       }
     }

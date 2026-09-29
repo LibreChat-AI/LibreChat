@@ -2,6 +2,7 @@
 
 const mockClearAppConfigCache = jest.fn().mockResolvedValue(undefined);
 const mockClearOverrideCache = jest.fn().mockResolvedValue(undefined);
+const mockReplaceBaseConfig = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('~/cache/getLogStores', () => {
   return jest.fn(() => ({}));
@@ -33,11 +34,19 @@ jest.mock('../getCachedTools', () => ({
 
 const mockClearMcpConfigCache = jest.fn().mockResolvedValue(undefined);
 jest.mock('@librechat/api', () => ({
-  createAppConfigService: jest.fn(() => ({
+  createDeploymentConfigService: jest.fn(() => ({
     getAppConfig: jest.fn().mockResolvedValue({ availableTools: {} }),
+    replaceBaseConfig: mockReplaceBaseConfig,
     clearAppConfigCache: mockClearAppConfigCache,
     clearOverrideCache: mockClearOverrideCache,
   })),
+  createConfigGenerationTracker: jest.fn(() => ({
+    distributed: false,
+    check: jest.fn().mockResolvedValue(false),
+    bump: jest.fn().mockResolvedValue(undefined),
+  })),
+  ioredisClient: null,
+  cacheConfig: { USE_REDIS: false },
   clearMcpConfigCache: mockClearMcpConfigCache,
   createCodeEnvironmentRegistry: jest.fn(() => ({})),
   mergeAccessibleCodeEnvironments: jest.fn(({ appConfig }) => appConfig),
@@ -52,12 +61,12 @@ describe('invalidateConfigCaches', () => {
     jest.clearAllMocks();
   });
 
-  it('clears all caches', async () => {
+  it('clears reloadable caches while preserving the startup-owned tool catalog', async () => {
     await invalidateConfigCaches();
 
     expect(mockClearAppConfigCache).toHaveBeenCalledTimes(1);
     expect(mockClearOverrideCache).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateCachedTools).toHaveBeenCalledWith({ invalidateGlobal: true });
+    expect(mockInvalidateCachedTools).not.toHaveBeenCalled();
     expect(mockClearMcpConfigCache).toHaveBeenCalledTimes(1);
   });
 
@@ -66,7 +75,7 @@ describe('invalidateConfigCaches', () => {
 
     expect(mockClearOverrideCache).toHaveBeenCalledWith('tenant-a');
     expect(mockClearAppConfigCache).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateCachedTools).toHaveBeenCalledWith({ invalidateGlobal: true });
+    expect(mockInvalidateCachedTools).not.toHaveBeenCalled();
   });
 
   it('all operations run in parallel (not sequentially)', async () => {
@@ -90,15 +99,6 @@ describe('invalidateConfigCaches', () => {
           }, 10),
         ),
     );
-    mockInvalidateCachedTools.mockImplementation(
-      () =>
-        new Promise((r) =>
-          setTimeout(() => {
-            order.push('tools');
-            r();
-          }, 10),
-        ),
-    );
     mockClearMcpConfigCache.mockImplementation(
       () =>
         new Promise((r) =>
@@ -111,8 +111,8 @@ describe('invalidateConfigCaches', () => {
 
     await invalidateConfigCaches();
 
-    expect(order).toHaveLength(4);
-    expect(new Set(order)).toEqual(new Set(['base', 'override', 'tools', 'mcp']));
+    expect(order).toHaveLength(3);
+    expect(new Set(order)).toEqual(new Set(['base', 'override', 'mcp']));
   });
 
   it('resolves even when clearAppConfigCache throws (partial failure)', async () => {
@@ -121,6 +121,6 @@ describe('invalidateConfigCaches', () => {
     await expect(invalidateConfigCaches()).resolves.not.toThrow();
 
     expect(mockClearOverrideCache).toHaveBeenCalledTimes(1);
-    expect(mockInvalidateCachedTools).toHaveBeenCalledWith({ invalidateGlobal: true });
+    expect(mockInvalidateCachedTools).not.toHaveBeenCalled();
   });
 });

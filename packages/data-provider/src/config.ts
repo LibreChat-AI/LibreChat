@@ -3099,10 +3099,28 @@ export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);
 
+export const DEFAULT_CONFIG_RELOAD_CLIENT_POLL_MS = 3_000;
+
 export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
+  /** Last-good value bounds reload requests to a remote CONFIG_PATH; startup remains unchanged. */
+  configReload: z
+    .object({
+      remoteTimeoutMs: z.number().int().positive().max(120_000).default(10_000),
+      /** Opt in only after every replica runs the same model-catalog reload protocol. */
+      clusterReady: z.boolean().default(false),
+      mismatchRetryMs: z.number().int().min(1_000).max(120_000).default(5_000),
+      clientPollIntervalMs: z
+        .number()
+        .int()
+        .min(1_000)
+        .max(120_000)
+        .default(DEFAULT_CONFIG_RELOAD_CLIENT_POLL_MS),
+    })
+    .strict()
+    .optional(),
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),

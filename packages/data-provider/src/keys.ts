@@ -25,6 +25,8 @@ export enum QueryKeys {
   tokenCount = 'tokenCount',
   availablePlugins = 'availablePlugins',
   startupConfig = 'startupConfig',
+  configReloadAccess = 'configReloadAccess',
+  configRevision = 'configRevision',
   insights = 'insights',
   insightsAccess = 'insightsAccess',
   assistants = 'assistants',
@@ -121,6 +123,7 @@ export enum MutationKeys {
   updateFavorites = 'updateFavorites',
   /** Pinned-section display order write, keyed for the same reason. */
   updatePinnedOrder = 'updatePinnedOrder',
+  reloadCustomConfig = 'reloadCustomConfig',
   updateLangfuseConnection = 'updateLangfuseConnection',
   testLangfuseConnection = 'testLangfuseConnection',
   createAgentApiKey = 'createAgentApiKey',

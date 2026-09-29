@@ -87,7 +87,14 @@ async function clearRedisNamespace(namespace: string): Promise<void> {
  * @returns Cache instance.
  */
 export const standardCache = (namespace: string, ttl?: number, fallbackStore?: object): Keyv => {
-  if (keyvRedisClient && !cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES?.includes(namespace)) {
+  // Each replica accepts a YAML generation only after its own source matches
+  // the published digest. A shared APP_CONFIG key could bypass that check and
+  // leak the publisher's startup-only settings onto a lagging replica.
+  if (
+    keyvRedisClient &&
+    namespace !== CacheKeys.APP_CONFIG &&
+    !cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES?.includes(namespace)
+  ) {
     const byTtl = redisCacheMap.get(namespace);
     const existing = byTtl?.get(ttl);
     if (existing) {

@@ -1,8 +1,10 @@
 jest.mock('~/cache/getLogStores');
 
 const mockGetAppConfig = jest.fn();
+const mockGetConfigRefreshStatus = jest.fn();
 jest.mock('~/server/services/Config/app', () => ({
   getAppConfig: (...args) => mockGetAppConfig(...args),
+  getConfigRefreshStatus: () => mockGetConfigRefreshStatus(),
 }));
 
 jest.mock('~/server/services/Config/ldap', () => ({
@@ -117,6 +119,26 @@ afterEach(() => {
   delete process.env.LANGFUSE_SAMPLE_RATE;
   delete process.env.TENANT_ISOLATION_STRICT;
   delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+});
+
+describe('GET /api/config/revision', () => {
+  it('never exposes even a generation to anonymous callers', async () => {
+    await request(createApp()).get('/api/config/revision').expect(401);
+    expect(mockGetConfigRefreshStatus).not.toHaveBeenCalled();
+  });
+
+  it('reports the local applied revision without cache or extra permission queries', async () => {
+    mockGetConfigRefreshStatus.mockResolvedValue({
+      distributed: true,
+      generation: 2,
+      pollIntervalMs: 3000,
+    });
+    const response = await request(createApp(mockUser)).get('/api/config/revision').expect(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.body).toEqual({ distributed: true, generation: 2, pollIntervalMs: 3000 });
+    expect(mockHasCapability).not.toHaveBeenCalled();
+    expect(mockGetAppConfig).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/config', () => {

@@ -33,6 +33,7 @@ import DuringRunAction from '../SettingsTabs/Chat/DuringRunAction';
 import DeleteAccount from '../SettingsTabs/Account/DeleteAccount';
 import StatefulWorkspaceDefault from './StatefulWorkspaceDefault';
 import { ForkSettings } from '../SettingsTabs/Chat/ForkSettings';
+import ConfigReload from '../SettingsTabs/General/ConfigReload';
 import ChatDirection from '../SettingsTabs/Chat/ChatDirection';
 import { DeleteCache } from '../SettingsTabs/Data/DeleteCache';
 import { ManageFiles } from '../SettingsTabs/Data/ManageFiles';
@@ -190,6 +191,15 @@ export const registry: SettingEntry[] = [
     keywords: ['admin', 'panel', 'dashboard'],
     Component: AdminPanel,
     show: (ctx) => ctx.adminPanelURL !== '',
+  },
+  {
+    id: 'configReload',
+    tab: GENERAL,
+    section: 'admin',
+    labelKey: 'com_ui_config_reload_title',
+    keywords: ['admin', 'yaml', 'remote', 'config', 'reload'],
+    Component: ConfigReload,
+    show: (ctx) => ctx.configReloadAccess,
   },
 
   // Chat · Sending

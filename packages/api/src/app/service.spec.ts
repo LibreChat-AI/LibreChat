@@ -1,10 +1,35 @@
 import { getMaxSubagents, setMaxSubagents } from 'librechat-data-provider';
+import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { ConfigGenerationChange } from './reload';
 import {
   createAppConfigService,
   _resetOverrideStrictCache,
   getAppConfigOptionsFromUser,
 } from './service';
+import { createConfigReloader, createConfigGenerationTracker, hashConfig } from './reload';
+
+function modelConfig(model: string): TCustomConfig {
+  return {
+    version: '1',
+    configReload: { clusterReady: true },
+    endpoints: {
+      custom: [
+        {
+          name: 'gateway',
+          apiKey: 'user_provided',
+          baseURL: 'https://example.com',
+          models: { default: [model], fetch: false },
+        },
+      ],
+    },
+  };
+}
+
+function modelAppConfig(model: string): AppConfig {
+  const config = modelConfig(model);
+  return { config, endpoints: config.endpoints } as AppConfig;
+}
 
 /** Extends AppConfig with mock fields used by merge behavior tests. */
 interface TestConfig extends AppConfig {
@@ -66,8 +91,77 @@ describe('createAppConfigService', () => {
       const config = await getAppConfig();
 
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
-      expect(deps.loadBaseConfig).toHaveBeenCalledWith('startup');
+      expect(deps.loadBaseConfig).toHaveBeenCalledWith('startup', undefined);
       expect(config).toEqual(deps._baseConfig);
+    });
+
+    it('reads the persisted generation before the startup source', async () => {
+      const beforeInitialLoad = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({ bootstrapConfigGeneration: beforeInitialLoad });
+      const { getAppConfig } = createAppConfigService(deps);
+      await getAppConfig({ baseOnly: true });
+
+      expect(beforeInitialLoad).toHaveBeenCalledTimes(1);
+      expect(beforeInitialLoad.mock.invocationCallOrder[0]).toBeLessThan(
+        deps.loadBaseConfig.mock.invocationCallOrder[0],
+      );
+      await getAppConfig({ baseOnly: true });
+      expect(beforeInitialLoad).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps startup config available when the optional Redis baseline fails', async () => {
+      const deps = createDeps({
+        bootstrapConfigGeneration: jest.fn().mockRejectedValue(new Error('Redis reconnecting')),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await expect(getAppConfig({ baseOnly: true })).resolves.toEqual(deps._baseConfig);
+      expect(deps.loadBaseConfig).toHaveBeenCalledWith('startup', undefined);
+    });
+
+    it('does not publish startup-only tool definitions from live reloads', async () => {
+      const tools = { calculator: { type: 'function' } };
+      const deps = createDeps({
+        loadBaseConfig: jest
+          .fn()
+          .mockResolvedValue({ availableTools: tools, config: { version: '1' } }),
+      });
+      const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+      await getAppConfig({ baseOnly: true });
+      expect(deps.setCachedTools).toHaveBeenCalledTimes(1);
+      await clearAppConfigCache();
+      await getAppConfig({ baseOnly: true });
+      expect(deps.setCachedTools).toHaveBeenCalledTimes(1);
+    });
+
+    it('publishes a validated subagent cap only after the new base is committed', async () => {
+      const oldCap = getMaxSubagents();
+      try {
+        const deps = createDeps({
+          loadBaseConfig: jest
+            .fn()
+            .mockResolvedValueOnce({ config: { endpoints: { agents: { maxSubagents: 7 } } } })
+            .mockResolvedValueOnce({ config: { endpoints: { agents: { maxSubagents: 20 } } } }),
+        });
+        const service = createAppConfigService(deps);
+        await service.getAppConfig({ baseOnly: true });
+        expect(getMaxSubagents()).toBe(7);
+        let commit: (() => void) | undefined;
+        deps._cache.set.mockImplementationOnce(
+          () =>
+            new Promise<undefined>((resolve) => {
+              commit = () => resolve(undefined);
+            }),
+        );
+        const pending = service.getAppConfig({ baseOnly: true, refresh: true });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(getMaxSubagents()).toBe(7);
+        commit?.();
+        await pending;
+        expect(getMaxSubagents()).toBe(20);
+      } finally {
+        setMaxSubagents(oldCap);
+      }
     });
 
     it('caches base config — does not reload on second call', async () => {
@@ -105,7 +199,7 @@ describe('createAppConfigService', () => {
       await getAppConfig({ refresh: true });
 
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
-      expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload');
+      expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload', expect.any(Object));
     });
 
     it.each(['invalid YAML', 'missing local file', 'remote fetch failure'])(
@@ -121,43 +215,7 @@ describe('createAppConfigService', () => {
 
         expect(reloaded).toBe(initial);
         expect(deps._cache._store.get('app_config:_BASE_')).toBe(initial);
-        expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload');
-      },
-    );
-
-    it.each(['tools', 'cache'])(
-      'restores the subagent cap if %s publication fails',
-      async (stage) => {
-        const deps = createDeps({
-          loadBaseConfig: jest.fn().mockResolvedValue({
-            config: { endpoints: { agents: { maxSubagents: 3 } } },
-            availableTools: { previous: {} },
-          }),
-        });
-        const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
-        try {
-          await getAppConfig({ baseOnly: true });
-          setMaxSubagents(3);
-          await clearAppConfigCache();
-          deps.loadBaseConfig.mockImplementationOnce(async () => {
-            setMaxSubagents(20);
-            return {
-              config: { endpoints: { agents: { maxSubagents: 20 } } },
-              availableTools: { new: {} },
-            };
-          });
-          if (stage === 'tools') {
-            deps.setCachedTools.mockRejectedValueOnce(new Error('tools unavailable'));
-          } else {
-            deps._cache.set.mockRejectedValueOnce(new Error('cache unavailable'));
-          }
-
-          const kept = await getAppConfig({ baseOnly: true });
-          expect(kept.config?.endpoints?.agents?.maxSubagents).toBe(3);
-          expect(getMaxSubagents()).toBe(3);
-        } finally {
-          setMaxSubagents(undefined);
-        }
+        expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload', expect.any(Object));
       },
     );
 
@@ -175,7 +233,7 @@ describe('createAppConfigService', () => {
           }),
       );
       const reloads = Array.from({ length: 10 }, () => getAppConfig({ baseOnly: true }));
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
 
       const next = { ...initial, interfaceConfig: { modelSelect: false } };
@@ -190,7 +248,279 @@ describe('createAppConfigService', () => {
       const { getAppConfig } = createAppConfigService(deps);
 
       await expect(getAppConfig({ baseOnly: true })).rejects.toBe(failure);
-      expect(deps.loadBaseConfig).toHaveBeenCalledWith('startup');
+      expect(deps.loadBaseConfig).toHaveBeenCalledWith('startup', undefined);
+    });
+
+    it('drops base and override entries when another replica publishes a generation', async () => {
+      const syncConfigGeneration = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({
+        syncConfigGeneration,
+        getApplicableConfigs: jest
+          .fn()
+          .mockResolvedValue([{ priority: 10, overrides: { x: 'old' }, isActive: true }]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+      await getAppConfig({ role: 'USER' });
+      const next = { ...deps._baseConfig, config: { version: '2.0' }, endpoints: ['new-endpoint'] };
+      deps.loadBaseConfig.mockResolvedValueOnce(next);
+      const acknowledge = jest.fn();
+      syncConfigGeneration.mockResolvedValueOnce({
+        expectedDigest: hashConfig(next.config),
+        isCurrent: () => true,
+        acknowledge,
+        defer: jest.fn(),
+      });
+
+      await getAppConfig({ role: 'USER' });
+      await new Promise((resolve) => setImmediate(resolve));
+      const config = await getAppConfig({ role: 'USER' });
+
+      expect(config.endpoints).toEqual(['new-endpoint']);
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload', expect.any(Object));
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not block an admin reload behind an offline generation read', async () => {
+      const original = modelAppConfig('old-model');
+      const syncConfigGeneration = jest.fn().mockResolvedValue(undefined);
+      let releaseRead: ((change: undefined) => void) | undefined;
+      const deps = createDeps({
+        loadBaseConfig: jest.fn().mockResolvedValue(original),
+        syncConfigGeneration,
+      });
+      const service = createAppConfigService(deps);
+      await service.getAppConfig({ baseOnly: true });
+      syncConfigGeneration.mockImplementationOnce(
+        () =>
+          new Promise<undefined>((resolve) => {
+            releaseRead = resolve;
+          }),
+      );
+      await service.getAppConfig({ baseOnly: true });
+
+      const reload = createConfigReloader({
+        loadConfig: async () => modelConfig('new-model'),
+        buildBaseConfig: async (source) => ({ ...original, config: source }),
+        getBaseConfig: () => service.getAppConfig({ baseOnly: true }),
+        replaceBaseConfig: service.replaceBaseConfig,
+        clearOverrideCache: () => service.clearOverrideCache(),
+        withConfigUpdate: service.withConfigUpdate,
+        generation: {
+          ...createConfigGenerationTracker(),
+          distributed: true,
+          snapshot: jest.fn().mockResolvedValue({ raw: null }),
+          superseded: jest.fn().mockReturnValue(false),
+          bump: jest.fn().mockRejectedValue(new Error('Redis unavailable')),
+        },
+      });
+      try {
+        await expect(
+          Promise.race([
+            reload(),
+            new Promise((resolve) => setTimeout(() => resolve('blocked'), 100)),
+          ]),
+        ).resolves.toMatchObject({
+          scope: 'local',
+          propagationError: 'Redis generation update failed',
+        });
+        expect(
+          (await service.getAppConfig({ baseOnly: true })).config.endpoints?.custom?.[0].models
+            ?.default,
+        ).toEqual(['new-model']);
+      } finally {
+        releaseRead?.(undefined);
+      }
+    });
+
+    it('ignores an older generation after an admin publishes a newer local base', async () => {
+      const original = modelAppConfig('old-model');
+      const syncConfigGeneration = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({
+        loadBaseConfig: jest.fn().mockResolvedValue(original),
+        syncConfigGeneration,
+      });
+      const service = createAppConfigService(deps);
+      await service.getAppConfig({ baseOnly: true });
+      let releaseRead: ((change: ConfigGenerationChange) => void) | undefined;
+      let current = true;
+      syncConfigGeneration.mockImplementationOnce(
+        () =>
+          new Promise<ConfigGenerationChange>((resolve) => {
+            releaseRead = resolve;
+          }),
+      );
+      await service.getAppConfig({ baseOnly: true });
+      const acknowledge = jest.fn();
+      const bump = jest.fn().mockImplementation(async () => {
+        current = false;
+        return 2;
+      });
+      const reload = createConfigReloader({
+        loadConfig: async () => modelConfig('new-model'),
+        buildBaseConfig: async (source) => ({ ...original, config: source }),
+        getBaseConfig: () => service.getAppConfig({ baseOnly: true }),
+        replaceBaseConfig: service.replaceBaseConfig,
+        clearOverrideCache: () => service.clearOverrideCache(),
+        withConfigUpdate: service.withConfigUpdate,
+        generation: {
+          ...createConfigGenerationTracker(),
+          distributed: true,
+          snapshot: jest.fn().mockResolvedValue({ raw: null }),
+          superseded: jest.fn().mockReturnValue(false),
+          bump,
+        },
+      });
+      await reload();
+      releaseRead?.({
+        expectedDigest: hashConfig(modelConfig('remote-model')),
+        isCurrent: () => current,
+        acknowledge,
+        defer: jest.fn(),
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(
+        (await service.getAppConfig({ baseOnly: true })).config.endpoints?.custom?.[0].models
+          ?.default,
+      ).toEqual(['new-model']);
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
+      expect(acknowledge).not.toHaveBeenCalled();
+    });
+
+    it('serializes a background generation with a concurrent admin reload', async () => {
+      const original = modelAppConfig('old-model');
+      const remote = modelAppConfig('remote-model');
+      let resolveRemote: ((config: AppConfig) => void) | undefined;
+      const loadBaseConfig = jest
+        .fn()
+        .mockResolvedValueOnce(original)
+        .mockImplementationOnce(
+          () =>
+            new Promise<AppConfig>((resolve) => {
+              resolveRemote = resolve;
+            }),
+        );
+      const syncConfigGeneration = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({ loadBaseConfig, syncConfigGeneration });
+      const service = createAppConfigService(deps);
+      await service.getAppConfig({ baseOnly: true });
+      syncConfigGeneration.mockResolvedValueOnce({
+        expectedDigest: hashConfig(remote.config),
+        isCurrent: () => true,
+        acknowledge: jest.fn(),
+        defer: jest.fn(),
+      });
+      await service.getAppConfig({ baseOnly: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(resolveRemote).toBeDefined();
+
+      const loadConfig = jest.fn().mockResolvedValue(modelConfig('new-model'));
+      const bump = jest.fn().mockResolvedValue(2);
+      const adminReload = createConfigReloader({
+        loadConfig,
+        buildBaseConfig: async (source) => ({ ...original, config: source }),
+        getBaseConfig: () => service.getAppConfig({ baseOnly: true }),
+        replaceBaseConfig: service.replaceBaseConfig,
+        clearOverrideCache: () => service.clearOverrideCache(),
+        withConfigUpdate: service.withConfigUpdate,
+        generation: {
+          ...createConfigGenerationTracker(),
+          distributed: true,
+          snapshot: jest.fn().mockResolvedValue({ raw: null }),
+          superseded: jest.fn().mockReturnValue(false),
+          bump,
+        },
+      });
+      const pendingAdmin = adminReload();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(loadConfig).not.toHaveBeenCalled();
+      resolveRemote?.(remote);
+      await expect(pendingAdmin).resolves.toMatchObject({ scope: 'cluster', generation: 2 });
+      expect(
+        (await service.getAppConfig({ baseOnly: true })).config.endpoints?.custom?.[0].models
+          ?.default,
+      ).toEqual(['new-model']);
+      expect(bump).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not acknowledge a generation until its source reload succeeds', async () => {
+      const syncConfigGeneration = jest.fn().mockResolvedValue(undefined);
+      const deps = createDeps({ syncConfigGeneration });
+      const { getAppConfig } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      const acknowledge = jest.fn();
+      const next = { ...initial, config: { version: '2.0' } };
+      const change = {
+        expectedDigest: hashConfig(next.config),
+        isCurrent: () => true,
+        acknowledge,
+      };
+      let published = true;
+      syncConfigGeneration.mockImplementation(async () => (published ? change : undefined));
+      deps.loadBaseConfig.mockRejectedValueOnce(new Error('remote unavailable'));
+      await getAppConfig({ baseOnly: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(acknowledge).not.toHaveBeenCalled();
+      expect((await getAppConfig({ baseOnly: true })).config).toBe(initial.config);
+
+      deps.loadBaseConfig.mockResolvedValue(next);
+      let recovered = await getAppConfig({ baseOnly: true });
+      for (let attempt = 0; attempt < 10 && recovered.config?.version !== '2.0'; attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+        recovered = await getAppConfig({ baseOnly: true });
+      }
+      expect(recovered.config).toEqual(next.config);
+      expect(acknowledge).toHaveBeenCalled();
+      published = false;
+    });
+
+    it('serves a cached base without waiting for an unavailable Redis generation check', async () => {
+      const check = jest.fn(() => new Promise<undefined>(() => undefined));
+      const deps = createDeps({ syncConfigGeneration: check });
+      const { getAppConfig } = createAppConfigService(deps);
+      await getAppConfig({ baseOnly: true });
+
+      await expect(getAppConfig({ baseOnly: true })).resolves.toMatchObject(deps._baseConfig);
+      expect(check).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not cache a merged override produced from an older base revision', async () => {
+      let resolveQuery: ((configs: []) => void) | undefined;
+      const getApplicableConfigs = jest
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<[]>((resolve) => {
+              resolveQuery = resolve;
+            }),
+        )
+        .mockResolvedValue([]);
+      const deps = createDeps({ getApplicableConfigs });
+      const { getAppConfig, replaceBaseConfig } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      const staleRead = getAppConfig({ role: 'USER' });
+      await new Promise((resolve) => setImmediate(resolve));
+      const next = { ...initial, interfaceConfig: { modelSelect: false } };
+      await replaceBaseConfig(next);
+      resolveQuery?.([]);
+
+      const result = await staleRead;
+      expect(result.interfaceConfig?.modelSelect).toBe(false);
+      expect(getApplicableConfigs).toHaveBeenCalledTimes(2);
+      expect(deps._cache._store.get('app_config:_OVERRIDE_:__default__:USER')).toBeUndefined();
+    });
+
+    it('installs a validated base config without re-reading its source', async () => {
+      const deps = createDeps();
+      const { getAppConfig, replaceBaseConfig } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      const next = { ...initial, interfaceConfig: { modelSelect: false } };
+
+      await replaceBaseConfig(next);
+      const config = await getAppConfig({ baseOnly: true });
+
+      expect(config).toBe(next);
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
     });
 
     it('queries DB for applicable configs', async () => {

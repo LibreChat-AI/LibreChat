@@ -2,15 +2,16 @@ import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { AgentCapabilities, PermissionTypes, Permissions } from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
+import { useGetStartupConfig, useConfigReloadAccessQuery } from '~/data-provider';
 import useProviderKeys from '../SettingsTabs/ProviderKeys/useProviderKeys';
 import { useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
 import usePersonalizationAccess from '~/hooks/usePersonalizationAccess';
-import { useGetStartupConfig } from '~/data-provider';
 import store from '~/store';
 
 export function useSettingsContext(): SettingsContextValue {
   const { user } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
+  const { data: configReloadAccess = false } = useConfigReloadAccessQuery(user?.id);
   const { agentsConfig } = useGetAgentsConfig();
   const { hasAnyPersonalizationFeature, hasMemoryOptOut } = usePersonalizationAccess();
 
@@ -59,6 +60,7 @@ export function useSettingsContext(): SettingsContextValue {
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,
+      configReloadAccess,
     }),
     [
       balanceEnabled,
@@ -76,6 +78,7 @@ export function useSettingsContext(): SettingsContextValue {
       engineTTS,
       langfuseConnectionAccess,
       adminPanelURL,
+      configReloadAccess,
     ],
   );
 }

@@ -94,7 +94,7 @@ describe('standardCache - CONFIG_STORE vs TOOL_CACHE namespace isolation', () =>
     expect(await toolCache.get('STARTUP_CONFIG')).toBeUndefined();
   });
 
-  it('should use Redis for all namespaces when nothing is forced in-memory', async () => {
+  it('keeps APP_CONFIG process-local even when other namespaces are Redis-backed', async () => {
     jest.doMock('../../cacheConfig', () => ({
       cacheConfig: {
         FORCED_IN_MEMORY_CACHE_NAMESPACES: [],
@@ -111,7 +111,7 @@ describe('standardCache - CONFIG_STORE vs TOOL_CACHE namespace isolation', () =>
     standardCache(CacheKeys.TOOL_CACHE);
     standardCache(CacheKeys.APP_CONFIG);
 
-    expect(MockKeyvRedis).toHaveBeenCalledTimes(3);
+    expect(MockKeyvRedis).toHaveBeenCalledTimes(2);
   });
 
   it('forcing TOOL_CACHE to in-memory should not affect CONFIG_STORE', async () => {

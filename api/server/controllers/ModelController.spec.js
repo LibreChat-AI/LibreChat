@@ -1,5 +1,6 @@
 const mockLoadDefaultModels = jest.fn();
 const mockLoadConfigModels = jest.fn();
+const mockGetGeneration = jest.fn(() => '2');
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -10,9 +11,10 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('~/server/services/Config', () => ({
   loadDefaultModels: (...args) => mockLoadDefaultModels(...args),
   loadConfigModels: (...args) => mockLoadConfigModels(...args),
+  getConfigGenerationForConfig: (...args) => mockGetGeneration(...args),
 }));
 
-const { loadModels } = require('./ModelController');
+const { loadModels, modelController } = require('./ModelController');
 
 function deferred() {
   let resolve;
@@ -53,5 +55,18 @@ describe('loadModels', () => {
       anthropic: ['default-anthropic'],
       custom: ['custom-model'],
     });
+  });
+});
+
+describe('versioned model response', () => {
+  it('stamps the generation of the config used for the actual model request', async () => {
+    const req = { user: { id: 'user-1' }, config: { endpoints: {} } };
+    const res = { set: jest.fn(), send: jest.fn(), status: jest.fn() };
+    mockLoadDefaultModels.mockResolvedValue({});
+    mockLoadConfigModels.mockResolvedValue({ gateway: ['new-model'] });
+    await modelController(req, res);
+    expect(mockGetGeneration).toHaveBeenCalledWith(req.config);
+    expect(res.set).toHaveBeenCalledWith('X-LibreChat-Config-Generation', '2');
+    expect(res.send).toHaveBeenCalledWith({ gateway: ['new-model'] });
   });
 });

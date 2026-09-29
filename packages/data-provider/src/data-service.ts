@@ -7,9 +7,11 @@ import type {
   TTraceRecordDetail,
 } from './types/traces';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
+import type { TConfigReloadResult, TConfigRevision } from './types/configReload';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
+import { CONFIG_GENERATION_HEADER } from './types/configReload';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
@@ -68,6 +70,14 @@ export function getConversationTraceRecord(
     endpoints.conversationTraceRecord(conversationId, recordId, messageId, sourceId),
     signal ? { signal } : undefined,
   );
+}
+
+export function reloadCustomConfig(): Promise<TConfigReloadResult> {
+  return request.post(endpoints.adminConfigReload());
+}
+
+export function getConfigReloadAccess(): Promise<boolean> {
+  return request.get(endpoints.adminConfigReloadAccess()).then(() => true);
 }
 
 export function getLangfuseConnection(): Promise<t.TLangfuseConnectionStatus> {
@@ -391,6 +401,26 @@ export const getStartupConfig = (
   }
 > => {
   return request.get(endpoints.config(options?.context));
+};
+
+export const getConfigRevision = (signal?: AbortSignal): Promise<TConfigRevision> =>
+  request.get(endpoints.configRevision(), signal ? { signal } : undefined);
+
+export const getModelsAtRevision = async (
+  generation: number,
+  signal?: AbortSignal,
+): Promise<t.TModelsConfig> => {
+  const response = await request.getResponse<t.TModelsConfig>(
+    endpoints.models(),
+    signal ? { signal } : undefined,
+  );
+  if (
+    Number(response.headers[CONFIG_GENERATION_HEADER.toLowerCase()]) !== generation ||
+    generation < 1
+  ) {
+    throw new Error('The serving replica has not applied the model catalog revision yet.');
+  }
+  return response.data;
 };
 
 export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {

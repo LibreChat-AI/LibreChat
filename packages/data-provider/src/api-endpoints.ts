@@ -270,6 +270,7 @@ export const actionOAuthBind = (actionId: string) =>
 
 export const config = (context?: StartupConfigContext) =>
   `${BASE_URL}/api/config${buildQuery({ context })}`;
+export const configRevision = () => `${BASE_URL}/api/config/revision`;
 
 export const prompts = () => `${BASE_URL}/api/prompts`;
 
@@ -494,6 +495,9 @@ export const conversationTraceRecord = (
   `${conversationTrace(conversationId)}/records/${encodeURIComponent(recordId)}?${new URLSearchParams(
     { message: messageId, ...(sourceId ? { source: sourceId } : {}) },
   ).toString()}`;
+
+export const adminConfigReload = () => `${BASE_URL}/api/admin/config/reload`;
+export const adminConfigReloadAccess = () => `${adminConfigReload()}/access`;
 
 export const adminSkillsSync = () => `${BASE_URL}/api/admin/skills/sync`;
 export const adminSkillsSyncStatus = () => `${adminSkillsSync()}/status`;

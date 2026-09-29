@@ -58,6 +58,7 @@ const recentDenialWarnings = new Map<string, number>();
 export type HasCapabilityFn = (
   user: CapabilityUser,
   capability: SystemCapability,
+  options?: { platformOnly?: boolean },
 ) => Promise<boolean>;
 
 export type RequireCapabilityFn = (

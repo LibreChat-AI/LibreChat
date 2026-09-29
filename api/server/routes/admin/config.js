@@ -8,13 +8,20 @@ const {
   hasAnyConfigReadAccess,
   getReadableConfigSections,
 } = require('~/server/middleware/roles/capabilities');
-const { getAppConfig, invalidateConfigCaches } = require('~/server/services/Config');
+const {
+  getAppConfig,
+  invalidateConfigCaches,
+  reloadCustomConfig,
+} = require('~/server/services/Config');
 const { requireJwtAuth } = require('~/server/middleware');
 const db = require('~/models');
 
 const router = express.Router();
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
+const requirePlatformConfigManager = requireCapability(SystemCapabilities.MANAGE_CONFIGS, {
+  platformOnly: true,
+});
 
 const handlers = createAdminConfigHandlers({
   listAllConfigs: db.listAllConfigs,
@@ -31,12 +38,15 @@ const handlers = createAdminConfigHandlers({
   hasCapability,
   getAppConfig,
   invalidateConfigCaches,
+  reloadCustomConfig,
 });
 
 router.use(requireJwtAuth, requireAdminAccess);
 
 router.get('/', handlers.listConfigs);
 router.get('/base', handlers.getBaseConfig);
+router.get('/reload/access', requirePlatformConfigManager, (_req, res) => res.sendStatus(204));
+router.post('/reload', requirePlatformConfigManager, handlers.reloadConfig);
 router.get('/:principalType/:principalId', handlers.getConfig);
 router.put('/:principalType/:principalId', handlers.upsertConfigOverrides);
 router.patch('/:principalType/:principalId/fields', handlers.patchConfigField);

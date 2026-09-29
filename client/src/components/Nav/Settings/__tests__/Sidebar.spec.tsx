@@ -21,6 +21,7 @@ const ctx: SettingsContextValue = {
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',
+  configReloadAccess: false,
 };
 
 function setup(extra: Partial<SettingsContextValue> = {}, query = '') {
