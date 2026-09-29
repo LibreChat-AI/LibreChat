@@ -14,6 +14,7 @@ const readBase64 = (blob: Blob): Promise<string> =>
   });
 
 interface FilledShell {
+  key: string;
   shell: string;
   content: string;
 }
@@ -37,6 +38,8 @@ export default function useOfficeFileShell(artifact: Artifact | null): {
   const isShell =
     stored != null && artifact?.download?.file_id != null && isOfficeFileShell(stored);
 
+  const key = `${artifact?.id}:${artifact?.download?.file_id}`;
+
   useEffect(() => {
     if (!isShell) {
       return;
@@ -44,7 +47,7 @@ export default function useOfficeFileShell(artifact: Artifact | null): {
     let cancelled = false;
     const settle = (content: string) => {
       if (!cancelled) {
-        setFilled({ shell: stored, content });
+        setFilled({ key, shell: stored, content });
       }
     };
     refetchRef
@@ -55,11 +58,11 @@ export default function useOfficeFileShell(artifact: Artifact | null): {
     return () => {
       cancelled = true;
     };
-  }, [isShell, stored, artifact?.id]);
+  }, [isShell, stored, key]);
 
   if (!isShell) {
     return { content: stored, isLoading: false };
   }
-  const isCurrent = filled?.shell === stored;
+  const isCurrent = filled?.key === key && filled.shell === stored;
   return { content: isCurrent ? filled.content : stored, isLoading: !isCurrent };
 }

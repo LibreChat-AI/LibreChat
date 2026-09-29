@@ -69,6 +69,26 @@ describe('useOfficeFileShell', () => {
     expect(result.current.content).toBe(shell);
   });
 
+  it('reports loading for a second artifact with an identical shell', async () => {
+    mockRefetch.mockResolvedValueOnce({ data: new Blob(['ABC']) });
+    const { result, rerender } = renderHook(({ artifact }) => useOfficeFileShell(artifact), {
+      initialProps: { artifact: shellArtifact },
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const filledA = fillOfficeFileShell(shell, 'QUJD');
+    expect(result.current.content).toBe(filledA);
+
+    mockRefetch.mockReturnValueOnce(new Promise(() => undefined));
+    const other: Artifact = {
+      ...shellArtifact,
+      id: 'a2',
+      download: { file_id: 'file-2', user: 'user-1' },
+    };
+    rerender({ artifact: other });
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.content).toBe(shell);
+  });
+
   it('does not fetch for a non-shell artifact', () => {
     const plain: Artifact = { ...shellArtifact, content: '<html>inline</html>' };
     const { result } = renderHook(() => useOfficeFileShell(plain));

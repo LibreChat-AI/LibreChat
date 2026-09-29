@@ -24,7 +24,11 @@ export default function SandboxArtifactTabs({
 }) {
   const localize = useLocalize();
   const { content, isLoading } = useOfficeFileShell(storedArtifact);
-  const artifact = useMemo(() => ({ ...storedArtifact, content }), [storedArtifact, content]);
+  const previewArtifact = useMemo(
+    () => ({ ...storedArtifact, content }),
+    [storedArtifact, content],
+  );
+  const artifact = storedArtifact;
   const { currentCode, setCurrentCode } = useCodeState();
   const { shareId } = useShareContext();
   const shouldUseSharedConfig =
@@ -48,7 +52,9 @@ export default function SandboxArtifactTabs({
     lastIdRef.current = artifact.id;
   }, [artifact.id, setCurrentCode]);
 
-  const { files, fileKey, template, sharedProps, deriveFiles } = useArtifactProps({ artifact });
+  const { files, fileKey, template, sharedProps, deriveFiles } = useArtifactProps({
+    artifact: previewArtifact,
+  });
   const editedCode = hasCurrentArtifactCode ? currentCode : undefined;
 
   /* An artifact whose preview entry is derived from its source needs the whole
