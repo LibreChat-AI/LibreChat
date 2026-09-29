@@ -127,21 +127,82 @@ describe('useAttachmentHandler upsert-by-file_id', () => {
     ]);
   });
 
-  it('appends (does NOT merge) attachments with no file_id', () => {
-    /* Lightweight attachments like file_search citations and web_search
-     * results don't carry file_id. The handler must keep its legacy
-     * append behavior for them — merging would lose distinct citations
-     * and is unnecessary because they're never the target of a
-     * deferred preview update. */
+  it('appends (does NOT merge) citation attachments with no file_id', () => {
+    /* Lightweight attachments like file_search citations don't carry file_id.
+     * The handler must keep its legacy append behavior for them: merging
+     * would lose distinct citations and is unnecessary because they're never
+     * the target of a deferred preview update. */
     const ctx = setup();
     const noFileId = {
       messageId,
       toolCallId: 'tc-1',
-      type: Tools.web_search,
+      type: Tools.file_search,
     } as unknown as TAttachment;
     ctx.handle(noFileId);
     ctx.handle(noFileId);
     expect(ctx.list).toHaveLength(2);
+  });
+
+  it('replaces a re-emitted web-search snapshot instead of stacking it', () => {
+    /* The search helper rewrites and re-emits the WHOLE payload after every
+     * highlight update, keeping the same toolCallId and turn. Appending those
+     * stacked one copy of every image, product and place per update. */
+    const ctx = setup();
+    const snapshot = (processed: boolean) =>
+      ({
+        messageId,
+        toolCallId: 'tc-1',
+        type: Tools.web_search,
+        [Tools.web_search]: { turn: 0, organic: [{ link: 'https://example.com', processed }] },
+      }) as unknown as TAttachment;
+
+    ctx.handle(snapshot(false));
+    ctx.handle(snapshot(true));
+
+    expect(ctx.list).toHaveLength(1);
+    expect(
+      (ctx.list[0] as unknown as { web_search: { organic: Array<{ processed: boolean }> } })
+        .web_search.organic[0].processed,
+    ).toBe(true);
+  });
+
+  it('keeps web-search snapshots from distinct tool calls separate', () => {
+    const ctx = setup();
+    const snapshot = (toolCallId: string) =>
+      ({
+        messageId,
+        toolCallId,
+        type: Tools.web_search,
+        [Tools.web_search]: { turn: 0 },
+      }) as unknown as TAttachment;
+
+    ctx.handle(snapshot('tc-1'));
+    ctx.handle(snapshot('tc-2'));
+
+    expect(ctx.list).toHaveLength(2);
+  });
+
+  it('keeps same-agent executions separate when provider id and turn repeat', () => {
+    const ctx = setup();
+    const snapshot = (stepId: string, link: string) =>
+      ({
+        messageId,
+        toolCallId: 'call_0',
+        agentId: 'agent-a',
+        stepId,
+        type: Tools.web_search,
+        [Tools.web_search]: { turn: 0, organic: [{ link }] },
+      }) as unknown as TAttachment;
+
+    ctx.handle(snapshot('step-1', 'https://first.example'));
+    ctx.handle(snapshot('step-2', 'https://second.example'));
+    ctx.handle(snapshot('step-1', 'https://first-updated.example'));
+
+    expect(ctx.list).toHaveLength(2);
+    expect(ctx.list.map((attachment) => attachment[Tools.web_search]?.organic?.[0]?.link)).toEqual([
+      'https://first-updated.example',
+      'https://second.example',
+    ]);
   });
 
   it('keeps sibling tool calls separate when they share a file_id (distinct toolCallIds)', () => {

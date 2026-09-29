@@ -79,6 +79,71 @@ describe('buildLangfuseConfig', () => {
     });
   });
 
+  it('stamps the configured trace identity and allowlisted metadata on the run config', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    const { buildLangfuseConfig } = await import('./config');
+
+    expect(
+      buildLangfuseConfig({
+        runId: 'run-1',
+        tenantId: 'tenant-1',
+        appConfig: {
+          langfuse: {
+            trace: {
+              userIdField: 'email',
+              userMetadataFields: ['email', 'role', 'samlId'],
+              conversationMetadataFields: ['conversationId', 'model', 'spec'],
+            },
+          },
+        } as unknown as AppConfig,
+        user: { id: 'user-1', email: 'alice@example.com', role: 'USER', username: 'alice' },
+        traceContext: {
+          conversationId: 'convo-1',
+          model: 'gpt-5',
+          modelLabel: 'Helper',
+          spec: 'support',
+        },
+      }),
+    ).toEqual({
+      deterministicTraceId: true,
+      userId: 'alice@example.com',
+      metadata: {
+        'librechat.user.email': 'alice@example.com',
+        'librechat.user.role': 'USER',
+        'librechat.conversation.id': 'convo-1',
+        'librechat.model': 'gpt-5',
+        'librechat.spec': 'support',
+        'librechat.tenant.id': 'tenant-1',
+      },
+      tags: ['tenant:tenant-1'],
+      publicKey: 'pk-env',
+      secretKey: 'sk-env',
+      baseUrl: 'https://cloud.langfuse.com',
+    });
+  });
+
+  it('exports neither user identity nor metadata until trace fields are configured', async () => {
+    delete process.env.TENANT_ISOLATION_STRICT;
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-env';
+    const { buildLangfuseConfig } = await import('./config');
+
+    expect(
+      buildLangfuseConfig({
+        runId: 'run-1',
+        user: { id: 'user-1', email: 'alice@example.com', role: 'USER' },
+        traceContext: { conversationId: 'convo-1', model: 'gpt-5', endpoint: 'agents' },
+      }),
+    ).toEqual({
+      deterministicTraceId: true,
+      publicKey: 'pk-env',
+      secretKey: 'sk-env',
+      baseUrl: 'https://cloud.langfuse.com',
+    });
+  });
+
   it('prefers environment credentials in single-tenant mode', async () => {
     delete process.env.TENANT_ISOLATION_STRICT;
     process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';

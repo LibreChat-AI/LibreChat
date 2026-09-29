@@ -11,6 +11,7 @@ import { ToolIcon, isError } from '~/components/Chat/Messages/Content/ToolOutput
 import Image from '~/components/Chat/Messages/Content/Image';
 import { useProgress, useLocalize } from '~/hooks';
 import { useToolCallIntent } from '../intent';
+import { ROW_GLYPH_SLOT } from '../../rows';
 import ProgressText from './ProgressText';
 import { scaleImage } from '~/utils';
 
@@ -258,8 +259,10 @@ export default function OpenAIImageGen({
           return intent ?? localize('com_ui_image_created');
         })()}
       </span>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2">
-        <ToolIcon type="image_gen" isAnimating={isInProgress} />
+      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2 text-text-secondary">
+        <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+          <ToolIcon type="image_gen" isAnimating={isInProgress} />
+        </span>
         <ProgressText
           progress={progress}
           error={reportsError}

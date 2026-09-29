@@ -27,6 +27,9 @@ describe('LibreChat Tailwind preset', () => {
     expect(resolved.theme.spacing['theme-control']).toBe(
       `var(--theme-control-height, ${defaultAppearance.controlHeight})`,
     );
+    expect(resolved.theme.spacing['theme-control-touch']).toBe(
+      `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem)`,
+    );
     expect(resolved.theme.borderRadius['theme-control']).toBe(
       `var(--theme-control-radius, ${defaultAppearance.controlRadius})`,
     );
@@ -48,6 +51,27 @@ describe('LibreChat Tailwind preset', () => {
     expect(resolved.theme.transitionDuration['theme-normal']).toBe(
       `var(--theme-motion-normal, ${defaultAppearance.motionNormal})`,
     );
+  });
+
+  /** The tap-target floor is half CSS and half variant: a spacing key nothing can
+   *  reach is not a floor, so the registration is asserted, not just the value. */
+  it('registers the appearance variants the utilities are written against', () => {
+    const variants = {};
+    tailwindPreset.plugins.forEach((plugin) =>
+      plugin({
+        addVariant: (name, value) => {
+          variants[name] = value;
+        },
+      }),
+    );
+
+    /** `any-pointer`, not `pointer`: the floor has to apply to a 2-in-1's
+     *  touchscreen while its trackpad is the primary device and reports `fine`. */
+    expect(variants.touch).toBe('@media (any-pointer: coarse)');
+    /** Its inverse gates hidden-until-hover states, so a 2-in-1's finger user —
+     *  whose trackpad makes `(hover: hover)` true — never loses the control. */
+    expect(variants['no-touch']).toBe('@media not all and (any-pointer: coarse)');
+    expect(variants['high-contrast']).toBe('html.high-contrast &');
   });
 
   it('exposes the preset in the published package', () => {

@@ -1,3 +1,4 @@
+import { Zap } from 'lucide-react';
 import type { ReactNode } from 'react';
 import MessageTimestamp from './MessageTimestamp';
 import HeaderLabel from './HeaderLabel';
@@ -17,9 +18,10 @@ type MessageRowProps = {
   hasParallelContent?: boolean;
   fullWidth?: boolean;
   isEditing?: boolean;
-  /** Full-width block without the author header or user bubble — for rows
-   *  whose body carries its own header (e.g. wake-up task cards). */
-  plain?: boolean;
+  /** Marks a host-authored turn (wake-up results, subagent triggers): it keeps
+   *  the user's position and bubble shape, outlined instead of filled, under
+   *  this visible heading in place of the author's name. */
+  systemLabel?: string;
   className?: string;
 };
 
@@ -50,11 +52,13 @@ export default function MessageRow({
   hasParallelContent = false,
   fullWidth = false,
   isEditing = false,
-  plain = false,
+  systemLabel,
 }: MessageRowProps) {
   // Same column as ChatForm: max-width plus `sm:px-2`, so the body lines
   // up with the composer surface rather than the form's outer box.
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
+  const isSystem = systemLabel != null && systemLabel !== '';
+  const isUserSide = isCreatedByUser || isSystem;
 
   return (
     <div
@@ -64,7 +68,7 @@ export default function MessageRow({
       className={cn(
         'message-render group mx-auto flex min-w-0 flex-1 font-theme-ui transition-[max-width] duration-theme-normal motion-reduce:transition-none',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary',
-        isCreatedByUser && !plain ? 'justify-end' : 'items-start',
+        isUserSide ? 'justify-end' : 'items-start',
         widthClass,
         className,
       )}
@@ -72,17 +76,25 @@ export default function MessageRow({
       <div
         className={cn(
           'relative flex min-w-0 flex-col',
-          isCreatedByUser ? 'user-turn' : 'agent-turn',
-          (hasParallelContent || isEditing || plain) && 'w-full',
+          isUserSide ? 'user-turn' : 'agent-turn',
+          (hasParallelContent || isEditing) && 'w-full',
           !hasParallelContent &&
-            !plain &&
-            isCreatedByUser &&
+            isUserSide &&
             cn('ml-auto items-end', !isEditing && 'w-fit max-w-[90%] sm:max-w-[85%]'),
-          !hasParallelContent && !isCreatedByUser && !isEditing && 'flex-1',
+          !hasParallelContent && !isUserSide && !isEditing && 'flex-1',
         )}
       >
+        {isSystem && (
+          <h2 className="mb-1 flex select-none items-center gap-1.5 pr-1.5 text-xs font-medium uppercase tracking-wide text-text-secondary">
+            <Zap size={12} aria-hidden="true" />
+            {systemLabel}
+            <span className="sr-only">
+              <MessageTimestamp value={timestamp} />
+            </span>
+          </h2>
+        )}
         {!hasParallelContent &&
-          !plain &&
+          !isSystem &&
           (isCreatedByUser ? (
             <h2 className="sr-only">
               {headerPrefix}
@@ -104,21 +116,22 @@ export default function MessageRow({
             </h2>
           ))}
 
-        <div className={cn('flex w-full flex-col gap-1', isCreatedByUser && !plain && 'items-end')}>
+        <div className={cn('flex w-full flex-col gap-1', isUserSide && 'items-end')}>
           <div
             className={cn(
               'flex min-h-[20px] max-w-full flex-grow flex-col gap-0',
-              isCreatedByUser && !isEditing && !plain
-                ? 'w-fit rounded-theme-surface rounded-br-theme-control bg-surface-tertiary px-theme-normal py-2.5'
+              isUserSide && !isEditing
+                ? cn(
+                    'w-fit rounded-theme-surface rounded-br-theme-control px-theme-normal',
+                    isSystem ? 'border border-border-medium py-1.5' : 'bg-surface-tertiary py-2.5',
+                  )
                 : 'w-full',
             )}
             data-testid="message-body"
           >
             {children}
           </div>
-          <div className={cn('w-full', isCreatedByUser && !plain && 'flex justify-end')}>
-            {footer}
-          </div>
+          <div className={cn('w-full', isUserSide && 'flex justify-end')}>{footer}</div>
         </div>
       </div>
     </div>

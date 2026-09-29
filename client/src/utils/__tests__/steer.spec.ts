@@ -64,6 +64,25 @@ describe('applySteerPart', () => {
     expect(twice).toBe(once);
   });
 
+  it('replaces a persisted steer when a later correction removes rejected files', () => {
+    const withFiles = applySteerPart(
+      assistantMessage(),
+      buildEvent({
+        part: {
+          type: ContentTypes.STEER,
+          [ContentTypes.STEER]: 'change course',
+          steerId: 'steer-1',
+          files: [{ file_id: 'rejected-file' }],
+        },
+      }),
+    );
+    const corrected = applySteerPart(withFiles, buildEvent());
+
+    expect(corrected).not.toBe(withFiles);
+    expect(getSteerPart(corrected.content?.[2])?.files).toBeUndefined();
+    expect(corrected.content).toHaveLength(3);
+  });
+
   it('handles a message without content', () => {
     const message = assistantMessage({ content: undefined });
     const updated = applySteerPart(message, buildEvent({ index: 0 }));
@@ -271,5 +290,30 @@ describe('collectDroppedSteerQuotes', () => {
       { content: [{ type: ContentTypes.STEER, steerId: 'srv-1', quotes: ['excerpt one'] }] },
     ];
     expect(collectDroppedSteerQuotes(values, chips)).toEqual([]);
+  });
+});
+
+describe('findSteerMessageIndex with the live placeholder ids', () => {
+  const user = { messageId: 'user-1', isCreatedByUser: true } as TMessage;
+  const placeholder = assistantMessage({ messageId: 'user-1_', content: [] });
+  const older = assistantMessage({ messageId: 'older-response' });
+  const server = assistantMessage({ messageId: 'server-resp' });
+  const event = buildEvent({ responseMessageId: 'server-resp', index: 0 });
+
+  it('prefers the exact server id when that row already exists', () => {
+    expect(findSteerMessageIndex([user, placeholder, server], event, ['user-1_'])).toBe(2);
+  });
+
+  it("falls back to the pane's own placeholder before the first run step renames it", () => {
+    expect(findSteerMessageIndex([user, placeholder], event, ['user-1_'])).toBe(1);
+  });
+
+  it('never guesses by position when the event names a row the pane has not rendered', () => {
+    expect(findSteerMessageIndex([user, older], event)).toBe(-1);
+    expect(findSteerMessageIndex([user, older], event, [undefined, null])).toBe(-1);
+  });
+
+  it('ignores a placeholder id that names a user message', () => {
+    expect(findSteerMessageIndex([user, older], event, ['user-1'])).toBe(-1);
   });
 });

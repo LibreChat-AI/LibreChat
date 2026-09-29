@@ -38,4 +38,30 @@ describe('direct tool output protection', () => {
       ),
     ).not.toThrow();
   });
+
+  it('allows an untraversable direct-call output for an audit-only policy', () => {
+    const output = new Proxy(
+      { value: 'hidden' },
+      {
+        ownKeys: () => {
+          throw new Error('opaque');
+        },
+      },
+    );
+
+    expect(() =>
+      assertDirectToolOutputAllowed(
+        {
+          toolArguments: {
+            pii: {
+              ...filters.toolArguments?.pii,
+              action: 'audit',
+            },
+          },
+        },
+        'execute_code',
+        output,
+      ),
+    ).not.toThrow();
+  });
 });

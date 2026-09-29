@@ -16,10 +16,9 @@ const DEFAULT_REVIEW_DECISIONS: Agents.ToolApprovalDecisionType[] = ['approve', 
 /**
  * Layered sources that combine into the effective tool-approval policy for a turn.
  *
- * Only {@link ToolApprovalPolicyLayers.endpoint} is consumed today; `agent` and
- * `skills` are reserved seams so future per-agent / per-skill plumbing lands in
- * {@link resolveToolApprovalPolicy} rather than being threaded through the run
- * call site.
+ * Endpoint policy remains the administrative baseline. Attached code environments
+ * also activate LibreChat's built-in BYOM baseline; `agent` and `skills` remain
+ * reserved seams for future persisted overrides.
  */
 export interface ToolApprovalPolicyLayers {
   /**
@@ -39,6 +38,12 @@ export interface ToolApprovalPolicyLayers {
    * skill can never silently auto-approve a tool.
    */
   skills?: TToolApprovalPolicy[];
+  /**
+   * At least one agent in this run executes in an attached, user-operated environment.
+   * Attached environments get LibreChat's safe approval baseline without requiring
+   * an administrator to opt the whole endpoint into prompts.
+   */
+  attachedCodeEnvironment?: boolean;
 }
 
 /**
@@ -51,13 +56,26 @@ export interface ToolApprovalPolicyLayers {
  *   - `agent` overrides `mode`/`allow`/`deny`/`ask`/`reason`;
  *   - `skills` may only tighten (add `ask`/`deny`), never loosen.
  *
- * Today only `endpoint` is consumed, so the result is identical to reading
- * `endpoints.agents.toolApproval` directly — `agent`/`skills` are accepted but
- * not yet merged. Behaviour-preserving until those layers ship.
+ * When no endpoint policy is active, BYOM adds `enabled: true, mode: 'bypass'` and
+ * an agent-scoped hook supplies its coding decisions. An already-enabled endpoint
+ * policy remains the run-wide administrative baseline, including its unmatched-tool
+ * mode. An explicit endpoint `enabled: false` remains the administrator emergency
+ * override. `agent`/`skills` are accepted but not yet merged.
  */
 export function resolveToolApprovalPolicy(
   layers: ToolApprovalPolicyLayers,
 ): TToolApprovalPolicy | undefined {
+  if (
+    layers.attachedCodeEnvironment === true &&
+    layers.endpoint?.enabled !== true &&
+    layers.endpoint?.enabled !== false
+  ) {
+    return {
+      ...layers.endpoint,
+      enabled: true,
+      mode: 'bypass',
+    };
+  }
   return layers.endpoint;
 }
 
@@ -297,6 +315,42 @@ export function buildToolApprovalPayload(
   };
 }
 
+/** Require one uniquely identified review policy for every paused tool call. */
+export function isToolApprovalPayloadValid(payload: Agents.ToolApprovalInterruptPayload): boolean {
+  if (payload.action_requests.length !== payload.review_configs.length) {
+    return false;
+  }
+
+  const requestedIds = new Set<string>();
+  for (const request of payload.action_requests) {
+    if (
+      typeof request.tool_call_id !== 'string' ||
+      request.tool_call_id.length === 0 ||
+      requestedIds.has(request.tool_call_id)
+    ) {
+      return false;
+    }
+    requestedIds.add(request.tool_call_id);
+  }
+
+  const reviewedIds = new Set<string>();
+  for (const config of payload.review_configs) {
+    if (
+      typeof config.tool_call_id !== 'string' ||
+      config.tool_call_id.length === 0 ||
+      reviewedIds.has(config.tool_call_id)
+    ) {
+      return false;
+    }
+    if (!requestedIds.has(config.tool_call_id)) {
+      return false;
+    }
+    reviewedIds.add(config.tool_call_id);
+  }
+
+  return true;
+}
+
 /** Build an ask-user-question interrupt payload. */
 export function buildAskUserQuestionPayload(
   question: Agents.AskUserQuestionRequest,
@@ -326,8 +380,12 @@ export interface PendingActionContext {
   threadId?: string;
   /** Fingerprint of the graph-determining request fields; see {@link computeAgentRequestFingerprint}. */
   requestFingerprint?: string;
+  /** Current fingerprint; the legacy field remains populated for rolling-deploy compatibility. */
+  requestFingerprintV2?: string;
   /** Graph-determining fields to replay on resume; see {@link RESUME_CONTEXT_KEYS}. */
   resumeContext?: Record<string, unknown>;
+  /** Opaque server-only binding to the stateful code targets selected at pause time. */
+  codeExecutionBinding?: Agents.CodeExecutionApprovalBinding;
 }
 
 /** Request fields that decide which agent/graph + tool set a turn runs. */
@@ -340,6 +398,9 @@ export interface AgentRequestFingerprintFields {
   /** Ephemeral agents derive their system instructions from this; pin it too. */
   promptPrefix?: string | null;
   ephemeralAgent?: Record<string, unknown> | null;
+  codeApprovalMode?: string | null;
+  codeEnvironmentMode?: string | null;
+  codeWorkspaces?: unknown;
 }
 
 /** Stable, order-independent serialization of the ephemeral capability config. */
@@ -377,6 +438,12 @@ export const RESUME_CONTEXT_KEYS = [
   'model',
   'promptPrefix',
   'ephemeralAgent',
+  'codeApprovalMode',
+  'codeEnvironmentMode',
+  // The selected attached workspace determines the code tools' execution root and
+  // operation ceiling. Pin it across every pause type so a reload or crafted resume
+  // cannot rebuild the graph against a different directory.
+  'codeWorkspaces',
   // The agents build reads addedConvo into endpointOption to add parallel/secondary
   // agents; the resume POST can't reconstruct it, so replay it from the paused request.
   'addedConvo',
@@ -711,6 +778,41 @@ export function computeAgentRequestFingerprint(fields: AgentRequestFingerprintFi
     spec: fields.spec ?? null,
     promptPrefix: fields.promptPrefix ?? null,
     ephemeralAgent: normalizeEphemeralAgent(fields.ephemeralAgent),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeApprovalMode')
+      ? { codeApprovalMode: fields.codeApprovalMode ?? null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeEnvironmentMode')
+      ? { codeEnvironmentMode: fields.codeEnvironmentMode ?? null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeWorkspaces')
+      ? { codeWorkspaces: fields.codeWorkspaces ?? null }
+      : {}),
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+/**
+ * Fingerprint understood by replicas predating conversation-owned code environments.
+ * Writers retain it in `requestFingerprint` while also storing the stricter current
+ * fingerprint, allowing either replica generation to resume safely during a rollout.
+ */
+export function computeLegacyAgentRequestFingerprint(
+  fields: AgentRequestFingerprintFields,
+): string {
+  const canonical = JSON.stringify({
+    endpoint: fields.endpoint ?? null,
+    endpointType: fields.endpointType ?? null,
+    agent_id: fields.agent_id ?? null,
+    model: fields.model ?? null,
+    spec: fields.spec ?? null,
+    promptPrefix: fields.promptPrefix ?? null,
+    ephemeralAgent: normalizeEphemeralAgent(fields.ephemeralAgent),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeApprovalMode')
+      ? { codeApprovalMode: fields.codeApprovalMode ?? null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeWorkspaces')
+      ? { codeWorkspaces: fields.codeWorkspaces ?? null }
+      : {}),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
@@ -726,6 +828,9 @@ export function buildPendingAction(
   payload: Agents.HumanInterruptPayload,
   ctx: PendingActionContext,
 ): Agents.PendingAction {
+  if (payload.type === 'tool_approval' && !isToolApprovalPayloadValid(payload)) {
+    throw new Error('Invalid tool approval payload');
+  }
   const createdAt = Date.now();
   const ttlExpiresAt = typeof ctx.ttlMs === 'number' ? createdAt + ctx.ttlMs : undefined;
   let absoluteExpiresAt: number | undefined;
@@ -758,12 +863,15 @@ export function buildPendingAction(
     interruptId: ctx.interruptId,
     threadId: ctx.threadId,
     requestFingerprint: ctx.requestFingerprint,
+    requestFingerprintV2: ctx.requestFingerprintV2,
     resumeContext: ctx.resumeContext,
+    codeExecutionBinding: ctx.codeExecutionBinding,
   };
 }
 
 /**
- * Client-facing projection of a pending action. `requestFingerprint` and `resumeContext`
+ * Client-facing projection of a pending action. `requestFingerprint`, `resumeContext`, and
+ * `codeExecutionBinding`
  * are server-only replay state — `resumeContext` in particular carries the resolved
  * model parameters — so every copy that leaves the server (SSE, status, resume state)
  * must go through this. The full record stays in the job store for the resume route.
@@ -776,7 +884,9 @@ export function toClientPendingAction(
   }
   const {
     requestFingerprint: _requestFingerprint,
+    requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
+    codeExecutionBinding: _codeExecutionBinding,
     ...clientSafe
   } = pendingAction;
   return clientSafe;

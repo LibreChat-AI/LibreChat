@@ -1,19 +1,13 @@
 import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
+import { HatGlasses } from 'lucide-react';
 import { easings } from '@react-spring/web';
-import { MessageCircleDashed } from 'lucide-react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { BirthdayIcon, TooltipAnchor, SplitText } from '@librechat/client';
-import {
-  getIconEndpoint,
-  getEntity,
-  getModelSpec,
-  createConfigHtmlSanitizer,
-  CONFIG_HTML_MEDIA_TAGS,
-  CONFIG_HTML_MEDIA_ATTR,
-} from '~/utils';
 import { useChatContext, useAgentsMapContext, useAssistantsMapContext } from '~/Providers';
+import Description, { isHtmlDescription } from '~/components/ui/Description';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { getIconEndpoint, getEntity, getModelSpec } from '~/utils';
 import { useLocalize, useAuthContext, useGreeting } from '~/hooks';
 import AgentContact from '~/components/Agents/AgentContact';
 import ConvoIcon from '~/components/Endpoints/ConvoIcon';
@@ -89,16 +83,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
   const description = isTemporary
     ? localize('com_ui_temporary_description')
     : ((entity?.description || brandedSpecDescription || conversation?.greeting) ?? '');
-  const descriptionIsHTML = description.trim().startsWith('<');
-
-  const sanitizeDescription = useMemo(
-    () =>
-      createConfigHtmlSanitizer({
-        allowedTags: CONFIG_HTML_MEDIA_TAGS,
-        allowedAttr: CONFIG_HTML_MEDIA_ATTR,
-      }),
-    [],
-  );
+  const descriptionIsHTML = isHtmlDescription(description);
   const selectedAgent =
     isAgent && conversation?.agent_id != null ? agentsMap?.[conversation.agent_id] : undefined;
 
@@ -160,7 +145,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
           <div className={`relative size-10 justify-center ${textHasMultipleLines ? 'mb-2' : ''}`}>
             {isTemporary ? (
               <div className={containerClassName}>
-                <MessageCircleDashed className="h-2/3 w-2/3 text-text-primary" aria-hidden="true" />
+                <HatGlasses className="h-2/3 w-2/3 text-text-primary" aria-hidden="true" />
               </div>
             ) : (
               <ConvoIcon
@@ -216,19 +201,15 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
             />
           )}
         </div>
-        {description &&
-          (descriptionIsHTML ? (
-            <div
-              className="animate-fadeIn mt-4 flex max-w-md items-center justify-center gap-2 text-center text-sm font-normal text-text-primary [&_img]:inline-block [&_img]:h-4 [&_img]:w-4"
-              dangerouslySetInnerHTML={{ __html: sanitizeDescription(description) }}
-            />
-          ) : (
-            <div
-              className={`animate-fadeIn mt-4 max-w-md text-center text-sm font-normal ${isTemporary ? 'text-text-secondary' : 'text-text-primary'}`}
-            >
-              {description}
-            </div>
-          ))}
+        <Description
+          allowMedia
+          description={description}
+          className={
+            descriptionIsHTML
+              ? 'animate-fadeIn mt-4 flex max-w-md items-center justify-center gap-2 text-center text-sm font-normal text-text-primary [&_img]:inline-block [&_img]:h-4 [&_img]:w-4'
+              : `animate-fadeIn mt-4 max-w-md text-center text-sm font-normal ${isTemporary ? 'text-text-secondary' : 'text-text-primary'}`
+          }
+        />
         {selectedAgent && !isTemporary && (
           <AgentContact
             agent={selectedAgent}

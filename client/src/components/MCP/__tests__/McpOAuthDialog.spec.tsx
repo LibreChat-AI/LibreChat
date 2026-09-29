@@ -87,9 +87,19 @@ describe('McpOAuthDialog', () => {
 
   test('Continue opens the OAuth URL in a new tab', () => {
     const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+    const clickSpy = jest
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
     render(<McpOAuthDialog {...baseProps} />);
     fireEvent.click(screen.getByText('com_ui_continue_oauth'));
-    expect(openSpy).toHaveBeenCalledWith(baseProps.oauthUrl, '_blank', 'noopener,noreferrer');
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    const link = clickSpy.mock.instances[0] as unknown as HTMLAnchorElement;
+    expect(link.href).toBe(baseProps.oauthUrl);
+    expect(link.target).toBe('_blank');
+    expect(link.rel).toBe('noopener noreferrer');
+    /** A features string makes WebKit request a popup window, which iOS web apps cannot open. */
+    expect(openSpy).not.toHaveBeenCalled();
+    clickSpy.mockRestore();
     openSpy.mockRestore();
   });
 

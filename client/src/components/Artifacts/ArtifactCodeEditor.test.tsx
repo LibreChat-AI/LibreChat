@@ -1,5 +1,8 @@
 import React from 'react';
 import { render, act } from '@testing-library/react';
+import { ThemeContext, highContrastDarkTheme, highContrastLightTheme } from '@librechat/client';
+import type { Monaco } from '@monaco-editor/react';
+import type { IThemeRGB } from '@librechat/client';
 import type { editor } from 'monaco-editor';
 import type { Artifact } from '~/common';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
@@ -17,7 +20,13 @@ interface MutationHandlers {
   onError?: (error?: unknown) => void;
 }
 
-const mockEditorProps: { onChange?: (value: string | undefined) => void } = {};
+interface MonacoEditorProps {
+  onChange?: (value: string | undefined) => void;
+  beforeMount?: (monaco: Monaco) => void;
+  theme?: string;
+}
+
+const mockEditorProps: MonacoEditorProps = {};
 const mockMutationHandlers: MutationHandlers = {};
 
 // Calling mutate replays onMutate synchronously so currentUpdateRef reflects the
@@ -28,8 +37,8 @@ const mockMutate = jest.fn((vars: MutationVars) => {
 
 jest.mock('@monaco-editor/react', () => ({
   __esModule: true,
-  default: (props: { onChange?: (value: string | undefined) => void }) => {
-    mockEditorProps.onChange = props.onChange;
+  default: (props: MonacoEditorProps) => {
+    Object.assign(mockEditorProps, props);
     return null;
   },
 }));
@@ -81,12 +90,65 @@ const otherArtifact: Artifact = {
   type: 'text/plain',
 };
 
-const renderEditor = (initial: Artifact = artifact) => {
+type Appearance = {
+  resolvedMode: 'light' | 'dark';
+  highContrast: boolean;
+};
+
+const defaultAppearance: Appearance = { resolvedMode: 'light', highContrast: false };
+
+const renderEditor = (initial: Artifact = artifact, initialAppearance = defaultAppearance) => {
   const monacoRef: React.MutableRefObject<editor.IStandaloneCodeEditor | null> = { current: null };
-  const utils = render(<ArtifactCodeEditor artifact={initial} monacoRef={monacoRef} />);
-  const rerenderWith = (next: Artifact) =>
-    utils.rerender(<ArtifactCodeEditor artifact={next} monacoRef={monacoRef} />);
-  return { ...utils, rerenderWith };
+  let currentArtifact = initial;
+  let currentAppearance = initialAppearance;
+  const tree = () => (
+    <ThemeContext.Provider
+      value={
+        {
+          resolvedMode: currentAppearance.resolvedMode,
+          highContrast: currentAppearance.highContrast,
+        } as React.ContextType<typeof ThemeContext>
+      }
+    >
+      <ArtifactCodeEditor artifact={currentArtifact} monacoRef={monacoRef} />
+    </ThemeContext.Provider>
+  );
+  const utils = render(tree());
+  const rerenderWith = (next: Artifact) => {
+    currentArtifact = next;
+    utils.rerender(tree());
+  };
+  const rerenderAppearance = (next: Appearance) => {
+    currentAppearance = next;
+    utils.rerender(tree());
+  };
+  return { ...utils, rerenderWith, rerenderAppearance };
+};
+
+const toHexColor = (palette: IThemeRGB, token: keyof IThemeRGB) =>
+  `#${palette[token]
+    ?.split(/\s+/)
+    .map((channel) => Number(channel).toString(16).padStart(2, '0'))
+    .join('')}`;
+
+const createMonacoMock = () => {
+  const defaults = {
+    setDiagnosticsOptions: jest.fn(),
+    setCompilerOptions: jest.fn(),
+  };
+  const defineTheme = jest.fn();
+  const monaco = {
+    editor: { defineTheme },
+    languages: {
+      typescript: {
+        typescriptDefaults: defaults,
+        javascriptDefaults: defaults,
+        JsxEmit: { React: 1 },
+      },
+    },
+  } as unknown as Monaco;
+
+  return { monaco, defineTheme };
 };
 
 const fireEdit = (value: string) => {
@@ -96,10 +158,12 @@ const fireEdit = (value: string) => {
   });
 };
 
-describe('ArtifactCodeEditor retry guard', () => {
+describe('ArtifactCodeEditor', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockEditorProps.onChange = undefined;
+    mockEditorProps.beforeMount = undefined;
+    mockEditorProps.theme = undefined;
     mockMutationHandlers.onMutate = undefined;
     mockMutationHandlers.onSuccess = undefined;
     mockMutationHandlers.onError = undefined;
@@ -108,6 +172,73 @@ describe('ArtifactCodeEditor retry guard', () => {
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+  });
+
+  it('paints the loading canvas with the standard Monaco canvas outside high contrast', () => {
+    const { container } = renderEditor();
+
+    expect(mockEditorProps.theme).toBe('vs-dark');
+    expect(container.firstElementChild).toHaveStyle({ backgroundColor: '#1e1e1e' });
+  });
+
+  it('moves the Monaco theme and its loading canvas together across contrast appearances', () => {
+    const { rerenderAppearance, container } = renderEditor(artifact, {
+      resolvedMode: 'light',
+      highContrast: true,
+    });
+
+    expect(mockEditorProps.theme).toBe('librechat-high-contrast-light');
+    expect(container.firstElementChild).toHaveStyle({
+      backgroundColor: toHexColor(highContrastLightTheme, 'rgb-surface-primary-alt'),
+    });
+
+    rerenderAppearance({ resolvedMode: 'dark', highContrast: true });
+
+    expect(mockEditorProps.theme).toBe('librechat-high-contrast-dark');
+    expect(container.firstElementChild).toHaveStyle({
+      backgroundColor: toHexColor(highContrastDarkTheme, 'rgb-presentation'),
+    });
+  });
+
+  it('defines both contrast themes from the semantic syntax palettes', () => {
+    renderEditor(artifact, { resolvedMode: 'light', highContrast: true });
+    const { monaco, defineTheme } = createMonacoMock();
+
+    mockEditorProps.beforeMount?.(monaco);
+
+    expect(defineTheme).toHaveBeenCalledTimes(2);
+    expect(defineTheme).toHaveBeenCalledWith(
+      'librechat-high-contrast-light',
+      expect.objectContaining({
+        base: 'vs',
+        inherit: false,
+        colors: expect.objectContaining({
+          'editor.background': toHexColor(highContrastLightTheme, 'rgb-surface-primary-alt'),
+          'editor.foreground': toHexColor(highContrastLightTheme, 'rgb-syntax-text'),
+          'editor.selectionBackground': toHexColor(highContrastLightTheme, 'rgb-text-primary'),
+          'editor.selectionForeground': toHexColor(highContrastLightTheme, 'rgb-surface-primary'),
+        }),
+        rules: expect.arrayContaining([
+          expect.objectContaining({
+            token: 'keyword',
+            foreground: toHexColor(highContrastLightTheme, 'rgb-syntax-keyword').slice(1),
+          }),
+        ]),
+      }),
+    );
+    expect(defineTheme).toHaveBeenCalledWith(
+      'librechat-high-contrast-dark',
+      expect.objectContaining({
+        base: 'vs-dark',
+        inherit: false,
+        colors: expect.objectContaining({
+          'editor.background': toHexColor(highContrastDarkTheme, 'rgb-presentation'),
+          'editor.foreground': toHexColor(highContrastDarkTheme, 'rgb-syntax-text'),
+          'editor.selectionBackground': toHexColor(highContrastDarkTheme, 'rgb-text-primary'),
+          'editor.selectionForeground': toHexColor(highContrastDarkTheme, 'rgb-surface-primary'),
+        }),
+      }),
+    );
   });
 
   it('does not re-run a mutation for content that just failed', () => {

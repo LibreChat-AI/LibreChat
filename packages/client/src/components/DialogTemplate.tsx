@@ -54,7 +54,10 @@ const DialogTemplate: ForwardRefExoticComponent<
     <DialogContent
       showCloseButton={showCloseButton}
       ref={ref}
-      className={cn('bg-surface-dialog shadow-2xl', className || '')}
+      className={cn(
+        'bg-surface-dialog shadow-2xl high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none',
+        className || '',
+      )}
       onClick={(e) => e.stopPropagation()}
     >
       <DialogHeader className={cn(headerClassName ?? '')}>

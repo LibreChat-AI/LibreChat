@@ -47,6 +47,8 @@ export type ToolApprovalHookFactory = (
 export interface ResolvedToolApprovalHook {
   hook: ToolApprovalHook;
   matcher?: string;
+  /** Optional admission-only scope for hooks that inspect the executing agent at runtime. */
+  agentIds?: ReadonlySet<string>;
 }
 
 interface RegisteredHook {
@@ -67,10 +69,10 @@ const registeredHooks: RegisteredHook[] = [];
  * Register a programmatic tool-approval hook (process-wide). Call once at startup. Returns an
  * unregister function that removes exactly this registration.
  *
- * Inert unless tool approval is enabled AND the caller is HITL-capable — hooks only run inside
- * the `PreToolUse` fold of an HITL run (see {@link buildToolApprovalHooks} /
- * `buildHITLRunWiring`). They compose with, and can only tighten, the static
- * `endpoints.agents.toolApproval` policy.
+ * Inert unless tool approval is enabled. Hooks run in the `PreToolUse` fold of
+ * both interactive and headless runs (see {@link buildToolApprovalHooks} /
+ * `buildHITLRunWiring`). Headless `ask` decisions are denied without pausing.
+ * They compose with, and can only tighten, the static policy.
  *
  * @param factory Builds the per-run hook from its context; return `undefined` to opt out.
  * @param options.matcher Optional regex string matched against the tool name — omit to run for
@@ -126,8 +128,12 @@ export function buildToolApprovalHooks(
 export function resolvedToolApprovalHooksCanMatch(
   hooks: readonly ResolvedToolApprovalHook[],
   toolNames: readonly string[],
+  agentId?: string,
 ): boolean {
-  return hooks.some(({ matcher }) => {
+  return hooks.some(({ matcher, agentIds }) => {
+    if (agentIds != null && (agentId == null || !agentIds.has(agentId))) {
+      return false;
+    }
     if (matcher == null) {
       return toolNames.length > 0;
     }

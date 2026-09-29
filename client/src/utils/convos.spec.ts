@@ -1,5 +1,6 @@
 import { QueryClient, InfiniteData } from '@tanstack/react-query';
 import type { TConversation } from 'librechat-data-provider';
+import type { ConversationCursorData } from './convos';
 import {
   dateKeys,
   storeEndpointSettings,
@@ -7,7 +8,7 @@ import {
   updateInfiniteConvoPage,
   findConversationInInfinite,
   removeConvoFromInfinitePages,
-  groupConversationsByDate,
+  groupConversations,
   updateConvoFieldsInfinite,
   addConvoToAllQueries,
   collectPinnedConversations,
@@ -15,6 +16,7 @@ import {
   updateConvoInAllQueries,
   removeConvoFromAllQueries,
   addConversationToAllConversationsQueries,
+  invalidateConversationLists,
 } from './convos';
 import { normalizeData } from './collection';
 
@@ -27,7 +29,7 @@ jest.mock('date-fns', () => {
 });
 
 describe('Conversation Utilities', () => {
-  describe('groupConversationsByDate', () => {
+  describe('groupConversations', () => {
     it('groups conversations by date correctly', () => {
       const conversations = [
         { conversationId: '1', updatedAt: '2023-04-01T12:00:00Z' },
@@ -36,7 +38,7 @@ describe('Conversation Utilities', () => {
         { conversationId: '4', updatedAt: new Date(Date.now() - 86400000 * 2).toISOString() },
         { conversationId: '5', updatedAt: new Date(Date.now() - 86400000 * 8).toISOString() },
       ];
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
       expect(grouped[0][0]).toBe(dateKeys.today);
       expect(grouped[0][1]).toHaveLength(1);
       expect(grouped[1][0]).toBe(dateKeys.yesterday);
@@ -57,7 +59,7 @@ describe('Conversation Utilities', () => {
         { conversationId: '3', updatedAt: '2022-12-01T12:00:00Z' },
       ];
 
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
 
       expect(grouped).toEqual(
         expect.arrayContaining([
@@ -81,7 +83,7 @@ describe('Conversation Utilities', () => {
         { conversationId: '5', updatedAt: '2022-12-01T12:00:00Z' },
       ];
 
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
 
       // Now expect grouping by year for 2023 and 2022
       const expectedGroups = [' 2023', ' 2022'];
@@ -108,7 +110,7 @@ describe('Conversation Utilities', () => {
         { conversationId: '5', updatedAt: '2021-12-01T12:00:00Z' },
       ];
 
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
 
       expect(grouped.map(([key]) => key)).toEqual([' 2023', ' 2022', ' 2021']);
       expect(grouped[0][1].map((c) => new Date(c.updatedAt).getFullYear())).toEqual([2023, 2023]);
@@ -123,7 +125,7 @@ describe('Conversation Utilities', () => {
         { conversationId: '3', updatedAt: '2023-06-30T12:00:00Z' },
       ];
 
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
 
       expect(grouped.length).toBe(1);
       expect(grouped[0][0]).toBe(' 2023');
@@ -137,7 +139,7 @@ describe('Conversation Utilities', () => {
         { conversationId: '3', updatedAt: undefined },
       ];
 
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
 
       expect(grouped.length).toBe(2);
       expect(grouped[0][0]).toBe(dateKeys.today);
@@ -154,13 +156,152 @@ describe('Conversation Utilities', () => {
         { conversationId: '4', updatedAt: '2023-06-01T12:00:00Z' },
       ];
 
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
 
       const allGroupedIds = grouped.flatMap(([, convs]) => convs.map((c) => c.conversationId));
       expect(allGroupedIds).not.toContain('1');
       expect(allGroupedIds).not.toContain('3');
       expect(allGroupedIds).toContain('2');
       expect(allGroupedIds).toContain('4');
+    });
+    it('keeps pinned conversations when requested', () => {
+      const timestamp = '2023-06-01T12:00:00Z';
+      const conversations = [
+        { conversationId: 'pinned', updatedAt: timestamp, pinned: true },
+        { conversationId: 'regular', updatedAt: timestamp },
+      ];
+
+      const defaultIds = groupConversations(conversations as TConversation[])
+        .flatMap(([, convos]) => convos)
+        .map((conversation) => conversation.conversationId);
+      const includedIds = groupConversations(conversations as TConversation[], {
+        includePinned: true,
+      })
+        .flatMap(([, convos]) => convos)
+        .map((conversation) => conversation.conversationId);
+
+      expect(defaultIds).toEqual(['regular']);
+      expect(includedIds).toEqual(['pinned', 'regular']);
+    });
+
+    it('inverts date group and conversation order when ascending', () => {
+      const conversations = [
+        { conversationId: 'today', title: 'Today', updatedAt: new Date().toISOString() },
+        {
+          conversationId: 'month-new',
+          title: 'Month new',
+          updatedAt: '2023-06-30T12:00:00Z',
+        },
+        {
+          conversationId: 'month-old',
+          title: 'Month old',
+          updatedAt: '2023-06-01T12:00:00Z',
+        },
+        {
+          conversationId: 'year',
+          title: 'Year',
+          updatedAt: '2022-06-01T12:00:00Z',
+        },
+      ];
+
+      const grouped = groupConversations(conversations as TConversation[], { direction: 'asc' });
+
+      expect(grouped.map(([key]) => key)).toEqual([' 2022', ' 2023', dateKeys.today]);
+      expect(grouped[1][1].map((conversation) => conversation.conversationId)).toEqual([
+        'month-old',
+        'month-new',
+      ]);
+    });
+
+    /** The server pages titles by its own string order, so the grouping must not reorder
+     *  what arrived: a re-sort would show an alphabet the cursor cannot keep filling. */
+    it('keeps the fetched order for title groups and shares one non-letter bucket', () => {
+      const conversations = [
+        { conversationId: 'avocado', title: 'Avocado' },
+        { conversationId: 'zoo', title: 'Zoo' },
+        { conversationId: 'apple', title: 'apple' },
+        { conversationId: 'number', title: '42 things' },
+        { conversationId: 'empty', title: '' },
+      ];
+
+      const grouped = groupConversations(conversations as TConversation[], {
+        field: 'title',
+        direction: 'asc',
+      });
+
+      expect(grouped.map(([key]) => key)).toEqual(['A', 'Z', 'a', '#']);
+      expect(
+        grouped.map(([, group]) => group.map((conversation) => conversation.conversationId)),
+      ).toEqual([['avocado'], ['zoo'], ['apple'], ['number', 'empty']]);
+    });
+
+    it('keeps a leading-space title in the server order and labels it as non-letter', () => {
+      const conversations = [
+        { conversationId: 'zebra', title: ' Zebra' },
+        { conversationId: 'apple', title: 'Apple' },
+      ];
+
+      const grouped = groupConversations(conversations as TConversation[], {
+        field: 'title',
+        direction: 'asc',
+      });
+
+      expect(grouped.map(([key]) => key)).toEqual(['#', 'A']);
+      expect(
+        grouped.flatMap(([, group]) => group.map((conversation) => conversation.conversationId)),
+      ).toEqual(['zebra', 'apple']);
+    });
+
+    /** A non-letter heading can appear on either side of a letter in the server's order
+     *  (`!draft`, `Apple`, `_scratch`), and merging those two `#` rows into one group would
+     *  move a row across the cursor boundary the next page continues from. */
+    it('emits repeated title headings as separate runs', () => {
+      const conversations = [
+        { conversationId: 'draft', title: '!draft' },
+        { conversationId: 'apple', title: 'Apple' },
+        { conversationId: 'scratch', title: '_scratch' },
+      ];
+
+      const grouped = groupConversations(conversations as TConversation[], {
+        field: 'title',
+        direction: 'asc',
+      });
+
+      expect(grouped.map(([key]) => key)).toEqual(['#', 'A', '#']);
+      expect(
+        grouped.map(([, group]) => group.map((conversation) => conversation.conversationId)),
+      ).toEqual([['draft'], ['apple'], ['scratch']]);
+    });
+
+    /** `charAt(0)` would return a lone surrogate here, which renders as a replacement
+     *  character and merges every supplementary-plane initial into one heading. */
+    it('heads a title group with its first code point', () => {
+      const grouped = groupConversations(
+        [{ conversationId: 'deseret', title: '𐐖ohn' }] as TConversation[],
+        { field: 'title' },
+      );
+
+      expect(grouped.map(([key]) => key)).toEqual(['𐐖']);
+    });
+
+    /** The cursor orders the archive's legacy group — archived before `archivedAt` was
+     *  recorded — by `createdAt`, so reading `updatedAt` first would misplace those rows. */
+    it('dates a legacy archived chat by createdAt rather than last activity', () => {
+      const conversations = [
+        {
+          conversationId: 'legacy',
+          archivedAt: null,
+          createdAt: '2022-06-01T12:00:00Z',
+          updatedAt: '2023-06-01T12:00:00Z',
+        },
+      ];
+
+      const grouped = groupConversations(conversations as unknown as TConversation[], {
+        field: 'archivedAt',
+      });
+
+      expect(grouped).toHaveLength(1);
+      expect(grouped[0][0]).toBe(' 2022');
     });
 
     it('correctly groups and sorts conversations for every month of the year', () => {
@@ -191,7 +332,7 @@ describe('Conversation Utilities', () => {
         },
       ]);
 
-      const grouped = groupConversationsByDate(conversations as TConversation[]);
+      const grouped = groupConversations(conversations as TConversation[]);
 
       // All 2023 conversations should be in a single group
       const group2023 = grouped.find(([key]) => key === ' 2023');
@@ -692,6 +833,113 @@ describe('Conversation Utilities', () => {
         ).toEqual(['a']);
       });
 
+      /** Only newest-first can be reproduced client-side: seeding a row at the front of a
+       *  title- or created-at-ordered page invents a position the next page contradicts. */
+      it('leaves a non-default sort variant to the server instead of seeding a row into it', () => {
+        const sortedKey = ['allConversations', { sortBy: 'title', sortDirection: 'asc' }];
+        queryClient.setQueryData(sortedKey, {
+          pages: [{ conversations: [convoA], nextCursor: null }],
+          pageParams: [],
+        });
+
+        upsertConvoInAllQueries(queryClient, convoB);
+
+        const sorted = queryClient.getQueryData<InfiniteData<any>>(sortedKey);
+        expect(sorted!.pages[0].conversations.map((c: TConversation) => c.conversationId)).toEqual([
+          'a',
+        ]);
+        expect(queryClient.getQueryState(sortedKey)?.isInvalidated).toBe(true);
+      });
+
+      /** The sidebar lists the archive from the same components, so both prefixes are live
+       *  caches: an SSE update to an archived chat must reach the list showing it. */
+      it('updates an archived row in the archived cache', () => {
+        const archivedKey = ['archivedConversations', { isArchived: true }];
+        const archived = { ...convoA, isArchived: true } as TConversation;
+        queryClient.setQueryData(archivedKey, {
+          pages: [{ conversations: [archived], nextCursor: null }],
+          pageParams: [],
+        });
+
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({ ...c, title: 'Renamed archived' }));
+
+        const data = queryClient.getQueryData<InfiniteData<ConversationCursorData>>(archivedKey);
+        expect(data!.pages[0].conversations[0].title).toBe('Renamed archived');
+      });
+
+      /** A copy of an archived chat inherits its archive state, so it belongs to the archived
+       *  list; seeding it into the active one would show a row the server would not return. */
+      it('keeps an archived conversation out of the active list caches', () => {
+        addConvoToAllQueries(queryClient, { ...convoB, isArchived: true } as TConversation);
+
+        const active = queryClient.getQueryData<InfiniteData<ConversationCursorData>>([
+          'allConversations',
+        ]);
+        expect(active!.pages[0].conversations.map((c) => c.conversationId)).toEqual(['a']);
+      });
+
+      it('drops a row from the active cache once it is archived', () => {
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({ ...c, isArchived: true }));
+
+        const active = queryClient.getQueryData<InfiniteData<ConversationCursorData>>([
+          'allConversations',
+        ]);
+        expect(
+          active!.pages.flatMap((page) => page.conversations.map((c) => c.conversationId)),
+        ).not.toContain('a');
+      });
+
+      /** A search is evaluated by the server, so a new row may or may not belong in a cached
+       *  result: skipping it silently would leave a mounted search list missing it. */
+      it('refetches a cached search variant instead of deciding its membership', () => {
+        const searchKey = ['allConversations', { search: 'draft' }];
+        queryClient.setQueryData(searchKey, {
+          pages: [{ conversations: [convoA], nextCursor: null }],
+          pageParams: [],
+        });
+
+        addConvoToAllQueries(queryClient, convoB);
+
+        const searched = queryClient.getQueryData<InfiniteData<ConversationCursorData>>(searchKey);
+        expect(searched!.pages[0].conversations.map((c) => c.conversationId)).toEqual(['a']);
+        expect(queryClient.getQueryState(searchKey)?.isInvalidated).toBe(true);
+      });
+
+      /** A title edit or a new message can make a row start or stop matching a search, and
+       *  only the server can say which: the mounted result has to be refetched either way. */
+      it('refetches a cached search variant after a field update', () => {
+        const searchKey = ['allConversations', { search: 'draft' }];
+        queryClient.setQueryData(searchKey, {
+          pages: [{ conversations: [convoA], nextCursor: null }],
+          pageParams: [],
+        });
+
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({ ...c, title: 'No longer a draft' }));
+
+        const searched = queryClient.getQueryData<InfiniteData<ConversationCursorData>>(searchKey);
+        expect(searched!.pages[0].conversations[0].title).toBe('No longer a draft');
+        expect(queryClient.getQueryState(searchKey)?.isInvalidated).toBe(true);
+      });
+
+      it('updates a row in place under a non-default sort rather than moving it to the top', () => {
+        const sortedKey = ['allConversations', { sortBy: 'createdAt' }];
+        const convoC = { conversationId: 'c', updatedAt: '2024-01-03T12:00:00Z' } as TConversation;
+        queryClient.setQueryData(sortedKey, {
+          pages: [{ conversations: [convoC, convoA], nextCursor: null }],
+          pageParams: [],
+        });
+
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({ ...c, title: 'Renamed' }), true);
+
+        const sorted = queryClient.getQueryData<InfiniteData<any>>(sortedKey);
+        expect(sorted!.pages[0].conversations.map((c: TConversation) => c.conversationId)).toEqual([
+          'c',
+          'a',
+        ]);
+        expect(sorted!.pages[0].conversations[1].title).toBe('Renamed');
+        expect(queryClient.getQueryState(sortedKey)?.isInvalidated).toBe(true);
+      });
+
       it('upsertConvoInAllQueries adds missing conversations to the top', () => {
         upsertConvoInAllQueries(queryClient, convoB);
         const data = queryClient.getQueryData<InfiniteData<{ conversations: TConversation[] }>>([
@@ -890,6 +1138,22 @@ describe('Conversation Utilities', () => {
         ]);
         expect(mainData!.pages[0].conversations[0].conversationId).toBe('b');
         expect(otherData!.pages[0].conversations[0].conversationId).toBe('b');
+      });
+
+      /** Callers that cannot say what changed — a recovered stream, a schedule that moved,
+       *  a deleted project — reach both prefixes through this, or the archive keeps a row
+       *  the server has already changed. */
+      it('invalidateConversationLists reaches the archived prefix too', async () => {
+        const archivedKey = ['archivedConversations', { isArchived: true }];
+        queryClient.setQueryData(archivedKey, {
+          pages: [{ conversations: [convoA], nextCursor: null }],
+          pageParams: [],
+        });
+
+        await invalidateConversationLists(queryClient);
+
+        expect(queryClient.getQueryState(['allConversations'])?.isInvalidated).toBe(true);
+        expect(queryClient.getQueryState(archivedKey)?.isInvalidated).toBe(true);
       });
     });
   });

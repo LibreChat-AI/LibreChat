@@ -3,6 +3,7 @@ import { useToastContext } from '@librechat/client';
 import { FileSources, sharedFileDownload } from 'librechat-data-provider';
 import { getDownloadFilename, isHttpDownloadTarget, triggerDownload } from '~/utils';
 import { useCodeOutputDownload, useFileDownload } from '~/data-provider';
+import useLocalize from '~/hooks/useLocalize';
 import { useShareContext } from '~/Providers';
 
 interface LogLinkProps {
@@ -48,6 +49,7 @@ export const useAttachmentLink = ({
   user,
   source,
 }: AttachmentLinkOptions) => {
+  const localize = useLocalize();
   const { showToast } = useToastContext();
   const { shareId } = useShareContext();
 
@@ -62,10 +64,12 @@ export const useAttachmentLink = ({
    * error or an empty/denied response (e.g. an expired code-output URL or
    * a 404 share download). Callers that show success feedback should gate
    * it on this result rather than on the promise merely resolving.
+   *
+   * Every `false` is announced here, by the layer that knows the cause, so
+   * a caller can report the failure in its own live region without racing
+   * this toast — one press never raises two notifications.
    */
-  const handleDownload = async (
-    event: React.MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
-  ): Promise<boolean> => {
+  const handleDownload = async (event: React.MouseEvent<HTMLElement>): Promise<boolean> => {
     event.preventDefault();
     try {
       // In a shared view, a snapshotted file's href is rewritten to the share
@@ -85,16 +89,14 @@ export const useAttachmentLink = ({
       const stream = useLocalDownload ? await downloadFromApi() : await downloadFromUrl();
       if (stream.data == null || stream.data === '') {
         console.error('Error downloading file: No data found');
-        showToast({
-          status: 'error',
-          message: 'Error downloading file',
-        });
+        showToast({ status: 'error', message: localize('com_ui_download_error') });
         return false;
       }
       triggerDownload(stream.data, downloadFilename);
       return true;
     } catch (error) {
       console.error('Error downloading file:', error);
+      showToast({ status: 'error', message: localize('com_ui_download_error') });
       return false;
     }
   };

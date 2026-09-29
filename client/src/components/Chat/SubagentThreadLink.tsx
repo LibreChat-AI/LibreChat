@@ -29,7 +29,11 @@ export default function SubagentThreadLink({
   return (
     <Button
       type="button"
-      variant="ghost"
+      /** Shares the chat header's translucent gradient with the model selector
+       *  and the sidebar toggle, and the conversation scrolls under all three,
+       *  so this takes the same opaque header treatment rather than `ghost`,
+       *  whose empty fill let message text run through the label. */
+      variant="header-action"
       size="sm"
       className={cn('shrink-0 gap-1', className)}
       aria-label={label}

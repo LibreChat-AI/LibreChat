@@ -70,5 +70,10 @@ describe('admin code environment routes', () => {
     expect(response.body).toEqual({ operation, environmentId: 'attached-vm' });
     expect(middlewareCalls).toEqual(['jwt', 'access:admin', 'manage:code_environments']);
     expect(mockHandlers[handlerName]).toHaveBeenCalledTimes(1);
+    if (path === 'pairings') {
+      expect(mockRequireCapability).toHaveBeenCalledWith('manage:code_environments', {
+        platformOnly: true,
+      });
+    }
   });
 });

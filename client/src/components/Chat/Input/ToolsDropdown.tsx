@@ -167,7 +167,7 @@ const ToolsDropdown = ({ disabled }: ToolsDropdownProps) => {
       onClick: handleFileSearchToggle,
       hideOnClick: false,
       render: (props) => (
-        <div {...props}>
+        <div {...props} data-testid="tools-menu-file-search">
           <div className="flex items-center gap-2">
             <VectorIcon className="icon-md" />
             <span>{localize('com_assistants_file_search')}</span>
@@ -317,7 +317,7 @@ const ToolsDropdown = ({ disabled }: ToolsDropdownProps) => {
       onClick: handleCodeInterpreterToggle,
       hideOnClick: false,
       render: (props) => (
-        <div {...props}>
+        <div {...props} data-testid="tools-menu-run-code">
           <div className="flex items-center gap-2">
             <TerminalSquareIcon className="icon-md" aria-hidden="true" />
             <span>{localize('com_ui_run_code')}</span>

@@ -1,20 +1,32 @@
 import { useMemo, memo, type FC, useCallback, useEffect, useRef } from 'react';
+import { useDrop } from 'react-dnd';
 import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
 import { ChevronDown } from 'lucide-react';
-import { Spinner, useMediaQuery } from '@librechat/client';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
+import { Spinner, useMediaQuery, buttonVariants } from '@librechat/client';
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { ConversationDragItem } from './dnd';
 import {
-  useLocalize,
-  TranslationKeys,
-  useFavorites,
-  useShowMarketplace,
-  useElementSize,
-} from '~/hooks';
-import FavoritesList from '~/components/Nav/Favorites/FavoritesList';
-import { groupConversationsByDate, cn } from '~/utils';
+  chatFilterCountAtom,
+  chatFilterTagsAtom,
+  chatSortAtom,
+  isAlphabeticalSort,
+  isArchivedChatViewAtom,
+  resetChatFiltersAtom,
+} from './chatFilters';
+import {
+  CONVERSATION_DRAG_TYPE,
+  markExternalHover,
+  useAssignDroppedConversation,
+  useEffectiveProjectId,
+  useUnpinDroppedConversation,
+} from './dnd';
+import { useLocalize, TranslationKeys, useElementSize, useOuterScrollWindow } from '~/hooks';
+import { groupConversationsWithRunning, RUNNING_CHATS_GROUP } from './running';
+import { groupConversations, cn } from '~/utils';
 import { useActiveJobs } from '~/data-provider';
 import Convo from './Convo';
 import store from '~/store';
@@ -39,9 +51,20 @@ interface ConversationsProps {
   isSearchLoading: boolean;
   isChatsExpanded: boolean;
   setIsChatsExpanded: (expanded: boolean) => void;
-  showFavorites?: boolean;
   /** Actions for the Chats header, alongside the Projects header's own. */
   chatsHeaderTrailing?: ReactNode;
+  /** Whether another page exists, so an empty list can be told apart from an unpaged one. */
+  hasNextPage?: boolean;
+  /** Whether the initial conversations request failed without usable rows. */
+  isError?: boolean;
+  /** Re-run the conversations request from the error state. */
+  onRetry?: () => void;
+  /** The sidebar's single scroll viewport: the list is windowed by it rather than
+   *  scrolling on its own, so the sections above it scroll with the chats. */
+  scrollViewport: HTMLElement | null;
+  /** Wrapper around everything inside that viewport, whose height changes when a
+   *  section above the list expands or collapses. */
+  scrollContent: HTMLElement | null;
 }
 
 interface MeasuredRowProps {
@@ -94,17 +117,24 @@ interface ChatsHeaderProps {
   onToggle: () => void;
   /** Section-scoped actions, mirroring the Projects header. */
   trailing?: ReactNode;
+  /** Drop-target affordance while a project conversation is dragged over the section. */
+  highlight?: boolean;
 }
 
 /** Collapsible header for the Chats section */
-const ChatsHeader: FC<ChatsHeaderProps> = memo(({ isExpanded, onToggle, trailing }) => {
+const ChatsHeader: FC<ChatsHeaderProps> = memo(({ isExpanded, onToggle, trailing, highlight }) => {
   const localize = useLocalize();
 
   return (
-    <div className="flex h-8 w-full items-center pr-2">
+    <div
+      className={cn(
+        'flex h-8 w-full items-center pr-2',
+        highlight && 'rounded-lg bg-surface-active-alt',
+      )}
+    >
       <button
         onClick={onToggle}
-        className="group flex min-w-0 flex-1 items-center gap-1 rounded-lg px-1 py-2 text-xs font-bold text-text-secondary outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+        className={cn(buttonVariants({ variant: 'section-header' }), 'group min-w-0 flex-1')}
         type="button"
         aria-expanded={isExpanded}
       >
@@ -124,25 +154,32 @@ const ChatsHeader: FC<ChatsHeaderProps> = memo(({ isExpanded, onToggle, trailing
 
 ChatsHeader.displayName = 'ChatsHeader';
 
-const DateLabel: FC<{ groupName: string; isFirst?: boolean }> = memo(({ groupName, isFirst }) => {
-  const localize = useLocalize();
-  return (
-    <h2
-      aria-label={localize('com_a11y_chats_date_section', {
-        date: localize(groupName as TranslationKeys) || groupName,
-      })}
-      className={cn('pl-1 pt-1 text-text-secondary', isFirst === true ? 'mt-0' : 'mt-2')}
-      style={{ fontSize: '0.7rem' }}
-    >
-      {localize(groupName as TranslationKeys) || groupName}
-    </h2>
-  );
-});
+const DateLabel: FC<{ groupName: string; isFirst?: boolean; isAlphabetical?: boolean }> = memo(
+  ({ groupName, isFirst, isAlphabetical = false }) => {
+    const localize = useLocalize();
+    const displayName = localize(groupName as TranslationKeys) || groupName;
+    return (
+      <h2
+        aria-label={
+          groupName === RUNNING_CHATS_GROUP
+            ? localize('com_a11y_chats_running_section')
+            : localize(
+                isAlphabetical ? 'com_a11y_chats_alpha_section' : 'com_a11y_chats_date_section',
+                isAlphabetical ? { letter: displayName } : { date: displayName },
+              )
+        }
+        className={cn('pl-1 pt-1 text-text-secondary', isFirst === true ? 'mt-0' : 'mt-2')}
+        style={{ fontSize: '0.7rem' }}
+      >
+        {displayName}
+      </h2>
+    );
+  },
+);
 
 DateLabel.displayName = 'DateLabel';
 
 type FlattenedItem =
-  | { type: 'favorites' }
   | { type: 'header'; groupName: string }
   | { type: 'convo'; convo: TConversation }
   | { type: 'loading' };
@@ -157,54 +194,137 @@ const Conversations: FC<ConversationsProps> = ({
   isSearchLoading,
   isChatsExpanded,
   setIsChatsExpanded,
-  showFavorites = true,
   chatsHeaderTrailing,
+  hasNextPage = false,
+  isError = false,
+  onRetry,
+  scrollViewport,
+  scrollContent,
 }) => {
   const localize = useLocalize();
   const search = useRecoilValue(store.search);
-  const { favorites, isLoading: isFavoritesLoading } = useFavorites();
+  const sort = useAtomValue(chatSortAtom);
+  const isArchivedView = useAtomValue(isArchivedChatViewAtom);
+  const activeFilterCount = useAtomValue(chatFilterCountAtom);
+  const filterTags = useAtomValue(chatFilterTagsAtom);
+  const resetFilters = useSetAtom(resetChatFiltersAtom);
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  /* Dropping a chat on the Chats section makes it an ordinary chat: out of its
+   * project, and unpinned. A root-list chat that is not pinned already is one,
+   * so it is rejected rather than given a drop that would do nothing. */
+  const assignDropped = useAssignDroppedConversation();
+  const unpinDropped = useUnpinDroppedConversation();
+  const effectiveProjectId = useEffectiveProjectId();
+  const chatsRegionRef = useRef<HTMLDivElement>(null);
+  const [{ isDropOver, canDrop }, dropRef] = useDrop<
+    ConversationDragItem,
+    unknown,
+    { isDropOver: boolean; canDrop: boolean }
+  >({
+    accept: CONVERSATION_DRAG_TYPE,
+    canDrop: (item) => effectiveProjectId(item) != null || item.pinned === true,
+    /* Reported even when refused, so a root chat dropped back on Chats does not
+     * save the shift its pointer caused on the way out of the pinned list. */
+    hover: () => markExternalHover(),
+    drop: (item) => {
+      /* Sequenced rather than fired together, for a pinned chat that also sits
+       * in a project. The pin write answers with the conversation as it stands
+       * once it has run, so a pin that overlapped the project write would
+       * publish a row still carrying its old `chatProjectId` into the lists the
+       * assignment had just corrected. Waiting also gives a failure one shape:
+       * an assignment that did not take leaves the chat pinned where it was,
+       * instead of unpinning it out of a project it is still in. Each half is a
+       * no-op when it already holds. */
+      void assignDropped(item, null).then((filed) => {
+        if (filed) {
+          unpinDropped(item);
+        }
+      });
+    },
+    collect: (monitor) => ({ isDropOver: monitor.isOver(), canDrop: monitor.canDrop() }),
+  });
+  dropRef(chatsRegionRef);
   const convoHeight = isSmallScreen ? 44 : 34;
-  const showAgentMarketplace = useShowMarketplace();
+  const { ref: listContainerRef, width: listWidth } = useElementSize<HTMLDivElement>();
+  /** The list does not scroll: the sidebar's one scroll container does, and the
+   *  list virtualizes against the slice of it the rows currently occupy. */
   const {
-    ref: listContainerRef,
-    width: listWidth,
-    height: listHeight,
-  } = useElementSize<HTMLDivElement>();
+    ref: listWindowRef,
+    height: windowHeight,
+    scrollTop: windowScrollTop,
+    isOnScreen: isListOnScreen,
+  } = useOuterScrollWindow(scrollViewport, scrollContent);
 
-  const favoritesContentKeyRef = useRef('');
+  /** One element is both the width source and the window anchor; a stable
+   *  callback keeps React from detaching and reattaching it every render. */
+  const setListNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      listContainerRef(node);
+      listWindowRef(node);
+    },
+    [listContainerRef, listWindowRef],
+  );
 
   // Fetch active job IDs for showing generation indicators
   const { data: activeJobsData } = useActiveJobs();
-  const activeJobIds = useMemo(
-    () => new Set(activeJobsData?.activeJobIds ?? []),
-    [activeJobsData?.activeJobIds],
-  );
-
-  // Determine if FavoritesList will render content
-  const shouldShowFavorites =
-    showFavorites &&
-    !search.query &&
-    (isFavoritesLoading || favorites.length > 0 || showAgentMarketplace);
-
-  favoritesContentKeyRef.current = `${favorites.length}-${showAgentMarketplace ? 1 : 0}-${isFavoritesLoading ? 1 : 0}`;
+  const activeJobIdsRef = useRef<Set<string> | null>(null);
+  const activeJobIds = useMemo(() => {
+    const ids = activeJobsData?.activeJobIds ?? [];
+    const next = new Set(ids);
+    const previous = activeJobIdsRef.current;
+    if (previous && next.size === previous.size && ids.every((id) => previous.has(id))) {
+      return previous;
+    }
+    activeJobIdsRef.current = next;
+    return next;
+  }, [activeJobsData?.activeJobIds]);
 
   const filteredConversations = useMemo(
     () => rawConversations.filter(Boolean) as TConversation[],
     [rawConversations],
   );
 
+  /** The pinned section carries pins except in the archive or during search, when it is
+   *  hidden. Keep matching pins in the Chats results instead of showing an empty list. */
+  const includePinned = isArchivedView || !!search.query;
+  const datedConversations = useMemo(
+    () =>
+      groupConversations(filteredConversations, {
+        field: sort.field,
+        direction: sort.direction,
+        includePinned,
+      }),
+    [filteredConversations, includePinned, sort.direction, sort.field],
+  );
+  /** The archive keeps its server order, while search still promotes active matches. */
   const groupedConversations = useMemo(
-    () => groupConversationsByDate(filteredConversations),
-    [filteredConversations],
+    () =>
+      groupConversationsWithRunning(datedConversations, activeJobIds, {
+        field: sort.field,
+        direction: sort.direction,
+        includePinned: isArchivedView,
+      }),
+    [datedConversations, activeJobIds, isArchivedView, sort.direction, sort.field],
   );
 
-  /* Pins are stripped from the date groups. An all-pin page leaves the
-     virtual list with no rows, so onRowsRendered never fires and later
+  /* Outside search, pins are stripped from the date groups. An all-pin page leaves
+     the virtual list with no rows, so onRowsRendered never fires and later
      unpinned chats stay unreachable. Ask for another page only when the
      conversations input actually changes; a failed fetchNextPage leaves
      the same array and must not loop. */
   const paginatedFromRef = useRef<Array<TConversation | null> | null>(null);
+
+  /* A drain that exhausted its retries leaves that array unchanged, so the
+     guard above would bar every later attempt and the remaining chats would
+     stay unreachable for the rest of the session. Collapsing the section is a
+     deliberate act, so reopening it is allowed to try once more, which is a
+     retry path rather than a loop. */
+  useEffect(() => {
+    if (!isChatsExpanded) {
+      paginatedFromRef.current = null;
+    }
+  }, [isChatsExpanded]);
+
   useEffect(() => {
     if (!isChatsExpanded || isLoading || isSearchLoading || groupedConversations.length > 0) {
       return;
@@ -225,11 +345,6 @@ const Conversations: FC<ConversationsProps> = ({
 
   const flattenedItems = useMemo(() => {
     const items: FlattenedItem[] = [];
-    // Only include favorites row if FavoritesList will render content
-    if (shouldShowFavorites) {
-      items.push({ type: 'favorites' });
-    }
-
     if (isChatsExpanded) {
       groupedConversations.forEach(([groupName, convos]) => {
         items.push({ type: 'header', groupName });
@@ -241,7 +356,7 @@ const Conversations: FC<ConversationsProps> = ({
       }
     }
     return items;
-  }, [groupedConversations, isLoading, isChatsExpanded, shouldShowFavorites]);
+  }, [groupedConversations, isLoading, isChatsExpanded]);
 
   // Store flattenedItems in a ref for keyMapper to access without recreating cache
   const flattenedItemsRef = useRef(flattenedItems);
@@ -258,12 +373,8 @@ const Conversations: FC<ConversationsProps> = ({
           if (!item) {
             return `unknown-${index}`;
           }
-          if (item.type === 'favorites') {
-            return `favorites-${favoritesContentKeyRef.current}`;
-          }
           if (item.type === 'header') {
-            const firstHeaderIndex = flattenedItemsRef.current[0]?.type === 'favorites' ? 1 : 0;
-            return `header-${item.groupName}-${index === firstHeaderIndex ? 'first' : 'sub'}`;
+            return `header-${item.groupName}-${index === 0 ? 'first' : 'sub'}`;
           }
           if (item.type === 'convo') {
             return `convo-${item.convo.conversationId}`;
@@ -276,22 +387,6 @@ const Conversations: FC<ConversationsProps> = ({
       }),
     [convoHeight],
   );
-
-  const clearFavoritesCache = useCallback(() => {
-    if (cache) {
-      cache.clear(0, 0);
-      if (containerRef.current && 'recomputeRowHeights' in containerRef.current) {
-        containerRef.current.recomputeRowHeights(0);
-      }
-    }
-  }, [cache, containerRef]);
-
-  useEffect(() => {
-    const frameId = requestAnimationFrame(() => {
-      clearFavoritesCache();
-    });
-    return () => cancelAnimationFrame(frameId);
-  }, [favorites.length, isFavoritesLoading, showAgentMarketplace, clearFavoritesCache]);
 
   useEffect(() => {
     const frameId = requestAnimationFrame(() => {
@@ -345,19 +440,14 @@ const Conversations: FC<ConversationsProps> = ({
         );
       }
 
-      if (item.type === 'favorites') {
-        return (
-          <MeasuredRow key={key} {...rowProps}>
-            <FavoritesList isSmallScreen={isSmallScreen} toggleNav={toggleNav} />
-          </MeasuredRow>
-        );
-      }
-
       if (item.type === 'header') {
-        const firstHeaderIndex = flattenedItems[0]?.type === 'favorites' ? 1 : 0;
         return (
           <MeasuredRow key={key} {...rowProps}>
-            <DateLabel groupName={item.groupName} isFirst={index === firstHeaderIndex} />
+            <DateLabel
+              groupName={item.groupName}
+              isFirst={index === 0}
+              isAlphabetical={isAlphabeticalSort(sort.field)}
+            />
           </MeasuredRow>
         );
       }
@@ -371,6 +461,7 @@ const Conversations: FC<ConversationsProps> = ({
               retainView={moveToTop}
               toggleNav={toggleNav}
               isGenerating={isGenerating}
+              draggable
             />
           </MeasuredRow>
         );
@@ -378,7 +469,7 @@ const Conversations: FC<ConversationsProps> = ({
 
       return null;
     },
-    [cache, flattenedItems, moveToTop, toggleNav, isSmallScreen, activeJobIds],
+    [cache, flattenedItems, moveToTop, toggleNav, activeJobIds, sort.field],
   );
 
   const getRowHeight = useCallback(
@@ -393,48 +484,140 @@ const Conversations: FC<ConversationsProps> = ({
 
   const handleRowsRendered = useCallback(
     ({ stopIndex }: { stopIndex: number }) => {
+      /** Reaching the end of what is rendered only means the reader is near the
+       *  end of the list when the reader can see it. A list still below the
+       *  fold renders its first row to keep a height, and on a page whose chats
+       *  are nearly all pinned that row is already within the threshold — which
+       *  would spend another request on chats nobody has looked at. The list
+       *  fills the moment it comes into view instead; a page holding no chats
+       *  at all is drained by the separate all-pin effect above.
+       *
+       *  Asked here rather than read from the last frame: a commit that swaps
+       *  what the sidebar holds — leaving a search restores the sections and
+       *  the unfiltered page together — reports its rows before any observer
+       *  has seen the new layout. */
+      if (!isListOnScreen()) {
+        return;
+      }
       if (stopIndex >= flattenedItems.length - 8) {
         throttledLoadMore();
       }
     },
-    [flattenedItems.length, throttledLoadMore],
+    [flattenedItems.length, throttledLoadMore, isListOnScreen],
   );
+  const isListError =
+    isChatsExpanded &&
+    isError &&
+    !isLoading &&
+    !isSearchLoading &&
+    filteredConversations.length === 0;
+
+  /** A list that came back empty is a dead end the user has to be able to leave: say why
+   *  it is empty and offer the way back. A drained page can still contain only pinned rows,
+   *  which render in PinnedSection and do not make the account empty. */
+  const hasUnfilteredRows =
+    !search.query && filterTags.length === 0 && !isArchivedView && filteredConversations.length > 0;
+  const isEmpty =
+    isChatsExpanded &&
+    !isLoading &&
+    !isSearchLoading &&
+    !isListError &&
+    !hasNextPage &&
+    groupedConversations.length === 0 &&
+    !hasUnfilteredRows;
+
+  let emptyLabel: TranslationKeys = 'com_ui_no_chats';
+  if (search.query) {
+    emptyLabel = 'com_ui_no_search_results';
+  } else if (filterTags.length > 0) {
+    emptyLabel = 'com_ui_no_chats_match_filters';
+  } else if (isArchivedView) {
+    emptyLabel = 'com_ui_no_archived_chats';
+  }
+
+  let body: ReactNode = (
+    <div ref={setListNode} className="flex-1">
+      <List
+        ref={containerRef}
+        autoHeight
+        width={listWidth}
+        height={windowHeight}
+        scrollTop={windowScrollTop}
+        deferredMeasurementCache={cache}
+        rowCount={flattenedItems.length}
+        rowHeight={getRowHeight}
+        rowRenderer={rowRenderer}
+        overscanRowCount={10}
+        aria-readonly={false}
+        className="outline-none"
+        aria-label="Conversations"
+        onRowsRendered={handleRowsRendered}
+        tabIndex={-1}
+        style={{ outline: 'none' }}
+        containerRole="rowgroup"
+      />
+    </div>
+  );
+  if (isSearchLoading) {
+    body = (
+      <div className="flex flex-1 items-center justify-center">
+        <Spinner className="text-text-primary" />
+        <span className="ml-2 text-text-primary">{localize('com_ui_loading')}</span>
+      </div>
+    );
+  } else if (isListError) {
+    body = (
+      <div
+        className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+        data-testid="convo-list-error"
+        role="alert"
+      >
+        <span className="text-sm text-text-secondary">{localize('com_ui_chats_load_error')}</span>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded-lg px-2 py-1 text-sm text-text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+          >
+            {localize('com_ui_retry')}
+          </button>
+        )}
+      </div>
+    );
+  } else if (isEmpty) {
+    body = (
+      <div
+        className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+        data-testid="convo-list-empty"
+      >
+        <span className="text-sm text-text-secondary">{localize(emptyLabel)}</span>
+        {activeFilterCount > 0 && (
+          <button
+            type="button"
+            onClick={() => resetFilters()}
+            className="rounded-lg px-2 py-1 text-sm text-text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+          >
+            {localize('com_ui_clear_filters')}
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col pb-2 text-sm text-text-primary">
+    <div
+      ref={chatsRegionRef}
+      className="relative flex flex-1 flex-col pb-2 text-sm text-text-primary"
+    >
       <div className="px-3">
         <ChatsHeader
           isExpanded={isChatsExpanded}
           onToggle={() => setIsChatsExpanded(!isChatsExpanded)}
           trailing={chatsHeaderTrailing}
+          highlight={isDropOver && canDrop}
         />
       </div>
-      {isSearchLoading ? (
-        <div className="flex flex-1 items-center justify-center">
-          <Spinner className="text-text-primary" />
-          <span className="ml-2 text-text-primary">{localize('com_ui_loading')}</span>
-        </div>
-      ) : (
-        <div ref={listContainerRef} className="min-h-0 flex-1 overflow-hidden">
-          <List
-            ref={containerRef}
-            width={listWidth}
-            height={listHeight}
-            deferredMeasurementCache={cache}
-            rowCount={flattenedItems.length}
-            rowHeight={getRowHeight}
-            rowRenderer={rowRenderer}
-            overscanRowCount={10}
-            aria-readonly={false}
-            className="outline-none"
-            aria-label="Conversations"
-            onRowsRendered={handleRowsRendered}
-            tabIndex={-1}
-            style={{ outline: 'none' }}
-            containerRole="rowgroup"
-          />
-        </div>
-      )}
+      {body}
     </div>
   );
 };

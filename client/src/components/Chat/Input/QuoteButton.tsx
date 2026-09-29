@@ -1,4 +1,4 @@
-import { memo, useRef, useState, useEffect, useCallback, useLayoutEffect } from 'react';
+import { memo, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { TextQuote } from 'lucide-react';
 import { useSetRecoilState } from 'recoil';
@@ -79,7 +79,7 @@ const CLIPPING_OVERFLOWS = new Set(['auto', 'scroll', 'hidden']);
  */
 const findClippingAncestors = (element: HTMLElement): HTMLElement[] => {
   const clippers: HTMLElement[] = [];
-  let current = element.parentElement;
+  let current: HTMLElement | null = element;
   while (current && current !== document.body) {
     const { overflowX, overflowY } = getComputedStyle(current);
     if (CLIPPING_OVERFLOWS.has(overflowX) || CLIPPING_OVERFLOWS.has(overflowY)) {
@@ -179,31 +179,107 @@ const readSelection = (): Reading | null => {
   };
 };
 
-/**
- * Whether the selection is still on screen, judged against the window
- * intersected with every ancestor that clips it, on both axes. Text slipping
- * under the chat header or sideways out of a table is invisible even though its
- * un-clipped rect is still inside the window, and checking the window alone
- * would leave the popup floating over unrelated UI.
- */
-const isAnchorVisible = (anchor: Anchor, clippers: HTMLElement[]): boolean => {
-  let top = 0;
-  let bottom = window.innerHeight;
-  let left = 0;
-  let right = window.innerWidth;
-  for (let index = 0; index < clippers.length; index++) {
-    const bounds = clippers[index].getBoundingClientRect();
+/** Use only the visible part of a selection to place the popup. A long code
+ * line can extend far beyond its scroll container even while partly selected. */
+const clipAnchor = (anchor: Anchor, clippers: HTMLElement[]): Anchor | null => {
+  let top = Math.max(0, anchor.top);
+  let bottom = Math.min(window.innerHeight, anchor.bottom);
+  let left = Math.max(0, anchor.left);
+  let right = Math.min(window.innerWidth, anchor.right);
+  for (const clipper of clippers) {
+    const bounds = clipper.getBoundingClientRect();
     top = Math.max(top, bounds.top);
     bottom = Math.min(bottom, bounds.bottom);
     left = Math.max(left, bounds.left);
     right = Math.min(right, bounds.right);
-    if (top > bottom || left > right) {
-      return false;
+    if (top >= bottom || left >= right) {
+      return null;
     }
   }
-  return (
-    anchor.bottom >= top && anchor.top <= bottom && anchor.right >= left && anchor.left <= right
-  );
+  return top < bottom && left < right ? { top, bottom, left, right } : null;
+};
+
+/** Selected text can cross from a clipped code block into unclipped prose. Clip
+ * each consecutive text fragment to its own ancestors before merging the visible bounds. */
+const visibleAnchor = (range: Range, anchor: Anchor, clippers: HTMLElement[]): Anchor | null => {
+  if (
+    range.startContainer === range.endContainer &&
+    range.startContainer.nodeType === Node.TEXT_NODE
+  ) {
+    return clipAnchor(anchor, clippers);
+  }
+
+  const ancestors = new Map<HTMLElement, HTMLElement[]>();
+  const clippersFor = (element: HTMLElement): HTMLElement[] => {
+    const cached = ancestors.get(element);
+    if (cached) {
+      return cached;
+    }
+    const parent = element.parentElement;
+    const outer = parent && parent !== document.body ? clippersFor(parent) : [];
+    const { overflowX, overflowY } = getComputedStyle(element);
+    const found =
+      CLIPPING_OVERFLOWS.has(overflowX) || CLIPPING_OVERFLOWS.has(overflowY)
+        ? [element, ...outer]
+        : outer;
+    ancestors.set(element, found);
+    return found;
+  };
+
+  let first: Text | null = null;
+  let last: Text | null = null;
+  let groupClippers: HTMLElement[] = [];
+  let visible: Anchor | null = null;
+  const measureGroup = () => {
+    if (!first || !last) {
+      return;
+    }
+    const fragment = document.createRange();
+    fragment.setStart(first, first === range.startContainer ? range.startOffset : 0);
+    fragment.setEnd(last, last === range.endContainer ? range.endOffset : last.length);
+    const bounds = anchorFromRect(fragment.getBoundingClientRect());
+    const clipped = bounds && clipAnchor(bounds, groupClippers);
+    if (!clipped) {
+      return;
+    }
+    visible = visible
+      ? {
+          top: Math.min(visible.top, clipped.top),
+          bottom: Math.max(visible.bottom, clipped.bottom),
+          left: Math.min(visible.left, clipped.left),
+          right: Math.max(visible.right, clipped.right),
+        }
+      : clipped;
+  };
+
+  const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT);
+  if (range.startContainer.nodeType === Node.TEXT_NODE) {
+    walker.currentNode = range.startContainer;
+  }
+  for (
+    let node =
+      range.startContainer.nodeType === Node.TEXT_NODE ? walker.currentNode : walker.nextNode();
+    node;
+    node = walker.nextNode()
+  ) {
+    if (range.comparePoint(node, 0) > 0) {
+      break;
+    }
+    if (!node.textContent || !range.intersectsNode(node) || !node.parentElement) {
+      continue;
+    }
+    const next = node as Text;
+    const nextClippers = clippersFor(node.parentElement as HTMLElement);
+    if (first && groupClippers !== nextClippers) {
+      measureGroup();
+      first = null;
+    }
+    first ??= next;
+    last = next;
+    groupClippers = nextClippers;
+  }
+  measureGroup();
+  return visible;
 };
 
 /** Place the popup on the preferred side, falling back to the other side and
@@ -244,7 +320,7 @@ const resolveTop = (anchor: Anchor, height: number, preferBelow: boolean): numbe
  */
 function QuoteButton({ conversationId }: { conversationId: string }) {
   const localize = useLocalize();
-  const [selection, setSelection] = useState<SelectionState | null>(null);
+  const selectionRef = useRef<SelectionState | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const rangeRef = useRef<Range | null>(null);
   const clippersRef = useRef<HTMLElement[]>([]);
@@ -254,6 +330,32 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
   /** Set by the listener effect so the press handlers can dismiss the popup. */
   const hideRef = useRef<() => void>(() => undefined);
   const setQuotes = useSetRecoilState(store.pendingQuotesByConvoId(conversationId));
+
+  /** Selection and scroll events must not enter React's commit/selection-restoration
+   *  path. Keep the portal mounted and update only its transient presentation. */
+  const presentSelection = useCallback((next: SelectionState | null) => {
+    selectionRef.current = next;
+    const button = buttonRef.current;
+    if (!button) {
+      return;
+    }
+    if (!next) {
+      button.style.display = 'none';
+      return;
+    }
+    const touch = String(next.viaTouch);
+    if (button.dataset.touch !== touch) {
+      button.dataset.touch = touch;
+    }
+    if (button.style.display === 'none') {
+      button.style.display = 'inline-flex';
+    }
+    const { width, height } = button.getBoundingClientRect();
+    const maxLeft = Math.max(EDGE_MARGIN, window.innerWidth - width - EDGE_MARGIN);
+    const left = Math.min(Math.max(anchorCenterX(next.anchor) - width / 2, EDGE_MARGIN), maxLeft);
+    button.style.top = `${resolveTop(next.anchor, height, next.viaTouch)}px`;
+    button.style.left = `${left}px`;
+  }, []);
 
   useEffect(() => {
     let settleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -279,7 +381,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
       }
       rangeRef.current = null;
       clippersRef.current = [];
-      setSelection(null);
+      presentSelection(null);
     };
 
     const hide = () => {
@@ -295,22 +397,23 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
        *  tracked during the settle window, so a selection scrolled out of the
        *  chat in those 300ms would otherwise be published off-screen and
        *  clamped into view, stranding the popup over unrelated UI. */
-      if (!reading || !isAnchorVisible(reading.anchor, reading.clippers)) {
+      const anchor = reading && visibleAnchor(reading.range, reading.anchor, reading.clippers);
+      if (!reading || !anchor) {
         hide();
         return;
       }
-      rangeRef.current = reading.range;
+      /** Native handle drags can mutate the Selection's Range in place. */
+      rangeRef.current = reading.range.cloneRange();
       clippersRef.current = reading.clippers;
-      /** Reuse the previous state object when nothing moved so a redundant
-       *  settle pass costs no render. */
-      setSelection((prev) =>
-        prev &&
-        prev.text === reading.text &&
-        prev.viaTouch === touch &&
-        sameAnchor(prev.anchor, reading.anchor)
-          ? prev
-          : { text: reading.text, anchor: reading.anchor, viaTouch: touch },
-      );
+      const previous = selectionRef.current;
+      if (
+        !previous ||
+        previous.text !== reading.text ||
+        previous.viaTouch !== touch ||
+        !sameAnchor(previous.anchor, anchor)
+      ) {
+        presentSelection({ text: reading.text, anchor, viaTouch: touch });
+      }
     };
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -377,14 +480,16 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
       if (!range) {
         return;
       }
-      const anchor = anchorFromRect(range.getBoundingClientRect());
-      if (!anchor || !isAnchorVisible(anchor, clippersRef.current)) {
+      const bounds = anchorFromRect(range.getBoundingClientRect());
+      const anchor = bounds && visibleAnchor(range, bounds, clippersRef.current);
+      if (!anchor) {
         hide();
         return;
       }
-      setSelection((prev) =>
-        prev && !sameAnchor(prev.anchor, anchor) ? { ...prev, anchor } : prev,
-      );
+      const previous = selectionRef.current;
+      if (previous && !sameAnchor(previous.anchor, anchor)) {
+        presentSelection({ ...previous, anchor });
+      }
     };
 
     const scheduleReanchor = () => {
@@ -422,29 +527,17 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
       document.removeEventListener('scroll', scheduleReanchor, true);
       window.removeEventListener('resize', scheduleReanchor);
     };
-  }, []);
+  }, [presentSelection]);
 
-  /** Clamp using the button's real size so it never lands off-screen. Apply the
-   *  measured layout directly before paint: feeding it back through state adds
-   *  a synchronous render to every selection update and can exhaust React's
-   *  nested-update limit while the browser is still changing the selection. */
+  /** A parent render (for example a locale change) can change the button size. */
   useLayoutEffect(() => {
-    const button = buttonRef.current;
-    if (!selection || !button) {
-      return;
-    }
-    const { width, height } = button.getBoundingClientRect();
-    const maxLeft = Math.max(EDGE_MARGIN, window.innerWidth - width - EDGE_MARGIN);
-    const left = Math.min(
-      Math.max(anchorCenterX(selection.anchor) - width / 2, EDGE_MARGIN),
-      maxLeft,
-    );
-    const top = resolveTop(selection.anchor, height, selection.viaTouch);
+    presentSelection(selectionRef.current);
+  });
 
-    button.style.top = `${top}px`;
-    button.style.left = `${left}px`;
-    button.style.visibility = 'visible';
-  }, [selection]);
+  useLayoutEffect(() => {
+    pressedTextRef.current = null;
+    hideRef.current();
+  }, [conversationId]);
 
   const commitQuote = useCallback(
     (text: string) => {
@@ -454,18 +547,19 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
       rangeRef.current = null;
       clippersRef.current = [];
       pressedTextRef.current = null;
-      setSelection(null);
+      presentSelection(null);
       window.getSelection()?.removeAllRanges();
       document.getElementById(mainTextareaId)?.focus();
     },
-    [setQuotes],
+    [setQuotes, presentSelection],
   );
 
   const addQuote = useCallback(() => {
+    const selection = selectionRef.current;
     if (selection) {
       commitQuote(selection.text);
     }
-  }, [selection, commitQuote]);
+  }, [commitQuote]);
 
   /**
    * End a touch press that did not commit. While a press is in flight the
@@ -482,16 +576,12 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
     }
   }, []);
 
-  if (!selection) {
-    return null;
-  }
-
   return createPortal(
     <button
       ref={buttonRef}
       type="button"
       /** A tap is also the gesture that dismisses a selection, so `click` can
-       *  never be relied on here: the button is already unmounted by the time it
+       *  never be relied on here: the button can be hidden by the time it
        *  would fire. The excerpt is captured on the press and committed on the
        *  release instead, which keeps a button's normal escape hatches — drag
        *  off the button, or have the gesture stolen by a scroll, and nothing is
@@ -501,7 +591,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
           return;
         }
         event.preventDefault();
-        pressedTextRef.current = selection.text;
+        pressedTextRef.current = selectionRef.current?.text ?? null;
         try {
           event.currentTarget.setPointerCapture(event.pointerId);
         } catch {
@@ -539,13 +629,12 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
       style={{
         top: 0,
         left: 0,
-        /** Hidden until measured so it never flashes at an unclamped position. */
-        visibility: 'hidden',
+        display: 'none',
       }}
       className={cn(
         'fixed z-50 inline-flex items-center gap-1.5 rounded-full border border-border-light bg-surface-secondary text-sm font-medium text-text-primary shadow-lg transition-colors hover:bg-surface-tertiary',
         /** Comfortable tap target when the selection came from a finger. */
-        selection.viaTouch ? 'min-h-11 px-4 py-2.5' : 'px-3 py-1.5',
+        'px-3 py-1.5 data-[touch=true]:min-h-11 data-[touch=true]:px-4 data-[touch=true]:py-2.5',
       )}
     >
       <TextQuote className="h-4 w-4" aria-hidden="true" />

@@ -37,6 +37,9 @@ describe('Elapsed', () => {
     /** The 6px inline-start inset that lines the reading up with the
      *  streaming dot and the hover-button glyphs that replace it. */
     expect(screen.getByTestId('stream-elapsed').parentElement).toHaveClass('ps-1.5');
+    /** The same shimmer a running tool call's label carries: the timer only
+     *  ever renders mid-generation, so it never animates a settled reading. */
+    expect(screen.getByTestId('stream-elapsed')).toHaveClass('shimmer');
 
     advance(54_000);
     expect(screen.getByTestId('stream-elapsed')).toHaveTextContent(/^59s$/);

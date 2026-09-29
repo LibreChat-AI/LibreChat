@@ -9,6 +9,7 @@ jest.mock('@librechat/api', () => ({
 jest.mock('mongoose', () => ({ models: {} }));
 jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
 jest.mock('~/server/services/Agents/triggers', () => ({ enqueueAgentTrigger: jest.fn() }));
+jest.mock('./mcp', () => jest.fn());
 jest.mock('./access', () => ({ resolveAgentFireAccess: jest.fn() }));
 jest.mock('~/models', () => ({ isAgentTriggerPrincipalActive: jest.fn() }));
 

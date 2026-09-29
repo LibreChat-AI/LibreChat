@@ -1,10 +1,13 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { Spinner } from '@librechat/client';
 import { Constants } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { CurrencyConfig } from '~/utils';
+import useCompactConversation, { supportsCompaction } from '~/hooks/Chat/useCompactConversation';
 import { useGetLangfuseSessionLinkQuery, useGetStartupConfig } from '~/data-provider';
 import useTokenUsage from '~/hooks/Chat/useTokenUsage';
+import CompactAction from './CompactAction';
 import { formatTokens, cn } from '~/utils';
 import { useLocalize } from '~/hooks';
 import Breakdown from './Breakdown';
@@ -28,13 +31,19 @@ function TokenUsageIndicator({
   showCost,
   currency,
   langfuseConnectionAccess,
+  compactionEnabled,
 }: TokenUsageProps & {
   showCost: boolean;
   currency?: CurrencyConfig;
   langfuseConnectionAccess: boolean;
+  compactionEnabled: boolean;
 }) {
   const localize = useLocalize();
   const view = useTokenUsage({ index, conversation, isSubmitting });
+  /** Owned here, not in the popover: `unmountOnHide` would otherwise lose the
+   *  in-flight state the moment the pointer leaves. */
+  const compaction = useCompactConversation();
+  const compactionAvailable = compactionEnabled && supportsCompaction(conversation?.endpoint);
   const popover = Ariakit.usePopoverStore({ placement: 'top' });
   const popoverOpen = Ariakit.useStoreState(popover, 'open');
   const disclosureRef = useRef<HTMLButtonElement>(null);
@@ -124,13 +133,17 @@ function TokenUsageIndicator({
   }
 
   const hasMax = view.maxTokens != null && view.maxTokens > 0;
-  const ariaLabel = hasMax
+  const usageAriaLabel = hasMax
     ? localize('com_ui_context_usage_label', {
         0: formatTokens(view.usedTokens),
         1: formatTokens(view.maxTokens ?? 0),
         2: String(Math.round(view.percent)),
       })
     : localize('com_ui_context_usage_label_unknown', { 0: formatTokens(view.usedTokens) });
+  const ariaLabel = compaction.isCompacting
+    ? localize('com_ui_context_compacting')
+    : usageAriaLabel;
+  const showCompactingIndicator = compaction.isCompacting && !popoverOpen;
 
   return (
     <>
@@ -144,6 +157,7 @@ function TokenUsageIndicator({
         type="button"
         data-testid="token-usage"
         aria-label={ariaLabel}
+        aria-busy={compaction.isCompacting}
         aria-haspopup="dialog"
         onPointerDown={() => {
           pinAtPointerDownRef.current = pinnedRef.current;
@@ -183,16 +197,20 @@ function TokenUsageIndicator({
           'duration-300 animate-in fade-in zoom-in-95',
         )}
       >
-        <span
-          role="meter"
-          aria-valuemin={0}
-          aria-valuemax={hasMax ? view.maxTokens : undefined}
-          aria-valuenow={view.usedTokens}
-          aria-label={localize('com_ui_context_usage')}
-          className="flex items-center justify-center"
-        >
-          <Gauge percent={view.percent} indeterminate={!hasMax} />
-        </span>
+        {showCompactingIndicator ? (
+          <Spinner className="size-5 text-text-secondary" />
+        ) : (
+          <span
+            role="meter"
+            aria-valuemin={0}
+            aria-valuemax={hasMax ? view.maxTokens : undefined}
+            aria-valuenow={view.usedTokens}
+            aria-label={localize('com_ui_context_usage')}
+            className="flex items-center justify-center"
+          >
+            <Gauge percent={view.percent} indeterminate={!hasMax} />
+          </span>
+        )}
       </Ariakit.PopoverDisclosure>
       {/* Focus the labelled dialog on keyboard/click open so screen readers
           enter and announce the breakdown, and so focus stays contained instead
@@ -214,18 +232,33 @@ function TokenUsageIndicator({
           }
         }}
         className={cn(
-          'z-[200] rounded-xl border border-border-medium bg-surface-secondary p-3 shadow-lg focus:outline-none',
+          'z-[200] rounded-xl border border-border-medium bg-surface-secondary p-3 text-text-primary shadow-lg focus:outline-none',
           'origin-bottom translate-y-1 scale-95 opacity-0 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
           'data-[enter]:translate-y-0 data-[enter]:scale-100 data-[enter]:opacity-100',
           'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
         )}
       >
-        <Breakdown
-          view={view}
-          showCost={showCost}
-          currency={currency}
-          langfuseSessionUrl={langfuseSession?.url ?? undefined}
-        />
+        {/* The popover owns its width, which the breakdown held only while it
+            was the sole child of a shrink-to-fit box. */}
+        <div className="w-72 space-y-3">
+          <Breakdown
+            view={view}
+            showCost={showCost}
+            compactionAvailable={compactionAvailable}
+            currency={currency}
+            langfuseSessionUrl={langfuseSession?.url ?? undefined}
+          />
+          {compactionAvailable && (
+            <>
+              <div className="border-t border-border-light" role="separator" />
+              <CompactAction
+                compact={compaction.compact}
+                canCompact={compaction.canCompact}
+                isCompacting={compaction.isCompacting}
+              />
+            </>
+          )}
+        </div>
       </Ariakit.Popover>
     </>
   );
@@ -246,6 +279,11 @@ const TokenUsage = memo(function TokenUsage(props: TokenUsageProps) {
       showCost={startupConfig.interface?.contextCost === true}
       currency={startupConfig.interface?.currency}
       langfuseConnectionAccess={startupConfig.langfuseConnectionAccess === true}
+      /** Same `summarization.enabled` switch that governs the automatic detour,
+       *  advertised positively: a server that does not know the capability
+       *  (a cached config from an older release) must not receive the request,
+       *  which it would run as an empty, billed ordinary turn. */
+      compactionEnabled={startupConfig.compactionEnabled === true}
     />
   );
 });

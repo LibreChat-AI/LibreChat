@@ -166,9 +166,8 @@ test.describe('escalating waiting messages to an interrupt', () => {
     expect(armResponse.status()).toBe(200);
     expect(((await armResponse.json()) as { armed?: boolean }).armed).toBe(true);
 
-    // Relabelled IN PLACE: still exactly one bubble with the same text, and
-    // an interrupting steer no longer offers its escalation control.
-    await expect(inFlightSteers(page)).toHaveCount(1);
+    // The stream can consume the armed steer before the HTTP response arrives.
+    // Whether waiting or already applied, it must no longer offer escalation.
     await expect(bubble.getByTestId('steer-escalate-now')).toHaveCount(0);
 
     // The armed steer seals mid-stream and injects with no tool boundary.
@@ -207,14 +206,14 @@ test.describe('escalating waiting messages to an interrupt', () => {
     // The toggle lives in the row menu's separated Preferences section.
     await row.getByRole('button', { name: 'More options' }).click();
     await expect(page.getByText('Preferences', { exact: true })).toBeVisible({ timeout: 5000 });
-    await page.getByRole('menuitem', { name: 'Always interrupt instead', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Steer sooner by default', exact: true }).click();
 
     // Verify the preference flips while this row is guaranteed to remain
     // parked. After the interrupt is submitted the run may seal and auto-drain
     // the row before another locator action can observe it.
     await row.getByRole('button', { name: 'More options' }).click();
     await expect(
-      page.getByRole('menuitem', { name: 'Wait for tool steps instead', exact: true }),
+      page.getByRole('menuitem', { name: 'Wait for the next step instead', exact: true }),
     ).toBeVisible({ timeout: 5000 });
     await page.keyboard.press('Escape');
 

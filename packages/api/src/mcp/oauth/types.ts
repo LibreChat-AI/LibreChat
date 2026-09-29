@@ -97,6 +97,10 @@ export interface MCPOAuthFlowMetadata extends FlowMetadata {
   serverName: string;
   userId: string;
   serverUrl: string;
+  /** Identity of the effective server definition that admitted this authorization attempt. */
+  serverGeneration?: string;
+  /** Persistence wait admitted with the server configuration; preserved across the OAuth redirect. */
+  oauthPersistenceWaitTimeout?: number;
   state: string;
   codeVerifier?: string;
   clientInfo?: OAuthClientInformation;
@@ -117,6 +121,12 @@ export interface MCPOAuthFlowMetadata extends FlowMetadata {
   reusedClientCredentialSetId?: string;
   /** Tenant context captured at flow initiation for callback replay (SameSite cookies unavailable on cross-origin redirects) */
   tenantId?: string;
+  /**
+   * False when `oauth.send_resource_parameter` opted this server out of RFC 8707
+   * `resource`. Captured at flow initiation so the token exchange sends the same
+   * parameters as the authorization request that produced the code.
+   */
+  sendResourceParameter?: boolean;
 }
 
 export interface MCPOAuthTokens extends OAuthTokens {
@@ -126,6 +136,12 @@ export interface MCPOAuthTokens extends OAuthTokens {
   obtained_at: number;
   /** Calculated expiry time */
   expires_at?: number;
+  /**
+   * Tool-cache publication generation written when these tokens were persisted. Carried only by
+   * tokens handed to the waiters of the authorization or refresh that stored them, never by a
+   * stored row, so a connection built on them can lease under that generation.
+   */
+  publication_generation?: string;
 }
 
 /** Extended OAuth tokens that may include refresh token expiry */

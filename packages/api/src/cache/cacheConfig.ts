@@ -88,12 +88,20 @@ const cacheConfig: {
   GLOBAL_PREFIX_SEPARATOR: string;
   REDIS_MAX_LISTENERS: number;
   REDIS_PING_INTERVAL: number;
+  /** Milliseconds a heartbeat PING may go unanswered before the socket is presumed dead */
+  REDIS_PING_TIMEOUT: number;
+  /** Heartbeat interval in seconds for dedicated pub/sub subscriber connections (0 = disabled) */
+  REDIS_SUBSCRIBER_PING_INTERVAL: number;
+  /** TCP keepalive idle delay in ms for ioredis sockets (0 = kernel default idle time) */
+  REDIS_KEEP_ALIVE: number;
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: number;
   /** Max number of reconnection attempts (0 = infinite) */
   REDIS_RETRY_MAX_ATTEMPTS: number;
   /** Connection timeout in ms */
   REDIS_CONNECT_TIMEOUT: number;
+  /** Min spacing in ms between reconnects forced by READONLY replies after a failover */
+  REDIS_READONLY_RECOVERY_INTERVAL: number;
   /** Queue commands when disconnected */
   REDIS_ENABLE_OFFLINE_QUEUE: boolean;
   /** flag to modify redis connection by adding dnsLookup this is required when connecting to elasticache for ioredis
@@ -165,12 +173,20 @@ const cacheConfig: {
   GLOBAL_PREFIX_SEPARATOR: '::',
   REDIS_MAX_LISTENERS: math(process.env.REDIS_MAX_LISTENERS, 40),
   REDIS_PING_INTERVAL: math(process.env.REDIS_PING_INTERVAL, 0),
+  /** Milliseconds a heartbeat PING may go unanswered before the socket is presumed dead */
+  REDIS_PING_TIMEOUT: math(process.env.REDIS_PING_TIMEOUT, 5000),
+  /** Heartbeat interval in seconds for dedicated pub/sub subscriber connections (0 = disabled) */
+  REDIS_SUBSCRIBER_PING_INTERVAL: math(process.env.REDIS_SUBSCRIBER_PING_INTERVAL, 15),
+  /** TCP keepalive idle delay in ms for ioredis sockets (0 = kernel default idle time) */
+  REDIS_KEEP_ALIVE: math(process.env.REDIS_KEEP_ALIVE, 10000),
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: math(process.env.REDIS_RETRY_MAX_DELAY, 3000),
   /** Max number of reconnection attempts (0 = infinite) */
   REDIS_RETRY_MAX_ATTEMPTS: math(process.env.REDIS_RETRY_MAX_ATTEMPTS, 10),
   /** Connection timeout in ms */
   REDIS_CONNECT_TIMEOUT: math(process.env.REDIS_CONNECT_TIMEOUT, 10000),
+  /** Min spacing in ms between reconnects forced by READONLY replies after a failover */
+  REDIS_READONLY_RECOVERY_INTERVAL: math(process.env.REDIS_READONLY_RECOVERY_INTERVAL, 5000),
   /** Queue commands when disconnected */
   REDIS_ENABLE_OFFLINE_QUEUE: isEnabled(process.env.REDIS_ENABLE_OFFLINE_QUEUE ?? 'true'),
   /** flag to modify redis connection by adding dnsLookup this is required when connecting to elasticache for ioredis

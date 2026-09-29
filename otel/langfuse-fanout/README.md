@@ -272,10 +272,10 @@ LibreChat stamps `librechat.tenant.id`, `librechat.langfuse.export_plan`, and
 `librechat.langfuse.export_reason` on Langfuse run spans. The gateway reads the
 tenant ID from each OTLP batch for the trace export counter. Batches without a
 tenant ID use `<unknown>`; batches containing more than one tenant use `<multiple>`.
-Angle brackets keep these synthetic values outside LibreChat's accepted tenant-ID grammar.
-The `tenant_id` label is intentionally high-cardinality and must only receive
-traffic from trusted LibreChat deployments. Each distinct tenant creates a
-Prometheus time series for every destination and result combination.
+Invalid tenant IDs use `<invalid>`. The gateway retains up to 1,000 valid tenant
+labels and aggregates additional IDs under `<overflow>`, bounding the trace
+counter's cardinality. Angle brackets keep these synthetic values outside
+LibreChat's accepted tenant-ID grammar.
 
 Successful admin connection updates emit the structured log event
 `librechat.langfuse.connection.changed`. It includes the tenant, configuration

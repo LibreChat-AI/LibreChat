@@ -1,6 +1,6 @@
 {
   "name": "@librechat/data-schemas",
-  "version": "0.0.68",
+  "version": "0.0.71",
   "description": "Mongoose schemas and models for LibreChat",
   "type": "module",
   "main": "dist/index.cjs",
@@ -44,12 +44,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/danny-avila/LibreChat"
+    "url": "https://github.com/LibreChat-AI/LibreChat"
   },
   "author": "",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/danny-avila/LibreChat/issues"
+    "url": "https://github.com/LibreChat-AI/LibreChat/issues"
   },
   "homepage": "https://librechat.ai",
   "dependencies": {

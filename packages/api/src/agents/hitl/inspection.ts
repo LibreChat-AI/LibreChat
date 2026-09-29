@@ -9,10 +9,11 @@ import {
 import type { Agent, FiltersConfig, UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { StoredMessageContentInput } from '~/protection/adapters/submissions';
+import type { LocatorTraversalReporter } from '../../protection/diagnostics';
 import type { ExternalChatMessage } from '~/protection/adapters/messages';
 import {
   hasActiveFilePolicy,
-  resolveCanonicalFileReferences,
+  resolveCanonicalFileReferenceUnits,
   type GetCanonicalFilesForInspection,
   type CanonicalFileInspectionFile,
 } from '~/protection/files';
@@ -69,6 +70,7 @@ type GetResumeMessages = (filter: {
 }) => Promise<ResumeMessage[] | null | undefined>;
 
 export interface ResumeContentInspectionInput {
+  readonly onTraversalFailure?: LocatorTraversalReporter;
   appConfig?: AppConfig;
   conversationId: string;
   targetMessageId?: string | null;
@@ -368,14 +370,16 @@ async function getResumeFileInspection(
     };
   }
 
-  const originalInput = {
-    storedMessages,
-    submittedMessages: input.submittedMessages,
-    fileReferenceInputs: input.fileReferenceInputs ?? [],
-  };
-  const fileInspection = await resolveCanonicalFileReferences({
+  const units = [
+    ...storedMessages.map((storedMessage) => ({ storedMessage })),
+    ...input.submittedMessages.map((submittedMessage) => ({ submittedMessage })),
+    ...(input.fileReferenceInputs ?? []).map((fileReferenceInput) => ({ fileReferenceInput })),
+  ];
+  const fileInspection = await resolveCanonicalFileReferenceUnits({
+    messageCount: storedMessages.length + input.submittedMessages.length,
+    onTraversalFailure: input.onTraversalFailure,
     filters,
-    input: originalInput,
+    input: units,
     user: input.user,
     ...(input.trustLiveFileContent === true && {
       trustedLiveFiles: input.liveFiles,
@@ -383,8 +387,12 @@ async function getResumeFileInspection(
     getFiles: input.getFiles,
   });
   return {
-    storedMessages: fileInspection.sanitizedInput.storedMessages,
-    submittedMessages: fileInspection.sanitizedInput.submittedMessages,
+    storedMessages: fileInspection.sanitizedInput.flatMap((unit) =>
+      'storedMessage' in unit ? [unit.storedMessage] : [],
+    ),
+    submittedMessages: fileInspection.sanitizedInput.flatMap((unit) =>
+      'submittedMessage' in unit ? [unit.submittedMessage] : [],
+    ),
     originalStoredMessages: storedMessages,
     hydratedFiles: fileInspection.hydratedFiles,
     hydratedFilters: fileInspection.hydratedFilters,

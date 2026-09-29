@@ -12,6 +12,7 @@ import { AgentTriggerServiceUnavailableError } from '../agents/triggers/service'
 import { AgentTriggerDeliveryError } from '../agents/triggers/delivery';
 import { computeNextRunAt, cadenceIntervalMinutes } from './cadence';
 import { resolveScheduleProjectId } from './types';
+import { ScheduleMCPError } from './mcp';
 
 /** Consecutive balance skips (pre-fire or mid-generation) before auto-disable. */
 export const BALANCE_SKIP_DISABLE_THRESHOLD: number = 5;
@@ -127,7 +128,7 @@ export async function fireSchedule(
   schedule: FireableSchedule,
   limits: ScheduleLimits,
   scheduledFor: Date,
-  options?: { manual?: boolean; dbNow?: Date },
+  options?: { manual?: boolean; dbNow?: Date; signal?: AbortSignal },
 ): Promise<FireResult> {
   const { methods } = deps;
   // Compute the NEXT occurrence relative to the CLAIM's clock (the engine passes
@@ -250,7 +251,15 @@ export async function fireSchedule(
     // a tenant- or role-specific config (disabled schedules, different
     // auto-disable threshold) must win over the base config the engine read.
     const ownerLimits = await deps.getLimits(user);
+    const deploymentLimits = await deps.getLimits();
     if (!ownerLimits.enabled) {
+      // A deployment-wide stop freezes due occurrences. The engine may have claimed
+      // this one just before the switch changed, so hand its lease back without
+      // advancing. A principal-scoped disable still consumes the occurrence because
+      // that owner is not allowed to dispatch it under the current policy.
+      if (!deploymentLimits.enabled) {
+        return stepAsideSuperseded();
+      }
       await advance();
       return { fired: false, skipped: 'disabled' as const };
     }
@@ -428,6 +437,43 @@ export async function fireSchedule(
       return stepAsideSuperseded();
     }
 
+    // Readiness is admission work, not generation work. Probe before reserving a
+    // durable started row or a global generation slot so a slow MCP endpoint cannot
+    // consume the capacity healthy ready schedules need to dispatch.
+    let mcp: Awaited<ReturnType<ScheduleEngineDeps['preflightMCP']>> = [];
+    let mcpFailure: { error: ScheduleMCPError | null; message: string } | null = null;
+    try {
+      const leaseDeadline = schedule.leaseUntil?.getTime() ?? Number.POSITIVE_INFINITY;
+      const preflightDeadline =
+        Date.now() +
+        Math.min(ownerLimits.mcpPreflightTimeoutMs, deploymentLimits.mcpPreflightTimeoutMs);
+      mcp = await deps.preflightMCP(schedule.agent_id, user, {
+        scheduleId: schedule.id,
+        signal: options?.signal,
+        concurrency: Math.min(
+          ownerLimits.mcpPreflightConcurrency,
+          deploymentLimits.mcpPreflightConcurrency,
+        ),
+        deadlineMs: Math.min(leaseDeadline, preflightDeadline),
+      });
+    } catch (error) {
+      if (options?.signal?.aborted) {
+        return stepAsideSuperseded();
+      }
+      if (
+        claimToken != null &&
+        !(await methods.revalidateClaim(schedule.id, claimToken, !options?.manual))
+      ) {
+        return stepAsideSuperseded();
+      }
+      const failure = error instanceof ScheduleMCPError ? error : null;
+      mcpFailure = { error: failure, message: failure?.message ?? 'MCP preflight unavailable' };
+    }
+
+    if (options?.signal?.aborted) {
+      return stepAsideSuperseded();
+    }
+
     // Pre-generate the conversation id and reserve the run row up front. The
     // loopback POST reuses it (streamId === conversationId), so reconciliation can
     // ALWAYS locate this occurrence's job — even if the post-accept detail write
@@ -466,56 +512,88 @@ export async function fireSchedule(
       };
     }
     const deliveryKey = getAgentTriggerIdempotencyKey(triggerEnvelope);
-    // The GLOBAL fireConcurrency cap is enforced by claiming a unique capacity slot in
-    // the SAME insert that reserves the run, so it is decided by the DB rather than by
-    // a count read before the write. The allocator advances to the next free slot when
-    // another admission wins one, and reports 'capacity' only when genuinely saturated.
-    // Occupancy is read system-scoped so the cap stays global across tenants.
-    // CLAMPED to the deployment-wide cap. The slots are global across every owner, so a
-    // role/user/tenant override must never be able to WIDEN them: manual Run Now resolves
-    // the owner's limits and bypasses the engine tick's base-config budget entirely, so
-    // an override of 5 against a base of 1 would otherwise let concurrent clicks occupy
-    // slots 0-4 and run five billed generations at once. Re-read without a principal for
-    // the base value (the same read the tick budgets from); a STRICTER owner value still
-    // applies, since only widening is the defect.
-    const deploymentLimits = await deps.getLimits();
-    const allocation = await deps.withGlobalCapacitySlot(
-      Math.min(ownerLimits.fireConcurrency, deploymentLimits.fireConcurrency),
-      async (capacitySlot) => {
-        const attempt = await methods.reserveStartedRun({
-          ...baseRun,
-          conversationId,
-          firedAt: new Date(),
-          capacitySlot,
-          deliveryKey,
-          // The destination THIS occurrence used. The schedule-level value can move on
-          // (a pin redirects later fires, and a paused run does not block them), so a
-          // resume must re-validate what its own conversation was filed under.
-          // ALWAYS written, `null` when deliberately unscoped: a later reader has to be
-          // able to tell "this run had no project" from "this row predates the field",
-          // and only the latter may fall back to the schedule's current value.
-          chatProjectId: chatProjectId ?? null,
-          ...(typeof schedule.configRevision === 'number'
-            ? { configRevision: schedule.configRevision }
-            : {}),
-        });
-        return 'conflict' in attempt && attempt.conflict === 'slot-taken'
-          ? 'slot-taken'
-          : { claimed: attempt };
+    const reserveRun = (
+      capacitySlot?: number,
+      admissionFailure?: {
+        error: string;
+        mcp?: Awaited<ReturnType<ScheduleEngineDeps['preflightMCP']>>;
       },
-    );
-    if (allocation === 'capacity') {
-      // Automatic claims keep the claim's lease as a backoff so the nextRunAt-sorted
-      // claimer doesn't immediately re-pick this row and starve others; nextRunAt is
-      // untouched, so the occurrence retries once the lease expires. A manual run-now
-      // MUST release its lease, or repeated Run-now clicks hit a misleading "already
-      // in progress" 409 for the full manual-lease TTL even after capacity frees.
-      if (options?.manual) {
-        await releaseManualLease();
+    ) =>
+      methods.reserveStartedRun({
+        ...baseRun,
+        conversationId,
+        firedAt: new Date(),
+        ...(capacitySlot != null ? { capacitySlot } : {}),
+        ...(admissionFailure
+          ? {
+              admissionOnly: true,
+              error: admissionFailure.error,
+              ...(admissionFailure.mcp ? { mcp: admissionFailure.mcp } : {}),
+            }
+          : {}),
+        deliveryKey,
+        // The destination THIS occurrence used. The schedule-level value can move on
+        // (a pin redirects later fires, and a paused run does not block them), so a
+        // resume must re-validate what its own conversation was filed under.
+        // ALWAYS written, `null` when deliberately unscoped: a later reader has to be
+        // able to tell "this run had no project" from "this row predates the field",
+        // and only the latter may fall back to the schedule's current value.
+        chatProjectId: chatProjectId ?? null,
+        ...(typeof schedule.configRevision === 'number'
+          ? { configRevision: schedule.configRevision }
+          : {}),
+      });
+
+    let reservation: Awaited<ReturnType<typeof methods.reserveStartedRun>>;
+    if (mcpFailure != null) {
+      // A terminal admission failure needs durable evidence and schedule bookkeeping,
+      // but it never starts a generation. Reserve the occurrence idempotently without
+      // a generation slot, then settle it immediately below.
+      reservation = await reserveRun(undefined, {
+        error: mcpFailure.message.slice(0, 2048),
+        ...(mcpFailure.error ? { mcp: mcpFailure.error.outcomes } : {}),
+      });
+    } else {
+      // The GLOBAL fireConcurrency cap is enforced by claiming a unique capacity slot
+      // in the SAME insert that reserves a generation, so it is decided by the DB rather
+      // than by a count read before the write. The allocator advances to the next free
+      // slot when another ready admission wins one, and reports 'capacity' only when
+      // genuinely saturated. Occupancy is read system-scoped so the cap stays global
+      // across tenants.
+      // CLAMPED to the deployment-wide cap. The slots are global across every owner, so a
+      // role/user/tenant override must never be able to WIDEN them: manual Run Now resolves
+      // the owner's limits and bypasses the engine tick's base-config budget entirely, so
+      // an override of 5 against a base of 1 would otherwise let concurrent clicks occupy
+      // slots 0-4 and run five billed generations at once. Re-read without a principal for
+      // the base value (the same read the tick budgets from); a STRICTER owner value still
+      // applies, since only widening is the defect.
+      const allocation = await deps.withGlobalCapacitySlot(
+        Math.min(ownerLimits.fireConcurrency, deploymentLimits.fireConcurrency),
+        async (capacitySlot) => {
+          const attempt = await reserveRun(capacitySlot);
+          return 'conflict' in attempt && attempt.conflict === 'slot-taken'
+            ? 'slot-taken'
+            : { claimed: attempt };
+        },
+      );
+      if (allocation === 'capacity') {
+        // Automatic claims keep the claim's lease as a backoff so the nextRunAt-sorted
+        // claimer doesn't immediately re-pick this row and starve others; nextRunAt is
+        // untouched, so the occurrence retries once the lease expires. A manual run-now
+        // MUST release its lease, or repeated Run-now clicks hit a misleading "already
+        // in progress" 409 for the full manual-lease TTL even after capacity frees.
+        if (options?.manual) {
+          await releaseManualLease();
+        } else {
+          const released = await methods.releaseLease(schedule.id, claimToken);
+          if (!released) {
+            await releaseSupersededLease();
+          }
+        }
+        return { fired: false, skipped: 'capacity' as const };
       }
-      return { fired: false, skipped: 'capacity' as const };
+      reservation = allocation.claimed;
     }
-    const reservation = allocation.claimed;
     if ('conflict' in reservation) {
       if (reservation.conflict === 'overlap') {
         // Another occurrence of this schedule is already active. Record the skip
@@ -569,6 +647,31 @@ export async function fireSchedule(
       return { fired: false, skipped: 'duplicate' as const };
     }
 
+    if (mcpFailure != null) {
+      await methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status: 'error',
+        error: mcpFailure.message,
+        ...(mcpFailure.error ? { mcp: mcpFailure.error.outcomes } : {}),
+        autoDisableAfterFailures: ownerLimits.autoDisableAfterFailures,
+        clearConversationId: true,
+      });
+      await advance();
+      return {
+        fired: false,
+        error: mcpFailure.message,
+        ...(mcpFailure.error
+          ? { mcp: mcpFailure.error.outcomes }
+          : { mcpPreflightUnavailable: true }),
+      };
+    }
+
+    if (options?.signal?.aborted) {
+      await rollbackReservation(conversationId);
+      return stepAsideSuperseded();
+    }
+
     // Last check before the point of no return: re-verify this fire still holds an
     // authoritative claim (same claim token, lease unexpired, not deleting; and for
     // an automatic fire, still enabled). An owner delete/edit or a lease-expiry
@@ -581,6 +684,11 @@ export async function fireSchedule(
       claimToken != null &&
       !(await methods.revalidateClaim(schedule.id, claimToken, !options?.manual))
     ) {
+      await rollbackReservation(conversationId);
+      return stepAsideSuperseded();
+    }
+
+    if (options?.signal?.aborted) {
       await rollbackReservation(conversationId);
       return stepAsideSuperseded();
     }
@@ -638,6 +746,7 @@ export async function fireSchedule(
       await advance();
       await methods.setRunFireDetails(schedule.id, scheduledFor, {
         conversationId,
+        ...(mcp.length > 0 ? { mcp } : {}),
         ...(droppedFileIds.length > 0 ? { droppedFileIds } : {}),
       });
       if (droppedFileIds.length > 0) {

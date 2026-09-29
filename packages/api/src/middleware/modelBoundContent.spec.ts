@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import { StreamLimitExceededError } from '@librechat/agents';
 import type { FiltersConfig } from 'librechat-data-provider';
 import {
@@ -99,6 +100,41 @@ describe('hasModelBoundContentProtection', () => {
 });
 
 describe('assertModelBoundContent', () => {
+  it('records later audit findings before returning an earlier blocking finding', () => {
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => logger);
+
+    try {
+      expect(() =>
+        assertModelBoundContent({
+          legacyPii: {
+            starterPatterns: [],
+            customPatterns: [{ id: 'legacy-block', label: 'legacy block', regex: 'PRIVATE-BLOCK' }],
+          },
+          filters: {
+            skills: {
+              pii: {
+                action: 'audit',
+                fields: ['instructions'],
+                starterPatterns: [],
+                customPatterns: [
+                  { id: 'skill-audit', label: 'skill audit', regex: 'AUDIT-SECRET' },
+                ],
+              },
+            },
+          },
+          submittedMessages: [{ role: 'user', content: 'PRIVATE-BLOCK' }],
+          skills: [{ body: 'AUDIT-SECRET' }],
+        }),
+      ).toThrow('Submitted content contains a legacy block');
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"ruleId":"skill-audit"'),
+        expect.objectContaining({ action: 'audit', source: 'skill' }),
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   it('does not traverse model-bound content for a zero-rule configuration', () => {
     const message = {
       isCreatedByUser: true,
@@ -1095,6 +1131,57 @@ describe('assertModelBoundContent', () => {
         ],
       }),
     ).not.toThrow();
+  });
+
+  it('inspects long stored history per message and still filters hydrated file content', () => {
+    const onTraversalFailure = jest.fn();
+    const storedMessages = Array.from({ length: 58 }, (_, index) => ({
+      isCreatedByUser: true,
+      role: 'user',
+      text: `Historical step ${index}`,
+      files: index === 0 ? [{ file_id: 'file-owned' }] : [],
+      content: Array.from({ length: 80 }, () => ({ type: 'text', text: 'safe preview material' })),
+    }));
+    const input = {
+      filters: {
+        files: {
+          pii: {
+            fields: ['extracted_text'],
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-FILE' }],
+            uninspectable: 'block',
+          },
+        },
+      } as FiltersConfig,
+      storedMessages,
+      onTraversalFailure,
+      resolvedFiles: [{ file_id: 'file-owned', text: 'safe canonical content' }],
+    };
+
+    expect(() => assertModelBoundContent(input)).not.toThrow();
+    expect(() =>
+      assertModelBoundContent({
+        ...input,
+        resolvedFiles: [{ file_id: 'file-owned', text: 'PRIVATE-FILE' }],
+      }),
+    ).toThrow('Submitted content contains a private value');
+    expect(() =>
+      assertModelBoundContent({
+        ...input,
+        storedMessages: [
+          { ...storedMessages[0], content: storedMessages.flatMap((m) => m.content) },
+        ],
+      }),
+    ).toThrow('Submitted content could not be completely inspected before processing.');
+    expect(onTraversalFailure).toHaveBeenCalledTimes(1);
+    expect(onTraversalFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'omit_resolved_file_locators',
+        reason: 'array_length',
+        messageCount: 1,
+        resolvedFileCount: 1,
+      }),
+    );
   });
 
   it('inspects owner-resolved file content before authorizing its stored locator', () => {
@@ -5549,7 +5636,7 @@ describe('assertModelBoundProviderContent', () => {
     ).toThrow('Submitted content contains a private value');
   });
 
-  it('shares aggregate nested extraction work across callback batches', () => {
+  it('inspects individually bounded nested messages across callback batches', () => {
     const callbackFilters: FiltersConfig = {
       messages: {
         pii: {
@@ -5595,7 +5682,7 @@ describe('assertModelBoundProviderContent', () => {
 
     expect(() =>
       callback.handleChatModelStart(undefined, [createBatch(0), createBatch(1), createBatch(2)]),
-    ).toThrow('Submitted content could not be completely inspected before processing.');
+    ).not.toThrow();
   });
 
   it('keeps the model callback usable after caller-owned state is released', () => {

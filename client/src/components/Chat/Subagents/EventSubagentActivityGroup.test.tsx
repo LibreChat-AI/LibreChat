@@ -1,10 +1,11 @@
 import React from 'react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '~/store/subagents';
+import type { ActiveSubagentPanel } from './state';
 import EventSubagentActivityGroup from './EventSubagentActivityGroup';
-import { activeSubagentPanel } from '~/store/subagents';
+import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
+import { activeSubagentPanel } from './state';
 
 const mockRefresh = jest.fn().mockResolvedValue(undefined);
 const mockChild: ParentSubagentSummary = {
@@ -81,17 +82,18 @@ describe('EventSubagentActivityGroup', () => {
   it('opens the durable event child under its owning parent message', () => {
     let selection: ActiveSubagentPanel | null = null;
     const Observer = () => {
-      selection = useRecoilValue(activeSubagentPanel);
+      selection = useAtomValue(activeSubagentPanel);
       return null;
     };
+    const claimForeground = jest.fn();
     render(
-      <RecoilRoot>
+      <ChatSurfaceHarness surface={testChatSurface({ claimForeground })}>
         <Observer />
         <EventSubagentActivityGroup
           conversationId="parent-conversation"
           parentMessageIds={['parent-message']}
         />
-      </RecoilRoot>,
+      </ChatSurfaceHarness>,
     );
 
     expect(
@@ -102,6 +104,9 @@ describe('EventSubagentActivityGroup', () => {
     fireEvent.click(screen.getByRole('button', { name: /Visible Agent/ }));
 
     expect(mockRefresh).toHaveBeenCalledTimes(1);
+    /** Whatever else holds the slot has to give it up, or the reader clicks
+     *  through to a panel the host never brings forward. */
+    expect(claimForeground).toHaveBeenCalledTimes(1);
     expect(selection).toEqual(
       expect.objectContaining({
         host: 'conversation',
@@ -120,12 +125,12 @@ describe('EventSubagentActivityGroup', () => {
 
   it('themes the group root so raw child-row buttons never inherit the unthemed body color', () => {
     render(
-      <RecoilRoot>
+      <ChatSurfaceHarness>
         <EventSubagentActivityGroup
           conversationId="parent-conversation"
           parentMessageIds={['parent-message']}
         />
-      </RecoilRoot>,
+      </ChatSurfaceHarness>,
     );
 
     expect(screen.getByRole('region', { name: 'com_ui_subagent_activity' })).toHaveClass(
@@ -135,13 +140,13 @@ describe('EventSubagentActivityGroup', () => {
 
   it('matches the width of a parallel assistant response', () => {
     render(
-      <RecoilRoot>
+      <ChatSurfaceHarness>
         <EventSubagentActivityGroup
           conversationId="parent-conversation"
           parentMessageIds={['parent-message']}
           hasParallelContent
         />
-      </RecoilRoot>,
+      </ChatSurfaceHarness>,
     );
 
     expect(
@@ -152,18 +157,18 @@ describe('EventSubagentActivityGroup', () => {
   it('retains a merged anchor that has no children yet', () => {
     let selection: ActiveSubagentPanel | null = null;
     const Observer = () => {
-      selection = useRecoilValue(activeSubagentPanel);
+      selection = useAtomValue(activeSubagentPanel);
       return null;
     };
 
     render(
-      <RecoilRoot>
+      <ChatSurfaceHarness>
         <Observer />
         <EventSubagentActivityGroup
           conversationId="parent-conversation"
           parentMessageIds={['parent-message', 'empty-assistant-message']}
         />
-      </RecoilRoot>,
+      </ChatSurfaceHarness>,
     );
 
     fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
@@ -194,18 +199,18 @@ describe('EventSubagentActivityGroup', () => {
     ]);
     let selection: ActiveSubagentPanel | null = null;
     const Observer = () => {
-      selection = useRecoilValue(activeSubagentPanel);
+      selection = useAtomValue(activeSubagentPanel);
       return null;
     };
 
     render(
-      <RecoilRoot>
+      <ChatSurfaceHarness>
         <Observer />
         <EventSubagentActivityGroup
           conversationId="parent-conversation"
           parentMessageIds={['parent-message', 'assistant-message']}
         />
-      </RecoilRoot>,
+      </ChatSurfaceHarness>,
     );
 
     const summary = screen.getByRole('button', { name: /com_ui_subagent_activity/ });
@@ -220,6 +225,40 @@ describe('EventSubagentActivityGroup', () => {
     ]);
   });
 
+  it('pins the status color to one column and shimmers only a live row', () => {
+    mockChildrenByMessage = new Map([['parent-message', [mockChild, mockCompletedChild]]]);
+
+    render(
+      <ChatSurfaceHarness>
+        <EventSubagentActivityGroup
+          conversationId="parent-conversation"
+          parentMessageIds={['parent-message']}
+        />
+      </ChatSurfaceHarness>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
+
+    const rows = [
+      screen.getByRole('button', { name: /Visible Agent/ }),
+      screen.getByRole('button', { name: /Completed Agent/ }),
+    ];
+    const [running, completed] = rows.map((row) => row.lastElementChild as HTMLElement);
+
+    /** Label first, dot last, in every row: a longer status can only grow
+     *  inboard, so the color never moves between rows. */
+    expect(running.firstElementChild).toHaveTextContent('com_ui_subagent_thread_status_running');
+    expect(running.lastElementChild).toHaveAttribute('aria-hidden', 'true');
+    expect(running.lastElementChild).toHaveClass('bg-status-info');
+    expect(running.firstElementChild).toHaveClass('shimmer');
+
+    expect(completed.firstElementChild).toHaveTextContent(
+      'com_ui_subagent_thread_status_completed',
+    );
+    expect(completed.lastElementChild).toHaveClass('bg-status-success');
+    expect(completed.firstElementChild).not.toHaveClass('shimmer');
+  });
+
   it('does not reopen a child after the user closes it while refresh is pending', async () => {
     let selection: ActiveSubagentPanel | null = null;
     let resolveRefresh!: (value: unknown) => void;
@@ -229,22 +268,22 @@ describe('EventSubagentActivityGroup', () => {
       }),
     );
     const Observer = () => {
-      selection = useRecoilValue(activeSubagentPanel);
+      selection = useAtomValue(activeSubagentPanel);
       return null;
     };
     const ClosePanel = () => {
-      const setSelection = useSetRecoilState(activeSubagentPanel);
+      const setSelection = useSetAtom(activeSubagentPanel);
       return <button type="button" data-testid="close-panel" onClick={() => setSelection(null)} />;
     };
     render(
-      <RecoilRoot>
+      <ChatSurfaceHarness>
         <Observer />
         <ClosePanel />
         <EventSubagentActivityGroup
           conversationId="parent-conversation"
           parentMessageIds={['parent-message']}
         />
-      </RecoilRoot>,
+      </ChatSurfaceHarness>,
     );
 
     fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));

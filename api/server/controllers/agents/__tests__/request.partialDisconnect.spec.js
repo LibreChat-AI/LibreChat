@@ -28,6 +28,7 @@ const mockGenerationJobManager = {
   beginProviderExecution: jest.fn(),
   markProviderExecutionDrained: jest.fn(),
   getResumeState: jest.fn(),
+  getJobStore: jest.fn(),
   updateMetadata: jest.fn(),
   claimGeneration: jest.fn(),
   releaseGeneration: jest.fn(),
@@ -46,6 +47,8 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getAgentErrorMetadata: (...args) =>
+    jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   sendEvent: jest.fn(),
   isScheduleFireRequest: jest.fn(() => false),
   exemptFromConcurrencyLimiter: jest.fn(() => false),
@@ -62,7 +65,16 @@ jest.mock('@librechat/api', () => ({
   })),
   buildMessageFiles: jest.fn(() => []),
   resolveTitleTiming: jest.fn(() => 'immediate'),
+  createConvoPersistenceSignal: jest.requireActual('@librechat/api').createConvoPersistenceSignal,
+  recoverTurnMessageReference: jest.requireActual('@librechat/api').recoverTurnMessageReference,
   resolveConversationAnchor: jest.requireActual('@librechat/api').resolveConversationAnchor,
+  resolveRunCodeWorkspaces: jest.requireActual('@librechat/api').resolveRunCodeWorkspaces,
+  shouldPersistCodeWorkspaceInitializationError:
+    jest.requireActual('@librechat/api').shouldPersistCodeWorkspaceInitializationError,
+  resolvePersistableCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
+  getSafeErrorMetadata: jest.requireActual('@librechat/api').getSafeErrorMetadata,
+  getSafeErrorText: jest.requireActual('@librechat/api').getSafeErrorText,
   GenerationJobManager: mockGenerationJobManager,
   getReferencedQuotes: jest.fn(() => null),
   cleanupMCPRequestContext: jest.fn(),
@@ -142,8 +154,20 @@ describe('ResumableAgentController tenant context', () => {
    * Drives the controller far enough to register the `allSubscribersLeft` handler,
    * fires it, and returns the tenant context that was active during `saveMessage`.
    */
-  const firePartialDisconnect = async (user) => {
+  const partialContextMeta = {
+    calibrationRatio: 1.2,
+    encoding: 'claude',
+    fading: { v: 1, budgetTokens: 50_000, masked: true },
+  };
+
+  const firePartialDisconnect = async (
+    user,
+    jobRecord = { createdAt: 1000, contextMeta: partialContextMeta },
+  ) => {
     let allSubscribersLeftHandler;
+    mockGenerationJobManager.getJobStore.mockReturnValue({
+      getJob: jest.fn().mockResolvedValue(jobRecord),
+    });
     mockGenerationJobManager.createJob.mockResolvedValue({
       createdAt: 1000,
       metadata: {
@@ -201,6 +225,30 @@ describe('ResumableAgentController tenant context', () => {
     await allSubscribersLeftHandler([{ type: 'text', text: 'Partial response' }]);
     return tenantSeenBySave;
   };
+
+  it('carries the context meta the run published onto the partial response saved on disconnect', async () => {
+    await firePartialDisconnect({ id: 'user-123', tenantId: 'tenant-a' });
+
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        messageId: 'response-message',
+        unfinished: true,
+        contextMeta: partialContextMeta,
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it('leaves context meta off the partial response when the job record belongs to another epoch', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123', tenantId: 'tenant-a' },
+      { createdAt: 2000, contextMeta: partialContextMeta },
+    );
+
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).not.toHaveProperty('contextMeta');
+  });
 
   it('restores the authenticated tenant before saving a partial response on disconnect', async () => {
     const tenantSeenBySave = await firePartialDisconnect({ id: 'user-123', tenantId: 'tenant-a' });

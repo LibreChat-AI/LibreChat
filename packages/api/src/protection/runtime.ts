@@ -6,7 +6,11 @@ import {
   MAX_PII_PATTERNS_PER_SOURCE,
   getPiiRegexProgramSize,
 } from 'librechat-data-provider';
-import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
+import type {
+  FilterPiiAction,
+  FiltersConfig,
+  MessageFilterPiiConfig,
+} from 'librechat-data-provider';
 import type {
   PatternContentInspector,
   PatternContentInspectorConfig,
@@ -26,9 +30,11 @@ import {
   isContentTraversalProtected,
 } from './adapters/nested';
 import { isLegacyPiiFragment } from './legacy';
+import { recordAuditFinding } from './audit';
 
 interface CompiledFilter {
   readonly detectorId: string;
+  readonly action: FilterPiiAction;
   readonly sources: ReadonlySet<ContentSource>;
   readonly fields: ReadonlySet<string> | null;
   readonly applies?: (fragment: TextContentFragment) => boolean;
@@ -41,11 +47,13 @@ export interface ContentInspectionConfig {
 }
 
 export interface ConfiguredContentInspector {
+  readonly hasAuditRules: boolean;
   createSession(): ConfiguredContentInspectionSession;
   inspect(fragments: Iterable<TextContentFragment>): ProtectionFinding | null;
 }
 
 export interface ConfiguredContentInspectionSession {
+  readonly hasAuditRules: boolean;
   inspectFragment(fragment: TextContentFragment): ProtectionFinding | null;
   inspect(fragments: Iterable<TextContentFragment>): ProtectionFinding | null;
 }
@@ -67,6 +75,7 @@ const MAX_LINEAR_REGEX_SET_MEMORY_BYTES = 8 * 1_024 * 1_024;
 
 interface FilterCompilationPlan {
   readonly detectorId: string;
+  readonly action: FilterPiiAction;
   readonly config: PatternContentInspectorConfig;
   readonly sources: readonly ContentSource[];
   readonly fields: ReadonlySet<string> | null;
@@ -134,7 +143,12 @@ function snapshotFilterFields(
 
 function appendFilterPlan(
   plans: FilterCompilationPlan[],
-  config: (PatternContentInspectorConfig & { readonly fields?: readonly string[] }) | undefined,
+  config:
+    | (PatternContentInspectorConfig & {
+        readonly action?: FilterPiiAction;
+        readonly fields?: readonly string[];
+      })
+    | undefined,
   sources: readonly ContentSource[],
 ): void {
   if (config == null) {
@@ -142,6 +156,7 @@ function appendFilterPlan(
   }
   plans.push({
     detectorId: 'pii-pattern',
+    action: config.action ?? 'block',
     config,
     sources,
     fields: snapshotFilterFields(config),
@@ -227,6 +242,7 @@ function createCompilationPlans(
   if (legacyPii != null) {
     plans.unshift({
       detectorId: 'legacy-pattern',
+      action: 'block',
       config: legacyPii,
       sources: ['message', 'assembled_context', 'tool_argument'],
       fields: null,
@@ -270,6 +286,7 @@ function compilePlans(plans: readonly FilterCompilationPlan[]): readonly Compile
     }
     compiled.push({
       detectorId: plan.detectorId,
+      action: plan.action,
       sources: new Set(plan.sources),
       fields: plan.fields,
       applies: plan.applies,
@@ -287,6 +304,7 @@ function compilePlans(plans: readonly FilterCompilationPlan[]): readonly Compile
 }
 
 function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentInspector {
+  const hasAuditRules = rules.some((rule) => rule.action === 'audit');
   const rulesBySource = new Map<ContentSource, Array<readonly [number, CompiledFilter]>>();
   for (let ruleIndex = 0; ruleIndex < rules.length; ruleIndex++) {
     const rule = rules[ruleIndex];
@@ -308,6 +326,7 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
     if (sourceRules == null) {
       return null;
     }
+    let firstBlockingFinding: ProtectionFinding | null = null;
     for (const [ruleIndex, rule] of sourceRules) {
       if (rule.fields != null && !rule.fields.has(fragment.field)) {
         continue;
@@ -324,29 +343,48 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
       }
       const finding = rule.inspector.inspectFragment(fragment);
       if (finding != null) {
-        return {
+        const configuredFinding = {
           ...finding,
           detectorId: rule.detectorId,
         };
+        if (rule.action === 'audit') {
+          recordAuditFinding({
+            action: rule.action,
+            detectorId: configuredFinding.detectorId,
+            ruleId: configuredFinding.ruleId,
+            label: configuredFinding.label,
+            source: configuredFinding.source,
+            field: configuredFinding.field,
+            provenance: configuredFinding.provenance,
+          });
+          continue;
+        }
+        firstBlockingFinding ??= configuredFinding;
+        if (!hasAuditRules) {
+          return firstBlockingFinding;
+        }
       }
     }
-    return null;
+    return firstBlockingFinding;
   };
   const inspect = (
     fragments: Iterable<TextContentFragment>,
     inspectedTextByRule: Array<Set<string> | undefined>,
   ): ProtectionFinding | null => {
+    let firstBlockingFinding: ProtectionFinding | null = null;
     for (const fragment of fragments) {
       const finding = inspectFragment(fragment, inspectedTextByRule);
-      if (finding != null) {
-        return finding;
+      firstBlockingFinding ??= finding;
+      if (firstBlockingFinding != null && !hasAuditRules) {
+        break;
       }
     }
-    return null;
+    return firstBlockingFinding;
   };
   const createSession = (): ConfiguredContentInspectionSession => {
     const inspectedTextByRule: Array<Set<string> | undefined> = new Array(rules.length);
     return {
+      hasAuditRules,
       inspectFragment(fragment) {
         return inspectFragment(fragment, inspectedTextByRule);
       },
@@ -357,6 +395,7 @@ function createInspector(rules: readonly CompiledFilter[]): ConfiguredContentIns
   };
 
   return {
+    hasAuditRules,
     createSession,
     inspect(fragments) {
       return inspect(fragments, new Array(rules.length));

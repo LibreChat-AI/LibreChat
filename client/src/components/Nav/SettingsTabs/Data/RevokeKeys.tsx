@@ -62,7 +62,7 @@ export const RevokeKeys = ({
           selection={{
             selectHandler: onClick,
             selectClasses:
-              'bg-surface-destructive text-white transition-all duration-200 hover:bg-surface-destructive-hover',
+              'bg-surface-destructive text-text-on-status transition-all duration-200 hover:bg-surface-destructive-hover',
             selectText: isLoading ? <Spinner /> : localize('com_ui_revoke'),
           }}
         />

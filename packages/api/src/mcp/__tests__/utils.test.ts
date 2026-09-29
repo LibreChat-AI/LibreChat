@@ -8,19 +8,28 @@ import {
   redactAllServerSecrets,
   redactServerSecrets,
   requiresUserScopedConnection,
+  canUseAppConnection,
+  canBackfillSharedServerInstructions,
   isInvalidClientMessage,
   isClientRejectionMessage,
   getMissingCustomUserVars,
   hasCustomUserVars,
   hasRuntimeUrlPlaceholders,
   getMCPRequestScope,
+  toCatalogConnectionConfig,
+  applyRequestHeaders,
   hasRuntimeContextPlaceholders,
   getRuntimeBodyPlaceholderFields,
   getMissingRuntimeBodyPlaceholderFields,
   isUserSourced,
   validateMCPServerConfig,
   requiresEphemeralUserConnection,
+  requiresOAuthMachinery,
+  isChatSelectableMCPServer,
+  filterChatSelectableMCPServers,
+  waitUntilDeadline,
 } from '~/mcp/utils';
+import { usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 
 describe('normalizeServerName', () => {
   it('should not modify server names that already match the pattern', () => {
@@ -66,7 +75,7 @@ describe('splitMCPToolKey', () => {
     // before LibreChat appends its own "_mcp_gitlab" suffix. A naive
     // `.split(delimiter)` produces 3 segments here and silently drops the
     // 3rd, yielding a bogus server name ("server_version" instead of
-    // "gitlab"). See https://github.com/danny-avila/LibreChat/issues/14440
+    // "gitlab"). See https://github.com/LibreChat-AI/LibreChat/issues/14440
     expect(splitMCPToolKey('gitlab-get_mcp_server_version_mcp_gitlab')).toEqual([
       'gitlab-get_mcp_server_version',
       'gitlab',
@@ -687,6 +696,44 @@ describe('isUserSourced', () => {
   });
 });
 
+describe('requiresOAuthMachinery', () => {
+  it('preserves explicit OAuth when a direct bearer placeholder is also present', () => {
+    expect(
+      requiresOAuthMachinery({
+        type: 'streamable-http',
+        url: 'https://mcp.example.com',
+        source: 'yaml',
+        oauth: { client_id: 'explicit-client' },
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      }),
+    ).toBe(true);
+  });
+  it('suppresses MCP OAuth for a trusted direct OpenID bearer even if inspection stamped OAuth', () => {
+    expect(
+      requiresOAuthMachinery({
+        type: 'streamable-http',
+        url: 'https://mcp.example.com',
+        source: 'yaml',
+        requiresOAuth: true,
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      }),
+    ).toBe(false);
+  });
+
+  it('keeps OBO wiring when both OBO and the direct bearer placeholder are present', () => {
+    expect(
+      requiresOAuthMachinery({
+        type: 'streamable-http',
+        url: 'https://mcp.example.com',
+        source: 'yaml',
+        requiresOAuth: true,
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+        obo: { scopes: 'api://mcp/.default' },
+      }),
+    ).toBe(true);
+  });
+});
+
 describe('requiresUserScopedConnection', () => {
   it('returns true for OAuth servers', () => {
     expect(requiresUserScopedConnection({ requiresOAuth: true })).toBe(true);
@@ -955,6 +1002,250 @@ describe('getMissingRuntimeBodyPlaceholderFields', () => {
   });
 });
 
+describe('operator requestHeaders', () => {
+  const config = {
+    type: 'streamable-http',
+    url: 'https://mcp.example.com/mcp',
+    source: 'yaml',
+    headers: { Authorization: 'Bearer static-token' },
+    requestHeaders: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+  } as ParsedServerConfig;
+
+  it('leaves the catalog unscoped while the runtime stays request-scoped', () => {
+    expect(getMCPRequestScope(config)).toEqual({
+      requestScoped: true,
+      requiredBodyFields: ['conversationId'],
+    });
+    expect(requiresEphemeralUserConnection(config)).toBe(true);
+
+    const catalogConfig = toCatalogConnectionConfig(config);
+    expect(getMCPRequestScope(catalogConfig)).toEqual({
+      requestScoped: false,
+      requiredBodyFields: [],
+    });
+    expect(requiresEphemeralUserConnection(catalogConfig)).toBe(false);
+    expect(getMissingRuntimeBodyPlaceholderFields(catalogConfig)).toEqual([]);
+  });
+
+  it('still blocks the catalog for a body placeholder discovery itself sends', () => {
+    const urlScoped = toCatalogConnectionConfig({
+      ...config,
+      url: 'https://mcp.example.com/{{LIBRECHAT_BODY_MESSAGEID}}/mcp',
+    } as ParsedServerConfig);
+
+    expect(getMCPRequestScope(urlScoped).requiredBodyFields).toEqual(['messageId']);
+    expect(getMissingRuntimeBodyPlaceholderFields(urlScoped)).toEqual(['messageId']);
+  });
+
+  it('fails closed when the runtime value the request headers need is absent', () => {
+    expect(getMissingRuntimeBodyPlaceholderFields(config, { messageId: 'msg-1' })).toEqual([
+      'conversationId',
+    ]);
+    expect(getMissingRuntimeBodyPlaceholderFields(config, { conversationId: '  ' })).toEqual([
+      'conversationId',
+    ]);
+    expect(getMissingRuntimeBodyPlaceholderFields(config, { conversationId: 'conv-1' })).toEqual(
+      [],
+    );
+  });
+
+  it('does not resolve requestHeaders placeholders for untrusted configs', () => {
+    for (const untrusted of [
+      { ...config, source: 'user' as const, dbId: 'server-123' },
+      { ...config, source: 'plugin' as const },
+    ]) {
+      expect(getMCPRequestScope(untrusted).requestScoped).toBe(false);
+      expect(requiresEphemeralUserConnection(untrusted)).toBe(false);
+      expect(getMissingRuntimeBodyPlaceholderFields(untrusted)).toEqual([]);
+    }
+  });
+
+  it('keeps a server with chat-only headers off the shared app connection', () => {
+    const shareable = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      source: 'yaml',
+    } as ParsedServerConfig;
+
+    expect(canUseAppConnection(shareable)).toBe(true);
+    /** Static values too: the shared connection's own handshake is catalog work. */
+    expect(
+      canUseAppConnection({
+        ...shareable,
+        requestHeaders: { 'X-Workspace': 'workspace-1' },
+      } as ParsedServerConfig),
+    ).toBe(false);
+    expect(canUseAppConnection(config)).toBe(false);
+    /** An empty map declares nothing, so it must not cost the server its sharing. */
+    expect(canUseAppConnection({ ...shareable, requestHeaders: {} } as ParsedServerConfig)).toBe(
+      true,
+    );
+  });
+
+  it('does not require body values from headers shadowed by the runtime map', () => {
+    const declared: ParsedServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com',
+      source: 'yaml',
+      headers: { 'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+      requestHeaders: { 'x-conversation': 'fixed' },
+    };
+    expect(getMissingRuntimeBodyPlaceholderFields(declared)).toEqual([]);
+    expect(hasRuntimeContextPlaceholders(declared)).toBe(false);
+    expect(getMissingRuntimeBodyPlaceholderFields(toCatalogConnectionConfig(declared))).toEqual([
+      'conversationId',
+    ]);
+  });
+
+  it('keeps chat-only instructions out of the shared catalog, including static headers', () => {
+    const deferred: ParsedServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com',
+      source: 'yaml',
+      startup: false,
+    };
+    expect(canBackfillSharedServerInstructions(deferred)).toBe(true);
+    expect(canBackfillSharedServerInstructions({ ...deferred, requestHeaders: {} })).toBe(true);
+    expect(
+      canBackfillSharedServerInstructions({
+        ...deferred,
+        requestHeaders: { 'X-Workspace': 'chat' },
+      }),
+    ).toBe(false);
+  });
+
+  it('drops a shadowed API-key body requirement while preserving discovery authentication', () => {
+    const declared: ParsedServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com',
+      source: 'yaml',
+      apiKey: {
+        source: 'admin',
+        authorization_type: 'bearer',
+        key: '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      },
+      requestHeaders: { authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    };
+    const runtime = applyRequestHeaders(declared);
+    expect(getMissingRuntimeBodyPlaceholderFields(declared)).toEqual([]);
+    expect(usesDirectOpenIDBearerRecovery(runtime)).toBe(true);
+    expect(runtime.apiKey?.key).toBeUndefined();
+    expect(declared.apiKey?.key).toBe('{{LIBRECHAT_BODY_CONVERSATIONID}}');
+    expect(getMissingRuntimeBodyPlaceholderFields(toCatalogConnectionConfig(declared))).toEqual([
+      'conversationId',
+    ]);
+    expect(applyRequestHeaders(runtime)).toBe(runtime);
+    const unshadowed = applyRequestHeaders({ ...declared, requestHeaders: { 'X-Trace': 'trace' } });
+    expect(unshadowed.apiKey).toBe(declared.apiKey);
+  });
+
+  it('never returns either header map to a client', () => {
+    const redacted = redactServerSecrets(config, { canEdit: true });
+
+    expect(redacted).not.toHaveProperty('requestHeaders');
+    expect(redacted).not.toHaveProperty('headers');
+    expect(redacted.requestScoped).toBe(true);
+  });
+});
+
+describe('toCatalogConnectionConfig', () => {
+  it('strips the chat-only map a discovery connection cannot resolve', () => {
+    const config = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer static-token' },
+      requestHeaders: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+    } as ParsedServerConfig;
+
+    const catalogConfig = toCatalogConnectionConfig(config);
+
+    expect(catalogConfig).not.toHaveProperty('requestHeaders');
+    expect((catalogConfig as { headers?: Record<string, string> }).headers).toEqual({
+      Authorization: 'Bearer static-token',
+    });
+    expect(config).toHaveProperty('requestHeaders');
+  });
+
+  it('returns the same reference when there is nothing to strip', () => {
+    const config = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer static-token' },
+    } as ParsedServerConfig;
+
+    expect(toCatalogConnectionConfig(config)).toBe(config);
+  });
+});
+
+describe('applyRequestHeaders', () => {
+  it('merges the request map over headers', () => {
+    const merged = applyRequestHeaders({
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer static', 'X-Keep': 'kept' },
+      requestHeaders: { 'X-Trace-Id': '{{LIBRECHAT_BODY_MESSAGEID}}' },
+    } as ParsedServerConfig) as { headers?: Record<string, string> };
+
+    expect(merged.headers).toEqual({
+      Authorization: 'Bearer static',
+      'X-Keep': 'kept',
+      'X-Trace-Id': '{{LIBRECHAT_BODY_MESSAGEID}}',
+    });
+    expect(merged).not.toHaveProperty('requestHeaders');
+  });
+
+  it('overrides a duplicate name regardless of casing', () => {
+    const merged = applyRequestHeaders({
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer stale', 'X-Trace-Id': 'stale-trace' },
+      requestHeaders: { authorization: 'Bearer fresh', 'x-trace-id': 'fresh-trace' },
+    } as ParsedServerConfig) as { headers?: Record<string, string> };
+
+    /** Both spellings surviving would let Undici join them into `stale, fresh`. */
+    expect(merged.headers).toEqual({
+      authorization: 'Bearer fresh',
+      'x-trace-id': 'fresh-trace',
+    });
+  });
+
+  it('is idempotent, so a config reused across connections cannot merge twice', () => {
+    const config = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { 'X-Trace-Id': 'stale' },
+      requestHeaders: { 'X-Trace-Id': 'fresh' },
+    } as ParsedServerConfig;
+
+    const once = applyRequestHeaders(config);
+    const twice = applyRequestHeaders(once);
+
+    expect(twice).toBe(once);
+    expect((twice as { headers?: Record<string, string> }).headers).toEqual({
+      'X-Trace-Id': 'fresh',
+    });
+  });
+
+  it('returns the same reference when there is nothing to merge', () => {
+    const config = { type: 'stdio', command: 'node', args: ['server.js'] } as ParsedServerConfig;
+
+    expect(applyRequestHeaders(config)).toBe(config);
+  });
+
+  it('brings a request-header Authorization under direct-bearer recovery', () => {
+    const config = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      source: 'yaml',
+      requiresOAuth: false,
+      requestHeaders: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    } as ParsedServerConfig;
+
+    expect(usesDirectOpenIDBearerRecovery(config)).toBe(false);
+    expect(usesDirectOpenIDBearerRecovery(applyRequestHeaders(config))).toBe(true);
+  });
+});
+
 describe('validateMCPServerConfig', () => {
   it('preserves server-managed metadata on a valid effective config', () => {
     const config = {
@@ -1090,5 +1381,240 @@ describe('getMissingCustomUserVars', () => {
     expect(
       getMissingCustomUserVars(config, { THINGY_TOKEN: 'abc123', UNRELATED: 'value' }),
     ).toEqual([]);
+  });
+});
+
+describe('isChatSelectableMCPServer', () => {
+  it('rejects a server hidden from the chat menu', () => {
+    expect(isChatSelectableMCPServer({ chatMenu: false })).toBe(false);
+  });
+
+  it('rejects a server reachable only through an agent', () => {
+    expect(isChatSelectableMCPServer({ consumeOnly: true })).toBe(false);
+  });
+
+  it('accepts a server with the flags unset or explicitly on', () => {
+    expect(isChatSelectableMCPServer({})).toBe(true);
+    expect(isChatSelectableMCPServer({ chatMenu: true, consumeOnly: false })).toBe(true);
+  });
+
+  it('accepts an unresolved config so request-tier servers are not dropped', () => {
+    expect(isChatSelectableMCPServer(undefined)).toBe(true);
+    expect(isChatSelectableMCPServer(null)).toBe(true);
+  });
+});
+
+describe('filterChatSelectableMCPServers', () => {
+  const catalog = {
+    visible: { chatMenu: true },
+    hidden: { chatMenu: false },
+    unset: {},
+    'agent-only': { consumeOnly: true },
+    'private server': { chatMenu: false },
+  };
+  const accessible = jest.fn(async () => catalog);
+
+  beforeEach(() => accessible.mockClear());
+
+  it('drops servers hidden from the chat menu', async () => {
+    await expect(
+      filterChatSelectableMCPServers(['visible', 'hidden'], {
+        userId: 'user123',
+        getAccessibleMCPServers: accessible,
+      }),
+    ).resolves.toEqual(['visible']);
+  });
+
+  it('drops servers the user only reaches through an agent', async () => {
+    await expect(
+      filterChatSelectableMCPServers(['visible', 'agent-only'], {
+        userId: 'user123',
+        getAccessibleMCPServers: accessible,
+      }),
+    ).resolves.toEqual(['visible']);
+  });
+
+  it('keeps servers with the flags unset', async () => {
+    await expect(
+      filterChatSelectableMCPServers(['unset'], {
+        userId: 'user123',
+        getAccessibleMCPServers: accessible,
+      }),
+    ).resolves.toEqual(['unset']);
+  });
+
+  it('resolves the catalog once, however long the selection', async () => {
+    await expect(
+      filterChatSelectableMCPServers(['visible', 'visible', 'unset', 'visible'], {
+        userId: 'user123',
+        getAccessibleMCPServers: accessible,
+      }),
+    ).resolves.toEqual(['visible', 'unset']);
+    expect(accessible).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the role through, since it scopes what the user can reach', async () => {
+    await filterChatSelectableMCPServers(['visible'], {
+      userId: 'user123',
+      role: 'ADMIN',
+      getAccessibleMCPServers: accessible,
+    });
+    expect(accessible).toHaveBeenCalledWith('user123', 'ADMIN');
+  });
+
+  it('drops a hidden server named by its normalized spelling', async () => {
+    await expect(
+      filterChatSelectableMCPServers(['private_server'], {
+        userId: 'user123',
+        getAccessibleMCPServers: accessible,
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('lets an exact accessible name win over another server normalizing onto it', async () => {
+    const crossTier = jest.fn(async () => ({
+      'private server': { chatMenu: false },
+      private_server: { chatMenu: true },
+    }));
+    await expect(
+      filterChatSelectableMCPServers(['private_server'], {
+        userId: 'user123',
+        getAccessibleMCPServers: crossTier,
+      }),
+    ).resolves.toEqual(['private_server']);
+  });
+
+  it('keeps a request-tier server the registry does not know', async () => {
+    await expect(
+      filterChatSelectableMCPServers(['body-scoped'], {
+        userId: 'user123',
+        getAccessibleMCPServers: accessible,
+      }),
+    ).resolves.toEqual(['body-scoped']);
+  });
+
+  it('keeps the selection when the catalog lookup fails', async () => {
+    const failing = jest.fn(async () => {
+      throw new Error('registry unavailable');
+    });
+    await expect(
+      filterChatSelectableMCPServers(['a', 'b'], {
+        userId: 'user123',
+        getAccessibleMCPServers: failing,
+      }),
+    ).resolves.toEqual(['a', 'b']);
+  });
+
+  it('uses the selection as sent when no resolver is supplied', async () => {
+    await expect(
+      filterChatSelectableMCPServers(['a', 'a', 'b'], { userId: 'user123' }),
+    ).resolves.toEqual(['a', 'b']);
+  });
+
+  it('returns an empty array for an empty or missing selection', async () => {
+    const opts = { userId: 'u', getAccessibleMCPServers: accessible };
+    await expect(filterChatSelectableMCPServers([], opts)).resolves.toEqual([]);
+    await expect(filterChatSelectableMCPServers(undefined, opts)).resolves.toEqual([]);
+    await expect(filterChatSelectableMCPServers(null, opts)).resolves.toEqual([]);
+  });
+});
+
+describe('waitUntilDeadline', () => {
+  const deferred = () => {
+    let resolve!: (value: string) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<string>((resolveWork, rejectWork) => {
+      resolve = resolveWork;
+      reject = rejectWork;
+    });
+    return { promise, resolve, reject };
+  };
+
+  it('returns the value of work that settles before the deadline', async () => {
+    await expect(waitUntilDeadline(Promise.resolve('tokens'), Date.now() + 1000)).resolves.toEqual({
+      settled: true,
+      value: 'tokens',
+    });
+  });
+
+  it('rethrows a rejection that lands before the deadline', async () => {
+    await expect(
+      waitUntilDeadline(Promise.reject(new Error('storage unavailable')), Date.now() + 1000),
+    ).rejects.toThrow('storage unavailable');
+  });
+
+  it('stops waiting at the deadline and keeps observing the abandoned work', async () => {
+    const work = deferred();
+
+    await expect(waitUntilDeadline(work.promise, Date.now() + 10)).resolves.toEqual({
+      settled: false,
+    });
+
+    /** Jest fails the test if this late rejection goes unhandled. */
+    work.reject(new Error('late failure'));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it('stops waiting when the signal aborts, including one aborted before the wait', async () => {
+    const aborting = new AbortController();
+    const pending = deferred();
+    const waiting = waitUntilDeadline(pending.promise, undefined, aborting.signal);
+    aborting.abort();
+    await expect(waiting).resolves.toEqual({ settled: false });
+
+    const aborted = new AbortController();
+    aborted.abort();
+    const abandoned = deferred();
+    await expect(waitUntilDeadline(abandoned.promise, undefined, aborted.signal)).resolves.toEqual({
+      settled: false,
+    });
+
+    pending.reject(new Error('late failure'));
+    abandoned.reject(new Error('late failure'));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+});
+
+describe('shadowed generated user API keys', () => {
+  const config: ParsedServerConfig = {
+    type: 'streamable-http',
+    url: 'https://mcp.example.test/mcp',
+    apiKey: { source: 'user', authorization_type: 'bearer' },
+    headers: { Authorization: 'Bearer {{MCP_API_KEY}}' },
+    requestHeaders: { authorization: 'Bearer request-secret' },
+    customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Generated key' } },
+  };
+
+  it('removes only the unused generated requirement and preserves the declaration', () => {
+    expect(hasCustomUserVars(config)).toBe(false);
+    expect(getMissingCustomUserVars(config)).toEqual([]);
+    const effective = applyRequestHeaders(config);
+    expect(effective.customUserVars).toEqual({});
+    expect(getMissingCustomUserVars(effective)).toEqual([]);
+    expect(applyRequestHeaders(effective)).toBe(effective);
+    expect(getMissingCustomUserVars(toCatalogConnectionConfig(config))).toEqual(['MCP_API_KEY']);
+    expect(config.customUserVars).toHaveProperty('MCP_API_KEY');
+  });
+
+  it.each([
+    { requestHeaders: { authorization: 'Bearer {{MCP_API_KEY}}' } },
+    { headers: { Authorization: 'Bearer {{MCP_API_KEY}}', 'X-Key': '{{MCP_API_KEY}}' } },
+    { url: 'https://mcp.example.test/{{MCP_API_KEY}}' },
+    { oauth_headers: { 'X-Key': '{{MCP_API_KEY}}' } },
+    { requestHeaders: { 'X-Unrelated': 'value' } },
+  ])('retains a key referenced by the effective configuration: %j', (fields) => {
+    expect(getMissingCustomUserVars({ ...config, ...fields })).toEqual(['MCP_API_KEY']);
+  });
+
+  it('retains explicitly declared variables', () => {
+    const declared = {
+      ...config,
+      customUserVars: {
+        ...config.customUserVars,
+        REGION: { title: 'Region', description: 'Required region' },
+      },
+    };
+    expect(getMissingCustomUserVars(declared)).toEqual(['REGION']);
+    expect(hasCustomUserVars(declared)).toBe(true);
   });
 });

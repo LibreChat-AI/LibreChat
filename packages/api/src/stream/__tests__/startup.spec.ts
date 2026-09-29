@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import type { AbortResult } from '~/stream/interfaces/IJobStore';
 import type { AgentStartupTelemetry } from '~/agents/startup';
 import type { ServerSentEvent } from '~/types';
@@ -14,6 +15,7 @@ import {
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { registerChunkPublicationCapability } from '~/stream/internal/chunkPublication';
 import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
+import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 
 function createTelemetry(): jest.Mocked<AgentStartupTelemetry> {
@@ -111,6 +113,7 @@ describe('GenerationJobManager startup telemetry', () => {
         model: 'test-model',
         agent_id: 'agent-1',
         isTemporary: false,
+        retentionExpiresAt: '2030-01-01T00:00:00.000Z',
         promptTokens: 0,
         discoveredTools: [],
         pendingAction: {
@@ -129,7 +132,7 @@ describe('GenerationJobManager startup telemetry', () => {
     expect(job.metadata).toMatchObject({
       userId: 'user-1',
       conversationId: 'conversation-1',
-      checkpointNamespace: String(job.createdAt),
+      checkpointNamespace: expect.stringMatching(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/),
       userMessage: {
         messageId: 'message-1',
         parentMessageId: 'parent-1',
@@ -147,6 +150,7 @@ describe('GenerationJobManager startup telemetry', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
+      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
       promptTokens: 0,
       discoveredTools: [],
       providerExecutionId: expect.any(String),
@@ -673,6 +677,12 @@ describe('GenerationJobManager startup telemetry', () => {
     const predecessor = await manager.createJob(streamId, 'user-1', streamId);
     const onDone = jest.fn();
     const subscription = await manager.subscribe(streamId, () => undefined, onDone);
+    const predecessorRuntime = (
+      manager as unknown as {
+        runtimeState: Map<string, { subscriberLeaseTimer?: ReturnType<typeof setInterval> }>;
+      }
+    ).runtimeState.get(streamId)!;
+    expect(predecessorRuntime.subscriberLeaseTimer).toBeDefined();
 
     const replacement = await manager.createJob(streamId, 'user-1', streamId);
 
@@ -685,6 +695,7 @@ describe('GenerationJobManager startup telemetry', () => {
       conversation: { conversationId: streamId },
     });
     expect(predecessor.abortController.signal.aborted).toBe(true);
+    expect(predecessorRuntime.subscriberLeaseTimer).toBeUndefined();
     expect(replacement.abortController.signal.aborted).toBe(false);
     expect(eventTransport.getSubscriberCount(streamId)).toBe(0);
     subscription?.unsubscribe();
@@ -1402,7 +1413,7 @@ describe('GenerationJobManager startup telemetry', () => {
       expect(getJob).toHaveBeenCalledTimes(1);
       expect(onError).not.toHaveBeenCalled();
       expect(onAllSubscribersLeft).not.toHaveBeenCalled();
-      expect(jest.getTimerCount()).toBe(timerCountBeforeFence);
+      expect(jest.getTimerCount()).toBe(timerCountBeforeFence - 1);
 
       releaseLookup?.();
       await jest.advanceTimersByTimeAsync(0);
@@ -2238,6 +2249,63 @@ describe('GenerationJobManager startup telemetry', () => {
     }
   });
 
+  it('treats a replacement-fenced terminal publication as a superseded outcome', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = new InMemoryEventTransport();
+    jest.spyOn(eventTransport, 'emitDone').mockImplementation((streamId, _event, generationId) => {
+      throw new GenerationPublicationFencedError('done', streamId, generationId);
+    });
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: true });
+    manager.initialize();
+    const streamId = 'stream-terminal-done-publication-fenced';
+
+    try {
+      const job = await manager.createJob(streamId, 'user-1', streamId);
+      const claim = await manager.claimTerminalJob(streamId, 'complete', undefined, job.createdAt, {
+        persistencePending: true,
+      });
+      expect(claim).not.toBeNull();
+      const finalEvent = {
+        final: true,
+        conversation: { conversationId: streamId },
+        responseMessage: { messageId: 'response-fenced-final', unfinished: false },
+      } as const;
+
+      await expect(manager.publishTerminalClaim(claim!, finalEvent)).resolves.toEqual({
+        finalEvent,
+        persistenceFailed: false,
+        publicationFenced: true,
+      });
+      expect(warn).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+
+      await manager.finishTerminalJob(claim!);
+
+      const failedStreamId = `${streamId}-persistence-failed`;
+      const failedJob = await manager.createJob(failedStreamId, 'user-1', failedStreamId);
+      const failedClaim = await manager.claimTerminalJob(
+        failedStreamId,
+        'complete',
+        undefined,
+        failedJob.createdAt,
+        { persistencePending: true },
+      );
+      expect(failedClaim).not.toBeNull();
+      await expect(manager.publishTerminalClaim(failedClaim!, null)).resolves.toMatchObject({
+        persistenceFailed: true,
+        publicationFenced: true,
+      });
+      await manager.finishTerminalJob(failedClaim!);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      await manager.destroy();
+    }
+  });
+
   it('releases its exact runtime when abort loses to a terminal transition', async () => {
     const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
     const abortDisposer = jest.fn();
@@ -2970,6 +3038,31 @@ describe('GenerationJobManager startup telemetry', () => {
     await manager.destroy();
   });
 
+  it('does not invoke local error fallback when terminal error publication is fenced', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = Object.assign(new InMemoryEventTransport(), {
+      emitError: jest.fn(async (streamId: string, _error: string, generationId?: number) => {
+        throw new GenerationPublicationFencedError('error', streamId, generationId);
+      }),
+    });
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-error-publish-fenced';
+    const job = await manager.createJob(streamId, 'user-1');
+    const onError = jest.fn();
+    const subscription = await manager.subscribe(streamId, () => undefined, undefined, onError);
+
+    await expect(
+      manager.completeJob(streamId, 'stale provider failure', job.createdAt),
+    ).resolves.toBe(true);
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(job.abortController.signal.aborted).toBe(true);
+    subscription?.unsubscribe();
+    await manager.destroy();
+  });
+
   it('finishes abort runtime cleanup but retains its durable final when publication throws', async () => {
     const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
     const eventTransport = Object.assign(new InMemoryEventTransport(), {
@@ -3122,6 +3215,439 @@ describe('GenerationJobManager startup telemetry', () => {
     });
     subscription?.unsubscribe();
     await manager.destroy();
+  });
+
+  it('returns the successor when stale terminal recovery publication is fenced', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = new InMemoryEventTransport();
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-terminal-recovery-replaced';
+    const predecessor = await manager.createJob(streamId, 'user-1', streamId);
+    const predecessorDone = jest.fn();
+    const predecessorError = jest.fn();
+    const predecessorSubscription = await manager.subscribe(
+      streamId,
+      () => undefined,
+      predecessorDone,
+      predecessorError,
+    );
+    await jobStore.transitionStatusAndDrainSteers(streamId, {
+      from: 'running',
+      to: 'aborted',
+      expectCreatedAt: predecessor.createdAt,
+      patch: {
+        completedAt: Date.now() - 60_000,
+        terminalPersistencePending: true,
+        terminalPersistenceStartedAt: Date.now() - 60_000,
+      },
+    });
+    const finalize = jobStore.finalizeTerminalPersistence.bind(jobStore);
+    let successorCreatedAt = 0;
+    jest.spyOn(jobStore, 'finalizeTerminalPersistence').mockImplementation(async (...args) => {
+      const finalized = await finalize(...args);
+      const successor = await jobStore.createJob(streamId, 'user-1', streamId);
+      successorCreatedAt = successor.createdAt;
+      await manager.getJob(streamId);
+      return finalized;
+    });
+    jest.spyOn(eventTransport, 'emitDone').mockImplementation((_streamId, _event, generationId) => {
+      throw new GenerationPublicationFencedError('done', streamId, generationId);
+    });
+    jest.useFakeTimers();
+
+    try {
+      const successor = await manager.getJob(streamId);
+      expect(successor).toMatchObject({
+        createdAt: expect.any(Number),
+        status: 'running',
+      });
+      expect(successor?.createdAt).toBe(successorCreatedAt);
+      expect(successor?.abortController.signal.aborted).toBe(false);
+      expect(predecessor.abortController.signal.aborted).toBe(true);
+      expect(predecessorDone).not.toHaveBeenCalled();
+      expect(predecessorError).not.toHaveBeenCalled();
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(
+        REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS + REDIS_EVENT_REORDER_TIMEOUT_MS * 2,
+      );
+
+      expect(predecessorDone).not.toHaveBeenCalled();
+      expect(predecessorError).toHaveBeenCalledWith(TERMINAL_PUBLICATION_RECONNECT_ERROR);
+      expect(successor?.abortController.signal.aborted).toBe(false);
+      expect(manager.getRuntimeStats().runtimeStateSize).toBe(1);
+    } finally {
+      jest.useRealTimers();
+      predecessorSubscription?.unsubscribe();
+      await manager.destroy();
+    }
+  });
+
+  it('reconnect-closes a predecessor that attaches during stale finalization', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = new InMemoryEventTransport();
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-terminal-recovery-late-attachment';
+    const predecessor = await jobStore.createJob(streamId, 'user-1', streamId);
+    await jobStore.transitionStatusAndDrainSteers(streamId, {
+      from: 'running',
+      to: 'aborted',
+      expectCreatedAt: predecessor.createdAt,
+      patch: {
+        completedAt: Date.now() - 60_000,
+        terminalPersistencePending: true,
+        terminalPersistenceStartedAt: Date.now() - 60_000,
+      },
+    });
+    const finalize = jobStore.finalizeTerminalPersistence.bind(jobStore);
+    let finalizeEntered!: () => void;
+    const finalizationStarted = new Promise<void>((resolve) => {
+      finalizeEntered = resolve;
+    });
+    let releaseFinalize!: () => void;
+    const finalizeReleased = new Promise<void>((resolve) => {
+      releaseFinalize = resolve;
+    });
+    let successorCreatedAt = 0;
+    jest.spyOn(jobStore, 'finalizeTerminalPersistence').mockImplementation(async (...args) => {
+      finalizeEntered();
+      await finalizeReleased;
+      const finalized = await finalize(...args);
+      const successor = await jobStore.createJob(streamId, 'user-1', streamId);
+      successorCreatedAt = successor.createdAt;
+      return finalized;
+    });
+    jest.spyOn(eventTransport, 'emitDone').mockImplementation((_streamId, _event, generationId) => {
+      throw new GenerationPublicationFencedError('done', streamId, generationId);
+    });
+    const predecessorError = jest.fn();
+    const recovery = manager.getJob(streamId);
+    await finalizationStarted;
+    const pendingPredecessor = await jobStore.getJob(streamId);
+    const lateRuntime = await (
+      manager as unknown as {
+        getOrCreateRuntimeState: (
+          id: string,
+          job: typeof pendingPredecessor,
+        ) => Promise<{
+          createdAt: number;
+          abortController: AbortController;
+          localErrorHandlers: Set<(error: string) => void>;
+        } | null>;
+      }
+    ).getOrCreateRuntimeState(streamId, pendingPredecessor);
+    lateRuntime?.localErrorHandlers.add(predecessorError);
+    jest.useFakeTimers();
+
+    try {
+      expect(lateRuntime?.createdAt).toBe(predecessor.createdAt);
+      releaseFinalize();
+      const successor = await recovery;
+
+      expect(successor?.createdAt).toBe(successorCreatedAt);
+      expect(successor?.abortController.signal.aborted).toBe(false);
+      expect(predecessorError).not.toHaveBeenCalled();
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(
+        REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS + REDIS_EVENT_REORDER_TIMEOUT_MS * 2,
+      );
+
+      expect(predecessorError).toHaveBeenCalledWith(TERMINAL_PUBLICATION_RECONNECT_ERROR);
+      expect(successor?.abortController.signal.aborted).toBe(false);
+      expect(manager.getRuntimeStats().runtimeStateSize).toBe(1);
+    } finally {
+      releaseFinalize();
+      jest.useRealTimers();
+      await manager.destroy();
+    }
+  });
+
+  it('reconnect-closes the predecessor when a successor wins stale finalization', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = new InMemoryEventTransport();
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-terminal-recovery-finalize-replaced';
+    const predecessor = await manager.createJob(streamId, 'user-1', streamId);
+    const predecessorDone = jest.fn();
+    const predecessorError = jest.fn();
+    const predecessorSubscription = await manager.subscribe(
+      streamId,
+      () => undefined,
+      predecessorDone,
+      predecessorError,
+    );
+    await jobStore.transitionStatusAndDrainSteers(streamId, {
+      from: 'running',
+      to: 'aborted',
+      expectCreatedAt: predecessor.createdAt,
+      patch: {
+        completedAt: Date.now() - 60_000,
+        terminalPersistencePending: true,
+        terminalPersistenceStartedAt: Date.now() - 60_000,
+      },
+    });
+    const finalize = jobStore.finalizeTerminalPersistence.bind(jobStore);
+    let successorCreatedAt = 0;
+    jest.spyOn(jobStore, 'finalizeTerminalPersistence').mockImplementation(async (...args) => {
+      const successor = await jobStore.createJob(streamId, 'user-1', streamId);
+      successorCreatedAt = successor.createdAt;
+      return finalize(...args);
+    });
+    jest.useFakeTimers();
+
+    try {
+      const successor = await manager.getJob(streamId);
+      expect(successor?.createdAt).toBe(successorCreatedAt);
+      expect(successor?.abortController.signal.aborted).toBe(false);
+      expect(predecessor.abortController.signal.aborted).toBe(true);
+      expect(predecessorDone).not.toHaveBeenCalled();
+      expect(predecessorError).not.toHaveBeenCalled();
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(
+        REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS + REDIS_EVENT_REORDER_TIMEOUT_MS * 2,
+      );
+
+      expect(predecessorDone).not.toHaveBeenCalled();
+      expect(predecessorError).toHaveBeenCalledWith(TERMINAL_PUBLICATION_RECONNECT_ERROR);
+      expect(successor?.abortController.signal.aborted).toBe(false);
+      expect(manager.getRuntimeStats().runtimeStateSize).toBe(1);
+    } finally {
+      jest.useRealTimers();
+      predecessorSubscription?.unsubscribe();
+      await manager.destroy();
+    }
+  });
+
+  it('reconnect-closes a predecessor instead of delivering a terminal successor', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = new InMemoryEventTransport();
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-terminal-recovery-successor-error';
+    const predecessor = await manager.createJob(streamId, 'user-1', streamId);
+    const predecessorDone = jest.fn();
+    const predecessorError = jest.fn();
+    const predecessorSubscription = await manager.subscribe(
+      streamId,
+      () => undefined,
+      predecessorDone,
+      predecessorError,
+    );
+    await jobStore.transitionStatusAndDrainSteers(streamId, {
+      from: 'running',
+      to: 'aborted',
+      expectCreatedAt: predecessor.createdAt,
+      patch: {
+        completedAt: Date.now() - 60_000,
+        terminalPersistencePending: true,
+        terminalPersistenceStartedAt: Date.now() - 60_000,
+      },
+    });
+    const finalize = jobStore.finalizeTerminalPersistence.bind(jobStore);
+    jest.spyOn(jobStore, 'finalizeTerminalPersistence').mockImplementation(async (...args) => {
+      const finalized = await finalize(...args);
+      const successor = await jobStore.createJob(streamId, 'user-1', streamId);
+      await jobStore.updateJob(
+        streamId,
+        { status: 'error', error: 'successor provider failure', completedAt: Date.now() },
+        successor.createdAt,
+      );
+      return finalized;
+    });
+    jest.spyOn(eventTransport, 'emitDone').mockImplementation((_streamId, _event, generationId) => {
+      throw new GenerationPublicationFencedError('done', streamId, generationId);
+    });
+    jest.useFakeTimers();
+
+    try {
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(predecessorDone).not.toHaveBeenCalled();
+      expect(predecessorError).not.toHaveBeenCalled();
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(
+        REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS + REDIS_EVENT_REORDER_TIMEOUT_MS * 2,
+      );
+
+      expect(predecessorError).toHaveBeenCalledWith(TERMINAL_PUBLICATION_RECONNECT_ERROR);
+      expect(manager.getRuntimeStats().runtimeStateSize).toBe(0);
+    } finally {
+      jest.useRealTimers();
+      predecessorSubscription?.unsubscribe();
+      await manager.destroy();
+    }
+  });
+
+  it('retires a predecessor when a local successor handoff frame is lost', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = new InMemoryEventTransport();
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-local-successor-handoff-lost';
+    const predecessor = await manager.createJob(streamId, 'user-1', streamId);
+    const predecessorDone = jest.fn();
+    const predecessorError = jest.fn();
+    jest.spyOn(eventTransport, 'emitDone').mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    const predecessorSubscription = await manager.subscribe(
+      streamId,
+      () => undefined,
+      predecessorDone,
+      predecessorError,
+    );
+
+    try {
+      const successor = await manager.createJob(streamId, 'user-1', streamId);
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(successor.createdAt).toBeGreaterThan(predecessor.createdAt);
+      expect(predecessorDone).not.toHaveBeenCalled();
+      expect(predecessorError).not.toHaveBeenCalled();
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(
+        REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS + REDIS_EVENT_REORDER_TIMEOUT_MS * 2,
+      );
+
+      expect(predecessorError).toHaveBeenCalledWith(TERMINAL_PUBLICATION_RECONNECT_ERROR);
+      expect(manager.getRuntimeStats()).toMatchObject({
+        runtimeStateSize: 1,
+        fencedRuntimeRetirements: 0,
+      });
+      await expect(jobStore.getJob(streamId)).resolves.toMatchObject({
+        createdAt: successor.createdAt,
+      });
+    } finally {
+      jest.useRealTimers();
+      predecessorSubscription?.unsubscribe();
+      await manager.destroy();
+    }
+  });
+
+  it('schedules predecessor retirement after a successor releases its transport hold', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const eventTransport = new InMemoryEventTransport();
+    let signalHandoffStarted: (() => void) | undefined;
+    const handoffStarted = new Promise<void>((resolve) => {
+      signalHandoffStarted = resolve;
+    });
+    let releaseHandoff: (() => void) | undefined;
+    const handoffGate = new Promise<void>((resolve) => {
+      releaseHandoff = resolve;
+    });
+    jest.spyOn(eventTransport, 'emitDone').mockImplementation(async () => {
+      signalHandoffStarted?.();
+      await handoffGate;
+    });
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-successor-transport-hold-retirement';
+    const predecessor = await manager.createJob(streamId, 'user-1', streamId);
+    const predecessorError = jest.fn();
+    jest.useFakeTimers();
+    const predecessorSubscription = await manager.subscribe(
+      streamId,
+      () => undefined,
+      undefined,
+      predecessorError,
+    );
+    let creatingSuccessor: ReturnType<typeof manager.createJob> | undefined;
+
+    try {
+      creatingSuccessor = manager.createJob(streamId, 'user-1', streamId);
+      await handoffStarted;
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(predecessor.abortController.signal.aborted).toBe(true);
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(0);
+
+      releaseHandoff?.();
+      const successor = await creatingSuccessor;
+
+      expect(successor.createdAt).toBeGreaterThan(predecessor.createdAt);
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(
+        REDIS_REPLACEMENT_HANDOFF_MAX_WAIT_MS + REDIS_EVENT_REORDER_TIMEOUT_MS * 2,
+      );
+      expect(predecessorError).toHaveBeenCalledWith(TERMINAL_PUBLICATION_RECONNECT_ERROR);
+      expect(manager.getRuntimeStats()).toMatchObject({
+        runtimeStateSize: 1,
+        fencedRuntimeRetirements: 0,
+      });
+    } finally {
+      releaseHandoff?.();
+      await creatingSuccessor?.catch(() => undefined);
+      jest.useRealTimers();
+      predecessorSubscription?.unsubscribe();
+      await manager.destroy();
+    }
+  });
+
+  it('retains the abort listener while stored-terminal abort proof is unavailable', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const abortHandlers = new Set<(generationId?: number) => void | boolean>();
+    let signalProofStarted: (() => void) | undefined;
+    const proofStarted = new Promise<void>((resolve) => {
+      signalProofStarted = resolve;
+    });
+    let resolveProof: ((confirmed: boolean) => void) | undefined;
+    const proofResult = new Promise<boolean>((resolve) => {
+      resolveProof = resolve;
+    });
+    const eventTransport = Object.assign(new InMemoryEventTransport(), {
+      onAbort: jest.fn(async (_streamId: string, handler: (generationId?: number) => boolean) => {
+        abortHandlers.add(handler);
+        return () => abortHandlers.delete(handler);
+      }),
+      recordAbortAcknowledgement: jest.fn(async () => {
+        signalProofStarted?.();
+        return proofResult;
+      }),
+    });
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: true, cleanupOnComplete: false });
+    manager.initialize();
+    const streamId = 'stream-successor-discovery-abort-proof';
+    const predecessor = await manager.createJob(streamId, 'user-1', streamId);
+    const predecessorSubscription = await manager.subscribe(streamId, () => undefined);
+    const successor = await jobStore.createJob(streamId, 'user-1', streamId);
+
+    try {
+      await proofStarted;
+
+      expect(predecessor.abortController.signal.aborted).toBe(true);
+      expect(abortHandlers).toHaveProperty('size', 1);
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(0);
+
+      resolveProof?.(false);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(successor.createdAt).toBeGreaterThan(predecessor.createdAt);
+      expect(eventTransport.recordAbortAcknowledgement).toHaveBeenCalledWith(
+        streamId,
+        predecessor.createdAt,
+      );
+      expect(abortHandlers).toHaveProperty('size', 1);
+      expect([...abortHandlers][0]?.(predecessor.createdAt)).toBe(true);
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+    } finally {
+      resolveProof?.(false);
+      predecessorSubscription?.unsubscribe();
+      await manager.destroy();
+    }
   });
 
   it('closes an already-live subscriber when abort finalization storage fails', async () => {
@@ -3599,6 +4125,224 @@ describe('GenerationJobManager startup telemetry', () => {
       status: 'error',
       error: 'Generation interrupted because its server shut down',
     });
+  });
+
+  const configureShutdownManager = () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    jest.spyOn(jobStore, 'destroy').mockResolvedValue();
+    const eventTransport = new InMemoryEventTransport();
+    const manager = new GenerationJobManagerClass();
+    manager.configure({ jobStore, eventTransport, isRedis: false });
+    manager.initialize();
+    return { manager, jobStore, eventTransport };
+  };
+
+  it('waits for a begun provider execution to record its drain before shutdown completes', async () => {
+    const { manager, eventTransport } = configureShutdownManager();
+    const streamId = 'stream-shutdown-open-execution';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    await expect(
+      manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId),
+    ).resolves.toBe(true);
+    const recordProviderDrain = jest.spyOn(eventTransport, 'recordProviderDrain');
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(false);
+
+    /** The execution records its own drain — from the controller's `.finally`, after its
+     *  trailing writes — and that is what releases shutdown. No registration involved. */
+    await manager.markProviderExecutionDrained(streamId, job.createdAt, providerExecutionId);
+    await destroying;
+
+    expect(destroyed).toBe(true);
+    expect(recordProviderDrain).toHaveBeenCalledWith(streamId, job.createdAt, providerExecutionId);
+  });
+
+  it('keeps waiting for every execution begun before shutdown, not only the first to drain', async () => {
+    const { manager } = configureShutdownManager();
+    const first = await manager.createJob('stream-shutdown-first', 'user-1');
+    const second = await manager.createJob('stream-shutdown-second', 'user-1');
+    const firstExecution = first.metadata.providerExecutionId!;
+    const secondExecution = second.metadata.providerExecutionId!;
+    await manager.beginProviderExecution('stream-shutdown-first', first.createdAt, firstExecution);
+    await manager.beginProviderExecution(
+      'stream-shutdown-second',
+      second.createdAt,
+      secondExecution,
+    );
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    /** The first draining must not release shutdown while the second is still open. */
+    await manager.markProviderExecutionDrained(
+      'stream-shutdown-first',
+      first.createdAt,
+      firstExecution,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(false);
+
+    await manager.markProviderExecutionDrained(
+      'stream-shutdown-second',
+      second.createdAt,
+      secondExecution,
+    );
+    await destroying;
+    expect(destroyed).toBe(true);
+  });
+
+  it('does not delay shutdown for a provider execution that already drained', async () => {
+    const { manager } = configureShutdownManager();
+    const streamId = 'stream-shutdown-drained';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    await manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId);
+    await manager.markProviderExecutionDrained(streamId, job.createdAt, providerExecutionId);
+
+    manager.prepareForShutdown();
+    await expect(manager.destroy({ settlementBudgetMs: 5_000 })).resolves.toBeUndefined();
+  });
+
+  it('keeps waiting when the provider-begin reply is lost after the store may have committed', async () => {
+    const { manager, jobStore } = configureShutdownManager();
+    const streamId = 'stream-shutdown-ambiguous-begin';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    jest
+      .spyOn(jobStore, 'beginProviderExecution')
+      .mockRejectedValueOnce(new Error('reply lost after commit'));
+    await expect(
+      manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId),
+    ).rejects.toThrow('reply lost after commit');
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    /** The caller treats the rejection as possibly-started and still records the drain from
+     *  its cleanup; shutdown has to wait for that rather than assume nothing began. */
+    expect(destroyed).toBe(false);
+
+    await manager.markProviderExecutionDrained(streamId, job.createdAt, providerExecutionId);
+    await destroying;
+    expect(destroyed).toBe(true);
+  });
+
+  it('does not carry undrained executions into a re-initialized manager', async () => {
+    const { manager } = configureShutdownManager();
+    const streamId = 'stream-shutdown-stale-execution';
+    const job = await manager.createJob(streamId, 'user-1');
+    await manager.beginProviderExecution(
+      streamId,
+      job.createdAt,
+      job.metadata.providerExecutionId!,
+    );
+
+    /** A bare reset: zero budget, so the execution is still open when teardown runs. */
+    manager.prepareForShutdown();
+    await manager.destroy();
+
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    jest.spyOn(jobStore, 'destroy').mockResolvedValue();
+    manager.configure({ jobStore, eventTransport: new InMemoryEventTransport(), isRedis: false });
+    manager.initialize();
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    /** Resolved without consuming the budget: nothing from the previous store is left to wait
+     *  on. Asserted before awaiting, or a 5s stale wait would pass this test too. */
+    expect(destroyed).toBe(true);
+    await destroying;
+  });
+
+  it('does not carry undrained executions across a reconfigure', async () => {
+    const { manager } = configureShutdownManager();
+    const streamId = 'stream-shutdown-reconfigure';
+    const job = await manager.createJob(streamId, 'user-1');
+    await manager.beginProviderExecution(
+      streamId,
+      job.createdAt,
+      job.metadata.providerExecutionId!,
+    );
+
+    /** Reconfiguring after initialization replaces the store and transport the open
+     *  execution belongs to; its tracker must go with them. */
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    jest.spyOn(jobStore, 'destroy').mockResolvedValue();
+    manager.configure({ jobStore, eventTransport: new InMemoryEventTransport(), isRedis: false });
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(true);
+    await destroying;
+  });
+
+  it('releases an abandoned provider execution without recording a drain', async () => {
+    const { manager, eventTransport } = configureShutdownManager();
+    const streamId = 'stream-shutdown-abandoned';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    await manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId);
+    const recordProviderDrain = jest.spyOn(eventTransport, 'recordProviderDrain');
+
+    /** A remote run that settled its provider work but failed terminalization twice
+     *  deliberately publishes no drain marker; it must still stop shutdown waiting on it. */
+    manager.abandonProviderExecution(streamId, job.createdAt, providerExecutionId);
+
+    manager.prepareForShutdown();
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(true);
+    await destroying;
+    expect(recordProviderDrain).not.toHaveBeenCalled();
+  });
+
+  it('refuses to begin a provider execution once shutdown has started', async () => {
+    const { manager, jobStore } = configureShutdownManager();
+    const streamId = 'stream-shutdown-late-begin';
+    const job = await manager.createJob(streamId, 'user-1');
+    const providerExecutionId = job.metadata.providerExecutionId!;
+    const storeBegin = jest.spyOn(jobStore, 'beginProviderExecution');
+
+    manager.prepareForShutdown();
+    /** Began after the settlement wait could have observed it: must not start, must not
+     *  commit `providerDrained: false`, and must leave nothing for shutdown to wait on. */
+    await expect(
+      manager.beginProviderExecution(streamId, job.createdAt, providerExecutionId),
+    ).resolves.toBe(false);
+    expect(storeBegin).not.toHaveBeenCalled();
+
+    let destroyed = false;
+    const destroying = manager.destroy({ settlementBudgetMs: 5_000 }).then(() => {
+      destroyed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(destroyed).toBe(true);
+    await destroying;
   });
 
   it('does not let late success overwrite or delete a shutdown error', async () => {

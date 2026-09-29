@@ -4,6 +4,7 @@ import { ChevronRight } from 'lucide-react';
 import { MCPIcon, PinIcon } from '@librechat/client';
 import MCPServerMenuItem from '~/components/MCP/MCPServerMenuItem';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
+import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
 import { useBadgeRowContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -22,6 +23,13 @@ const MCPSubMenu = React.forwardRef<HTMLButtonElement, MCPSubMenuProps>(
       focusLoop: true,
       showTimeout: 100,
       placement: 'right',
+    });
+
+    const isOpen = menuStore.useState('open');
+    const configDialogOpen = mcpServerManager?.getConfigDialogProps()?.isOpen === true;
+    useMCPRefresh({
+      enabled:
+        (isOpen || configDialogOpen) && (mcpServerManager?.selectableServers.length ?? 0) > 0,
     });
 
     if (!mcpServerManager) {
@@ -89,9 +97,11 @@ const MCPSubMenu = React.forwardRef<HTMLButtonElement, MCPSubMenuProps>(
           <Ariakit.Menu
             portal={true}
             unmountOnHide={true}
+            gutter={12}
+            flip="left bottom-end top-end"
             aria-label={localize('com_ui_mcp_servers')}
             className={cn(
-              'animate-popover-left z-40 ml-3 flex min-w-[260px] max-w-[320px] flex-col rounded-xl',
+              'animate-popover-left z-40 flex min-w-[min(260px,calc(100vw-1rem))] max-w-[min(320px,calc(100vw-1rem))] flex-col rounded-xl',
               'border border-border-light bg-presentation p-1.5 shadow-lg',
             )}
           >

@@ -1,7 +1,14 @@
 import { Buffer } from 'node:buffer';
 import { RetentionMode } from 'librechat-data-provider';
-import type { AnyBulkWriteOperation, FilterQuery, Model, SortOrder, Types } from 'mongoose';
-import type { DeleteResult } from 'mongoose';
+import type {
+  AnyBulkWriteOperation,
+  DeleteResult,
+  FilterQuery,
+  Model,
+  SortOrder,
+  Types,
+} from 'mongoose';
+import type { SearchParams } from 'meilisearch';
 import type {
   IAgentEventActorCheckpoint,
   IAgentEventActorReconciliation,
@@ -17,6 +24,7 @@ import type {
   ISharedLink,
   ISubagentThreadReservation,
 } from '~/types';
+import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
 import {
   MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS,
@@ -34,15 +42,39 @@ import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
 } from './chatProject';
+import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
-import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
 import logger from '~/config/winston';
 
+const ACTOR_CHECKPOINT_FIELDS = [
+  'agentEventActor',
+  'agentEventActorCleanup',
+  'agentEventActorReconciliations',
+  'agentEventActorSuspension',
+] as const;
+
+function stripActorCheckpointFields(record: Record<string, unknown>): void {
+  for (const key of Object.keys(record)) {
+    if (ACTOR_CHECKPOINT_FIELDS.some((field) => key === field || key.startsWith(`${field}.`))) {
+      delete record[key];
+    }
+  }
+}
+
 const AGENT_EVENT_ACTOR_RECEIPT_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const MAX_AGENT_EVENT_ACTOR_SUSPENSION_BYTES = 64 * 1_024;
+/** MeiliSearch's default `pagination.maxTotalHits` ceiling. */
+const MEILI_SEARCH_LIMIT = 1000;
+/** Ceiling for a single conversation page; the sidebar's largest request is 100. */
+const MAX_CONVO_PAGE_SIZE = 100;
+const DEFAULT_CONVO_PAGE_SIZE = 25;
+const escapeMeiliFilterValue = (value: string): string =>
+  value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
 function validateAgentEventActorSuspension(
   conversationId: string,
@@ -241,6 +273,8 @@ export interface ConversationMethods {
       noUpsert?: boolean;
       createdAtOnInsert?: Date;
       preserveUpdatedAt?: boolean;
+      /** Same-tenant persisted agent already resolved by the request layer. */
+      initialAgentId?: string | null;
       /** `_id`s of messages this save just wrote. When present, they are appended with
        *  `$addToSet` and the O(n) read-and-rewrite of the `messages` array is skipped;
        *  every save without this option still rebuilds the array from the database. */
@@ -251,6 +285,41 @@ export interface ConversationMethods {
     user: string,
     conversationId: string,
     pinned: boolean,
+  ): Promise<IConversation | null>;
+  appendConvoMessageReference(
+    user: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<IConversation | null>;
+  getConvoCodeEnvironmentDecision(
+    user: string,
+    conversationId: string,
+  ): Promise<Pick<
+    IConversation,
+    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
+  > | null>;
+  readAdmittedConvoCodeEnvironmentDecision(
+    user: string,
+    conversationId: string,
+  ): Promise<Pick<
+    IConversation,
+    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces'
+  > | null>;
+  replaceConvoCodeEnvironmentDecision(
+    params: {
+      user: string;
+      conversationId: string;
+      expected: Pick<
+        IConversation,
+        'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
+      >;
+    } & (
+      | {
+          codeEnvironmentMode: 'attached';
+          codeWorkspaces: NonNullable<IConversation['codeWorkspaces']>;
+        }
+      | { codeEnvironmentMode: 'without_attached'; codeWorkspaces?: undefined }
+    ),
   ): Promise<IConversation | null>;
   bulkSaveConvos(conversations: Array<Record<string, unknown>>): Promise<unknown>;
   getConvosByCursor(
@@ -405,7 +474,11 @@ export interface ConversationMethods {
   getAgentEventActorReconciliationStorageMetrics(
     now: Date,
   ): Promise<AgentEventActorReconciliationStorageMetrics>;
-  expireLegacyAgentEventActorReceipts(now: Date, limit?: number): Promise<number>;
+  expireLegacyAgentEventActorReceipts(
+    now: Date,
+    limit?: number,
+    activity?: { found: boolean },
+  ): Promise<number>;
   reserveSubagentThread(input: {
     user: string;
     conversationId: string;
@@ -453,7 +526,7 @@ export interface ConversationMethods {
   getConvoRetention(
     user: string,
     conversationId: string,
-  ): Promise<Pick<IConversation, 'expiredAt'> | null>;
+  ): Promise<Pick<IConversation, 'expiredAt' | 'isTemporary'> | null>;
   getConvoTitle(user: string, conversationId: string): Promise<string | null>;
   deleteConvos(
     user: string,
@@ -466,17 +539,34 @@ export interface ConversationMethods {
   archiveAllConvos(user: string): Promise<{ archivedCount: number }>;
 }
 
+export interface ConversationMethodDeps
+  extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
+  searchMessages?: MessageMethods['searchMessages'];
+  deleteAgentQueuedTurns?: (
+    user: string,
+    conversations: Array<{ conversationId: string; tenantId?: string; allTenants?: true }>,
+  ) => Promise<void>;
+  eraseAgentTriggerDeliveryConversationResults?: (
+    user: string,
+    conversationIds: string[],
+  ) => Promise<void>;
+  prepareAgentTriggerConversationResultErasure?: (
+    user: string,
+    conversationIds: string[],
+  ) => Promise<void>;
+}
+
 export function createConversationMethods(
   mongoose: typeof import('mongoose'),
-  messageMethods?: Pick<MessageMethods, 'getMessages' | 'deleteMessages'>,
+  deps?: ConversationMethodDeps,
 ): ConversationMethods {
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
 
   function getMessageMethods() {
-    if (!messageMethods) {
+    if (!deps) {
       throw new Error('Message methods not injected into conversation methods');
     }
-    return messageMethods;
+    return deps;
   }
 
   function getVisibleConversationRetentionFilter(): FilterQuery<IConversation> {
@@ -614,6 +704,15 @@ export function createConversationMethods(
     };
   }
 
+  function readableActorSuspension(
+    suspension: IConversation['agentEventActorSuspension'],
+  ): IAgentEventActorSnapshot['suspension'] {
+    if (suspension == null) return null;
+    if (suspension.status === 'pending_owned') return { ...suspension, status: 'pending' };
+    if (suspension.status === 'claimed_owned') return { ...suspension, status: 'claimed' };
+    return suspension;
+  }
+
   /** Reads the private actor head and every fail-closed reconciliation marker. */
   async function getAgentEventActorSnapshot(input: {
     user: string;
@@ -639,7 +738,7 @@ export function createConversationMethods(
           state: conversation.agentEventActor ?? null,
           reconciliations: conversation.agentEventActorReconciliations ?? [],
           legacyTurn: conversation.agentEventActorLegacyTurn ?? null,
-          suspension: conversation.agentEventActorSuspension ?? null,
+          suspension: readableActorSuspension(conversation.agentEventActorSuspension),
           epoch: conversation.agentEventActorEpoch ?? 0,
         };
   }
@@ -675,7 +774,7 @@ export function createConversationMethods(
             ],
           }
         : {
-            'agentEventActorSuspension.status': 'claimed',
+            'agentEventActorSuspension.status': { $in: ['claimed', 'claimed_owned'] },
             'agentEventActorSuspension.suspension.suspensionId': input.previous.suspensionId,
             'agentEventActorSuspension.suspension.attempt': input.previous.attempt,
             'agentEventActorSuspension.resumeAttemptId': input.previous.resumeAttemptId,
@@ -702,7 +801,7 @@ export function createConversationMethods(
       handlingGenerationCreatedAt: input.handlingGenerationCreatedAt ?? input.jobCreatedAt,
       actionId: input.actionId,
       jobCreatedAt: input.jobCreatedAt,
-      status: 'pending' as const,
+      status: 'pending_owned' as const,
       observedAt: new Date(),
     };
     const storeUpdate = {
@@ -768,7 +867,7 @@ export function createConversationMethods(
         conversationId: input.conversationId,
         subagentThread: { $exists: true },
         agentEventBinding: { $exists: true },
-        'agentEventActorSuspension.status': 'pending',
+        'agentEventActorSuspension.status': { $in: ['pending', 'pending_owned'] },
         'agentEventActorSuspension.suspension.suspensionId': input.suspensionId,
         'agentEventActorSuspension.suspension.attempt': input.attempt,
         'agentEventActorSuspension.actionId': input.actionId,
@@ -778,7 +877,7 @@ export function createConversationMethods(
       },
       {
         $set: {
-          'agentEventActorSuspension.status': 'claimed',
+          'agentEventActorSuspension.status': 'claimed_owned',
           'agentEventActorSuspension.resumeAttemptId': input.resumeAttemptId,
           'agentEventActorSuspension.observedAt': new Date(),
         },
@@ -810,7 +909,7 @@ export function createConversationMethods(
       {
         user: input.user,
         conversationId: input.conversationId,
-        'agentEventActorSuspension.status': 'claimed',
+        'agentEventActorSuspension.status': { $in: ['claimed', 'claimed_owned'] },
         'agentEventActorSuspension.suspension.suspensionId': input.suspensionId,
         'agentEventActorSuspension.suspension.attempt': input.attempt,
         'agentEventActorSuspension.resumeAttemptId': input.resumeAttemptId,
@@ -877,9 +976,9 @@ export function createConversationMethods(
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const suspensionOwner =
       input.claimedResumeAttemptId == null
-        ? { 'agentEventActorSuspension.status': 'pending' }
+        ? { 'agentEventActorSuspension.status': { $in: ['pending', 'pending_owned'] } }
         : {
-            'agentEventActorSuspension.status': 'claimed',
+            'agentEventActorSuspension.status': { $in: ['claimed', 'claimed_owned'] },
             'agentEventActorSuspension.resumeAttemptId': input.claimedResumeAttemptId,
           };
     const cancelled = await Conversation.findOneAndUpdate(
@@ -990,6 +1089,15 @@ export function createConversationMethods(
       throw new RangeError('Event actor context calibration is invalid');
     }
     if (
+      input.contextMeta?.fadingTiers != null &&
+      !isAgentFadingTierEntries(input.contextMeta.fadingTiers)
+    ) {
+      throw new RangeError('Event actor context fading tiers are invalid');
+    }
+    if (input.contextMeta?.fading != null && !isAgentFadingTier(input.contextMeta.fading)) {
+      throw new RangeError('Event actor context fading tier is invalid');
+    }
+    if (
       input.compactionSemanticIndex != null &&
       !isCompactionSemanticIndexProjection(input.compactionSemanticIndex)
     ) {
@@ -1013,6 +1121,9 @@ export function createConversationMethods(
             'agentEventActor.checkpoint.threadId': input.expected.checkpoint.threadId,
             'agentEventActor.checkpoint.checkpointId': input.expected.checkpoint.checkpointId,
             'agentEventActor.checkpoint.checkpointNs': input.expected.checkpoint.checkpointNs,
+            'agentEventActor.previousCheckpoint': input.expected.previousCheckpoint ?? {
+              $exists: false,
+            },
             ...(input.expected.contextFingerprint == null
               ? { 'agentEventActor.contextFingerprint': { $exists: false } }
               : {
@@ -1048,7 +1159,7 @@ export function createConversationMethods(
       input.settlementAuthority == null
         ? {}
         : {
-            'agentEventActorSuspension.status': 'claimed',
+            'agentEventActorSuspension.status': { $in: ['claimed', 'claimed_owned'] },
             'agentEventActorSuspension.suspension.suspensionId':
               input.settlementAuthority.suspensionId,
             'agentEventActorSuspension.suspension.attempt': input.settlementAuthority.attempt,
@@ -1102,6 +1213,11 @@ export function createConversationMethods(
                 'agentEventActorSuspension.observedAt': new Date(),
               }),
         },
+        ...(input.expected?.previousCheckpoint == null
+          ? {}
+          : {
+              $addToSet: { agentEventActorCleanup: input.expected.previousCheckpoint },
+            }),
         $unset: { 'agentEventActorReconciliations.$.error': 1 },
       },
       { new: false, timestamps: false },
@@ -1695,7 +1811,11 @@ export function createConversationMethods(
   /** Bounded mixed-version cleanup for terminal receipts embedded by older
    * builds. New receipts expire through the delivery collection TTL index,
    * but dormant legacy conversations need an independent retirement path. */
-  async function expireLegacyAgentEventActorReceipts(now: Date, limit = 100): Promise<number> {
+  async function expireLegacyAgentEventActorReceipts(
+    now: Date,
+    limit = 100,
+    activity?: { found: boolean },
+  ): Promise<number> {
     if (Number.isNaN(now.getTime())) {
       throw new TypeError('now must be a valid date');
     }
@@ -1714,7 +1834,16 @@ export function createConversationMethods(
     const candidates = await Conversation.find({
       ...(legacyReceiptExpiryCursor == null ? {} : { _id: { $gt: legacyReceiptExpiryCursor } }),
     })
-      .select('_id +agentEventActorReconciliations')
+      /** Pure inclusion, as an object. The string form
+       * `'_id +agentEventActorReconciliations'` compiles to `{ _id: 1 }` plus a
+       * `: 0` exclusion for every OTHER `select: false` sibling — the `+` token
+       * only un-hides its field and `_id` alone does not make the projection
+       * inclusive. MongoDB tolerates that mixed shape via the `_id` exception;
+       * Amazon DocumentDB rejects it, which failed this sweep on every pass and
+       * took the sequenced lane reclamation down with it. An explicit `1` for a
+       * `select: false` path overrides the schema default, so nothing hidden
+       * leaks and nothing extra is fetched. */
+      .select({ _id: 1, agentEventActorReconciliations: 1 })
       .sort({ _id: 1 })
       .limit(boundedLimit)
       .lean<
@@ -1725,6 +1854,9 @@ export function createConversationMethods(
       return 0;
     }
     legacyReceiptExpiryCursor = candidates[candidates.length - 1]._id;
+    // A full page is not an empty sweep: later conversations may contain
+    // expired receipts. Keep scanning at base cadence until the page walk ends.
+    if (activity != null && candidates.length === boundedLimit) activity.found = true;
     const expiredInvocationIds = [
       ...new Set(
         candidates.flatMap((candidate) =>
@@ -1734,6 +1866,8 @@ export function createConversationMethods(
         ),
       ),
     ];
+    if (expiredInvocationIds.length === 0) return 0;
+    if (activity != null) activity.found = true;
     const protectedInvocationIds = new Set(
       await Delivery.find({
         deliveryKey: { $in: expiredInvocationIds },
@@ -1992,11 +2126,11 @@ export function createConversationMethods(
   async function getConvoRetention(
     user: string,
     conversationId: string,
-  ): Promise<Pick<IConversation, 'expiredAt'> | null> {
+  ): Promise<Pick<IConversation, 'expiredAt' | 'isTemporary'> | null> {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      return await Conversation.findOne({ user, conversationId }, 'expiredAt').lean<
-        Pick<IConversation, 'expiredAt'>
+      return await Conversation.findOne({ user, conversationId }, 'expiredAt isTemporary').lean<
+        Pick<IConversation, 'expiredAt' | 'isTemporary'>
       >();
     } catch (error) {
       logger.error('[getConvoRetention] Error getting conversation retention fields', error);
@@ -2081,6 +2215,7 @@ export function createConversationMethods(
       noUpsert?: boolean;
       createdAtOnInsert?: Date;
       preserveUpdatedAt?: boolean;
+      initialAgentId?: string | null;
       appendMessageIds?: Types.ObjectId[];
     },
   ) {
@@ -2094,12 +2229,31 @@ export function createConversationMethods(
 
       const appendMessageIds = metadata?.appendMessageIds;
       const update: Record<string, unknown> = { ...convo, user: userId };
+      delete update.isTemporary;
+      delete update.expiredAt;
+      delete update.initial_agent_id;
+      /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
+      const decisionOnInsert = {
+        ...(convo.codeEnvironmentMode != null && {
+          codeEnvironmentMode: convo.codeEnvironmentMode,
+        }),
+        ...(convo.codeWorkspaces != null && { codeWorkspaces: convo.codeWorkspaces }),
+      };
+      delete update.codeEnvironmentRevision;
+      delete update.codeEnvironmentMode;
+      delete update.codeWorkspaces;
+      stripActorCheckpointFields(update);
       if (appendMessageIds == null) {
         update.messages = await getMessages({ conversationId, user: userId }, '_id');
       } else {
         delete update.messages;
       }
       const unsetFields: Record<string, number> = { ...(metadata?.unsetFields ?? {}) };
+      delete unsetFields.initial_agent_id;
+      delete unsetFields.codeEnvironmentRevision;
+      delete unsetFields.codeEnvironmentMode;
+      delete unsetFields.codeWorkspaces;
+      stripActorCheckpointFields(unsetFields);
 
       if (Object.prototype.hasOwnProperty.call(update, 'chatProjectId') && update.chatProjectId) {
         const chatProjectId = typeof update.chatProjectId === 'string' ? update.chatProjectId : '';
@@ -2136,6 +2290,7 @@ export function createConversationMethods(
         update.conversationId = newConversationId;
       }
 
+      let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
       if (expiredAt instanceof Date && !Number.isNaN(expiredAt.getTime())) {
         if (typeof isTemporary === 'boolean') {
           update.isTemporary = isTemporary;
@@ -2145,12 +2300,31 @@ export function createConversationMethods(
         if (typeof isTemporary === 'boolean') {
           update.isTemporary = isTemporary;
         }
-        try {
-          update.expiredAt = createTempChatExpirationDate(interfaceConfig);
-        } catch (err) {
-          logger.error('Error creating temporary chat expiration date:', err);
-          logger.info(`---\`saveConvo\` context: ${metadata?.context}`);
-          update.expiredAt = createFallbackRetentionDate();
+        if (
+          typeof isTemporary === 'boolean' ||
+          interfaceConfig.generalChatRetention === undefined
+        ) {
+          try {
+            update.expiredAt = createChatExpirationDate(interfaceConfig, isTemporary);
+          } catch (err) {
+            logger.error('Error creating chat expiration date:', err);
+            logger.info(`---\`saveConvo\` context: ${metadata?.context}`);
+            update.expiredAt = createFallbackRetentionDate();
+          }
+        } else {
+          try {
+            retentionOnInsert = {
+              expiredAt: createChatExpirationDate(interfaceConfig, false),
+              isTemporary: false,
+            };
+          } catch (err) {
+            logger.error('Error creating chat expiration date:', err);
+            logger.info(`---\`saveConvo\` context: ${metadata?.context}`);
+            retentionOnInsert = {
+              expiredAt: createFallbackRetentionDate(),
+              isTemporary: false,
+            };
+          }
         }
       } else if (isTemporary === true) {
         update.isTemporary = true;
@@ -2186,6 +2360,14 @@ export function createConversationMethods(
         timestampOptions.timestamps = false;
       }
 
+      const canUpsert = metadata?.noUpsert !== true;
+      const initialAgentId =
+        canUpsert &&
+        typeof metadata?.initialAgentId === 'string' &&
+        metadata.initialAgentId.trim() !== ''
+          ? metadata.initialAgentId
+          : null;
+
       const buildOperation = (setFields: Record<string, unknown>) => {
         const operation: Record<string, unknown> = { $set: setFields };
         if (appendMessageIds != null && appendMessageIds.length > 0) {
@@ -2198,14 +2380,16 @@ export function createConversationMethods(
           ? (createdAtOnInsert ??
             (!preserveUpdatedAt && update.updatedAt instanceof Date ? update.updatedAt : undefined))
           : createdAtOnInsert;
-        if (createdAtForInsert) {
-          operation.$setOnInsert = { createdAt: createdAtForInsert };
-        }
+        operation.$setOnInsert = {
+          initial_agent_id: initialAgentId,
+          ...decisionOnInsert,
+          ...retentionOnInsert,
+          ...(createdAtForInsert ? { createdAt: createdAtForInsert } : {}),
+        };
         return operation;
       };
 
       const baseFilter = { conversationId, user: userId };
-      const canUpsert = metadata?.noUpsert !== true;
       const runUpdate = (
         filter: Record<string, unknown>,
         operation: Record<string, unknown>,
@@ -2284,6 +2468,56 @@ export function createConversationMethods(
       if (!conversation) {
         logger.debug('[saveConvo] Conversation not found, skipping update');
         return null;
+      }
+
+      /** `$setOnInsert` only reaches a chat this save creates, yet a chat whose earlier turns never
+       * involved a code-capable agent holds no decision either: without this fill its first
+       * workspace choice is dropped and the next turn starts undecided again. The filter repeats
+       * that absence, so a concurrent writer that decided first keeps its decision and a chat that
+       * already holds one is never touched. Only a whole decision seeds a row, never bare
+       * selections. */
+      if (
+        decisionOnInsert.codeEnvironmentMode != null &&
+        conversation.codeEnvironmentMode == null &&
+        (conversation.codeWorkspaces?.length ?? 0) === 0
+      ) {
+        const seeded = await Conversation.updateOne(
+          {
+            _id: conversation._id,
+            codeEnvironmentMode: { $in: [null] },
+            $or: [{ codeWorkspaces: { $in: [null] } }, { codeWorkspaces: { $size: 0 } }],
+          },
+          { $set: decisionOnInsert },
+          { timestamps: false },
+        );
+        if (seeded.modifiedCount > 0) {
+          Object.assign(conversation, decisionOnInsert);
+        }
+      }
+
+      /** Reuse the saved row's chat type when callers omit it, preserving existing deadlines. */
+      if (
+        interfaceConfig?.retentionMode === RetentionMode.ALL &&
+        interfaceConfig.generalChatRetention !== undefined &&
+        typeof isTemporary !== 'boolean' &&
+        conversation.expiredAt == null
+      ) {
+        const deadline = createChatExpirationDate(
+          interfaceConfig,
+          conversation.isTemporary === true,
+        );
+        const result = await Conversation.updateOne(
+          {
+            _id: conversation._id,
+            expiredAt: null,
+            isTemporary: conversation.isTemporary === true ? true : { $ne: true },
+          },
+          { $set: { expiredAt: deadline } },
+          { timestamps: false },
+        );
+        if (result.modifiedCount > 0) {
+          conversation.expiredAt = deadline;
+        }
       }
 
       if (
@@ -2394,6 +2628,121 @@ export function createConversationMethods(
   }
 
   /**
+   * Adds one message's id to a conversation's message list, and nothing else.
+   *
+   * A message write that failed, or that resolved falsy on a duplicate key it could not
+   * re-read, leaves its row out of `messages`, and the bare `saveMessage` retries that
+   * restore the row never add it. Going direct keeps the repair to what it is: no
+   * `getMessages` round trip, no rewrite of the whole array, and no `$set` of fields the
+   * caller never meant to touch. `timestamps: false` because repairing a reference is not
+   * activity and must not reorder the sidebar.
+   *
+   * Takes the id as a string so callers stay free of the storage engine's own id type; the
+   * cast to it happens here. Returns null when no conversation matched, so a repair can
+   * never insert one.
+   */
+  async function appendConvoMessageReference(
+    user: string,
+    conversationId: string,
+    messageId: string,
+  ) {
+    if (!isValidObjectIdString(messageId)) {
+      logger.warn('[appendConvoMessageReference] Ignoring an unusable message id');
+      return null;
+    }
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      return await Conversation.findOneAndUpdate(
+        { conversationId, user },
+        { $addToSet: { messages: new mongoose.Types.ObjectId(messageId) } },
+        { new: true, timestamps: false },
+      ).lean<IConversation>();
+    } catch (error) {
+      logger.error('[appendConvoMessageReference] Error appending the message reference', error);
+      throw new Error('Error appending the message reference');
+    }
+  }
+
+  /** Internal snapshot for a transition. The revision is never exposed in ordinary chat reads. */
+  async function getConvoCodeEnvironmentDecision(user: string, conversationId: string) {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    return Conversation.findOne({ user, conversationId })
+      .select('conversationId codeEnvironmentMode codeWorkspaces +codeEnvironmentRevision')
+      .lean<IConversation>();
+  }
+
+  /**
+   * Call only AFTER publishing the generation's active job. Atomically advance the fence and
+   * return the post-update decision in one round trip. A run that wins invalidates an in-flight
+   * transition's revision; a transition that wins is observed by this read.
+   */
+  async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    return withoutMeiliIndexing(
+      Conversation.findOneAndUpdate(
+        { user, conversationId },
+        { $inc: { codeEnvironmentRevision: 1 } },
+        { new: true, timestamps: false },
+      ),
+    )
+      .select('conversationId codeEnvironmentMode codeWorkspaces')
+      .lean<IConversation>();
+  }
+
+  /**
+   * Compare-and-swap for an owner's explicit replacement of a code-environment decision, whether
+   * that attaches an environment, moves to another, or leaves attached execution behind.
+   * The filter repeats the stored decision being replaced, so a writer that changed it first
+   * leaves this update unmatched rather than overwritten. A missing and a null mode both
+   * describe a legacy decision inferred from its selections. Leaving attached execution clears
+   * the selections outright: a decision that kept them would read as attached again.
+   */
+  async function replaceConvoCodeEnvironmentDecision({
+    user,
+    conversationId,
+    expected,
+    codeEnvironmentMode,
+    codeWorkspaces,
+  }: {
+    user: string;
+    conversationId: string;
+    expected: Pick<
+      IConversation,
+      'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
+    >;
+  } & (
+    | {
+        codeEnvironmentMode: 'attached';
+        codeWorkspaces: NonNullable<IConversation['codeWorkspaces']>;
+      }
+    | { codeEnvironmentMode: 'without_attached'; codeWorkspaces?: undefined }
+  )) {
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      return await Conversation.findOneAndUpdate(
+        {
+          conversationId,
+          user,
+          codeEnvironmentMode: expected.codeEnvironmentMode ?? { $in: [null] },
+          codeWorkspaces: expected.codeWorkspaces ?? { $in: [null] },
+          codeEnvironmentRevision: expected.codeEnvironmentRevision ?? { $in: [null] },
+        },
+        codeEnvironmentMode === 'attached'
+          ? { $set: { codeEnvironmentMode, codeWorkspaces }, $inc: { codeEnvironmentRevision: 1 } }
+          : {
+              $set: { codeEnvironmentMode },
+              $unset: { codeWorkspaces: 1 },
+              $inc: { codeEnvironmentRevision: 1 },
+            },
+        { new: true, timestamps: false },
+      ).lean<IConversation>();
+    } catch (error) {
+      logger.error('[replaceConvoCodeEnvironmentDecision] Error moving code environment', error);
+      throw new Error('Error moving code environment');
+    }
+  }
+
+  /**
    * Saves multiple conversations in bulk.
    */
   async function bulkSaveConvos(conversations: Array<Record<string, unknown>>) {
@@ -2463,7 +2812,10 @@ export function createConversationMethods(
 
       const affectedProjectStats = new Map<string, { user: string; projectId: string }>();
       const bulkOps = conversations.map((convo) => {
-        const sanitized = { ...convo };
+        const { codeEnvironmentMode, codeWorkspaces, ...sanitized } = convo;
+        delete sanitized.initial_agent_id;
+        delete sanitized.codeEnvironmentRevision;
+        stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
           if (ownedProjects.has(`${sanitized.user}:${sanitized.chatProjectId}`)) {
             affectedProjectStats.set(`${sanitized.user}:${sanitized.chatProjectId}`, {
@@ -2493,7 +2845,14 @@ export function createConversationMethods(
               conversationId: sanitized.conversationId,
               user: sanitized.user,
             },
-            update: sanitized,
+            update: {
+              $set: sanitized,
+              $setOnInsert: {
+                initial_agent_id: null,
+                ...(codeEnvironmentMode != null && { codeEnvironmentMode }),
+                ...(codeWorkspaces != null && { codeWorkspaces }),
+              },
+            },
             upsert: true,
             timestamps: false,
           },
@@ -2556,7 +2915,7 @@ export function createConversationMethods(
     user: string,
     {
       cursor,
-      limit = 25,
+      limit = DEFAULT_CONVO_PAGE_SIZE,
       isArchived = false,
       pinned = false,
       tags,
@@ -2576,7 +2935,13 @@ export function createConversationMethods(
       projectId?: string;
     } = {},
   ) {
-    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const Conversation = mongoose.models.Conversation as Model<IConversation> &
+      Pick<SchemaWithMeiliMethods, 'meiliSearch'>;
+    /* `.limit(0)` is "no limit" to MongoDB and a negative one caps to a single batch, so an
+       unclamped page size hands the caller the whole collection rather than a page of it. */
+    const pageSize = Number.isFinite(limit)
+      ? Math.min(Math.max(Math.trunc(limit), 1), MAX_CONVO_PAGE_SIZE)
+      : DEFAULT_CONVO_PAGE_SIZE;
     const filters: FilterQuery<IConversation>[] = [{ user } as FilterQuery<IConversation>];
     if (isArchived) {
       filters.push({ isArchived: true } as FilterQuery<IConversation>);
@@ -2607,23 +2972,43 @@ export function createConversationMethods(
 
     if (search) {
       try {
-        const meiliResults = await (
-          Conversation as unknown as {
-            meiliSearch: (
-              query: string,
-              options: Record<string, string>,
-            ) => Promise<{
-              hits: Array<{ conversationId: string }>;
-            }>;
+        const searchParams: SearchParams = {
+          filter: `user = "${escapeMeiliFilterValue(user)}"`,
+          limit: MEILI_SEARCH_LIMIT,
+          attributesToRetrieve: ['conversationId', 'originalConversationId'],
+        };
+        const [convoResults, messageHits] = await Promise.all([
+          Conversation.meiliSearch(search, searchParams),
+          deps?.searchMessages
+            ? deps.searchMessages(search, searchParams).then(
+                (results) => (Array.isArray(results.hits) ? results.hits : []),
+                (error) => {
+                  logger.error(
+                    '[getConvosByCursor] Message search failed, using title matches only',
+                    error,
+                  );
+                  return [];
+                },
+              )
+            : [],
+        ]);
+        const matchingIds = new Set<string>();
+        for (const hit of convoResults.hits ?? []) {
+          if (typeof hit.conversationId === 'string') {
+            matchingIds.add(hit.conversationId);
           }
-        ).meiliSearch(search, { filter: `user = "${user}"` });
-        const matchingIds = Array.isArray(meiliResults.hits)
-          ? meiliResults.hits.map((result) => result.conversationId)
-          : [];
-        if (!matchingIds.length) {
+        }
+        for (const hit of messageHits) {
+          if (typeof hit.conversationId === 'string') {
+            matchingIds.add(hit.conversationId);
+          }
+        }
+        if (!matchingIds.size) {
           return { conversations: [], nextCursor: null };
         }
-        filters.push({ conversationId: { $in: matchingIds } } as FilterQuery<IConversation>);
+        filters.push({
+          conversationId: { $in: [...matchingIds] },
+        } as FilterQuery<IConversation>);
       } catch (error) {
         logger.error('[getConvosByCursor] Error during meiliSearch', error);
         throw new Error('Error during meiliSearch');
@@ -2727,15 +3112,18 @@ export function createConversationMethods(
       sortObj._id = sortOrder;
 
       const convos = await Conversation.find(query)
+        /* `isArchived` rides along so a row can offer archive or restore from its own state:
+           the sidebar lists archived and unarchived chats in the same session, and the
+           active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title createdAt updatedAt archivedAt user model agent_id assistant_id spec iconURL chatProjectId pinned',
+          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned',
         )
         .sort(sortObj)
-        .limit(limit + 1)
+        .limit(pageSize + 1)
         .lean<IConversation[]>();
 
       let nextCursor: string | null = null;
-      if (convos.length > limit) {
+      if (convos.length > pageSize) {
         convos.pop();
         const lastReturned = convos[convos.length - 1];
         const sortValues: Record<string, string | Date | null | undefined> = {
@@ -2865,7 +3253,10 @@ export function createConversationMethods(
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       const { deleteMessages, getMessages } = getMessageMethods();
       const userFilter = { ...filter, user };
-      type DeletionConversation = Pick<IConversation, 'conversationId' | 'chatProjectId' | 'tags'>;
+      type DeletionConversation = Pick<
+        IConversation,
+        'conversationId' | 'tenantId' | 'chatProjectId' | 'tags'
+      >;
       const retryCascadeOperation = async <T>(operation: () => PromiseLike<T> | T): Promise<T> => {
         let lastError: unknown;
         for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -2881,7 +3272,7 @@ export function createConversationMethods(
         throw lastError;
       };
       let conversations = await Conversation.find(userFilter)
-        .select('conversationId chatProjectId tags')
+        .select('conversationId tenantId chatProjectId tags')
         .lean<DeletionConversation[]>();
       const recoveryConversationIds: string[] = [];
       if (!conversations.length && typeof filter.conversationId === 'string') {
@@ -2895,12 +3286,12 @@ export function createConversationMethods(
               user,
               'subagentThread.rootConversationId': filter.conversationId,
             })
-              .select('conversationId chatProjectId tags')
+              .select('conversationId tenantId chatProjectId tags')
               .lean<DeletionConversation[]>(),
           ),
           getMessages({ user, conversationId: filter.conversationId }, '_id', { limit: 1 }),
         ]);
-        if (descendants.length === 0 && rootMessages.length === 0) {
+        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true) {
           throw new Error('Conversation not found or already deleted.');
         }
         conversations = descendants;
@@ -2970,8 +3361,26 @@ export function createConversationMethods(
           break;
         }
         const waveIds = wave.map((conversation) => conversation.conversationId);
+        await deps?.deleteAgentQueuedTurns?.(
+          user,
+          wave.map((conversation) => ({
+            conversationId: conversation.conversationId,
+            ...(conversation.tenantId != null && { tenantId: conversation.tenantId }),
+          })),
+        );
         await options?.beforeDelete?.(waveIds);
+        await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        if (result.deletedCount > 0) {
+          /** Result erasure is irreversible. Keep receipts intact when a
+           * pre-delete hook or the conversation delete itself fails, so a
+           * retained conversation cannot lose a receipt-only completion. */
+          try {
+            await deps?.eraseAgentTriggerDeliveryConversationResults?.(user, waveIds);
+          } catch (error) {
+            logger.error('[deleteConvos] Receipt erasure deferred to durable cleanup', error);
+          }
+        }
         acknowledged &&= result.acknowledged;
         deletedCount += result.deletedCount;
         await reconcileDeletedWave(wave, result.deletedCount);
@@ -2984,7 +3393,7 @@ export function createConversationMethods(
             user,
             'subagentThread.parentConversationId': { $in: waveIds },
           })
-            .select('conversationId chatProjectId tags')
+            .select('conversationId tenantId chatProjectId tags')
             .lean<DeletionConversation[]>(),
         );
       }
@@ -2993,6 +3402,21 @@ export function createConversationMethods(
         ...recoveryConversationIds,
         ...deletedConversations.map((conversation) => conversation.conversationId),
       ];
+
+      if (recoveryConversationIds.length > 0) {
+        await deps?.deleteAgentQueuedTurns?.(
+          user,
+          recoveryConversationIds.map((conversationId) => ({
+            conversationId,
+            allTenants: true,
+          })),
+        );
+        try {
+          await deps?.eraseAgentTriggerDeliveryConversationResults?.(user, recoveryConversationIds);
+        } catch (error) {
+          logger.error('[deleteConvos] Receipt erasure deferred to durable cleanup', error);
+        }
+      }
 
       const deleteConvoResult: DeleteResult = { acknowledged, deletedCount };
 
@@ -3156,6 +3580,10 @@ export function createConversationMethods(
     deleteNullOrEmptyConversations,
     saveConvo,
     setConvoPinned,
+    appendConvoMessageReference,
+    getConvoCodeEnvironmentDecision,
+    readAdmittedConvoCodeEnvironmentDecision,
+    replaceConvoCodeEnvironmentDecision,
     bulkSaveConvos,
     getConvosByCursor,
     getConvosQueried,

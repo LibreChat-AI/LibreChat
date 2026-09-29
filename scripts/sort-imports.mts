@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Sorts imports across the LibreChat monorepo per project convention
- * (CLAUDE.md § Import Order):
+ * (AGENTS.md § Code style and performance):
  *
  *   1. Package value imports     — shortest line to longest (`react` always first)
  *   2. import type from packages — longest line to shortest
@@ -81,7 +81,7 @@ function extractSpec(raw: string): string | null {
   return raw.match(/from\s+['"]([^'"]+)['"]/)?.[1] ?? null;
 }
 
-/** Applies the CLAUDE.md grouping/length ordering to a run of pure imports. */
+/** Applies the AGENTS.md grouping/length ordering to a run of pure imports. */
 function sortSegment(stmts: Stmt[]): string[] {
   const g1 = stmts
     .filter((s) => !s.isType && !s.isLocal)

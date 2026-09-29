@@ -42,6 +42,11 @@ import {
   genTitleQueryKey,
   queueTitleGeneration,
   useActiveJobs,
+  resetActiveJobsGrace,
+  extendActiveJobsGrace,
+  getActiveJobsRefetchInterval,
+  ACTIVE_JOBS_POLL_MS,
+  ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
 } from '../queries';
 
 describe('fetchStreamStatus generation protocol advertisement', () => {
@@ -84,14 +89,95 @@ describe('useActiveJobs focus behaviour', () => {
     expect(options.staleTime).toBe(5_000);
   });
 
-  it('polls only while something is listed', () => {
+  it('polls while something is listed', () => {
     (useQuery as jest.Mock).mockClear();
+    resetActiveJobsGrace();
 
     useActiveJobs();
 
     const options = (useQuery as jest.Mock).mock.calls[0][0];
-    expect(options.refetchInterval({ activeJobIds: ['convo-1'] })).toBe(5_000);
-    expect(options.refetchInterval({ activeJobIds: [] })).toBe(false);
+    expect(options.refetchInterval({ activeJobIds: ['convo-1'] })).toBe(ACTIVE_JOBS_POLL_MS);
+  });
+});
+
+describe('useActiveJobs successor grace', () => {
+  let now = 1_000_000;
+
+  beforeEach(() => {
+    now = 1_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    resetActiveJobsGrace();
+  });
+
+  afterEach(() => {
+    (Date.now as jest.Mock).mockRestore?.();
+    resetActiveJobsGrace();
+  });
+
+  it('does not poll for an empty list it has never seen fill', () => {
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(false);
+  });
+
+  it('keeps asking across the handover to a server-started successor', () => {
+    /**
+     * The run ends, the client removes its own job optimistically, and the
+     * backend admits the queued turn (or a background-tool continuation) it
+     * owns. Going quiet on the empty list is what leaves the pane on the
+     * previous turn until a reload.
+     */
+    expect(getActiveJobsRefetchInterval({ activeJobIds: ['convo-1'] })).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += 1_000;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(ACTIVE_JOBS_POLL_MS);
+  });
+
+  it('keeps listening for as long as a successor is known to be owed', () => {
+    /** The deterministic path: a queued turn the backend has taken ownership
+     *  of needs no window, because the client already knows a run is coming. */
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, true)).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS * 10;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, true)).toBe(ACTIVE_JOBS_POLL_MS);
+  });
+
+  it('restarts the window from a live observation the list never saw', () => {
+    /** A pane attached to the run a queued turn produced, and that run
+     *  finished before the list polled. The list's clock is stale; the
+     *  observation is what keeps an unpredicted continuation discoverable. */
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS * 3;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(false);
+
+    extendActiveJobsGrace();
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS + 1;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(false);
+  });
+
+  it('stops once a successor is no longer owed', () => {
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, true)).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS + 1;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] }, false)).toBe(false);
+  });
+
+  it('stops once the handover window has passed without a successor', () => {
+    expect(getActiveJobsRefetchInterval({ activeJobIds: ['convo-1'] })).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS + 1;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(false);
+  });
+
+  it('renews the window when the successor turns up', () => {
+    getActiveJobsRefetchInterval({ activeJobIds: ['convo-1'] });
+    now += 1_000;
+    getActiveJobsRefetchInterval({ activeJobIds: [] });
+
+    now += 1_000;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: ['convo-1'] })).toBe(ACTIVE_JOBS_POLL_MS);
+
+    now += ACTIVE_JOBS_SUCCESSOR_GRACE_MS - 1;
+    expect(getActiveJobsRefetchInterval({ activeJobIds: [] })).toBe(ACTIVE_JOBS_POLL_MS);
   });
 });
 

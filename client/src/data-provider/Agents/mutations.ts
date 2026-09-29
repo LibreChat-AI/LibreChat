@@ -30,6 +30,31 @@ const hasEdgeWithAgent = (data: unknown, agentId: string): boolean => {
   );
 };
 
+const pruneEdgeEndpoint = (
+  endpoint: t.GraphEdge['from'],
+  agentId: string,
+): t.GraphEdge['from'] | null => {
+  if (Array.isArray(endpoint)) {
+    const retained = endpoint.filter((id) => id !== agentId);
+    return retained.length > 0 ? retained : null;
+  }
+  return endpoint === agentId ? null : endpoint;
+};
+
+/** Mirrors the server's deletion cleanup so cached execution graphs stop referencing the
+ * deleted agent immediately, before the authoritative refetch completes. */
+const pruneAgentEdges = (agent: t.Agent, agentId: string): t.Agent => {
+  if (!hasEdgeWithAgent(agent, agentId)) {
+    return agent;
+  }
+  const edges = (agent.edges ?? []).flatMap((edge) => {
+    const from = pruneEdgeEndpoint(edge.from, agentId);
+    const to = pruneEdgeEndpoint(edge.to, agentId);
+    return from == null || to == null ? [] : [{ ...edge, from, to }];
+  });
+  return { ...agent, edges };
+};
+
 /**
  * Mutation responses omit list-only `isEditable`. When merging into a cached list
  * row, keep the ACL flag the list endpoint set rather than inferring it from
@@ -156,7 +181,9 @@ export const useDeleteAgentMutation = (
               return options?.onSuccess?.(_data, variables, context);
             }
 
-            data = listRes.data.filter((agent) => agent.id !== variables.agent_id);
+            data = listRes.data
+              .filter((agent) => agent.id !== variables.agent_id)
+              .map((agent) => pruneAgentEdges(agent, variables.agent_id));
 
             queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
               ...listRes,
@@ -168,15 +195,20 @@ export const useDeleteAgentMutation = (
 
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id]);
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id, 'expanded']);
-        /** Deletion removes the agent from every edge endpoint server-side. Expanded queries
-         * opt out of refetch-on-mount, so refresh every cached graph known to reference it. */
+        /** Deletion removes the agent from every edge endpoint server-side. Refresh every cached
+         * graph known to reference it, then mirror that cleanup immediately while refetch runs. */
         queryClient.invalidateQueries({
           queryKey: [QueryKeys.agent],
-          predicate: (query) =>
-            query.queryKey[2] === 'expanded' &&
-            hasEdgeWithAgent(query.state.data, variables.agent_id),
+          predicate: (query) => hasEdgeWithAgent(query.state.data, variables.agent_id),
           refetchType: 'all',
         });
+        queryClient.setQueriesData<t.Agent>(
+          {
+            queryKey: [QueryKeys.agent],
+            predicate: (query) => hasEdgeWithAgent(query.state.data, variables.agent_id),
+          },
+          (agent) => (agent ? pruneAgentEdges(agent, variables.agent_id) : agent),
+        );
         invalidateAgentMarketplaceQueries(queryClient);
 
         return options?.onSuccess?.(_data, variables, data);

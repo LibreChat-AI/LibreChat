@@ -1,6 +1,7 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { v4 } from 'uuid';
 import { Folder } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useForm, Controller } from 'react-hook-form';
 import {
@@ -49,9 +50,11 @@ import {
   useCreateScheduleMutation,
   useUpdateScheduleMutation,
 } from '~/data-provider';
+import { scheduleMCPErrorMessage, scheduleMCPErrorOutcomes } from './errors';
 import { useLocalize, useClockFormat, useWeekStart } from '~/hooks';
 import { useChatProjectPicker } from './useScheduleProjects';
 import { VariableEditor } from '~/components/Variables';
+import ScheduleMCPRecovery from './ScheduleMCPRecovery';
 import { rotateWeekFrom } from '~/utils/clock';
 import { cn } from '~/utils';
 
@@ -183,10 +186,14 @@ export default function ScheduleDialog({
   schedule,
   triggerRef,
 }: ScheduleDialogProps) {
+  const navigate = useNavigate();
   const localize = useLocalize();
   const { i18n } = useTranslation();
   const { showToast } = useToastContext();
   const locale = i18n.language;
+  const [mcpRecoveryOutcomes, setMCPRecoveryOutcomes] = useState<
+    ReturnType<typeof scheduleMCPErrorOutcomes>
+  >([]);
 
   const {
     control,
@@ -211,6 +218,7 @@ export default function ScheduleDialog({
   const daysOfWeek = watch('daysOfWeek');
   const expression = watch('expression');
   const timezone = watch('timezone');
+  const selectedAgentId = watch('agent_id');
   /** Not named `hour12`: that is already the form's own 12-hour clock VALUE (1-12).
    *  This is the preference deciding whether a time is written with a meridiem. */
   const prefersMeridiem = useClockFormat();
@@ -226,6 +234,10 @@ export default function ScheduleDialog({
 
   const agentItems = useMemo(
     () => (agents ?? []).map((agent) => ({ label: agent.name || agent.id, value: agent.id })),
+    [agents],
+  );
+  const agentNames = useMemo(
+    () => Object.fromEntries((agents ?? []).map((agent) => [agent.id, agent.name || agent.id])),
     [agents],
   );
 
@@ -317,25 +329,34 @@ export default function ScheduleDialog({
 
   const createSchedule = useCreateScheduleMutation({
     onSuccess: () => {
+      setMCPRecoveryOutcomes([]);
       createRequestId.current = v4();
       lastAttemptedPayload.current = null;
       showToast({ message: localize('com_ui_schedule_created'), status: 'success' });
       onOpenChange(false);
     },
-    onError: () => {
-      showToast({ message: localize('com_ui_error'), status: 'error' });
+    onError: (error) => {
+      setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
+      showToast({
+        message: scheduleMCPErrorMessage(error, localize) ?? localize('com_ui_error'),
+        status: 'error',
+      });
     },
   });
 
   const updateSchedule = useUpdateScheduleMutation({
     onSuccess: () => {
+      setMCPRecoveryOutcomes([]);
       showToast({ message: localize('com_ui_schedule_updated'), status: 'success' });
       onOpenChange(false);
     },
     onError: (error) => {
+      setMCPRecoveryOutcomes(scheduleMCPErrorOutcomes(error));
       const status = (error as { response?: { status?: number } } | undefined)?.response?.status;
       showToast({
-        message: localize(status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error'),
+        message:
+          scheduleMCPErrorMessage(error, localize) ??
+          localize(status === 409 ? 'com_ui_schedule_conflict' : 'com_ui_error'),
         status: 'error',
       });
     },
@@ -568,6 +589,15 @@ export default function ScheduleDialog({
         className="w-11/12 md:max-w-3xl"
         main={
           <form id={FORM_ID} onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <ScheduleMCPRecovery
+              outcomes={mcpRecoveryOutcomes}
+              fallbackAgentId={schedule?.agent_id ?? selectedAgentId}
+              agentNames={agentNames}
+              onOpenAgent={(ownerId) => {
+                onOpenChange(false);
+                navigate(`/c/new?agent_id=${encodeURIComponent(ownerId)}`);
+              }}
+            />
             {/* Identity row: what the schedule is, who runs it, where its chats land.
                 Its caption is grouped with it rather than left to the form's own 4-unit
                 rhythm, which would spend more vertical budget on the gap than the

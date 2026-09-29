@@ -1,3 +1,4 @@
+import { getMaxSubagents, setMaxSubagents } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   createAppConfigService,
@@ -65,6 +66,7 @@ describe('createAppConfigService', () => {
       const config = await getAppConfig();
 
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
+      expect(deps.loadBaseConfig).toHaveBeenCalledWith('startup');
       expect(config).toEqual(deps._baseConfig);
     });
 
@@ -103,6 +105,92 @@ describe('createAppConfigService', () => {
       await getAppConfig({ refresh: true });
 
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+      expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload');
+    });
+
+    it.each(['invalid YAML', 'missing local file', 'remote fetch failure'])(
+      'keeps the last good base config when reload fails: %s',
+      async (message) => {
+        const deps = createDeps();
+        const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+        const initial = await getAppConfig({ baseOnly: true });
+        deps.loadBaseConfig.mockRejectedValueOnce(new Error(message));
+
+        await clearAppConfigCache();
+        const reloaded = await getAppConfig({ baseOnly: true });
+
+        expect(reloaded).toBe(initial);
+        expect(deps._cache._store.get('app_config:_BASE_')).toBe(initial);
+        expect(deps.loadBaseConfig).toHaveBeenLastCalledWith('reload');
+      },
+    );
+
+    it.each(['tools', 'cache'])(
+      'restores the subagent cap if %s publication fails',
+      async (stage) => {
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValue({
+            config: { endpoints: { agents: { maxSubagents: 3 } } },
+            availableTools: { previous: {} },
+          }),
+        });
+        const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+        try {
+          await getAppConfig({ baseOnly: true });
+          setMaxSubagents(3);
+          await clearAppConfigCache();
+          deps.loadBaseConfig.mockImplementationOnce(async () => {
+            setMaxSubagents(20);
+            return {
+              config: { endpoints: { agents: { maxSubagents: 20 } } },
+              availableTools: { new: {} },
+            };
+          });
+          if (stage === 'tools') {
+            deps.setCachedTools.mockRejectedValueOnce(new Error('tools unavailable'));
+          } else {
+            deps._cache.set.mockRejectedValueOnce(new Error('cache unavailable'));
+          }
+
+          const kept = await getAppConfig({ baseOnly: true });
+          expect(kept.config?.endpoints?.agents?.maxSubagents).toBe(3);
+          expect(getMaxSubagents()).toBe(3);
+        } finally {
+          setMaxSubagents(undefined);
+        }
+      },
+    );
+
+    it('single-flights concurrent base config reloads', async () => {
+      const deps = createDeps();
+      const { getAppConfig, clearAppConfigCache } = createAppConfigService(deps);
+      const initial = await getAppConfig({ baseOnly: true });
+      await clearAppConfigCache();
+
+      let resolveReload: ((config: AppConfig) => void) | undefined;
+      deps.loadBaseConfig.mockImplementationOnce(
+        () =>
+          new Promise<AppConfig>((resolve) => {
+            resolveReload = resolve;
+          }),
+      );
+      const reloads = Array.from({ length: 10 }, () => getAppConfig({ baseOnly: true }));
+      await Promise.resolve();
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+
+      const next = { ...initial, interfaceConfig: { modelSelect: false } };
+      resolveReload?.(next);
+      await expect(Promise.all(reloads)).resolves.toEqual(Array(10).fill(next));
+      expect(deps.loadBaseConfig).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not convert a startup load failure into an empty config', async () => {
+      const failure = new Error('invalid startup config');
+      const deps = createDeps({ loadBaseConfig: jest.fn().mockRejectedValue(failure) });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await expect(getAppConfig({ baseOnly: true })).rejects.toBe(failure);
+      expect(deps.loadBaseConfig).toHaveBeenCalledWith('startup');
     });
 
     it('queries DB for applicable configs', async () => {
@@ -464,6 +552,20 @@ describe('createAppConfigService', () => {
       });
     });
 
+    it('reuses caller-resolved principals without querying them again', async () => {
+      const deps = createDeps();
+      const { getAppConfig } = createAppConfigService(deps);
+      const resolvedPrincipals = [
+        { principalType: 'role', principalId: 'USER' },
+        { principalType: 'user', principalId: 'uid1' },
+      ];
+
+      await getAppConfig({ role: 'USER', userId: 'uid1', resolvedPrincipals });
+
+      expect(deps.getUserPrincipals).not.toHaveBeenCalled();
+      expect(deps.getApplicableConfigs).toHaveBeenCalledWith(resolvedPrincipals);
+    });
+
     it('re-runs mutable principal config augmentation without rebuilding cached overrides', async () => {
       const augmentConfig = jest.fn(async ({ appConfig, principals }) => ({
         ...appConfig,
@@ -492,12 +594,26 @@ describe('createAppConfigService', () => {
       );
     });
 
+    it('skips mutable runtime augmentation when the caller already loaded it', async () => {
+      const augmentConfig = jest.fn(async ({ appConfig }) => appConfig);
+      const deps = createDeps({ augmentConfig });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await getAppConfig({
+        role: 'USER',
+        userId: 'uid1',
+        skipRuntimeAugmentation: true,
+      });
+
+      expect(augmentConfig).not.toHaveBeenCalled();
+    });
+
     it('preserves resolved principal restrictions when optional augmentation fails', async () => {
       const deps = createDeps({
         getApplicableConfigs: jest.fn().mockResolvedValue([
           {
             priority: 10,
-            overrides: { endpoints: ['untrusted-override'] },
+            overrides: { interface: { modelSelect: false } },
             isActive: true,
           },
         ]),
@@ -509,8 +625,38 @@ describe('createAppConfigService', () => {
 
       expect(config).toEqual(
         expect.objectContaining({
-          endpoints: ['untrusted-override'],
+          interfaceConfig: { modelSelect: false },
         }),
+      );
+    });
+
+    it('propagates principal resolution failures for fail-closed callers', async () => {
+      const error = new Error('principal authorization unavailable');
+      const deps = createDeps({ getUserPrincipals: jest.fn().mockRejectedValue(error) });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await expect(getAppConfig({ role: 'USER', userId: 'uid1', failClosed: true })).rejects.toBe(
+        error,
+      );
+    });
+
+    it('propagates override resolution failures for fail-closed callers', async () => {
+      const error = new Error('override authorization unavailable');
+      const deps = createDeps({ getApplicableConfigs: jest.fn().mockRejectedValue(error) });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await expect(getAppConfig({ role: 'USER', userId: 'uid1', failClosed: true })).rejects.toBe(
+        error,
+      );
+    });
+
+    it('propagates principal augmentation failures for fail-closed callers', async () => {
+      const error = new Error('environment authorization unavailable');
+      const deps = createDeps({ augmentConfig: jest.fn().mockRejectedValue(error) });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      await expect(getAppConfig({ role: 'USER', userId: 'uid1', failClosed: true })).rejects.toBe(
+        error,
       );
     });
 

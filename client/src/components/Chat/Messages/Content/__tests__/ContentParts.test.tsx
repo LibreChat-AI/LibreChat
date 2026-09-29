@@ -12,20 +12,18 @@ jest.mock('~/utils', () => ({
   groupSequentialToolCalls: jest.fn(),
   hasPendingApprovalInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingApprovalInPart,
   getPartKeyIndex: jest.requireActual('~/utils/messages').getPartKeyIndex,
+  /** Real implementations: the media helpers are pure and drive the phase
+   * card's attachment row, so stubbing them would make that path inert here. */
+  ...jest.requireActual<typeof import('~/utils/media')>('~/utils/media'),
 }));
 
 jest.mock('~/Providers', () => {
-  const react = jest.requireActual<typeof import('react')>('react');
   return {
-    MessageContext: {
-      Provider: ({
-        children,
-        value,
-      }: {
-        children: React.ReactElement<{ idx?: number }>;
-        value: { partIndex: number };
-      }) => react.cloneElement(children, { idx: value.partIndex }),
-    },
+    /** Use the real context: cloning the immediate child assumes Part has no
+     * intervening providers and does not exercise context propagation. */
+    MessageContext: jest.requireActual<typeof import('~/Providers/MessageContext')>(
+      '~/Providers/MessageContext',
+    ).MessageContext,
     SearchContext: {
       Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     },
@@ -33,12 +31,19 @@ jest.mock('~/Providers', () => {
      * the component's own catch swallowed it, so the sources path was dead here
      * while the suite still passed. */
     useSearchContext: () => ({ searchResults: undefined }),
+    MediaContext: {
+      Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    },
+    useMediaContext: () => ({ attachmentsByName: undefined }),
   };
 });
 
 jest.mock('../Parts', () => ({
   EmptyText: ({ underHeaderIcon }: { underHeaderIcon?: boolean }) => (
     <div data-testid="empty-text" data-under-header-icon={String(underHeaderIcon === true)} />
+  ),
+  AttachmentGroup: ({ attachments }: { attachments?: unknown[] }) => (
+    <div data-testid="attachment-group" data-count={String(attachments?.length ?? 0)} />
   ),
   AgentUpdate: ({ currentAgentId }: { currentAgentId: string }) => (
     <div data-testid="post-steer-agent-update" data-agent-id={currentAgentId} />
@@ -119,24 +124,33 @@ jest.mock('../Container', () => ({
   ),
 }));
 
-jest.mock('../Part', () => ({
-  __esModule: true,
-  default: ({
-    part,
-    idx,
-    showCursor,
-  }: {
-    part: TMessageContentParts;
-    idx: number;
-    showCursor?: boolean;
-  }) => (
-    <div
-      data-testid={`real-part-${part.type}`}
-      data-index={idx}
-      data-show-cursor={String(showCursor === true)}
-    />
-  ),
-}));
+jest.mock('../Part', () => {
+  const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
+    '~/Providers/MessageContext',
+  );
+  return {
+    __esModule: true,
+    default: function MockPart({
+      part,
+      showCursor,
+      isLast,
+    }: {
+      part: TMessageContentParts;
+      showCursor?: boolean;
+      isLast?: boolean;
+    }) {
+      const { partIndex } = useMessageContext();
+      return (
+        <div
+          data-testid={`real-part-${part.type}`}
+          data-index={partIndex}
+          data-show-cursor={String(showCursor === true)}
+          data-is-last={String(isLast === true)}
+        />
+      );
+    },
+  };
+});
 
 jest.mock('../ParallelContent', () => ({
   /** Invokes `renderResumeAttribution` per content index like the real
@@ -164,6 +178,7 @@ const baseProps = {
   isSubmitting: false,
   isLatestMessage: false,
   isCreatedByUser: false,
+  showThinking: false,
   content: [],
 };
 
@@ -255,11 +270,19 @@ describe('ContentParts — interim skill cards', () => {
   });
 
   it('renders pending skill cards above parallel content', () => {
+    /** Two agents, so the group renders as columns at all. */
     const parallelContent: TMessageContentParts[] = [
       {
         type: ContentTypes.TEXT,
-        text: 'parallel',
-        groupId: 'group-1',
+        text: 'primary',
+        agentId: 'agent_a',
+        groupId: 1,
+      } as unknown as TMessageContentParts,
+      {
+        type: ContentTypes.TEXT,
+        text: 'added',
+        agentId: 'agent_b____1',
+        groupId: 1,
       } as unknown as TMessageContentParts,
     ];
     render(<ContentParts {...baseProps} content={parallelContent} manualSkills={['pptx']} />);
@@ -411,15 +434,17 @@ describe('ContentParts — post-steer author re-attribution', () => {
   });
 
   it('provides resume attribution to the parallel renderer for its sequential stretches', () => {
-    const parallelText = {
-      type: ContentTypes.TEXT,
-      text: 'column',
-      groupId: 1,
-    } as unknown as TMessageContentParts;
+    const laneText = (agentId: string) =>
+      ({
+        type: ContentTypes.TEXT,
+        text: `column ${agentId}`,
+        agentId,
+        groupId: 1,
+      }) as unknown as TMessageContentParts;
     render(
       <ContentParts
         {...baseProps}
-        content={[parallelText, steerPart, textPart('resumed')]}
+        content={[laneText('agent_a'), laneText('agent_b____1'), steerPart, textPart('resumed')]}
         authorHeader={header}
       />,
     );
@@ -490,6 +515,48 @@ describe('ContentParts — activity phase state', () => {
     expect(textParts[1]).toHaveAttribute('data-show-cursor', 'false');
   });
 
+  /** Activity phases split one response into several bodies, and every settled
+   *  body has a trailing part. Only the body holding the message's cursor may
+   *  own a live one — otherwise a phase that finished minutes ago keeps its
+   *  reasoning shimmering while later phases stream. */
+  it("leaves an earlier phase's trailing part settled while a later part streams", () => {
+    const think = {
+      type: ContentTypes.THINK,
+      think: 'weighing the options',
+    } as unknown as TMessageContentParts;
+    const phase = {
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: 'Mapped the schema',
+      activity_label_type: 'phase',
+      activity_start_index: 0,
+      activity_end_index: 1,
+      activity_count: 1,
+      pending: false,
+    } as unknown as TMessageContentParts;
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[
+          think,
+          phase,
+          { type: ContentTypes.TEXT, text: 'Good — schema mapped.' } as TMessageContentParts,
+        ]}
+        isLast
+        isSubmitting
+        isLatestMessage
+      />,
+    );
+
+    expect(screen.getByTestId(`real-part-${ContentTypes.THINK}`)).toHaveAttribute(
+      'data-is-last',
+      'false',
+    );
+    expect(screen.getByTestId(`real-part-${ContentTypes.TEXT}`)).toHaveAttribute(
+      'data-is-last',
+      'true',
+    );
+  });
+
   it('renders a completion-appended parent before the final root text', () => {
     const tool = {
       type: ContentTypes.TOOL_CALL,
@@ -553,18 +620,21 @@ describe('ContentParts — activity phase state', () => {
       activity_count: 2,
       pending: false,
     } as unknown as TMessageContentParts;
-    const parallel = {
-      type: ContentTypes.TEXT,
-      text: 'lane result',
-      groupId: 1,
-    } as unknown as TMessageContentParts;
+    const lane = (agentId: string) =>
+      ({
+        type: ContentTypes.TEXT,
+        text: `lane result ${agentId}`,
+        agentId,
+        groupId: 1,
+      }) as unknown as TMessageContentParts;
 
     render(
       <ContentParts
         {...baseProps}
         content={[
           { type: ContentTypes.TEXT, text: 'before' } as unknown as TMessageContentParts,
-          parallel,
+          lane('agent_a'),
+          lane('agent_b____1'),
           phase,
         ]}
       />,

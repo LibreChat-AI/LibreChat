@@ -1,11 +1,11 @@
 import React from 'react';
-import { Check } from 'lucide-react';
-import { TooltipAnchor } from '@librechat/client';
-import type { LucideIcon } from 'lucide-react';
+import { Check } from 'lucide';
+import { MorphIcon, TooltipAnchor } from '@librechat/client';
+import type { IconInput } from '@librechat/client';
 import cn from '~/utils/cn';
 
 interface ActionButtonProps {
-  icon: LucideIcon;
+  icon: IconInput;
   isActive: boolean;
   label: string;
   activeLabel: string;
@@ -19,7 +19,7 @@ interface ActionButtonProps {
 const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
   (
     {
-      icon: Icon,
+      icon,
       isActive,
       label,
       activeLabel,
@@ -48,22 +48,7 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
           className,
         )}
       >
-        <span className="relative flex size-[18px] items-center justify-center" aria-hidden="true">
-          <Icon
-            size={18}
-            className={cn(
-              'absolute transition-all duration-300 ease-out',
-              isActive ? 'rotate-[-90deg] scale-0 opacity-0' : 'rotate-0 scale-100 opacity-100',
-            )}
-          />
-          <Check
-            size={18}
-            className={cn(
-              'transition-all duration-300 ease-out',
-              isActive ? 'rotate-0 scale-100 opacity-100' : 'rotate-90 scale-0 opacity-0',
-            )}
-          />
-        </span>
+        <MorphIcon icon={isActive ? Check : icon} size={18} />
         {!iconOnly && (
           <span className="relative overflow-hidden">
             <span

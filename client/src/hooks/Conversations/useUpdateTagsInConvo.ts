@@ -1,5 +1,5 @@
-import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys } from 'librechat-data-provider';
+import { useQueryClient } from '@tanstack/react-query';
 import type { ConversationListResponse } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
@@ -23,77 +23,90 @@ const useUpdateTagsInConvo = () => {
       tags,
     } as t.TConversation;
     queryClient.setQueryData([QueryKeys.conversation, conversationId], updatedConvo);
-    queryClient.setQueryData<InfiniteData<ConversationListResponse>>(
-      [QueryKeys.allConversations],
-      (convoData) => {
-        if (!convoData) {
-          return convoData;
-        }
-        return {
-          ...convoData,
-          pages: convoData.pages.map((page) => ({
-            ...page,
-            conversations: page.conversations.map((conversation) =>
-              conversation.conversationId === (currentConvo.conversationId ?? '')
-                ? { ...conversation, tags: updatedConvo.tags }
-                : conversation,
-            ),
-          })),
-        };
-      },
-    );
+
+    for (const listKey of [QueryKeys.allConversations, QueryKeys.archivedConversations]) {
+      const queries = queryClient.getQueryCache().findAll([listKey], { exact: false });
+      for (const query of queries) {
+        queryClient.setQueryData<InfiniteData<ConversationListResponse>>(
+          query.queryKey,
+          (convoData) => {
+            if (!convoData) {
+              return convoData;
+            }
+            return {
+              ...convoData,
+              pages: convoData.pages.map((page) => ({
+                ...page,
+                conversations: page.conversations.map((conversation) =>
+                  conversation.conversationId === conversationId
+                    ? { ...conversation, tags: updatedConvo.tags }
+                    : conversation,
+                ),
+              })),
+            };
+          },
+        );
+      }
+      /* A tag filter can change membership, so a patched row is not enough to make
+       * every parameterized list variant correct. */
+      queryClient.invalidateQueries({ queryKey: [listKey] });
+    }
   };
 
   // update the tag to newTag in all conversations when a tag is updated to a newTag
   // The difference with updateTagsInConversation is that it adds or removes tags for a specific conversation,
   // whereas this function is for changing the title of a specific tag.
   const replaceTagsInAllConversations = (tag: string, newTag: string) => {
-    const data = queryClient.getQueryData<InfiniteData<ConversationListResponse>>([
-      QueryKeys.allConversations,
-    ]);
+    const conversationIdsWithTag = new Set<string>();
 
-    if (data) {
-      const newData = JSON.parse(JSON.stringify(data)) as InfiniteData<ConversationListResponse>;
-      for (let pageIndex = 0; pageIndex < newData.pages.length; pageIndex++) {
-        const page = newData.pages[pageIndex];
-        page.conversations = page.conversations.map((conversation) => {
-          if (
-            conversation.conversationId &&
-            'tags' in conversation &&
-            Array.isArray((conversation as { tags?: string[] }).tags) &&
-            (conversation as { tags?: string[] }).tags?.includes(tag)
-          ) {
-            (conversation as { tags: string[] }).tags = (
-              conversation as { tags: string[] }
-            ).tags.map((t: string) => (t === tag ? newTag : t));
+    for (const listKey of [QueryKeys.allConversations, QueryKeys.archivedConversations]) {
+      const queries = queryClient.getQueryCache().findAll([listKey], { exact: false });
+      for (const query of queries) {
+        queryClient.setQueryData<InfiniteData<ConversationListResponse>>(query.queryKey, (data) => {
+          if (!data) {
+            return data;
           }
-          return conversation;
+
+          return {
+            ...data,
+            pages: data.pages.map((page) => ({
+              ...page,
+              conversations: page.conversations.map((conversation) => {
+                const conversationTags = (conversation as t.TConversation).tags;
+                if (
+                  conversation.conversationId &&
+                  Array.isArray(conversationTags) &&
+                  conversationTags.includes(tag)
+                ) {
+                  conversationIdsWithTag.add(conversation.conversationId);
+                  return {
+                    ...conversation,
+                    tags: conversationTags.map((conversationTag) =>
+                      conversationTag === tag ? newTag : conversationTag,
+                    ),
+                  };
+                }
+                return conversation;
+              }),
+            })),
+          };
         });
       }
-      queryClient.setQueryData<InfiniteData<ConversationListResponse>>(
-        [QueryKeys.allConversations],
-        newData,
-      );
+      queryClient.invalidateQueries({ queryKey: [listKey] });
     }
 
-    const conversationIdsWithTag = [] as string[];
-
-    // update the tag to newTag from the cache of each conversation
-    for (let i = 0; i < conversationIdsWithTag.length; i++) {
-      const conversationId = conversationIdsWithTag[i];
+    for (const conversationId of conversationIdsWithTag) {
       const conversation = queryClient.getQueryData<t.TConversation>([
         QueryKeys.conversation,
         conversationId,
       ]);
-      if (conversation && conversation.tags) {
-        const updatedConvo = {
+      if (conversation?.tags) {
+        queryClient.setQueryData<t.TConversation>([QueryKeys.conversation, conversationId], {
           ...conversation,
-          tags: conversation.tags.map((t) => (t === tag ? newTag : t)),
-        } as t.TConversation;
-        queryClient.setQueryData<t.TConversation>(
-          [QueryKeys.conversation, conversationId],
-          updatedConvo,
-        );
+          tags: conversation.tags.map((conversationTag) =>
+            conversationTag === tag ? newTag : conversationTag,
+          ),
+        });
       }
     }
   };

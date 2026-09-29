@@ -10,17 +10,20 @@ import {
   SettingDefinition,
   tConvoUpdateSchema,
   applyModelAwareDefaults,
+  normalizeEndpointName,
+  resolveDropParamsUIKeys,
 } from 'librechat-data-provider';
 import type { TPreset } from 'librechat-data-provider';
+import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import { SaveAsPresetDialog } from '~/components/Endpoints';
 import { useSetIndexOptions, useLocalize } from '~/hooks';
-import { useGetEndpointsQuery } from '~/data-provider';
 import { componentMapping } from './components';
 import { logger, cn } from '~/utils';
 
 export default function Parameters() {
   const localize = useLocalize();
+  const { data: startupConfig } = useGetStartupConfig();
   const { conversation, setConversation } = useChatContext();
   const { announcePolite } = useLiveAnnouncer();
   const { setOption } = useSetIndexOptions();
@@ -43,22 +46,36 @@ export default function Parameters() {
     [conversation?.endpoint, endpointsConfig],
   );
 
-  const parameters = useMemo((): SettingDefinition[] => {
+  const { parameters, visibleParameters } = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     const [combinedKey, endpointKey] = getSettingsKeys(endpointType ?? provider, model);
     const overriddenEndpointKey = customParams.defaultParamsEndpoint ?? endpointKey;
+    const dropParamsMap = startupConfig?.endpointsDropParamsMap;
+    const dropParamsEntry =
+      dropParamsMap?.[provider] ?? dropParamsMap?.[normalizeEndpointName(provider)];
+    const resolvedDropParams = Array.isArray(dropParamsEntry)
+      ? dropParamsEntry
+      : dropParamsEntry?.[model];
+    const dropParamsSet = resolveDropParamsUIKeys(
+      Array.isArray(resolvedDropParams) ? resolvedDropParams : undefined,
+      overriddenEndpointKey,
+    );
     const defaultParams = paramSettings[combinedKey] ?? paramSettings[overriddenEndpointKey] ?? [];
     const overriddenParams = endpointsConfig[provider]?.customParams?.paramDefinitions ?? [];
     const overriddenParamsMap = keyBy(overriddenParams, 'key');
-    const modelAwareParams = applyModelAwareDefaults(
-      defaultParams.filter((param) => param != null),
+    /** Model visibility must not determine which stored settings survive pruning.
+     * Explicit administrator drops still remove a key from both sets. */
+    const parameters = defaultParams.filter(
+      (param) => param != null && !dropParamsSet.has(param.key),
+    );
+    const visibleParameters = applyModelAwareDefaults(
+      parameters,
       overriddenEndpointKey,
       model,
-    );
-    return modelAwareParams.map(
-      (param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param,
-    );
-  }, [endpointType, endpointsConfig, model, provider]);
+      endpointsConfig?.[provider ?? '']?.responsesApiRouting,
+    ).map((param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param);
+    return { parameters, visibleParameters };
+  }, [endpointType, endpointsConfig, model, provider, startupConfig]);
 
   useEffect(() => {
     if (!parameters) {
@@ -165,7 +182,7 @@ export default function Parameters() {
         {' '}
         {/* This is the parent element containing all settings */}
         {/* Below is an example of an applied dynamic setting, each be contained by a div with the column span specified */}
-        {parameters.map((setting) => {
+        {visibleParameters.map((setting) => {
           const Component = componentMapping[setting.component];
           if (!Component) {
             return null;

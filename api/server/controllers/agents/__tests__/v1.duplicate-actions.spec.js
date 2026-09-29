@@ -102,6 +102,49 @@ describe('duplicateAgentHandler — action domain extraction', () => {
     expect(duplicatedAction.metadata.domain).toBe('api.example.com');
   });
 
+  it('removes cloned actions when Agent creation is rejected', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const originalAgentId = 'agent_conflicted_clone_source';
+    const agent = await mongoose.models.Agent.create({
+      id: originalAgentId,
+      name: 'Conflicted clone source',
+      author: userId.toString(),
+      provider: 'openai',
+      model: 'gpt-4',
+      tools: [],
+      actions: [`api.example.com${actionDelimiter}act_original`],
+      versions: [{ name: 'Conflicted clone source', createdAt: new Date(), updatedAt: new Date() }],
+    });
+    await mongoose.models.Action.create({
+      user: userId,
+      action_id: 'act_original',
+      agent_id: originalAgentId,
+      metadata: { domain: 'api.example.com' },
+    });
+    const createAgent = jest
+      .spyOn(mongoose.models.Agent, 'create')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Code environment is being removed'), { statusCode: 409 }),
+      );
+    const req = {
+      params: { id: agent.id },
+      user: { id: userId.toString() },
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    await duplicateAgent(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    await expect(mongoose.models.Action.countDocuments()).resolves.toBe(1);
+    await expect(
+      mongoose.models.Action.findOne({ action_id: 'act_original', agent_id: originalAgentId }),
+    ).resolves.not.toBeNull();
+    createAgent.mockRestore();
+  });
+
   it('strips sensitive metadata fields from duplicated actions', async () => {
     const userId = new mongoose.Types.ObjectId();
     const originalAgentId = 'agent_sensitive';

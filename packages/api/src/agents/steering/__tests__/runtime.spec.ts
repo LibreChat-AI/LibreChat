@@ -20,6 +20,7 @@ import {
   createSteerPreemptPoll,
   isSteeringSupported,
   isSteerPreemptSupported,
+  isSteerPreemptRestartSupported,
   isSteerTerminalContinuationSupported,
 } from '../runtime';
 import type { TerminalSteerHookInput } from '../runtime';
@@ -456,10 +457,12 @@ describe('createSteerDrainHook', () => {
       files: [{ file_id: 'f-gone' }],
     });
 
+    const onMediaError = jest.fn();
     const hook = createSteerDrainHook({
       streamId,
       jobCreatedAt: job.createdAt,
       applySteer: jest.fn(),
+      onMediaError,
       buildMedia: async () => {
         throw new Error('encode failed');
       },
@@ -469,6 +472,10 @@ describe('createSteerDrainHook', () => {
     expect(output.injectedMessages).toEqual([
       { role: 'user', content: 'words survive', source: 'steer' },
     ]);
+    expect(onMediaError).toHaveBeenCalledWith(
+      expect.objectContaining({ steerId: 's1' }),
+      expect.objectContaining({ message: 'encode failed' }),
+    );
   });
 });
 
@@ -481,6 +488,20 @@ describe('isSteerPreemptSupported', () => {
     };
     const expected = isSteeringSupported() && sdk.HOOK_PREEMPT_BOUNDARY_CAPABLE === true;
     expect(isSteerPreemptSupported()).toBe(expected);
+  });
+});
+
+describe('isSteerPreemptRestartSupported', () => {
+  /**
+   * A THIRD probe on top of the preempt one. An SDK that can seal still cannot
+   * act on an interrupt armed while the model is silent or merely thinking —
+   * exactly the window users reach for it most — so a host that conflated the
+   * two would hand out a wake channel nothing reads.
+   */
+  it('requires the restart capability ON TOP of preempt support', () => {
+    const sdk = agentsSdk as { HOOK_PREEMPT_RESTART_CAPABLE?: boolean };
+    const expected = isSteerPreemptSupported() && sdk.HOOK_PREEMPT_RESTART_CAPABLE === true;
+    expect(isSteerPreemptRestartSupported()).toBe(expected);
   });
 });
 
@@ -745,5 +766,172 @@ describe('createSteerPreemptPoll', () => {
 
   it('is false for a stream with no live generation', () => {
     expect(createSteerPreemptPoll('no-such-stream').shouldPreempt()).toBe(false);
+  });
+});
+
+/**
+ * The wake channel exists because the poll above is only read per streamed
+ * chunk. A steer armed while the provider is silent, or while it streams
+ * reasoning that will never become sealable, cannot reach the run any other
+ * way — it would wait out the whole turn and land as a terminal continuation.
+ */
+describe('preempt wake channel', () => {
+  beforeEach(() => {
+    GenerationJobManager.configure({
+      jobStore: new InMemoryJobStore({ ttlAfterComplete: 60000 }),
+      eventTransport: new InMemoryEventTransport(),
+      isRedis: false,
+      cleanupOnComplete: false,
+    });
+    GenerationJobManager.initialize();
+  });
+
+  afterEach(async () => {
+    await GenerationJobManager.destroy();
+  });
+
+  it('wakes a subscribed run when a steer arms', async () => {
+    const streamId = `preempt-wake-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    const wake = jest.fn();
+    GenerationJobManager.subscribePreempt(streamId, wake, job.createdAt);
+
+    expect(wake).not.toHaveBeenCalled();
+    await GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(GenerationJobManager.isPreemptRequested(streamId)).toBe(true);
+  });
+
+  /**
+   * The wake is a hint, not the request. An arm the store REFUSES — a steer
+   * already drained at an ordinary boundary, so its id is tombstoned — leaves
+   * nothing for the run to act on, and waking would spend a look for nothing.
+   */
+  it('stays quiet when the arm is refused', async () => {
+    const streamId = `preempt-wake-refused-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    GenerationJobManager.noteSteersRemoved(streamId, ['s1'], job.createdAt);
+    const wake = jest.fn();
+    GenerationJobManager.subscribePreempt(streamId, wake, job.createdAt);
+
+    await GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt);
+
+    expect(wake).not.toHaveBeenCalled();
+    expect(GenerationJobManager.isPreemptRequested(streamId)).toBe(false);
+  });
+
+  /**
+   * Requests are level-triggered, so an arm that landed before the run
+   * installed its listener has no callback to notify — and on a silent or
+   * reasoning-only turn no later chunk poll may ever run, which is the exact
+   * stall this channel removes.
+   */
+  it('replays an arm that landed before the run subscribed', async () => {
+    const streamId = `preempt-wake-replay-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    await GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt);
+
+    const wake = jest.fn();
+    GenerationJobManager.subscribePreempt(streamId, wake, job.createdAt);
+
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay to a run that already looked', async () => {
+    const streamId = `preempt-wake-replay-once-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    const first = jest.fn();
+    GenerationJobManager.subscribePreempt(streamId, first, job.createdAt);
+    await GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt);
+    expect(first).toHaveBeenCalledTimes(1);
+
+    const second = jest.fn();
+    GenerationJobManager.subscribePreempt(streamId, second, job.createdAt);
+
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay when nothing is armed', async () => {
+    const streamId = `preempt-wake-no-replay-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    const wake = jest.fn();
+
+    GenerationJobManager.subscribePreempt(streamId, wake, job.createdAt);
+
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it('stops waking once the run unsubscribes', async () => {
+    const streamId = `preempt-wake-unsub-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    const wake = jest.fn();
+    const unsubscribe = GenerationJobManager.subscribePreempt(streamId, wake, job.createdAt);
+
+    unsubscribe();
+    await GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt);
+
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The same `createdAt` fence every other preempt entry point carries: a run
+   * wired to a generation that has since been replaced must not be woken by
+   * the replacement's arms.
+   */
+  it('refuses to subscribe against a replaced generation', async () => {
+    const streamId = `preempt-wake-fence-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    const wake = jest.fn();
+    const unsubscribe = GenerationJobManager.subscribePreempt(streamId, wake, job.createdAt - 1);
+
+    await GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt);
+
+    expect(wake).not.toHaveBeenCalled();
+    expect(() => unsubscribe()).not.toThrow();
+  });
+
+  /**
+   * A wake is an optimization over the per-chunk poll. A listener that throws
+   * must not fail the arm a durably queued steer already depends on.
+   */
+  it('survives a throwing listener without losing the arm', async () => {
+    const streamId = `preempt-wake-throws-${Date.now()}`;
+    const job = await GenerationJobManager.createJob(streamId, 'user-1');
+    const healthy = jest.fn();
+    GenerationJobManager.subscribePreempt(
+      streamId,
+      () => {
+        throw new Error('listener exploded');
+      },
+      job.createdAt,
+    );
+    GenerationJobManager.subscribePreempt(streamId, healthy, job.createdAt);
+
+    await expect(GenerationJobManager.requestPreempt(streamId, 's1', job.createdAt)).resolves.toBe(
+      true,
+    );
+    expect(healthy).toHaveBeenCalledTimes(1);
+    expect(GenerationJobManager.isPreemptRequested(streamId)).toBe(true);
+  });
+
+  /**
+   * The capability probe is what keeps the promise honest: an SDK that cannot
+   * discard an unstarted turn is handed no wake channel at all, so the run
+   * falls back to the per-chunk poll rather than subscribing to a signal
+   * nothing reads.
+   */
+  it('supplies the channel only when the SDK can act on it', async () => {
+    const streamId = `preempt-wake-probe-${Date.now()}`;
+    await GenerationJobManager.createJob(streamId, 'user-1');
+    /** Widened locally, the same way this file reads the SDK's capability
+     *  constants: an SDK predating the restart contract types
+     *  `StreamPreemption` without `subscribe`, and the probe below is exactly
+     *  what decides whether the field is there to read. */
+    const poll = createSteerPreemptPoll(streamId) as {
+      subscribe?: (wake: () => void) => () => void;
+    };
+
+    expect(typeof poll.subscribe === 'function').toBe(isSteerPreemptRestartSupported());
   });
 });

@@ -16,6 +16,8 @@ export const codeEnvRefSchema: Schema = new Schema(
       enum: ['default', 'stateful'],
     },
     executionRouteKey: { type: String },
+    provisionedAt: { type: Number },
+    sandboxFilename: { type: String },
   },
   { _id: false },
 );

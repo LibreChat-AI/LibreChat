@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+)
+
+const (
+	maxTenantMetricLabels = 1000
+	invalidTenantID       = "<invalid>"
+	overflowTenantID      = "<overflow>"
 )
 
 type gatewayMetrics struct {
@@ -23,6 +30,8 @@ type gatewayMetrics struct {
 	uploadPlanMisses      prometheus.Counter
 	uploadPlanStoreErrors *prometheus.CounterVec
 	uploadBytes           prometheus.Histogram
+	tenantLabelsMu        sync.Mutex
+	tenantLabels          map[string]struct{}
 }
 
 func newGatewayMetrics() *gatewayMetrics {
@@ -33,7 +42,8 @@ func newGatewayMetrics() *gatewayMetrics {
 	)
 
 	metrics := &gatewayMetrics{
-		registry: registry,
+		registry:     registry,
+		tenantLabels: make(map[string]struct{}, maxTenantMetricLabels),
 		httpRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "langfuse_fanout_http_requests_total",
 			Help: "Total HTTP requests handled by the Langfuse fanout gateway.",
@@ -129,15 +139,48 @@ func (m *gatewayMetrics) recordTraceExport(destination string, result string, te
 	if m == nil {
 		return
 	}
-	m.traceExports.WithLabelValues(normalizeMetricLabel(destination), result, tenantMetricLabel(tenantID)).Inc()
+	m.traceExports.WithLabelValues(normalizeMetricLabel(destination), result, m.tenantMetricLabel(tenantID)).Inc()
 }
 
-func tenantMetricLabel(tenantID string) string {
+func (m *gatewayMetrics) tenantMetricLabel(tenantID string) string {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
-		return "unknown"
+		return unknownTenantID
 	}
+	if tenantID == unknownTenantID || tenantID == multipleTenantIDs {
+		return tenantID
+	}
+	if !validTenantMetricID(tenantID) {
+		return invalidTenantID
+	}
+
+	m.tenantLabelsMu.Lock()
+	defer m.tenantLabelsMu.Unlock()
+	if _, ok := m.tenantLabels[tenantID]; ok {
+		return tenantID
+	}
+	if len(m.tenantLabels) >= maxTenantMetricLabels {
+		return overflowTenantID
+	}
+	m.tenantLabels[tenantID] = struct{}{}
 	return tenantID
+}
+
+func validTenantMetricID(tenantID string) bool {
+	if len(tenantID) > 128 {
+		return false
+	}
+	for _, r := range tenantID {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (m *gatewayMetrics) recordMediaDivergence(kind string, destination string) {

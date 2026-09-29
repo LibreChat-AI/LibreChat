@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 import { getLocalE2EEnv, getE2EBaseURL } from './setup/env';
+import { managementAuth } from './setup/agent-management';
 
 const rootPath = path.resolve(__dirname, '..');
 const replicaCount = Number(process.env.E2E_REPLICAS || '1');
@@ -13,9 +14,12 @@ const serverPath = path.resolve(
   replicaCount === 2 ? 'e2e/setup/start-server-cluster.js' : 'e2e/setup/start-server.js',
 );
 const mcpHttpServerPath = path.resolve(rootPath, 'e2e/setup/fake-mcp-http-server.js');
+const mcpOAuthServerPath = path.resolve(rootPath, 'e2e/setup/fake-mcp-oauth-server.js');
 const dynamicMcpServerPath = path.resolve(rootPath, 'e2e/setup/fake-mcp-dynamic-network-server.js');
 /** Must match the `e2e-http` server URL in e2e/config/librechat.e2e.yaml. */
 const MCP_HTTP_PORT = process.env.E2E_MCP_HTTP_PORT || '8765';
+/** Must match the protected OAuth MCP fixture in e2e/config/librechat.e2e.yaml. */
+const MCP_OAUTH_PORT = process.env.E2E_MCP_OAUTH_PORT || '8767';
 /** Must match the dynamic Streamable HTTP and SSE URLs in the e2e config template. */
 const MCP_DYNAMIC_PORT = process.env.E2E_MCP_DYNAMIC_PORT || '8766';
 const MCP_STATE_PATH =
@@ -25,6 +29,12 @@ const labelServerPath = path.resolve(rootPath, 'e2e/setup/fake-label-server.js')
 /** The template's custom-endpoint `baseURL`s hard-code 8889;
  *  `writeRuntimeMockConfig` substitutes any override into the generated copy. */
 const LABEL_PORT = process.env.E2E_LABEL_PORT || '8889';
+const codeServerPath = path.resolve(rootPath, 'e2e/setup/fake-code-server.js');
+const ragServerPath = path.resolve(rootPath, 'e2e/setup/fake-rag-server.js');
+/** Ports the backend reaches via LIBRECHAT_CODE_BASEURL / RAG_API_URL below.
+ *  Kept clear of the MCP (8765/8766) and label (8889) fixtures. */
+const CODE_API_PORT = process.env.E2E_CODE_API_PORT || '8790';
+const RAG_API_PORT = process.env.E2E_RAG_API_PORT || '8791';
 const fakeModelHookPath = path.resolve(rootPath, 'e2e/setup/fake-model.js');
 /** Model-fixture record mode: the run hook taps the REAL provider stream into a
  *  replayable fixture instead of overriding the model (e2e/setup/model-replay.js). */
@@ -118,6 +128,14 @@ const vanillaOverrides = {
   CHECK_BALANCE: 'false',
 };
 
+const externalCodeBaseUrl = process.env.E2E_CODE_BASEURL?.trim();
+const codeApiKeyEnv: Record<string, string> = {};
+if (!externalCodeBaseUrl) {
+  codeApiKeyEnv.LIBRECHAT_CODE_API_KEY = 'e2e-code-key';
+} else if (process.env.E2E_CODE_API_KEY) {
+  codeApiKeyEnv.LIBRECHAT_CODE_API_KEY = process.env.E2E_CODE_API_KEY;
+}
+
 const baseEnv = {
   ...getLocalE2EEnv(),
   CONFIG_PATH: configPath,
@@ -139,6 +157,11 @@ const baseEnv = {
   ...(process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN
     ? { E2E_CODE_BRIDGE_ADMIN_TOKEN: process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN }
     : {}),
+  /** Point code-env + RAG provisioning at the local fakes started below. */
+  LIBRECHAT_CODE_BASEURL: externalCodeBaseUrl || `http://127.0.0.1:${CODE_API_PORT}/v1`,
+  ...(externalCodeBaseUrl ? { LIBRECHAT_CODE_BASEURL_STATEFUL: externalCodeBaseUrl } : {}),
+  ...codeApiKeyEnv,
+  RAG_API_URL: `http://127.0.0.1:${RAG_API_PORT}`,
   ...vanillaOverrides,
 };
 
@@ -164,6 +187,10 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  config = config.replace(
+    '  agents:\n',
+    `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,
+  );
   const dynamicMcpConfig = enableDynamicMcp
     ? {
         allowedDomain: '- http://127.0.0.1:8766',
@@ -234,6 +261,14 @@ function writeRuntimeMockConfig() {
           '      type: attached',
           `      baseURL: ${JSON.stringify(codeBridgeURL)}`,
           '      default: true',
+          '      configSchema:',
+          '        permissions:',
+          '          fileWrite:',
+          '            allowed: [allow, ask, deny]',
+          '            default: ask',
+          '          commandExecution:',
+          '            allowed: [ask, deny]',
+          '            default: ask',
           ...codeBridgePairing,
         ].join('\n    ')
       : '# __E2E_CODE_BRIDGE_CONFIG__',
@@ -247,6 +282,9 @@ function writeRuntimeMockConfig() {
   }
   if (enableDynamicMcp && MCP_DYNAMIC_PORT !== '8766') {
     config = config.split('127.0.0.1:8766').join(`127.0.0.1:${MCP_DYNAMIC_PORT}`);
+  }
+  if (MCP_OAUTH_PORT !== '8767') {
+    config = config.split('127.0.0.1:8767').join(`127.0.0.1:${MCP_OAUTH_PORT}`);
   }
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, config);
@@ -340,6 +378,16 @@ export default defineConfig({
       timeout: 60_000,
       reuseExistingServer: false,
     },
+    {
+      // Protected resource whose OAuth flow intentionally remains pending across navigation.
+      command: `node ${mcpOAuthServerPath}`,
+      cwd: rootPath,
+      env: { ...process.env, E2E_MCP_OAUTH_PORT: MCP_OAUTH_PORT },
+      url: `http://127.0.0.1:${MCP_OAUTH_PORT}/`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
     ...(enableDynamicMcp
       ? [
           {
@@ -374,6 +422,26 @@ export default defineConfig({
       cwd: rootPath,
       env: { ...process.env, E2E_ASSISTANTS_PORT: ASSISTANTS_PORT },
       url: `http://127.0.0.1:${ASSISTANTS_PORT}/`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
+    {
+      // Fake code-execution API for file-provisioning specs (LIBRECHAT_CODE_BASEURL).
+      command: `node ${codeServerPath}`,
+      cwd: rootPath,
+      env: { ...process.env, E2E_CODE_API_PORT: CODE_API_PORT },
+      url: `http://127.0.0.1:${CODE_API_PORT}/health`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
+    {
+      // Fake RAG (vector DB) API for file-provisioning specs (RAG_API_URL).
+      command: `node ${ragServerPath}`,
+      cwd: rootPath,
+      env: { ...process.env, E2E_RAG_API_PORT: RAG_API_PORT },
+      url: `http://127.0.0.1:${RAG_API_PORT}/health`,
       stdout: 'pipe',
       timeout: 60_000,
       reuseExistingServer: false,

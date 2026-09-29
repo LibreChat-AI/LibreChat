@@ -2,6 +2,7 @@ const express = require('express');
 const { logger } = require('@librechat/data-schemas');
 const {
   createMessageFilterPii,
+  reportLocatorTraversalFailure,
   generateCheckAccess,
   skipAgentCheck,
   applyResumeContext,
@@ -72,6 +73,7 @@ const restoreResumeContext = async (req, res, next) => {
 router.use(restoreResumeContext);
 router.use(
   createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
     getConfig: (req) => req.config?.messageFilter?.pii,
     getFilters: (req) => req.config?.filters,
     getFiles,

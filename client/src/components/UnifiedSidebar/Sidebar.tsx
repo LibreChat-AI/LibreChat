@@ -39,7 +39,12 @@ function Sidebar({
         />
         <nav
           className={cn(
-            'min-h-0 flex-1 overflow-hidden bg-surface-primary-alt',
+            /** The resize separator to the right is transparent until hovered, so
+             *  the panel has no resting right edge. That is deliberate in the
+             *  standard themes, where `surface-primary-alt` carries the boundary
+             *  on its own; in high contrast both sides are the same pure white or
+             *  pure black, so the edge has to be drawn. */
+            'min-h-0 flex-1 overflow-hidden bg-surface-primary-alt high-contrast:border-r high-contrast:border-border-light',
             expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
           style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}

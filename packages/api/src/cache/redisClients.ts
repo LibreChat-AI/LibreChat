@@ -5,6 +5,9 @@ import { createClient, createCluster } from '@keyv/redis';
 import type { ScanOptions } from '@redis/client/dist/lib/commands/SCAN';
 import type { RedisClientType, RedisClusterType } from '@redis/client';
 import type { Redis, Cluster } from 'ioredis';
+import type { ReadonlyRecoveryHandler } from './recovery';
+import { createReadonlyRecovery, isReadonlyReplicaError } from './recovery';
+import { startRedisHeartbeat } from './heartbeat';
 import { cacheConfig } from './cacheConfig';
 
 const urls = cacheConfig.REDIS_URI?.split(',').map((uri) => new URL(uri)) || [];
@@ -62,8 +65,7 @@ if (cacheConfig.USE_REDIS) {
       return delay;
     },
     reconnectOnError: (err: Error) => {
-      const targetError = 'READONLY';
-      if (err.message.includes(targetError)) {
+      if (isReadonlyReplicaError(err)) {
         logger.warn('ioredis reconnecting due to READONLY error');
         return 2; // Return retry delay instead of boolean
       }
@@ -72,6 +74,7 @@ if (cacheConfig.USE_REDIS) {
     enableOfflineQueue: cacheConfig.REDIS_ENABLE_OFFLINE_QUEUE,
     connectTimeout: cacheConfig.REDIS_CONNECT_TIMEOUT,
     maxRetriesPerRequest: 3,
+    keepAlive: cacheConfig.REDIS_KEEP_ALIVE,
   };
 
   ioredisClient = !isRedisCluster
@@ -128,54 +131,69 @@ if (cacheConfig.USE_REDIS) {
     logger.warn('ioredis client connection closed');
   });
 
-  /** Ping Interval to keep the Redis server connection alive (if enabled) */
-  let pingInterval: NodeJS.Timeout | null = null;
-  const clearPingInterval = () => {
-    if (pingInterval) {
-      clearInterval(pingInterval);
-      pingInterval = null;
-    }
-  };
-
+  /** Deadline-bounded keepalive PINGs; an unanswered probe forces a reconnect. */
   if (cacheConfig.REDIS_PING_INTERVAL > 0) {
-    pingInterval = setInterval(() => {
-      if (ioredisClient && ioredisClient.status === 'ready') {
-        ioredisClient.ping().catch((err) => {
-          logger.error('ioredis ping failed:', err);
-        });
-      }
-    }, cacheConfig.REDIS_PING_INTERVAL * 1000);
-    ioredisClient.on('close', clearPingInterval);
-    ioredisClient.on('end', clearPingInterval);
+    startRedisHeartbeat({
+      client: ioredisClient,
+      intervalMs: cacheConfig.REDIS_PING_INTERVAL * 1000,
+      timeoutMs: cacheConfig.REDIS_PING_TIMEOUT,
+      label: 'ioredis client',
+    });
   }
 }
 
 let keyvRedisClient: RedisClientType | RedisClusterType | null = null;
+let recoverKeyvRedisClient: ReadonlyRecoveryHandler | undefined;
+
+/**
+ * Routes a Keyv Redis client error through READONLY failover recovery.
+ * Cluster clients follow MOVED to the owning master on their own, so the hook
+ * only exists for the standalone client. Returns whether a reconnect was started.
+ */
+function handleKeyvRedisError(error: unknown): boolean {
+  return recoverKeyvRedisClient?.(error) ?? false;
+}
 
 type RedisEvalOptions = { keys: string[]; arguments: string[] };
 
-/**
- * Runs a Lua script on the master that owns its keys. Node Redis can execute a
- * cluster EVAL through an arbitrary node while the slot map is settling, which
- * leaks a MOVED reply instead of following it. Catalog scripts are deliberately
- * single-slot, so selecting the owning master also makes that invariant explicit.
- */
-async function evalKeyvRedisScript(script: string, options: RedisEvalOptions): Promise<unknown> {
-  await waitForKeyvRedisClient();
-  if (!keyvRedisClient) {
-    throw new Error('Keyv Redis client is not configured');
-  }
-  if (!('masters' in keyvRedisClient) || options.keys.length === 0) {
-    return keyvRedisClient.eval(script, options);
+async function runKeyvRedisScript(
+  client: RedisClientType | RedisClusterType,
+  script: string,
+  options: RedisEvalOptions,
+): Promise<unknown> {
+  if (!('masters' in client) || options.keys.length === 0) {
+    return client.eval(script, options);
   }
 
   const slot = calculateSlot(options.keys[0]);
   if (options.keys.some((key) => calculateSlot(key) !== slot)) {
     throw new Error('Redis catalog script keys must share one cluster slot');
   }
-  const master = keyvRedisClient.getSlotMaster(slot);
-  const nodeClient = await keyvRedisClient.nodeClient(master);
+  const master = client.getSlotMaster(slot);
+  const nodeClient = await client.nodeClient(master);
   return nodeClient.eval(script, options);
+}
+
+/**
+ * Runs a Lua script on the master that owns its keys. Node Redis can execute a
+ * cluster EVAL through an arbitrary node while the slot map is settling, which
+ * leaks a MOVED reply instead of following it. Catalog scripts are deliberately
+ * single-slot, so selecting the owning master also makes that invariant explicit.
+ *
+ * Script failures reject straight to the caller without passing through any
+ * client error event, so READONLY replies are routed to failover recovery here.
+ */
+async function evalKeyvRedisScript(script: string, options: RedisEvalOptions): Promise<unknown> {
+  await waitForKeyvRedisClient();
+  if (!keyvRedisClient) {
+    throw new Error('Keyv Redis client is not configured');
+  }
+  try {
+    return await runKeyvRedisScript(keyvRedisClient, script, options);
+  } catch (error) {
+    handleKeyvRedisError(error);
+    throw error;
+  }
 }
 
 if (cacheConfig.USE_REDIS) {
@@ -238,6 +256,13 @@ if (cacheConfig.USE_REDIS) {
 
   keyvRedisClient.setMaxListeners(cacheConfig.REDIS_MAX_LISTENERS);
 
+  if (!isRedisCluster) {
+    recoverKeyvRedisClient = createReadonlyRecovery({
+      client: keyvRedisClient as RedisClientType,
+      minIntervalMs: cacheConfig.REDIS_READONLY_RECOVERY_INTERVAL,
+    });
+  }
+
   keyvRedisClient.on('error', (err) => {
     logger.error('@keyv/redis client error:', err);
   });
@@ -272,4 +297,5 @@ export {
   keyvRedisClientReady,
   waitForKeyvRedisClient,
   evalKeyvRedisScript,
+  handleKeyvRedisError,
 };

@@ -9,8 +9,8 @@ import type {
   SubagentThreadView,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { SubagentProgress } from '~/store/subagents';
-import { REDACTED_REASONING_MARKER } from '~/store/subagents';
+import type { SubagentProgress } from './state';
+import { REDACTED_REASONING_MARKER } from './state';
 
 export type ChildActivityItem =
   | {

@@ -9,6 +9,7 @@ export { default as MobileSidebar } from './MobileSidebar';
 export { default as Spinner } from './Spinner';
 export { default as Clipboard } from './Clipboard';
 export { default as CheckMark } from './CheckMark';
+export { default as VerifiedIcon } from './VerifiedIcon';
 export { default as CrossIcon } from './CrossIcon';
 export { default as LogOutIcon } from './LogOutIcon';
 export { default as CustomMinimalIcon } from './CustomMinimalIcon';

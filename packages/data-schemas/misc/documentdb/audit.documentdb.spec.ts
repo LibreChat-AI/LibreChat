@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'crypto';
 import type { ConnectOptions } from 'mongoose';
 import { createAgentTriggerDeliveryMethods } from '~/methods/triggerDelivery';
+import { createConversationMethods } from '~/methods/conversation';
 import { createMessageMethods } from '~/methods/message';
 import { createModels } from '~/models';
 
@@ -145,6 +146,20 @@ describeLive('Amazon DocumentDB - 2026-08-30 audit surface', () => {
   });
 
   describe('raw construct probes (isolates which primitive the engine refuses)', () => {
+    it('probes the mixed include and exclude projection', async () => {
+      /** `{ _id: 1, other: 0 }` is what Mongoose compiles `'_id +field'` to on
+       * a schema with hidden siblings. MongoDB tolerates it via the `_id`
+       * exception; DocumentDB rejects it, which broke the legacy actor-receipt
+       * sweep on every maintenance pass. */
+      const verdict = await probe('mixed projection { _id: 1, x: 0 }', () =>
+        getDb()
+          .collection(probeCollection)
+          .find({ probe: 1 }, { projection: { _id: 1, note: 0 } })
+          .toArray(),
+      );
+      expect(verdict).toBeTruthy();
+    });
+
     it('probes the pipeline-update form', async () => {
       const verdict = await probe('pipeline-form findOneAndUpdate', () =>
         getDb()
@@ -392,6 +407,14 @@ describeLive('Amazon DocumentDB - 2026-08-30 audit surface', () => {
         }),
       );
       expectShape('listSubagentTasksForThreads');
+    });
+
+    it('site 8 - expireLegacyAgentEventActorReceipts', async () => {
+      const verdict = await probe('expireLegacyAgentEventActorReceipts', () =>
+        createConversationMethods(mongoose).expireLegacyAgentEventActorReceipts(new Date(), 5),
+      );
+      expectShape('expireLegacyAgentEventActorReceipts');
+      expect(verdict).toBeTruthy();
     });
 
     it('site 7 - updateToolCallResult', async () => {

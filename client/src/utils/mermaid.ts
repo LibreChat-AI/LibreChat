@@ -1,5 +1,7 @@
 import dedent from 'dedent';
 import DOMPurify from 'dompurify';
+import { highContrastDarkTheme, highContrastLightTheme } from '@librechat/client';
+import type { IThemeRGB } from '@librechat/client';
 
 interface MermaidButtonStyles {
   bg: string;
@@ -31,8 +33,35 @@ const lightButtonStyles: MermaidButtonStyles = {
   divider: 'rgba(0, 0, 0, 0.1)',
 };
 
-const getButtonStyles = (isDarkMode: boolean): MermaidButtonStyles =>
-  isDarkMode ? darkButtonStyles : lightButtonStyles;
+/**
+ * The standard control palettes hold fixed greys and 10%-alpha borders, which
+ * leave the zoom label below AAA and the border and divider below the 3:1
+ * non-text floor against a pure canvas, so a contrast mode builds its controls
+ * from the same tokens the diagram uses.
+ */
+const contrastButtonStyles = (isDarkMode: boolean): MermaidButtonStyles => {
+  const palette = isDarkMode ? highContrastDarkTheme : highContrastLightTheme;
+  const canvas = tokenHex(palette['rgb-surface-primary'], isDarkMode ? '#000000' : '#ffffff');
+  const ink = tokenHex(palette['rgb-text-primary'], isDarkMode ? '#ffffff' : '#000000');
+  const active = tokenHex(palette['rgb-surface-active'], isDarkMode ? '#5c5c5c' : '#8c8c8c');
+
+  return {
+    bg: canvas,
+    bgHover: active,
+    border: `2px solid ${ink}`,
+    text: ink,
+    textSecondary: ink,
+    shadow: 'none',
+    divider: ink,
+  };
+};
+
+const getButtonStyles = (isDarkMode: boolean, highContrast = false): MermaidButtonStyles => {
+  if (highContrast) {
+    return contrastButtonStyles(isDarkMode);
+  }
+  return isDarkMode ? darkButtonStyles : lightButtonStyles;
+};
 
 const baseFlowchartConfig = {
   curve: 'basis' as const,
@@ -57,6 +86,147 @@ const inlineFlowchartConfig = {
 };
 
 export { inlineFlowchartConfig, artifactFlowchartConfig };
+
+const tokenHex = (triplet: string | undefined, fallback: string): string => {
+  const channels = triplet?.trim().split(/\s+/).map(Number);
+  if (channels?.length !== 3 || channels.some(Number.isNaN)) {
+    return fallback;
+  }
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+};
+
+const seriesColors = (palette: IThemeRGB): string[] =>
+  Array.from({ length: 7 }, (_, index) =>
+    tokenHex(palette[`rgb-series-${index + 1}` as keyof IThemeRGB], '#000000'),
+  );
+
+/** Mermaid reads twelve pie slots; the palette ships seven, so they wrap. */
+const seriesVariables = (slots: string[]): Record<string, string> => {
+  return Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => [`pie${index + 1}`, slots[index % slots.length]]),
+  );
+};
+
+/**
+ * Mermaid keeps a Git branch palette (`git0`-`git7`) separate from the pie and
+ * Gantt ones, so the base theme's bright green, yellow, cyan and white survive
+ * into a contrast mode unless these slots are populated too.
+ *
+ * Eight slots against a seven-slot ramp. Wrapping would give branch 8 the same
+ * colour as branch 1, which is the one thing a categorical scale must not do,
+ * so the last slot takes the ink instead: 21:1 on the canvas and outside the
+ * ramp, therefore distinct from all seven. `gitBranchLabel*` is the label drawn
+ * ON the branch colour, so it takes the canvas rather than the ink — the ramp
+ * lives on the far side of the canvas precisely so the branches are visible.
+ */
+const gitVariables = (slots: string[], canvas: string, ink: string): Record<string, string> =>
+  Object.fromEntries(
+    Array.from({ length: 8 }, (_, index) => [
+      [`git${index}`, slots[index] ?? ink],
+      [`gitBranchLabel${index}`, canvas],
+      [`gitInv${index}`, ink],
+    ]).flat(),
+  );
+
+/**
+ * Mermaid's built-in `neutral` and `dark` themes carry their own palette, which
+ * no app token can reach, so a diagram keeps mid-grey nodes and mid-grey edges
+ * in a contrast mode. These variables put the diagram on the canvas with ink
+ * nodes, ink edges and ink labels, which is 21:1 for every mark and every
+ * label. Returns undefined outside the contrast modes so the standard themes
+ * keep rendering exactly as they do today.
+ */
+export const contrastMermaidVariables = (
+  isDarkMode: boolean,
+  highContrast: boolean,
+): Record<string, string> | undefined => {
+  if (!highContrast) {
+    return undefined;
+  }
+
+  const palette = isDarkMode ? highContrastDarkTheme : highContrastLightTheme;
+  const canvas = tokenHex(palette['rgb-surface-primary'], isDarkMode ? '#000000' : '#ffffff');
+  const ink = tokenHex(palette['rgb-text-primary'], isDarkMode ? '#ffffff' : '#000000');
+  /** The label colour for anything drawn on a solid fill rather than the canvas. */
+  const onFill = tokenHex(palette['rgb-text-on-status'], isDarkMode ? '#000000' : '#ffffff');
+  const series = seriesColors(palette);
+  const active = tokenHex(palette['rgb-surface-active'], ink);
+  const successFill = tokenHex(palette['rgb-status-success-strong'], series[2]);
+  const successBorder = tokenHex(palette['rgb-status-success-border'], successFill);
+  const errorFill = tokenHex(palette['rgb-status-error-strong'], series[4]);
+  const errorBorder = tokenHex(palette['rgb-status-error-border'], errorFill);
+  const errorText = tokenHex(palette['rgb-text-destructive'], errorBorder);
+
+  return {
+    background: canvas,
+    mainBkg: canvas,
+    primaryColor: canvas,
+    secondaryColor: canvas,
+    tertiaryColor: canvas,
+    clusterBkg: canvas,
+    edgeLabelBackground: canvas,
+    primaryTextColor: ink,
+    secondaryTextColor: ink,
+    tertiaryTextColor: ink,
+    textColor: ink,
+    titleColor: ink,
+    primaryBorderColor: ink,
+    secondaryBorderColor: ink,
+    tertiaryBorderColor: ink,
+    nodeBorder: ink,
+    clusterBorder: ink,
+    lineColor: ink,
+    errorBkgColor: canvas,
+    errorTextColor: errorText,
+    sectionBkgColor: series[2],
+    sectionBkgColor2: series[3],
+    altSectionBkgColor: series[4],
+    excludeBkgColor: active,
+    taskBkgColor: series[0],
+    taskBorderColor: series[0],
+    activeTaskBkgColor: series[1],
+    activeTaskBorderColor: series[1],
+    doneTaskBkgColor: successFill,
+    doneTaskBorderColor: successBorder,
+    critBkgColor: errorFill,
+    critBorderColor: errorBorder,
+    todayLineColor: errorBorder,
+    vertLineColor: errorBorder,
+    gridColor: ink,
+    taskTextColor: onFill,
+    taskTextOutsideColor: ink,
+    taskTextLightColor: onFill,
+    taskTextDarkColor: onFill,
+    taskTextClickableColor: onFill,
+    /**
+     * `pie1`..`pie12` otherwise derive from the primary, secondary and tertiary
+     * colours, which are all the canvas here, so every slice would collapse
+     * into the background and into its neighbours. The series scale is the
+     * palette's own categorical ramp: seven slots that clear the 3:1 mark floor
+     * on this canvas and stay separable under simulated deuteranopia. Slices
+     * beyond the seventh wrap, which mermaid's own palettes do as well.
+     */
+    ...seriesVariables(series),
+    ...gitVariables(series, canvas, ink),
+    commitLabelColor: ink,
+    commitLabelBackground: canvas,
+    tagLabelColor: ink,
+    tagLabelBackground: canvas,
+    tagLabelBorder: tokenHex(palette['rgb-border-medium'], ink),
+    pieStrokeColor: ink,
+    pieOuterStrokeColor: ink,
+    pieTitleTextColor: ink,
+    /**
+     * Labels drawn inside a slice sit on a series colour, not on the canvas, and
+     * the series ramp deliberately lives on the far side of the canvas so the
+     * slices are visible. So this one takes the opposing ink, the same
+     * `text-on-status` the palette uses for a label on a solid fill. Title and
+     * legend stay on the canvas ink, since they are drawn on the canvas.
+     */
+    pieSectionTextColor: onFill,
+    pieLegendTextColor: ink,
+  };
+};
 
 /** Perceived luminance (0 = black, 1 = white) via BT.601 luma coefficients */
 const hexLuminance = (hex: string): number => {
@@ -143,6 +313,7 @@ const buildMermaidComponent = (
   mermaidTheme: string,
   bgColor: string,
   btnStyles: MermaidButtonStyles,
+  themeVariables?: Record<string, string>,
 ) =>
   dedent(`import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
@@ -289,6 +460,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ content }) => {
     mermaid.initialize({
       startOnLoad: false,
       theme: "${mermaidTheme}",
+      ${themeVariables ? `themeVariables: ${JSON.stringify(themeVariables)},` : ''}
       securityLevel: "strict",
       flowchart: ${JSON.stringify(artifactFlowchartConfig, null, 8)},
     });
@@ -310,7 +482,7 @@ const MermaidDiagram: React.FC<MermaidDiagramProps> = ({ content }) => {
       } catch (error) {
         console.error("Mermaid rendering error:", error);
         if (mermaidRef.current) {
-          mermaidRef.current.innerHTML = "Error rendering diagram";
+          mermaidRef.current.innerHTML = '<p class="mermaid-error">Error rendering diagram</p>';
         }
       }
     };
@@ -461,13 +633,20 @@ export default App;
 `);
 };
 
-export const getMermaidFiles = (content: string, isDarkMode = true) => {
-  const mermaidTheme = isDarkMode ? 'dark' : 'neutral';
-  const btnStyles = getButtonStyles(isDarkMode);
-  const bgColor = isDarkMode ? '#212121' : '#FFFFFF';
+export const getMermaidFiles = (content: string, isDarkMode = true, highContrast = false) => {
+  const themeVariables = contrastMermaidVariables(isDarkMode, highContrast);
+  const standardTheme = isDarkMode ? 'dark' : 'neutral';
+  /** `base` is the only built-in mermaid theme that honours themeVariables. */
+  const mermaidTheme = themeVariables ? 'base' : standardTheme;
+  const btnStyles = getButtonStyles(isDarkMode, highContrast);
+  const bgColor = themeVariables?.background ?? (isDarkMode ? '#212121' : '#FFFFFF');
+  const errorTextColor = themeVariables?.errorTextColor ?? btnStyles.text;
   const mermaidCSS = `
 body {
   background-color: ${bgColor};
+}
+.mermaid-error {
+  color: ${errorTextColor};
 }
 `;
 
@@ -484,7 +663,12 @@ import App from "./App";
 const root = createRoot(document.getElementById("root"));
 root.render(<App />);
 ;`),
-    '/components/ui/MermaidDiagram.tsx': buildMermaidComponent(mermaidTheme, bgColor, btnStyles),
+    '/components/ui/MermaidDiagram.tsx': buildMermaidComponent(
+      mermaidTheme,
+      bgColor,
+      btnStyles,
+      themeVariables,
+    ),
     'mermaid.css': mermaidCSS,
   };
 };

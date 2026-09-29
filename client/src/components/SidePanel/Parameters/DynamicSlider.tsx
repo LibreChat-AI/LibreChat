@@ -179,7 +179,7 @@ function DynamicSlider({
             >
               {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40">
+                <small className="opacity-40 high-contrast:opacity-100">
                   ({localize('com_endpoint_default')}: {getDefaultDisplayValue()})
                 </small>
               )}
@@ -228,7 +228,11 @@ function DynamicSlider({
             disabled={readonly}
             value={[
               isEnum
-                ? enumToNumeric[(selectedValue as number) ?? '']
+                ? // A model switch may hide a saved enum value. Keep its stored value
+                  // but retain a valid thumb so keyboard users can choose a supported one.
+                  (enumToNumeric[String(selectedValue ?? '')] ??
+                  enumToNumeric[String(defaultValue)] ??
+                  0)
                 : ((inputValue as number) ?? (defaultValue as number)),
             ]}
             onValueChange={(value) => handleValueChange(value[0])}

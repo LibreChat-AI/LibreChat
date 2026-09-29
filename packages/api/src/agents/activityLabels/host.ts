@@ -7,6 +7,7 @@ import type { ClientOptions } from '@librechat/agents';
 import type { EndpointDbMethods, OpenAIConfiguration, ServerRequest } from '~/types';
 import type { ActivityLabelLLM } from './runtime';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { resolveRequestTenantId } from '~/middleware/tenant';
 import { resolveConfigHeaders } from '~/utils/headers';
 import { omitTitleOptions } from '~/agents/client';
 import { createSafeUser } from '~/utils/env';
@@ -482,6 +483,7 @@ export async function resolveActivityLabelModel({
   resolveConfigHeaders({
     llmConfig: clientOptions,
     user: createSafeUser(req.user as IUser | undefined),
+    tenantId: resolveRequestTenantId(req),
     body: ids,
   });
   return {

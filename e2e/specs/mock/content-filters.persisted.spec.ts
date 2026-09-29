@@ -2979,7 +2979,9 @@ test.describe('persisted source-aware content filters', () => {
               {
                 type: 'tool_call',
                 tool_call: {
-                  name: `e2e_${testCase.field}`,
+                  id: `e2e-${testCase.field}-${suffix}`,
+                  name: 'conditional_transfer',
+                  args: '{}',
                   output: testCase.marker,
                 },
               },

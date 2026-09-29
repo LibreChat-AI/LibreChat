@@ -12,12 +12,20 @@
  */
 
 import { Keyv } from 'keyv';
+import jwt from 'jsonwebtoken';
 import { logger } from '@librechat/data-schemas';
+import type { IUser } from '@librechat/data-schemas';
 import type { OAuthTestServer } from './helpers/oauthTestServer';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
+import type * as t from '~/mcp/types';
+import {
+  persistMCPAuthorizationTransaction,
+  prepareMCPAuthorizationMutation,
+} from '~/mcp/authorization';
 import { MockKeyv, InMemoryTokenStore, createOAuthMCPServer } from './helpers/oauthTestServer';
-import { MCPTokenStorage, ReauthenticationRequiredError } from '~/mcp/oauth';
+import { MCPTokenStorage, MCPOAuthHandler, ReauthenticationRequiredError } from '~/mcp/oauth';
 import { FlowStateManager, PENDING_STALE_MS } from '~/flow/manager';
+import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -45,6 +53,19 @@ function bindingMetadata(serverUrl: string) {
   };
 }
 
+async function waitForCondition(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() > deadline) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function seedStoredClient(tokenStore: InMemoryTokenStore, serverUrl: string) {
   await tokenStore.createToken({
     userId: 'u1',
@@ -55,6 +76,250 @@ async function seedStoredClient(tokenStore: InMemoryTokenStore, serverUrl: strin
     metadata: { ...tokenMetadata, ...bindingMetadata(serverUrl) },
   });
 }
+
+describe('Persisted access-token expiry', () => {
+  const ONE_YEAR_SECONDS = 365 * 24 * 60 * 60;
+
+  /** Stores one provider response and reports the lifetime the access record actually carries. */
+  async function persistedLifetimeSeconds(
+    tokens: Record<string, unknown>,
+    updateExisting = false,
+  ): Promise<number> {
+    const tokenStore = new InMemoryTokenStore();
+    if (updateExisting) {
+      await tokenStore.createToken({
+        userId: 'u1',
+        type: 'mcp_oauth',
+        identifier: 'mcp:test-srv',
+        token: 'enc:previous-token',
+        expiresIn: 3600,
+        metadata: tokenMetadata,
+      });
+    }
+    await MCPTokenStorage.storeTokens({
+      userId: 'u1',
+      serverName: 'test-srv',
+      tokens: tokens as never,
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      findToken: tokenStore.findToken,
+      clientInfo: { client_id: 'test-client' },
+      metadata: bindingMetadata('https://mcp.example.com/'),
+    });
+    const stored = await tokenStore.findToken({
+      userId: 'u1',
+      type: 'mcp_oauth',
+      identifier: 'mcp:test-srv',
+    });
+    return Math.round((stored!.expiresAt.getTime() - Date.now()) / 1000);
+  }
+
+  it.each([{ expires_in: 0 }, { expires_at: 0 }])(
+    'preserves an explicitly zero lifetime: %j',
+    async (expiry) => {
+      await expect(
+        persistedLifetimeSeconds({
+          access_token: 'opaque-zero-lifetime',
+          token_type: 'Bearer',
+          ...expiry,
+        }),
+      ).resolves.toBeLessThanOrEqual(0);
+    },
+  );
+
+  it('updates an existing access record to expire immediately for expires_in zero', async () => {
+    await expect(
+      persistedLifetimeSeconds(
+        {
+          access_token: 'replacement',
+          token_type: 'Bearer',
+          expires_in: 0,
+        },
+        true,
+      ),
+    ).resolves.toBeLessThanOrEqual(0);
+  });
+
+  it.each([NaN, Infinity])(
+    'ignores non-finite expires_at %s in favor of a finite lifetime',
+    async (expires_at) => {
+      await expect(
+        persistedLifetimeSeconds({
+          access_token: 'opaque',
+          token_type: 'Bearer',
+          expires_at,
+          expires_in: 3600,
+        }),
+      ).resolves.toBe(3600);
+    },
+  );
+
+  it('keeps a disclosed lifetime', async () => {
+    await expect(
+      persistedLifetimeSeconds({
+        access_token: 'opaque-access-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: 'r1',
+        obtained_at: Date.now(),
+      }),
+    ).resolves.toBe(3600);
+  });
+
+  /**
+   * A lifetime that has already elapsed must not be recorded as a year of validity: `getTokens`
+   * decides to refresh from this record, so a dead credential stored as valid is only discovered
+   * when the resource server rejects a request.
+   */
+  it('records a credential that arrived expired as expired', async () => {
+    const lifetime = await persistedLifetimeSeconds({
+      access_token: 'expired-access-token',
+      token_type: 'Bearer',
+      expires_at: Date.now() - 60_000,
+      refresh_token: 'r1',
+      obtained_at: Date.now(),
+    });
+    expect(lifetime).toBeLessThanOrEqual(0);
+    expect(lifetime).not.toBe(ONE_YEAR_SECONDS);
+  });
+
+  it('does not round a sub-second remaining lifetime up to a year', async () => {
+    const lifetime = await persistedLifetimeSeconds({
+      access_token: 'nearly-expired-access-token',
+      token_type: 'Bearer',
+      expires_at: Date.now() + 900,
+      refresh_token: 'r1',
+      obtained_at: Date.now(),
+    });
+    expect(lifetime).toBeLessThanOrEqual(1);
+    expect(lifetime).not.toBe(ONE_YEAR_SECONDS);
+  });
+
+  /**
+   * A JWT `exp` comes from the provider's clock, so skew can make a live credential look expired.
+   * That case keeps its existing leniency (`tokens.test.ts`) and is deliberately not changed here.
+   */
+  it('keeps the default for a past JWT exp, which may be clock skew', async () => {
+    const expiredJwt = jwt.sign(
+      { sub: 'u1', exp: Math.floor(Date.now() / 1000) - 60 },
+      'test-secret',
+    );
+    await expect(
+      persistedLifetimeSeconds({
+        access_token: expiredJwt,
+        token_type: 'Bearer',
+        refresh_token: 'r1',
+        obtained_at: Date.now(),
+      }),
+    ).resolves.toBe(ONE_YEAR_SECONDS);
+  });
+
+  /** RFC 6749 §5.1 makes `expires_in` only RECOMMENDED, so an unknown lifetime keeps its default. */
+  it('keeps the long default when no lifetime is knowable', async () => {
+    await expect(
+      persistedLifetimeSeconds({
+        access_token: 'opaque-access-token-without-expiry',
+        token_type: 'Bearer',
+        refresh_token: 'r1',
+        obtained_at: Date.now(),
+      }),
+    ).resolves.toBe(ONE_YEAR_SECONDS);
+  });
+});
+
+describe('A credential persisted with an elapsed lifetime', () => {
+  let server: OAuthTestServer;
+  let tokenStore: InMemoryTokenStore;
+
+  beforeEach(async () => {
+    server = await createOAuthMCPServer({
+      tokenTTLMs: 60000,
+      issueRefreshTokens: true,
+      rotateRefreshTokens: true,
+    });
+    tokenStore = new InMemoryTokenStore();
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  /**
+   * The stored-credential read is the only path that can recover before a request fails, so a
+   * response whose lifetime already elapsed has to refresh here rather than reach a transport,
+   * get rejected, and risk an interactive prompt for a grant that is still renewable.
+   */
+  it('refreshes on the next read instead of requiring re-authentication', async () => {
+    const code = await server.getAuthCode();
+    const tokenRes = await fetch(`${server.url}token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=authorization_code&code=${code}`,
+    });
+    const initial = (await tokenRes.json()) as { access_token: string; refresh_token: string };
+
+    await MCPTokenStorage.storeTokens({
+      userId: 'u1',
+      serverName: 'test-srv',
+      tokens: { ...initial, token_type: 'Bearer', obtained_at: Date.now(), expires_at: Date.now() },
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      findToken: tokenStore.findToken,
+      clientInfo: { client_id: 'test-client' },
+      metadata: bindingMetadata(server.url),
+    });
+
+    const result = await MCPTokenStorage.getTokens({
+      userId: 'u1',
+      serverName: 'test-srv',
+      findToken: tokenStore.findToken,
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      refreshTokens: async (refreshToken) => {
+        const res = await fetch(`${server.url}token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `grant_type=refresh_token&refresh_token=${refreshToken}`,
+        });
+        if (!res.ok) {
+          throw new Error(`Refresh failed: ${res.status}`);
+        }
+        const data = (await res.json()) as MCPOAuthTokens & { expires_in: number };
+        return {
+          ...data,
+          obtained_at: Date.now(),
+          expires_at: Date.now() + data.expires_in * 1000,
+        };
+      },
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.access_token).not.toBe(initial.access_token);
+    expect(
+      server.tokenRequests.filter(({ grantType }) => grantType === 'refresh_token'),
+    ).toHaveLength(1);
+
+    const mcpRes = await fetch(server.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${result!.access_token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'initialize',
+        id: 1,
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '0.0.1' },
+        },
+      }),
+    });
+    expect(mcpRes.status).toBe(200);
+  });
+});
 
 describe('MCP OAuth Token Expiry Scenarios', () => {
   afterEach(() => {
@@ -165,6 +430,373 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
       });
       expect(mcpRes.status).toBe(200);
     });
+  });
+
+  describe('Discovery budget ends while refreshed tokens wait on the authorization fence', () => {
+    let server: OAuthTestServer;
+    let tokenStore: InMemoryTokenStore;
+
+    beforeEach(async () => {
+      server = await createOAuthMCPServer({
+        tokenTTLMs: 60000,
+        issueRefreshTokens: true,
+        rotateRefreshTokens: true,
+      });
+      tokenStore = new InMemoryTokenStore();
+    });
+
+    afterEach(async () => {
+      await server.close();
+    });
+
+    it('returns within its budget and still stores the rotated tokens once the fence write lands', async () => {
+      const code = await server.getAuthCode();
+      const tokenRes = await fetch(`${server.url}token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=authorization_code&code=${code}`,
+      });
+      const initial = (await tokenRes.json()) as { access_token: string; refresh_token: string };
+      await tokenStore.createToken({
+        userId: 'u1',
+        type: 'mcp_oauth',
+        identifier: 'mcp:test-srv',
+        token: `enc:${initial.access_token}`,
+        expiresIn: -1,
+        metadata: tokenMetadata,
+      });
+      await tokenStore.createToken({
+        userId: 'u1',
+        type: 'mcp_oauth_refresh',
+        identifier: 'mcp:test-srv:refresh',
+        token: `enc:${initial.refresh_token}`,
+        expiresIn: 86400,
+        metadata: tokenMetadata,
+      });
+      await seedStoredClient(tokenStore, server.url);
+
+      const tokenEndpoint = `${server.url}token`;
+      /** Redeems at the test provider directly; provider discovery is outside this scenario. */
+      class ProviderRefreshFactory extends MCPConnectionFactory {
+        protected createRefreshTokensFunction() {
+          return async (refreshToken: string): Promise<MCPOAuthTokens> => {
+            const res = await fetch(tokenEndpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: `grant_type=refresh_token&refresh_token=${refreshToken}`,
+            });
+            const data = (await res.json()) as MCPOAuthTokens & { expires_in: number };
+            return {
+              ...data,
+              obtained_at: Date.now(),
+              expires_at: Date.now() + data.expires_in * 1000,
+            };
+          };
+        }
+      }
+
+      let releaseFenceWrite: (() => void) | undefined;
+      const fenceWrite = new Promise<void>((resolve) => {
+        releaseFenceWrite = resolve;
+      });
+      const persistPublicationRetry = jest.fn(async () => {
+        await fenceWrite;
+        return 'retry-v1';
+      });
+      const invalidateRecoveryGeneration = jest.fn().mockResolvedValue('generation-2');
+      const clearLocalRecovery = jest.fn();
+      const onDiscoveryDetached = jest.fn();
+      const flowManager = new FlowStateManager<MCPOAuthTokens | null>(
+        new MockKeyv<MCPOAuthTokens | null>() as unknown as Keyv,
+        { ttl: 30000, ci: true },
+      );
+      const refreshGrants = () =>
+        server.tokenRequests.filter(({ grantType }) => grantType === 'refresh_token');
+      const storedToken = async (type: string, identifier: string) =>
+        (await tokenStore.findToken({ userId: 'u1', type, identifier }))?.token.replace(
+          /^enc:/,
+          '',
+        );
+
+      const budgetMs = 2_000;
+      const startedAt = Date.now();
+      const discovery = ProviderRefreshFactory.discoverTools(
+        {
+          serverName: 'test-srv',
+          serverConfig: {
+            type: 'streamable-http',
+            url: server.url,
+            oauthRefreshCoordination: true,
+          },
+        },
+        {
+          useOAuth: true,
+          user: { id: 'u1' } as IUser,
+          flowManager,
+          tokenMethods: {
+            findToken: tokenStore.findToken,
+            createToken: tokenStore.createToken,
+            updateToken: tokenStore.updateToken,
+            deleteTokens: tokenStore.deleteTokens,
+          },
+          deadlineMs: startedAt + budgetMs,
+          onDiscoveryDetached,
+          onOAuthCredentialsChanging: (scope) =>
+            prepareMCPAuthorizationMutation(scope, {
+              invalidateRecoveryGeneration,
+              clearLocalRecovery,
+              persistPublicationRetry,
+              retryDelaysMs: [0],
+            }),
+        },
+      );
+
+      await waitForCondition(() => persistPublicationRetry.mock.calls.length === 1);
+      expect(refreshGrants()).toHaveLength(1);
+      expect(server.issuedRefreshTokens.has(initial.refresh_token)).toBe(false);
+
+      await expect(discovery).resolves.toEqual({
+        tools: null,
+        connection: null,
+        oauthRequired: false,
+        oauthUrl: null,
+      });
+      expect(Date.now() - startedAt).toBeLessThan(budgetMs + 1_000);
+      expect(await storedToken('mcp_oauth_refresh', 'mcp:test-srv:refresh')).toBe(
+        initial.refresh_token,
+      );
+      expect(onDiscoveryDetached).toHaveBeenCalledTimes(1);
+      const [tokenWork] = onDiscoveryDetached.mock.calls[0] as [Promise<unknown>];
+
+      releaseFenceWrite?.();
+      await Promise.allSettled([tokenWork]);
+      const tokenFlowId = MCPOAuthHandler.generateTokenFlowId('u1', 'test-srv');
+      expect((await flowManager.getFlowState(tokenFlowId, 'mcp_get_tokens'))?.status).toBe(
+        'COMPLETED',
+      );
+
+      const rotatedRefreshToken = await storedToken('mcp_oauth_refresh', 'mcp:test-srv:refresh');
+      const refreshedAccessToken = await storedToken('mcp_oauth', 'mcp:test-srv');
+      expect(server.issuedRefreshTokens.has(rotatedRefreshToken ?? '')).toBe(true);
+      expect(server.issuedTokens.has(refreshedAccessToken ?? '')).toBe(true);
+      expect(invalidateRecoveryGeneration).toHaveBeenCalledWith({
+        userId: 'u1',
+        serverName: 'test-srv',
+      });
+      expect(clearLocalRecovery).toHaveBeenCalledWith('u1', 'test-srv', 'generation-2');
+
+      await expect(
+        MCPTokenStorage.getTokens({
+          userId: 'u1',
+          serverName: 'test-srv',
+          findToken: tokenStore.findToken,
+        }),
+      ).resolves.toMatchObject({
+        access_token: refreshedAccessToken,
+        refresh_token: rotatedRefreshToken,
+      });
+      expect(refreshGrants()).toHaveLength(1);
+    });
+  });
+
+  describe('A callback settles or removes the token flow a connection is waiting on', () => {
+    let server: OAuthTestServer;
+    let tokenStore: InMemoryTokenStore;
+    let flowManager: FlowStateManager<MCPOAuthTokens | null>;
+    const tokenFlowId = MCPOAuthHandler.generateTokenFlowId('u1', 'test-srv');
+    const oauthFlowId = MCPOAuthHandler.generateFlowId('u1', 'test-srv');
+
+    class TokenLoadingFactory extends MCPConnectionFactory {
+      public constructor(basic: t.BasicConnectionOptions, options: t.OAuthConnectionOptions) {
+        super(basic, options);
+      }
+
+      public loadTokens(): Promise<MCPOAuthTokens | null> {
+        return this.getOAuthTokens();
+      }
+    }
+
+    beforeEach(async () => {
+      server = await createOAuthMCPServer({ tokenTTLMs: 60000, issueRefreshTokens: true });
+      tokenStore = new InMemoryTokenStore();
+      flowManager = new FlowStateManager<MCPOAuthTokens | null>(
+        new MockKeyv<MCPOAuthTokens | null>() as unknown as Keyv,
+        { ttl: 30000, ci: true },
+      );
+    });
+
+    afterEach(async () => {
+      await server.close();
+    });
+
+    const waitingConnection = (
+      hooks: Pick<
+        t.UserConnectionContext,
+        'onOAuthCredentialsAdopted' | 'onOAuthCredentialsInvalidated'
+      >,
+    ) =>
+      new TokenLoadingFactory(
+        {
+          serverName: 'test-srv',
+          serverConfig: {
+            type: 'streamable-http',
+            url: server.url,
+            oauthRefreshCoordination: true,
+          },
+        },
+        {
+          useOAuth: true,
+          user: { id: 'u1' } as IUser,
+          flowManager,
+          tokenMethods: {
+            findToken: tokenStore.findToken,
+            createToken: tokenStore.createToken,
+            updateToken: tokenStore.updateToken,
+            deleteTokens: tokenStore.deleteTokens,
+          },
+          ...hooks,
+        },
+      );
+
+    /** Mirrors the callback route: exchanges a code, then stores, publishes, and settles in one transaction. */
+    const completeAuthorizationFromCallback = async () => {
+      const code = await server.getAuthCode();
+      const tokenRes = await fetch(`${server.url}token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=authorization_code&code=${code}`,
+      });
+      const exchanged = (await tokenRes.json()) as {
+        access_token: string;
+        token_type: string;
+        expires_in: number;
+        refresh_token: string;
+      };
+      const exchangedTokens: MCPOAuthTokens = {
+        ...exchanged,
+        obtained_at: Date.now(),
+        expires_at: Date.now() + exchanged.expires_in * 1000,
+      };
+      await flowManager.initFlow(oauthFlowId, 'mcp_oauth', {
+        serverName: 'test-srv',
+        userId: 'u1',
+        serverUrl: server.url,
+        state: 'callback-state',
+      });
+      const stored = await persistMCPAuthorizationTransaction(
+        {
+          scope: { userId: 'u1', serverName: 'test-srv' },
+          flowIds: [tokenFlowId, oauthFlowId],
+          tokens: exchangedTokens,
+          completeAuthorization: async (tokens) => {
+            await flowManager.completeFlow(oauthFlowId, 'mcp_oauth', tokens);
+          },
+          persistTokens: (tokens, onStoreCommitted) =>
+            MCPTokenStorage.storeTokens({
+              userId: 'u1',
+              serverName: 'test-srv',
+              tokens,
+              createToken: tokenStore.createToken,
+              updateToken: tokenStore.updateToken,
+              deleteTokens: tokenStore.deleteTokens,
+              findToken: tokenStore.findToken,
+              clientInfo: { client_id: 'test-client' },
+              metadata: bindingMetadata(server.url),
+              onStoreCommitted,
+            }),
+        },
+        {
+          ensureServerActive: async () => true,
+          inactiveServerError: () => new Error('deleted'),
+          invalidateRecoveryGeneration: async () => 'generation-2',
+          persistPublicationRetry: async () => 'retry-v1',
+          clearPublicationRetry: async () => undefined,
+          flowManager,
+          retryDelaysMs: [0],
+        },
+      );
+      return { exchanged, stored };
+    };
+
+    it('re-reads the tokens a callback stored after removing the failed flow it was waiting on', async () => {
+      let failEarlierAttempt: (() => void) | undefined;
+      const earlierAttempt = flowManager.createFlowWithHandler(
+        tokenFlowId,
+        'mcp_get_tokens',
+        () =>
+          new Promise<MCPOAuthTokens | null>((_, reject) => {
+            failEarlierAttempt = () =>
+              reject(new ReauthenticationRequiredError('test-srv', 'missing'));
+          }),
+      );
+      await waitForCondition(
+        async () =>
+          (await flowManager.getFlowState(tokenFlowId, 'mcp_get_tokens'))?.status === 'PENDING',
+      );
+
+      const onOAuthCredentialsInvalidated = jest.fn().mockResolvedValue(undefined);
+      const onOAuthCredentialsAdopted = jest.fn();
+      const waiting = waitingConnection({
+        onOAuthCredentialsInvalidated,
+        onOAuthCredentialsAdopted,
+      }).loadTokens();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      failEarlierAttempt?.();
+      await expect(earlierAttempt).rejects.toBeInstanceOf(ReauthenticationRequiredError);
+      expect((await flowManager.getFlowState(tokenFlowId, 'mcp_get_tokens'))?.status).toBe(
+        'FAILED',
+      );
+
+      const { exchanged } = await completeAuthorizationFromCallback();
+      expect(await flowManager.getFlowState(tokenFlowId, 'mcp_get_tokens')).toBeFalsy();
+
+      await expect(waiting).resolves.toMatchObject({ access_token: exchanged.access_token });
+      expect(onOAuthCredentialsInvalidated).toHaveBeenCalledTimes(1);
+      expect(onOAuthCredentialsAdopted).not.toHaveBeenCalled();
+      expect((await flowManager.getFlowState(oauthFlowId, 'mcp_oauth'))?.result).toMatchObject({
+        access_token: exchanged.access_token,
+        publication_generation: 'generation-2',
+      });
+    }, 15000);
+
+    it('adopts the generation a callback published when it settles the flow it was waiting on', async () => {
+      let finishEarlierAttempt: (() => void) | undefined;
+      const earlierAttempt = flowManager.createFlowWithHandler(
+        tokenFlowId,
+        'mcp_get_tokens',
+        () =>
+          new Promise<MCPOAuthTokens | null>((resolve) => {
+            finishEarlierAttempt = () => resolve(null);
+          }),
+      );
+      await waitForCondition(
+        async () =>
+          (await flowManager.getFlowState(tokenFlowId, 'mcp_get_tokens'))?.status === 'PENDING',
+      );
+
+      const onOAuthCredentialsInvalidated = jest.fn().mockResolvedValue(undefined);
+      const onOAuthCredentialsAdopted = jest.fn();
+      const waiting = waitingConnection({
+        onOAuthCredentialsInvalidated,
+        onOAuthCredentialsAdopted,
+      }).loadTokens();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      const { exchanged } = await completeAuthorizationFromCallback();
+
+      await expect(waiting).resolves.toMatchObject({
+        access_token: exchanged.access_token,
+        publication_generation: 'generation-2',
+      });
+      expect(onOAuthCredentialsAdopted).toHaveBeenCalledWith('generation-2');
+      expect(onOAuthCredentialsInvalidated).not.toHaveBeenCalled();
+
+      finishEarlierAttempt?.();
+      await expect(earlierAttempt).resolves.toMatchObject({
+        access_token: exchanged.access_token,
+      });
+    }, 15000);
   });
 
   describe('Access token expired + refresh token rejected by server', () => {
@@ -693,4 +1325,39 @@ describe('MCP OAuth Token Expiry Scenarios', () => {
       expect(age < PENDING_STALE_MS).toBe(true);
     });
   });
+});
+
+describe('mixed-version token flow isolation', () => {
+  it.each([undefined, 'tenant/a'])(
+    'does not expose typed failures to legacy readers (%s)',
+    async (tenantId) => {
+      const manager = new FlowStateManager<MCPOAuthTokens>(new Keyv(), { ci: true, ttl: 30_000 });
+      const legacyId = MCPOAuthHandler.generateFlowId('u1', 'test-srv', tenantId);
+      const currentId = MCPOAuthHandler.generateTokenFlowId('u1', 'test-srv', tenantId);
+      expect(currentId).not.toBe(legacyId);
+      await manager.initFlow(legacyId, 'mcp_get_tokens');
+      await manager.initFlow(currentId, 'mcp_get_tokens');
+      const failure = Object.assign(new Error('retry later'), {
+        name: 'MCPTokenRefreshUnavailableError',
+      });
+      await manager.failFlow(currentId, 'mcp_get_tokens', failure);
+      expect(await manager.getFlowState(legacyId, 'mcp_get_tokens')).toMatchObject({
+        status: 'PENDING',
+      });
+      expect(await manager.getFlowState(currentId, 'mcp_get_tokens')).toMatchObject({
+        status: 'FAILED',
+        errorName: failure.name,
+      });
+      await manager.completeFlow(legacyId, 'mcp_get_tokens', {
+        access_token: 'legacy-token',
+        obtained_at: Date.now(),
+        token_type: 'Bearer',
+      });
+      expect(await manager.getFlowState(currentId, 'mcp_get_tokens')).toMatchObject({
+        status: 'FAILED',
+      });
+      await manager.deleteFlow(legacyId, 'mcp_get_tokens');
+      await manager.deleteFlow(currentId, 'mcp_get_tokens');
+    },
+  );
 });

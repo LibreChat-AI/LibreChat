@@ -142,7 +142,7 @@ export function buildResponse(
     instructions: context.instructions ?? null,
     output: tracker.items,
     error: null,
-    tools: [],
+    tools: context.tools ?? [],
     tool_choice: 'auto',
     truncation: 'disabled',
     parallel_tool_calls: true,
@@ -278,6 +278,13 @@ export interface StreamHandlerConfig {
   res: ServerResponse;
   context: ResponseContext;
   tracker: ResponseTracker;
+  /**
+   * Names the caller declared and executes itself. A call to one of these is
+   * never run by the server, so `on_tool_end` cannot terminate its item and the
+   * run's own finalization has to. Omitted by every request that declares none,
+   * which leaves that request's event stream untouched.
+   */
+  clientToolNames?: ReadonlySet<string>;
 }
 
 /**

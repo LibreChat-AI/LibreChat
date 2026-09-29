@@ -21,7 +21,7 @@ const mockStripActivityLabelParts = jest.fn((payload) =>
 );
 
 const { Providers } = require('@librechat/agents');
-const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
+const { Constants, ContentTypes, EModelEndpoint, ErrorTypes } = require('librechat-data-provider');
 const {
   GenerationJobManager,
   createStreamServices,
@@ -33,6 +33,140 @@ const {
 const BaseClient = require('~/app/clients/BaseClient');
 const AgentClient = require('./client');
 const { resolveConfigServers } = require('~/server/services/MCP');
+
+describe('AgentClient code approval persistence', () => {
+  it('persists a validated mode in agent conversation options', () => {
+    const client = Object.create(AgentClient.prototype);
+    client.agentConfigs = new Map([
+      [
+        'secondary',
+        {
+          codeExecutionContext: {
+            environmentId: 'team-vm',
+            environmentType: 'attached',
+            codeWorkspace: {
+              environmentId: 'team-vm',
+              workspaceId: 'project-b',
+              operations: ['read_file'],
+            },
+          },
+        },
+      ],
+    ]);
+    const secondary = client.agentConfigs.get('secondary');
+    client.agentConfigs = new Map();
+    client.options = {
+      endpoint: EModelEndpoint.agents,
+      agent: {
+        id: 'attached-agent',
+        subagentAgentConfigs: [secondary],
+        codeExecutionContext: {
+          environmentId: 'attached-vm',
+          environmentType: 'attached',
+          codeWorkspace: {
+            environmentId: 'attached-vm',
+            workspaceId: 'project-a',
+            operations: ['read_file', 'execute_command'],
+          },
+          codeEnvironmentConfigSchema: {
+            permissions: {
+              fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+              commandExecution: { allowed: ['ask'], default: 'ask' },
+            },
+          },
+        },
+      },
+      req: {
+        body: { codeApprovalMode: 'acceptEdits' },
+        _codeEnvironmentDecision: {
+          mode: 'attached',
+          codeWorkspaces: [
+            { environmentId: 'attached-vm', workspaceId: 'project-a' },
+            { environmentId: 'team-vm', workspaceId: 'project-b' },
+          ],
+        },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+    };
+
+    expect(client.getSaveOptions()).toMatchObject({
+      codeApprovalMode: 'acceptEdits',
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [
+        { environmentId: 'attached-vm', workspaceId: 'project-a' },
+        { environmentId: 'team-vm', workspaceId: 'project-b' },
+      ],
+    });
+  });
+
+  it('never writes its run-start decision over a stored one a move replaced', () => {
+    const client = Object.create(AgentClient.prototype);
+    client.agentConfigs = new Map();
+    client.conversationId = 'convo-1';
+    client.options = {
+      endpoint: EModelEndpoint.agents,
+      agent: { id: 'attached-agent' },
+      req: {
+        body: { conversationId: 'convo-1' },
+        _codeEnvironmentDecision: {
+          mode: 'attached',
+          codeWorkspaces: [{ environmentId: 'mac', workspaceId: 'primary' }],
+        },
+        resolvedConversation: {
+          conversationId: 'convo-1',
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [{ environmentId: 'vm', workspaceId: 'projects' }],
+        },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+    };
+
+    const saveOptions = client.getSaveOptions();
+    expect(saveOptions).not.toHaveProperty('codeEnvironmentMode');
+    expect(saveOptions).not.toHaveProperty('codeWorkspaces');
+  });
+
+  it('records only the mode a legacy conversation inferred', () => {
+    const client = Object.create(AgentClient.prototype);
+    client.agentConfigs = new Map();
+    client.conversationId = 'convo-1';
+    const codeWorkspaces = [{ environmentId: 'mac', workspaceId: 'primary' }];
+    client.options = {
+      endpoint: EModelEndpoint.agents,
+      agent: { id: 'attached-agent' },
+      req: {
+        body: { conversationId: 'convo-1' },
+        _codeEnvironmentDecision: { mode: 'attached', codeWorkspaces },
+        resolvedConversation: { conversationId: 'convo-1', codeWorkspaces },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+    };
+
+    const saveOptions = client.getSaveOptions();
+    expect(saveOptions.codeEnvironmentMode).toBe('attached');
+    expect(saveOptions).not.toHaveProperty('codeWorkspaces');
+  });
+
+  it('does not combine a normalized no-attached mode with stale request selections', () => {
+    const client = Object.create(AgentClient.prototype);
+    client.agentConfigs = new Map();
+    client.options = {
+      endpoint: EModelEndpoint.agents,
+      agent: { id: 'attached-agent' },
+      req: {
+        body: {
+          codeWorkspaces: [{ environmentId: 'attached-vm', workspaceId: 'stale-project' }],
+        },
+        _codeEnvironmentDecision: { mode: 'without_attached' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+    };
+
+    const saveOptions = client.getSaveOptions();
+    expect(saveOptions.codeEnvironmentMode).toBe('without_attached');
+    expect(saveOptions).not.toHaveProperty('codeWorkspaces');
+  });
+});
 
 function deferred() {
   let resolve;
@@ -155,7 +289,7 @@ describe('AgentClient - event actor history adapter', () => {
         contextFingerprint: fingerprint,
         skillManifest,
         discoveredToolNames: ['deferred_tool'],
-        summary: { text: 'Earlier compacted context.', tokenCount: 12 },
+        summary: { text: 'Earlier compacted context.', tokenCount: 12, version: 1 },
         contextMeta: { calibrationRatio: 1.25, encoding: 'o200k_base' },
         compactionSemanticIndex,
       }),
@@ -186,6 +320,7 @@ describe('AgentClient - event actor history adapter', () => {
     expect(client.eventActorSummary).toEqual({
       text: 'Earlier compacted context.',
       tokenCount: 12,
+      version: 1,
     });
     expect(client.contextMeta).toEqual({ calibrationRatio: 1.25, encoding: 'o200k_base' });
     expect(client.compactionSemanticIndexSnapshot).toEqual({
@@ -302,6 +437,7 @@ describe('AgentClient - event actor history adapter', () => {
         type: ContentTypes.SUMMARY,
         content: [{ type: ContentTypes.TEXT, text: 'Fresh compacted context.' }],
         tokenCount: 18,
+        boundary: { messageId: 'step_summary', contentIndex: 0 },
       },
     ];
     client.contextMeta = { calibrationRatio: 1.3, encoding: 'o200k_base' };
@@ -919,6 +1055,701 @@ describe('AgentClient - interrupt discovery persistence', () => {
       entries: client.compactionSemanticIndexSnapshot.entries,
       providedEntryCount: 1,
     });
+  });
+
+  it('binds a paused code approval to the resolved stateful target without storing raw routing data', async () => {
+    const streamId = 'conversation-code-target-pause';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        toolDefinitions: [{ name: 'bash_tool', toolType: 'builtin' }],
+        codeExecutionContext: {
+          baseUrl: 'https://private-bridge.example/v1',
+          codeSessionKey: 'execute_code:stateful:private-route:private-session',
+          executionProfile: 'stateful',
+          executionRouteKey: 'stateful:private-route',
+          runtimeSessionHint: 'private-session',
+          statefulSessions: true,
+          environmentId: 'personal-machine',
+          environmentType: 'attached',
+          bridgeWorkerId: 'private-worker',
+        },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-code-target-pause';
+    client.jobCreatedAt = job.createdAt;
+
+    await client.handleRunInterrupt(
+      {
+        getInterrupt: () => ({
+          interruptId: 'code-interrupt',
+          threadId: streamId,
+          payload: {
+            type: 'tool_approval',
+            action_requests: [
+              { name: 'bash_tool', arguments: { command: 'git status' }, tool_call_id: 'tc1' },
+            ],
+            review_configs: [
+              {
+                action_name: 'bash_tool',
+                tool_call_id: 'tc1',
+                allowed_decisions: ['approve', 'reject'],
+              },
+            ],
+          },
+        }),
+        getDiscoveredTools: () => ['bash_tool'],
+        getRunMessages: () => [],
+      },
+      streamId,
+    );
+
+    const paused = await GenerationJobManager.getJob(streamId);
+    expect(paused?.metadata.pendingAction.codeExecutionBinding).toEqual({
+      version: 1,
+      targets: [
+        {
+          agentId: 'agent-123',
+          targetHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      ],
+    });
+    expect(paused?.metadata.pendingAction.payload.action_requests[0]).toMatchObject({
+      name: 'bash_tool',
+      source: 'librechat_code',
+    });
+    const stored = JSON.stringify(paused?.metadata.pendingAction.codeExecutionBinding);
+    expect(stored).not.toContain('private-bridge');
+    expect(stored).not.toContain('private-worker');
+    expect(stored).not.toContain('private-session');
+  });
+
+  it('makes the run context meta durable when the run pauses', async () => {
+    const streamId = 'conversation-context-meta-pause';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-context-meta-pause';
+    client.jobCreatedAt = job.createdAt;
+    const fading = { v: 1, budgetTokens: 50_000, masked: true };
+
+    await client.handleRunInterrupt(
+      {
+        getInterrupt: () => ({
+          interruptId: 'ask-interrupt',
+          threadId: streamId,
+          payload: {
+            type: 'ask_user_question',
+            question: { question: 'Proceed?' },
+          },
+        }),
+        getDiscoveredTools: () => [],
+        getRunMessages: () => [],
+        getCalibrationRatio: () => 1.2,
+        getFadingTier: () => ({ ...fading, latched: true }),
+        getFadingTiers: () => ({
+          'agent-123': { ...fading, latched: true },
+          'agent-worker': { v: 1, budgetTokens: 8_000, masked: false, latched: true },
+        }),
+      },
+      streamId,
+    );
+
+    const paused = await GenerationJobManager.getJob(streamId);
+    expect(paused?.status).toBe('requires_action');
+    /** Only the compact tiers travel: the SDK's provenance flag is stripped. */
+    expect(paused?.metadata.contextMeta).toEqual({
+      calibrationRatio: 1.2,
+      encoding: client.getEncoding(),
+      fading,
+      fadingTiers: [
+        { agentId: 'agent-123', v: 1, budgetTokens: 50_000, masked: true },
+        { agentId: 'agent-worker', v: 1, budgetTokens: 8_000, masked: false },
+      ],
+    });
+  });
+
+  it('captures the live graph state at a pause instead of the run seeds', async () => {
+    const streamId = 'conversation-context-meta-live-pause';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-context-meta-live-pause';
+    client.jobCreatedAt = job.createdAt;
+    const seeded = { v: 1, budgetTokens: 50_000, masked: false };
+    const live = { v: 1, budgetTokens: 25_000, masked: true };
+
+    await client.handleRunInterrupt(
+      {
+        getInterrupt: () => ({
+          interruptId: 'ask-interrupt',
+          threadId: streamId,
+          payload: {
+            type: 'ask_user_question',
+            question: { question: 'Proceed?' },
+          },
+        }),
+        getDiscoveredTools: () => [],
+        getRunMessages: () => [],
+        getCalibrationRatio: () => 1,
+        getFadingTier: () => seeded,
+        Graph: {
+          getCalibrationRatio: () => 1.4,
+          getFadingTier: () => live,
+        },
+      },
+      streamId,
+    );
+
+    const paused = await GenerationJobManager.getJob(streamId);
+    expect(paused?.metadata.contextMeta).toEqual({
+      calibrationRatio: 1.4,
+      encoding: client.getEncoding(),
+      fading: live,
+    });
+  });
+
+  it('publishes the live context meta onto the job after each context snapshot', async () => {
+    const streamId = 'conversation-context-meta-publish';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const contextUsageSink = { latest: null, count: 0 };
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+      contextUsageSink,
+    });
+    const seed = { calibrationRatio: 1.05, encoding: client.getEncoding() };
+    client.contextMeta = seed;
+    const updateMetadata = jest.spyOn(GenerationJobManager, 'updateMetadata');
+
+    /** Before the run exists the inherited seed is what a Stop must carry. */
+    await client.publishRunContextMeta();
+    await expect(GenerationJobManager.getJob(streamId)).resolves.toMatchObject({
+      metadata: { contextMeta: seed },
+    });
+
+    const tier = { v: 1, budgetTokens: 25_000, masked: true };
+    let ratio = 1.1;
+    client.run = {
+      Graph: {
+        getCalibrationRatio: () => ratio,
+        getFadingTier: () => tier,
+      },
+    };
+
+    expect(typeof contextUsageSink.onSnapshot).toBe('function');
+    await contextUsageSink.onSnapshot();
+    await contextUsageSink.onSnapshot();
+    ratio = 1.3;
+    await contextUsageSink.onSnapshot();
+
+    expect(updateMetadata).toHaveBeenCalledTimes(3);
+    expect(updateMetadata).toHaveBeenLastCalledWith(
+      streamId,
+      {
+        contextMeta: {
+          calibrationRatio: 1.3,
+          encoding: client.getEncoding(),
+          fading: tier,
+        },
+      },
+      job.createdAt,
+    );
+    const running = await GenerationJobManager.getJob(streamId);
+    expect(running?.metadata.contextMeta).toEqual({
+      calibrationRatio: 1.3,
+      encoding: client.getEncoding(),
+      fading: tier,
+    });
+    updateMetadata.mockRestore();
+  });
+
+  it('publishes a neutral record when live state stops carrying anything', async () => {
+    const streamId = 'conversation-context-meta-neutral';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const contextUsageSink = { latest: null, count: 0 };
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+      contextUsageSink,
+    });
+    let ratio = 1;
+    let tier;
+    client.run = {
+      Graph: {
+        getCalibrationRatio: () => ratio,
+        getFadingTier: () => tier,
+      },
+    };
+    const updateMetadata = jest.spyOn(GenerationJobManager, 'updateMetadata');
+
+    /** A fresh conversation's first neutral snapshot has nothing to clear. */
+    await contextUsageSink.onSnapshot();
+    expect(updateMetadata).not.toHaveBeenCalled();
+    await expect(GenerationJobManager.getJob(streamId)).resolves.toMatchObject({
+      metadata: expect.not.objectContaining({ contextMeta: expect.anything() }),
+    });
+
+    ratio = 1.25;
+    await contextUsageSink.onSnapshot();
+    await expect(GenerationJobManager.getJob(streamId)).resolves.toMatchObject({
+      metadata: { contextMeta: { calibrationRatio: 1.25, encoding: client.getEncoding() } },
+    });
+
+    ratio = 1;
+    await contextUsageSink.onSnapshot();
+    await contextUsageSink.onSnapshot();
+    expect(updateMetadata).toHaveBeenCalledTimes(2);
+    await expect(GenerationJobManager.getJob(streamId)).resolves.toMatchObject({
+      metadata: { contextMeta: { calibrationRatio: 1, encoding: client.getEncoding() } },
+    });
+    updateMetadata.mockRestore();
+  });
+
+  it('shares one in-flight write between equal concurrent snapshots', async () => {
+    const streamId = 'conversation-context-meta-inflight';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const contextUsageSink = { latest: null, count: 0 };
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+      contextUsageSink,
+    });
+    const tier = { v: 1, budgetTokens: 25_000, masked: true };
+    client.run = {
+      Graph: {
+        getCalibrationRatio: () => 1.2,
+        getFadingTier: () => tier,
+      },
+    };
+    let settled = false;
+    let releaseWrite;
+    const updateMetadata = jest
+      .spyOn(GenerationJobManager, 'updateMetadata')
+      .mockImplementationOnce(async () => {
+        await new Promise((resolve) => {
+          releaseWrite = resolve;
+        });
+        settled = true;
+      });
+
+    const first = contextUsageSink.onSnapshot();
+    const second = contextUsageSink.onSnapshot();
+    let secondSettled = false;
+    void second.then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(updateMetadata).toHaveBeenCalledTimes(1);
+
+    releaseWrite();
+    await Promise.all([first, second]);
+    expect(settled).toBe(true);
+    expect(secondSettled).toBe(true);
+    updateMetadata.mockRestore();
+  });
+
+  it('serializes distinct concurrent snapshots so the newest value wins', async () => {
+    const streamId = 'conversation-context-meta-ordered';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const contextUsageSink = { latest: null, count: 0 };
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+      contextUsageSink,
+    });
+    let tier = { v: 1, budgetTokens: 50_000, masked: false };
+    client.run = {
+      Graph: {
+        getCalibrationRatio: () => 1.2,
+        getFadingTier: () => tier,
+      },
+    };
+    let releaseFirstWrite;
+    const originalUpdateMetadata = Object.getPrototypeOf(GenerationJobManager).updateMetadata;
+    const updateMetadata = jest.spyOn(GenerationJobManager, 'updateMetadata');
+    updateMetadata.mockImplementationOnce(async (...args) => {
+      await new Promise((resolve) => {
+        releaseFirstWrite = resolve;
+      });
+      return originalUpdateMetadata.apply(GenerationJobManager, args);
+    });
+
+    const older = contextUsageSink.onSnapshot();
+    tier = { v: 1, budgetTokens: 25_000, masked: true };
+    const newer = contextUsageSink.onSnapshot();
+    await Promise.resolve();
+    /** The newer write waits for the older one instead of racing it. */
+    expect(updateMetadata).toHaveBeenCalledTimes(1);
+
+    releaseFirstWrite();
+    await Promise.all([older, newer]);
+    expect(updateMetadata).toHaveBeenCalledTimes(2);
+    await expect(GenerationJobManager.getJob(streamId)).resolves.toMatchObject({
+      metadata: {
+        contextMeta: {
+          calibrationRatio: 1.2,
+          encoding: client.getEncoding(),
+          fading: { v: 1, budgetTokens: 25_000, masked: true },
+        },
+      },
+    });
+    updateMetadata.mockRestore();
+  });
+
+  it('publishes the inherited context meta before the resumed run continues', async () => {
+    const streamId = 'conversation-context-meta-resume-seed';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123', isTemporary: true },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+    });
+    const seed = {
+      calibrationRatio: 1.15,
+      encoding: client.getEncoding(),
+      fading: { v: 1, budgetTokens: 30_000, masked: true },
+    };
+    client.seedContextMeta(seed);
+    let metaWhenResumed;
+    let metaWhenCreated;
+    const resume = jest.fn(async () => {
+      metaWhenResumed = (await GenerationJobManager.getJob(streamId))?.metadata.contextMeta;
+    });
+    mockCreateRun.mockImplementationOnce(async () => {
+      metaWhenCreated = (await GenerationJobManager.getJob(streamId))?.metadata.contextMeta;
+      return {
+        Graph: null,
+        resume,
+        processStream: jest.fn().mockResolvedValue(),
+        getCalibrationRatio: jest.fn(() => 0),
+        getInterrupt: jest.fn(() => undefined),
+      };
+    });
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-context-meta-resume-seed';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.resumeCompletion({
+      resumeValue: { decisions: [] },
+      streamId,
+      checkpointNamespace: 'resume-seed',
+    });
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(metaWhenCreated).toEqual(seed);
+    expect(metaWhenResumed).toEqual(seed);
+  });
+
+  it('records collected usage as an abort when a resumed run is stopped', async () => {
+    jest.clearAllMocks();
+    const streamId = 'conversation-resume-stopped';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const abortController = new AbortController();
+    mockCreateRun.mockImplementationOnce(async () => ({
+      Graph: null,
+      resume: jest.fn(async () => {
+        abortController.abort();
+      }),
+      processStream: jest.fn().mockResolvedValue(),
+      getCalibrationRatio: jest.fn(() => 0),
+      getInterrupt: jest.fn(() => undefined),
+    }));
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123', isTemporary: true },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [{ input_tokens: 10, output_tokens: 5 }],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+    });
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-resume-stopped';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.resumeCompletion({
+      resumeValue: { decisions: [] },
+      streamId,
+      checkpointNamespace: 'resume-stopped',
+      abortController,
+    });
+
+    expect(client.recordCollectedUsage).toHaveBeenCalledTimes(1);
+    expect(client.recordCollectedUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ context: 'abort' }),
+    );
+  });
+
+  it('publishes the inherited context meta before a fresh run streams', async () => {
+    const streamId = 'conversation-context-meta-stream-seed';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+    });
+    const seed = {
+      calibrationRatio: 1.15,
+      encoding: client.getEncoding(),
+      fading: { v: 1, budgetTokens: 30_000, masked: true },
+    };
+    client.contextMeta = seed;
+    let metaWhenStreamed;
+    let metaWhenCreated;
+    const processStream = jest.fn(async () => {
+      metaWhenStreamed = (await GenerationJobManager.getJob(streamId))?.metadata.contextMeta;
+    });
+    /** Run creation is the first abortable setup stage; the seed must precede it. */
+    mockCreateRun.mockImplementationOnce(async () => {
+      metaWhenCreated = (await GenerationJobManager.getJob(streamId))?.metadata.contextMeta;
+      return {
+        Graph: null,
+        processStream,
+        getCalibrationRatio: jest.fn(() => 0),
+        getInterrupt: jest.fn(() => undefined),
+      };
+    });
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-context-meta-stream-seed';
+    client.parentMessageId = 'parent-context-meta-stream-seed';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [] });
+
+    expect(processStream).toHaveBeenCalledTimes(1);
+    expect(metaWhenCreated).toEqual(seed);
+    expect(metaWhenStreamed).toEqual(seed);
+  });
+
+  it('keeps the inherited context meta when a fresh run fails before it exists', async () => {
+    const streamId = 'conversation-context-meta-setup-failure';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123' },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+    });
+    const seed = {
+      calibrationRatio: 1.15,
+      encoding: client.getEncoding(),
+      fading: { v: 1, budgetTokens: 30_000, masked: true },
+    };
+    client.contextMeta = seed;
+    mockCreateRun.mockRejectedValueOnce(new Error('run creation failed'));
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-context-meta-setup-failure';
+    client.parentMessageId = 'parent-context-meta-setup-failure';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [] }).catch(() => undefined);
+
+    expect(client.run).toBeUndefined();
+    expect(client.contextMeta).toEqual(seed);
+  });
+
+  it('keeps the inherited context meta when a resumed run fails to rebuild', async () => {
+    const streamId = 'conversation-context-meta-resume-failure';
+    const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { endpoint: EModelEndpoint.agents, agent_id: 'agent-123', isTemporary: true },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: streamId,
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+      jobCreatedAt: job.createdAt,
+    });
+    const seed = {
+      calibrationRatio: 1.15,
+      encoding: client.getEncoding(),
+      fading: { v: 1, budgetTokens: 30_000, masked: true },
+    };
+    client.seedContextMeta(seed);
+    mockCreateRun.mockRejectedValueOnce(new Error('rebuild failed'));
+    client.conversationId = streamId;
+    client.responseMessageId = 'response-context-meta-resume-failure';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client
+      .resumeCompletion({
+        resumeValue: { decisions: [] },
+        streamId,
+        checkpointNamespace: 'resume-failure',
+      })
+      .catch(() => undefined);
+
+    expect(client.run).toBeUndefined();
+    expect(client.contextMeta).toEqual(seed);
   });
 
   it('caps an event-bound pause at the inherited binding deadline', async () => {
@@ -1677,7 +2508,8 @@ describe('AgentClient - startup telemetry', () => {
 
     const client = new AgentClient({
       req: {
-        user: { id: 'user-123' },
+        tenantId: 'request-tenant',
+        user: { id: 'user-123', tenantId: 'stale-user-tenant' },
         body: {},
         config: {
           endpoints: { [EModelEndpoint.agents]: { toolApproval: { enabled: true } } },
@@ -1712,12 +2544,16 @@ describe('AgentClient - startup telemetry', () => {
     expect(mockCreateRun).toHaveBeenCalledTimes(1);
     expect(mockCreateRun.mock.calls[0][0]).toEqual(
       expect.objectContaining({
-        modelCallbacks: [
+        tenantId: 'request-tenant',
+        modelCallbacks: expect.arrayContaining([
           expect.objectContaining({
             name: 'librechat-model-bound-content-filter',
             raiseError: true,
           }),
-        ],
+          expect.objectContaining({
+            name: 'librechat-agent-attachment-memory',
+          }),
+        ]),
       }),
     );
     expect(mockDeleteAgentCheckpoint).toHaveBeenCalledWith(
@@ -2053,6 +2889,672 @@ describe('AgentClient - startup telemetry', () => {
     );
   });
 
+  it('ends a step-limit turn as incomplete rather than as an error part', async () => {
+    jest.clearAllMocks();
+    const { GraphRecursionError } = require('@langchain/langgraph');
+    /** The exact error LangGraph throws once the graph runs out of supersteps. */
+    const stepLimitError = new GraphRecursionError(
+      'Recursion limit of 50 reached without hitting a stop condition.',
+      { lc_error_code: 'GRAPH_RECURSION_LIMIT' },
+    );
+
+    mockCreateRun.mockResolvedValue({
+      Graph: null,
+      processStream: jest.fn().mockRejectedValue(stepLimitError),
+      getCalibrationRatio: jest.fn(() => 0),
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-step-limit',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      /** Work the turn already produced; it must survive the boundary. */
+      contentParts: [{ type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'Partial findings' }],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-step-limit';
+    client.responseMessageId = 'response-step-limit';
+    client.parentMessageId = 'parent-step-limit';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [] });
+
+    expect(client.stepLimitReached).toBe(true);
+    expect(client.contentParts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: ContentTypes.ERROR })]),
+    );
+    expect(client.contentParts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ [ContentTypes.TEXT]: 'Partial findings' }),
+      ]),
+    );
+  });
+
+  it('still surfaces an error part for an ordinary run failure', async () => {
+    jest.clearAllMocks();
+    mockCreateRun.mockResolvedValue({
+      Graph: null,
+      processStream: jest.fn().mockRejectedValue(new Error('provider exploded')),
+      getCalibrationRatio: jest.fn(() => 0),
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-plain-error',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-plain-error';
+    client.responseMessageId = 'response-plain-error';
+    client.parentMessageId = 'parent-plain-error';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [] });
+
+    expect(client.stepLimitReached).toBe(false);
+    expect(client.contentParts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: ContentTypes.ERROR })]),
+    );
+  });
+
+  it('records collected usage as an abort when the run is stopped', async () => {
+    jest.clearAllMocks();
+    const abortController = new AbortController();
+    mockCreateRun.mockResolvedValue({
+      Graph: null,
+      processStream: jest.fn(async () => {
+        abortController.abort();
+      }),
+      getCalibrationRatio: jest.fn(() => 0),
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-stopped',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [{ input_tokens: 10, output_tokens: 5 }],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-stopped';
+    client.responseMessageId = 'response-conversation-stopped';
+    client.parentMessageId = 'parent-conversation-stopped';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [], abortController });
+
+    expect(client.recordCollectedUsage).toHaveBeenCalledTimes(1);
+    expect(client.recordCollectedUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ context: 'abort' }),
+    );
+  });
+
+  it('records collected usage as a message when the run completes', async () => {
+    jest.clearAllMocks();
+    mockCreateRun.mockResolvedValue({
+      Graph: null,
+      processStream: jest.fn().mockResolvedValue(),
+      getCalibrationRatio: jest.fn(() => 0),
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-completed',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [{ input_tokens: 10, output_tokens: 5 }],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-completed';
+    client.responseMessageId = 'response-conversation-completed';
+    client.parentMessageId = 'parent-conversation-completed';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [], abortController: new AbortController() });
+
+    expect(client.recordCollectedUsage).toHaveBeenCalledTimes(1);
+    expect(client.recordCollectedUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ context: 'message' }),
+    );
+  });
+
+  it('classifies a terminal chat-model failure without logging provider content', async () => {
+    jest.clearAllMocks();
+    const { logger } = require('@librechat/data-schemas');
+    const { traceIdForMessage } = require('@librechat/api');
+    const privateValue = 'PRIVATE-UPSTREAM-PROVIDER-CONTENT';
+    const providerError = Object.assign(new Error(), {
+      code: 'InternalServerException',
+      response: {
+        status: 500,
+        headers: { authorization: privateValue },
+        data: { prompt: privateValue },
+      },
+    });
+    Object.defineProperties(providerError, {
+      name: {
+        get() {
+          throw new Error(`Provider echoed ${privateValue}`);
+        },
+      },
+      message: {
+        get() {
+          throw new Error(`Provider echoed ${privateValue}`);
+        },
+      },
+    });
+    const abortController = new AbortController();
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    mockCreateRun.mockImplementation(async (options) => {
+      const tracker = options.modelCallbacks.find(
+        (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+      );
+      return {
+        Graph: null,
+        processStream: jest.fn(async () => {
+          tracker.handleLLMError(providerError, 'model-run');
+          abortController.abort();
+          throw providerError;
+        }),
+        getCalibrationRatio: jest.fn(() => 0),
+      };
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: {
+          endpoints: { [EModelEndpoint.agents]: {} },
+          filters: { messages: { pii: {} } },
+        },
+        _resumableStreamId: 'conversation-upstream-error',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-upstream-error';
+    client.responseMessageId = 'response-upstream-error';
+    client.parentMessageId = 'parent-upstream-error';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [], abortController });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[api/server/controllers/agents/client.js #sendCompletion] Upstream model error',
+      {
+        type: 'Error',
+        status: 500,
+        errorCode: 'UPSTREAM_MODEL_ERROR',
+        errorOrigin: 'model_provider',
+        errorType: '500',
+        traceId: traceIdForMessage('response-upstream-error'),
+      },
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateValue);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('InternalServerException');
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error',
+      expect.anything(),
+    );
+    expect(client.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]:
+        'The model provider could not complete this request.\n' +
+        JSON.stringify({ type: 'upstream_model_error', status: 500 }),
+    });
+    errorSpy.mockRestore();
+  });
+
+  it.each([
+    [
+      'closed',
+      'SocketError',
+      ErrorTypes.MODEL_STREAM_CLOSED,
+      'stream_closed',
+      'The model provider closed the connection before the response finished. Try again.',
+    ],
+    [
+      'stalled',
+      'BodyTimeoutError',
+      ErrorTypes.MODEL_STREAM_STALLED,
+      'stream_stalled',
+      'The model provider stopped sending the response, and the request timed out. Try again.',
+    ],
+  ])(
+    'keeps partial content and a safe %s model error in the agent turn',
+    async (kind, causeName, type, errorType, prose) => {
+      jest.clearAllMocks();
+      const { logger } = require('@librechat/data-schemas');
+      const { errors: undiciErrors } = require('undici');
+      const privateValue = 'PRIVATE-TRANSPORT-DIAGNOSTIC';
+      const cause = new undiciErrors[causeName](privateValue);
+      const providerError = new TypeError('terminated', { cause });
+      const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      mockCreateRun.mockImplementation(async (options) => {
+        const tracker = options.modelCallbacks.find(
+          (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+        );
+        return {
+          Graph: null,
+          processStream: jest.fn(async () => {
+            tracker.handleLLMError(providerError);
+            throw new Error('graph failed', { cause: providerError });
+          }),
+          getCalibrationRatio: jest.fn(() => 0),
+        };
+      });
+      mockIsHITLEnabled.mockReturnValue(false);
+      const partial = { type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'Partial findings' };
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: { [EModelEndpoint.agents]: {} },
+            filters: { messages: { pii: {} } },
+          },
+          _resumableStreamId: `conversation-stream-${kind}`,
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          hide_sequential_outputs: false,
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [partial],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = `conversation-stream-${kind}`;
+      client.responseMessageId = `response-stream-${kind}`;
+      client.parentMessageId = `parent-stream-${kind}`;
+      client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+      try {
+        await client.chatCompletion({ payload: [] });
+
+        expect(client.contentParts).toEqual(
+          expect.arrayContaining([
+            partial,
+            {
+              type: ContentTypes.ERROR,
+              [ContentTypes.ERROR]: `${prose}\n${JSON.stringify({ type })}`,
+            },
+          ]),
+        );
+        expect(JSON.stringify(client.contentParts)).not.toContain(privateValue);
+        expect(client.recordCollectedUsage).toHaveBeenCalledWith(
+          expect.objectContaining({ context: 'message' }),
+        );
+        expect(errorSpy).toHaveBeenCalledWith(
+          '[api/server/controllers/agents/client.js #sendCompletion] Upstream model error',
+          expect.objectContaining({ errorType }),
+        );
+        expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateValue);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  /** A compaction's only record of having been one is the marker on the part it
+   *  produced, and Compact runs on whatever leaf the branch ends with. Without
+   *  the marker on the failure, a compaction that failed on a user leaf keeps a
+   *  Regenerate that answers that user message instead of redoing the run. */
+  it('marks the failure a compaction turn persists instead of a summary', async () => {
+    jest.clearAllMocks();
+    mockCreateRun.mockImplementation(async () => ({
+      Graph: null,
+      processStream: jest.fn(async () => {
+        throw new Error('summarizer unavailable');
+      }),
+      getCalibrationRatio: jest.fn(() => 0),
+    }));
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { compact: true },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-compaction-failure',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-compaction-failure';
+    client.responseMessageId = 'response-compaction-failure';
+    client.parentMessageId = 'parent-compaction-failure';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    const { completion } = await client.sendCompletion([]);
+
+    expect(completion).toEqual([
+      expect.objectContaining({ type: ContentTypes.ERROR, initiatedBy: 'user' }),
+    ]);
+  });
+
+  /** A summarizer that returns nothing emits no content at all, so the run has
+   *  neither a summary nor an explanation. The turn records the typed failure
+   *  itself instead of being saved as a bare error row the client cannot tell
+   *  apart from an answer to the message it hangs off. */
+  it('records a marked typed failure when a compaction run produces nothing', async () => {
+    jest.clearAllMocks();
+    mockCreateRun.mockImplementation(async () => ({
+      Graph: null,
+      processStream: jest.fn(async () => {}),
+      getCalibrationRatio: jest.fn(() => 0),
+    }));
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { compact: true },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-compaction-empty',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-compaction-empty';
+    client.responseMessageId = 'response-compaction-empty';
+    client.parentMessageId = 'parent-compaction-empty';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    const { completion } = await client.sendCompletion([]);
+
+    expect(completion).toEqual([
+      {
+        type: ContentTypes.ERROR,
+        error: JSON.stringify({ type: ErrorTypes.COMPACTION_FAILED }),
+        initiatedBy: 'user',
+      },
+    ]);
+  });
+
+  it('keeps a later non-provider run failure on the generic error path', async () => {
+    jest.clearAllMocks();
+    const { logger } = require('@librechat/data-schemas');
+    const recoveredProviderError = new Error('recovered provider failure');
+    const checkpointError = new Error('checkpoint failed');
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    mockCreateRun.mockImplementation(async (options) => {
+      const tracker = options.modelCallbacks.find(
+        (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+      );
+      return {
+        Graph: null,
+        processStream: jest.fn(async () => {
+          tracker.handleLLMError(recoveredProviderError, 'recovered-model-run');
+          throw checkpointError;
+        }),
+        getCalibrationRatio: jest.fn(() => 0),
+      };
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-non-provider-error',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-non-provider-error';
+    client.responseMessageId = 'response-non-provider-error';
+    client.parentMessageId = 'parent-non-provider-error';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [] });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error',
+      { type: 'Error' },
+    );
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      '[api/server/controllers/agents/client.js #sendCompletion] Upstream model error',
+      expect.anything(),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('cancels current attachment persistence after combined admission rejects the run', async () => {
+    jest.clearAllMocks();
+    let attachmentLimitError;
+    try {
+      require('@librechat/api').assertAgentAttachmentLimits({
+        attachments: [{ file_id: 'too-large', bytes: 2_000_000 }],
+        fileConfig: { fileContextSizeLimit: 1 },
+      });
+    } catch (error) {
+      attachmentLimitError = error;
+    }
+    expect(attachmentLimitError).toEqual(
+      expect.objectContaining({ code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED' }),
+    );
+    expect(require('@librechat/api').isAgentAttachmentLimitError(attachmentLimitError)).toBe(true);
+    mockCreateRun.mockResolvedValue({
+      Graph: null,
+      processStream: jest.fn().mockRejectedValue(attachmentLimitError),
+      getCalibrationRatio: jest.fn(() => 0),
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const currentFile = { file_id: 'rejected-current', bytes: 600_000 };
+    const cancel = jest.fn();
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { files: [{ file_id: currentFile.file_id }] },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-attachment-limit',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      attachments: [currentFile],
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-attachment-limit';
+    client.responseMessageId = 'response-attachment-limit';
+    client.parentMessageId = 'parent-attachment-limit';
+    client.modelBoundCurrentFiles = [currentFile];
+    client.modelBoundUserMessagePersistence = {
+      cancel,
+      isPending: jest.fn(() => true),
+      start: jest.fn(),
+    };
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [] });
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(client.options.attachments).toEqual([]);
+    expect(client.modelBoundCurrentFiles).toEqual([]);
+    expect(client.contentParts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: ContentTypes.ERROR,
+          [ContentTypes.ERROR]: expect.stringContaining('total attachment size'),
+        }),
+      ]),
+    );
+  });
+
+  it('cancels current attachment persistence when its storage object is unavailable', async () => {
+    jest.clearAllMocks();
+    const attachmentError = new (require('@librechat/api').AttachmentObjectNotFoundError)(
+      'missing-current',
+    );
+    mockCreateRun.mockResolvedValue({
+      Graph: null,
+      processStream: jest.fn().mockRejectedValue(attachmentError),
+      getCalibrationRatio: jest.fn(() => 0),
+    });
+    mockIsHITLEnabled.mockReturnValue(false);
+    const currentFile = { file_id: 'missing-current', bytes: 600_000 };
+    const cancel = jest.fn();
+    const client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: { files: [{ file_id: currentFile.file_id }] },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+        _resumableStreamId: 'conversation-missing-attachment',
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+      },
+      attachments: [currentFile],
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'conversation-missing-attachment';
+    client.responseMessageId = 'response-missing-attachment';
+    client.parentMessageId = 'parent-missing-attachment';
+    client.modelBoundCurrentFiles = [currentFile];
+    client.modelBoundUserMessagePersistence = {
+      cancel,
+      isPending: jest.fn(() => true),
+      start: jest.fn(),
+    };
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+
+    await client.chatCompletion({ payload: [] });
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(client.options.attachments).toEqual([]);
+    expect(client.modelBoundCurrentFiles).toEqual([]);
+    expect(client.contentParts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: ContentTypes.ERROR,
+          [ContentTypes.ERROR]: expect.stringContaining('no longer available'),
+        }),
+      ]),
+    );
+  });
+
   it('evolves warm compaction guidance while injecting only the new event message', async () => {
     jest.clearAllMocks();
     const history = { _getType: () => 'human', content: 'old turn' };
@@ -2098,6 +3600,7 @@ describe('AgentClient - startup telemetry', () => {
           type: ContentTypes.SUMMARY,
           content: [{ type: ContentTypes.TEXT, text: 'Fresh compacted context.' }],
           tokenCount: 18,
+          boundary: { messageId: 'step_summary', contentIndex: 0 },
         },
         { type: ContentTypes.TEXT, text: 'Done.' },
       );
@@ -2137,7 +3640,15 @@ describe('AgentClient - startup telemetry', () => {
     client.eventActorContinuation = 'warm';
     client.eventActorDiscoveredToolNames = ['deferred_tool'];
     client.eventActorSummary = { text: 'summary of earlier turns', tokenCount: 40 };
-    client.contextMeta = { calibrationRatio: 1.25, encoding: client.getEncoding() };
+    client.contextMeta = {
+      calibrationRatio: 1.25,
+      encoding: client.getEncoding(),
+      fading: { v: 2, budgetTokens: 20_000, masked: true },
+      fadingTiers: [
+        { agentId: 'agent-123', v: 2, budgetTokens: 20_000, masked: true },
+        { agentId: 'agent-worker', v: 1, budgetTokens: 8_000, masked: false },
+      ],
+    };
     client.compactionSemanticIndexSnapshot = baseCompactionSemanticIndexSnapshot;
     client.recordCollectedUsage = jest.fn().mockResolvedValue();
 
@@ -2156,9 +3667,16 @@ describe('AgentClient - startup telemetry', () => {
         indexTokenCountMap: {},
         initialSummary: { text: 'summary of earlier turns', tokenCount: 40 },
         calibrationRatio: 1.25,
+        fadingTier: { v: 2, budgetTokens: 20_000, masked: true },
+        fadingTiers: {
+          'agent-123': { v: 2, budgetTokens: 20_000, masked: true },
+        },
         compactionSemanticIndex: evolvedCompactionSemanticIndexSnapshot.entries,
       }),
     );
+    /** The seeded map must be prototype-safe: a null-prototype record built from own keys. */
+    const seededTiers = mockCreateRun.mock.calls.at(-1)[0].fadingTiers;
+    expect(Object.getPrototypeOf(seededTiers)).toBeNull();
     expect(mockFormatAgentMessages.mock.calls[0][4]).toEqual(
       expect.objectContaining({
         compactionSemanticIndex: expect.objectContaining({
@@ -2187,6 +3705,7 @@ describe('AgentClient - startup telemetry', () => {
     expect(client.eventActorSummary).toEqual({
       text: 'Fresh compacted context.',
       tokenCount: 18,
+      version: 1,
     });
     expect(client.contentParts).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: ContentTypes.SUMMARY })]),
@@ -3754,7 +5273,9 @@ describe('AgentClient - titleConvo', () => {
         file_id: 'request-file',
         filename: 'request.txt',
         source: 'text',
+        text: 'Request file contents',
         type: 'text/plain',
+        bytes: 0,
       };
 
       client.options.attachments = requestAttachments.promise;
@@ -4045,6 +5566,9 @@ describe('AgentClient - titleConvo', () => {
         },
       };
       mockRes = {};
+      mockAgent.deliveryRouting = jest
+        .requireActual('@librechat/api')
+        .resolveTurnDeliveryRouting({ agent: mockAgent, config: mockReq.config });
 
       client = new AgentClient({
         req: mockReq,
@@ -4417,6 +5941,43 @@ describe('AgentClient - titleConvo', () => {
       ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
     });
 
+    it.each([
+      ['seeds the run from a server-authored parent response', undefined, true],
+      ['ignores context meta on a client-submitted parent response', true, false],
+    ])('%s', async (_label, isUserSubmitted, expectSeed) => {
+      const contextMeta = {
+        calibrationRatio: 1.2,
+        encoding: 'claude',
+        fading: { v: 1, budgetTokens: 50_000, masked: true },
+      };
+      const parentResponse = {
+        messageId: 'assistant-seed',
+        parentMessageId: null,
+        sender: 'Assistant',
+        role: 'assistant',
+        isCreatedByUser: false,
+        ...(isUserSubmitted != null && { isUserSubmitted }),
+        text: 'Prior response',
+        contextMeta,
+      };
+      const userMessage = {
+        messageId: 'user-next',
+        parentMessageId: 'assistant-seed',
+        sender: 'User',
+        role: 'user',
+        isCreatedByUser: true,
+        text: 'Next question',
+      };
+      client.setModelBoundStoredMessages([parentResponse, userMessage]);
+      client.contextMeta = undefined;
+      client.publishRunContextMeta = jest.fn().mockResolvedValue(undefined);
+
+      await client.buildMessages([parentResponse, userMessage], 'user-next', {}, {});
+
+      expect(client.contextMeta).toEqual(expectSeed ? contextMeta : undefined);
+      expect(client.publishRunContextMeta).toHaveBeenCalledTimes(expectSeed ? 1 : 0);
+    });
+
     it('preserves persisted source identity through both agent formatting passes', async () => {
       mockReq.config.filters = {
         messages: {
@@ -4545,6 +6106,418 @@ describe('AgentClient - titleConvo', () => {
       ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
     });
 
+    it('enforces extracted-text limits on retained history when file replay is disabled', async () => {
+      client.options.resendFiles = false;
+      mockReq.config.fileConfig = { fileContextCharLimit: 10 };
+
+      await expect(
+        client.buildMessages(
+          [
+            {
+              messageId: 'historical-context',
+              parentMessageId: null,
+              sender: 'User',
+              text: 'Inspect the retained context.',
+              isCreatedByUser: true,
+              fileContext: 'this retained context is over the configured limit',
+            },
+            {
+              messageId: 'msg-1',
+              parentMessageId: 'historical-context',
+              sender: 'User',
+              text: 'Continue.',
+              isCreatedByUser: true,
+            },
+          ],
+          'msg-1',
+          {},
+        ),
+      ).rejects.toMatchObject({
+        code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+        limitType: 'extracted_text',
+      });
+    });
+
+    it('does not count retained text-only history against endpoint file limits', async () => {
+      client.options.resendFiles = false;
+      mockReq.config.fileConfig = {
+        fileContextCharLimit: 1_000_000,
+        endpoints: { agents: { fileLimit: 1 } },
+      };
+
+      await expect(
+        client.buildMessages(
+          [
+            {
+              messageId: 'historical-context-1',
+              parentMessageId: null,
+              sender: 'User',
+              text: 'First retained context.',
+              isCreatedByUser: true,
+              fileContext: 'first retained file context',
+            },
+            {
+              messageId: 'historical-context-2',
+              parentMessageId: 'historical-context-1',
+              sender: 'User',
+              text: 'Second retained context.',
+              isCreatedByUser: true,
+              fileContext: 'second retained file context',
+            },
+            {
+              messageId: 'msg-1',
+              parentMessageId: 'historical-context-2',
+              sender: 'User',
+              text: 'Continue.',
+              isCreatedByUser: true,
+            },
+          ],
+          'msg-1',
+          {},
+        ),
+      ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+    });
+
+    it('rejects combined historical and current bytes before either batch is encoded', async () => {
+      mockAgent.endpoint = 'Moonshot';
+      client.options.endpointType = EModelEndpoint.custom;
+      client.options.resendFiles = true;
+      mockReq.config.fileConfig = {
+        endpoints: { Moonshot: { fileLimit: 10, totalSizeLimit: 1 } },
+      };
+      const first = {
+        ...makeUploadedFile('history-1', 'one.pdf', 'application/pdf'),
+        bytes: 600_000,
+      };
+      const second = {
+        ...makeUploadedFile('current-1', 'two.pdf', 'application/pdf'),
+        bytes: 600_000,
+      };
+      client.options.attachments = Promise.resolve([second]);
+      require('~/models').getFiles.mockResolvedValue([first]);
+      client.addFileContextToMessage = jest.fn();
+      client.processAttachments = jest.fn();
+
+      await expect(
+        client.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            isCreatedByUser: true,
+            files: [{ file_id: first.file_id }],
+          },
+        ]),
+      ).rejects.toMatchObject({
+        code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+        limitType: 'bytes',
+      });
+      expect(client.addFileContextToMessage).not.toHaveBeenCalled();
+      expect(client.processAttachments).not.toHaveBeenCalled();
+    });
+
+    it('rejects combined historical and scoped bytes before history is encoded', async () => {
+      mockAgent.endpoint = 'Moonshot';
+      client.options.endpointType = EModelEndpoint.custom;
+      client.options.resendFiles = true;
+      mockReq.config.fileConfig = {
+        endpoints: {
+          Moonshot: {
+            fileLimit: 10,
+            totalSizeLimit: 1,
+            supportedMimeTypes: ['^application/pdf$'],
+          },
+        },
+      };
+      const historicalFile = {
+        ...makeUploadedFile('history-1', 'history.pdf', 'application/pdf'),
+        bytes: 600_000,
+      };
+      const scopedFile = {
+        ...makeUploadedFile('scoped-1', 'scoped.pdf', 'application/pdf'),
+        bytes: 600_000,
+      };
+      client.options.agentContextAttachmentsByAgentId = new Map([['primary-agent', [scopedFile]]]);
+      require('~/models').getFiles.mockResolvedValue([historicalFile]);
+      client.addFileContextToMessage = jest.fn();
+      client.processAttachments = jest.fn();
+
+      await expect(
+        client.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            isCreatedByUser: true,
+            files: [{ file_id: historicalFile.file_id }],
+          },
+        ]),
+      ).rejects.toMatchObject({
+        code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+        limitType: 'bytes',
+      });
+      expect(client.addFileContextToMessage).not.toHaveBeenCalled();
+      expect(client.processAttachments).not.toHaveBeenCalled();
+    });
+
+    it('does not count display-only historical artifacts toward model attachment limits', async () => {
+      client.options.resendFiles = true;
+      const artifacts = Array.from({ length: 11 }, (_, index) =>
+        makeUploadedFile(`artifact-${index}`, `artifact-${index}.png`, 'image/png'),
+      );
+      require('~/models').getFiles.mockResolvedValue(artifacts);
+
+      await expect(
+        client.addPreviousAttachments([
+          {
+            messageId: 'assistant-artifacts',
+            isCreatedByUser: false,
+            attachments: artifacts.map(({ file_id }) => ({ file_id })),
+          },
+        ]),
+      ).resolves.toEqual([
+        expect.objectContaining({ attachments: expect.arrayContaining(artifacts) }),
+      ]);
+    });
+
+    it('does not admit endpoint-incompatible historical files to model limits', async () => {
+      mockAgent.endpoint = 'Moonshot';
+      client.options.endpointType = EModelEndpoint.custom;
+      client.options.resendFiles = true;
+      mockReq.config.fileConfig = {
+        endpoints: {
+          Moonshot: { fileLimit: 10, supportedMimeTypes: ['^text/plain$'] },
+        },
+      };
+      const incompatibleFiles = Array.from({ length: 11 }, (_, index) =>
+        makeUploadedFile(`history-${index}`, `history-${index}.bin`, 'application/octet-stream'),
+      );
+      require('~/models').getFiles.mockResolvedValue(incompatibleFiles);
+      client.addFileContextToMessage = jest.fn();
+      client.processAttachments = jest.fn();
+
+      await expect(
+        client.addPreviousAttachments(
+          incompatibleFiles.map((file, index) => ({
+            messageId: `msg-${index}`,
+            isCreatedByUser: true,
+            files: [{ file_id: file.file_id }],
+          })),
+        ),
+      ).resolves.toHaveLength(11);
+      expect(Object.values(client.message_file_map).flat()).toEqual([]);
+      expect(client.processAttachments).not.toHaveBeenCalled();
+    });
+
+    it('does not admit tool-only historical files to model limits', async () => {
+      client.options.resendFiles = true;
+      const toolFiles = Array.from({ length: 11 }, (_, index) => ({
+        ...makeUploadedFile(`tool-history-${index}`, `tool-${index}.txt`, 'text/plain'),
+        embedded: true,
+      }));
+      require('~/models').getFiles.mockResolvedValue(toolFiles);
+      client.addFileContextToMessage = jest.fn();
+      client.processAttachments = jest.fn((_message, files) => files);
+
+      await expect(
+        client.addPreviousAttachments(
+          toolFiles.map((file, index) => ({
+            messageId: `tool-msg-${index}`,
+            isCreatedByUser: true,
+            files: [{ file_id: file.file_id }],
+          })),
+        ),
+      ).resolves.toHaveLength(11);
+      expect(Object.values(client.message_file_map).flat()).toEqual([]);
+      expect(client.addFileContextToMessage).not.toHaveBeenCalled();
+      expect(client.processAttachments).not.toHaveBeenCalled();
+    });
+
+    it('does not count current tool-only resources toward model attachment admission', async () => {
+      mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+      const toolFiles = Array.from({ length: 10 }, (_, index) => ({
+        ...makeUploadedFile(`tool-current-${index}`, `tool-${index}.txt`, 'text/plain'),
+        embedded: true,
+      }));
+      const modelFile = makeTextFile('model-current', 'model.txt', 'model context');
+      client.options.attachments = [...toolFiles, modelFile];
+
+      await expect(
+        client.buildMessages(
+          [
+            {
+              messageId: 'msg-1',
+              parentMessageId: null,
+              sender: 'User',
+              text: 'Use the available context.',
+              isCreatedByUser: true,
+            },
+          ],
+          'msg-1',
+          {},
+        ),
+      ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+      expect(client.modelBoundCurrentFiles).toEqual([modelFile]);
+    });
+
+    it('processes only endpoint-admitted current files plus tool-only passthrough files', async () => {
+      mockReq.config.fileConfig = {
+        endpoints: { openAI: { fileSizeLimit: 1, supportedMimeTypes: ['^text/plain$'] } },
+      };
+      const oversized = {
+        ...makeUploadedFile('oversized', 'oversized.png', 'image/png'),
+        bytes: 2 * 1024 * 1024,
+      };
+      const oversizedText = {
+        ...makeTextFile('oversized-text', 'oversized.txt', 'must not reach the prompt'),
+        bytes: 2 * 1024 * 1024,
+      };
+      const toolOnly = {
+        ...makeUploadedFile('tool-only', 'tool.txt', 'text/plain'),
+        embedded: true,
+      };
+      const admitted = makeTextFile('admitted', 'admitted.txt', 'model context');
+      client.options.attachments = [oversized, oversizedText, toolOnly, admitted];
+      client.addFileContextToMessage = jest.fn();
+      client.processAttachments = jest.fn((_message, files) => files);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Use the available context.',
+            isCreatedByUser: true,
+          },
+        ],
+        'msg-1',
+        {},
+      );
+
+      expect(client.addFileContextToMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'msg-1' }),
+        [admitted],
+      );
+      expect(client.processAttachments).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'msg-1' }),
+        [toolOnly, admitted],
+      );
+      expect(client.options.attachments).toEqual([toolOnly, admitted]);
+      expect(client.message_file_map['msg-1']).toEqual([toolOnly, admitted]);
+    });
+
+    it('defers current attachment persistence until model admission', () => {
+      client.modelBoundCurrentFiles = [makeTextFile('pending', 'pending.txt', 'context')];
+
+      expect(client.shouldDeferUserMessagePersistence()).toBe(true);
+    });
+
+    it('still seeds the conversation row when only attachments defer the message', () => {
+      client.modelBoundCurrentFiles = [makeTextFile('pending', 'pending.txt', 'context')];
+
+      expect(client.shouldDeferUserMessagePersistence()).toBe(true);
+      expect(client.shouldSeedDeferredConversation()).toBe(true);
+    });
+
+    it('holds back the conversation row while a content policy defers every write', () => {
+      client.modelBoundCurrentFiles = [makeTextFile('pending', 'pending.txt', 'context')];
+      mockReq.config.messageFilter = {
+        pii: {
+          starterPatterns: [],
+          customPatterns: [{ id: 'secret', label: 'secret', regex: 'SECRET-[A-Z]+' }],
+        },
+      };
+
+      expect(client.shouldDeferUserMessagePersistence()).toBe(true);
+      expect(client.shouldSeedDeferredConversation()).toBe(false);
+    });
+
+    it('keeps repeated lazy scoped-text admission cumulative across resolutions', () => {
+      mockReq.config.fileConfig = { fileContextCharLimit: 1_000_000 };
+      const repeated = makeTextFile('lazy-context', 'lazy.txt', 'x'.repeat(600_000));
+      const cumulativeInjections = [repeated];
+
+      expect(() => client.assertTurnAttachmentLimits([], cumulativeInjections)).not.toThrow();
+      cumulativeInjections.push(repeated);
+      expect(() => client.assertTurnAttachmentLimits([], cumulativeInjections)).toThrow(
+        expect.objectContaining({
+          code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+          limitType: 'extracted_text',
+        }),
+      );
+    });
+
+    it('keeps live steer attachments cumulative with the initial turn', () => {
+      const initial = {
+        ...makeUploadedFile('initial-large', 'initial.pdf', 'application/pdf'),
+        bytes: 120 * 1024 * 1024,
+      };
+      const steer = {
+        ...makeUploadedFile('steer-large', 'steer.pdf', 'application/pdf'),
+        bytes: 20 * 1024 * 1024,
+      };
+      client.turnSharedAttachmentFiles = [initial];
+      client.turnScopedAttachmentsByAgentId = new Map([['primary-agent', []]]);
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: mockAgent.endpoint }],
+      ]);
+
+      expect(() => client.admitSteerAttachments([steer])).toThrow(
+        expect.objectContaining({
+          code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+          limitType: 'bytes',
+        }),
+      );
+      expect(client.turnSharedAttachmentFiles).toEqual([initial]);
+    });
+
+    it('does not charge tool-only steer files to model attachment admission', () => {
+      const toolOnly = {
+        ...makeUploadedFile('steer-tool-only', 'tool-only.bin', 'application/octet-stream'),
+        embedded: true,
+        bytes: 200 * 1024 * 1024,
+      };
+      client.turnSharedAttachmentFiles = [];
+      client.turnScopedAttachmentsByAgentId = new Map([['primary-agent', []]]);
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: mockAgent.endpoint }],
+      ]);
+
+      expect(() => client.admitSteerAttachments([toolOnly])).not.toThrow();
+      expect(client.turnSharedAttachmentFiles).toEqual([]);
+    });
+
+    it('excludes tool-only and endpoint-incompatible scoped files from cumulative admission', () => {
+      mockAgent.endpoint = 'Moonshot';
+      client.options.endpointType = EModelEndpoint.custom;
+      mockReq.config.fileConfig = {
+        endpoints: {
+          Moonshot: { fileLimit: 1, supportedMimeTypes: ['^text/plain$'] },
+        },
+      };
+      const filtered = client.getFilteredScopedAttachmentMap(
+        new Set(),
+        new Map([
+          [
+            'primary-agent',
+            [
+              {
+                ...makeUploadedFile('tool-only', 'tool.txt', 'text/plain'),
+                embedded: true,
+              },
+              makeUploadedFile('unsupported', 'unsupported.bin', 'application/octet-stream'),
+              makeTextFile('model-bound', 'model.txt', 'model context'),
+            ],
+          ],
+        ]),
+        [mockAgent],
+      );
+
+      expect([...filtered.values()].flat()).toEqual([
+        expect.objectContaining({ file_id: 'model-bound' }),
+      ]);
+      expect(() =>
+        client.assertTurnAttachmentLimits([], [...filtered.values()].flat()),
+      ).not.toThrow();
+    });
+
     it('filters historical attachment content only when its source survives pruning', async () => {
       const privateText = 'PRIVATE-HISTORICAL-CONTENT';
       mockReq.config.filters = {
@@ -4561,7 +6534,7 @@ describe('AgentClient - titleConvo', () => {
         makeTextFile('historical-file', 'history.txt', privateText),
       ]);
       client.addFileContextToMessage = jest.fn();
-      client.processAttachments = jest.fn();
+      client.processAttachments = jest.fn((_message, files) => files);
 
       const hydratedMessages = await client.addPreviousAttachments([
         {
@@ -4850,6 +6823,82 @@ describe('AgentClient - titleConvo', () => {
           }),
         ]);
         expect(files).toEqual([currentFile]);
+      },
+    );
+
+    it.each(['current', 'history', 'history-disabled'])(
+      'resolves %s tool-routed text only for an authorized handoff without a reader',
+      async (location) => {
+        const file = {
+          ...makeUploadedFile('fallback-file', 'sales.csv', 'text/csv'),
+          text: 'handoff fallback content',
+          llmDeliveryPath: 'none',
+          /* The primary agent runs code, and a tool serves a file only once it holds it, so the
+           * sandbox reference is what keeps the text out of the primary prompt while the handoff
+           * agent, which runs no reader at all, still receives it. */
+          metadata: {
+            destinationChosen: false,
+            codeEnvRef: {
+              kind: 'user',
+              id: 'user-1',
+              storage_session_id: 'session-1',
+              file_id: 'sandbox-fallback-file',
+            },
+          },
+        };
+        const { resolveTurnDeliveryRouting } = jest.requireActual('@librechat/api');
+        client.options.req.config.fileConfig = {
+          endpoints: {
+            default: {
+              defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
+              textFallbackWithoutTools: true,
+            },
+          },
+        };
+        mockAgent.deliveryRouting = resolveTurnDeliveryRouting({
+          agent: mockAgent,
+          config: client.options.req.config,
+        });
+        mockAgent.fileConsumers = { executeCode: true, fileSearch: false };
+        const handoffAgent = {
+          id: 'handoff-agent',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          instructions: 'Handoff instructions',
+          model_parameters: { model: 'gpt-4' },
+          tools: [],
+          deliveryRouting: mockAgent.deliveryRouting,
+          fileConsumers: { executeCode: false, fileSearch: false },
+        };
+        const isolatedAgent = { ...handoffAgent, id: 'isolated-agent' };
+        mockAgent.subagentAgentConfigs = new Map([['isolated-agent', isolatedAgent]]);
+        client.agentConfigs = new Map([['handoff-agent', handoffAgent]]);
+        client.options.resendFiles = location !== 'history-disabled';
+        client.options.attachments = location === 'current' ? [file] : [];
+        client.authorizedHistoricalFiles = new Map([[file.file_id, file]]);
+        client.message_file_map = {};
+        const messages = [
+          {
+            messageId: 'msg-1',
+            sender: 'User',
+            text: 'Read it',
+            isCreatedByUser: true,
+            ...(location !== 'current' ? { files: [{ file_id: file.file_id }] } : {}),
+          },
+        ];
+        const result = await client.buildMessages(messages, 'msg-1', {});
+        expect(JSON.stringify(result.prompt)).not.toContain(file.text);
+        expect(mockAgent.additional_instructions ?? '').not.toContain(file.text);
+        expect(isolatedAgent.additional_instructions ?? '').not.toContain(file.text);
+        if (location === 'history-disabled') {
+          expect(handoffAgent.additional_instructions ?? '').not.toContain(file.text);
+        } else {
+          expect(handoffAgent.additional_instructions).toContain(file.text);
+          expect(client.turnScopedAttachmentsByAgentId.get('handoff-agent')).toEqual([
+            { ...file, llmDeliveryPath: 'text' },
+          ]);
+        }
+        expect(file.llmDeliveryPath).toBe('none');
       },
     );
 
@@ -5180,6 +7229,54 @@ describe('AgentClient - titleConvo', () => {
           attachmentsByAgentId: new Map([['pure-child-agent', [childContext]]]),
         }),
       );
+    });
+
+    it('keeps historical steer files in cumulative admission for lazy agents', async () => {
+      const historicalSteerFile = {
+        ...makeUploadedFile('steer-history', 'steer.pdf', 'application/pdf'),
+        bytes: 120 * 1024 * 1024,
+      };
+      const childContext = {
+        ...makeUploadedFile('lazy-context', 'lazy.pdf', 'application/pdf'),
+        bytes: 20 * 1024 * 1024,
+      };
+      const resolvedChild = {
+        id: 'lazy-child-agent',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        instructions: 'Lazy child instructions',
+        model_parameters: { model: 'gpt-4' },
+        tools: [],
+        agentContextAttachments: [childContext],
+      };
+      const descriptor = {
+        id: resolvedChild.id,
+        resolve: jest.fn().mockResolvedValue(resolvedChild),
+      };
+      client.modelBoundHistoricalSteerFiles = [historicalSteerFile];
+      mockAgent.lazySubagentConfigs = [descriptor];
+      client.agentConfigs = new Map();
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Answer from the child context.',
+            isCreatedByUser: true,
+          },
+        ],
+        'msg-1',
+        {},
+      );
+
+      await expect(
+        descriptor.resolve({ signal: new AbortController().signal }),
+      ).rejects.toMatchObject({
+        code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+        limitType: 'bytes',
+      });
     });
   });
 
@@ -5934,6 +8031,88 @@ describe('AgentClient - titleConvo', () => {
       expect(parallelAgent2.additional_instructions ?? '').not.toContain(memoryContent);
     });
 
+    it('tells the primary read-only agent about persistent memory when the store is empty', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      const parallelAgent = {
+        id: 'parallel-agent-1',
+        instructions: 'Parallel instructions',
+        provider: EModelEndpoint.openAI,
+      };
+      client.agentConfigs = new Map([['parallel-agent-1', parallelAgent]]);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Remember that I like tea',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
+      expect(client.options.agent.additional_instructions).not.toContain('# Existing memory');
+      expect(client.options.agent.additional_instructions).not.toContain('set_memory');
+      expect(parallelAgent.additional_instructions ?? '').not.toContain(memoryInstructions);
+    });
+
+    it('keeps memory guidance out of agents when memory was unavailable', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue(undefined);
+      client.agentConfigs = new Map();
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Hello',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions ?? '').not.toContain(memoryInstructions);
+    });
+
+    it('provides empty-state memory guidance to parallel agents when automatic extraction is on', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      mockReq.config.memory.agent = { enabled: true, id: 'memory-agent' };
+      const parallelAgent = {
+        id: 'parallel-agent-1',
+        instructions: 'Parallel instructions',
+        provider: EModelEndpoint.openAI,
+      };
+      client.agentConfigs = new Map([['parallel-agent-1', parallelAgent]]);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Remember that I like tea',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
+      expect(parallelAgent.additional_instructions).toContain(memoryInstructions);
+      expect(parallelAgent.additional_instructions).not.toContain('# Existing memory');
+    });
+
     it('applies scoped context to graph-only members without promoting them', async () => {
       client.useMemory = jest.fn().mockResolvedValue(undefined);
       const graphMember = {
@@ -6386,6 +8565,21 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    it('retains automatic memory extraction when the first conversation has no memories', async () => {
+      const processMemory = jest.fn();
+      mockCheckAccess.mockResolvedValue(true);
+      mockInitializeAgent.mockResolvedValue({ ...mockAgent });
+      mockCreateMemoryProcessor.mockResolvedValue(['', processMemory]);
+
+      client = new AgentClient(mockOptions);
+      client.conversationId = 'convo-123';
+      client.responseMessageId = 'response-123';
+
+      await expect(client.useMemory()).resolves.toEqual({ withKeys: '', withoutKeys: '' });
+      expect(mockCreateMemoryProcessor).toHaveBeenCalledTimes(1);
+      expect(client.processMemory).toBe(processMemory);
+    });
+
     it('should return existing memories without auto-processing when memory agent is not enabled', async () => {
       mockReq.config.memory = {
         personalize: true,
@@ -6434,6 +8628,29 @@ describe('AgentClient - titleConvo', () => {
       expect(mockInitializeAgent).not.toHaveBeenCalled();
       expect(mockCreateMemoryProcessor).not.toHaveBeenCalled();
       expect(client.processMemory).toBeUndefined();
+    });
+
+    it('does not interpret a failed memory read as an eligible empty store', async () => {
+      mockReq.config.memory = { personalize: true };
+      mockCheckAccess.mockResolvedValue(true);
+      mockGetFormattedMemories.mockResolvedValue({
+        readFailed: true,
+        withKeys: undefined,
+        withoutKeys: undefined,
+        totalTokens: 0,
+      });
+
+      client = new AgentClient(mockOptions);
+      client.conversationId = 'convo-123';
+      client.responseMessageId = 'response-123';
+
+      const result = await client.useMemory();
+
+      expect(result).toEqual({ withKeys: undefined, withoutKeys: undefined });
+      expect(mockCreateMemoryProcessor).not.toHaveBeenCalled();
+      expect(client.processMemory).toBeUndefined();
+      const { formatMemoryContext } = require('@librechat/api');
+      expect(formatMemoryContext(result.withoutKeys)).toBeUndefined();
     });
 
     it('should return existing memories without auto-processing when memory agent config lacks explicit enablement', async () => {
@@ -6567,7 +8784,7 @@ describe('AgentClient - finalizeSubagentContent', () => {
    *  `ON_SUBAGENT_UPDATE` handler so we exercise the same get-or-create
    *  aggregator logic the live request uses, rather than constructing
    *  aggregators directly in the test. */
-  const runSubagentEvents = async (events) => {
+  const runSubagentEvents = async (events, resolveMcpServerName) => {
     const map = new Map();
     const handlers = getDefaultHandlers({
       res: { write: jest.fn(), writableEnded: false },
@@ -6575,6 +8792,7 @@ describe('AgentClient - finalizeSubagentContent', () => {
       toolEndCallback: jest.fn(),
       collectedUsage: [],
       subagentAggregatorsByToolCallId: map,
+      resolveMcpServerName,
     });
     const handler = handlers[GraphEvents.ON_SUBAGENT_UPDATE];
     for (const e of events) {
@@ -6582,6 +8800,29 @@ describe('AgentClient - finalizeSubagentContent', () => {
     }
     return map;
   };
+
+  it.each(['agent', 'graph'])(
+    'persists %s identity even when the child has no content',
+    async (subagentKind) => {
+      const identity = {
+        subagentKind,
+        subagentAgentId: subagentKind === 'graph' ? 'graph:agent-1' : 'agent-1',
+      };
+      const buffer = await runSubagentEvents([
+        { ...event('start', undefined), ...identity, subagentType: 'agent-1' },
+        { ...event('error', undefined), ...identity, subagentType: 'agent-1' },
+      ]);
+      const client = makeClient(buffer);
+      client.contentParts = [
+        { type: 'tool_call', tool_call: { id: 'unrelated', name: Constants.SUBAGENT } },
+        { type: 'tool_call', tool_call: { id: 'call_sub', name: Constants.SUBAGENT } },
+      ];
+      client.finalizeSubagentContent();
+      expect(client.contentParts[0].tool_call.subagentIdentity).toBeUndefined();
+      expect(client.contentParts[1].tool_call.subagentIdentity).toEqual(identity);
+      expect(buffer.size).toBe(0);
+    },
+  );
 
   it('attaches aggregated subagent_content to the matching subagent tool_call part', async () => {
     const buffer = await runSubagentEvents([
@@ -6649,6 +8890,94 @@ describe('AgentClient - finalizeSubagentContent', () => {
     /** Buffer drained so a second call (e.g. resumable retry) doesn't
      *  double-append. */
     expect(buffer.size).toBe(0);
+  });
+
+  it('stamps durable MCP server identity onto nested persisted tool calls', () => {
+    const client = makeClient(new Map());
+    client.options.agent.accessibleMcpServerNames = ['bar', 'foo_mcp_bar'];
+    client.options.agent.toolDefinitions = [
+      {
+        name: 'gitlab-get_mcp_server_version_mcp_bar',
+        serverName: 'bar',
+      },
+    ];
+    client.contentParts = [
+      {
+        type: 'tool_call',
+        tool_call: {
+          name: Constants.SUBAGENT,
+          subagent_content: [
+            {
+              type: 'tool_call',
+              tool_call: { name: 'gitlab-get_mcp_server_version_mcp_bar' },
+            },
+          ],
+        },
+      },
+    ];
+
+    client.stampMcpServerIdentities();
+
+    expect(client.contentParts[0].tool_call.subagent_content[0].tool_call.mcpServerName).toBe(
+      'bar',
+    );
+  });
+
+  it('retains the resolved lazy-agent MCP identity for an ambiguous nested key', async () => {
+    const resolveMcpServerName = jest.fn(() => 'bar');
+    const buffer = await runSubagentEvents(
+      [
+        {
+          ...event('run_step', {
+            id: 'step_tool',
+            index: 0,
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [
+                {
+                  id: 'inner_1',
+                  function: { name: 'lookup_mcp_foo_mcp_bar', arguments: '{}' },
+                },
+              ],
+            },
+          }),
+          memberAgentId: 'member',
+        },
+      ],
+      resolveMcpServerName,
+    );
+    const client = makeClient(buffer);
+    client.options.agent.accessibleMcpServerNames = ['bar', 'foo_mcp_bar'];
+    client.contentParts = [
+      {
+        type: 'tool_call',
+        tool_call: { id: 'call_sub', name: Constants.SUBAGENT, args: '{}' },
+      },
+    ];
+
+    client.finalizeSubagentContent();
+    const inner = client.contentParts[0].tool_call.subagent_content[0].tool_call;
+    expect(resolveMcpServerName).toHaveBeenCalledWith('lookup_mcp_foo_mcp_bar', 'member');
+    expect(inner.mcpServerName).toBe('bar');
+
+    const emptyMemberResolver = jest.fn(() => 'bar');
+    await runSubagentEvents(
+      [
+        {
+          ...event('run_step', {
+            id: 'step_tool_2',
+            index: 0,
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [{ id: 'inner_2', name: 'lookup_mcp_foo_mcp_bar', args: '{}' }],
+            },
+          }),
+          memberAgentId: '',
+        },
+      ],
+      emptyMemberResolver,
+    );
+    expect(emptyMemberResolver).toHaveBeenCalledWith('lookup_mcp_foo_mcp_bar', 'child');
   });
 
   it('ignores tool_call parts whose name is not SUBAGENT', async () => {
@@ -6775,6 +9104,7 @@ describe('AgentClient - resumeCompletion content protection', () => {
   const makeContext = (filters) => ({
     options: {
       req: {
+        tenantId: 'request-tenant',
         user: { id: 'user-123' },
         body: { files: [] },
         config: {
@@ -6809,6 +9139,7 @@ describe('AgentClient - resumeCompletion content protection', () => {
     applyHideSequentialOutputsFilter: jest.fn(),
     rebaseActivityPhaseBounds: jest.fn(),
     finalizeSubagentContent: jest.fn(),
+    stampMcpServerIdentities: jest.fn(),
     settleActivityLabels: jest.fn().mockResolvedValue(undefined),
     recordCollectedUsage: jest.fn().mockResolvedValue(undefined),
   });
@@ -7043,7 +9374,11 @@ describe('AgentClient - resumeCompletion content protection', () => {
     expect(mockCreateRun).toHaveBeenCalledTimes(1);
     expect(mockCreateRun.mock.calls[0][0]).toEqual(
       expect.objectContaining({
-        modelCallbacks: [expect.objectContaining({ name: 'librechat-model-bound-content-filter' })],
+        tenantId: 'request-tenant',
+        modelCallbacks: expect.arrayContaining([
+          expect.objectContaining({ name: 'librechat-model-bound-content-filter' }),
+          expect.objectContaining({ name: 'librechat-agent-attachment-memory' }),
+        ]),
         compactionSemanticIndex: compactionSemanticIndex.entries,
       }),
     );
@@ -7205,7 +9540,11 @@ describe('AgentClient - resumeCompletion content protection', () => {
   it('freezes owner-hydrated resume files into the final model callback', async () => {
     mockGetAgentCheckpointer.mockResolvedValue({
       getTuple: jest.fn().mockResolvedValue({
-        checkpoint: { channel_values: { messages: [] } },
+        checkpoint: {
+          channel_values: {
+            messages: [{ role: 'human', files: [{ file_id: 'file-paused' }] }],
+          },
+        },
       }),
     });
     const storedMessage = {
@@ -7221,6 +9560,9 @@ describe('AgentClient - resumeCompletion content protection', () => {
       {
         file_id: 'file-paused',
         filename: 'report.txt',
+        source: 'text',
+        type: 'text/plain',
+        bytes: 10,
         text: 'Safe extracted text',
       },
     ]);
@@ -7241,7 +9583,19 @@ describe('AgentClient - resumeCompletion content protection', () => {
       storedMessages: [storedMessage],
     });
 
-    const [modelBoundCallback] = mockCreateRun.mock.calls[0][0].modelCallbacks;
+    const [modelBoundCallback, attachmentMemoryCallback] =
+      mockCreateRun.mock.calls[0][0].modelCallbacks;
+    expect(attachmentMemoryCallback).toEqual(
+      expect.objectContaining({ name: 'librechat-agent-attachment-memory' }),
+    );
+    expect(context.attachmentMemoryContext).toEqual(
+      expect.objectContaining({
+        conversationId: 'conversation-123',
+        messageId: 'response-123',
+        attachments: [expect.objectContaining({ file_id: 'file-paused' })],
+        countRepeatedExtractedText: true,
+      }),
+    );
     expect(() =>
       modelBoundCallback.handleChatModelStart(undefined, [
         [
@@ -7253,6 +9607,454 @@ describe('AgentClient - resumeCompletion content protection', () => {
         ],
       ]),
     ).not.toThrow();
+  });
+
+  it('reapplies aggregate attachment limits to persistent history on resume', async () => {
+    const historicalFiles = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `resume-history-${index}`,
+      filename: `history-${index}.txt`,
+      source: 'text',
+      type: 'text/plain',
+      text: 'context',
+      bytes: 10,
+    }));
+    require('~/models').getMessages.mockResolvedValue(
+      historicalFiles.map((file, index) => ({
+        messageId: index === historicalFiles.length - 1 ? 'parent-123' : `history-${index}`,
+        parentMessageId: index === 0 ? Constants.NO_PARENT : `history-${index - 1}`,
+        isCreatedByUser: true,
+        role: 'user',
+        text: 'inspect file',
+        files: [{ file_id: file.file_id }],
+      })),
+    );
+    require('~/models').getFiles.mockResolvedValue(historicalFiles);
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: historicalFiles.map((file) => ({
+              role: 'human',
+              files: [{ file_id: file.file_id }],
+            })),
+          },
+        },
+      }),
+    });
+    const context = makeContext(undefined);
+    context.options.req.body.isTemporary = false;
+    context.options.req.config.fileConfig = {
+      endpoints: { agents: { fileLimit: 10 } },
+    };
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+      limitType: 'count',
+    });
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it('counts a restored request file only once when it is already in the checkpoint', async () => {
+    const retainedFile = {
+      file_id: 'retained-request',
+      filename: 'retained.txt',
+      source: 'text',
+      type: 'text/plain',
+      text: 'x'.repeat(600_000),
+      bytes: 600_000,
+    };
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: [{ role: 'human', files: [{ file_id: retainedFile.file_id }] }],
+          },
+        },
+      }),
+    });
+    require('~/models').getFiles.mockResolvedValue([retainedFile]);
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
+    const context = makeContext(undefined);
+    context.options.attachments = [retainedFile];
+    context.options.req.config.fileConfig = { fileContextCharLimit: 1_000_000 };
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).resolves.toBeUndefined();
+
+    expect(mockCreateRun).toHaveBeenCalledTimes(1);
+    expect(context.attachmentMemoryContext.attachments).toEqual([retainedFile]);
+  });
+
+  it('limits resume history to files retained by the checkpoint', async () => {
+    const historicalFiles = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `old-history-${index}`,
+      filename: `old-${index}.txt`,
+      source: 'text',
+      type: 'text/plain',
+      text: 'context',
+      bytes: 10,
+    }));
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: [{ role: 'human', files: [{ file_id: 'old-history-10' }] }],
+          },
+        },
+      }),
+    });
+    require('~/models').getFiles.mockResolvedValue(historicalFiles);
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
+    const context = makeContext(undefined);
+    context.options.req.config.fileConfig = {
+      endpoints: { agents: { fileLimit: 10 } },
+    };
+
+    await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+
+    expect(mockCreateRun).toHaveBeenCalledTimes(1);
+    expect(context.attachmentMemoryContext.attachments).toEqual([
+      expect.objectContaining({ file_id: 'old-history-10' }),
+    ]);
+  });
+
+  it('counts checkpoint files retained in model state after endpoint policy tightens', async () => {
+    const checkpointFiles = [
+      {
+        file_id: 'retained-1',
+        filename: 'retained-1.pdf',
+        source: 'local',
+        type: 'application/pdf',
+        bytes: 10,
+      },
+      {
+        file_id: 'retained-2',
+        filename: 'retained-2.pdf',
+        source: 'local',
+        type: 'application/pdf',
+        bytes: 10,
+      },
+    ];
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: {
+          channel_values: {
+            messages: [
+              {
+                role: 'human',
+                files: checkpointFiles.map(({ file_id }) => ({ file_id })),
+              },
+            ],
+          },
+        },
+      }),
+    });
+    require('~/models').getFiles.mockResolvedValue(checkpointFiles);
+    const context = makeContext(undefined);
+    context.options.req.config.fileConfig = {
+      endpoints: {
+        agents: { fileLimit: 1 },
+      },
+    };
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+      limitType: 'count',
+    });
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it('reapplies each secondary agent endpoint limit on resume', async () => {
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: { channel_values: { messages: [] } },
+      }),
+    });
+    const context = makeContext(undefined);
+    context.options.agent.endpoint = 'openAI';
+    context.options.req.config.fileConfig = {
+      endpoints: {
+        openAI: { fileLimit: 10 },
+        Moonshot: { fileLimit: 1, supportedMimeTypes: ['^text/plain$'] },
+      },
+    };
+    context.agentConfigs = new Map([
+      [
+        'secondary',
+        {
+          id: 'secondary',
+          endpoint: 'Moonshot',
+          model_parameters: { model: 'moonshot-v1' },
+          tools: [],
+        },
+      ],
+    ]);
+    context.options.agentContextAttachmentsByAgentId = new Map([
+      [
+        'secondary',
+        [
+          { file_id: 'secondary-1', source: 'text', type: 'text/plain', text: 'one', bytes: 1 },
+          { file_id: 'secondary-2', source: 'text', type: 'text/plain', text: 'two', bytes: 1 },
+        ],
+      ],
+    ]);
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+      limitType: 'count',
+      observed: 2,
+      limit: 1,
+    });
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it('restores agent-scoped file context before rebuilding a resumed run', async () => {
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: { channel_values: { messages: [] } },
+      }),
+    });
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
+    const context = makeContext(undefined);
+    context.options.agentContextAttachmentsByAgentId = new Map([
+      [
+        'agent-123',
+        [
+          {
+            file_id: 'resume-private-context',
+            filename: 'private.txt',
+            source: 'text',
+            type: 'text/plain',
+            text: 'Resume-only private context',
+            bytes: 27,
+          },
+        ],
+      ],
+    ]);
+
+    await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+
+    expect(context.options.agent.additional_instructions).toContain('Resume-only private context');
+    expect(mockCreateRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('reapplies shared attachment limits after a lazy resume agent resolves', async () => {
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: { channel_values: { messages: [] } },
+      }),
+    });
+    const resolvedChild = {
+      id: 'lazy-secondary',
+      endpoint: 'Moonshot',
+      model_parameters: { model: 'moonshot-v1' },
+      tools: [],
+    };
+    const resolveLazy = jest.fn().mockResolvedValue(resolvedChild);
+    const descriptor = {
+      id: 'lazy-secondary',
+      resolve: resolveLazy,
+    };
+    const sharedFile = {
+      file_id: 'shared-large',
+      filename: 'shared.txt',
+      source: 'text',
+      type: 'text/plain',
+      text: 'shared context',
+      bytes: 2 * 1024 * 1024,
+    };
+    const context = makeContext(undefined);
+    context.options.agent.endpoint = 'openAI';
+    context.options.agent.lazySubagentConfigs = [descriptor];
+    context.options.attachments = [sharedFile];
+    context.options.req.config.fileConfig = {
+      endpoints: {
+        openAI: { totalSizeLimit: 128 },
+        Moonshot: { totalSizeLimit: 1 },
+      },
+    };
+    mockCreateRun.mockImplementation(async () => ({
+      resume: jest.fn(async () => descriptor.resolve({ signal: new AbortController().signal })),
+      getCalibrationRatio: jest.fn(() => 0),
+    }));
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+      limitType: 'bytes',
+      observed: 2 * 1024 * 1024,
+      limit: 1024 * 1024,
+    });
+    expect(resolveLazy).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes admitted steer files when a lazy resume agent resolves', async () => {
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: { channel_values: { messages: [] } },
+      }),
+    });
+    const resolvedChild = {
+      id: 'lazy-secondary',
+      endpoint: 'Moonshot',
+      model_parameters: { model: 'moonshot-v1' },
+      tools: [],
+    };
+    const descriptor = {
+      id: 'lazy-secondary',
+      resolve: jest.fn().mockResolvedValue(resolvedChild),
+    };
+    const steerFile = {
+      file_id: 'steer-large',
+      filename: 'steer.txt',
+      source: 'text',
+      type: 'text/plain',
+      text: 'steered context',
+      bytes: 2 * 1024 * 1024,
+    };
+    const context = makeContext(undefined);
+    context.options.agent.endpoint = 'openAI';
+    context.options.agent.lazySubagentConfigs = [descriptor];
+    context.options.req.config.fileConfig = {
+      endpoints: {
+        openAI: { totalSizeLimit: 128 },
+        Moonshot: { totalSizeLimit: 1 },
+      },
+    };
+    mockCreateRun.mockImplementation(async () => ({
+      resume: jest.fn(async () => {
+        context.turnSharedAttachmentFiles.push(steerFile);
+        return descriptor.resolve({ signal: new AbortController().signal });
+      }),
+      getCalibrationRatio: jest.fn(() => 0),
+    }));
+
+    await expect(
+      AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
+    ).rejects.toMatchObject({
+      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+      limitType: 'bytes',
+      observed: 2 * 1024 * 1024,
+      limit: 1024 * 1024,
+    });
+  });
+
+  it('reserves a lazy resume endpoint before awaiting its scoped context', async () => {
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: { channel_values: { messages: [] } },
+      }),
+    });
+    const resolvedChild = {
+      id: 'lazy-secondary',
+      endpoint: 'Moonshot',
+      model_parameters: { model: 'moonshot-v1' },
+      tools: [],
+    };
+    const descriptor = {
+      id: 'lazy-secondary',
+      resolve: jest.fn().mockResolvedValue(resolvedChild),
+    };
+    const lateScopedContext = deferred();
+    mockBuildAgentScopedContext.mockImplementationOnce((...args) =>
+      jest.requireActual('@librechat/api').buildAgentScopedContext(...args),
+    );
+    mockBuildAgentScopedContext.mockImplementationOnce(() => lateScopedContext.promise);
+    const context = makeContext(undefined);
+    context.options.agent.endpoint = 'openAI';
+    context.options.agent.lazySubagentConfigs = [descriptor];
+    context.options.req.config.fileConfig = {
+      endpoints: {
+        openAI: { totalSizeLimit: 128 },
+        Moonshot: { totalSizeLimit: 1 },
+      },
+    };
+    mockCreateRun.mockImplementation(async () => ({
+      resume: jest.fn(async () => descriptor.resolve({ signal: new AbortController().signal })),
+      getCalibrationRatio: jest.fn(() => 0),
+    }));
+
+    const resumePromise = AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+    for (
+      let attempt = 0;
+      attempt < 20 && mockBuildAgentScopedContext.mock.calls.length < 2;
+      attempt++
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(mockBuildAgentScopedContext).toHaveBeenCalledTimes(2);
+    expect(() =>
+      AgentClient.prototype.admitSteerAttachments.call(context, [
+        {
+          file_id: 'racing-steer',
+          filename: 'racing.txt',
+          source: 'text',
+          type: 'text/plain',
+          text: 'steered context',
+          bytes: 2 * 1024 * 1024,
+        },
+      ]),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
+        limitType: 'bytes',
+      }),
+    );
+
+    lateScopedContext.resolve(new Map([['lazy-secondary', '']]));
+    await expect(resumePromise).resolves.toBeUndefined();
+  });
+
+  it('restores scoped file context after a lazy resume agent resolves', async () => {
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({
+        checkpoint: { channel_values: { messages: [] } },
+      }),
+    });
+    const resolvedChild = {
+      id: 'lazy-secondary',
+      endpoint: 'Moonshot',
+      model_parameters: { model: 'moonshot-v1' },
+      tools: [],
+      agentContextAttachments: [
+        {
+          file_id: 'lazy-private-context',
+          filename: 'lazy-private.txt',
+          source: 'text',
+          type: 'text/plain',
+          text: 'Lazy resume private context',
+          bytes: 27,
+        },
+      ],
+    };
+    const resolveLazy = jest.fn().mockResolvedValue(resolvedChild);
+    const descriptor = {
+      id: 'lazy-secondary',
+      resolve: resolveLazy,
+    };
+    const context = makeContext(undefined);
+    context.options.agent.lazySubagentConfigs = [descriptor];
+    mockCreateRun.mockImplementation(async () => ({
+      resume: jest.fn(async () => descriptor.resolve({ signal: new AbortController().signal })),
+      getCalibrationRatio: jest.fn(() => 0),
+    }));
+
+    await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+
+    expect(resolvedChild.additional_instructions).toContain('Lazy resume private context');
+    expect(resolveLazy).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed when a paused file reference cannot be rehydrated', async () => {
@@ -7452,6 +10254,125 @@ describe('AgentClient - resumeCompletion content protection', () => {
     errorSpy.mockRestore();
   });
 
+  it('classifies a terminal resumed model failure and preserves redaction', async () => {
+    const { logger } = require('@librechat/data-schemas');
+    const { traceIdForMessage } = require('@librechat/api');
+    const privateValue = 'PRIVATE-RESUMED-UPSTREAM-CONTENT';
+    const providerError = Object.assign(new Error(), {
+      code: 'PROVIDER_INTERNAL',
+      status: 503,
+    });
+    Object.defineProperties(providerError, {
+      name: {
+        get() {
+          throw new Error(`Provider echoed ${privateValue}`);
+        },
+      },
+      message: {
+        get() {
+          throw new Error(`Provider echoed ${privateValue}`);
+        },
+      },
+    });
+    const abortController = new AbortController();
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    mockCreateRun.mockImplementation(async (options) => {
+      const tracker = options.modelCallbacks.find(
+        (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+      );
+      return {
+        resume: jest.fn(async () => {
+          tracker.handleLLMError(providerError, 'resumed-model-run');
+          abortController.abort();
+          throw providerError;
+        }),
+        getCalibrationRatio: jest.fn(() => 0),
+      };
+    });
+    const context = makeContext(undefined);
+
+    await AgentClient.prototype.resumeCompletion.call(context, {
+      resumeValue: {},
+      abortController,
+    });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[api/server/controllers/agents/client.js #resumeCompletion] Upstream model error',
+      {
+        type: 'Error',
+        status: 503,
+        errorCode: 'UPSTREAM_MODEL_ERROR',
+        errorOrigin: 'model_provider',
+        errorType: '503',
+        traceId: traceIdForMessage('response-123'),
+      },
+    );
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateValue);
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain('PROVIDER_INTERNAL');
+    expect(context.contentParts).toContainEqual({
+      type: ContentTypes.ERROR,
+      [ContentTypes.ERROR]:
+        'The model provider could not complete this request.\n' +
+        JSON.stringify({ type: 'upstream_model_error', status: 503 }),
+    });
+    errorSpy.mockRestore();
+  });
+
+  /** A gateway or privacy proxy states its rejection in its own message and nowhere else, so an
+   *  unclassified upstream failure carries it exactly as every other failure text does. */
+  it.each([undefined, 24, 3000])(
+    'keeps the provider explanation with limit %s on a terminal resumed model failure',
+    async (maxProviderErrorChars) => {
+      const explanation = '400 Request rejected: this prompt cannot be masked safely';
+      const trackTerminalProviderError = (providerError) => {
+        mockCreateRun.mockImplementation(async (options) => {
+          const tracker = options.modelCallbacks.find(
+            (callback) => callback.name === 'librechat-upstream-model-error-tracker',
+          );
+          return {
+            resume: jest.fn(async () => {
+              tracker.handleLLMError(providerError, 'resumed-model-run');
+              throw providerError;
+            }),
+            getCalibrationRatio: jest.fn(() => 0),
+          };
+        });
+      };
+
+      trackTerminalProviderError(Object.assign(new Error(explanation), { status: 400 }));
+      const context = makeContext(undefined);
+      context.options.req.config.endpoints = { agents: { maxProviderErrorChars } };
+
+      await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+
+      expect(context.contentParts).toContainEqual({
+        type: ContentTypes.ERROR,
+        [ContentTypes.ERROR]:
+          'The model provider could not complete this request.\n' +
+          JSON.stringify({
+            type: 'upstream_model_error',
+            status: 400,
+            message: explanation.slice(0, maxProviderErrorChars),
+          }),
+      });
+
+      /** With a policy inspecting the traffic, the body may echo submitted content: status only. */
+      trackTerminalProviderError(Object.assign(new Error(explanation), { status: 400 }));
+      const protectedContext = makeContext({
+        messages: { pii: { fields: ['text'], starterPatterns: ['email'] } },
+      });
+
+      await AgentClient.prototype.resumeCompletion.call(protectedContext, { resumeValue: {} });
+
+      expect(protectedContext.contentParts).toContainEqual({
+        type: ContentTypes.ERROR,
+        [ContentTypes.ERROR]:
+          'The model provider could not complete this request.\n' +
+          JSON.stringify({ type: 'upstream_model_error', status: 400 }),
+      });
+    },
+  );
+
   it('preserves provider error detail when content protection is disabled', async () => {
     const providerMessage = 'Legacy provider detail';
     mockCreateRun.mockRejectedValue(new Error(providerMessage));
@@ -7463,5 +10384,90 @@ describe('AgentClient - resumeCompletion content protection', () => {
       type: ContentTypes.ERROR,
       [ContentTypes.ERROR]: `An error occurred while resuming the request: ${providerMessage}`,
     });
+  });
+});
+
+describe('fading tier context meta', () => {
+  const fading = { v: 1, budgetTokens: 20_000, masked: true };
+  const fadingTiers = [
+    { agentId: 'agent-123', v: 1, budgetTokens: 20_000, masked: true },
+    { agentId: 'agent-worker', v: 1, budgetTokens: 8_000, masked: false },
+  ];
+
+  it('carries valid fading tiers through event actor context', async () => {
+    const client = Object.create(AgentClient.prototype);
+    client.options = { req: { config: {} } };
+    const contextMeta = { calibrationRatio: 1.25, encoding: 'o200k_base', fading, fadingTiers };
+    client.getEventActorContext = jest.fn().mockResolvedValue({
+      fingerprint: 'fingerprint-1',
+      skillManifest: [],
+      discoveredToolNames: [],
+      contextMeta,
+    });
+
+    await expect(
+      client.prepareEventActorContext({
+        contextFingerprint: 'fingerprint-1',
+        skillManifest: [],
+        discoveredToolNames: [],
+        contextMeta,
+      }),
+    ).resolves.toMatchObject({ contextMeta });
+    expect(client.contextMeta).toEqual(contextMeta);
+  });
+
+  it('rejects event actor context carrying a malformed fading tier', async () => {
+    const client = Object.create(AgentClient.prototype);
+    client.options = { req: { config: {} } };
+    client.getEventActorContext = jest.fn();
+
+    await expect(
+      client.prepareEventActorContext({
+        contextFingerprint: 'fingerprint-1',
+        skillManifest: [],
+        discoveredToolNames: [],
+        contextMeta: { calibrationRatio: 1.25, fading: { v: 1, budgetTokens: -5, masked: true } },
+      }),
+    ).resolves.toBeUndefined();
+    expect(client.getEventActorContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects event actor context carrying malformed per-agent tiers', async () => {
+    const client = Object.create(AgentClient.prototype);
+    client.options = { req: { config: {} } };
+    client.getEventActorContext = jest.fn();
+
+    await expect(
+      client.prepareEventActorContext({
+        contextFingerprint: 'fingerprint-1',
+        skillManifest: [],
+        discoveredToolNames: [],
+        contextMeta: {
+          calibrationRatio: 1.25,
+          fadingTiers: [{ agentId: '', v: 1, budgetTokens: 20_000, masked: true }],
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(client.getEventActorContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('seedContextMeta', () => {
+  it('seeds valid context meta and drops a malformed fading tier', () => {
+    const client = Object.create(AgentClient.prototype);
+    const contextMeta = {
+      calibrationRatio: 1.25,
+      encoding: 'claude',
+      fading: { v: 1, budgetTokens: 20_000, masked: true },
+    };
+
+    client.seedContextMeta(contextMeta);
+    expect(client.contextMeta).toEqual(contextMeta);
+
+    client.seedContextMeta({ calibrationRatio: 1.25, fading: { v: 1, budgetTokens: 0 } });
+    expect(client.contextMeta).toBeUndefined();
+
+    client.seedContextMeta(undefined);
+    expect(client.contextMeta).toBeUndefined();
   });
 });

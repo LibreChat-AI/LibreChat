@@ -2,6 +2,7 @@ import { Constants } from '@librechat/agents';
 import type { CodeEnvFile, CodeSessionContext, ToolSessionMap } from '@librechat/agents';
 import {
   buildAgentInitialToolSessions,
+  mergeCodeFilesIntoContext,
   buildInitialToolSessions,
   collectCodeExecutionProfileRoutes,
   seedCodeFilesIntoSessions,
@@ -21,6 +22,62 @@ const file = (id: string, storage_session_id: string, name: string): CodeEnvFile
    * primed code-execution attachments at the test boundary (most are
    * chat uploads). Tests that need shared kinds set it explicitly. */
   kind: 'user',
+});
+
+describe('mergeCodeFilesIntoContext', () => {
+  it('adds a freshly provisioned file to an existing session context', () => {
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('a', 'store-1', 'a.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('b', 'store-1', 'b.csv')]);
+
+    expect(merged?.session_id).toBe('exec-1');
+    expect(merged?.files.map((f) => f.id)).toEqual(['a', 'b']);
+  });
+
+  it('builds a context when the batch had none', () => {
+    const merged = mergeCodeFilesIntoContext(undefined, [file('b', 'store-2', 'b.csv')]);
+
+    expect(merged?.session_id).toBe('store-2');
+    expect(merged?.files.map((f) => f.id)).toEqual(['b']);
+  });
+
+  it('does not duplicate a file the context already carries', () => {
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('a', 'store-1', 'a.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('a', 'store-1', 'a.csv')]);
+
+    expect(merged?.files.map((f) => f.id)).toEqual(['a']);
+  });
+
+  it('drops a provisioned file whose destination the context already claimed', () => {
+    /**
+     * The destination constraint has to hold on this path too. Lazy provisioning
+     * folds its uploads into a context the graph seeded at run start, so a name
+     * the seed already claimed reaches codeapi as a duplicate destination and
+     * takes the whole `/exec` call down, exactly as in the seeding path.
+     */
+    const prior: CodeSessionContext = {
+      session_id: 'exec-1',
+      files: [file('id-A', 'sess-A', 'data.csv')],
+      lastUpdated: 1,
+    };
+
+    const merged = mergeCodeFilesIntoContext(prior, [file('id-B', 'sess-B', 'data.csv')]);
+
+    expect(merged?.files.map((f) => f.id)).toEqual(['id-A']);
+  });
+
+  it('reports nothing to record when there are no files', () => {
+    expect(mergeCodeFilesIntoContext({ session_id: 'exec-1' }, [])).toBeUndefined();
+  });
 });
 
 describe('seedCodeFilesIntoSessions', () => {
@@ -132,19 +189,61 @@ describe('seedCodeFilesIntoSessions', () => {
     expect(entry.files!.map((f) => f.id).sort()).toEqual(['new-1', 'shared-1', 'skill-1']);
   });
 
-  it('treats same name + same session as a duplicate; same name + different sessions as distinct', () => {
+  it('keeps distinct identities that mount at distinct destinations', () => {
     /**
-     * The dedupe key is `(session_id, id)` — not `name` alone. Two
-     * primed uploads can legitimately share a filename when they live
-     * in different sandbox sessions (e.g. each agent re-uploaded the
-     * same source file). Both should land in the seed.
+     * The dedupe key is `(session_id, id)` — not `name` alone. Two primed
+     * uploads are separate files even when one was re-uploaded into a new
+     * sandbox session, and both belong in the seed as long as the caller
+     * resolved them to different mount paths.
      */
     const a = file('id-A', 'sess-A', 'data.csv');
-    const b = file('id-B', 'sess-B', 'data.csv');
+    const b = file('id-B', 'sess-B', 'data-2.csv');
     const result = seedCodeFilesIntoSessions([a, a, b], undefined);
     const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
     expect(entry.files).toHaveLength(2);
     expect(entry.files!.map((f) => f.storage_session_id).sort()).toEqual(['sess-A', 'sess-B']);
+  });
+
+  it('drops a distinct identity that would mount at an already-claimed destination', () => {
+    /**
+     * Regression for #15443. The identity key cannot see this: one file
+     * re-uploaded by one agent and cache-hit by another arrives twice with
+     * different `storage_session_id`s under a single `name`. Codeapi rejects
+     * the whole `/exec` request on the duplicate destination, and because the
+     * call never reaches the sandbox nothing comes back to collapse the pair
+     * — every later turn re-primes it and fails the same way.
+     */
+    const primed = file('id-A', 'sess-A', 'data.csv');
+    const reuploaded = file('id-B', 'sess-B', 'data.csv');
+    const result = seedCodeFilesIntoSessions([primed, reuploaded], undefined);
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files).toHaveLength(1);
+    expect(entry.files![0].storage_session_id).toBe('sess-A');
+  });
+
+  it('lets the prior partition keep a destination an incoming file also wants', () => {
+    const existing: ToolSessionMap = new Map();
+    existing.set(Constants.EXECUTE_CODE, {
+      session_id: 'skill-sess',
+      files: [file('skill-1', 'skill-sess', 'skills/report/run.py')],
+      lastUpdated: 1,
+    } satisfies CodeSessionContext);
+
+    const result = seedCodeFilesIntoSessions(
+      [file('user-1', 'user-sess', 'skills/report/run.py'), file('user-2', 'user-sess', 'ok.csv')],
+      existing,
+    );
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files!.map((f) => f.id)).toEqual(['skill-1', 'user-2']);
+  });
+
+  it('rejects an incoming file whose destination is a directory of a claimed one', () => {
+    const result = seedCodeFilesIntoSessions(
+      [file('id-A', 'sess-A', 'data/rows.csv'), file('id-B', 'sess-B', 'data')],
+      undefined,
+    );
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files!.map((f) => f.id)).toEqual(['id-A']);
   });
 
   it('seeds only the requested code-session partition', () => {

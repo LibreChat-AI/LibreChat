@@ -51,25 +51,17 @@
   </a>
 </p>
 
-## 🚀 What's New in v0.8.8-rc1
+## 🚀 What's New in v0.8.8-rc4
 
-- **Agent run control:** Interrupt or steer an Agent mid-run, queue follow-up messages, and reclaim, edit, or escalate pending steers.
-- **Human-in-the-loop Agents:** Agents stream question progress, ask up to four related questions in one form, pause for input or tool approval, and resume.
-- **Unified Agent Builder:** A redesigned Tools marketplace brings together Skills, MCP, Code Interpreter, orchestration, Programmatic Tool Calling, model-spec controls, and per-tool background and intent settings.
-- **Readable Agent activity:** Generated activity-group headers, parent phase summaries, and live tool intent labels make long reasoning and tool runs easier to scan.
-- **Code Interpreter workflows:** Code and shell tools can run in the background, sandbox images return as viewable artifacts, and highly experimental stateful sessions can reuse prewarmed conversation workspaces.
-- **Agent extensibility:** Experimental Agent Plugins can bundle deployment Skills, MCP servers, and opt-in command hooks, while explicit subagents initialize only when selected.
-- **Memory, context, and identity:** Agents can manage memory with optional per-agent isolation, expose support contacts safely, and show a more faithful Context Usage gauge.
-- **Sharing and files:** Shared conversations show a badge and update at a stable URL, while signed-in viewers can continue them as personal copies.
-- **Artifact workflows:** Open previews fullscreen, work with PowerPoint `.potx` templates across upload, search, and code execution, upload shell scripts across common MIME variants, export Mermaid diagrams as SVG or PNG, and download original Office files from the artifact panel.
-- **Models and reasoning:** Added GPT-5.6 with Responses API reasoning controls, Claude Opus 5 and Sonnet 5, Gemini 3.7 and 3.6 Flash, and Gemini 3.5 Flash-Lite.
-- **Langfuse observability:** Configure encrypted Langfuse connections in-app, let authorized admins open sampled sessions directly, optionally fan out traces by tenant, and suppress central export per run.
-- **Administration and security:** Delegate config sections, encrypt registered secrets, enforce SSRF checks for speech, OCR, and web tools, and generate unique temporary credentials when secrets are blank.
-- **Messages and navigation:** Right-aligned user turns, unified multi-part editing, full-message copy, a dock-style message rail, virtualized search, smooth streaming, and faster Agent startup.
-- **Streaming and tool reliability:** Adaptive provider smoothing, Redis delta batching, dynamic MCP tool refresh, parsed MCP response media types, runtime OAuth recovery, and Agent stream circuit breakers improve long-running workflows.
-- **Deployment and reliability:** Added configurable HTTP timeouts, Amazon DocumentDB 5.0+ support, low-noise Redis and browser observability, and a rolling-upgrade-safe generation protocol.
+- **Public Agents API docs:** Serve an OpenAPI specification and interactive Swagger UI for inference, events, Agent management, and Skill management.
+- **Attached workspaces (highly experimental):** Isolate workspaces by conversation, load repository instructions, and use bounded queue waits and command timeouts.
+- **Trace Viewer:** Inspect model conversations as ordered steps with roles, Agent identity, tool rounds, previews, and cost.
+- **Skills:** Author or import a Skill and invoke it in the same Agent run, with safer rollback for failed imports.
+- **Agent activity:** Render system events as distinct turns and hold live activity to one stable row.
+- **MCP reliability:** Send per-request headers without hiding tools, coordinate OAuth refresh across replicas, and preserve credentials through provider outages.
+- **Performance:** Stream Markdown incrementally, virtualize model search, and reduce completed Agent message rendering work.
 
-Read the [full v0.8.8-rc1 changelog](https://www.librechat.ai/changelog/v0.8.8-rc1).
+Read the [full v0.8.8-rc4 changelog](https://www.librechat.ai/changelog/v0.8.8-rc4).
 
 # ✨ Features
 
@@ -79,7 +71,7 @@ Read the [full v0.8.8-rc1 changelog](https://www.librechat.ai/changelog/v0.8.8-r
   - Anthropic (Claude), AWS Bedrock, OpenAI, Azure OpenAI, Google, Vertex AI, OpenAI Responses API (incl. Azure)
   - [Custom Endpoints](https://www.librechat.ai/docs/quick_start/custom_endpoints): Use any OpenAI-compatible API with LibreChat, no proxy required
   - Compatible with [Local & Remote AI Providers](https://www.librechat.ai/docs/configuration/librechat_yaml/ai_endpoints):
-    - Ollama, groq, Cohere, Mistral AI, Apple MLX, koboldcpp, together.ai,
+    - Ollama, [AMD Lemonade](https://lemonade-server.ai/), groq, Cohere, Mistral AI, Apple MLX, koboldcpp, together.ai,
     - OpenRouter, Helicone, Perplexity, ShuttleAI, Deepseek, Qwen, and more
 
 - 🔧 **[Code Interpreter API](https://www.librechat.ai/docs/features/code_interpreter)**: 
@@ -97,6 +89,8 @@ Read the [full v0.8.8-rc1 changelog](https://www.librechat.ai/changelog/v0.8.8-r
     - [Skills](https://www.librechat.ai/docs/features/skills): Create reusable `SKILL.md` instruction bundles for manual, automatic, or always-on agent workflows
     - [Agent Plugins](https://www.librechat.ai/docs/features/agent_plugins): Experimentally bundle deployment Skills and MCP servers into startup-loaded packages
     - [Subagents](https://www.librechat.ai/docs/features/subagents): Delegate focused work to isolated child agent runs with their own context windows
+    - Agent Management API: Automate Agent, file, and Skill management with deployment-bound OIDC clients
+    - Attached Code Workspaces: Let Agents inspect, search, edit, and run commands in managed or personal workspaces (highly experimental)
     - Compatible with Custom Endpoints, OpenAI, Azure, Anthropic, AWS Bedrock, Google, Vertex AI, Responses API, and more
     - [Model Context Protocol (MCP) Support](https://modelcontextprotocol.io/clients#librechat) for Tools
 
@@ -121,10 +115,12 @@ Read the [full v0.8.8-rc1 changelog](https://www.librechat.ai/changelog/v0.8.8-r
   - Edit, Resubmit, and Continue Messages with Conversation branching  
   - Create and share prompts with specific users and groups
   - [Fork Messages & Conversations](https://www.librechat.ai/docs/features/fork) for Advanced Context control
+  - Compact long conversations on demand while preserving recent context
 
 - 💬 **Multimodal & File Interactions**:  
   - Upload and analyze images with Claude 3, GPT-4.5, GPT-4o, o1, Llama-Vision, and Gemini 📸  
   - Chat with Files using Custom Endpoints, OpenAI, Azure, Anthropic, AWS Bedrock, & Google 🗃️
+  - Copy messages as formatted rich text for documents, email, and collaboration apps
 
 - 🌎 **Multilingual UI**:
   - English, 中文 (简体), 中文 (繁體), العربية, Deutsch, Español, Français, Italiano
@@ -137,6 +133,10 @@ Read the [full v0.8.8-rc1 changelog](https://www.librechat.ai/changelog/v0.8.8-r
 
 - 🎨 **Customizable Interface**:  
   - Customizable Dropdown & Interface that adapts to both power users and newcomers
+  - Light, dark, system, and high-contrast appearance modes
+
+- 📈 **Observability**:
+  - Export traces and logs with OpenTelemetry and connect Langfuse for Agent and model insights
 
 - 🌊 **[Resumable Streams](https://www.librechat.ai/docs/features/resumable_streams)**:  
   - Never lose a response: AI responses automatically reconnect and resume if your connection drops
@@ -188,7 +188,7 @@ Open source, actively developed, and built for anyone who values control over th
 ## 🌐 Resources
 
 **GitHub Repo:**
-  - **RAG API:** [github.com/danny-avila/rag_api](https://github.com/danny-avila/rag_api)
+  - **RAG API:** [github.com/LibreChat-AI/rag-api](https://github.com/LibreChat-AI/rag-api)
   - **Website:** [github.com/LibreChat-AI/librechat.ai](https://github.com/LibreChat-AI/librechat.ai)
 
 **Other:**
@@ -201,7 +201,7 @@ Open source, actively developed, and built for anyone who values control over th
 ## 📝 Changelog
 
 Keep up with the latest updates by visiting the releases page and notes:
-- [Releases](https://github.com/danny-avila/LibreChat/releases)
+- [Releases](https://github.com/LibreChat-AI/LibreChat/releases)
 - [Changelog](https://www.librechat.ai/changelog) 
 
 **⚠️ Please consult the [changelog](https://www.librechat.ai/changelog) for breaking changes before updating.**
@@ -222,7 +222,7 @@ Keep up with the latest updates by visiting the releases page and notes:
 
 <p align="center">
   <a href="https://trendshift.io/repositories/4685" target="_blank" style="padding: 10px;">
-    <img src="https://trendshift.io/api/badge/repositories/4685" alt="danny-avila%2FLibreChat | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+    <img src="https://trendshift.io/api/badge/repositories/4685" alt="LibreChat-AI%2FLibreChat | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
   <a href="https://runacap.com/ross-index/q1-24/" target="_blank" rel="noopener" style="margin-left: 20px;">
     <img style="width: 260px; height: 56px" src="https://runacap.com/wp-content/uploads/2024/04/ROSS_badge_white_Q1_2024.svg" alt="ROSS Index - Fastest Growing Open-Source Startups in Q1 2024 | Runa Capital" width="260" height="56"/>
@@ -243,8 +243,8 @@ If you'd like to help translate LibreChat into your language, we'd love your con
 
 ## 💖 This project exists in its current state thanks to all the people who contribute
 
-<a href="https://github.com/danny-avila/LibreChat/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=danny-avila/LibreChat" />
+<a href="https://github.com/LibreChat-AI/LibreChat/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=LibreChat-AI/LibreChat" />
 </a>
 
 ---

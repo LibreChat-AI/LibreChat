@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import {
   Constants,
@@ -8,6 +9,7 @@ import {
   ToolCallTypes,
   getNonEmptyValue,
   getRunStepDurationMs,
+  getRunStepCloseMetadata,
 } from 'librechat-data-provider';
 import type {
   Agents,
@@ -28,13 +30,16 @@ import {
   listRegisteredSubagentProgressKeys,
   reduceSubagentProgress,
   registerSubagentProgressKey,
+  removeSubagentProgressAtoms,
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   takeRegisteredSubagentProgressKeys,
+  subagentProgressKey,
+} from '~/components/Chat/Subagents/state';
+import {
   sandboxStartingByToolCallId,
   ptcTraceByToolCallId,
   PTC_TRACE_MAX_ENTRIES,
-  subagentProgressKey,
   ptcTraceKey,
 } from '~/store';
 import { isAskUserQuestionPart, isAnsweredAskUserQuestionPart } from '~/utils/approval';
@@ -53,6 +58,7 @@ type TUseStepHandler = {
    * invalidation) so this hook stays free of query-client coupling.
    */
   onSkillAuthoringComplete?: () => void;
+  onSubagentIndexChange?: (conversationId: string) => void;
 };
 
 type TStepEvent =
@@ -155,7 +161,9 @@ export default function useStepHandler({
   announcePolite,
   lastAnnouncementTimeRef,
   onSkillAuthoringComplete,
+  onSubagentIndexChange,
 }: TUseStepHandler) {
+  const subagentStore = useStore();
   const toolCallIdMap = useRef(new Map<string, string | undefined>());
   const messageMap = useRef(new Map<string, TMessage>());
   const stepMap = useRef(new Map<string, Agents.RunStep>());
@@ -248,108 +256,97 @@ export default function useStepHandler({
   );
 
   /**
-   * Merges an incoming {@link SubagentUpdateEvent} into the Recoil atom bucket
-   * keyed by the parent `tool_call_id`. Buffers early-arriving events whose
-   * tool call is not yet mapped, and replays the buffer once correlation
-   * completes.
+   * Merges an incoming {@link SubagentUpdateEvent} into the atom bucket keyed
+   * by the parent `tool_call_id`. Buffers early-arriving events whose tool call
+   * is not yet mapped, and replays the buffer once correlation completes.
    */
-  const applySubagentUpdate = useRecoilCallback(
-    ({ set }) =>
-      (payload: SubagentUpdateEvent, parentMessageId: string): void => {
-        const invocationKey = resolveSubagentInvocationKey(payload, parentMessageId);
+  const applySubagentUpdate = useCallback(
+    (payload: SubagentUpdateEvent, parentMessageId: string): void => {
+      const invocationKey = resolveSubagentInvocationKey(payload, parentMessageId);
 
-        if (!invocationKey) {
-          const pending = pendingSubagentBuffer.current.get(payload.subagentRunId) ?? {
-            parentMessageId,
-            events: [],
-          };
-          pending.events.push(payload);
-          pendingSubagentBuffer.current.set(payload.subagentRunId, pending);
-          return;
-        }
+      if (!invocationKey) {
+        const pending = pendingSubagentBuffer.current.get(payload.subagentRunId) ?? {
+          parentMessageId,
+          events: [],
+        };
+        pending.events.push(payload);
+        pendingSubagentBuffer.current.set(payload.subagentRunId, pending);
+        return;
+      }
 
-        const pending = pendingSubagentBuffer.current.get(payload.subagentRunId);
-        if (pending && pending.events.length > 0) {
-          pendingSubagentBuffer.current.delete(payload.subagentRunId);
-        }
-        const toApply = pending ? [...pending.events, payload] : [payload];
+      const pending = pendingSubagentBuffer.current.get(payload.subagentRunId);
+      if (pending && pending.events.length > 0) {
+        pendingSubagentBuffer.current.delete(payload.subagentRunId);
+      }
+      const toApply = pending ? [...pending.events, payload] : [payload];
 
-        registerSubagentProgressKey(invocationKey);
-        set(subagentParentStreamOpenByToolCallId(invocationKey), true);
-        set(subagentProgressByToolCallId(invocationKey), (prev) =>
-          reduceSubagentProgress(prev, toApply, 'parent', true),
-        );
-      },
-    [resolveSubagentInvocationKey],
+      registerSubagentProgressKey(invocationKey);
+      subagentStore.set(subagentParentStreamOpenByToolCallId(invocationKey), true);
+      subagentStore.set(subagentProgressByToolCallId(invocationKey), (prev) =>
+        reduceSubagentProgress(prev, toApply, 'parent', true),
+      );
+    },
+    [resolveSubagentInvocationKey, subagentStore],
   );
 
   /**
-   * Resets all accumulated subagent Recoil state. Kept for conversation-
-   * switch cleanup (see top-level hook usage) but NOT called from
-   * `clearStepMaps` — the collapsed SubagentCall ticker and its panel
-   * read from these atoms to render the child's content parts, and we
-   * want that history to remain visible after the stream ends so the
-   * user can reopen the panel for auditability. The atoms are bounded
-   * by aggregated structure and per-conversation (one atom per
-   * subagent spawn), so growth is proportional to messages — the same
-   * growth profile as the rest of the conversation state.
+   * Resets all accumulated subagent state. Kept for conversation-switch
+   * cleanup (see top-level hook usage) but NOT called from `clearStepMaps` —
+   * the collapsed SubagentCall ticker and its panel read from these atoms to
+   * render the child's content parts, and we want that history to remain
+   * visible after the stream ends so the user can reopen the panel for
+   * auditability. The atoms are bounded by aggregated structure and
+   * per-conversation (one atom per subagent spawn), so growth is proportional
+   * to messages — the same growth profile as the rest of the conversation
+   * state.
    */
-  const resetSubagentAtoms = useRecoilCallback(
-    ({ reset }) =>
-      (): void => {
-        for (const invocationKey of takeRegisteredSubagentProgressKeys()) {
-          reset(subagentProgressByToolCallId(invocationKey));
-          reset(subagentParentStreamOpenByToolCallId(invocationKey));
-        }
-      },
-    [],
-  );
+  const resetSubagentAtoms = useCallback((): void => {
+    for (const invocationKey of takeRegisteredSubagentProgressKeys()) {
+      /** Clear before freeing: `remove` drops the cached family member but
+       *  tells nothing still subscribed to it, so anything mounted at this
+       *  boundary has to see the empty value first. */
+      subagentStore.set(subagentProgressByToolCallId(invocationKey), null);
+      subagentStore.set(subagentParentStreamOpenByToolCallId(invocationKey), false);
+      removeSubagentProgressAtoms(invocationKey);
+    }
+  }, [subagentStore]);
 
-  const closeParentSubagentStreams = useRecoilCallback(
-    ({ set }) =>
-      (): void => {
-        for (const invocationKey of listRegisteredSubagentProgressKeys()) {
-          set(subagentParentStreamOpenByToolCallId(invocationKey), false);
-          set(subagentProgressByToolCallId(invocationKey), closeParentSubagentProgress);
-        }
-      },
-    [],
-  );
+  const closeParentSubagentStreams = useCallback((): void => {
+    for (const invocationKey of listRegisteredSubagentProgressKeys()) {
+      subagentStore.set(subagentParentStreamOpenByToolCallId(invocationKey), false);
+      subagentStore.set(subagentProgressByToolCallId(invocationKey), closeParentSubagentProgress);
+    }
+  }, [subagentStore]);
 
   /** Tool-call ids whose sandbox-starting atom is set, so completion can clear them. */
   const knownSandboxAtomKeys = useRef(new Set<string>());
 
-  const setSandboxStarting = useRecoilCallback(
-    ({ set }) =>
-      (toolCallId: string): void => {
-        knownSandboxAtomKeys.current.add(toolCallId);
-        set(sandboxStartingByToolCallId(toolCallId), true);
-      },
-    [],
+  const sandboxStore = useStore();
+  const setSandboxStarting = useCallback(
+    (toolCallId: string): void => {
+      knownSandboxAtomKeys.current.add(toolCallId);
+      sandboxStore.set(sandboxStartingByToolCallId(toolCallId), true);
+    },
+    [sandboxStore],
   );
 
-  const clearSandboxStarting = useRecoilCallback(
-    ({ reset }) =>
-      (toolCallId?: string | null): void => {
-        if (!toolCallId || !knownSandboxAtomKeys.current.has(toolCallId)) {
-          return;
-        }
-        knownSandboxAtomKeys.current.delete(toolCallId);
-        reset(sandboxStartingByToolCallId(toolCallId));
-      },
-    [],
+  const clearSandboxStarting = useCallback(
+    (toolCallId?: string | null): void => {
+      if (!toolCallId || !knownSandboxAtomKeys.current.has(toolCallId)) {
+        return;
+      }
+      knownSandboxAtomKeys.current.delete(toolCallId);
+      sandboxStore.set(sandboxStartingByToolCallId(toolCallId), false);
+    },
+    [sandboxStore],
   );
 
-  const resetSandboxAtoms = useRecoilCallback(
-    ({ reset }) =>
-      (): void => {
-        for (const toolCallId of knownSandboxAtomKeys.current) {
-          reset(sandboxStartingByToolCallId(toolCallId));
-        }
-        knownSandboxAtomKeys.current.clear();
-      },
-    [],
-  );
+  const resetSandboxAtoms = useCallback((): void => {
+    for (const toolCallId of knownSandboxAtomKeys.current) {
+      sandboxStore.set(sandboxStartingByToolCallId(toolCallId), false);
+    }
+    knownSandboxAtomKeys.current.clear();
+  }, [sandboxStore]);
 
   /** PTC tool call ids with a live trace, so the atoms can be released. */
   const knownPtcAtomKeys = useRef(new Set<string>());
@@ -723,6 +720,11 @@ export default function useStepHandler({
       const shouldRemoveRegenerateResponse = (message: TMessage, responseMessageId: string) =>
         submission.isRegenerate &&
         !message.isCreatedByUser &&
+        /** A compaction's preliminary response is `${anchorId}_`. The ordinary
+         *  regenerate alias set strips that suffix, but here the base ID is the
+         *  assistant ANCHOR, not a response being replaced. Keep it so the
+         *  summary remains its child instead of becoming an orphan root. */
+        (submission.compact !== true || message.messageId !== userMessage.messageId) &&
         getRegenerateResponseIds(responseMessageId).has(message.messageId);
       const shouldRemoveInitialResponse = (message: TMessage, responseMessageId: string) => {
         const initialResponseId = submission.initialResponse?.messageId;
@@ -1355,6 +1357,7 @@ export default function useStepHandler({
           [ContentTypes.TOOL_CALL]: {
             ...existingToolCall,
             runStepStatus: closed.status,
+            ...getRunStepCloseMetadata(closed),
             ...(durationMs != null && { runStepDurationMs: durationMs }),
           },
         };
@@ -1382,6 +1385,18 @@ export default function useStepHandler({
           responseMessageId = submission?.initialResponse?.messageId ?? '';
         }
         applySubagentUpdate(stepEvent.data, responseMessageId);
+        if (
+          stepEvent.data.phase === 'start' ||
+          stepEvent.data.phase === 'stop' ||
+          stepEvent.data.phase === 'error'
+        ) {
+          const conversationId = [
+            submission?.userMessage?.conversationId,
+            submission?.initialResponse?.conversationId,
+            submission?.conversation?.conversationId,
+          ].find((id) => id && id !== Constants.NEW_CONVO && id !== Constants.PENDING_CONVO);
+          if (conversationId) onSubagentIndexChange?.(conversationId);
+        }
       } else if (stepEvent.event === StepEvents.ON_SUMMARIZE_START) {
         announcePolite({ message: 'summarize_started', isStatus: true });
       } else if (stepEvent.event === StepEvents.ON_SUMMARIZE_DELTA) {
@@ -1440,37 +1455,52 @@ export default function useStepHandler({
           return;
         }
 
-        if (completeData.error) {
-          const filtered = targetMessage.content.filter(
-            (part) =>
-              part?.type !== ContentTypes.SUMMARY || !(part as SummaryContentPart).summarizing,
-          );
-          if (filtered.length !== targetMessage.content.length) {
-            announcePolite({ message: 'summarize_failed', isStatus: true });
-            const cleaned = { ...targetMessage, content: filtered };
-            const currentMessages = submission.isRegenerate ? messages : getMessages() || [];
-            messageMap.current.set(completeMessageId, cleaned);
-            setMessages(mergeResponseMessage(currentMessages, cleaned, completeMessageId));
-          }
-        } else {
-          let didFinalize = false;
-          const updatedContent = targetMessage.content.map((part) => {
-            if (part?.type === ContentTypes.SUMMARY && (part as SummaryContentPart).summarizing) {
-              didFinalize = true;
-              if (!completeData.summary) {
-                return { ...part, summarizing: false } as SummaryContentPart;
-              }
-              return { ...completeData.summary, summarizing: false } as SummaryContentPart;
-            }
+        /**
+         * Scoped to the owning step's slot when the step is known: a global
+         * scan finalizes a NEWER round's in-flight part when summarize
+         * cycles run back-to-back (tiny context windows re-trigger
+         * summarization every graph step). Unknown step falls back to
+         * finalizing every in-flight part.
+         */
+        const completeIndex =
+          completeRunStep != null ? completeRunStep.index + editPrefixOffset : -1;
+        let didFinalize = false;
+        const updatedContent = targetMessage.content.map((part, index) => {
+          if (part?.type !== ContentTypes.SUMMARY || !(part as SummaryContentPart).summarizing) {
             return part;
-          });
-          if (didFinalize) {
-            announcePolite({ message: 'summarize_completed', isStatus: true });
-            const finalized = { ...targetMessage, content: updatedContent };
-            const currentMessages = submission.isRegenerate ? messages : getMessages() || [];
-            messageMap.current.set(completeMessageId, finalized);
-            setMessages(mergeResponseMessage(currentMessages, finalized, completeMessageId));
           }
+          if (completeIndex >= 0 && index !== completeIndex) {
+            return part;
+          }
+          didFinalize = true;
+          if (!completeData.error && completeData.summary) {
+            return { ...completeData.summary, summarizing: false } as SummaryContentPart;
+          }
+          /**
+           * Failed rounds keep their slot. Splicing the part out shifts every
+           * later part under the index-keyed renderer (remounting rows and
+           * collapsing whatever the user expanded mid-stream) and breaks the
+           * content-position == step-index invariant that `updateContent`
+           * writes rely on. Flipping the flag alone hides an empty row
+           * (`Summary` renders null without text) and matches the persisted
+           * message, which retains the part server-side. An errored round
+           * carries `failed` so partial deltas that already streamed in are
+           * not presented as a completed summary.
+           */
+          if (completeData.error) {
+            return { ...part, summarizing: false, failed: true } as SummaryContentPart;
+          }
+          return { ...part, summarizing: false } as SummaryContentPart;
+        });
+        if (didFinalize) {
+          announcePolite({
+            message: completeData.error ? 'summarize_failed' : 'summarize_completed',
+            isStatus: true,
+          });
+          const finalized = { ...targetMessage, content: updatedContent };
+          const currentMessages = submission.isRegenerate ? messages : getMessages() || [];
+          messageMap.current.set(completeMessageId, finalized);
+          setMessages(mergeResponseMessage(currentMessages, finalized, completeMessageId));
         }
       } else {
         const _exhaustive: never = stepEvent;
@@ -1485,6 +1515,7 @@ export default function useStepHandler({
       calculateContentIndex,
       getCurrentMessages,
       applySubagentUpdate,
+      onSubagentIndexChange,
       setSandboxStarting,
       clearSandboxStarting,
       applyPtcToolCall,

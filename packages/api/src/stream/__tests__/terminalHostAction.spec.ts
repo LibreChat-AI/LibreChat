@@ -27,6 +27,97 @@ describe('GenerationJobManager terminal host actions', () => {
     await manager.destroy();
   });
 
+  it.each(['ordinary', 'detached'])(
+    'all deletion callers discover %s terminal host actions outside owner membership',
+    async (lane) => {
+      const job = await manager.createJob('pending-host', 'user-1', 'conversation');
+      await store.transitionStatus('pending-host', {
+        from: 'running',
+        to: 'complete',
+        expectCreatedAt: job.createdAt,
+        patch: { completedAt: Date.now(), providerDrained: true, terminalHostActionPending: true },
+      });
+      Object.assign(store, { getCleanupJobIdsByUser: undefined });
+      const terminal = (await store.getJob('pending-host'))!;
+      jest.spyOn(store, 'getRetainedJobIdsByUser').mockResolvedValue([]);
+      const rows = [
+        terminal,
+        { ...terminal, streamId: 'foreign-user', userId: 'user-2' },
+        { ...terminal, streamId: 'foreign-tenant', tenantId: 'tenant-b' },
+      ];
+      jest
+        .spyOn(store, 'getTerminalHostActionJobs')
+        .mockResolvedValue(lane === 'ordinary' ? rows : []);
+      Object.assign(store, {
+        getDetachedAgentEventTerminalHostActionJobs: jest
+          .fn()
+          .mockResolvedValue(lane === 'detached' ? rows : []),
+      });
+      expect(await manager.getAccountCleanupJobIdsForUser('user-1', 'tenant-a')).toEqual([
+        'pending-host',
+      ]);
+      expect(await manager.getCleanupBlockingJobIdsForUser('user-1', 'tenant-a')).toEqual([
+        'pending-host',
+      ]);
+      expect(
+        await manager.getCleanupBlockingJobIdsForConversations(
+          'user-1',
+          ['conversation'],
+          'tenant-a',
+        ),
+      ).toEqual(['pending-host']);
+      expect(
+        await manager.getCleanupBlockingJobIdsForConversations('user-1', ['unrelated'], 'tenant-a'),
+      ).toEqual([]);
+      expect((await manager.getJob('pending-host'))?.metadata?.terminalHostActionPending).toBe(
+        true,
+      );
+    },
+  );
+
+  it('owner queries retain terminal obligations through active polling without global scans', async () => {
+    const job = await manager.createJob('owner-host', 'user-1', 'conversation');
+    await store.transitionStatus('owner-host', {
+      from: 'running',
+      to: 'complete',
+      expectCreatedAt: job.createdAt,
+      patch: { completedAt: Date.now(), providerDrained: true, terminalHostActionPending: true },
+    });
+    const global = jest.spyOn(store, 'getTerminalHostActionJobs');
+    expect(await manager.getActiveJobIdsForUser('user-1')).toEqual([]);
+    expect(await manager.getCleanupBlockingJobIdsForUser('user-1')).toEqual(['owner-host']);
+    expect(global).not.toHaveBeenCalled();
+    await store.clearTerminalHostAction('owner-host', job.createdAt);
+    expect(await manager.getCleanupBlockingJobIdsForUser('user-1')).toEqual([]);
+  });
+
+  it('durable cleanup preserves stale terminal-persistence recovery', async () => {
+    const job = await manager.createJob('stale-persistence', 'user-1', 'conversation');
+    await store.transitionStatus('stale-persistence', {
+      from: 'running',
+      to: 'complete',
+      expectCreatedAt: job.createdAt,
+      patch: { completedAt: 1, terminalPersistenceStartedAt: 1, terminalPersistencePending: true },
+    });
+    expect(await manager.getCleanupJob('stale-persistence')).toMatchObject({
+      createdAt: job.createdAt,
+      metadata: { terminalPersistencePending: false },
+    });
+  });
+
+  it('durable cleanup still sees a replacement when runtime attachment loses its epoch', async () => {
+    const first = await store.createJob('remote', 'user-1', 'conversation');
+    const read = store.getJob.bind(store);
+    const replacement = await store.createJob('remote', 'user-1', 'conversation');
+    jest.spyOn(store, 'getJob').mockResolvedValueOnce(first).mockImplementation(read);
+    expect(await manager.getJob('remote')).toBeUndefined();
+    expect(await manager.getCleanupJob('remote')).toMatchObject({
+      createdAt: replacement.createdAt,
+      status: 'running',
+      metadata: { userId: 'user-1' },
+    });
+  });
+
   it('verifies detached terminal outbox persistence against the exact generation', async () => {
     const streamId = 'conversation-detached-outbox';
     const job = await manager.createJob(streamId, 'user-1', streamId);

@@ -1,8 +1,8 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { Skeleton } from '@librechat/client';
 import { apiBaseUrl } from 'librechat-data-provider';
+import { cn, toAbsoluteFilePath } from '~/utils';
 import DialogImage from './DialogImage';
-import { cn } from '~/utils';
 
 /** Max display height for chat images (Tailwind JIT class) */
 export const IMAGE_MAX_H = 'max-h-[45vh]' as const;
@@ -28,6 +28,7 @@ const Image = ({
   imagePath,
   altText,
   className,
+  alignRight = false,
   args,
   width,
   height,
@@ -35,6 +36,7 @@ const Image = ({
   imagePath: string;
   altText: string;
   className?: string;
+  alignRight?: boolean;
   args?: {
     prompt?: string;
     quality?: 'low' | 'medium' | 'high';
@@ -48,21 +50,10 @@ const Image = ({
   const [isOpen, setIsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  const absoluteImageUrl = useMemo(() => {
-    if (!imagePath) return imagePath;
-
-    if (imagePath.startsWith('http') || imagePath.startsWith('data:')) {
-      return imagePath;
-    }
-
-    // Root-relative server paths (`/images/...` static, `/api/share/...` share
-    // routes) are resolved against the API base so they load under a subpath.
-    if (imagePath.startsWith('/images/') || imagePath.startsWith('/api/')) {
-      return `${apiBaseUrl()}${imagePath}`;
-    }
-
-    return imagePath;
-  }, [imagePath]);
+  /** Root-relative server paths (`/images/...` static, `/api/...` downloads and
+   *  share routes) are resolved against the API base so they load under a
+   *  subpath deployment. */
+  const absoluteImageUrl = useMemo(() => toAbsoluteFilePath(imagePath, apiBaseUrl()), [imagePath]);
 
   const downloadImage = async () => {
     try {
@@ -105,7 +96,7 @@ const Image = ({
   const showSkeleton = hasDimensions && !paintedUrls.has(absoluteImageUrl);
 
   return (
-    <div>
+    <div className={alignRight ? 'ml-auto' : undefined}>
       <button
         ref={triggerRef}
         type="button"

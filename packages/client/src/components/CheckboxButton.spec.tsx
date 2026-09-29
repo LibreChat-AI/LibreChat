@@ -7,7 +7,8 @@ describe('CheckboxButton', () => {
     render(<CheckboxButton label="Tools" icon={<span>icon</span>} />);
 
     expect(screen.getByRole('checkbox', { name: 'Tools' })).toHaveClass(
-      'size-theme-control',
+      'h-theme-control',
+      'w-theme-control',
       'rounded-theme-control-round',
       'gap-theme-compact',
       'p-theme-compact',

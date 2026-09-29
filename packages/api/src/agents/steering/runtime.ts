@@ -80,6 +80,8 @@ export interface SteerDrainHookOptions {
    * never dropped because an attachment could not be encoded.
    */
   buildMedia?: (item: SteerQueueItem) => Promise<SteerMediaResult | undefined>;
+  /** Repairs the durable steer part when media degrades to text-only. */
+  onMediaError?: (item: SteerQueueItem, error: unknown) => void | Promise<void>;
 }
 
 /**
@@ -102,7 +104,7 @@ async function drainAndBuildInjections(
   claim: () => Promise<SteerQueueItem[]> = () =>
     GenerationJobManager.steering.drain(opts.streamId, opts.jobCreatedAt),
 ): Promise<InjectedMessage[]> {
-  const { streamId, jobCreatedAt, applySteer, buildMedia } = opts;
+  const { streamId, jobCreatedAt, applySteer, buildMedia, onMediaError } = opts;
   // The replacement guard lives INSIDE the store's atomic drain: a separate
   // check-then-drain could still consume a replacement job's queue if
   // createJob landed between the two steps.
@@ -181,6 +183,14 @@ async function drainAndBuildInjections(
             `[steering] Failed to encode steer media for ${streamId} steer=${item.steerId}; injecting text only:`,
             error,
           );
+          try {
+            await onMediaError?.(item, error);
+          } catch (repairError) {
+            logger.error(
+              `[steering] Failed to repair text-only steer persistence for ${streamId} steer=${item.steerId}:`,
+              repairError,
+            );
+          }
         }
       }
       /** The media path already merged quotes into its text part; the plain
@@ -315,10 +325,26 @@ export function createSteerTerminalContinuationHook(
  * job's armed preempt requests, exactly as the SDK contract requires: it
  * keeps returning true until the boundary drain (either boundary) clears the
  * request via `noteSteersRemoved`. Never consumes on read.
+ *
+ * `subscribe` adds the wake channel the poll alone cannot cover. The SDK only
+ * reads `shouldPreempt` per streamed chunk, so an interrupt armed while the
+ * model is silent — or while it streams reasoning that will never become
+ * sealable — would otherwise wait for the entire turn and land as a terminal
+ * continuation. Woken, the SDK discards the unstarted turn and re-issues it
+ * with the steer appended. The callback is a hint only; the poll above stays
+ * the authority, so the level-triggered contract is unchanged.
+ *
+ * Fenced on `jobCreatedAt` for the same reason every other preempt entry point
+ * is: a run wired to a generation that has since been replaced must not be
+ * woken by the replacement's arms.
  */
-export function createSteerPreemptPoll(streamId: string): StreamPreemption {
+export function createSteerPreemptPoll(streamId: string, jobCreatedAt?: number): StreamPreemption {
   return {
     shouldPreempt: () => GenerationJobManager.isPreemptRequested(streamId),
+    ...(isSteerPreemptRestartSupported() && {
+      subscribe: (wake: () => void) =>
+        GenerationJobManager.subscribePreempt(streamId, wake, jobCreatedAt),
+    }),
   };
 }
 
@@ -331,6 +357,22 @@ export function createSteerPreemptPoll(streamId: string): StreamPreemption {
 export function isSteerPreemptSupported(): boolean {
   const sdk = agentsSdk as { HOOK_PREEMPT_BOUNDARY_CAPABLE?: boolean };
   return isSteeringSupported() && sdk.HOOK_PREEMPT_BOUNDARY_CAPABLE === true;
+}
+
+/**
+ * Whether the installed SDK can honor a preempt on a turn that has produced
+ * nothing to keep — discarding the in-flight model call and re-issuing it
+ * rather than waiting for a sealable chunk that a silent or thinking turn
+ * never reaches.
+ *
+ * A THIRD probe, separate from `isSteerPreemptSupported()`, because the two
+ * differ in exactly the window users reach for an interrupt most. An SDK with
+ * only the seal path still accepts the request and still labels the chip
+ * "interrupting" — it simply cannot act until the model starts writing.
+ */
+export function isSteerPreemptRestartSupported(): boolean {
+  const sdk = agentsSdk as { HOOK_PREEMPT_RESTART_CAPABLE?: boolean };
+  return isSteerPreemptSupported() && sdk.HOOK_PREEMPT_RESTART_CAPABLE === true;
 }
 
 export function isSteerTerminalContinuationSupported(): boolean {

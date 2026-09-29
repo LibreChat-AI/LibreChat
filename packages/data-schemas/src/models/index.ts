@@ -1,5 +1,7 @@
+import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
+import { getTenantIndexMigrationHint } from '~/migrations/tenantIndexes';
 import { createSkillSyncCredentialModel } from './skillSyncCredential';
 import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
@@ -89,6 +91,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentTriggerDelivery: ReturnType<typeof createAgentTriggerDeliveryModel>;
   AgentTriggerLaneSequence: ReturnType<typeof createAgentTriggerLaneSequenceModel>;
   AgentTriggerUserPurge: ReturnType<typeof createAgentTriggerUserPurgeModel>;
+  AgentQueuedTurn: ReturnType<typeof createAgentQueuedTurnModel>;
+  AgentQueuedTurnSequence: ReturnType<typeof createAgentQueuedTurnSequenceModel>;
   Schedule: ReturnType<typeof createScheduleModel>;
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
@@ -136,6 +140,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentTriggerDelivery: createAgentTriggerDeliveryModel(mongoose),
     AgentTriggerLaneSequence: createAgentTriggerLaneSequenceModel(mongoose),
     AgentTriggerUserPurge: createAgentTriggerUserPurgeModel(mongoose),
+    AgentQueuedTurn: createAgentQueuedTurnModel(mongoose),
+    AgentQueuedTurnSequence: createAgentQueuedTurnSequenceModel(mongoose),
     Schedule: createScheduleModel(mongoose),
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),
@@ -151,6 +157,11 @@ export function createModels(mongoose: typeof import('mongoose')): {
       model.on('index', (error?: Error) => {
         if (error) {
           logger.error(`Index build failed for "${model.modelName}": ${error.message}`);
+          // eslint-disable-next-line no-restricted-syntax -- Collection name metadata only, no raw driver operations.
+          const hint = getTenantIndexMigrationHint(model.collection.collectionName, error);
+          if (hint) {
+            logger.warn(hint);
+          }
         }
       });
     }

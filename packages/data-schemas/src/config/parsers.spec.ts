@@ -48,6 +48,9 @@ describe('redactMessage', () => {
     expect(redactMessage('token: sk-abc123def')).toBe('token: sk-[REDACTED]');
     expect(redactMessage('auth Bearer secretvalue')).toBe('auth Bearer [REDACTED]');
     expect(redactMessage('api-key: secretvalue')).toBe('api-key: [REDACTED]');
+    expect(redactMessage('Authorization: Basic basic-credentials')).toBe(
+      'Authorization: [REDACTED]',
+    );
     expect(redactMessage('https://example.test/?key=secretvalue&next=true')).toBe(
       'https://example.test/?key=[REDACTED]&next=true',
     );
@@ -60,6 +63,53 @@ describe('redactMessage', () => {
     expect(redactMessage('task-runner failed')).toBe('task-runner failed');
     expect(redactMessage('mask-value computed')).toBe('mask-value computed');
     expect(redactMessage('monkey=10 bananas')).toBe('monkey=10 bananas');
+  });
+
+  it('redacts OAuth and signed URL parameters', () => {
+    const message =
+      'https://example.test/callback?code=auth-code&code_verifier=pkce-secret&client_secret=oauth-secret&X-Amz-Signature=aws-signature&X-Amz-Security-Token=session-token&next=true';
+
+    expect(redactMessage(message)).toBe(
+      'https://example.test/callback?code=[REDACTED]&code_verifier=[REDACTED]&client_secret=[REDACTED]&X-Amz-Signature=[REDACTED]&X-Amz-Security-Token=[REDACTED]&next=true',
+    );
+  });
+
+  it('redacts OAuth secrets in JSON-formatted strings', () => {
+    const message =
+      'oauth failed: {"refresh_token":"refresh-json-canary","client_secret": "client-json-canary","client_assertion":"assertion-json-canary","code":"code-json-canary","safe":"visible"}';
+
+    expect(redactMessage(message)).toBe(
+      'oauth failed: {"refresh_token":"[REDACTED]","client_secret": "[REDACTED]","client_assertion":"[REDACTED]","code":"[REDACTED]","safe":"visible"}',
+    );
+  });
+
+  it('redacts escaped JSON OAuth secret values through the closing quote', () => {
+    const secret = 'prefix"secret-tail\\suffix';
+    const message = `oauth failed: ${JSON.stringify({ refresh_token: secret, safe: 'visible' })}`;
+    const redacted = redactMessage(message);
+
+    expect(redacted).toBe('oauth failed: {"refresh_token":"[REDACTED]","safe":"visible"}');
+    expect(redacted).not.toContain('secret-tail');
+    expect(redacted).not.toContain('suffix');
+  });
+
+  it('redacts complete JWTs, cookies, and URI userinfo', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQtdXNlciJ9.c2lnbmF0dXJlLXNlY3JldA';
+    const message =
+      `token=${jwt} Cookie: session=cookie-secret; refresh=refresh-secret\n` +
+      'database=postgresql://service-user:database-secret@example.test/app\n' +
+      'cache=redis://:password-only-canary@example.test:6379';
+    const redacted = redactMessage(message);
+
+    expect(redacted).not.toContain(jwt);
+    expect(redacted).not.toContain('cookie-secret');
+    expect(redacted).not.toContain('refresh-secret');
+    expect(redacted).not.toContain('database-secret');
+    expect(redacted).not.toContain('password-only-canary');
+    expect(redacted).toContain('token=[REDACTED]');
+    expect(redacted).toContain('Cookie: [REDACTED]');
+    expect(redacted).toContain('postgresql://[REDACTED]@example.test/app');
+    expect(redacted).toContain('redis://[REDACTED]@example.test:6379');
   });
 });
 
@@ -114,6 +164,9 @@ describe('redactFormat', () => {
       nested: { token: 'secretvalue' },
       safe: 'secretvalue',
       'x-api-key': 'secretvalue',
+      cookie: 'session=secretvalue',
+      code_verifier: 'secretvalue',
+      connectionString: 'postgresql://user:secretvalue@example.test/db',
     };
     const info = runRedactFormat({
       level: 'info',
@@ -126,6 +179,9 @@ describe('redactFormat', () => {
     expect(splat[0].authorization).toBe('[REDACTED]');
     expect(splat[0].nested.token).toBe('[REDACTED]');
     expect(splat[0]['x-api-key']).toBe('[REDACTED]');
+    expect(splat[0].cookie).toBe('[REDACTED]');
+    expect(splat[0].code_verifier).toBe('[REDACTED]');
+    expect(splat[0].connectionString).toBe('[REDACTED]');
     expect(splat[0].safe).toBe('secretvalue');
     expect(metadata.apiKey).toBe('secretvalue');
     expect(metadata.nested.token).toBe('secretvalue');
@@ -238,6 +294,24 @@ describe('redactFormat', () => {
     expect(Object.prototype.propertyIsEnumerable.call(splat[0], 'stack')).toBe(false);
     expect(error.message).toBe('Bearer secretvalue');
     expect(error.stack).toContain('Bearer secretvalue');
+  });
+
+  it('redacts JSON OAuth bodies and password-only URIs inside errors', () => {
+    const error = new Error(
+      'OAuth failed: {"refresh_token":"error-json-canary"} redis://:error-uri-canary@example.test',
+    );
+
+    const info = runRedactFormat({
+      level: 'error',
+      message: 'token refresh failed',
+      [SPLAT_SYMBOL]: [error],
+    });
+    const redactedError = (info[SPLAT_SYMBOL] as Error[])[0];
+
+    expect(redactedError.message).toContain('"refresh_token":"[REDACTED]"');
+    expect(redactedError.message).toContain('redis://[REDACTED]@example.test');
+    expect(redactedError.message).not.toContain('error-json-canary');
+    expect(redactedError.message).not.toContain('error-uri-canary');
   });
 
   it('preserves contextual messages when redacting error splat arguments', () => {

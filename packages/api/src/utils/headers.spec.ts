@@ -128,22 +128,24 @@ describe('resolveConfigHeaders', () => {
     });
   });
 
-  it('leaves Google customHeaders untouched (resolved at init, not request time)', () => {
+  it('resolves only tenant placeholders in Google customHeaders', () => {
     const llmConfig = {
       customHeaders: {
         'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'X-Tenant-Id': '{{LIBRECHAT_USER_TENANT_ID}}',
         Authorization: 'Bearer ${SOME_KEY}',
       },
     } as unknown as RunLLMConfig;
 
-    resolveConfigHeaders({ llmConfig, user, body });
+    resolveConfigHeaders({ llmConfig, user, tenantId: 'request-tenant', body });
 
-    // Native Google headers are resolved in initializeGoogle; resolveConfigHeaders
-    // must not re-process them (keeps the key-derived auth out of env expansion).
+    // Native Google headers are otherwise resolved in initializeGoogle. In
+    // particular, provider auth must never pass through environment expansion.
     expect(
       (llmConfig as unknown as { customHeaders: Record<string, string> }).customHeaders,
     ).toEqual({
       'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      'X-Tenant-Id': 'request-tenant',
       Authorization: 'Bearer ${SOME_KEY}',
     });
   });
@@ -177,6 +179,36 @@ describe('resolveConfigHeaders', () => {
 
     expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-Gateway-Key': 'secret-key' });
     delete process.env.HEADERS_SPEC_GATEWAY_KEY;
+  });
+
+  it('resolves model tenant aliases without exposing tenantId through the safe user', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: {
+          'X-Tenant-ID': '{{LIBRECHAT_USER_TENANT_ID}}',
+          'X-Canonical-Tenant-ID': '{{LIBRECHAT_USER_TENANTID}}',
+        },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({ llmConfig, user, tenantId: 'request-tenant', body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({
+      'X-Tenant-ID': 'request-tenant',
+      'X-Canonical-Tenant-ID': 'request-tenant',
+    });
+  });
+
+  it('blanks model tenant placeholders when the run has no tenant', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: { 'X-Tenant-ID': '{{LIBRECHAT_USER_TENANT_ID}}' },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({ llmConfig, user, body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-Tenant-ID': '' });
   });
 
   it('leaves configs without header maps untouched', () => {

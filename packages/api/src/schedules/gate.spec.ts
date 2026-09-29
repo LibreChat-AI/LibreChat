@@ -31,6 +31,7 @@ function makeService(base: Cfg, merged: Cfg = base) {
     findBalance: jest.fn(async () => null),
     upsertBalance: jest.fn(async () => null),
     initializeNullBalance: jest.fn(async () => null),
+    preflightMCP: jest.fn().mockResolvedValue([]),
     resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
     getChatProject: jest.fn(async () => ({ _id: 'proj-1' })),
     isUserDeleting: jest.fn(async () => false),
@@ -46,7 +47,10 @@ const limits = {
   maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
+  admissionConcurrency: 20,
   fireConcurrency: 5,
+  mcpPreflightConcurrency: 3,
+  mcpPreflightTimeoutMs: 300_000,
   requireProject: false,
 };
 
@@ -121,10 +125,16 @@ describe('v1 experimental gate, asserted at real entry points', () => {
     expect((await makeService({ interfaceConfig: { schedules: true } }).getLimits()).enabled).toBe(
       true,
     );
-    const tuned = makeService({ interfaceConfig: { schedules: { maxPerUser: 3 } } });
+    const tuned = makeService({
+      interfaceConfig: {
+        schedules: { maxPerUser: 3, admissionConcurrency: 12, mcpPreflightConcurrency: 2 },
+      },
+    });
     const resolved = await tuned.getLimits();
     expect(resolved.enabled).toBe(true);
     expect(resolved.maxPerUser).toBe(3);
+    expect(resolved.admissionConcurrency).toBe(12);
+    expect(resolved.mcpPreflightConcurrency).toBe(2);
   });
 
   it('REFUSES a manual run-now while the global kill switch is on', async () => {
@@ -157,6 +167,7 @@ describe('v1 experimental gate, asserted at real entry points', () => {
         findBalance: jest.fn(),
         upsertBalance: jest.fn(),
         initializeNullBalance: jest.fn(),
+        preflightMCP: jest.fn().mockResolvedValue([]),
         resolveAgentFireAccess: jest.fn(),
         getChatProject: jest.fn(),
       } as unknown as SchedulesServiceDeps),

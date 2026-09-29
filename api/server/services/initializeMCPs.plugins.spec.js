@@ -51,6 +51,10 @@ jest.mock('./Config/mcp', () => ({
   updateMCPServerTools: jest.fn(),
 }));
 
+jest.mock('./MCPAuthorizationFenceRetry', () => ({
+  startMCPAuthorizationFenceRetryWorker: jest.fn(),
+}));
+
 const mockGetAppConfig = jest.fn();
 const mockMergeAppTools = jest.fn();
 const mockSyncStaticTools = jest.fn();

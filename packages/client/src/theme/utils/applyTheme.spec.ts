@@ -1,7 +1,11 @@
 import type { ThemeDefinition } from '../types';
-import applyTheme, { applyResolvedTheme, clearAppliedTheme } from './applyTheme';
+import applyTheme, {
+  applyResolvedTheme,
+  clearAppliedTheme,
+  themeOwnedProperties,
+} from './applyTheme';
+import { highContrastTheme, resolveTheme } from '../registry';
 import { defaultTheme } from '../themes/default';
-import { resolveTheme } from '../registry';
 
 const semanticProperties = [
   '--link',
@@ -10,6 +14,9 @@ const semanticProperties = [
   '--accent-primary',
   '--accent-primary-hover',
   '--text-destructive',
+  '--text-muted',
+  '--chart-widget-surface',
+  '--chart-widget-stroke',
   '--border-destructive',
   '--status-success',
   '--status-success-subtle',
@@ -128,6 +135,146 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--theme-control-radius')).toBe('0.25rem');
     expect(root.style.getPropertyValue('--theme-surface-radius')).toBe('0.5rem');
     expect(root.style.getPropertyValue('--theme-motion-fast')).toBe('80ms');
+  });
+
+  it('applies the resolved high-contrast code surface instead of the stock grey', () => {
+    const root = document.documentElement;
+
+    applyResolvedTheme(resolveTheme(highContrastTheme, 'dark'), root);
+
+    expect(root.style.getPropertyValue('--surface-code')).toBe('0 0 0');
+  });
+
+  /** The sweep under an in-flight label is painted in CSS, so it is only
+   *  themeable if its stops are theme-owned properties. A dark theme is the
+   *  case that matters: `style.css` declares a `.dark` base outright, which a
+   *  theme can only outrank by having these applied to the document element. */
+  it('lets a dark theme restate the in-flight label sweep', () => {
+    const root = document.documentElement;
+
+    applyResolvedTheme(
+      resolveTheme(
+        {
+          version: 1,
+          name: 'shimmer-reference',
+          modes: {
+            dark: { colors: { 'rgb-shimmer-base': '12 200 180', 'rgb-shimmer-dip': '4 60 55' } },
+          },
+        },
+        'dark',
+      ),
+      root,
+    );
+
+    expect(root.style.getPropertyValue('--shimmer-base')).toBe('12 200 180');
+    expect(root.style.getPropertyValue('--shimmer-dip')).toBe('4 60 55');
+    expect(themeOwnedProperties).toEqual(
+      expect.arrayContaining(['--shimmer-base', '--shimmer-dip']),
+    );
+
+    clearAppliedTheme(root);
+    expect(root.style.getPropertyValue('--shimmer-base')).toBe('');
+  });
+
+  /** Legacy `themeRGB` themes predate the shimmer stops and this adapter applies
+   *  only the keys they name, so a stored theme would otherwise keep the stock
+   *  sweep while the rest of its palette moved — and in dark the CSS cannot
+   *  recover, since `.dark` declares a base that outranks the fallback. */
+  it('carries a legacy theme without shimmer keys onto its own text color', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-primary': '10 20 30' }, root);
+
+    expect(root.style.getPropertyValue('--shimmer-base')).toBe('10 20 30');
+  });
+
+  it('leaves a legacy theme that names its own shimmer base alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-primary': '10 20 30', 'rgb-shimmer-base': '90 80 70' }, root);
+
+    expect(root.style.getPropertyValue('--shimmer-base')).toBe('90 80 70');
+  });
+
+  it('carries a legacy theme without muted text onto its tertiary text color', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-tertiary': '80 81 82' }, root);
+
+    expect(root.style.getPropertyValue('--text-muted')).toBe('80 81 82');
+  });
+
+  it('leaves a legacy theme that names muted text alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-tertiary': '80 81 82', 'rgb-text-muted': '100 101 102' }, root);
+
+    expect(root.style.getPropertyValue('--text-muted')).toBe('100 101 102');
+  });
+
+  it('carries legacy panel colors onto chart widgets', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-border-light': '30 31 32' }, root);
+
+    expect(root.style.getPropertyValue('--chart-widget-surface')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--chart-widget-stroke')).toBe('30 31 32');
+  });
+
+  it('leaves explicit chart widget colors alone', () => {
+    const root = document.documentElement;
+
+    applyTheme(
+      {
+        'rgb-surface-primary': '20 21 22',
+        'rgb-border-light': '30 31 32',
+        'rgb-chart-widget-surface': '40 41 42',
+        'rgb-chart-widget-stroke': '50 51 52',
+      },
+      root,
+    );
+
+    expect(root.style.getPropertyValue('--chart-widget-surface')).toBe('40 41 42');
+    expect(root.style.getPropertyValue('--chart-widget-stroke')).toBe('50 51 52');
+  });
+
+  it('carries a legacy theme without a verified fill onto its success fill', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-status-success-strong': '8 135 89' }, root);
+
+    expect(root.style.getPropertyValue('--status-verified')).toBe('8 135 89');
+  });
+
+  it('leaves a legacy theme that names its own verified fill alone', () => {
+    const root = document.documentElement;
+
+    applyTheme(
+      { 'rgb-status-success-strong': '8 135 89', 'rgb-status-verified': '26 127 216' },
+      root,
+    );
+
+    expect(root.style.getPropertyValue('--status-verified')).toBe('26 127 216');
+  });
+
+  it('carries a legacy theme that names no fills onto the mode palette it inherits', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-tertiary': '30 30 38' }, root, {
+      'rgb-status-success-strong': '8 135 89',
+    });
+
+    expect(root.style.getPropertyValue('--status-verified')).toBe('8 135 89');
+  });
+
+  it('leaves the verified fill alone for a legacy theme that repaints nothing around the mark', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-primary': '10 20 30' }, root, {
+      'rgb-status-success-strong': '8 135 89',
+    });
+
+    expect(root.style.getPropertyValue('--status-verified')).toBe('');
   });
 
   it('clears only properties owned by the theme module', () => {

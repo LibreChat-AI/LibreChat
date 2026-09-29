@@ -14,6 +14,9 @@ describe('cacheConfig', () => {
     delete process.env.USE_REDIS_CLUSTER;
     delete process.env.REDIS_CLUSTER_SAFE_DELETE;
     delete process.env.REDIS_PING_INTERVAL;
+    delete process.env.REDIS_PING_TIMEOUT;
+    delete process.env.REDIS_SUBSCRIBER_PING_INTERVAL;
+    delete process.env.REDIS_KEEP_ALIVE;
     delete process.env.FORCED_IN_MEMORY_CACHE_NAMESPACES;
     delete process.env.VIOLATION_SCORE_TTL;
 
@@ -219,6 +222,26 @@ describe('cacheConfig', () => {
 
       const { cacheConfig } = await import('../cacheConfig');
       expect(cacheConfig.REDIS_PING_INTERVAL).toBe(300);
+    });
+  });
+
+  describe('Redis dead-socket detection configuration', () => {
+    test('defaults the heartbeat deadline, subscriber interval, and keepalive', async () => {
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.REDIS_PING_TIMEOUT).toBe(5000);
+      expect(cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL).toBe(15);
+      expect(cacheConfig.REDIS_KEEP_ALIVE).toBe(10000);
+    });
+
+    test('reads the provided values, including zero to disable', async () => {
+      process.env.REDIS_PING_TIMEOUT = '2500';
+      process.env.REDIS_SUBSCRIBER_PING_INTERVAL = '0';
+      process.env.REDIS_KEEP_ALIVE = '0';
+
+      const { cacheConfig } = await import('../cacheConfig');
+      expect(cacheConfig.REDIS_PING_TIMEOUT).toBe(2500);
+      expect(cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL).toBe(0);
+      expect(cacheConfig.REDIS_KEEP_ALIVE).toBe(0);
     });
   });
 

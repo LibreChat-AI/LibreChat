@@ -33,6 +33,8 @@ jest.mock('~/hooks', () => ({
   useAdaptiveSSE: jest.fn(),
   useResumeOnLoad: jest.fn(),
   useQueueDrain: jest.fn(),
+  useQueuedTurnReveal: jest.fn(),
+  useScrollbarGutterSeed: jest.fn(),
 }));
 
 jest.mock('../Presentation', () => ({
@@ -40,7 +42,11 @@ jest.mock('../Presentation', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 jest.mock('../Header', () => ({ __esModule: true, default: () => <div /> }));
-jest.mock('../Footer', () => ({ __esModule: true, default: () => <div /> }));
+jest.mock('../Footer', () => ({
+  __esModule: true,
+  default: () => <div />,
+  useConfiguredFooter: () => false,
+}));
 jest.mock('../Landing', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('../Messages/MessagesView', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('../Input/ChatForm', () => ({ __esModule: true, default: () => <div /> }));
@@ -128,5 +134,14 @@ describe('ChatView composer column', () => {
     expect(composerColumn).not.toBeNull();
     expect(composerColumn).not.toHaveClass('overflow-y-auto');
     expect(composerColumn).not.toHaveClass('scrollbar-gutter-stable');
+  });
+
+  test('layers composer overlays above positioned tool glyphs in the message column', () => {
+    const { container } = render(<ChatView />);
+
+    const composerColumn = container.querySelector('.scrollbar-gutter-spacer');
+
+    expect(composerColumn).toHaveClass('[view-transition-name:chat-form]');
+    expect(composerColumn).toHaveClass('relative', 'z-10');
   });
 });

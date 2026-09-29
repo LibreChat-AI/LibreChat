@@ -1,10 +1,13 @@
+import { X } from 'lucide-react';
 import { JSX } from 'react/jsx-runtime';
 import * as RadixToast from '@radix-ui/react-toast';
 import { NotificationSeverity } from '~/common';
-import { useToast } from '~/hooks';
+import { useToast, useLocalize } from '~/hooks';
 
 export function Toast(): JSX.Element {
   const { toast, onOpenChange } = useToast();
+  const localize = useLocalize();
+  const persistent = toast.duration === Infinity;
   const severityClassName = {
     [NotificationSeverity.INFO]: 'border-status-info-strong bg-status-info-strong',
     [NotificationSeverity.SUCCESS]: 'border-status-success-strong bg-status-success-strong',
@@ -14,11 +17,13 @@ export function Toast(): JSX.Element {
 
   return (
     <RadixToast.Root
+      key={toast.id}
       open={toast.open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(open) => onOpenChange(open, toast.id)}
+      duration={toast.duration}
       className="toast-root"
       style={{
-        height: '74px',
+        minHeight: '74px',
         marginBottom: '0px',
       }}
     >
@@ -51,6 +56,14 @@ export function Toast(): JSX.Element {
           <RadixToast.Description className="flex-1 justify-center gap-2">
             <div className="whitespace-pre-wrap text-left">{toast.message}</div>
           </RadixToast.Description>
+          {persistent && (
+            <RadixToast.Close
+              aria-label={localize('com_ui_close')}
+              className="ml-2 inline-flex flex-shrink-0 flex-grow-0 items-center justify-center self-center rounded-sm opacity-80 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+            >
+              <X className="h-4 w-4" strokeWidth={3} />
+            </RadixToast.Close>
+          )}
         </div>
       </div>
     </RadixToast.Root>

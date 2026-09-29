@@ -29,6 +29,14 @@ jest.mock('@librechat/data-schemas', () => ({
 const mockGetAppConfig = jest.fn();
 const mockSyncStaticTools = jest.fn();
 const mockMergeAppTools = jest.fn();
+const mockInvalidateCachedTools = jest.fn();
+const mockStartMCPAuthorizationFenceRetryWorker = jest.fn();
+
+jest.mock('./MCPAuthorizationFenceRetry', () => ({
+  get startMCPAuthorizationFenceRetryWorker() {
+    return mockStartMCPAuthorizationFenceRetryWorker;
+  },
+}));
 
 jest.mock('./Config', () => ({
   get getAppConfig() {
@@ -39,6 +47,9 @@ jest.mock('./Config', () => ({
   },
   get syncStaticTools() {
     return mockSyncStaticTools;
+  },
+  get invalidateCachedTools() {
+    return mockInvalidateCachedTools;
   },
 }));
 
@@ -224,7 +235,13 @@ describe('initializeMCPs', () => {
 
       // MCPManager should be created with empty object when no configured servers
       expect(mockCreateMCPManager).toHaveBeenCalledTimes(1);
-      expect(mockCreateMCPManager).toHaveBeenCalledWith({});
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(
+        {},
+        {
+          catalogRecoveryMaxStateEntries: undefined,
+          catalogRecoveryMaxDetachedDiscoveries: undefined,
+        },
+      );
     });
 
     it('should initialize MCPManager with configured servers when provided', async () => {
@@ -236,7 +253,39 @@ describe('initializeMCPs', () => {
 
       await initializeMCPs();
 
-      expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers);
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(mcpServers, {
+        catalogRecoveryMaxStateEntries: undefined,
+        catalogRecoveryMaxDetachedDiscoveries: undefined,
+      });
+    });
+
+    it('sets process-wide recovery capacity from the base config', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        mcpConfig: {},
+        mcpSettings: {
+          catalogRecovery: {
+            maxStateEntries: 2500,
+            maxDetachedDiscoveries: 8,
+            authorizationFenceRetryIntervalMs: 15_000,
+            authorizationFenceRetryBatchSize: 250,
+            authorizationFenceTimeoutMs: 750,
+          },
+        },
+      });
+
+      await initializeMCPs();
+
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(
+        {},
+        {
+          catalogRecoveryMaxStateEntries: 2500,
+          catalogRecoveryMaxDetachedDiscoveries: 8,
+        },
+      );
+      expect(mockStartMCPAuthorizationFenceRetryWorker).toHaveBeenCalledWith(
+        mockInvalidateCachedTools,
+        { intervalMs: 15_000, batchSize: 250, attemptTimeoutMs: 750 },
+      );
     });
 
     it('should register app connections for graceful shutdown', async () => {
@@ -416,7 +465,13 @@ describe('initializeMCPs', () => {
       expect(mockCreateMCPManager).toHaveBeenCalledTimes(1);
 
       // Verify manager was created with empty config (not null/undefined)
-      expect(mockCreateMCPManager).toHaveBeenCalledWith({});
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(
+        {},
+        {
+          catalogRecoveryMaxStateEntries: undefined,
+          catalogRecoveryMaxDetachedDiscoveries: undefined,
+        },
+      );
     });
   });
 });

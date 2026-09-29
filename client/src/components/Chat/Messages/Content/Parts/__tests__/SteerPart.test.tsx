@@ -2,10 +2,12 @@ import React from 'react';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import { STEER_ICON } from '~/components/Chat/Steering/identity';
 import SteerPart from '../SteerPart';
 import store from '~/store';
 
 let mockShareContext: { isSharedConvo?: boolean; shareId?: string } = {};
+let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -13,11 +15,12 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/Providers', () => ({
   useShareContext: () => mockShareContext,
+  useFileMapContext: () => mockFileMap,
 }));
 
 jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
   __esModule: true,
-  default: () => null,
+  default: () => <time data-testid="steer-timestamp" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
@@ -36,8 +39,20 @@ jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
 
 jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileName }: { open: boolean; fileName: string }) =>
-    open ? <div data-testid="steer-file-preview">{fileName}</div> : null,
+  default: ({
+    open,
+    fileName,
+    deliveryPath,
+  }: {
+    open: boolean;
+    fileName: string;
+    deliveryPath?: string;
+  }) =>
+    open ? (
+      <div data-testid="steer-file-preview" data-delivery-path={deliveryPath}>
+        {fileName}
+      </div>
+    ) : null,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({
@@ -65,6 +80,7 @@ function renderPart(
 describe('SteerPart author label', () => {
   beforeEach(() => {
     mockShareContext = {};
+    mockFileMap = {};
   });
 
   it('labels with the logged-in user name in the owner view (username display on)', () => {
@@ -119,11 +135,25 @@ describe('SteerPart author label', () => {
     const receipt = screen.getByTestId('steer-receipt');
     expect(receipt.className).not.toContain('opacity-0');
   });
+
+  it('anchors the receipt after the timestamp, at the trailing edge of the row', () => {
+    renderPart();
+    // The timestamp is the hover-revealed half of the row and its width changes
+    // as the relative string ticks; leading the checks with it would park the
+    // one always-visible mark at a moving offset from the bubble's corner.
+    const row = screen.getByTestId('steer-receipt').parentElement;
+    const children = Array.from(row?.children ?? []);
+    expect(children.map((child) => child.getAttribute('data-testid'))).toEqual([
+      'steer-timestamp',
+      'steer-receipt',
+    ]);
+  });
 });
 
 describe('SteerPart presentation', () => {
   beforeEach(() => {
     mockShareContext = {};
+    mockFileMap = {};
   });
 
   it('presents the steer as a compact user bubble with accessible attribution', () => {
@@ -149,22 +179,38 @@ describe('SteerPart presentation', () => {
     expect(part).not.toHaveClass('md:-ml-9', '-ml-9');
   });
 
-  it('renders steer attachments', () => {
+  it('keeps multiple steer images together at the right while file chips stay at the start', () => {
     renderPart([
       { file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' },
       { file_id: 'f2', filename: 'shot.png', type: 'image/png', filepath: '/images/shot.png' },
+      { file_id: 'f3', filename: 'second.png', type: 'image/png', filepath: '/images/second.png' },
     ]);
+    const images = screen.getAllByTestId('steer-image');
+    const imageGroup = images[0].parentElement;
+
+    expect(images).toHaveLength(2);
+    expect(imageGroup).toContainElement(images[1]);
+    expect(imageGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
+    expect(imageGroup?.parentElement).toHaveClass('w-full');
+    expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
-    expect(screen.getByTestId('steer-image')).toBeInTheDocument();
   });
 
-  it('opens the file preview dialog when a non-image steer attachment is clicked', () => {
-    renderPart([{ file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' }]);
-    expect(screen.queryByTestId('steer-file-preview')).toBeNull();
+  it.each(['application/pdf', 'image/png'])(
+    'opens extracted previews for %s attachments',
+    (type) => {
+      mockFileMap = { f1: { llmDeliveryPath: 'text' } };
+      renderPart([{ file_id: 'f1', filename: 'notes.pdf', type }]);
+      expect(screen.queryByTestId('steer-file-preview')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('steer-file'));
-    expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
-  });
+      fireEvent.click(screen.getByTestId('steer-file'));
+      expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
+      expect(screen.getByTestId('steer-file-preview')).toHaveAttribute(
+        'data-delivery-path',
+        'text',
+      );
+    },
+  );
 
   it('renders quoted excerpts as reference blocks inside the bubble', () => {
     render(
@@ -264,13 +310,13 @@ describe('SteerPart live receipt draw-in', () => {
 describe('SteerPart receipt settling', () => {
   const checks = () => screen.getByLabelText('com_ui_steer_applied_info').querySelector('svg');
 
-  it('keeps the amber identity while the owning response is still generating', () => {
+  it('keeps the steer identity while the owning response is still generating', () => {
     render(
       <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
         <SteerPart steer="steered words" steerId="s1" createdAt={1} isSubmitting />
       </RecoilRoot>,
     );
-    expect(checks()).toHaveClass('dark:text-amber-500');
+    expect(checks()).toHaveClass(STEER_ICON);
     expect(checks()).not.toHaveClass('text-text-secondary');
   });
 
@@ -279,6 +325,6 @@ describe('SteerPart receipt settling', () => {
     // rendering: still a double check, no longer lit.
     renderPart();
     expect(checks()).toHaveClass('text-text-secondary');
-    expect(checks()).not.toHaveClass('dark:text-amber-500');
+    expect(checks()).not.toHaveClass(STEER_ICON);
   });
 });

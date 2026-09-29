@@ -36,7 +36,12 @@
 import { logger } from '@librechat/data-schemas';
 import { createHash, randomUUID } from 'node:crypto';
 import { Constants as AgentConstants } from '@librechat/agents';
-import { Tools, Constants, imageGenTools } from 'librechat-data-provider';
+import {
+  Tools,
+  Constants,
+  imageGenTools,
+  AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT,
+} from 'librechat-data-provider';
 import type {
   LCTool,
   LCToolRegistry,
@@ -48,13 +53,29 @@ import type {
   SubagentTaskControlResult,
   SubagentTaskStore,
 } from '@librechat/agents';
-import type { AgentToolOptions } from 'librechat-data-provider';
+import type {
+  BackgroundToolResultClaim,
+  BackgroundToolResultRecord,
+} from '@librechat/data-schemas';
+import type { AgentToolOptions, BackgroundTaskDelivery } from 'librechat-data-provider';
+import type { BackgroundToolResultState } from './harvest';
 import type { CapabilityToolNames } from './selection';
 import {
   BACKGROUND_TASK_TIMEOUT_MS,
+  BACKGROUND_TASK_SHUTDOWN_MESSAGE,
+  BACKGROUND_SHUTDOWN_FLUSH_RESERVE_MS,
+  BACKGROUND_SHUTDOWN_TEARDOWN_RESERVE_MS,
+  type PendingBackgroundCompletion,
   type BackgroundToolDeadClaimRecovery,
   type BackgroundToolWakeupAdmission,
+  type PendingBackgroundCompletionControls,
 } from './backgroundCompletion';
+import {
+  CREATE_FILE_TOOL_NAME,
+  EDIT_FILE_TOOL_NAME,
+  SEARCH_WORKSPACE_TOOL_NAME,
+  LIST_WORKSPACE_FILES_TOOL_NAME,
+} from './tools';
 import {
   resolveToolOption,
   getSelectionNames,
@@ -62,10 +83,10 @@ import {
   synthesizeSelectionToolOptions,
 } from './selection';
 import { SUBAGENT_WAKEUP_GUIDANCE, agentUsesSubagentCompletionWakeups } from './subagentDelivery';
+import { registerShutdownTask, getRemainingShutdownMs } from '~/app/shutdown';
 import { SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
 import { SET_MEMORY_TOOL_NAME, DELETE_MEMORY_TOOL_NAME } from './memory';
 import { ASK_USER_QUESTION_TOOL_NAME } from './hitl/askUserQuestionTool';
-import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from './tools';
 import { normalizeActionToolName } from '~/actions/tools';
 import { truncateMiddle } from '~/utils';
 
@@ -112,6 +133,8 @@ const EXCLUDED_BACKGROUND_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   AgentConstants.SUBAGENT,
   CREATE_FILE_TOOL_NAME,
   EDIT_FILE_TOOL_NAME,
+  SEARCH_WORKSPACE_TOOL_NAME,
+  LIST_WORKSPACE_FILES_TOOL_NAME,
   SET_MEMORY_TOOL_NAME,
   DELETE_MEMORY_TOOL_NAME,
   ASK_USER_QUESTION_TOOL_NAME,
@@ -342,11 +365,11 @@ export function stripBackgroundFromToolRegistry(
 
 const CHECK_BACKGROUND_TASK_DESCRIPTION = `Check, control, and retrieve tool or subagent tasks previously dispatched in the background (with run_in_background: true).
 
-Provide a background_task_id to poll one task; omit it to list every background task in this thread. A task is only finished when its status is "completed", "error", or "cancelled" — never assume completion without polling. Results are not pushed to you; you must call this tool to collect them. Subagent tasks additionally accept steer, queue, interrupt, cancel, and cancel_message actions while running. Live subagent controls route across API replicas but do not survive a restart of the process that owns the executor. A completed subagent thread may be continued later through the subagent tool's durable thread id.`;
+Provide a background_task_id to poll one task; omit it to list every background task in this thread. A task is only finished when its status is "completed", "error", or "cancelled" — never assume completion without polling. Results are not pushed to you; you must call this tool to collect them. The cancel action applies to subagents and to ordinary tools when enabled by the deployment; steer, queue, interrupt, and cancel_message apply only to subagents. Live controls route to process-local executors and do not survive an owning-process restart. A completed subagent thread may be continued later through the subagent tool's durable thread id.`;
 
 const CHECK_BACKGROUND_TASK_WAKEUP_DESCRIPTION = `Check, control, and retrieve tool or subagent tasks previously dispatched in the background (with run_in_background: true).
 
-Provide a background_task_id to inspect one task; omit it to list every background task in this thread. Background tools and detached subagents use automatic completion delivery: continue independent work or end the turn instead of repeatedly polling an unchanged running task, and the host will resume you when one finishes. Use this tool for explicit status, steer, queue, interrupt, cancel, or cancel_message actions, or as a fallback if automatic delivery is unavailable. Ordinary tool execution remains process-local and does not survive restart; once its result is persisted, completion delivery may continue on another replica. Live subagent controls route across API replicas but do not survive a restart of the process that owns the executor. A completed subagent thread may be continued later through the subagent tool's durable thread id.`;
+Provide a background_task_id to inspect one task; omit it to list every background task in this thread. Background tools and detached subagents use automatic completion delivery: continue independent work or end the turn instead of repeatedly polling an unchanged running task, and the host will resume you when one finishes. Use this tool for explicit status, steer, queue, interrupt, cancel, or cancel_message actions, or as a fallback if automatic delivery is unavailable. A task is outstanding until its result is delivered, not merely until it stops running: a finished task whose delivery is "pending" will still arrive as a new turn, so never report it as done or cancelled on the strength of its status alone. Polling or cancelling a finished task retires its pending delivery so it never arrives as a new turn: a poll returns the result now, and cancelling a result this turn can no longer poll discards it. Ordinary tool execution remains process-local and does not survive restart; once its result is persisted, completion delivery may continue on another replica. Live subagent controls route across API replicas but do not survive a restart of the process that owns the executor. A completed subagent thread may be continued later through the subagent tool's durable thread id.`;
 
 function checkBackgroundTaskDescription(subagentCompletionWakeups: boolean): string {
   return subagentCompletionWakeups
@@ -388,7 +411,8 @@ const CHECK_BACKGROUND_TASK_PARAMETERS = Object.freeze<CheckBackgroundTaskParame
     action: {
       type: 'string',
       enum: ['poll', 'steer', 'queue', 'interrupt', 'cancel', 'cancel_message'],
-      description: 'Defaults to poll. Control actions apply only to a running subagent task.',
+      description:
+        'Defaults to poll. Cancel applies to subagents and may apply to ordinary tools when enabled by the deployment; other controls apply only to subagents.',
     },
     message: {
       type: 'string',
@@ -589,7 +613,7 @@ export function synthesizeBackgroundToolOptions(sources: {
   );
 }
 
-export type BackgroundTaskStatus = 'running' | 'completed' | 'error';
+export type BackgroundTaskStatus = 'running' | 'completed' | 'error' | 'cancelled';
 
 export interface BackgroundTask {
   id: string;
@@ -603,6 +627,10 @@ export interface BackgroundTask {
    *  (e.g. `call_0`) across agents when patching the dispatch turn. */
   agentId?: string;
   status: BackgroundTaskStatus;
+  /** Set when an owner asked the live invocation to abort. The task remains
+   * running until the invocation actually settles, so capacity and status do
+   * not imply that external effects have stopped prematurely. */
+  cancellationRequestedAt?: number;
   /** Tool result content once completed. */
   result?: string;
   /**
@@ -639,6 +667,7 @@ export interface BackgroundTask {
     kind: 'manual' | 'wakeup';
     claimId: string;
     claimedAt: number;
+    generationId?: string;
   };
   /** The declared tool may return a process-local live artifact. A terminal
    * same-generation poll may therefore deliver from the local claim after it
@@ -646,15 +675,22 @@ export interface BackgroundTask {
    * finalize and deadlocking that same generation. */
   liveArtifactPollRequired?: boolean;
   completionWakeup?: boolean;
+  /** The automatic delivery was durably retired before a manual poll took over. */
+  completionWakeupRetired?: boolean;
+  /** True while the terminal result is being persisted for automatic delivery. */
+  completionPersistencePending?: boolean;
   /** Process-local cancellation handle for the preregistered durable delivery.
    * A same-generation manual claim retires it before exposing the result. */
   completionWakeupRetire?: BackgroundToolWakeupAdmission['retire'];
   completionPersistenceFailed?: boolean;
   createdAt: number;
   updatedAt: number;
+  settledAt?: number;
 }
 
 interface TaskBucket {
+  key: string;
+  userId: string;
   tasks: Map<string, BackgroundTask>;
   /** toolCallId -> taskId, for dispatch idempotency across graph re-execution. */
   byToolCall: Map<string, string>;
@@ -665,18 +701,86 @@ interface TaskBucket {
   lastAccess: number;
 }
 
+interface RetainedPayloadUsage {
+  result: number;
+  artifact: number;
+  attachments: number;
+  error: number;
+}
+
 export interface BackgroundTaskCapacityPermit {
   id: string;
   userId: string;
   conversationId: string;
 }
 
+export type BackgroundTaskCapacityScope =
+  | 'conversation_running'
+  | 'conversation_retention'
+  | 'user_running'
+  | 'user_retention'
+  | 'global_running'
+  | 'global_retention'
+  | 'shutting_down';
+
+type BackgroundTaskCapacityRejection = {
+  atCapacity: true;
+  scope: BackgroundTaskCapacityScope;
+};
+
+/** Process-local controls a running task registers so graceful shutdown can settle it. */
+export interface BackgroundTaskShutdownHandle {
+  /** Resolves once the task's result is durable, or once the task finished when it has
+   * no durable delivery. Never rejects. */
+  settled: Promise<void>;
+  /** Aborts the live invocation because the server is shutting down. */
+  interrupt: (reason: string) => void;
+  /** Stores the best result available now: the task's own result when it has settled,
+   * otherwise an interrupted failure. */
+  flush: (reason: string) => Promise<void>;
+}
+
+export interface BackgroundTaskDrainSummary {
+  /** Tasks with an unsettled result when the drain began. */
+  tracked: number;
+  /** Tasks still running when the drain aborted them. */
+  interrupted: number;
+  /** Tasks whose result was still not durable, so the drain stored one. */
+  flushed: number;
+  /** Tasks whose durable result was still unconfirmed at the deadline. */
+  unsettled: number;
+}
+
+/** Resolves when `promise` settles or at `deadlineAt`, whichever comes first. */
+function waitUntil(promise: Promise<unknown>, deadlineAt: number): Promise<void> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, remainingMs);
+    const finish = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(finish, finish);
+  });
+}
+
 const COMPLETED_TASK_TTL_MS = 60 * 60 * 1000;
 const IDLE_BUCKET_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_RUNNING_PER_BUCKET = 10;
 const MAX_TASKS_PER_BUCKET = 200;
+/** Cross-conversation limits prevent one principal from multiplying the bucket allowance. */
+const MAX_RUNNING_PER_USER = 40;
+const MAX_RUNNING_GLOBAL = 200;
+const MAX_TASKS_PER_USER = 400;
+const MAX_TASKS_GLOBAL = 2_000;
 const MAX_RESULT_CHARS = 100_000;
 const MAX_ARTIFACT_CHARS = 10_000_000;
+/** JSON-character budgets bound large settled payloads independently of task metadata. */
+const MAX_RETAINED_CHARS_PER_USER = 16_000_000;
+const MAX_RETAINED_CHARS_GLOBAL = 64_000_000;
 const GLOBAL_SWEEP_INTERVAL_MS = 60 * 1000;
 
 /**
@@ -720,31 +824,43 @@ function nextDispatchStamp(now: number): number {
 }
 
 function toStoredContent(content: unknown): string {
-  const asString = typeof content === 'string' ? content : JSON.stringify(content ?? '');
+  const serialized = typeof content === 'string' ? content : JSON.stringify(content ?? '');
+  const asString = serialized ?? String(content ?? '');
   return truncateMiddle(asString, MAX_RESULT_CHARS);
 }
 
 /**
  * Bounds retained artifact memory: an artifact is held for up to the completed
  * TTL, so a runaway payload (huge base64 blobs) is dropped rather than pinned.
- * Measurement failures (circular refs) keep the artifact.
+ * Measurement failures (such as circular references) drop the artifact because
+ * an unmeasurable value cannot safely participate in the aggregate budget.
  */
-function toStoredArtifact(taskId: string, artifact: unknown): unknown {
+function toStoredArtifact(
+  taskId: string,
+  artifact: unknown,
+): { artifact?: unknown; chars: number } {
   if (artifact == null) {
-    return undefined;
+    return { chars: 0 };
   }
   try {
-    const size = JSON.stringify(artifact)?.length ?? 0;
+    const serialized = JSON.stringify(artifact);
+    if (serialized == null) {
+      logger.warn(`[background] Dropping unmeasurable artifact for task ${taskId}.`);
+      return { chars: 0 };
+    }
+    const size = serialized.length;
     if (size > MAX_ARTIFACT_CHARS) {
       logger.warn(
         `[background] Dropping oversized artifact for task ${taskId} (${size} chars > ${MAX_ARTIFACT_CHARS}).`,
       );
-      return undefined;
+      return { chars: 0 };
     }
+    const storedArtifact: unknown = JSON.parse(serialized);
+    return { artifact: storedArtifact, chars: size };
   } catch {
-    /* unmeasurable artifact: keep it */
+    logger.warn(`[background] Dropping unmeasurable artifact for task ${taskId}.`);
+    return { chars: 0 };
   }
-  return artifact;
 }
 
 /**
@@ -758,16 +874,34 @@ function toStoredArtifact(taskId: string, artifact: unknown): unknown {
  */
 export class BackgroundTaskRegistryClass {
   private readonly buckets = new Map<string, TaskBucket>();
+  private readonly retainedUsage = new WeakMap<BackgroundTask, RetainedPayloadUsage>();
+  /** Live invocation controls are intentionally process-local and are never
+   * exposed through task snapshots or durable receipts. */
+  private readonly cancellationRequests = new WeakMap<BackgroundTask, () => boolean | void>();
+  /** Tasks whose result is not yet durable, for the graceful-shutdown drain. */
+  private readonly shutdownHandles = new Map<BackgroundTask, BackgroundTaskShutdownHandle>();
+  private admissionClosed = false;
   private lastGlobalSweepAt = 0;
 
   private key(userId: string, conversationId: string): string {
     return `${userId}::${conversationId}`;
   }
 
+  private releaseEvictedShutdownHandle(task: BackgroundTask): void {
+    if (this.shutdownHandles.delete(task)) {
+      logger.warn(`[background] Unconfirmed shutdown result for evicted task ${task.id}.`);
+    }
+  }
+
   private sweepBucketTasks(bucket: TaskBucket, now: number): void {
     for (const [taskId, task] of bucket.tasks) {
-      if (task.status !== 'running' && now - task.updatedAt > COMPLETED_TASK_TTL_MS) {
+      if (
+        task.status !== 'running' &&
+        task.completionPersistencePending !== true &&
+        now - task.updatedAt > COMPLETED_TASK_TTL_MS
+      ) {
         bucket.tasks.delete(taskId);
+        this.releaseEvictedShutdownHandle(task);
       }
     }
     /** Drop dedupe mappings whose task was evicted (keys are
@@ -791,11 +925,23 @@ export class BackgroundTaskRegistryClass {
     }
     this.lastGlobalSweepAt = now;
     for (const [bucketKey, bucket] of this.buckets) {
-      if (now - bucket.lastAccess > IDLE_BUCKET_TTL_MS && bucket.capacityPermits.size === 0) {
+      if (
+        now - bucket.lastAccess > IDLE_BUCKET_TTL_MS &&
+        bucket.capacityPermits.size === 0 &&
+        ![...bucket.tasks.values()].some(
+          (task) => task.status === 'running' || task.completionPersistencePending === true,
+        )
+      ) {
+        for (const task of bucket.tasks.values()) {
+          this.releaseEvictedShutdownHandle(task);
+        }
         this.buckets.delete(bucketKey);
         continue;
       }
       this.sweepBucketTasks(bucket, now);
+      if (bucket.tasks.size === 0 && bucket.capacityPermits.size === 0) {
+        this.buckets.delete(bucketKey);
+      }
     }
   }
 
@@ -804,6 +950,8 @@ export class BackgroundTaskRegistryClass {
     let bucket = this.buckets.get(bucketKey);
     if (!bucket) {
       bucket = {
+        key: bucketKey,
+        userId,
         tasks: new Map(),
         byToolCall: new Map(),
         capacityPermits: new Map(),
@@ -829,6 +977,236 @@ export class BackgroundTaskRegistryClass {
     return running;
   }
 
+  private payloadUsage(task: BackgroundTask): RetainedPayloadUsage {
+    return (
+      this.retainedUsage.get(task) ?? {
+        result: 0,
+        artifact: 0,
+        attachments: 0,
+        error: 0,
+      }
+    );
+  }
+
+  private payloadChars(task: BackgroundTask): number {
+    const usage = this.payloadUsage(task);
+    return usage.result + usage.artifact + usage.attachments + usage.error;
+  }
+
+  private updatePayloadUsage(task: BackgroundTask, patch: Partial<RetainedPayloadUsage>): void {
+    this.retainedUsage.set(task, { ...this.payloadUsage(task), ...patch });
+  }
+
+  private aggregateUsage(userId: string): {
+    runningForUser: number;
+    runningGlobal: number;
+    tasksForUser: number;
+    tasksGlobal: number;
+    retainedForUser: number;
+    retainedGlobal: number;
+  } {
+    let runningForUser = 0;
+    let runningGlobal = 0;
+    let tasksForUser = 0;
+    let tasksGlobal = 0;
+    let retainedForUser = 0;
+    let retainedGlobal = 0;
+    for (const bucket of this.buckets.values()) {
+      const isUser = bucket.userId === userId;
+      tasksGlobal += bucket.tasks.size + bucket.capacityPermits.size;
+      if (isUser) {
+        tasksForUser += bucket.tasks.size + bucket.capacityPermits.size;
+      }
+      for (const task of bucket.tasks.values()) {
+        if (task.status === 'running') {
+          runningGlobal++;
+          if (isUser) {
+            runningForUser++;
+          }
+        }
+        const retained = this.payloadChars(task);
+        retainedGlobal += retained;
+        if (isUser) {
+          retainedForUser += retained;
+        }
+      }
+      runningGlobal += bucket.capacityPermits.size;
+      if (isUser) {
+        runningForUser += bucket.capacityPermits.size;
+      }
+    }
+    return {
+      runningForUser,
+      runningGlobal,
+      tasksForUser,
+      tasksGlobal,
+      retainedForUser,
+      retainedGlobal,
+    };
+  }
+
+  private runningCapacityScope(userId: string): 'user_running' | 'global_running' | undefined {
+    const usage = this.aggregateUsage(userId);
+    if (usage.runningForUser >= MAX_RUNNING_PER_USER) {
+      return 'user_running';
+    }
+    if (usage.runningGlobal >= MAX_RUNNING_GLOBAL) {
+      return 'global_running';
+    }
+    return undefined;
+  }
+
+  private settledCandidates(params: {
+    userId?: string;
+    bucket?: TaskBucket;
+    excludeTask?: BackgroundTask;
+    requirePayload?: boolean;
+  }): Array<{ bucket: TaskBucket; task: BackgroundTask }> {
+    const candidates: Array<{ bucket: TaskBucket; task: BackgroundTask }> = [];
+    for (const bucket of this.buckets.values()) {
+      if (params.bucket != null && bucket !== params.bucket) {
+        continue;
+      }
+      if (params.userId != null && bucket.userId !== params.userId) {
+        continue;
+      }
+      for (const task of bucket.tasks.values()) {
+        if (
+          task.status !== 'running' &&
+          task.harvestPending !== true &&
+          task.completionPersistencePending !== true &&
+          task !== params.excludeTask &&
+          (params.requirePayload !== true || this.payloadChars(task) > 0)
+        ) {
+          candidates.push({ bucket, task });
+        }
+      }
+    }
+    return candidates.sort((a, b) => a.task.updatedAt - b.task.updatedAt);
+  }
+
+  private evictSelected(selected: Map<BackgroundTask, TaskBucket>): void {
+    const touched = new Set<TaskBucket>();
+    for (const [task, bucket] of selected) {
+      bucket.tasks.delete(task.id);
+      this.releaseEvictedShutdownHandle(task);
+      touched.add(bucket);
+    }
+    const now = Date.now();
+    for (const bucket of touched) {
+      this.sweepBucketTasks(bucket, now);
+      if (bucket.tasks.size === 0 && bucket.capacityPermits.size === 0) {
+        this.buckets.delete(bucket.key);
+      }
+    }
+  }
+
+  private makeTaskRoom(userId: string, bucket?: TaskBucket): boolean {
+    const usage = this.aggregateUsage(userId);
+    const bucketRequired = Math.max(
+      0,
+      (bucket?.tasks.size ?? 0) + (bucket?.capacityPermits.size ?? 0) - MAX_TASKS_PER_BUCKET + 1,
+    );
+    const userRequired = Math.max(0, usage.tasksForUser - MAX_TASKS_PER_USER + 1);
+    const globalRequired = Math.max(0, usage.tasksGlobal - MAX_TASKS_GLOBAL + 1);
+    const selected = new Map<BackgroundTask, TaskBucket>();
+
+    const selectCount = (
+      candidates: Array<{ bucket: TaskBucket; task: BackgroundTask }>,
+      required: number,
+    ): boolean => {
+      let remaining = required;
+      for (const candidate of candidates) {
+        if (remaining <= 0) {
+          break;
+        }
+        if (selected.has(candidate.task)) {
+          continue;
+        }
+        selected.set(candidate.task, candidate.bucket);
+        remaining--;
+      }
+      return remaining === 0;
+    };
+
+    if (bucket != null && !selectCount(this.settledCandidates({ bucket }), bucketRequired)) {
+      return false;
+    }
+    const selectedForUser = [...selected.values()].filter(
+      (selectedBucket) => selectedBucket.userId === userId,
+    ).length;
+    if (
+      !selectCount(this.settledCandidates({ userId }), Math.max(0, userRequired - selectedForUser))
+    ) {
+      return false;
+    }
+    if (!selectCount(this.settledCandidates({}), Math.max(0, globalRequired - selected.size))) {
+      return false;
+    }
+    this.evictSelected(selected);
+    return true;
+  }
+
+  private taskCapacityScope(
+    userId: string,
+    bucket?: TaskBucket,
+  ): 'conversation_retention' | 'user_retention' | 'global_retention' {
+    if (bucket != null && bucket.tasks.size + bucket.capacityPermits.size >= MAX_TASKS_PER_BUCKET) {
+      return 'conversation_retention';
+    }
+    return this.aggregateUsage(userId).tasksForUser >= MAX_TASKS_PER_USER
+      ? 'user_retention'
+      : 'global_retention';
+  }
+
+  private makeRetainedRoom(userId: string, task: BackgroundTask, chars: number): boolean {
+    const usage = this.aggregateUsage(userId);
+    const userRequired = Math.max(0, usage.retainedForUser + chars - MAX_RETAINED_CHARS_PER_USER);
+    const globalRequired = Math.max(0, usage.retainedGlobal + chars - MAX_RETAINED_CHARS_GLOBAL);
+    const selected = new Map<BackgroundTask, TaskBucket>();
+
+    const selectChars = (
+      candidates: Array<{ bucket: TaskBucket; task: BackgroundTask }>,
+      required: number,
+    ): boolean => {
+      let retained = 0;
+      for (const candidate of candidates) {
+        if (retained >= required) {
+          break;
+        }
+        if (selected.has(candidate.task)) {
+          continue;
+        }
+        selected.set(candidate.task, candidate.bucket);
+        retained += this.payloadChars(candidate.task);
+      }
+      return retained >= required;
+    };
+
+    if (
+      !selectChars(
+        this.settledCandidates({ userId, excludeTask: task, requirePayload: true }),
+        userRequired,
+      )
+    ) {
+      return false;
+    }
+    let selectedChars = 0;
+    for (const selectedTask of selected.keys()) {
+      selectedChars += this.payloadChars(selectedTask);
+    }
+    if (
+      !selectChars(
+        this.settledCandidates({ excludeTask: task, requirePayload: true }),
+        Math.max(0, globalRequired - selectedChars),
+      )
+    ) {
+      return false;
+    }
+    this.evictSelected(selected);
+    return true;
+  }
+
   /** Acquires process-local capacity before a caller persists launch authority.
    * The synchronous permit closes the capacity-rejection crash window without
    * making ordinary background tasks durable. */
@@ -841,20 +1219,40 @@ export class BackgroundTaskRegistryClass {
   }):
     | { permit: BackgroundTaskCapacityPermit }
     | { task: BackgroundTask; isNew: false }
-    | { atCapacity: true } {
+    | BackgroundTaskCapacityRejection {
     const now = Date.now();
     this.sweep(now);
-    const bucket = this.getBucket(params.userId, params.conversationId, now);
-    this.sweepBucketTasks(bucket, now);
+    const bucketKey = this.key(params.userId, params.conversationId);
+    const existingBucket = this.buckets.get(bucketKey);
+    if (existingBucket != null) {
+      existingBucket.lastAccess = now;
+      this.sweepBucketTasks(existingBucket, now);
+    }
     const dedupeKey = this.dedupeKey(params);
-    const existingId = bucket.byToolCall.get(dedupeKey);
-    const existing = existingId == null ? undefined : bucket.tasks.get(existingId);
+    const existingId = existingBucket?.byToolCall.get(dedupeKey);
+    const existing = existingId == null ? undefined : existingBucket?.tasks.get(existingId);
     if (existing != null) {
       return { task: existing, isNew: false };
     }
-    if (this.runningCount(bucket) + bucket.capacityPermits.size >= MAX_RUNNING_PER_BUCKET) {
-      return { atCapacity: true };
+    if (this.admissionClosed) {
+      return { atCapacity: true, scope: 'shutting_down' };
     }
+    if (
+      existingBucket != null &&
+      this.runningCount(existingBucket) + existingBucket.capacityPermits.size >=
+        MAX_RUNNING_PER_BUCKET
+    ) {
+      return { atCapacity: true, scope: 'conversation_running' };
+    }
+    const runningScope = this.runningCapacityScope(params.userId);
+    if (runningScope != null) {
+      return { atCapacity: true, scope: runningScope };
+    }
+    if (!this.makeTaskRoom(params.userId, existingBucket)) {
+      return { atCapacity: true, scope: this.taskCapacityScope(params.userId, existingBucket) };
+    }
+    const bucket =
+      this.buckets.get(bucketKey) ?? this.getBucket(params.userId, params.conversationId, now);
     const permit: BackgroundTaskCapacityPermit = {
       id: randomUUID(),
       userId: params.userId,
@@ -869,9 +1267,12 @@ export class BackgroundTaskRegistryClass {
   }
 
   releaseCapacity(permit: BackgroundTaskCapacityPermit): void {
-    this.buckets
-      .get(this.key(permit.userId, permit.conversationId))
-      ?.capacityPermits.delete(permit.id);
+    const bucketKey = this.key(permit.userId, permit.conversationId);
+    const bucket = this.buckets.get(bucketKey);
+    bucket?.capacityPermits.delete(permit.id);
+    if (bucket?.tasks.size === 0 && bucket.capacityPermits.size === 0) {
+      this.buckets.delete(bucketKey);
+    }
   }
 
   /**
@@ -900,16 +1301,24 @@ export class BackgroundTaskRegistryClass {
     harvestStarted?: boolean;
     liveArtifactPollRequired?: boolean;
     capacityPermit?: BackgroundTaskCapacityPermit;
-  }): { task: BackgroundTask; isNew: boolean } | { atCapacity: true } {
+    /** Abort the already-created invocation signal. Ownership is enforced by
+     * requestCancellation before this closure can be reached. */
+    /** Returns false when another abort source already won the race. */
+    requestCancellation?: () => boolean | void;
+  }): { task: BackgroundTask; isNew: boolean } | BackgroundTaskCapacityRejection {
     const now = Date.now();
     this.sweep(now);
-    const bucket = this.getBucket(params.userId, params.conversationId, now);
-    this.sweepBucketTasks(bucket, now);
+    const bucketKey = this.key(params.userId, params.conversationId);
+    const existingBucket = this.buckets.get(bucketKey);
+    if (existingBucket != null) {
+      existingBucket.lastAccess = now;
+      this.sweepBucketTasks(existingBucket, now);
+    }
 
     const dedupeKey = this.dedupeKey(params);
-    const existingId = bucket.byToolCall.get(dedupeKey);
+    const existingId = existingBucket?.byToolCall.get(dedupeKey);
     if (existingId) {
-      const existing = bucket.tasks.get(existingId);
+      const existing = existingBucket?.tasks.get(existingId);
       if (existing) {
         if (params.capacityPermit != null) {
           this.releaseCapacity(params.capacityPermit);
@@ -918,7 +1327,16 @@ export class BackgroundTaskRegistryClass {
       }
     }
 
+    /** A permit already reserved launch authority before shutdown began, so it may still land. */
+    if (this.admissionClosed && params.capacityPermit == null) {
+      return { atCapacity: true, scope: 'shutting_down' };
+    }
+
     if (params.capacityPermit != null) {
+      if (existingBucket == null) {
+        throw new Error('Background task capacity permit is stale');
+      }
+      const bucket = existingBucket;
       const permit = bucket.capacityPermits.get(params.capacityPermit.id);
       if (
         params.capacityPermit.userId !== params.userId ||
@@ -930,30 +1348,26 @@ export class BackgroundTaskRegistryClass {
       bucket.capacityPermits.delete(params.capacityPermit.id);
     }
     /** Only *running* tasks gate dispatch. */
-    if (
-      params.capacityPermit == null &&
-      this.runningCount(bucket) + bucket.capacityPermits.size >= MAX_RUNNING_PER_BUCKET
-    ) {
-      return { atCapacity: true };
-    }
-    /** The total-tasks cap bounds memory but must NOT block new work: evict the
-     *  oldest SETTLED tasks to make room rather than rejecting (settled tasks
-     *  aren't removed by polling, so 200 quick calls would otherwise block for
-     *  up to the completed-TTL). Running is already capped, so room always frees. */
-    if (bucket.tasks.size >= MAX_TASKS_PER_BUCKET) {
-      const settledOldestFirst = [...bucket.tasks.values()]
-        .filter((t) => t.status !== 'running')
-        .sort((a, b) => a.createdAt - b.createdAt);
-      let toEvict = bucket.tasks.size - MAX_TASKS_PER_BUCKET + 1;
-      for (const stale of settledOldestFirst) {
-        if (toEvict <= 0) {
-          break;
-        }
-        bucket.tasks.delete(stale.id);
-        toEvict--;
+    if (params.capacityPermit == null) {
+      if (
+        existingBucket != null &&
+        this.runningCount(existingBucket) + existingBucket.capacityPermits.size >=
+          MAX_RUNNING_PER_BUCKET
+      ) {
+        return { atCapacity: true, scope: 'conversation_running' };
+      }
+      const runningScope = this.runningCapacityScope(params.userId);
+      if (runningScope != null) {
+        return { atCapacity: true, scope: runningScope };
       }
     }
-
+    if (!this.makeTaskRoom(params.userId, existingBucket)) {
+      return { atCapacity: true, scope: this.taskCapacityScope(params.userId, existingBucket) };
+    }
+    /** Aggregate eviction may have removed `existingBucket` when its only
+     * settled task was the oldest candidate. Never register into that detached map. */
+    const bucket =
+      this.buckets.get(bucketKey) ?? this.getBucket(params.userId, params.conversationId, now);
     const task: BackgroundTask = {
       id: params.taskId ?? randomUUID(),
       toolName: params.toolName,
@@ -969,7 +1383,119 @@ export class BackgroundTaskRegistryClass {
     };
     bucket.tasks.set(task.id, task);
     bucket.byToolCall.set(dedupeKey, task.id);
+    if (params.requestCancellation != null) {
+      this.cancellationRequests.set(task, params.requestCancellation);
+    }
     return { task, isNew: true };
+  }
+
+  requestCancellation(
+    userId: string,
+    conversationId: string,
+    taskId: string,
+  ):
+    | { status: 'not_found' }
+    | { status: 'unavailable'; task: BackgroundTask }
+    | { status: 'requested' | 'already_requested' | 'settled'; task: BackgroundTask } {
+    const task = this.get(userId, conversationId, taskId);
+    if (task == null) {
+      return { status: 'not_found' };
+    }
+    if (task.status !== 'running') {
+      return { status: 'settled', task };
+    }
+    if (task.cancellationRequestedAt != null) {
+      return { status: 'already_requested', task };
+    }
+    const request = this.cancellationRequests.get(task);
+    if (request == null) {
+      return { status: 'unavailable', task };
+    }
+    if (request() === false) {
+      return { status: 'unavailable', task };
+    }
+    task.cancellationRequestedAt = Date.now();
+    task.updatedAt = task.cancellationRequestedAt;
+    return { status: 'requested', task };
+  }
+
+  /** Refuses new background tasks; the server is shutting down. Replays still resolve. */
+  closeAdmission(): void {
+    this.admissionClosed = true;
+  }
+
+  isAdmissionClosed(): boolean {
+    return this.admissionClosed;
+  }
+
+  /** Registers a new task's shutdown controls until its result is durable. */
+  trackShutdown(task: BackgroundTask, handle: BackgroundTaskShutdownHandle): void {
+    this.shutdownHandles.set(task, handle);
+    const release = (): void => {
+      if (this.shutdownHandles.get(task) === handle) {
+        this.shutdownHandles.delete(task);
+      }
+    };
+    handle.settled.then(release, release);
+  }
+
+  /**
+   * Settles every tracked task before the process exits. Tasks first get whatever time
+   * is left before `interruptGraceMs` and the flush reserve; tasks still running are then
+   * aborted and get `interruptGraceMs` to settle on their own; the rest have a durable
+   * result written for them. Without this, a restart abandons them and their automatic
+   * deliveries dead-letter once the producer lease expires.
+   */
+  async drainForShutdown(options: {
+    deadlineAt: number;
+    interruptGraceMs: number;
+    flushReserveMs: number;
+    reason: string;
+  }): Promise<BackgroundTaskDrainSummary> {
+    this.closeAdmission();
+    const tracked = this.shutdownHandles.size;
+    if (tracked === 0) {
+      return { tracked: 0, interrupted: 0, flushed: 0, unsettled: 0 };
+    }
+    const flushAt = options.deadlineAt - options.flushReserveMs;
+    const interruptAt = flushAt - options.interruptGraceMs;
+
+    await this.waitForShutdownHandles(interruptAt);
+    let interrupted = 0;
+    for (const [task, handle] of this.shutdownHandles) {
+      if (task.status === 'running') {
+        interrupted++;
+        handle.interrupt(options.reason);
+      }
+    }
+
+    await this.waitForShutdownHandles(flushAt);
+    const remaining = [...this.shutdownHandles.values()];
+    let durable = 0;
+    await waitUntil(
+      Promise.allSettled(
+        remaining.map((handle) =>
+          handle.flush(options.reason).then(() => {
+            durable++;
+          }),
+        ),
+      ),
+      options.deadlineAt,
+    );
+    return {
+      tracked,
+      interrupted,
+      flushed: remaining.length,
+      unsettled: remaining.length - durable,
+    };
+  }
+
+  private waitForShutdownHandles(deadlineAt: number): Promise<void> {
+    const pending = [...this.shutdownHandles.values()].map((handle) => handle.settled);
+    if (pending.length === 0) {
+      return Promise.resolve();
+    }
+    return waitUntil(Promise.all(pending), deadlineAt);
   }
 
   private update(
@@ -977,13 +1503,14 @@ export class BackgroundTaskRegistryClass {
     conversationId: string,
     taskId: string,
     patch: Partial<BackgroundTask>,
-  ): void {
+  ): boolean {
     const bucket = this.buckets.get(this.key(userId, conversationId));
     const task = bucket?.tasks.get(taskId);
     if (!task || (task.artifactBlocked === true && patch.artifactBlocked !== true)) {
-      return;
+      return false;
     }
     Object.assign(task, patch, { updatedAt: Date.now() });
+    return true;
   }
 
   complete(
@@ -993,15 +1520,41 @@ export class BackgroundTaskRegistryClass {
     result: { content: unknown; artifact?: unknown; harvestStarted?: boolean },
   ): string {
     const storedContent = toStoredContent(result.content);
-    this.update(userId, conversationId, taskId, {
+    const task = this.buckets.get(this.key(userId, conversationId))?.tasks.get(taskId);
+    if (task == null || task.status !== 'running' || task.artifactBlocked === true) {
+      return storedContent;
+    }
+    const storedArtifact = toStoredArtifact(taskId, result.artifact);
+    const usage = this.payloadUsage(task);
+    const desiredChars = storedContent.length + storedArtifact.chars;
+    const currentChars = usage.result + usage.artifact;
+    const hasRetainedCapacity = this.makeRetainedRoom(
+      userId,
+      task,
+      Math.max(0, desiredChars - currentChars),
+    );
+    const retainedContent = hasRetainedCapacity ? storedContent : undefined;
+    const artifact = hasRetainedCapacity ? storedArtifact.artifact : undefined;
+    const artifactChars = hasRetainedCapacity ? storedArtifact.chars : 0;
+    const updated = this.update(userId, conversationId, taskId, {
       status: 'completed',
-      result: storedContent,
-      artifact: toStoredArtifact(taskId, result.artifact),
+      settledAt: Date.now(),
+      result: retainedContent,
+      artifact,
+      error: undefined,
       ...(result.harvestStarted === true ? { harvestStarted: true, harvestPending: true } : {}),
       /** Marks that an artifact existed even after `claimArtifact` clears it,
        *  so re-polls keep the "produced an artifact" note. */
       artifactDelivered: false,
     });
+    if (updated) {
+      this.cancellationRequests.delete(task);
+      this.updatePayloadUsage(task, {
+        result: retainedContent?.length ?? 0,
+        artifact: artifactChars,
+        error: 0,
+      });
+    }
     return storedContent;
   }
 
@@ -1020,7 +1573,18 @@ export class BackgroundTaskRegistryClass {
     if (attachments.length === 0) {
       return;
     }
-    this.update(userId, conversationId, taskId, { attachments });
+    const task = this.buckets.get(this.key(userId, conversationId))?.tasks.get(taskId);
+    if (task == null || task.status !== 'completed' || task.artifactBlocked === true) {
+      return;
+    }
+    const measured = toStoredArtifact(taskId, attachments);
+    const additionalChars = Math.max(0, measured.chars - this.payloadUsage(task).attachments);
+    if (measured.artifact == null || !this.makeRetainedRoom(userId, task, additionalChars)) {
+      return;
+    }
+    if (this.update(userId, conversationId, taskId, { attachments })) {
+      this.updatePayloadUsage(task, { attachments: measured.chars });
+    }
   }
 
   /** Marks completion-time inspection/persistence successful, unlocking artifact collection. */
@@ -1030,10 +1594,25 @@ export class BackgroundTaskRegistryClass {
     taskId: string,
     attachments: unknown[] = [],
   ): void {
-    this.update(userId, conversationId, taskId, {
+    const task = this.buckets.get(this.key(userId, conversationId))?.tasks.get(taskId);
+    if (task == null || task.status !== 'completed' || task.artifactBlocked === true) {
+      return;
+    }
+    if (attachments.length === 0) {
+      this.update(userId, conversationId, taskId, { harvestPending: false });
+      return;
+    }
+    const measured = toStoredArtifact(taskId, attachments);
+    const additionalChars = Math.max(0, measured.chars - this.payloadUsage(task).attachments);
+    const canStoreAttachments =
+      measured.artifact != null && this.makeRetainedRoom(userId, task, additionalChars);
+    const updated = this.update(userId, conversationId, taskId, {
       harvestPending: false,
-      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(attachments.length > 0 && canStoreAttachments ? { attachments } : {}),
     });
+    if (updated && attachments.length > 0 && canStoreAttachments) {
+      this.updatePayloadUsage(task, { attachments: measured.chars });
+    }
   }
 
   /**
@@ -1074,6 +1653,7 @@ export class BackgroundTaskRegistryClass {
     const artifact = task.artifact;
     task.artifactDelivered = true;
     task.artifact = undefined;
+    this.updatePayloadUsage(task, { artifact: 0 });
     return {
       toolName: task.toolName,
       toolCallId: task.toolCallId,
@@ -1093,13 +1673,27 @@ export class BackgroundTaskRegistryClass {
   restoreArtifact(userId: string, conversationId: string, taskId: string, artifact: unknown): void {
     const bucket = this.buckets.get(this.key(userId, conversationId));
     const task = bucket?.tasks.get(taskId);
-    if (!task || task.artifactBlocked === true || task.artifact != null) {
+    if (
+      !task ||
+      task.status !== 'completed' ||
+      task.artifactBlocked === true ||
+      task.artifact != null
+    ) {
       return;
     }
     /** Same size bound as `complete()` — a restore path must not resurrect
      *  an artifact the memory cap already discarded. */
-    task.artifact = toStoredArtifact(taskId, artifact);
+    const storedArtifact = toStoredArtifact(taskId, artifact);
+    if (
+      storedArtifact.artifact == null ||
+      !this.makeRetainedRoom(userId, task, storedArtifact.chars)
+    ) {
+      return;
+    }
+    task.artifact = storedArtifact.artifact;
     task.artifactDelivered = false;
+    this.updatePayloadUsage(task, { artifact: storedArtifact.chars });
+    task.updatedAt = Date.now();
   }
 
   fail(
@@ -1109,11 +1703,65 @@ export class BackgroundTaskRegistryClass {
     error: string,
     options?: { harvestStarted?: boolean },
   ): void {
-    this.update(userId, conversationId, taskId, {
+    const storedError = truncateMiddle(error, MAX_RESULT_CHARS);
+    const task = this.buckets.get(this.key(userId, conversationId))?.tasks.get(taskId);
+    if (task == null || task.status !== 'running' || task.artifactBlocked === true) {
+      return;
+    }
+    const hasRetainedCapacity = this.makeRetainedRoom(userId, task, storedError.length);
+    const retainedError = hasRetainedCapacity ? storedError : undefined;
+    const updated = this.update(userId, conversationId, taskId, {
       status: 'error',
-      error,
+      settledAt: Date.now(),
+      error: retainedError,
+      result: undefined,
+      artifact: undefined,
+      attachments: undefined,
       ...(options?.harvestStarted === true ? { harvestStarted: true, harvestPending: true } : {}),
     });
+    if (updated) {
+      this.cancellationRequests.delete(task);
+      this.retainedUsage.set(task, {
+        result: 0,
+        artifact: 0,
+        attachments: 0,
+        error: retainedError?.length ?? 0,
+      });
+    }
+  }
+
+  cancel(
+    userId: string,
+    conversationId: string,
+    taskId: string,
+    error: string,
+    options?: { harvestStarted?: boolean },
+  ): void {
+    const storedError = truncateMiddle(error, MAX_RESULT_CHARS);
+    const task = this.buckets.get(this.key(userId, conversationId))?.tasks.get(taskId);
+    if (task == null || task.status !== 'running' || task.artifactBlocked === true) {
+      return;
+    }
+    const hasRetainedCapacity = this.makeRetainedRoom(userId, task, storedError.length);
+    const retainedError = hasRetainedCapacity ? storedError : undefined;
+    const updated = this.update(userId, conversationId, taskId, {
+      status: 'cancelled',
+      settledAt: Date.now(),
+      error: retainedError,
+      result: undefined,
+      artifact: undefined,
+      attachments: undefined,
+      ...(options?.harvestStarted === true ? { harvestStarted: true, harvestPending: true } : {}),
+    });
+    if (updated) {
+      this.cancellationRequests.delete(task);
+      this.retainedUsage.set(task, {
+        result: 0,
+        artifact: 0,
+        attachments: 0,
+        error: retainedError?.length ?? 0,
+      });
+    }
   }
 
   markCompletionWakeup(
@@ -1128,8 +1776,24 @@ export class BackgroundTaskRegistryClass {
     });
   }
 
+  markCompletionPersistencePending(userId: string, conversationId: string, taskId: string): void {
+    this.update(userId, conversationId, taskId, { completionPersistencePending: true });
+  }
+
+  markCompletionPersistenceFinished(userId: string, conversationId: string, taskId: string): void {
+    const bucket = this.buckets.get(this.key(userId, conversationId));
+    const task = bucket?.tasks.get(taskId);
+    if (bucket == null || task == null) return;
+    /** Even a policy-blocked task must release retention protection. This only
+     * clears lifecycle state; the immutable artifact block remains intact. */
+    task.completionPersistencePending = undefined;
+    task.updatedAt = Date.now();
+    bucket.lastAccess = task.updatedAt;
+  }
+
   markCompletionPersistenceFailed(userId: string, conversationId: string, taskId: string): void {
     this.update(userId, conversationId, taskId, {
+      completionPersistencePending: undefined,
       completionPersistenceFailed: true,
       completionWakeupRetire: undefined,
     });
@@ -1149,6 +1813,7 @@ export class BackgroundTaskRegistryClass {
     const retired = await task.completionWakeupRetire(reason, options);
     if (retired) {
       task.completionWakeupRetire = undefined;
+      task.completionWakeupRetired = true;
       task.updatedAt = Date.now();
     }
     return retired;
@@ -1158,7 +1823,7 @@ export class BackgroundTaskRegistryClass {
     userId: string,
     conversationId: string,
     taskId: string,
-    claim: { kind: 'manual' | 'wakeup'; claimId: string },
+    claim: { kind: 'manual' | 'wakeup'; claimId: string; generationId?: string },
   ): 'acquired' | 'replay' | 'claimed' | 'not_ready' {
     const task = this.get(userId, conversationId, taskId);
     if (task == null || task.status === 'running') {
@@ -1189,9 +1854,21 @@ export class BackgroundTaskRegistryClass {
 
   /** Permanently removes a policy-rejected artifact and exposes only the raw-free policy error. */
   blockArtifact(userId: string, conversationId: string, taskId: string, error: string): void {
-    this.update(userId, conversationId, taskId, {
+    const task = this.buckets.get(this.key(userId, conversationId))?.tasks.get(taskId);
+    if (task == null) {
+      return;
+    }
+    const storedError = truncateMiddle(error, MAX_RESULT_CHARS);
+    const hasRetainedCapacity = this.makeRetainedRoom(
+      userId,
+      task,
+      Math.max(0, storedError.length - this.payloadChars(task)),
+    );
+    const retainedError = hasRetainedCapacity ? storedError : undefined;
+    const updated = this.update(userId, conversationId, taskId, {
       status: 'error',
-      error,
+      settledAt: task.settledAt ?? Date.now(),
+      error: retainedError,
       result: undefined,
       artifact: undefined,
       attachments: undefined,
@@ -1200,6 +1877,14 @@ export class BackgroundTaskRegistryClass {
       artifactDelivered: false,
       artifactBlocked: true,
     });
+    if (updated) {
+      this.retainedUsage.set(task, {
+        result: 0,
+        artifact: 0,
+        attachments: 0,
+        error: retainedError?.length ?? 0,
+      });
+    }
   }
 
   /**
@@ -1217,8 +1902,7 @@ export class BackgroundTaskRegistryClass {
     task.harvestStarted = undefined;
     task.harvestPending = undefined;
     if (task.artifact == null && artifact != null) {
-      task.artifact = artifact;
-      task.artifactDelivered = false;
+      this.restoreArtifact(userId, conversationId, taskId, artifact);
     }
     task.updatedAt = Date.now();
   }
@@ -1234,6 +1918,10 @@ export class BackgroundTaskRegistryClass {
     }
     bucket.lastAccess = now;
     this.sweepBucketTasks(bucket, now);
+    if (bucket.tasks.size === 0 && bucket.capacityPermits.size === 0) {
+      this.buckets.delete(bucket.key);
+      return undefined;
+    }
     return bucket.tasks.get(taskId);
   }
 
@@ -1246,11 +1934,67 @@ export class BackgroundTaskRegistryClass {
     }
     bucket.lastAccess = now;
     this.sweepBucketTasks(bucket, now);
+    if (bucket.tasks.size === 0 && bucket.capacityPermits.size === 0) {
+      this.buckets.delete(bucket.key);
+      return [];
+    }
     return [...bucket.tasks.values()].sort((a, b) => a.createdAt - b.createdAt);
   }
 }
 
-export const backgroundTaskRegistry = new BackgroundTaskRegistryClass();
+export const backgroundTaskRegistry: BackgroundTaskRegistryClass =
+  new BackgroundTaskRegistryClass();
+
+export interface BackgroundTaskShutdownOptions {
+  /** `endpoints.agents.backgroundTasks.shutdownInterruptGraceMs`. */
+  interruptGraceMs?: number;
+  /** Shutdown time left for the drain; defaults to the local coordinator's remaining budget.
+   * A clustered worker passes its primary's tighter deadline. */
+  getBudgetMs?: () => number | null;
+  registry?: BackgroundTaskRegistryClass;
+}
+
+/**
+ * Registers the graceful-shutdown steps for background tools: stop admitting new tasks
+ * while the HTTP server drains, then, after generations are finalized, settle every task
+ * whose result is not yet durable.
+ */
+export function registerBackgroundTaskShutdown(options: BackgroundTaskShutdownOptions = {}): void {
+  const registry = options.registry ?? backgroundTaskRegistry;
+  const getBudgetMs = options.getBudgetMs ?? getRemainingShutdownMs;
+  registerShutdownTask('background task admission', () => registry.closeAdmission(), {
+    phase: 'pre-drain',
+    priority: 110,
+  });
+  registerShutdownTask(
+    'background tasks',
+    async () => {
+      const budgetMs = getBudgetMs();
+      if (budgetMs == null) {
+        registry.closeAdmission();
+        return;
+      }
+      const summary = await registry.drainForShutdown({
+        deadlineAt: Date.now() + Math.max(0, budgetMs - BACKGROUND_SHUTDOWN_TEARDOWN_RESERVE_MS),
+        interruptGraceMs:
+          options.interruptGraceMs ?? AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT,
+        flushReserveMs: BACKGROUND_SHUTDOWN_FLUSH_RESERVE_MS,
+        reason: BACKGROUND_TASK_SHUTDOWN_MESSAGE,
+      });
+      if (summary.tracked === 0) {
+        return;
+      }
+      if (summary.unsettled > 0) {
+        logger.warn('[background] Shutdown left background task results unconfirmed', summary);
+        return;
+      }
+      logger.info('[background] Drained background tasks for shutdown', summary);
+    },
+    /** After the generation job manager (100) finalizes interrupted turns, so completion
+     * deliveries anchored to them can resolve; before the subagent task store (90). */
+    { priority: 95 },
+  );
+}
 
 /** Content for the synthetic ToolMessage returned when a call is backgrounded. */
 export function buildBackgroundHandleContent(
@@ -1269,16 +2013,37 @@ export function buildBackgroundHandleContent(
     background_task_id: task.id,
     tool: task.toolName,
     status: task.status,
-    message,
+    message: `${message} The tool field identifies the originating tool, not the polling tool. Status request: ${JSON.stringify({ name: CHECK_BACKGROUND_TASK_NAME, arguments: { background_task_id: task.id } })}`,
   });
 }
 
-/** Content returned when the per-conversation background running cap is hit. */
-export function buildBackgroundCapacityContent(toolName: string): string {
+/** Content returned when a background registry capacity limit is hit. */
+export function buildBackgroundCapacityContent(
+  toolName: string,
+  scope: BackgroundTaskCapacityScope = 'conversation_running',
+): string {
+  let message: string;
+  if (scope === 'user_running') {
+    message = `Too many background tasks are already active for this user (limit ${MAX_RUNNING_PER_USER}, including pending launch reservations). Wait for existing background work to settle, or run this call in the foreground.`;
+  } else if (scope === 'user_retention') {
+    message = `This user is retaining the maximum number of background tasks (${MAX_TASKS_PER_USER}), and pending result processing prevents safe eviction. Wait for background result processing to finish, or run this call in the foreground.`;
+  } else if (scope === 'global_running') {
+    message = `The server-wide background task registry is at capacity (running limit ${MAX_RUNNING_GLOBAL}). Retry later, or run this call in the foreground.`;
+  } else if (scope === 'global_retention') {
+    message = `The server-wide background task registry is retaining its maximum number of tasks (${MAX_TASKS_GLOBAL}), and pending result processing prevents safe eviction. Retry later, or run this call in the foreground.`;
+  } else if (scope === 'shutting_down') {
+    message =
+      'This server is shutting down and is not starting new background tasks. Run this call in the foreground, or dispatch it again after the server restarts.';
+  } else if (scope === 'conversation_retention') {
+    message = `This conversation is retaining the maximum number of background tasks (${MAX_TASKS_PER_BUCKET}), and pending result processing prevents safe eviction. Wait for background result processing to finish, or run this call in the foreground.`;
+  } else {
+    message = `Too many background tasks are already running in this conversation (limit ${MAX_RUNNING_PER_BUCKET}). Poll ${CHECK_BACKGROUND_TASK_NAME} to collect finished results before dispatching more, or run this call in the foreground.`;
+  }
   return JSON.stringify({
     status: 'rejected',
     tool: toolName,
-    message: `Too many background tasks are already running in this conversation (limit ${MAX_RUNNING_PER_BUCKET}). Poll ${CHECK_BACKGROUND_TASK_NAME} to collect finished results before dispatching more, or run this call in the foreground.`,
+    scope,
+    message,
   });
 }
 
@@ -1294,11 +2059,57 @@ interface SerializedBackgroundTask {
   status: BackgroundTaskStatus;
   /** Coarse 0..1: no intermediate progress exists, only running vs settled. */
   progress: number;
+  cancellation_requested?: boolean;
+  /** ISO-8601 dispatch time, the app's serialization for every timestamp. */
+  started_at?: string;
+  /** ISO-8601 terminal time. Absent while the task is still running. */
+  settled_at?: string;
+  /** Dispatch to settlement, or dispatch to this poll while still running. */
+  elapsed_ms?: number;
   result?: string;
   result_available?: boolean;
   result_chars?: number;
+  /** Whether the result has reached the conversation. `pending` results still
+   * arrive as a new turn unless polled or cancelled first. Absent when the task
+   * has no automatic delivery, so only a poll ever surfaces its result. */
+  delivery?: BackgroundTaskDelivery;
   note?: string;
   error?: string;
+}
+
+const FAILED_DELIVERY_GUIDANCE =
+  'Automatic delivery failed for some finished tasks (delivery: "failed"); they will not arrive as a new turn. Poll each to collect its result.';
+
+const SUBAGENT_PENDING_DELIVERY_GUIDANCE =
+  'Some finished subagents have not been delivered yet (delivery: "pending"); each will arrive as a new turn. Poll one to collect its result now. Do not report them as finished until then.';
+
+const PENDING_DELIVERY_GUIDANCE =
+  'Some finished tasks have not been delivered yet (delivery: "pending"); each will arrive as a new turn. Poll one to collect its result now, or cancel it so it does not arrive. Do not report these tasks as finished or cancelled until then.';
+
+/**
+ * Model-facing task timings. The registry keeps epoch milliseconds; everything the
+ * app serializes carries ISO-8601 (`toISOString`), so the poll payload does too.
+ * `elapsed_ms` is served alongside them because a polling model has no clock of its
+ * own: without it, "running" carries no age and a caller cannot tell a task that
+ * started seconds ago from one stuck for an hour.
+ *
+ * `createdAt` is the strictly-increasing dispatch stamp, so a same-millisecond
+ * dispatch can read a few milliseconds after its real start and, for an instantly
+ * settled task, after `updatedAt`; clamping keeps `settled_at` from preceding
+ * `started_at` and `elapsed_ms` from going negative.
+ */
+function taskTimings(task: {
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+}): Pick<SerializedBackgroundTask, 'started_at' | 'settled_at' | 'elapsed_ms'> {
+  const settled = task.status !== 'running';
+  const settledAt = Math.max(task.updatedAt, task.createdAt);
+  return {
+    started_at: new Date(task.createdAt).toISOString(),
+    ...(settled ? { settled_at: new Date(settledAt).toISOString() } : {}),
+    elapsed_ms: Math.max(0, (settled ? settledAt : Date.now()) - task.createdAt),
+  };
 }
 
 function resultFields(
@@ -1331,6 +2142,100 @@ function taskNote(task: BackgroundTask): Pick<SerializedBackgroundTask, 'note'> 
   return {};
 }
 
+function taskDelivery(task: BackgroundTask): Pick<SerializedBackgroundTask, 'delivery'> {
+  if (task.completionWakeup !== true || task.completionPersistenceFailed === true) {
+    return {};
+  }
+  if (task.resultClaim != null || task.completionWakeupRetired === true) {
+    return { delivery: 'delivered' };
+  }
+  return { delivery: 'pending' };
+}
+
+/** A completion known only to the durable delivery store: dispatched in an earlier
+ * turn, on another replica, or before a restart, and not delivered yet. */
+function serializePendingCompletion(
+  completion: PendingBackgroundCompletion,
+): SerializedBackgroundTask {
+  const settled = completion.result;
+  return {
+    background_task_id: completion.taskId,
+    tool: completion.toolName,
+    status: settled?.status ?? 'running',
+    progress: settled == null ? 0 : 1,
+    started_at: completion.dispatchedAt.toISOString(),
+    ...(settled != null && { settled_at: settled.settledAt.toISOString() }),
+    delivery: 'pending',
+    note:
+      settled == null
+        ? 'Still running outside this turn; its result will arrive as a new turn when it finishes.'
+        : 'Finished, but its result has not been delivered; it will arrive as a new turn unless you poll or cancel it.',
+  };
+}
+
+/** One conversation's durable delivery evidence, split from what this process holds. */
+export interface DurableCompletionView {
+  /** Undelivered completions this process does not hold. */
+  pending: PendingBackgroundCompletion[];
+  /** Dead-lettered completions this process does not hold; only a poll recovers them. */
+  dead: PendingBackgroundCompletion[];
+  /** Every undelivered task id, present only when the listing was complete: a local
+   * task absent from it was delivered on this or another replica. */
+  pendingTaskIds?: ReadonlySet<string>;
+  deadTaskIds: ReadonlySet<string>;
+}
+
+/** Reads the durable delivery store, which outlives the process-local registry.
+ * Rejects when the store is unreachable; callers keep their local view then. */
+export async function readDurableCompletions(
+  controls: Pick<PendingBackgroundCompletionControls, 'list'>,
+  input: { userId: string; conversationId: string },
+  localTaskIds: ReadonlySet<string>,
+): Promise<DurableCompletionView> {
+  const durable = await controls.list(input);
+  const remote = (completion: PendingBackgroundCompletion) => !localTaskIds.has(completion.taskId);
+  return {
+    pending: durable.completions.filter(remote),
+    dead: durable.dead.filter(remote),
+    ...(durable.complete && {
+      pendingTaskIds: new Set(durable.completions.map(({ taskId }) => taskId)),
+    }),
+    deadTaskIds: new Set(durable.dead.map(({ taskId }) => taskId)),
+  };
+}
+
+/** A local task whose durable delivery settled elsewhere (an automatic wake-up
+ * on any replica) no longer holds a local claim; the complete durable listing is
+ * the evidence. An incomplete listing proves nothing, so the local view stands. */
+export function resolveTaskDelivery(
+  task: BackgroundTask,
+  durable?: Pick<DurableCompletionView, 'pendingTaskIds' | 'deadTaskIds'>,
+): BackgroundTaskDelivery | undefined {
+  const local = taskDelivery(task).delivery;
+  if (local !== 'pending' || task.status === 'running' || durable == null) {
+    return local;
+  }
+  if (durable.deadTaskIds.has(task.id)) {
+    return 'failed';
+  }
+  if (durable.pendingTaskIds == null || durable.pendingTaskIds.has(task.id)) {
+    return local;
+  }
+  return 'delivered';
+}
+
+/** A completion whose automatic delivery dead-lettered and that this process no
+ * longer holds: never delivered, so only a poll can still collect its result. */
+function serializeDeadCompletion(
+  completion: PendingBackgroundCompletion,
+): SerializedBackgroundTask {
+  return {
+    ...serializePendingCompletion(completion),
+    delivery: 'failed',
+    note: 'Automatic delivery failed; this result will not arrive as a new turn. Poll it to collect the result.',
+  };
+}
+
 function serializeTask(
   task: BackgroundTask,
   { includeResult }: { includeResult: boolean },
@@ -1340,9 +2245,30 @@ function serializeTask(
     tool: task.toolName,
     status: task.status,
     progress: task.status === 'running' ? 0 : 1,
+    ...(task.status === 'running' && task.cancellationRequestedAt != null
+      ? { cancellation_requested: true }
+      : {}),
+    ...taskTimings(task),
     ...resultFields(task, includeResult),
+    ...taskDelivery(task),
     ...taskNote(task),
     ...(task.error !== undefined ? { error: task.error } : {}),
+  };
+}
+
+/**
+ * A durable receipt is what a poll sees once process-local state is gone (another
+ * replica, or after a restart). It records when the task settled but not when it was
+ * dispatched, so it carries `settled_at` alone: no start, hence no elapsed span.
+ */
+function serializeDurableTask(task: BackgroundToolResultRecord): SerializedBackgroundTask {
+  return {
+    background_task_id: task.taskId,
+    tool: task.toolName,
+    status: task.status,
+    progress: 1,
+    ...(task.settledAt == null ? {} : { settled_at: task.settledAt.toISOString() }),
+    ...(task.status === 'completed' ? { result: task.output } : { error: task.output }),
   };
 }
 
@@ -1354,6 +2280,9 @@ interface SerializedSubagentTask {
   status: string;
   progress: number;
   progress_detail?: SubagentTaskSnapshot['progress'];
+  started_at?: string;
+  settled_at?: string;
+  elapsed_ms?: number;
   result?: string;
   result_available?: boolean;
   result_claimed?: boolean;
@@ -1361,6 +2290,8 @@ interface SerializedSubagentTask {
   error?: string;
   control_id?: string;
   message?: string;
+  /** A finished subagent whose result will still resume the parent turn. */
+  delivery?: 'pending';
 }
 
 function serializeSubagentSnapshot(
@@ -1380,6 +2311,8 @@ function serializeSubagentSnapshot(
     status: options.status ?? task.status,
     progress: task.status === 'running' ? 0 : 1,
     ...(task.progress == null ? {} : { progress_detail: task.progress }),
+    /** Timings follow the task's own lifecycle, never a control receipt's status. */
+    ...taskTimings(task),
     ...(options.includeResult == null ? {} : { result: options.includeResult }),
     ...(task.resultAvailable ? { result_available: true } : {}),
     ...(task.resultClaimed ? { result_claimed: true } : {}),
@@ -1502,20 +2435,25 @@ export async function runCheckBackgroundTask(params: {
   /** Scopes that tool-call id, whose provider ids repeat across runs and agents. */
   agentId?: string;
   runId?: string;
+  /** Stable response-message identity used to fence abandoned manual claims. */
+  generationId?: string;
   subagentTasks?: SubagentTaskConfig;
   claimBackgroundToolResult?: (params: {
     userId: string;
     conversationId: string;
-    messageId: string;
+    messageId?: string;
     taskId: string;
     agentId?: string;
     kind: 'manual';
     claimId: string;
-  }) => Promise<
-    | { status: 'acquired' | 'not_found' | 'not_ready' }
-    | { status: 'claimed'; claim?: { kind: 'manual' | 'wakeup'; claimId: string } }
-  >;
+    generationId?: string;
+    allowUnfinished?: boolean;
+  }) => Promise<BackgroundToolResultClaim>;
   recoverDeadBackgroundToolClaim?: BackgroundToolDeadClaimRecovery;
+  /** Trusted deployment policy. Defaults false for backward compatibility. */
+  ordinaryToolCancellation?: boolean;
+  /** Durable view of this conversation's undelivered background completions. */
+  pendingCompletions?: PendingBackgroundCompletionControls;
 }): Promise<string> {
   const { userId, conversationId } = params;
   const args = coerceArgsObject(params.args) ?? {};
@@ -1534,11 +2472,51 @@ export async function runCheckBackgroundTask(params: {
     const task = backgroundTaskRegistry.get(userId, conversationId, taskId);
     if (task != null) {
       if (action !== 'poll') {
-        return JSON.stringify({
-          status: 'invalid',
-          background_task_id: taskId,
-          message: 'Control actions are supported only for subagent tasks.',
-        });
+        if (action === 'cancel') {
+          /** A finished task has no execution to stop, so the live-cancellation
+           * policy does not apply: cancelling it falls through to the poll path,
+           * which retires its pending delivery. */
+          if (params.ordinaryToolCancellation !== true && task.status === 'running') {
+            return JSON.stringify({
+              status: 'invalid',
+              background_task_id: taskId,
+              message: 'Cancellation is not enabled for ordinary background tools.',
+            });
+          }
+          const cancellation = backgroundTaskRegistry.requestCancellation(
+            userId,
+            conversationId,
+            taskId,
+          );
+          if (cancellation.status === 'settled') {
+            /** Settlement won the race. Fall through to the ordinary poll path
+             * so durable result-claim arbitration still elects one consumer. */
+          } else if (
+            cancellation.status === 'requested' ||
+            cancellation.status === 'already_requested'
+          ) {
+            return JSON.stringify({
+              ...serializeTask(cancellation.task, { includeResult: false }),
+              status: 'cancellation_requested',
+              cancellation_requested: true,
+              message:
+                'Cancellation was requested. The task remains active until its executor settles; poll again for a terminal result.',
+            });
+          } else {
+            return JSON.stringify({
+              status: 'unavailable',
+              background_task_id: taskId,
+              message:
+                'This server no longer owns a live cancellation handle for the task. Poll for its outcome; do not assume execution stopped.',
+            });
+          }
+        } else {
+          return JSON.stringify({
+            status: 'invalid',
+            background_task_id: taskId,
+            message: 'This control action is supported only for subagent tasks.',
+          });
+        }
       }
       if (task.status !== 'running') {
         if (
@@ -1555,13 +2533,19 @@ export async function runCheckBackgroundTask(params: {
             agentId: task.agentId,
             kind: 'manual' as const,
             claimId: invocationId,
+            ...(params.generationId == null ? {} : { generationId: params.generationId }),
           };
           let durableClaim = await params.claimBackgroundToolResult(durableClaimInput);
           if (durableClaim.status === 'claimed') {
             let recovered = false;
             let recoveryUnavailable = false;
+            const existingClaim = durableClaim.claim;
+            const recoverableClaim =
+              existingClaim?.kind === 'wakeup' ||
+              (existingClaim?.kind === 'manual' && existingClaim.generationId != null);
             if (
-              durableClaim.claim?.kind === 'wakeup' &&
+              recoverableClaim &&
+              existingClaim != null &&
               params.recoverDeadBackgroundToolClaim != null
             ) {
               try {
@@ -1569,7 +2553,13 @@ export async function runCheckBackgroundTask(params: {
                   userId,
                   conversationId,
                   messageId: task.messageId,
-                  claimId: durableClaim.claim.claimId,
+                  claimId: existingClaim.claimId,
+                  ...(existingClaim.kind === 'manual'
+                    ? {
+                        kind: 'manual' as const,
+                        generationId: existingClaim.generationId,
+                      }
+                    : {}),
                 });
               } catch (error) {
                 recoveryUnavailable = true;
@@ -1605,47 +2595,69 @@ export async function runCheckBackgroundTask(params: {
               });
             }
           }
+          if (durableClaim.status === 'acquired' && task.completionWakeupRetired !== true) {
+            /** The result reaches the agent here, so its automatic delivery is redundant. */
+            await backgroundTaskRegistry
+              .retireCompletionWakeup(
+                userId,
+                conversationId,
+                taskId,
+                'completion claimed by manual poll',
+                { onlyIfUnclaimed: true },
+              )
+              .catch((error: unknown) =>
+                logger.warn(
+                  `[background] Failed to retire the delivery of manually claimed task ${taskId}:`,
+                  error,
+                ),
+              );
+          }
           if (durableClaim.status === 'not_found' || durableClaim.status === 'not_ready') {
             const localReplay =
               task.resultClaim?.kind === 'manual' && task.resultClaim.claimId === invocationId;
-            let localClaimNeedsNoDurableConfirmation =
-              localReplay && task.liveArtifactPollRequired === true;
+            const pollOwnsOriginatingGeneration =
+              params.generationId != null && params.generationId === task.messageId;
+            const localClaimAllowed =
+              pollOwnsOriginatingGeneration || task.liveArtifactPollRequired === true;
+            let localClaimNeedsNoDurableConfirmation = localReplay && localClaimAllowed;
             if (!localReplay) {
               /** Retire the still-unclaimed delivery before creating local
                * ownership. A live resolver lease wins. Once that resolver is
                * irreversibly dead-lettered, a dead-only repair reopens the
                * process-local poll fallback without stealing live work. */
-              let retired = false;
-              try {
-                retired = await backgroundTaskRegistry.retireCompletionWakeup(
-                  userId,
-                  conversationId,
-                  taskId,
-                  'completion claimed by same-generation manual poll',
-                  { onlyIfUnclaimed: true },
-                );
-                if (!retired) {
+              let retired = task.completionWakeupRetired === true;
+              if (!retired) {
+                try {
                   retired = await backgroundTaskRegistry.retireCompletionWakeup(
                     userId,
                     conversationId,
                     taskId,
-                    'dead completion recovered by same-generation manual poll',
-                    { onlyIfDead: true },
+                    'completion claimed by same-generation manual poll',
+                    { onlyIfUnclaimed: true },
                   );
-                  if (retired) {
-                    localClaimNeedsNoDurableConfirmation = true;
-                    backgroundTaskRegistry.markCompletionPersistenceFailed(
+                  if (!retired) {
+                    retired = await backgroundTaskRegistry.retireCompletionWakeup(
                       userId,
                       conversationId,
                       taskId,
+                      'dead completion recovered by same-generation manual poll',
+                      { onlyIfDead: true },
                     );
+                    if (retired) {
+                      localClaimNeedsNoDurableConfirmation = true;
+                      backgroundTaskRegistry.markCompletionPersistenceFailed(
+                        userId,
+                        conversationId,
+                        taskId,
+                      );
+                    }
                   }
+                } catch (error) {
+                  logger.warn(
+                    `[background] Failed to retire automatic completion for manual claim ${taskId}:`,
+                    error,
+                  );
                 }
-              } catch (error) {
-                logger.warn(
-                  `[background] Failed to retire automatic completion for manual claim ${taskId}:`,
-                  error,
-                );
               }
               if (!retired) {
                 return JSON.stringify({
@@ -1655,44 +2667,54 @@ export async function runCheckBackgroundTask(params: {
                     'The task is finished and completion ownership is being settled. Retry this poll shortly.',
                 });
               }
-              const localClaim = backgroundTaskRegistry.claimResult(
-                userId,
-                conversationId,
-                taskId,
-                { kind: 'manual', claimId: invocationId },
-              );
-              if (localClaim === 'claimed') {
-                return JSON.stringify({
-                  status: 'delivery_scheduled',
-                  background_task_id: taskId,
-                  message: 'This result is already assigned to an automatic continuation.',
-                });
-              }
-              if (localClaim === 'not_ready') {
-                return JSON.stringify({
-                  status: 'result_persisting',
-                  background_task_id: taskId,
-                  message:
-                    'The task is finished and its result is being made durable. Retry this poll shortly.',
-                });
-              }
-              if (task.liveArtifactPollRequired === true) {
-                /** The poll is executing inside the still-unfinished dispatch
-                 * generation, so waiting for the durable row would require
-                 * that generation to end before it can obey its mandatory
-                 * live-artifact poll. The retired unclaimed wakeup plus this
-                 * local manual claim is authoritative for this owner process;
-                 * the persistence retry re-reads and copies the claim after
-                 * the generation finalizes. */
+              if (localClaimAllowed) {
+                const localClaim = backgroundTaskRegistry.claimResult(
+                  userId,
+                  conversationId,
+                  taskId,
+                  {
+                    kind: 'manual',
+                    claimId: invocationId,
+                    ...(params.generationId == null ? {} : { generationId: params.generationId }),
+                  },
+                );
+                if (localClaim === 'claimed') {
+                  return JSON.stringify({
+                    status: 'delivery_scheduled',
+                    background_task_id: taskId,
+                    message: 'This result is already assigned to an automatic continuation.',
+                  });
+                }
+                if (localClaim === 'not_ready') {
+                  return JSON.stringify({
+                    status: 'result_persisting',
+                    background_task_id: taskId,
+                    message:
+                      'The task is finished and its result is being made durable. Retry this poll shortly.',
+                  });
+                }
+                /** The poll is executing inside the unfinished dispatch
+                 * generation, or it must deliver a live artifact. Waiting for
+                 * the durable row would require that generation to end first.
+                 * The retired unclaimed wakeup plus this local manual claim is
+                 * authoritative for this owner process; the persistence retry
+                 * re-reads and copies the claim after finalization. */
                 localClaimNeedsNoDurableConfirmation = true;
               }
             }
-            /** Ordinary polls do not expose the local result until the durable
-             * row has copied this manual claim. The owner-process live-artifact
-             * exception above cannot wait for its own generation to finalize;
-             * its persister re-reads the local claim after finalization. */
+            /** Ordinary polls claim the durable terminal receipt directly.
+             * They never reserve a process-local claim while the receipt is
+             * absent: a later poll has a different provider tool-call id and
+             * could never take over that abandoned reservation. A poll owned
+             * by the originating generation cannot wait for that same
+             * generation to finalize its durable response row. */
             if (!localClaimNeedsNoDurableConfirmation) {
-              const reconciledClaim = await params.claimBackgroundToolResult(durableClaimInput);
+              const reconciledClaim = await params.claimBackgroundToolResult({
+                ...durableClaimInput,
+                /** Retirement above makes this owner-process takeover safe;
+                 * the terminal row may still be a mid-turn partial save. */
+                allowUnfinished: true,
+              });
               if (reconciledClaim.status === 'claimed') {
                 backgroundTaskRegistry.releaseResultClaim(userId, conversationId, taskId, {
                   kind: 'manual',
@@ -1712,6 +2734,25 @@ export async function runCheckBackgroundTask(params: {
                     'The task is finished and its result is being made durable. Retry this poll shortly.',
                 });
               }
+              /** The response's final full save can overwrite a claim stamped
+               * on its unfinished partial row. Mirror only a DURABLY acquired
+               * claim so the persistence retry re-applies that ownership after
+               * finalization; never create an unanchored local reservation. */
+              const mirroredClaim = backgroundTaskRegistry.claimResult(
+                userId,
+                conversationId,
+                taskId,
+                {
+                  kind: 'manual',
+                  claimId: invocationId,
+                  ...(params.generationId == null ? {} : { generationId: params.generationId }),
+                },
+              );
+              if (mirroredClaim === 'claimed') {
+                logger.error(
+                  `[background] Durable manual claim for ${taskId} conflicts with process-local ownership.`,
+                );
+              }
             }
           }
         }
@@ -1719,21 +2760,191 @@ export async function runCheckBackgroundTask(params: {
       return JSON.stringify(serializeTask(task, { includeResult: true }));
     }
 
+    /** A failed lookup must not mask a subagent the controls below can still reach. */
+    let discardFailed = false;
+    if (action === 'cancel' && params.pendingCompletions != null) {
+      let outcome: Awaited<ReturnType<PendingBackgroundCompletionControls['discard']>> =
+        'not_pending';
+      try {
+        outcome = await params.pendingCompletions.discard({ userId, conversationId, taskId });
+      } catch (error) {
+        logger.warn(`[background] Failed to discard pending completion ${taskId}:`, error);
+        discardFailed = true;
+      }
+      if (outcome === 'discarded') {
+        return JSON.stringify({
+          status: 'cancelled',
+          background_task_id: taskId,
+          message: 'The finished result was discarded and will not arrive as a new turn.',
+        });
+      }
+      if (outcome === 'running') {
+        return JSON.stringify({
+          status: 'unavailable',
+          background_task_id: taskId,
+          delivery: 'pending',
+          message:
+            'This task is still running outside this turn and cannot be stopped from here. Its result will arrive as a new turn when it finishes; cancel it then to discard the result.',
+        });
+      }
+      if (outcome === 'delivering') {
+        return JSON.stringify({
+          status: 'delivery_scheduled',
+          background_task_id: taskId,
+          message: 'This result is already being delivered as a new turn.',
+        });
+      }
+    }
+
     const subagentTasks = params.subagentTasks;
+    let subagentPollChecked = false;
+    let subagentPollError: unknown;
+    /** Routed subagents have their own durable/cross-replica store. Resolve
+     * them before ordinary-tool Mongo recovery so two fallback reads—or a
+     * message-store outage—cannot delay or mask a healthy subagent result. */
+    if (action === 'poll' && subagentTasks != null) {
+      subagentPollChecked = true;
+      try {
+        const routedStore = routedSubagentStore(subagentTasks.store);
+        const claim =
+          routedStore == null
+            ? subagentTasks.store.claim(subagentTasks.scopeId, taskId)
+            : await routedStore.claimTask(subagentTasks.scopeId, taskId, invocationId);
+        const claimed = serializeSubagentClaim(
+          claim,
+          agentUsesSubagentCompletionWakeups(subagentTasks, params.agentId),
+        );
+        if (claimed != null) {
+          return JSON.stringify(claimed);
+        }
+      } catch (error) {
+        /** This id may still belong to an ordinary background tool whose
+         * durable receipt is healthy. Defer the subagent failure until after
+         * that independent recovery path has had a chance to identify it. */
+        subagentPollError = error;
+      }
+    }
+
+    if (action === 'poll' && params.claimBackgroundToolResult != null) {
+      const durableClaimInput = {
+        userId,
+        conversationId,
+        taskId,
+        agentId: params.agentId,
+        kind: 'manual' as const,
+        claimId: invocationId,
+        ...(params.generationId == null ? {} : { generationId: params.generationId }),
+      };
+      let durableClaim: BackgroundToolResultClaim;
+      try {
+        durableClaim = await params.claimBackgroundToolResult(durableClaimInput);
+        const claimedResult = durableClaim.status === 'claimed' ? durableClaim : undefined;
+        const existingClaim = claimedResult?.claim;
+        const recoverableClaim =
+          existingClaim?.kind === 'wakeup' ||
+          (existingClaim?.kind === 'manual' && existingClaim.generationId != null);
+        if (
+          recoverableClaim &&
+          existingClaim != null &&
+          claimedResult?.messageId != null &&
+          params.recoverDeadBackgroundToolClaim != null
+        ) {
+          const recovered = await params.recoverDeadBackgroundToolClaim({
+            userId,
+            conversationId,
+            messageId: claimedResult.messageId,
+            claimId: existingClaim.claimId,
+            ...(existingClaim.kind === 'manual'
+              ? {
+                  kind: 'manual' as const,
+                  generationId: existingClaim.generationId,
+                }
+              : {}),
+          });
+          if (recovered) {
+            durableClaim = await params.claimBackgroundToolResult(durableClaimInput);
+          }
+        }
+      } catch (error) {
+        logger.warn(`[background] Failed to recover durable task ${taskId} during polling:`, error);
+        return JSON.stringify({
+          status: 'result_unavailable',
+          background_task_id: taskId,
+          message:
+            'The durable task receipt is temporarily unavailable. Do not repeat a mutating operation; retry this status check later.',
+        });
+      }
+      if (durableClaim.status === 'acquired') {
+        const durableTask = durableClaim.results.find((result) => result.taskId === taskId);
+        if (durableTask != null) {
+          /** The result reaches the agent here, so its automatic delivery is redundant. */
+          await params.pendingCompletions
+            ?.settleClaimed({ userId, conversationId, taskId })
+            .catch((error: unknown) =>
+              logger.warn(
+                `[background] Failed to retire the delivery of manually claimed task ${taskId}:`,
+                error,
+              ),
+            );
+          return JSON.stringify(serializeDurableTask(durableTask));
+        }
+        return JSON.stringify({
+          status: 'result_persisting',
+          background_task_id: taskId,
+          message: 'The task receipt is settling. Retry this poll shortly.',
+        });
+      }
+      if (durableClaim.status === 'claimed') {
+        return JSON.stringify({
+          status: 'delivery_scheduled',
+          background_task_id: taskId,
+          message: 'This result is already assigned to another poll or automatic continuation.',
+        });
+      }
+      if (durableClaim.status === 'outcome_unknown') {
+        return JSON.stringify({
+          status: 'outcome_unknown',
+          background_task_id: taskId,
+          tool: durableClaim.toolName,
+          message:
+            'The task was launched, but this server cannot confirm a live executor or a durable terminal receipt. Do not repeat a mutating operation automatically; inspect the target system before retrying.',
+        });
+      }
+      if (durableClaim.status === 'not_ready') {
+        return JSON.stringify({
+          status: 'result_persisting',
+          background_task_id: taskId,
+          message:
+            'The task exists, but its terminal receipt is not ready. Do not repeat a mutating operation; retry this status check later.',
+        });
+      }
+    }
+
     if (subagentTasks != null) {
       try {
         const routedStore = routedSubagentStore(subagentTasks.store);
         if (action === 'poll') {
-          const claim =
-            routedStore == null
-              ? subagentTasks.store.claim(subagentTasks.scopeId, taskId)
-              : await routedStore.claimTask(subagentTasks.scopeId, taskId, invocationId);
-          const claimed = serializeSubagentClaim(
-            claim,
-            agentUsesSubagentCompletionWakeups(subagentTasks, params.agentId),
-          );
-          if (claimed != null) {
-            return JSON.stringify(claimed);
+          if (!subagentPollChecked) {
+            const claim =
+              routedStore == null
+                ? subagentTasks.store.claim(subagentTasks.scopeId, taskId)
+                : await routedStore.claimTask(subagentTasks.scopeId, taskId, invocationId);
+            const claimed = serializeSubagentClaim(
+              claim,
+              agentUsesSubagentCompletionWakeups(subagentTasks, params.agentId),
+            );
+            if (claimed != null) {
+              return JSON.stringify(claimed);
+            }
+          } else if (subagentPollError != null) {
+            if (subagentPollError instanceof SubagentTaskOwnerUnavailableError) {
+              return JSON.stringify({
+                status: 'unavailable',
+                background_task_id: taskId,
+                message: subagentPollError.message,
+              });
+            }
+            throw subagentPollError;
           }
         } else {
           const command = buildSubagentControlCommand(args, action);
@@ -1765,6 +2976,14 @@ export async function runCheckBackgroundTask(params: {
       }
     }
 
+    if (discardFailed) {
+      return JSON.stringify({
+        status: 'unavailable',
+        background_task_id: taskId,
+        message:
+          'The pending result could not be discarded right now. It may still arrive as a new turn; retry the cancel shortly.',
+      });
+    }
     return JSON.stringify({
       status: 'not_found',
       background_task_id: taskId,
@@ -1781,7 +3000,27 @@ export async function runCheckBackgroundTask(params: {
 
   const tasks = backgroundTaskRegistry.list(userId, conversationId);
   let subagentTasks: SerializedSubagentTask[] = [];
-  let listWarning: string | undefined;
+  const listWarnings: string[] = [];
+  let durable: DurableCompletionView | undefined;
+  if (params.pendingCompletions != null) {
+    try {
+      durable = await readDurableCompletions(
+        params.pendingCompletions,
+        { userId, conversationId },
+        new Set(tasks.map((task) => task.id)),
+      );
+      if (durable.pendingTaskIds == null) {
+        listWarnings.push(
+          'The undelivered or failed result list may be incomplete; pending results not shown may still arrive as new turns.',
+        );
+      }
+    } catch (error) {
+      logger.warn('[background] Failed to list undelivered background completions:', error);
+      listWarnings.push(
+        'Undelivered results from earlier turns could not be listed; some may still arrive as new turns.',
+      );
+    }
+  }
   const completionWakeups = agentUsesSubagentCompletionWakeups(
     params.subagentTasks,
     params.agentId,
@@ -1802,24 +3041,71 @@ export async function runCheckBackgroundTask(params: {
         subagentTasks = params.subagentTasks.store
           .list(params.subagentTasks.scopeId)
           .map((task) => serializeSubagentSnapshot(task));
-        listWarning = `Cross-replica subagent tasks could not be listed: ${error.message}`;
+        listWarnings.push(`Cross-replica subagent tasks could not be listed: ${error.message}`);
       } else {
         throw error;
       }
     }
   }
+  const ordinaryTasks = [
+    ...tasks.map((task) => {
+      const serialized = serializeTask(task, { includeResult: false });
+      const delivery = resolveTaskDelivery(task, durable);
+      return delivery == null ? serialized : { ...serialized, delivery };
+    }),
+    ...(durable?.pending ?? []).map(serializePendingCompletion),
+    ...(durable?.dead ?? []).map(serializeDeadCompletion),
+  ];
+  /** Pending only with durable evidence: whether a subagent's wake-up exists depends on
+   * the policy when it was admitted, not on this request's configuration. */
+  const finishedSubagents = subagentTasks.filter(
+    (task) => task.status !== 'running' && task.result_claimed !== true,
+  );
+  if (finishedSubagents.length > 0 && params.pendingCompletions != null) {
+    try {
+      const wakeups = await params.pendingCompletions.listSubagentWakeups({
+        userId,
+        conversationId,
+      });
+      const waiting = new Set(wakeups.taskIds);
+      subagentTasks = subagentTasks.map((task) =>
+        task.status !== 'running' &&
+        task.result_claimed !== true &&
+        waiting.has(task.background_task_id)
+          ? { ...task, delivery: 'pending' as const }
+          : task,
+      );
+    } catch (error) {
+      logger.warn('[background] Failed to list undelivered subagent completions:', error);
+      listWarnings.push(
+        'Undelivered subagent results could not be checked; some may still arrive as new turns.',
+      );
+    }
+  }
+  /** Work is outstanding until its result reaches the conversation: a finished
+   * task with a pending delivery is still going to resume the agent. */
+  const isOutstanding = (task: { status: string; delivery?: string }): boolean =>
+    task.status === 'running' || task.delivery === 'pending' || task.delivery === 'failed';
+  const outstanding =
+    ordinaryTasks.filter(isOutstanding).length + subagentTasks.filter(isOutstanding).length;
+  const isFinishedPending = (task: { status: string; delivery?: string }): boolean =>
+    task.status !== 'running' && task.delivery === 'pending';
+  const guidance = [
+    ...(ordinaryTasks.some(isFinishedPending) ? [PENDING_DELIVERY_GUIDANCE] : []),
+    ...(ordinaryTasks.some((task) => task.delivery === 'failed') ? [FAILED_DELIVERY_GUIDANCE] : []),
+    ...(subagentTasks.some(isFinishedPending) ? [SUBAGENT_PENDING_DELIVERY_GUIDANCE] : []),
+    ...(completionWakeups && subagentTasks.some((task) => task.status === 'running')
+      ? [SUBAGENT_WAKEUP_GUIDANCE]
+      : []),
+  ];
   logger.debug(
-    `[background] check_background_task listed ${tasks.length + subagentTasks.length} task(s)`,
+    `[background] check_background_task listed ${ordinaryTasks.length + subagentTasks.length} task(s), ${outstanding} outstanding`,
   );
   return JSON.stringify({
-    tasks: [
-      ...tasks.map((task) => serializeTask(task, { includeResult: false })),
-      ...subagentTasks,
-    ],
-    ...(completionWakeups && subagentTasks.some((task) => task.status === 'running')
-      ? { message: SUBAGENT_WAKEUP_GUIDANCE }
-      : {}),
-    ...(listWarning != null && { partial: true, warning: listWarning }),
+    tasks: [...ordinaryTasks, ...subagentTasks],
+    outstanding,
+    ...(guidance.length > 0 && { message: guidance.join(' ') }),
+    ...(listWarnings.length > 0 && { partial: true, warning: listWarnings.join(' ') }),
   });
 }
 
@@ -1911,6 +3197,7 @@ export function getBackgroundCodeDelivery(params: {
       result?: string;
       error?: string;
       attachments?: unknown[];
+      backgroundTask?: BackgroundToolResultState;
     }
   | undefined {
   const rawId = coerceArgsObject(params.args)?.background_task_id;
@@ -1938,6 +3225,30 @@ export function getBackgroundCodeDelivery(params: {
     result: task.result,
     error: task.error,
     attachments: task.attachments,
+    ...(task.status === 'running'
+      ? {}
+      : {
+          backgroundTask: {
+            taskId: task.id,
+            toolName: task.toolName,
+            status: task.status === 'cancelled' ? 'error' : task.status,
+            ...(task.status === 'cancelled' ? { cancelled: true } : {}),
+            settledAt: new Date(task.updatedAt),
+            ...(task.completionWakeup === true ? { completionWakeup: true } : {}),
+            ...(task.resultClaim == null
+              ? {}
+              : {
+                  resultClaim: {
+                    kind: task.resultClaim.kind,
+                    claimId: task.resultClaim.claimId,
+                    claimedAt: new Date(task.resultClaim.claimedAt),
+                    ...(task.resultClaim.generationId == null
+                      ? {}
+                      : { generationId: task.resultClaim.generationId }),
+                  },
+                }),
+          },
+        }),
   };
 }
 

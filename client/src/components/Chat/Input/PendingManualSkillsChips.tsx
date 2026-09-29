@@ -42,7 +42,7 @@ function PendingManualSkillsChips({ conversationId }: { conversationId: string }
           role="listitem"
           className="inline-flex items-center gap-1 rounded-full border border-border-light bg-surface-secondary px-2 py-0.5 text-xs text-text-secondary"
         >
-          <ScrollText className="h-3 w-3 text-cyan-500" aria-hidden="true" />
+          <ScrollText className="h-3 w-3 text-status-info" aria-hidden="true" />
           <span className="max-w-[12rem] truncate">{name}</span>
           <button
             type="button"

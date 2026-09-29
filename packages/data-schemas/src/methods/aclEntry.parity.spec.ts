@@ -1,12 +1,12 @@
 import mongoose from 'mongoose';
 import { performance } from 'node:perf_hooks';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   ResourceType,
   PrincipalType,
   PrincipalModel,
   PermissionBits,
 } from 'librechat-data-provider';
-import { MongoMemoryServer } from 'mongodb-memory-server';
 import type * as t from '~/types';
 import { createAclEntryMethods } from './aclEntry';
 import aclEntrySchema from '~/schema/aclEntry';
@@ -67,7 +67,7 @@ async function seedVariedPermissions(
   grantedBy: mongoose.Types.ObjectId,
   count: number,
 ): Promise<void> {
-  /** Every permBits value from 0..15 appears roughly `count/16` times, giving
+  /** Every permBits value from 0..31 appears roughly `count/32` times, giving
    *  a uniform distribution for parity + perf assertions. */
   const docs: Partial<t.IAclEntry>[] = [];
   for (let i = 0; i < count; i++) {
@@ -77,7 +77,7 @@ async function seedVariedPermissions(
       principalModel: PrincipalModel.USER,
       resourceType: ResourceType.AGENT,
       resourceId: new mongoose.Types.ObjectId(),
-      permBits: i % 16,
+      permBits: i % 32,
       grantedBy,
     });
   }
@@ -106,6 +106,8 @@ describe('ACL $bitsAllSet vs $in parity (issue #12729)', () => {
       PermissionBits.EDIT,
       PermissionBits.DELETE,
       PermissionBits.SHARE,
+      PermissionBits.VIEW_INSIGHTS,
+      PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
       PermissionBits.VIEW | PermissionBits.EDIT,
       PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE,
       PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
@@ -142,7 +144,7 @@ describe('ACL $bitsAllSet vs $in parity (issue #12729)', () => {
           principalType: PrincipalType.PUBLIC,
           resourceType: ResourceType.AGENT,
           resourceId: new mongoose.Types.ObjectId(),
-          permBits: i % 16,
+          permBits: i % 32,
           grantedBy: grantedById,
         });
       }
@@ -161,8 +163,8 @@ describe('ACL $bitsAllSet vs $in parity (issue #12729)', () => {
 
     test('hasPermission returns the same boolean as `$bitsAllSet` across all permBits patterns', async () => {
       const sharedResourceId = new mongoose.Types.ObjectId();
-      /** One entry per permBits value (0..15) on the same resource. */
-      for (let permBits = 0; permBits <= 15; permBits++) {
+      /** One entry per permBits value (0..31) on the same resource. */
+      for (let permBits = 0; permBits <= 31; permBits++) {
         await AclEntry.create({
           principalType: PrincipalType.USER,
           principalId: new mongoose.Types.ObjectId(),
@@ -181,6 +183,7 @@ describe('ACL $bitsAllSet vs $in parity (issue #12729)', () => {
         PermissionBits.EDIT,
         PermissionBits.DELETE,
         PermissionBits.SHARE,
+        PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
         PermissionBits.VIEW | PermissionBits.EDIT,
         PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
       ]) {

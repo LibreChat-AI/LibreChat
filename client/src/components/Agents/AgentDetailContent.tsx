@@ -1,7 +1,14 @@
 import React from 'react';
-import { Link, Pin, PinOff } from 'lucide-react';
+import { Link } from 'lucide-react';
+import { Pin, PinOff } from 'lucide';
 import { useQueryClient } from '@tanstack/react-query';
-import { OGDialogContent, Button, TooltipAnchor, useToastContext } from '@librechat/client';
+import {
+  Button,
+  MorphIcon,
+  TooltipAnchor,
+  OGDialogContent,
+  useToastContext,
+} from '@librechat/client';
 import {
   QueryKeys,
   Constants,
@@ -11,8 +18,9 @@ import {
   AgentListResponse,
 } from 'librechat-data-provider';
 import type t from 'librechat-data-provider';
+import { renderAgentAvatar, clearMessagesCache, specDisplayFieldReset } from '~/utils';
 import { useLocalize, useDefaultConvo, useFavorites } from '~/hooks';
-import { renderAgentAvatar, clearMessagesCache } from '~/utils';
+import Description from '~/components/ui/Description';
 import { useChatContext } from '~/Providers';
 import AgentContact from './AgentContact';
 
@@ -64,6 +72,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({ agent }) => {
         endpoint: EModelEndpoint.agents,
         agent_id: agent.id,
         title: localize('com_agents_chat_with', { name: agent.name || localize('com_ui_agent') }),
+        ...specDisplayFieldReset,
       };
 
       const currentConvo = getDefaultConversation({
@@ -113,9 +122,10 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({ agent }) => {
       <AgentContact agent={agent} className="mt-1 justify-center text-center text-sm" />
 
       {/* Agent description */}
-      <div className="mt-4 whitespace-pre-wrap px-6 text-center text-base text-text-primary">
-        {agent?.description}
-      </div>
+      <Description
+        description={agent?.description}
+        className="mt-4 whitespace-pre-wrap px-6 text-center text-base text-text-primary [&_a]:underline [&_a]:underline-offset-2 [&_img]:inline-block [&_img]:max-w-full"
+      />
 
       {/* Action button */}
       <div className="mb-4 mt-6 flex justify-center gap-2">
@@ -128,7 +138,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({ agent }) => {
               onClick={handleFavoriteClick}
               aria-label={isFavorite ? localize('com_ui_unpin') : localize('com_ui_pin')}
             >
-              {isFavorite ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+              <MorphIcon icon={isFavorite ? PinOff : Pin} className="h-4 w-4" />
             </Button>
           }
         />

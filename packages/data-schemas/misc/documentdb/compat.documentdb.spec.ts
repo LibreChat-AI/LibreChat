@@ -273,6 +273,15 @@ describeLive('Amazon DocumentDB live compatibility', () => {
             permBits: PermissionBits.VIEW,
             grantedBy: userId,
           });
+          /** The proof transaction READS PluginAuth and Token. On a database
+           * where they do not exist yet, DocumentDB rejects the in-transaction
+           * read of a non-existent collection and `asMCPError` reports it as
+           * `proof_unavailable` — which is why this test failed on every live
+           * cluster run while passing against MongoDB. Materialize both
+           * before the transaction. */
+          await models.PluginAuth.createCollection();
+          await models.Token.createCollection();
+          await models.Group.createCollection();
           const server = await models.MCPServer.findById(serverId).lean();
           if (!server) {
             throw new Error('DocumentDB authority probe server was not created');

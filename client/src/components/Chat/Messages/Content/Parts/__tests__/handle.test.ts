@@ -75,6 +75,16 @@ describe('parseBackgroundHandle', () => {
     expect(fileAttachments).toHaveLength(0);
   });
 
+  it('preserves the cancelled terminal status from an owned marker', () => {
+    const marker = {
+      type: 'background_task_status',
+      file_id: 'bg-tc-mine',
+      toolCallId: 'tc-mine',
+      status: 'cancelled',
+    } as never;
+    expect(splitBackgroundAttachments([marker], 'tc-mine').backgroundStatus).toBe('cancelled');
+  });
+
   it('returns null for oversized payloads (real output, not a handle)', () => {
     const big = JSON.stringify({
       background_task_id: 'task-1',

@@ -39,7 +39,7 @@
     },
     "api": {
       "name": "@librechat/backend",
-      "version": "0.8.8-rc1",
+      "version": "0.8.8-rc4",
       "dependencies": {
         "@anthropic-ai/vertex-sdk": "^0.16.0",
         "@aws-sdk/client-bedrock-runtime": "^3.1013.0",
@@ -151,7 +151,7 @@
     },
     "client": {
       "name": "@librechat/frontend",
-      "version": "0.8.8-rc1",
+      "version": "0.8.8-rc4",
       "dependencies": {
         "@ariakit/react": "^0.4.29",
         "@ariakit/react-components": "^0.1.2",
@@ -276,7 +276,6 @@
         "babel-plugin-transform-import-meta": "^2.3.2",
         "babel-plugin-transform-vite-meta-env": "^1.0.3",
         "eslint-plugin-jest": "^29.1.0",
-        "fs-extra": "^11.3.2",
         "identity-obj-proxy": "^3.0.0",
         "jest": "^30.2.0",
         "jest-canvas-mock": "^2.5.2",
@@ -295,7 +294,7 @@
     },
     "packages/api": {
       "name": "@librechat/api",
-      "version": "1.7.46",
+      "version": "1.7.49",
       "dependencies": {
         "@langchain/langgraph-checkpoint": "^1.1.2",
         "@langchain/langgraph-checkpoint-mongodb": "^1.4.0",
@@ -408,7 +407,7 @@
     },
     "packages/client": {
       "name": "@librechat/client",
-      "version": "0.4.76",
+      "version": "0.4.79",
       "devDependencies": {
         "@babel/core": "^7.28.5",
         "@babel/preset-env": "^7.29.5",
@@ -491,7 +490,7 @@
     },
     "packages/data-provider": {
       "name": "librechat-data-provider",
-      "version": "0.8.521",
+      "version": "0.8.524",
       "dependencies": {
         "axios": "^1.16.0",
         "dayjs": "^1.11.13",
@@ -526,7 +525,7 @@
     },
     "packages/data-schemas": {
       "name": "@librechat/data-schemas",
-      "version": "0.0.68",
+      "version": "0.0.71",
       "dependencies": {
         "mdast-util-directive": "^3.0.0",
         "mdast-util-from-markdown": "^2.0.1",
@@ -3295,8 +3294,6 @@
     "framer-motion": ["framer-motion@12.43.0", "", { "dependencies": { "motion-dom": "^12.43.0", "motion-utils": "^12.39.0", "tslib": "^2.4.0" }, "peerDependencies": { "@emotion/is-prop-valid": "*", "react": "^18.0.0 || ^19.0.0", "react-dom": "^18.0.0 || ^19.0.0" }, "optionalPeers": ["@emotion/is-prop-valid", "react", "react-dom"] }, "sha512-1eaL3RvR/kAlbG7UYcpMptEyzPoENO0c6w7ZnB3/hh2vSAz/6uGAFn6fdoqTBguNstf3MsFhJHsD/0DHiclG+g=="],
 
     "fresh": ["fresh@2.0.0", "", {}, "sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A=="],
-
-    "fs-extra": ["fs-extra@11.3.2", "", { "dependencies": { "graceful-fs": "^4.2.0", "jsonfile": "^6.0.1", "universalify": "^2.0.0" } }, "sha512-Xr9F6z6up6Ws+NjzMCZc6WXg2YFRlrLP9NQDO3VQrWrfiojdhS56TzueT88ze0uBdCTwEIhQ3ptnmKeWGFAe0A=="],
 
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
 

@@ -50,24 +50,3 @@ export function computeToggleAction(item: AgentItem, state: { selected: boolean 
     ? { type: 'action-remove', actionId: item.id }
     : { type: 'action-add', actionId: item.id };
 }
-
-/**
- * `skills_enabled` is the master opt-in for the skill allowlist, and an empty
- * allowlist with the flag on means the FULL accessible catalog ("use all
- * skills"). Selection edits sync the flag to the selection: any non-empty
- * selection needs the flag on to take effect (this also heals agents saved
- * with the since-removed Advanced kill switch off while skills were still
- * selected), and clearing the selection turns it off so the agent doesn't
- * silently escalate to the full catalog. Returns `undefined` when the flag
- * already matches. The "use all skills" state (flag on, empty selection) is
- * only ever set by its explicit toggle, never by selection edits.
- */
-export function skillsEnabledTransition(
-  next: string[],
-  enabled: boolean | undefined,
-): boolean | undefined {
-  if (next.length > 0) {
-    return enabled === true ? undefined : true;
-  }
-  return enabled === true ? false : undefined;
-}

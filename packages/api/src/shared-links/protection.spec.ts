@@ -1497,6 +1497,30 @@ describe('shared file metadata protection', () => {
     });
   });
 
+  it('allows malformed metadata traversal failures for an audit-only policy', () => {
+    let malformedUrl: Record<string, unknown> = { label: 'safe' };
+    for (let index = 0; index < 30; index++) {
+      malformedUrl = { nested: malformedUrl };
+    }
+
+    expect(() =>
+      assertSharedFileMetadataAllowed({
+        filters: {
+          files: {
+            pii: {
+              action: 'audit',
+              fields: ['uri'],
+              starterPatterns: [],
+              customPatterns: [BLOCK_PATTERN],
+            },
+          },
+        },
+        messages: [{ files: [{ url: malformedUrl as never }] }],
+        shareId: 'share-123',
+      }),
+    ).not.toThrow();
+  });
+
   it('does not read serialized metadata beyond the traversal budget', () => {
     const file = Object.fromEntries(
       Array.from({ length: CONTENT_TRAVERSAL_MAX_NODES }, (_, index) => [

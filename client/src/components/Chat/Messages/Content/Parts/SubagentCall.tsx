@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useSetAtom } from 'jotai';
 import { ChevronRight, Users } from 'lucide-react';
 import { EModelEndpoint } from 'librechat-data-provider';
-import { useRecoilValue, useResetRecoilState, useSetRecoilState } from 'recoil';
 import type {
   PartMetadata,
   TAttachment,
@@ -9,20 +9,24 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { SubagentTickerLine } from '~/utils/subagentContent';
-import store, {
+import {
   activeSubagentPanel,
-  subagentProgressByToolCallId,
   subagentProgressKey,
-} from '~/store';
+  useSubagentProgress,
+} from '~/components/Chat/Subagents/state';
 import { adaptLivePersistedActivity } from '~/components/Chat/Subagents/adapters';
+import { resolveSubagentAgentId } from '~/components/Chat/Subagents/identity';
+import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { parseSubagentBackgroundHandle } from './handle';
+import { isError } from '../ToolOutput/OutputRenderer';
 import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
+import { useFailedReveal } from '../reveal';
 import { cn, parseToolName } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -40,11 +44,12 @@ interface SubagentCallProps {
   output?: string | null;
   attachments?: TAttachment[];
   /** Aggregated content parts the backend attached to the tool_call at
-   *  message-save time. Takes precedence over the in-memory Recoil atom
+   *  message-save time. Takes precedence over the in-memory atom
    *  so a page refresh shows the same history the user saw live. Older
    *  runs recorded before the persistence path landed will not have this
    *  field; those fall back to the atom (or the raw `output` string). */
   persistedContent?: TMessageContentParts[];
+  subagentIdentity?: PartMetadata['subagentIdentity'];
   hideAttachments?: boolean;
 }
 
@@ -151,7 +156,7 @@ function useThrottledValue<T>(value: T, intervalMs: number, enabled: boolean): T
  * artifacts-style panel that renders the child's aggregated activity through
  * the shared child-activity module, so every subagent mode uses one deep view.
  *
- * Progress is sourced from the `subagentProgressByToolCallId` Recoil atom
+ * Progress is sourced from the `subagentProgressByToolCallId` atom
  * family, populated by `useStepHandler` as `ON_SUBAGENT_UPDATE` SSE
  * envelopes arrive. The atom is keyed by the parent message and
  * `tool_call_id`, since providers may reuse tool IDs across turns.
@@ -165,6 +170,7 @@ export default function SubagentCall({
   output,
   attachments,
   persistedContent,
+  subagentIdentity,
   hideAttachments = false,
 }: SubagentCallProps) {
   const localize = useLocalize();
@@ -172,12 +178,9 @@ export default function SubagentCall({
   const parentMessageContext = useContext(MessageContext);
   const parentMessageId = parentMessageContext.messageId?.trim() ?? '';
   const partIndex = parentMessageContext.partIndex ?? 0;
-  const progress = useRecoilValue(
-    subagentProgressByToolCallId(subagentProgressKey(parentMessageId, toolCallId, partIndex)),
-  );
-  const setSelectedSubagent = useSetRecoilState(activeSubagentPanel);
-  const setArtifactsVisible = useSetRecoilState(store.artifactsVisibility);
-  const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
+  const progress = useSubagentProgress(subagentProgressKey(parentMessageId, toolCallId, partIndex));
+  const setSelectedSubagent = useSetAtom(activeSubagentPanel);
+  const openPanel = useOpenSubagentPanel();
   const agentsMap = useAgentsMapContext();
   const backgroundHandle = useMemo(
     () => parseSubagentBackgroundHandle(output, args),
@@ -189,12 +192,7 @@ export default function SubagentCall({
 
   const subagentType = progress?.subagentType ?? extractSubagentType(args);
   const isSelfSpawn = subagentType === 'self';
-  /** Avatar lookup for the header icon. We use the child's agent id when
-   *  present (explicit subagents); self-spawn falls back to the agents
-   *  map being unavailable → the Users SVG. The tool UI has a similar
-   *  icon-left-of-label pattern; this reuses `MessageIcon` so the agent's
-   *  configured avatar lands here without a separate image pipeline. */
-  const subagentAgentId = progress?.subagentAgentId;
+  const subagentAgentId = resolveSubagentAgentId(progress, subagentIdentity);
   const subagentAgent = subagentAgentId ? agentsMap?.[subagentAgentId] : undefined;
   /**
    * Tri-state status resolution, aligned with `ToolCall.tsx`:
@@ -222,7 +220,10 @@ export default function SubagentCall({
    * status is the authority on why it stopped.
    */
   const hasError =
-    (progress?.status === 'error' || runStepStatus === 'failed') && runStepStatus !== 'cancelled';
+    runStepStatus !== 'cancelled' &&
+    (progress?.status === 'error' ||
+      runStepStatus === 'failed' ||
+      (typeof output === 'string' && isError(output)));
   const finished = isClosed
     ? runStepStatus !== 'cancelled'
     : initialProgress >= 1 || progress?.status === 'stop' || hasError;
@@ -301,10 +302,14 @@ export default function SubagentCall({
     const canOpenLiveForeground =
       isSharedConvo !== true && backgroundHandle == null && hasParentContext;
     return (
-      hasParentContext && (canOpenDurablePanel || canOpenLiveForeground || hasRenderableFallback)
+      /** No host, no panel to open — a search result renders this same card. */
+      openPanel != null &&
+      hasParentContext &&
+      (canOpenDurablePanel || canOpenLiveForeground || hasRenderableFallback)
     );
   }, [
     backgroundHandle,
+    openPanel,
     canOpenDurablePanel,
     initialProgress,
     isSharedConvo,
@@ -324,6 +329,7 @@ export default function SubagentCall({
       toolCallId,
       partIndex,
       subagentType,
+      subagentIdentity,
       ...(prompt == null ? {} : { prompt }),
       ...(backgroundHandle == null ? { legacyOutput: output } : {}),
       ...(persistedContent == null ? {} : { persistedContent }),
@@ -354,6 +360,7 @@ export default function SubagentCall({
       runStepStatus,
       shareId,
       subagentType,
+      subagentIdentity,
       toolCallId,
     ],
   );
@@ -369,17 +376,18 @@ export default function SubagentCall({
   }, [panelSelection, parentMessageId, partIndex, setSelectedSubagent, toolCallId]);
 
   const openDetails = useCallback(() => {
-    if (!canOpenDetails) return;
-    resetCurrentArtifactId();
-    setArtifactsVisible(false);
-    setSelectedSubagent(panelSelection);
-  }, [
-    canOpenDetails,
-    panelSelection,
-    resetCurrentArtifactId,
-    setArtifactsVisible,
-    setSelectedSubagent,
-  ]);
+    if (!canOpenDetails || openPanel == null) return;
+    openPanel(panelSelection);
+  }, [canOpenDetails, openPanel, panelSelection]);
+  const revealFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (claimFocus()) {
+        openDetails();
+      }
+    },
+    [openDetails],
+  );
+  useFailedReveal(hasError && canOpenDetails, revealFailure);
 
   return (
     <>
@@ -394,7 +402,7 @@ export default function SubagentCall({
         data-subagent-parent-message={parentMessageId}
         data-subagent-part-index={partIndex}
         className={cn(
-          'my-1.5 flex w-full flex-col gap-1 rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-left transition',
+          'my-2 flex w-full flex-col gap-1 rounded-lg border border-border-light bg-surface-secondary px-3 py-2 text-left transition',
           canOpenDetails ? 'group hover:bg-surface-tertiary' : 'cursor-default opacity-80',
           running && !detachedStatusUnknown && 'animate-pulse-slow',
         )}

@@ -6,10 +6,16 @@ import useDrawerSwipe, {
   setDrawerSlideListener,
 } from '../useDrawerSwipe';
 import {
+  DRAWER_UNPAINTED,
   MOBILE_DRAWER_ID,
   MOBILE_PANE_SHIFT,
   MOBILE_SCRIM_ID,
+  TRANSITION_MS,
 } from '~/components/UnifiedSidebar/constants';
+
+/** Mirrors the hook's own settle buffer: the window between React writing the
+ *  resting value and the release handing the inline styles back. */
+const SETTLE_BUFFER_MS = 80;
 
 const DRAWER_WIDTH = 375;
 
@@ -971,6 +977,147 @@ describe('useDrawerSwipe — kickDrawerAnimation (button toggles)', () => {
 
     expect(harness.drawer.style.transform).toBe('translate3d(-240px, 0, 0)');
     expect(harness.pane.style.transform).toBe('translate3d(60px, 0, 0)');
+    harness.unmount();
+  });
+});
+
+/**
+ * A closed drawer is not painted at all (see UnifiedSidebar), so every path
+ * that moves it has to claim painting for the travel and hand it back once the
+ * slide is over: claimed too late the opening frames are invisible, released
+ * too late — or never — and the settled drawer keeps the off-screen layer whose
+ * stale tiles this is all here to avoid.
+ */
+describe('useDrawerSwipe — painting through the travel', () => {
+  it('paints the drawer for a drag that opens it out of a closed state', () => {
+    jest.useFakeTimers();
+    const harness = setup(false);
+    harness.swipe(
+      harness.pane,
+      [
+        { x: 20, y: 100, t: 0 },
+        { x: 120, y: 104, t: 50 },
+      ],
+      false,
+    );
+
+    expect(harness.drawer.style.visibility).toBe('visible');
+
+    harness.pane.dispatchEvent(touchEvent('touchend', [], 120));
+    jest.runAllTimers();
+
+    expect(harness.onOpenChange).toHaveBeenCalledWith(true);
+    expect(harness.drawer.style.visibility).toBe('');
+    jest.useRealTimers();
+    harness.unmount();
+  });
+
+  /** The drawer never commits open here, so nothing else would ever resolve the
+   *  inline override: the settle has to land on the closed value itself. */
+  it('settles a drag that snaps back on the unpainted value', () => {
+    jest.useFakeTimers();
+    const harness = setup(false);
+    harness.swipe(harness.pane, [
+      { x: 20, y: 100, t: 0 },
+      { x: 60, y: 100, t: 200 },
+      { x: 80, y: 100, t: 400 },
+    ]);
+    jest.runAllTimers();
+
+    expect(harness.onOpenChange).not.toHaveBeenCalled();
+    expect(harness.drawer.style.visibility).toBe(DRAWER_UNPAINTED);
+    jest.useRealTimers();
+    harness.unmount();
+  });
+
+  it.each([
+    ['open', false, true, ''],
+    ['close', true, false, DRAWER_UNPAINTED],
+  ])(
+    'paints a kicked %s slide before its state flip commits, then settles',
+    (_name, open, next, settled) => {
+      jest.useFakeTimers();
+      const harness = setup(open);
+      const visibilityAtApply: string[] = [];
+      kickDrawerAnimation(next, () => {
+        visibilityAtApply.push(harness.drawer.style.visibility);
+      });
+
+      expect(visibilityAtApply).toEqual(['visible']);
+
+      jest.advanceTimersByTime(400);
+
+      expect(harness.drawer.style.visibility).toBe(settled);
+      jest.useRealTimers();
+      harness.unmount();
+    },
+  );
+
+  /**
+   * The regression that made the first pass of this change a no-op for every
+   * button and keyboard close. React owns the resting value and writes
+   * `hidden` when the travel window closes at TRANSITION_MS; the release runs a
+   * buffer later, and clearing the property there dropped that value while
+   * React still believed its unchanged prop was applied — so React never wrote
+   * it again and the settled, closed drawer was painted for the rest of the
+   * session. Modelled the way the pane's transform already is: the declarative
+   * value is in the DOM before the release, and the release must respect it.
+   */
+  it('leaves a settled close on the value React rendered, not cleared', () => {
+    jest.useFakeTimers();
+    const harness = setup(true);
+    kickDrawerAnimation(false, () => undefined);
+    /** What React writes once `isSliding` expires, mid-way through the buffer
+     *  the release waits out. */
+    jest.advanceTimersByTime(TRANSITION_MS);
+    harness.drawer.style.visibility = DRAWER_UNPAINTED;
+
+    jest.advanceTimersByTime(SETTLE_BUFFER_MS + 20);
+
+    expect(harness.drawer.style.visibility).toBe(DRAWER_UNPAINTED);
+    jest.useRealTimers();
+    harness.unmount();
+  });
+
+  /** A gesture surviving into a new effect run was interrupted, and the run that
+   *  inherits it resolves the drag styles to the state it finds rather than to
+   *  the gesture's own target. That is the other path that can strand the
+   *  claim — here an external close commits while a close drag is still held. */
+  it('resolves an interrupted drag to the state that superseded it', () => {
+    jest.useFakeTimers();
+    const harness = setup(true);
+    harness.swipe(
+      harness.drawer,
+      [
+        { x: 350, y: 100, t: 0 },
+        { x: 250, y: 100, t: 50 },
+      ],
+      false,
+    );
+
+    expect(harness.drawer.style.visibility).toBe('visible');
+
+    harness.rerender({ open: false, enabled: true });
+
+    expect(harness.drawer.style.visibility).toBe(DRAWER_UNPAINTED);
+    jest.useRealTimers();
+    harness.unmount();
+  });
+
+  /** Reduced motion has no travel to paint: the state flip is the whole
+   *  transition, so nothing claims painting and React's value stands alone. */
+  it('never claims painting under reduced motion', () => {
+    jest.useFakeTimers();
+    const harness = setup(false, true);
+    harness.swipe(harness.pane, [
+      { x: 20, y: 100, t: 0 },
+      { x: 240, y: 100, t: 50 },
+    ]);
+    kickDrawerAnimation(false, jest.fn());
+    jest.runAllTimers();
+
+    expect(harness.drawer.style.visibility).not.toBe('visible');
+    jest.useRealTimers();
     harness.unmount();
   });
 });

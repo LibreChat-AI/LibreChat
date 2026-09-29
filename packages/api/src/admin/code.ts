@@ -5,6 +5,8 @@ import type { Response } from 'express';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ServerRequest } from '~/types/http';
 
+import { getCodeApiTenantId } from '~/auth/codeapi';
+
 const CODE_BRIDGE_REQUEST_TIMEOUT_MS = 10_000;
 
 type AgentsEndpointConfig = NonNullable<AppConfig['endpoints']>[EModelEndpoint.agents];
@@ -31,6 +33,7 @@ interface CodeRevocationResponse {
 
 export interface AdminCodeEnvironmentDeps {
   getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig>;
+  resolveTenantId?: (req: ServerRequest) => string;
   readSecret?: (name: string) => string | undefined;
   fetchImpl?: FetchImpl;
 }
@@ -55,7 +58,11 @@ function pairingConfig(environment: ConfiguredCodeEnvironment):
   if (environment.type !== 'attached' || environment.owner !== 'deployment') {
     return undefined;
   }
-  return environment.pairing;
+  const pairing = environment.pairing;
+  if (pairing?.workerId == null) {
+    return undefined;
+  }
+  return { workerId: pairing.workerId, tokenEnv: pairing.tokenEnv };
 }
 
 function bridgeUrl(environment: ConfiguredCodeEnvironment, path: string): string {
@@ -87,6 +94,7 @@ export function createAdminCodeEnvironmentHandlers(deps: AdminCodeEnvironmentDep
   revokeWorker: (req: ServerRequest, res: Response) => Promise<Response>;
 } {
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const resolveTenantId = deps.resolveTenantId ?? getCodeApiTenantId;
   const readSecret =
     deps.readSecret ??
     ((name: string) =>
@@ -130,6 +138,12 @@ export function createAdminCodeEnvironmentHandlers(deps: AdminCodeEnvironmentDep
   async function createPairing(req: ServerRequest, res: Response): Promise<Response> {
     const resolved = await resolve(req, res);
     if ('statusCode' in resolved) return resolved;
+    let tenantId: string;
+    try {
+      tenantId = resolveTenantId(req);
+    } catch {
+      return res.status(503).json({ error: 'Code environment tenant context is unavailable' });
+    }
     try {
       const response = await fetchImpl(bridgeUrl(resolved.environment, '/bridge/pairings'), {
         method: 'POST',
@@ -137,7 +151,13 @@ export function createAdminCodeEnvironmentHandlers(deps: AdminCodeEnvironmentDep
           Authorization: `Bearer ${resolved.token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ workerId: resolved.pairing.workerId }),
+        body: JSON.stringify({
+          workerId: resolved.pairing.workerId,
+          binding: {
+            tenantId,
+            principal: { type: 'deployment', id: resolved.id },
+          },
+        }),
         redirect: 'error',
         signal: AbortSignal.timeout(CODE_BRIDGE_REQUEST_TIMEOUT_MS),
       });

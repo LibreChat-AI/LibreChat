@@ -58,6 +58,20 @@ import { usePauseGlobalAudio } from './Audio';
 import { useHasAccess } from '~/hooks';
 import store from '~/store';
 
+export function clearInheritedAgentWorkspace(
+  conversation: TConversation,
+  previousConversation?: TConversation | null,
+): TConversation {
+  const startsNewAgentConversation =
+    conversation.conversationId === Constants.NEW_CONVO &&
+    conversation.agent_id != null &&
+    conversation.agent_id !== previousConversation?.agent_id;
+
+  return startsNewAgentConversation
+    ? { ...conversation, codeEnvironmentMode: undefined, codeWorkspaces: undefined }
+    : conversation;
+}
+
 const useNewConvo = (index = 0) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -349,7 +363,7 @@ const useNewConvo = (index = 0) => {
           ? { endpoint: _template.endpoint, chatProjectId: _template.chatProjectId }
           : _template;
 
-      const conversation = {
+      let conversation = {
         conversationId: Constants.NEW_CONVO as string,
         title: 'New Chat',
         endpoint: null,
@@ -373,6 +387,7 @@ const useNewConvo = (index = 0) => {
       }
 
       const prevConversation = getConversation();
+      conversation = clearInheritedAgentWorkspace(conversation, prevConversation);
       applyModelSpecEffects({
         startupConfig,
         specName: preset?.spec,

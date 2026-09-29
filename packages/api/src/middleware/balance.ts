@@ -19,7 +19,11 @@ export interface BalanceMiddlewareOptions {
     refresh?: boolean;
   }) => Promise<AppConfig>;
   findBalanceByUser: (userId: string) => Promise<IBalance | null>;
-  upsertBalanceFields: (userId: string, fields: IBalanceUpdate) => Promise<IBalance | null>;
+  upsertBalanceFields: (
+    userId: string,
+    fields: IBalanceUpdate,
+    insertOnly?: IBalanceUpdate,
+  ) => Promise<IBalance | null>;
 }
 
 type BalanceLocals = {
@@ -148,6 +152,14 @@ export function createSetBalanceConfig({
 
         if (Object.keys(updateFields).length === 0) {
           balanceLocals.balanceData = userBalanceRecord;
+          return;
+        }
+
+        if (userBalanceRecord == null) {
+          const { tokenCredits, ...syncFields } = updateFields;
+          balanceLocals.balanceData = await upsertBalanceFields(userId, syncFields, {
+            tokenCredits,
+          });
           return;
         }
 

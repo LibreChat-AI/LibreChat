@@ -86,6 +86,7 @@ describe('GenerationJobManager resume replay events', () => {
   test('includes OAuth run step and delta replay events in resume state', async () => {
     manager = createInMemoryManager();
     const streamId = `oauth-delta-resume-${Date.now()}`;
+    const expiresAt = Date.now() + 60_000;
     await manager.createJob(streamId, 'user-1', streamId);
 
     const runStepEvent = {
@@ -108,7 +109,7 @@ describe('GenerationJobManager resume replay events', () => {
           type: 'tool_calls',
           tool_calls: [{ name: 'oauth_mcp_Google-Workspace', args: '' }],
           auth: 'https://auth.example.com/oauth',
-          expires_at: 1780791946,
+          expires_at: expiresAt,
         },
       },
     } satisfies ServerSentEvent;
@@ -141,6 +142,36 @@ describe('GenerationJobManager resume replay events', () => {
     const resumeState = await manager.getResumeState(streamId);
 
     expect(resumeState?.replayEvents).toEqual([runStepEvent, authEvent]);
+    expect(resumeState?.pendingOAuthPrompts).toEqual([
+      {
+        stepId: 'step-oauth',
+        runId: 'USE_PRELIM_RESPONSE_MESSAGE_ID',
+        index: 0,
+        toolCallId: 'call-oauth',
+        toolName: 'oauth_mcp_Google-Workspace',
+        authURL: 'https://auth.example.com/oauth',
+        expiresAt,
+      },
+    ]);
+
+    await manager.emitChunk(streamId, {
+      event: 'on_run_step_completed',
+      data: {
+        result: {
+          id: 'step-oauth',
+          index: 0,
+          tool_call: {
+            id: 'call-oauth',
+            name: 'oauth_mcp_Google-Workspace',
+            output: 'OAuth authentication completed',
+          },
+        },
+      },
+    });
+
+    await expect(manager.getResumeState(streamId)).resolves.toMatchObject({
+      pendingOAuthPrompts: undefined,
+    });
   });
 
   test('retains emitted run steps when the live graph is unavailable during resume', async () => {

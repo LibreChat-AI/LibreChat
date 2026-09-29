@@ -1,9 +1,10 @@
 import path from 'path';
 import JSZip from 'jszip';
 import crypto from 'crypto';
-import { logger } from '@librechat/data-schemas';
+import { logger, validateRelativePath } from '@librechat/data-schemas';
 import {
   ResourceType,
+  DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY,
   AccessRoleIds,
   PrincipalType,
   hasActivePiiFields,
@@ -15,8 +16,10 @@ import type {
   ISkillFile,
   CreateSkillInput,
   CreateSkillResult,
+  DeleteSkillResult,
   UpsertSkillFileInput,
 } from '@librechat/data-schemas';
+import type { SkillImportFailureReason, TSkillImportFailedResponse } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { Types } from 'mongoose';
 import type {
@@ -37,10 +40,11 @@ import {
   contentFilterUninspectableResponse,
   getBlockedUninspectableSkillFileField,
 } from '~/protection';
+import { deleteSkillWithRetry, mergeDeleteSkillResults } from './cleanup';
 import { contentFilterBlockResponse } from '~/middleware/contentFilter';
 import { resolveRequestTenantId } from '~/middleware/tenant';
+import { createConcurrencyLimiter } from '~/utils/promise';
 import { DEFAULT_SKILL_IMPORT_LIMITS } from './limits';
-import { isSafeSkillFilePath } from './path';
 import { parseSkillMarkdown } from './parse';
 import { isBinaryBuffer } from './binary';
 
@@ -130,7 +134,7 @@ export interface ImportSkillDeps {
   limits?: Partial<ImportLimits> | ((req: ServerRequest) => Partial<ImportLimits> | undefined);
   createSkill: (data: CreateSkillInput) => Promise<CreateSkillResult>;
   getSkillById: (id: string | Types.ObjectId) => Promise<(ISkill & { _id: Types.ObjectId }) | null>;
-  deleteSkill: (id: string) => Promise<{ deleted: boolean }>;
+  deleteSkill: (id: string) => Promise<DeleteSkillResult>;
   upsertSkillFile: (row: UpsertSkillFileInput) => Promise<ISkillFile & { _id: Types.ObjectId }>;
   saveBuffer: (
     req: Request,
@@ -365,7 +369,12 @@ async function grantOwnership(
   } catch (error) {
     logger.error(`[importSkill] Failed to grant SKILL_OWNER for ${skillId}, rolling back:`, error);
     try {
-      await deps.deleteSkill(skillId.toString());
+      const deletion = await deleteSkillWithRetry(deps.deleteSkill, skillId.toString());
+      if (!deletion.cleanupComplete) {
+        logger.error(
+          `[importSkill] Compensating delete incomplete for ${skillId}: ${deletion.failedCleanupSteps.join(', ')}`,
+        );
+      }
     } catch (rollbackError) {
       logger.error(`[importSkill] Compensating delete failed for ${skillId}:`, rollbackError);
     }
@@ -468,8 +477,29 @@ async function handleMarkdown(
 type ImportFileResult = {
   path: string;
   status: 'ok' | 'error';
+  /** Stable code the client localizes; set on every failure. */
+  reason?: SkillImportFailureReason;
+  /** Limit in MB, when `reason` names a size limit. */
+  limitMb?: number;
+  /**
+   * Human-readable detail for the server log only. Storage and database
+   * messages can name buckets, hosts and driver internals, so this never
+   * reaches the client — `reason` does.
+   */
   error?: string;
 };
+
+/**
+ * Limits are reported to the user in MB. Two decimals, and never 0 for a
+ * positive limit: a deployment configured in kilobytes would otherwise render
+ * as "exceeds the 0 MB limit".
+ */
+function bytesToMb(bytes: number): number {
+  if (bytes <= 0) {
+    return 0;
+  }
+  return Math.max(0.01, Math.round((bytes / (1024 * 1024)) * 100) / 100);
+}
 
 interface ArchiveFileDescriptor {
   readonly entryPath: string;
@@ -526,6 +556,42 @@ async function readZipEntry(
   };
 }
 
+/**
+ * Record every archive entry the scan never reached.
+ *
+ * The decompression budget stops the loop mid-archive, and an import that
+ * reported only the entries it happened to read would tell the user they had
+ * seen the whole failure set: they would fix those paths, retry, and meet the
+ * next batch. `startIndex` is the entry the loop stopped on, inclusive.
+ */
+function pushUnprocessedEntries(
+  results: ImportFileResult[],
+  entries: readonly [string, JSZip.JSZipObject][],
+  startIndex: number,
+  prefix: string,
+  limitMb: number,
+): void {
+  for (let index = startIndex; index < entries.length; index++) {
+    const [entryPath, zipEntry] = entries[index];
+    if (zipEntry.dir) {
+      continue;
+    }
+    const normalized = entryPath.replace(/\\/g, '/');
+    const relativePath =
+      prefix && normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
+    if (relativePath.toUpperCase() === SKILL_MD.toUpperCase()) {
+      continue;
+    }
+    results.push({
+      path: relativePath || normalized,
+      status: 'error',
+      reason: 'archive_too_large',
+      limitMb,
+      error: 'Not processed: cumulative decompressed size exceeded limit',
+    });
+  }
+}
+
 async function scanArchiveFiles(
   zip: JSZip,
   prefix: string,
@@ -539,7 +605,11 @@ async function scanArchiveFiles(
   let totalDecompressed = initialDecompressedBytes;
   let cumulativeLimitExceeded = false;
 
-  for (const [entryPath, zipEntry] of Object.entries(zip.files)) {
+  const entries = Object.entries(zip.files);
+  const budgetMb = bytesToMb(maxDecompressedBytes);
+
+  for (let index = 0; index < entries.length; index++) {
+    const [entryPath, zipEntry] = entries[index];
     if (zipEntry.dir) {
       continue;
     }
@@ -552,8 +622,13 @@ async function scanArchiveFiles(
     if (callbacks.onName?.(relativePath || normalized) === true) {
       return { files, results, blocked: true, cumulativeLimitExceeded };
     }
-    if (!relativePath || !isSafeSkillFilePath(relativePath)) {
-      results.push({ path: normalized, status: 'error', error: 'Invalid path' });
+    if (validateRelativePath(relativePath).length > 0) {
+      results.push({
+        path: relativePath,
+        status: 'error',
+        reason: 'invalid_path',
+        error: 'Invalid path',
+      });
       continue;
     }
 
@@ -562,26 +637,25 @@ async function scanArchiveFiles(
       const effectiveLimit = Math.min(limits.maxSingleFileBytes, cumulativeLimit);
       if (effectiveLimit <= 0) {
         cumulativeLimitExceeded = true;
-        results.push({
-          path: relativePath,
-          status: 'error',
-          error: 'Cumulative decompressed size exceeds limit',
-        });
+        pushUnprocessedEntries(results, entries, index, prefix, budgetMb);
         break;
       }
 
       const { buffer, bytesRead } = await readZipEntry(zipEntry, effectiveLimit);
       totalDecompressed += bytesRead;
       if (buffer == null) {
-        const reason =
-          bytesRead > limits.maxSingleFileBytes
-            ? `File too large (max ${limits.maxSingleFileBytes / 1024 / 1024}MB)`
-            : 'Cumulative decompressed size exceeds limit';
-        results.push({ path: relativePath, status: 'error', error: reason });
         if (bytesRead > cumulativeLimit) {
           cumulativeLimitExceeded = true;
+          pushUnprocessedEntries(results, entries, index, prefix, budgetMb);
           break;
         }
+        results.push({
+          path: relativePath,
+          status: 'error',
+          reason: 'file_too_large',
+          limitMb: bytesToMb(limits.maxSingleFileBytes),
+          error: `File too large (max ${limits.maxSingleFileBytes / 1024 / 1024}MB)`,
+        });
         continue;
       }
 
@@ -603,6 +677,7 @@ async function scanArchiveFiles(
       results.push({
         path: relativePath,
         status: 'error',
+        reason: 'persistence_failed',
         error: (error as Error).message,
       });
     }
@@ -633,11 +708,28 @@ function preflightArchiveNames(
   return false;
 }
 
+/** A blob that reached storage, kept so a failed import can delete it again. */
+interface PersistedArchiveBlob {
+  readonly relativePath: string;
+  readonly filepath: string;
+  readonly source: string;
+  readonly storageKey?: string;
+  readonly storageRegion?: string;
+  /** Whether a SkillFile row can still reference this blob. */
+  readonly rowPersisted: boolean;
+}
+
 interface ArchivePersistenceContext {
   readonly userId: string;
   readonly skillId: Types.ObjectId;
   readonly authorId: Types.ObjectId;
   readonly tenantId?: string;
+  /**
+   * Blobs written so far, in archive order. An import that loses any bundled
+   * file is rolled back whole (`rollbackArchiveImport`), and the storage writes
+   * are the only part of that no database cascade can undo.
+   */
+  readonly persisted: PersistedArchiveBlob[];
 }
 
 async function persistArchiveFile(
@@ -657,6 +749,14 @@ async function persistArchiveFile(
     isImage: file.mimeType.startsWith('image/'),
     tenantId: context.tenantId,
   });
+  const persistedBlob: PersistedArchiveBlob = {
+    relativePath: file.relativePath,
+    filepath,
+    source,
+    storageKey,
+    storageRegion,
+    rowPersisted: false,
+  };
 
   try {
     await deps.upsertSkillFile({
@@ -675,6 +775,7 @@ async function persistArchiveFile(
       tenantId: context.tenantId,
     });
   } catch (dbError) {
+    let blobRemoved = false;
     if (deps.deleteFile) {
       await deps
         .deleteFile(req, {
@@ -685,12 +786,143 @@ async function persistArchiveFile(
           user: context.authorId,
           tenantId: context.tenantId,
         })
+        .then(() => {
+          blobRemoved = true;
+        })
         .catch((error) =>
           logger.error(`[importSkill] Orphan cleanup failed for ${file.relativePath}:`, error),
         );
     }
+    if (!blobRemoved) {
+      context.persisted.push(persistedBlob);
+    }
     throw dbError;
   }
+
+  context.persisted.push({ ...persistedBlob, rowPersisted: true });
+}
+
+async function cleanupArchiveBlobs(
+  req: ServerRequest,
+  deps: ImportSkillDeps,
+  context: ArchivePersistenceContext,
+  blobs: PersistedArchiveBlob[],
+): Promise<boolean> {
+  const { deleteFile } = deps;
+  if (blobs.length === 0) {
+    return true;
+  }
+  if (deleteFile == null) {
+    return false;
+  }
+
+  const limit = createConcurrencyLimiter(
+    req.config?.fileConfig?.skills?.importCleanupConcurrency ??
+      DEFAULT_SKILL_IMPORT_CLEANUP_CONCURRENCY,
+  );
+  const results = await Promise.allSettled(
+    blobs.map((blob) =>
+      limit(() =>
+        deleteFile(req, {
+          filepath: blob.filepath,
+          storageKey: blob.storageKey,
+          storageRegion: blob.storageRegion,
+          source: blob.source,
+          user: context.authorId,
+          tenantId: context.tenantId,
+        }),
+      ),
+    ),
+  );
+  let complete = true;
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      complete = false;
+      logger.error(
+        `[importSkill] Rollback blob cleanup failed for ${blobs[index].relativePath}:`,
+        result.reason,
+      );
+    }
+  }
+  return complete;
+}
+
+/**
+ * Undo an archive import that could not persist every bundled file.
+ *
+ * `deleteSkill` cascades to the SkillFile rows, the agent allowlists and the
+ * ACL grant, so only the storage blobs written by `persistArchiveFile` need
+ * explicit cleanup.
+ *
+ * Order matters: the blobs are deleted only once the cascade has confirmed the
+ * skill is gone. If the delete throws or finds nothing, the SkillFile rows may
+ * still reference those blobs, and deleting them anyway would leave a visible,
+ * shareable skill whose files 404 — a worse version of the bug this rollback
+ * exists to prevent. Unreferenced storage is reclaimable; a broken skill is
+ * not, so the blobs stay and the caller reports the rollback as incomplete.
+ */
+async function rollbackArchiveImport(
+  req: ServerRequest,
+  deps: ImportSkillDeps,
+  context: ArchivePersistenceContext,
+): Promise<{ skillRemoved: boolean; cleanupComplete: boolean }> {
+  const skillId = context.skillId.toString();
+  let deletion: DeleteSkillResult;
+  try {
+    deletion = await deps.deleteSkill(skillId);
+  } catch (error) {
+    logger.error(`[importSkill] Rollback delete failed for skill ${skillId}:`, error);
+    logger.error(
+      `[importSkill] Rollback incomplete for skill ${skillId}: retaining row-backed files because the skill row was not removed`,
+    );
+    await cleanupArchiveBlobs(
+      req,
+      deps,
+      context,
+      context.persisted.filter((blob) => !blob.rowPersisted),
+    );
+    return { skillRemoved: false, cleanupComplete: false };
+  }
+
+  if (deletion.skillAbsent && !deletion.cleanupComplete) {
+    try {
+      deletion = mergeDeleteSkillResults(deletion, await deps.deleteSkill(skillId));
+    } catch (error) {
+      logger.error(`[importSkill] Rollback cleanup retry failed for skill ${skillId}:`, error);
+    }
+  }
+
+  if (!deletion.skillAbsent) {
+    logger.error(`[importSkill] Rollback could not confirm removal of skill ${skillId}`);
+    await cleanupArchiveBlobs(
+      req,
+      deps,
+      context,
+      context.persisted.filter((blob) => !blob.rowPersisted),
+    );
+    return { skillRemoved: false, cleanupComplete: false };
+  }
+  const databaseCleanupComplete = deletion.cleanupComplete;
+  if (!deletion.cleanupComplete) {
+    logger.error(
+      `[importSkill] Rollback database cleanup incomplete for skill ${skillId}: ${deletion.failedCleanupSteps.join(', ')}`,
+    );
+    /** If SkillFile cleanup failed, those rows can still reference the stored
+     * blobs, so retain them for the idempotent database retry. When only an
+     * independent cleanup step failed, the captured records are now the last
+     * blob references and must be consumed before returning the 500. */
+  }
+
+  const skillFileCleanupIncomplete = deletion.failedCleanupSteps.includes('skill_files');
+  const blobsToDelete = skillFileCleanupIncomplete
+    ? context.persisted.filter((blob) => !blob.rowPersisted)
+    : context.persisted;
+
+  const blobCleanupComplete = await cleanupArchiveBlobs(req, deps, context, blobsToDelete);
+  return {
+    skillRemoved: true,
+    cleanupComplete: databaseCleanupComplete && blobCleanupComplete,
+  };
 }
 
 async function persistPreflightedArchiveFiles(
@@ -704,8 +936,10 @@ async function persistPreflightedArchiveFiles(
 ): Promise<ImportFileResult[]> {
   const results: ImportFileResult[] = [];
   let totalDecompressed = initialDecompressedBytes;
+  const budgetMb = bytesToMb(limits.maxDecompressedBytes);
 
-  for (const file of files) {
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
     try {
       const zipEntry = zip.file(file.entryPath);
       if (zipEntry == null) {
@@ -714,11 +948,18 @@ async function persistPreflightedArchiveFiles(
       const cumulativeLimit = limits.maxDecompressedBytes - totalDecompressed;
       const effectiveLimit = Math.min(limits.maxSingleFileBytes, cumulativeLimit);
       if (effectiveLimit <= 0) {
-        results.push({
-          path: file.relativePath,
-          status: 'error',
-          error: 'Cumulative decompressed size exceeds limit',
-        });
+        /** Same reasoning as `pushUnprocessedEntries`: the remaining files were
+         *  never attempted, and omitting them would understate the failure set
+         *  the user has to fix before a retry can succeed. */
+        for (const skipped of files.slice(index)) {
+          results.push({
+            path: skipped.relativePath,
+            status: 'error',
+            reason: 'archive_too_large',
+            limitMb: budgetMb,
+            error: 'Not processed: cumulative decompressed size exceeded limit',
+          });
+        }
         break;
       }
       const { buffer, bytesRead } = await readZipEntry(zipEntry, effectiveLimit);
@@ -727,6 +968,7 @@ async function persistPreflightedArchiveFiles(
         results.push({
           path: file.relativePath,
           status: 'error',
+          reason: 'archive_entry_changed',
           error: 'Archive entry changed after content inspection',
         });
         continue;
@@ -741,6 +983,7 @@ async function persistPreflightedArchiveFiles(
       results.push({
         path: file.relativePath,
         status: 'error',
+        reason: 'persistence_failed',
         error: (error as Error).message,
       });
     }
@@ -782,6 +1025,9 @@ async function handleZip(
   let skillMdPath: string | null = null;
   let prefix = '';
   for (const p of entries) {
+    if (zip.files[p].dir) {
+      continue;
+    }
     const normalized = p.replace(/\\/g, '/');
     const segments = normalized.split('/').filter(Boolean);
     const basename = segments[segments.length - 1];
@@ -955,6 +1201,7 @@ async function handleZip(
     skillId: skill._id,
     authorId,
     tenantId,
+    persisted: [],
   };
   let fileResults: ImportFileResult[];
   if (preflight == null) {
@@ -995,9 +1242,56 @@ async function handleZip(
     }
   }
 
-  logger.info(
-    `[importSkill] Imported skill "${inferredName}" with ${successCount} files (${errors.length} errors)`,
-  );
+  /**
+   * A skill whose bundled files did not all persist is broken in a way the
+   * uploader cannot see: it lists, shares and attaches normally while an agent
+   * that follows `SKILL.md` cannot find the resources it names. Import is
+   * therefore atomic — any failed file rolls the whole skill back and the
+   * response says which paths failed and why.
+   */
+  if (errors.length > 0) {
+    logger.warn(
+      `[importSkill] Rolling back skill "${inferredName}" (${skill._id.toString()}): ${errors.length} of ${fileResults.length} files failed`,
+    );
+    const { skillRemoved, cleanupComplete } = await rollbackArchiveImport(
+      req,
+      deps,
+      persistenceContext,
+    );
+    /** Reasons are codes, not prose: the client localizes them, and the
+     *  underlying storage and database messages stay in the server log where
+     *  they cannot leak infrastructure detail to the uploader. */
+    const failedFiles = errors.map((entry) => ({
+      path: entry.path,
+      reason: entry.reason ?? 'persistence_failed',
+      ...(entry.limitMb == null ? {} : { limitMb: entry.limitMb }),
+    }));
+    if (!skillRemoved) {
+      const rollbackFailure: TSkillImportFailedResponse = {
+        error: 'skill_import_rollback_failed',
+        message: `Import failed for ${errors.length} of ${fileResults.length} files and the partially created skill could not be removed automatically.`,
+        failedFiles,
+        skillId: skill._id.toString(),
+      };
+      return res.status(500).json(rollbackFailure);
+    }
+    if (!cleanupComplete) {
+      const cleanupFailure: TSkillImportFailedResponse = {
+        error: 'skill_import_cleanup_incomplete',
+        message: `Import failed for ${errors.length} of ${fileResults.length} files. The skill was removed, but automatic cleanup did not finish.`,
+        failedFiles,
+      };
+      return res.status(500).json(cleanupFailure);
+    }
+    const failure: TSkillImportFailedResponse = {
+      error: 'skill_import_incomplete',
+      message: `Import canceled: ${errors.length} of ${fileResults.length} files in the archive could not be imported.`,
+      failedFiles,
+    };
+    return res.status(422).json(failure);
+  }
+
+  logger.info(`[importSkill] Imported skill "${inferredName}" with ${successCount} files`);
 
   // Re-read the skill to get the current version/fileCount (bumped by each upsertSkillFile)
   const refreshed = (await deps.getSkillById(skill._id)) ?? skill;
@@ -1007,7 +1301,7 @@ async function handleZip(
     _importSummary: {
       filesProcessed: fileResults.length,
       filesSucceeded: successCount,
-      filesFailed: errors.length,
+      filesFailed: 0,
       errors,
     },
   });

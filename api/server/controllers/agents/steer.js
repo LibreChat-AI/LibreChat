@@ -203,3 +203,4 @@ module.exports = SteerController;
 module.exports.SteerDeliveryController = SteerDeliveryController;
 module.exports.SteerCancelController = SteerCancelController;
 module.exports.SteerArmController = SteerArmController;
+module.exports.createAgentAccessCheck = createAgentAccessCheck;

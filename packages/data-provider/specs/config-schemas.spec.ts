@@ -8,6 +8,7 @@ import {
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
+  normalizeAgentSelectorLimit,
   SKILL_SYNC_MAX_INTERVAL_MINUTES,
   summarizationTriggerSchema,
   summarizationConfigSchema,
@@ -15,6 +16,8 @@ import {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
   setMaxSubagents,
+  traceViewerDefaults,
+  resolveTraceViewerConfig,
 } from '../src/config';
 import {
   tModelSpecPresetSchema,
@@ -441,6 +444,21 @@ describe('endpointSchema addParams validation', () => {
 });
 
 describe('agentsEndpointSchema', () => {
+  it('defaults and bounds Code API upload recovery controls', () => {
+    expect(agentsEndpointSchema.parse({}).codeApiUploadConcurrency).toBe(3);
+    expect(
+      agentsEndpointSchema.parse({ codeApiUploadConcurrency: 8 }).codeApiUploadConcurrency,
+    ).toBe(8);
+    expect(agentsEndpointSchema.safeParse({ codeApiUploadConcurrency: 0 }).success).toBe(false);
+    expect(agentsEndpointSchema.safeParse({ codeApiUploadConcurrency: 101 }).success).toBe(false);
+    expect(agentsEndpointSchema.parse({}).codeApiMaxRetryWaitMs).toBe(20_000);
+    expect(
+      agentsEndpointSchema.parse({ codeApiMaxRetryWaitMs: 60_000 }).codeApiMaxRetryWaitMs,
+    ).toBe(60_000);
+    expect(agentsEndpointSchema.safeParse({ codeApiMaxRetryWaitMs: -1 }).success).toBe(false);
+    expect(agentsEndpointSchema.safeParse({ codeApiMaxRetryWaitMs: 300_001 }).success).toBe(false);
+  });
+
   it('accepts a non-empty stateful code environment allowlist', () => {
     const result = agentsEndpointSchema.safeParse({
       statefulCodeSessions: { allowedEnvironments: ['user', 'agent-user'] },
@@ -448,6 +466,28 @@ describe('agentsEndpointSchema', () => {
 
     expect(result.success).toBe(true);
   });
+
+  it.each([0, 5, 1000])('accepts a personal worker ceiling of %i', (maxPerUser) => {
+    const principalWorkers = { enabled: true, maxPerUser };
+    const result = agentsEndpointSchema.parse({
+      statefulCodeSessions: { allowedEnvironments: ['user'], principalWorkers },
+    });
+    expect(result.statefulCodeSessions?.principalWorkers).toEqual(principalWorkers);
+  });
+
+  it.each([-1, 0.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid personal worker ceiling %s',
+    (maxPerUser) => {
+      expect(
+        agentsEndpointSchema.safeParse({
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            principalWorkers: { maxPerUser },
+          },
+        }).success,
+      ).toBe(false);
+    },
+  );
 
   it('accepts uniquely named execution environments with exactly one default', () => {
     const result = agentsEndpointSchema.safeParse({
@@ -576,6 +616,75 @@ describe('agentsEndpointSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts a principal-worker control plane without a singleton worker', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'personal-code-control-plane',
+            name: 'Personal Code',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            pairing: {
+              allowPrincipalWorkers: true,
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a pairing-only control plane as the execution default', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'personal-code-control-plane',
+            name: 'Personal Code',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            default: true,
+            pairing: {
+              allowPrincipalWorkers: true,
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects conflicting direct and pairing worker routes', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            default: true,
+            workerId: 'direct-worker',
+            pairing: {
+              workerId: 'paired-worker',
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('rejects pairing metadata on a principal-owned environment', () => {
     const result = agentsEndpointSchema.safeParse({
       statefulCodeSessions: {
@@ -591,6 +700,26 @@ describe('agentsEndpointSchema', () => {
               workerId: 'vm-1',
               tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
             },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects pairing configuration without a singleton or principal workers', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'invalid-control-plane',
+            name: 'Invalid',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            default: true,
+            pairing: { tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN' },
           },
         ],
       },
@@ -1287,6 +1416,27 @@ describe('configSchema skillSync', () => {
 });
 
 describe('interfaceSchema', () => {
+  it('accepts independent retention periods', () => {
+    expect(
+      interfaceSchema.parse({
+        retentionMode: RetentionMode.ALL,
+        temporaryChatRetention: 1,
+        generalChatRetention: 2160,
+      }),
+    ).toMatchObject({
+      temporaryChatRetention: 1,
+      generalChatRetention: 2160,
+    });
+    expect(interfaceSchema.parse({})).not.toHaveProperty('generalChatRetention');
+  });
+
+  it.each([0, 8761, '2160', null])(
+    'rejects invalid general retention: %s',
+    (generalChatRetention) => {
+      expect(interfaceSchema.safeParse({ generalChatRetention }).success).toBe(false);
+    },
+  );
+
   it('silently strips removed legacy fields', () => {
     const result = interfaceSchema.parse({
       endpointsMenu: true,
@@ -1676,6 +1826,42 @@ describe('configSchema langfuse', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts trace identity and metadata allowlists', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.7',
+      langfuse: {
+        trace: {
+          userIdField: 'email',
+          userMetadataFields: ['email', 'username', 'role', 'provider'],
+          conversationMetadataFields: ['conversationId', 'endpoint', 'model', 'spec'],
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects trace fields outside the allowlists', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.7',
+        langfuse: { trace: { userIdField: 'password' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.3.7',
+        langfuse: { trace: { userMetadataFields: ['totpSecret'] } },
+      }).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.3.7',
+        langfuse: { trace: { conversationMetadataFields: ['text'] } },
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects non-string Langfuse header values', () => {
     const result = configSchema.safeParse({
       version: '1.3.7',
@@ -1685,5 +1871,86 @@ describe('configSchema langfuse', () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe('interface.traceViewer', () => {
+  it('accepts the documented fields and rejects out-of-range limits', () => {
+    const parse = (traceViewer: Record<string, unknown>) =>
+      interfaceSchema.safeParse({ traceViewer }).success;
+
+    expect(
+      parse({
+        enabled: true,
+        showInputOutput: true,
+        showToolNames: true,
+        maxRecords: 500,
+        maxContentLength: 2000,
+        requestsPerMinute: 10,
+        requestTimeoutMs: 30_000,
+      }),
+    ).toBe(true);
+    expect(parse({ showToolNames: 'yes' })).toBe(false);
+    expect(parse({ requestTimeoutMs: 999 })).toBe(false);
+    expect(parse({ requestTimeoutMs: 300_001 })).toBe(false);
+    expect(parse({ maxRecords: 0 })).toBe(false);
+    expect(parse({ maxRecords: 10_001 })).toBe(false);
+    expect(parse({ maxContentLength: 1.5 })).toBe(false);
+    expect(parse({ requestsPerMinute: 1001 })).toBe(false);
+  });
+
+  it('keeps the viewer off with the documented defaults when unset', () => {
+    expect(resolveTraceViewerConfig(undefined)).toEqual(traceViewerDefaults);
+    expect(interfaceSchema.parse({}).traceViewer).toBeUndefined();
+  });
+
+  it('names tool rounds from the tracing backend only when asked to', () => {
+    expect(resolveTraceViewerConfig({ enabled: true }).showToolNames).toBe(false);
+    expect(resolveTraceViewerConfig({ enabled: true, showToolNames: true }).showToolNames).toBe(
+      true,
+    );
+  });
+
+  it('re-validates overrides that bypassed the schema', () => {
+    expect(
+      resolveTraceViewerConfig({
+        enabled: 'true',
+        showInputOutput: 1,
+        showToolNames: 'true',
+        maxRecords: 50_000,
+        maxContentLength: -5,
+        requestsPerMinute: Number.NaN,
+        requestTimeoutMs: 50,
+      }),
+    ).toEqual({
+      enabled: false,
+      showInputOutput: false,
+      showToolNames: false,
+      maxRecords: 10_000,
+      maxContentLength: traceViewerDefaults.maxContentLength,
+      requestsPerMinute: traceViewerDefaults.requestsPerMinute,
+      requestTimeoutMs: traceViewerDefaults.requestTimeoutMs,
+    });
+  });
+});
+
+describe('interfaceSchema agentSelectorLimit', () => {
+  it('defaults the unsearched agents selector list to ten entries', () => {
+    const result = interfaceSchema.parse({});
+    expect(result.agentSelectorLimit).toBe(10);
+  });
+
+  it('honors a deployment override and rejects out-of-bounds values', () => {
+    expect(interfaceSchema.parse({ agentSelectorLimit: 25 }).agentSelectorLimit).toBe(25);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 0 }).success).toBe(false);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 101 }).success).toBe(false);
+  });
+
+  it('normalizes runtime values that bypassed the schema back into bounds', () => {
+    expect(normalizeAgentSelectorLimit(25)).toBe(25);
+    expect(normalizeAgentSelectorLimit(undefined)).toBe(10);
+    expect(normalizeAgentSelectorLimit(0)).toBe(10);
+    expect(normalizeAgentSelectorLimit(101)).toBe(10);
+    expect(normalizeAgentSelectorLimit('10')).toBe(10);
   });
 });

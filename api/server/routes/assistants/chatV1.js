@@ -1,5 +1,5 @@
 const express = require('express');
-const { createMessageFilterPii } = require('@librechat/api');
+const { createMessageFilterPii, reportLocatorTraversalFailure } = require('@librechat/api');
 
 const router = express.Router();
 const { handleAbort, validateModel, buildEndpointOption } = require('~/server/middleware');
@@ -12,6 +12,7 @@ const { getFiles } = require('~/models');
 router.post('/abort', handleAbort());
 
 const filterMessageContent = createMessageFilterPii({
+  onTraversalFailure: reportLocatorTraversalFailure,
   getConfig: (req) => req.config?.messageFilter?.pii,
   getFilters: (req) => req.config?.filters,
   getFiles,

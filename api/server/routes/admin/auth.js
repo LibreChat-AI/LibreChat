@@ -156,6 +156,7 @@ function buildGoogleAdminRefreshDeps(sessionExpiry) {
 router.post(
   '/login/local',
   middleware.logHeaders,
+  middleware.requireSameOrigin,
   middleware.loginLimiter,
   middleware.checkBan,
   middleware.validateEmailLogin,

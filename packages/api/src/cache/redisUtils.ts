@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import type { ClusterOptions, RedisOptions, Cluster, Redis } from 'ioredis';
 import type { RedisClientType, RedisClusterType } from '@redis/client';
+import { startRedisHeartbeat } from './heartbeat';
 import { cacheConfig } from './cacheConfig';
 
 /**
@@ -42,6 +43,30 @@ export function duplicateIoRedisClient(
     return duplicate;
   }
   return (client as Redis).duplicate(options);
+}
+
+/**
+ * Duplicates a client for a dedicated pub/sub subscriber. `duplicate()` copies options but
+ * not listeners, so a bare duplicate reports socket errors only through ioredis's
+ * "Unhandled error event" and, between generations, carries no traffic at all: a peer
+ * that vanishes without closing the socket stays undetected until the kernel gives up.
+ * The heartbeat is the traffic the shared client gets for free.
+ */
+export function createIoRedisSubscriber(client: Redis | Cluster, label: string): Redis | Cluster {
+  const subscriber = duplicateIoRedisClient(client);
+  subscriber.on('error', (error: Error) => {
+    logger.error(`${label} error:`, error);
+  });
+  subscriber.on('ready', () => {
+    logger.info(`${label} ready`);
+  });
+  startRedisHeartbeat({
+    client: subscriber,
+    intervalMs: cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL * 1000,
+    timeoutMs: cacheConfig.REDIS_PING_TIMEOUT,
+    label,
+  });
+  return subscriber;
 }
 
 /**

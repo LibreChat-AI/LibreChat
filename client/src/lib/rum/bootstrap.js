@@ -1,3 +1,5 @@
+import { getClientBuildId } from './build';
+
 const RUM_QUEUE_KEY = 'lc-rum-queue';
 const MAX_RUM_QUEUE = 20;
 
@@ -21,6 +23,7 @@ function safeAttributes(attributes) {
 
 export function installRumBootstrap(targetWindow) {
   const targetDocument = targetWindow.document;
+  const clientBuildId = getClientBuildId(targetDocument);
   const targetNavigator = targetWindow.navigator;
   let targetSessionStorage;
   try {
@@ -79,7 +82,7 @@ export function installRumBootstrap(targetWindow) {
         type,
         at: safeNow(targetWindow),
         visibilityState: targetDocument.visibilityState,
-        attributes: safeAttributes(attributes),
+        attributes: { ...safeAttributes(attributes), clientBuildId },
       });
     } catch {
       /* Diagnostics should never affect application startup. */

@@ -1,7 +1,9 @@
 import React from 'react';
 import { RefreshCw, Trash2 } from 'lucide-react';
 import { Button, Spinner } from '@librechat/client';
-import { useLocalize, useMCPServerManager, useMCPConnectionStatus } from '~/hooks';
+import { useLocalize, useMCPServerManager } from '~/hooks';
+import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
+import { openInNewTab } from '~/utils';
 
 interface ServerInitializationSectionProps {
   sidePanel?: boolean;
@@ -30,12 +32,15 @@ export default function ServerInitializationSection({
     initializeServer,
     availableMCPServers,
     availableMCPServersMap,
+    connectionStatus,
     revokeOAuthForServer,
-  } = useMCPServerManager({ conversationId, storageContextKey });
-
-  const { connectionStatus } = useMCPConnectionStatus({
-    enabled: !!availableMCPServers && availableMCPServers.length > 0,
+  } = useMCPServerManager({
+    conversationId,
+    storageContextKey,
+    observeToolAuthorization: true,
   });
+
+  useMCPRefresh({ enabled: availableMCPServers.length > 0 });
 
   const serverStatus = connectionStatus?.[serverName];
   const isConnected = serverStatus?.connectionState === 'connected';
@@ -93,11 +98,7 @@ export default function ServerInitializationSection({
           >
             {localize('com_ui_cancel')}
           </Button>
-          <Button
-            variant="submit"
-            onClick={() => window.open(serverOAuthUrl, '_blank', 'noopener,noreferrer')}
-            className="flex-1"
-          >
+          <Button variant="submit" onClick={() => openInNewTab(serverOAuthUrl)} className="flex-1">
             {localize('com_ui_continue_oauth')}
           </Button>
         </div>

@@ -1,5 +1,5 @@
 import z from 'zod';
-import { EModelEndpoint, supportsContext1m } from 'librechat-data-provider';
+import { EModelEndpoint, supportsContext1m, supportsOutput128k } from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
 /**
@@ -64,6 +64,9 @@ const openAIModels = {
   'gpt-5.6': 1050000,
   'gpt-5.6-terra': 1050000,
   'gpt-5.6-luna': 1050000,
+  'gpt-6-astra': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6-sol': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6-luna': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'chat-latest': 400000,
   'gpt-5-mini': 400000,
   'gpt-5-nano': 400000,
@@ -143,6 +146,7 @@ const googleModels = {
   'gemini-3.5-flash-lite': 1048576,
   'gemini-3.6-flash': 1048576,
   'gemini-3.7-flash': 1048576,
+  'gemini-3.8-flash': 1048576,
 };
 
 const anthropicModels = {
@@ -177,15 +181,22 @@ const anthropicModels = {
   'claude-sonnet-4-9': 1000000,
   'claude-sonnet-4.9': 1000000,
   'claude-sonnet-5': 1000000,
+  'claude-sonnet-5-5': 1000000,
+  'claude-sonnet-5.5': 1000000,
   'claude-opus-4-6': 1000000,
   'claude-opus-4-7': 1000000,
   'claude-opus-4-8': 1000000,
+  'claude-opus-5-5': 1000000,
+  'claude-opus-5.5': 1000000,
   'claude-opus-5': 1000000,
   'claude-fable-5': 1000000,
   'claude-mythos-5': 1000000,
+  'claude-fable-5-1': 1000000,
+  'claude-mythos-5-1': 1000000,
 };
 
 const ANTHROPIC_CONTEXT_1M = 1000000;
+const ANTHROPIC_OUTPUT_128K = 128000;
 const ANTHROPIC_SONNET_4_6_PLUS_OUTPUT = 128000;
 const ANTHROPIC_SONNET_4_6_PLUS_PATTERN =
   /(?:claude-sonnet[-.]?4[-.]?(?:[6-9]|\d{2})|claude[-.]?4[-.]?(?:[6-9]|\d{2})[-.]?sonnet)(?=$|[^0-9])/;
@@ -215,6 +226,13 @@ function getAnthropicSonnet46PlusOutput(
     return undefined;
   }
   return ANTHROPIC_SONNET_4_6_PLUS_OUTPUT;
+}
+
+function getAnthropicOutput128k(modelName: string, endpoint: EModelEndpoint): number | undefined {
+  if (!usesAnthropicContextMap(endpoint) || !supportsOutput128k(modelName)) {
+    return undefined;
+  }
+  return ANTHROPIC_OUTPUT_128K;
 }
 
 const deepseekModels = {
@@ -403,9 +421,16 @@ const amazonModels = {
   'nova-2-pro': 995000, // -5000 from max
 };
 
+/** Bedrock can reject near-limit GPT prompts before its published window is reached. */
+const bedrockOpenAIContext = 950000;
+
 const openAIBedrockModels = {
   'openai.gpt-oss-20b': 128000,
   'openai.gpt-oss-120b': 128000,
+  'openai.gpt-5.6': bedrockOpenAIContext,
+  'openai.gpt-6-astra': bedrockOpenAIContext,
+  'openai.gpt-6-sol': bedrockOpenAIContext,
+  'openai.gpt-6-luna': bedrockOpenAIContext,
 };
 
 const bedrockModels = {
@@ -442,6 +467,8 @@ const xAIModels = {
   'grok-4-5': 500000,
   'grok-4.6': 500000,
   'grok-4-6': 500000,
+  'grok-4.7': 500000,
+  'grok-4-7': 500000,
 };
 
 const aggregateModels = {
@@ -505,6 +532,9 @@ export const modelMaxOutputs = {
   'gpt-5.6': 128000,
   'gpt-5.6-terra': 128000,
   'gpt-5.6-luna': 128000,
+  'gpt-6-astra': 128000,
+  'gpt-6-sol': 128000,
+  'gpt-6-luna': 128000,
   'chat-latest': 128000,
   'gpt-5-mini': 128000,
   'gpt-5-nano': 128000,
@@ -536,9 +566,13 @@ const anthropicMaxOutputs = {
   'claude-opus-4-6': 128000,
   'claude-opus-4-7': 128000,
   'claude-opus-4-8': 128000,
+  'claude-opus-5-5': 128000,
+  'claude-opus-5.5': 128000,
   'claude-opus-5': 128000,
   'claude-fable-5': 128000,
   'claude-mythos-5': 128000,
+  'claude-fable-5-1': 128000,
+  'claude-mythos-5-1': 128000,
   'claude-3.5-sonnet': 8192,
   'claude-3-5-sonnet': 8192,
   'claude-3.7-sonnet': 128000,
@@ -709,6 +743,10 @@ export function getModelMaxOutputTokens(
     if (overrideValue != null) {
       return overrideValue;
     }
+  }
+  const output128kValue = getAnthropicOutput128k(modelName, endpoint);
+  if (output128kValue != null) {
+    return output128kValue;
   }
   const sonnet46PlusValue = getAnthropicSonnet46PlusOutput(modelName, endpoint);
   if (sonnet46PlusValue != null) {

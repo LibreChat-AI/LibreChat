@@ -1,11 +1,13 @@
-import { ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes } from 'librechat-data-provider';
 import type { TActivityLabelEvent, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import {
   applyActivityLabelPart,
+  getActivityLabelText,
   groupActivityPhases,
   lastCursorContentIdx,
   lastVisibleContentIdx,
   offsetActivityPhaseBoundary,
+  findActivityLabelMessageIndex,
 } from '../activityLabels';
 
 const buildMessage = (content: TMessage['content']): TMessage =>
@@ -514,5 +516,422 @@ describe('groupActivityPhases', () => {
         hasContent: false,
       }),
     ]);
+  });
+});
+
+describe('groupActivityPhases — synthesized folds', () => {
+  const toolPart = (id: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id, name: 'web_search', args: '{}', output: 'ok' },
+    }) as unknown as TMessageContentParts;
+
+  const childLabel = (label: string, status?: string): TMessageContentParts =>
+    labelPart({
+      activity_label: label,
+      pending: false,
+      ...(status != null && { status }),
+    } as Partial<TActivityLabelEvent['part']>) as unknown as TMessageContentParts;
+
+  const answer = (value = 'Here is what I found.'): TMessageContentParts =>
+    ({ type: ContentTypes.TEXT, text: value }) as TMessageContentParts;
+
+  const commentary = (value: string): TMessageContentParts =>
+    ({ type: ContentTypes.TEXT, text: value, phase: 'commentary' }) as TMessageContentParts;
+
+  const thinking = (): TMessageContentParts =>
+    ({ type: ContentTypes.THINK, think: 'weighing options' }) as unknown as TMessageContentParts;
+
+  const foldOf = (segments: ReturnType<typeof groupActivityPhases>) => {
+    const fold = segments?.find((segment) => segment.type === 'phase');
+    return fold?.type === 'phase' ? fold : undefined;
+  };
+
+  it('folds a run of two labeled activity blocks into one card', () => {
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+    ]);
+
+    expect(segments).toHaveLength(1);
+    expect(foldOf(segments)).toMatchObject({
+      synthesized: true,
+      startIndex: 0,
+      labelIndex: 3,
+      hasContent: true,
+    });
+    expect(getActivityLabelText(foldOf(segments)?.labelPart)).toBe('Checked the callers');
+  });
+
+  it('carries the newest filled child label as the ticker', () => {
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+      toolPart('t3'),
+      childLabel('Confirmed the fix'),
+    ]);
+
+    expect(getActivityLabelText(foldOf(segments)?.labelPart)).toBe('Confirmed the fix');
+    expect(foldOf(segments)?.labelPart.activity_count).toBe(3);
+  });
+
+  it('leaves in-flight activity past the newest label outside the card', () => {
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+      thinking(),
+      toolPart('t3'),
+    ]);
+
+    expect(foldOf(segments)?.contentIndices).toEqual([0, 1, 2, 3]);
+    expect(segments?.[1]).toMatchObject({ type: 'content', contentIndices: [4, 5] });
+  });
+
+  it('does not fold a single labeled block', () => {
+    expect(
+      groupActivityPhases([toolPart('t1'), toolPart('t2'), childLabel('Read both files')]),
+    ).toBeUndefined();
+  });
+
+  it('does not fold unlabeled tool calls', () => {
+    expect(groupActivityPhases([toolPart('t1'), toolPart('t2'), toolPart('t3')])).toBeUndefined();
+  });
+
+  it('stops a fold at the answer text so it can never be hidden', () => {
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+      answer('Done.'),
+    ]);
+
+    expect(foldOf(segments)?.contentIndices).toEqual([0, 1, 2, 3]);
+    expect(segments?.[1]).toMatchObject({ type: 'content', contentIndices: [4] });
+  });
+
+  it('absorbs short commentary but breaks on a substantial block', () => {
+    const short = groupActivityPhases([
+      commentary('One moment.'),
+      toolPart('t1'),
+      childLabel('Read the config'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+    ]);
+    expect(foldOf(short)?.contentIndices).toEqual([0, 1, 2, 3, 4]);
+
+    const long = groupActivityPhases([
+      commentary('x'.repeat(201)),
+      toolPart('t1'),
+      childLabel('Read the config'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+    ]);
+    expect(foldOf(long)?.contentIndices).toEqual([1, 2, 3, 4]);
+  });
+
+  it('aggregates child status onto the card', () => {
+    const partial = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config', 'failed'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+    ]);
+    expect(foldOf(partial)?.labelPart.status).toBe('partial');
+
+    const failed = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config', 'failed'),
+      toolPart('t2'),
+      childLabel('Checked the callers', 'failed'),
+    ]);
+    expect(foldOf(failed)?.labelPart.status).toBe('failed');
+  });
+
+  const inLane = (part: TMessageContentParts, agentId: string): TMessageContentParts =>
+    ({ ...(part as object), agentId, groupId: 1 }) as unknown as TMessageContentParts;
+
+  it('stands down when the message carries parallel content', () => {
+    expect(
+      groupActivityPhases([
+        inLane(toolPart('t1'), 'agent_a'),
+        inLane(childLabel('Read the config'), 'agent_a'),
+        inLane(toolPart('t2'), 'agent_b'),
+        inLane(childLabel('Checked the callers'), 'agent_b'),
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('folds a labeled run whose group id is backed by one agent', () => {
+    /** A multi-agent graph stamps a group id on every starting node, so an
+     *  agent that merely has subagents available carries one on its own
+     *  output. It renders sequentially, so it folds like any other run. */
+    const segments = groupActivityPhases([
+      inLane(toolPart('t1'), 'agent_a'),
+      inLane(childLabel('Read the config'), 'agent_a'),
+      inLane(toolPart('t2'), 'agent_a'),
+      inLane(childLabel('Checked the callers'), 'agent_a'),
+    ]);
+
+    expect(foldOf(segments)).toMatchObject({ synthesized: true, contentIndices: [0, 1, 2, 3] });
+  });
+
+  it("takes the caller's lane scan instead of repeating it", () => {
+    /** `ContentParts` already scans the message for lanes; passing the answer
+     *  keeps a streamed delta to one pass, and must decide identically. */
+    const run = [
+      inLane(toolPart('t1'), 'agent_a'),
+      inLane(childLabel('Read the config'), 'agent_a'),
+      inLane(toolPart('t2'), 'agent_a'),
+      inLane(childLabel('Checked the callers'), 'agent_a'),
+    ];
+
+    expect(foldOf(groupActivityPhases(run, new Set()))).toMatchObject({ synthesized: true });
+    expect(groupActivityPhases(run, new Set([1]))).toBeUndefined();
+  });
+
+  it('never folds a span a server marker already claims', () => {
+    const phase = labelPart({ activity_label: 'Reviewed the release paths', pending: false });
+    Object.assign(phase, {
+      activity_label_type: 'phase',
+      activity_start_index: 0,
+      activity_end_index: 4,
+      activity_count: 2,
+    });
+
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+      phase as never,
+    ]);
+
+    expect(segments).toHaveLength(1);
+    expect(segments?.[0]).toMatchObject({ type: 'phase', labelIndex: 4 });
+    expect(segments?.[0]).not.toHaveProperty('synthesized', true);
+  });
+
+  it('folds a trailing run left unclaimed after a server phase', () => {
+    const phase = labelPart({ activity_label: 'Reviewed the release paths', pending: false });
+    Object.assign(phase, {
+      activity_label_type: 'phase',
+      activity_start_index: 0,
+      activity_end_index: 2,
+      activity_count: 2,
+    });
+
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      phase as never,
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+      toolPart('t3'),
+      childLabel('Confirmed the fix'),
+    ]);
+
+    const synthesized = segments?.filter(
+      (segment) => segment.type === 'phase' && segment.synthesized === true,
+    );
+    expect(synthesized).toHaveLength(1);
+    expect(synthesized?.[0]).toMatchObject({ startIndex: 3 });
+  });
+});
+
+describe('groupActivityPhases — what a fold may not swallow', () => {
+  const toolPart = (id: string, name = 'web_search'): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id, name, args: '{}', output: 'ok' },
+    }) as unknown as TMessageContentParts;
+
+  const childLabel = (label: string): TMessageContentParts =>
+    labelPart({ activity_label: label, pending: false }) as unknown as TMessageContentParts;
+
+  const foldOf = (segments: ReturnType<typeof groupActivityPhases>) => {
+    const fold = segments?.find((segment) => segment.type === 'phase');
+    return fold?.type === 'phase' ? fold : undefined;
+  };
+
+  it('breaks the fold on a visible non-activity part', () => {
+    const error = { type: ContentTypes.ERROR, error: 'boom' } as unknown as TMessageContentParts;
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      error,
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+    ]);
+
+    /** One activity either side of the error, so neither side reaches the
+     *  threshold — the error cannot end up behind a tool disclosure. */
+    expect(segments).toBeUndefined();
+  });
+
+  it('keeps a handoff inside the fold, matching the server', () => {
+    const handoff = {
+      type: ContentTypes.AGENT_UPDATE,
+      agent_update: { agentId: 'agent_2' },
+    } as unknown as TMessageContentParts;
+    const segments = groupActivityPhases([
+      toolPart('t1'),
+      childLabel('Read the config'),
+      handoff,
+      toolPart('t2'),
+      childLabel('Checked the callers'),
+    ]);
+
+    expect(foldOf(segments)?.contentIndices).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('does not count orphan labels that head no group', () => {
+    expect(
+      groupActivityPhases([childLabel('Read the config'), childLabel('Checked the callers')]),
+    ).toBeUndefined();
+  });
+
+  it('does not count a label whose only call is a handoff', () => {
+    const transfer = toolPart('t2', `${Constants.LC_TRANSFER_TO_}agent_2`);
+    expect(
+      groupActivityPhases([
+        toolPart('t1'),
+        childLabel('Read the config'),
+        transfer,
+        childLabel('Handed off'),
+      ]),
+    ).toBeUndefined();
+  });
+
+  it('does not let a handoff carry an earlier call into the next label', () => {
+    /** `groupSequentialToolCalls` flushes the block at the non-groupable
+     *  transfer and then drops the label through `coversTransferCall`, so
+     *  neither batch heads a rendered group. */
+    const batch = (index: number) => [
+      toolPart(`t${index}a`),
+      toolPart(`t${index}b`, `${Constants.LC_TRANSFER_TO_}agent_${index}`),
+      childLabel(`Handed off ${index}`),
+    ];
+
+    expect(groupActivityPhases([...batch(1), ...batch(2)])).toBeUndefined();
+  });
+
+  it('resets the claim at a blank reservation, as the grouping does', () => {
+    /** The blank label closes the first batch's claim, so the filled label
+     *  after it claims nothing and heads no group. */
+    expect(
+      groupActivityPhases([
+        toolPart('t1'),
+        childLabel('Read the config'),
+        toolPart('t2'),
+        labelPart() as unknown as TMessageContentParts,
+        childLabel('Checked the callers'),
+      ]),
+    ).toBeUndefined();
+  });
+});
+
+describe('findActivityLabelMessageIndex', () => {
+  const user: TMessage = { ...buildMessage([]), messageId: 'user-1', isCreatedByUser: true };
+  const placeholder: TMessage = { ...buildMessage([]), messageId: 'user-1_' };
+  const older: TMessage = { ...buildMessage([]), messageId: 'older-response' };
+  const event = {
+    index: 0,
+    part: labelPart(),
+    responseMessageId: 'server-resp',
+  } as TActivityLabelEvent;
+
+  it("falls back to the pane's own placeholder before the first run step renames it", () => {
+    expect(findActivityLabelMessageIndex([user, placeholder], event, ['user-1_'])).toBe(1);
+  });
+
+  it('never guesses by position when the event names a row the pane has not rendered', () => {
+    expect(findActivityLabelMessageIndex([user, older], event)).toBe(-1);
+    expect(findActivityLabelMessageIndex([user, older], event, [undefined, null])).toBe(-1);
+  });
+
+  it('ignores a placeholder id that names a user message', () => {
+    expect(findActivityLabelMessageIndex([user, older], event, ['user-1'])).toBe(-1);
+  });
+});
+
+describe('groupActivityPhases — live tail', () => {
+  const tool = (id: string, name = 'lookup'): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name, args: '{}', output: '' },
+    }) as unknown as TMessageContentParts;
+  const text = (value: string): TMessageContentParts =>
+    ({ type: ContentTypes.TEXT, text: value }) as unknown as TMessageContentParts;
+  const think = { type: ContentTypes.THINK, think: 'hm' } as unknown as TMessageContentParts;
+
+  it('folds the span being written from its first tool call, tail included', () => {
+    const segments = groupActivityPhases([think, tool('t1')], undefined, true);
+    expect(segments).toHaveLength(1);
+    expect(segments?.[0]).toMatchObject({
+      type: 'phase',
+      live: true,
+      synthesized: true,
+      contentIndices: [0, 1],
+    });
+  });
+
+  it('leaves the same content untouched when the message is not live', () => {
+    expect(groupActivityPhases([think, tool('t1')])).toBeUndefined();
+  });
+
+  it('folds a streaming thought before any tool call, so its peek never opens and snaps shut', () => {
+    const segments = groupActivityPhases([think], undefined, true);
+    expect(segments?.[0]).toMatchObject({ type: 'phase', live: true, contentIndices: [0] });
+  });
+
+  it('does not fold a thought that has no text yet', () => {
+    const empty = { type: ContentTypes.THINK, think: '  ' } as unknown as TMessageContentParts;
+    expect(groupActivityPhases([empty], undefined, true)).toBeUndefined();
+  });
+
+  it('leaves a settled thought on its own row', () => {
+    expect(groupActivityPhases([think])).toBeUndefined();
+  });
+
+  it('does not fold a span the stream has already moved past', () => {
+    expect(groupActivityPhases([tool('t1'), text('The answer.')], undefined, true)).toBeUndefined();
+  });
+
+  it('folds only the tail span when an answer separates two runs', () => {
+    const segments = groupActivityPhases(
+      [tool('t1'), text('A first answer.'), tool('t2')],
+      undefined,
+      true,
+    );
+    expect(segments?.map((segment) => segment.type)).toEqual(['content', 'phase']);
+    expect(segments?.[1]).toMatchObject({ live: true, contentIndices: [2] });
+  });
+
+  it('never folds a handoff on its own', () => {
+    const transfer = tool('t1', `${Constants.LC_TRANSFER_TO_}agent_b`);
+    expect(groupActivityPhases([transfer], undefined, true)).toBeUndefined();
+  });
+});
+
+describe('groupActivityPhases — live tail and handoffs', () => {
+  const tool = (id: string, name = 'lookup'): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name, args: '{}', output: '' },
+    }) as unknown as TMessageContentParts;
+
+  it('ends the span at a handoff and starts a new live span for the next agent', () => {
+    const transfer = tool('h1', `${Constants.LC_TRANSFER_TO_}agent_b`);
+    const segments = groupActivityPhases([tool('t1'), transfer, tool('t2')], undefined, true);
+    expect(segments?.map((segment) => segment.type)).toEqual(['content', 'phase']);
+    expect(segments?.[0].contentIndices).toEqual([0, 1]);
+    expect(segments?.[1]).toMatchObject({ live: true, contentIndices: [2] });
   });
 });

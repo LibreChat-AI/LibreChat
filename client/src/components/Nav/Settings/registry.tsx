@@ -47,6 +47,7 @@ import { showThinkingAtom } from '~/store/showThinking';
 import ProviderKeys from '../SettingsTabs/ProviderKeys';
 import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
+import CodeEnvironments from './CodeEnvironments';
 import About from '../SettingsTabs/About/About';
 import ApiKeys from '../SettingsTabs/ApiKeys';
 import MemoryToggle from './MemoryToggle';
@@ -62,7 +63,15 @@ export const registry: SettingEntry[] = [
     tab: GENERAL,
     section: 'appearance',
     labelKey: 'com_nav_theme',
-    keywords: ['dark', 'light', 'appearance', 'color'],
+    keywords: [
+      'dark',
+      'light',
+      'appearance',
+      'color',
+      'contrast',
+      'high contrast',
+      'accessibility',
+    ],
     Component: ThemeSetting,
   },
   {
@@ -369,6 +378,19 @@ export const registry: SettingEntry[] = [
     }),
   },
   {
+    id: 'copyRichText',
+    tab: CHAT,
+    section: 'messages',
+    labelKey: 'com_nav_copy_rich_text',
+    keywords: ['copy', 'clipboard', 'rich', 'html', 'format', 'markdown', 'paste'],
+    Component: toggleControl({
+      stateAtom: store.copyRichText,
+      localizationKey: 'com_nav_copy_rich_text',
+      switchId: 'copyRichText',
+      hoverCardText: 'com_nav_info_copy_rich_text',
+    }),
+  },
+  {
     id: 'autoExpandTools',
     tab: CHAT,
     section: 'messages',
@@ -587,6 +609,15 @@ export const registry: SettingEntry[] = [
     keywords: ['agent', 'code', 'environment', 'sandbox', 'stateful', 'workspace'],
     show: (ctx) => ctx.hasStatefulCodeSessions,
     Component: StatefulWorkspaceDefault,
+  },
+  {
+    id: 'codeEnvironments',
+    tab: DATA,
+    section: 'codeExecution',
+    labelKey: 'com_ui_code_environments',
+    keywords: ['bridge', 'cli', 'code', 'environment', 'sandbox', 'vm', 'worker'],
+    show: (ctx) => ctx.hasStatefulCodeSessions,
+    Component: CodeEnvironments,
   },
   // Data controls · Your data
   {

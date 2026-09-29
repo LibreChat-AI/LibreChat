@@ -87,6 +87,7 @@ describe('useRum', () => {
     });
 
     expect(mockSetGlobalAttributes).toHaveBeenCalledWith({
+      clientBuildId: 'unknown',
       route: '/c/:conversationId',
       role: 'USER',
       userId: 'user-123',

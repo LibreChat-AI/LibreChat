@@ -9,6 +9,17 @@ const mockSkillsEnabled = { current: true };
 const mockEndpoint = { current: 'openAI' as string | null };
 const mockCommandToggles = { at: true, plus: true, slash: true, dollar: true };
 
+jest.mock('jotai', () => ({
+  ...jest.requireActual('jotai'),
+  useSetAtom: jest.fn((atom: string) =>
+    atom === 'showSkillsPopoverFamily-0' ? mockSetShowSkillsPopover : jest.fn(),
+  ),
+}));
+
+jest.mock('~/components/Chat/Input/skillsState', () => ({
+  showSkillsPopoverFamily: (idx: number) => `showSkillsPopoverFamily-${idx}`,
+}));
+
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
   useRecoilValue: jest.fn((atom) => {
@@ -39,9 +50,6 @@ jest.mock('recoil', () => ({
     if (atom === 'showPromptsPopoverFamily-0') {
       return mockSetShowPromptsPopover;
     }
-    if (atom === 'showSkillsPopoverFamily-0') {
-      return mockSetShowSkillsPopover;
-    }
     return jest.fn();
   }),
 }));
@@ -50,7 +58,6 @@ jest.mock('~/store', () => ({
   showPromptsPopoverFamily: (idx: number) => `showPromptsPopoverFamily-${idx}`,
   showMentionPopoverFamily: (idx: number) => `showMentionPopoverFamily-${idx}`,
   showPlusPopoverFamily: (idx: number) => `showPlusPopoverFamily-${idx}`,
-  showSkillsPopoverFamily: (idx: number) => `showSkillsPopoverFamily-${idx}`,
   effectiveEndpointByIndex: (idx: number) => `effectiveEndpointByIndex-${idx}`,
   atCommand: 'atCommand',
   plusCommand: 'plusCommand',

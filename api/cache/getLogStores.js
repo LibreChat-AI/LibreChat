@@ -30,6 +30,7 @@ const namespaces = {
   [ViolationTypes.TTS_LIMIT]: violationCache(ViolationTypes.TTS_LIMIT),
   [ViolationTypes.STT_LIMIT]: violationCache(ViolationTypes.STT_LIMIT),
   [ViolationTypes.CONVO_ACCESS]: violationCache(ViolationTypes.CONVO_ACCESS),
+  [ViolationTypes.SHARE_LIMIT]: violationCache(ViolationTypes.SHARE_LIMIT),
   [ViolationTypes.TOOL_CALL_LIMIT]: violationCache(ViolationTypes.TOOL_CALL_LIMIT),
   [ViolationTypes.FILE_UPLOAD_LIMIT]: violationCache(ViolationTypes.FILE_UPLOAD_LIMIT),
   [ViolationTypes.VERIFY_EMAIL_LIMIT]: violationCache(ViolationTypes.VERIFY_EMAIL_LIMIT),

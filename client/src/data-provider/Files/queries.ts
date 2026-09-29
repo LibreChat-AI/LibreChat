@@ -161,6 +161,26 @@ export const useSharedFileDownload = (
   );
 };
 
+/** Preview consumers share immutable bytes, never a revocable download URL. */
+export const useFilePreviewBlob = (
+  userId?: string,
+  fileId?: string,
+  shareId?: string,
+): QueryObserverResult<Blob> =>
+  useQuery(
+    [QueryKeys.fileDownload, 'previewBlob', shareId ? 'share' : 'owner', shareId ?? userId, fileId],
+    async () => {
+      if (!fileId || (!shareId && !userId)) {
+        throw new Error('Preview identity unavailable');
+      }
+      const response = shareId
+        ? await dataService.getSharedFileDownload(shareId, fileId)
+        : await dataService.getFileDownload(userId!, fileId);
+      return response.data;
+    },
+    { enabled: false, retry: false, cacheTime: 0 },
+  );
+
 export const useCodeOutputDownload = (url = ''): QueryObserverResult<string> => {
   return useQuery(
     [QueryKeys.fileDownload, url],

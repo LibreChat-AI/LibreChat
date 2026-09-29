@@ -64,6 +64,8 @@ export enum PermissionBits {
   DELETE = 4,
   /**  1000 - Can share agent with others (future) */
   SHARE = 8,
+  /** 10000 - Can view Insights data for an agent when VIEW is also present */
+  VIEW_INSIGHTS = 16,
 }
 
 /**
@@ -107,6 +109,8 @@ export const principalSchema = z.object({
   description: z.string().optional(), // for group and role types
   idOnTheSource: z.string().optional(), // Entra ID for users/groups
   accessRoleId: z.nativeEnum(AccessRoleIds).optional(), // Access role ID for permissions
+  viewInsights: z.boolean().optional(),
+  isAdmin: z.boolean().optional(),
   memberCount: z.number().optional(), // for group type
 });
 
@@ -231,6 +235,7 @@ export type TPrincipalSearchResult = {
   memberCount?: number; // for groups
   description?: string; // for groups
   idOnTheSource?: string; // Entra ID for users (maps to openidId) and groups (maps to idOnTheSource)
+  isAdmin?: boolean;
 };
 
 /**

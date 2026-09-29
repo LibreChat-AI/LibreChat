@@ -5,6 +5,7 @@ export {
   createSteerPreemptPoll,
   isSteeringSupported,
   isSteerPreemptSupported,
+  isSteerPreemptRestartSupported,
   isSteerTerminalContinuationSupported,
 } from './runtime';
 export type {

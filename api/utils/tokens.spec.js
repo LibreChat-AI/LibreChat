@@ -359,6 +359,9 @@ describe('getModelMaxTokens', () => {
     expect(getModelMaxTokens('gemini-3.7-flash', EModelEndpoint.google)).toBe(
       maxTokensMap[EModelEndpoint.google]['gemini-3.7-flash'],
     );
+    expect(getModelMaxTokens('gemini-3.8-flash', EModelEndpoint.google)).toBe(
+      maxTokensMap[EModelEndpoint.google]['gemini-3.8-flash'],
+    );
     expect(getModelMaxTokens('gemini-2.5-pro', EModelEndpoint.google)).toBe(
       maxTokensMap[EModelEndpoint.google]['gemini-2.5-pro'],
     );
@@ -1638,6 +1641,40 @@ describe('Claude Model Tests', () => {
     modelVariations.forEach((model) => {
       expect(matchModelName(model, EModelEndpoint.anthropic)).toBe('claude-mythos-5');
     });
+  });
+
+  it('should return correct context length for Claude Fable 5.1 (1M)', () => {
+    expect(maxTokensMap[EModelEndpoint.anthropic]['claude-fable-5-1']).toBe(1000000);
+    expect(maxTokensMap[EModelEndpoint.anthropic]['claude-mythos-5-1']).toBe(1000000);
+    expect(getModelMaxTokens('claude-fable-5-1', EModelEndpoint.anthropic)).toBe(1000000);
+    expect(getModelMaxTokens('claude-mythos-5-1', EModelEndpoint.anthropic)).toBe(1000000);
+  });
+
+  it('should return correct max output tokens for Claude Fable 5.1 (128K)', () => {
+    const { getModelMaxOutputTokens } = require('@librechat/api');
+    expect(maxOutputTokensMap[EModelEndpoint.anthropic]['claude-fable-5-1']).toBe(128000);
+    expect(maxOutputTokensMap[EModelEndpoint.anthropic]['claude-mythos-5-1']).toBe(128000);
+    expect(getModelMaxOutputTokens('claude-fable-5-1', EModelEndpoint.anthropic)).toBe(128000);
+    expect(getModelMaxOutputTokens('claude-mythos-5-1', EModelEndpoint.anthropic)).toBe(128000);
+  });
+
+  it('should match model names correctly for Claude Fable 5.1 without collapsing to Fable 5', () => {
+    const modelVariations = [
+      'claude-fable-5-1',
+      'claude-fable-5-1-20260901',
+      'claude-fable-5-1-latest',
+      'anthropic/claude-fable-5-1',
+      'claude-fable-5-1/anthropic',
+      'anthropic.claude-fable-5-1',
+    ];
+
+    modelVariations.forEach((model) => {
+      expect(matchModelName(model, EModelEndpoint.anthropic)).toBe('claude-fable-5-1');
+    });
+
+    expect(matchModelName('claude-fable-5-20260609', EModelEndpoint.anthropic)).toBe(
+      'claude-fable-5',
+    );
   });
 
   it('should return correct context length for Claude Sonnet 4.6 (1M)', () => {

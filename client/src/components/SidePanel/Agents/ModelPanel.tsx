@@ -1,24 +1,21 @@
-import React, { useMemo } from 'react';
-import keyBy from 'lodash/keyBy';
+import React, { useMemo, useEffect } from 'react';
 import { ChevronLeft, RotateCcw } from 'lucide-react';
 import { Alert, Button, ControlCombobox } from '@librechat/client';
 import { useFormContext, useWatch, Controller } from 'react-hook-form';
 import {
+  Permissions,
   alternateName,
-  getSettingsKeys,
-  getEndpointField,
+  PermissionTypes,
   LocalStorageKeys,
   resolveModelCatalogKey,
-  SettingDefinition,
-  agentParamSettings,
-  applyModelAwareDefaults,
 } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { AgentForm, AgentModelPanelProps, StringOption } from '~/common';
+import { pruneAgentModelParameters, resolveAgentParameterSettings } from './parameters';
 import { componentMapping } from '~/components/SidePanel/Parameters/components';
-import { useGetEndpointsQuery } from '~/data-provider';
+import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
-import { useLocalize } from '~/hooks';
 import { Panel } from '~/common';
 import { cn } from '~/utils';
 
@@ -45,7 +42,7 @@ export default function ModelPanel({
   const localize = useLocalize();
   const { announcePolite } = useLiveAnnouncer();
 
-  const { control, setValue } = useFormContext<AgentForm>();
+  const { control, setValue, getValues } = useFormContext<AgentForm>();
 
   const model = useWatch({ control, name: 'model' });
   const providerOption = useWatch({ control, name: 'provider' });
@@ -66,33 +63,47 @@ export default function ModelPanel({
   const selectionDisabled = !modelsReady || modelsError;
 
   const { data: endpointsConfig = {} } = useGetEndpointsQuery();
+  const { data: startupConfig } = useGetStartupConfig();
 
   const bedrockRegions = useMemo(() => {
     return endpointsConfig?.[provider]?.availableRegions ?? [];
   }, [endpointsConfig, provider]);
 
-  const endpointType = useMemo(
-    () => getEndpointField(endpointsConfig, provider, 'type'),
-    [provider, endpointsConfig],
-  );
+  const webSearchAllowed = useHasAccess({
+    permissionType: PermissionTypes.WEB_SEARCH,
+    permission: Permissions.USE,
+  });
 
-  const parameters = useMemo((): SettingDefinition[] => {
-    const customParams = endpointsConfig[provider]?.customParams ?? {};
-    const [combinedKey, endpointKey] = getSettingsKeys(endpointType ?? provider, model ?? '');
-    const overriddenEndpointKey = customParams.defaultParamsEndpoint ?? endpointKey;
-    const defaultParams =
-      agentParamSettings[combinedKey] ?? agentParamSettings[overriddenEndpointKey] ?? [];
-    const overriddenParams = endpointsConfig[provider]?.customParams?.paramDefinitions ?? [];
-    const overriddenParamsMap = keyBy(overriddenParams, 'key');
-    const modelAwareParams = applyModelAwareDefaults(
-      defaultParams.filter((param) => param != null),
-      overriddenEndpointKey,
-      model ?? '',
-    );
-    return modelAwareParams.map(
-      (param) => (overriddenParamsMap[param.key] as SettingDefinition) ?? param,
-    );
-  }, [endpointType, endpointsConfig, model, provider]);
+  const parameterSettings = useMemo(
+    () =>
+      resolveAgentParameterSettings({
+        endpointsConfig,
+        model: model ?? '',
+        provider,
+        startupConfig,
+        webSearchAllowed,
+      }),
+    [endpointsConfig, model, provider, startupConfig, webSearchAllowed],
+  );
+  /** The rendered set omits role-gated controls; `parameterSettings.parameters`
+   *  stays complete so the pruning effect below still recognises them. */
+  const { visibleParameters: parameters } = parameterSettings;
+
+  /**
+   * Prunes `model_parameters` entries that no longer have a visible control (e.g. a
+   * parameter newly added to the endpoint's `dropParams`), mirroring the conversation
+   * panel's pruning effect. Otherwise the stale value stays saved and silently reactivates
+   * if the endpoint config later stops dropping it, with no control to inspect or clear it.
+   */
+  useEffect(() => {
+    const currentParameters = getValues('model_parameters') ?? ({} as t.AgentModelParameters);
+    const prunedParameters = pruneAgentModelParameters(currentParameters, parameterSettings);
+    if (prunedParameters === currentParameters) {
+      return;
+    }
+
+    setValue('model_parameters', prunedParameters);
+  }, [parameterSettings, getValues, setValue]);
 
   const setOption = (optionKey: keyof t.AgentModelParameters) => (value: t.AgentParameterValue) => {
     setValue(`model_parameters.${optionKey}`, value);
@@ -131,7 +142,7 @@ export default function ModelPanel({
             )}
             htmlFor="provider"
           >
-            {localize('com_ui_provider')} <span className="text-red-500">*</span>
+            {localize('com_ui_provider')} <span className="text-text-destructive">*</span>
           </label>
           <Controller
             name="provider"
@@ -174,14 +185,14 @@ export default function ModelPanel({
                       label: typeof provider === 'string' ? provider : provider.label,
                       value: typeof provider === 'string' ? provider : provider.value,
                     }))}
-                    className={cn(error ? 'border-2 border-red-500' : '')}
+                    className={cn(error ? 'border-2 border-border-destructive' : '')}
                     ariaLabel={localize('com_ui_provider')}
                     disabled={selectionDisabled}
                     isCollapsed={false}
                     showCarat={true}
                   />
                   {error && (
-                    <span className="mt-1 text-xs text-red-500" role="alert">
+                    <span className="mt-1 text-xs text-text-destructive" role="alert">
                       {localize('com_ui_field_required')}
                     </span>
                   )}
@@ -200,7 +211,7 @@ export default function ModelPanel({
             )}
             htmlFor="model"
           >
-            {localize('com_ui_model')} <span className="text-red-500">*</span>
+            {localize('com_ui_model')} <span className="text-text-destructive">*</span>
           </label>
           <Controller
             name="model"
@@ -228,13 +239,16 @@ export default function ModelPanel({
                       value: model,
                     }))}
                     disabled={!provider || selectionDisabled}
-                    className={cn('disabled:opacity-50', error ? 'border-2 border-red-500' : '')}
+                    className={cn(
+                      'disabled:opacity-50',
+                      error ? 'border-2 border-border-destructive' : '',
+                    )}
                     ariaLabel={localize('com_ui_model')}
                     isCollapsed={false}
                     showCarat={true}
                   />
                   {provider && error && (
-                    <span className="mt-1 text-xs text-red-500" role="alert">
+                    <span className="mt-1 text-xs text-text-destructive" role="alert">
                       {localize('com_ui_field_required')}
                     </span>
                   )}

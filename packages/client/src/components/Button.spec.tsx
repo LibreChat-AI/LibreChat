@@ -18,18 +18,58 @@ describe('Button', () => {
     );
   });
 
+  it('offers the composer action row geometry as a size and a shape', () => {
+    render(
+      <Button size="icon-theme" shape="round" aria-label="Scroll to bottom">
+        v
+      </Button>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toHaveClass(
+      'size-theme-control',
+      'p-0',
+      'rounded-theme-control-round',
+    );
+  });
+
   it('renders the header-action toggle from semantic tokens', () => {
     render(<Button variant="header-action">Toggle</Button>);
 
-    /** Transparent so the toggle reads as an icon on the header rather than a
-     *  raised control; the border and hover still mark it as hit-able. */
+    /** Opaque: the chat header is a gradient that fades to nothing with the
+     *  conversation scrolling under it, so a transparent toggle shows message
+     *  text through itself while every neighbour sits on `bg-presentation`. */
     expect(screen.getByRole('button', { name: 'Toggle' })).toHaveClass(
-      'bg-transparent',
+      'bg-presentation',
       'border-border-light',
       'rounded-xl',
       'duration-0',
       'hover:bg-surface-active-alt',
     );
+  });
+
+  /** `size: 'sm'` carries `rounded-lg`, which is emitted after the variant and
+   *  would otherwise win the merge, squaring off a text-bearing header control
+   *  next to the icon-sized ones sharing its row. A caller that names a shape
+   *  still outranks that repair, the way it does for `subtle`. */
+  it('keeps the header-action corner at every size', () => {
+    const { rerender } = render(
+      <Button variant="header-action" size="sm">
+        Back
+      </Button>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Back' });
+    expect(button).toHaveClass('rounded-xl', 'h-9', 'bg-presentation');
+    expect(button).not.toHaveClass('rounded-lg');
+
+    rerender(
+      <Button variant="header-action" size="sm" shape="theme">
+        Back
+      </Button>,
+    );
+
+    expect(button).toHaveClass('rounded-theme-control', 'h-9');
+    expect(button).not.toHaveClass('rounded-xl');
   });
 
   it('preserves variant geometry until a shape is explicitly selected', () => {
@@ -65,18 +105,16 @@ describe('Button', () => {
       </Button>,
     );
 
-    expect(screen.getByRole('button', { name: 'Open' })).toHaveClass(
-      'size-8',
-      'p-0',
-      'rounded-lg',
-      'hover:bg-surface-hover-alt',
-    );
+    const button = screen.getByRole('button', { name: 'Open' });
+
+    expect(button).toHaveClass('size-8', 'p-0', 'rounded-md', 'hover:bg-surface-hover-alt');
+    expect(button).not.toHaveClass('rounded-lg');
   });
 
   /**
    * Section actions sit close enough to their heading and to each other that
    * the default offset ring crosses a neighbour, so this variant has to win
-   * both radius and ring — and stay distinct from `row-action` above.
+   * both radius and ring.
    */
   it('gives section actions an inset ring and a tighter radius', () => {
     render(
@@ -101,5 +139,26 @@ describe('Button', () => {
     expect(sectionAction).toContain('rounded-md');
     expect(sectionAction).toContain('rounded-lg');
     expect(cn(sectionAction)).not.toContain('rounded-lg');
+  });
+
+  /**
+   * Every other variant is given a size by its call sites, but a section
+   * heading is sized by its own text and all three headers ask for the recipe
+   * alone. The default size recipe is emitted after the variant, so without an
+   * opt out it wins the merge and puts a 40px control in a 32px header row.
+   */
+  it('keeps section headers out of the default size recipe', () => {
+    const header = cn(buttonVariants({ variant: 'section-header' }));
+
+    expect(header).toContain('px-1');
+    expect(header).toContain('h-auto');
+    expect(header).not.toContain('h-10');
+    expect(header).not.toContain('px-4');
+    /** A heading is not a control: nothing fills under the pointer. */
+    expect(header).not.toContain('hover:bg-');
+  });
+
+  it('still takes a size when a caller asks for one', () => {
+    expect(cn(buttonVariants({ variant: 'section-header', size: 'sm' }))).toContain('h-9');
   });
 });

@@ -25,6 +25,7 @@ interface ApprovalSubagentGraph {
 }
 
 export interface ToolApprovalAdmissionAgent {
+  readonly id?: string;
   readonly tools?: readonly (string | ApprovalToolReference)[];
   readonly toolRegistry?: ApprovalToolRegistry;
   readonly toolDefinitions?: readonly ApprovalToolReference[];
@@ -55,12 +56,12 @@ function agentHasTool(agent: ToolApprovalAdmissionAgent, toolName: string): bool
 
 function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | null | undefined)[]): {
   agents: ToolApprovalAdmissionAgent[];
-  hasLazyToolSurface: boolean;
+  lazyAgentIds: Set<string | undefined>;
 } {
   const agents: ToolApprovalAdmissionAgent[] = [];
   const visited = new Set<ToolApprovalAdmissionAgent>();
   const pending = [...roots];
-  let hasLazyToolSurface = false;
+  const lazyAgentIds = new Set<string | undefined>();
 
   for (let index = 0; index < pending.length; index++) {
     const agent = pending[index];
@@ -71,7 +72,9 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
     agents.push(agent);
     pending.push(...(agent.subagentAgentConfigs ?? []));
     if ((agent.lazySubagentConfigs?.length ?? 0) > 0) {
-      hasLazyToolSurface = true;
+      for (const lazyAgent of agent.lazySubagentConfigs ?? []) {
+        lazyAgentIds.add(lazyAgent?.id);
+      }
       pending.push(...(agent.lazySubagentConfigs ?? []));
     }
     pending.push(...(agent.subagentGraphMemberMetadata ?? []));
@@ -80,7 +83,7 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
     }
   }
 
-  return { agents, hasLazyToolSurface };
+  return { agents, lazyAgentIds };
 }
 
 /**
@@ -106,12 +109,14 @@ export function canAgentGraphPause({
   }
 
   const approvalGraph = collectApprovalAgents(agents);
-  const toolNames = new Set<string>();
+  const toolOwners = new Map<string, Set<string | undefined>>();
   const aliases: MCPToolAlias[] = [];
   const aliasesByToolName = new Map<string, string[]>();
-  const addToolName = (name: unknown) => {
+  const addToolName = (name: unknown, agentId?: string) => {
     if (typeof name === 'string' && name !== ASK_USER_QUESTION_TOOL_NAME) {
-      toolNames.add(name);
+      const owners = toolOwners.get(name) ?? new Set<string | undefined>();
+      owners.add(agentId);
+      toolOwners.set(name, owners);
     }
   };
 
@@ -121,15 +126,15 @@ export function canAgentGraphPause({
 
   for (const agent of approvalGraph.agents) {
     for (const tool of agent.tools ?? []) {
-      addToolName(typeof tool === 'string' ? tool : tool.name);
+      addToolName(typeof tool === 'string' ? tool : tool.name, agent.id);
     }
     if (agent.toolRegistry) {
       for (const name of agent.toolRegistry.keys()) {
-        addToolName(name);
+        addToolName(name, agent.id);
       }
     }
     for (const definition of agent.toolDefinitions ?? []) {
-      addToolName(definition.name);
+      addToolName(definition.name, agent.id);
     }
     for (const alias of agent.mcpToolAliases ?? []) {
       aliases.push(alias);
@@ -140,24 +145,33 @@ export function canAgentGraphPause({
   }
 
   const effectivePolicy = healToolApprovalPolicy(policy, aliases);
-  const knownToolCanPause = Array.from(toolNames).some((toolName) => {
+  const knownToolCanPause = Array.from(toolOwners).some(([toolName, agentIds]) => {
     const matcherNames = [toolName, ...(aliasesByToolName.get(toolName) ?? [])];
-    const requestHookCanAsk = resolvedToolApprovalHooksCanMatch(
-      resolvedProgrammaticHooks,
-      matcherNames,
-    );
     const pluginHookCanAsk = pluginHookSource?.hasToolApprovalHooks?.([toolName]) === true;
-    return isToolApprovalPauseCapable(effectivePolicy, requestHookCanAsk || pluginHookCanAsk, [
-      toolName,
-    ]);
+    return Array.from(agentIds).some((agentId) => {
+      const requestHookCanAsk = resolvedToolApprovalHooksCanMatch(
+        resolvedProgrammaticHooks,
+        matcherNames,
+        agentId,
+      );
+      return isToolApprovalPauseCapable(effectivePolicy, requestHookCanAsk || pluginHookCanAsk, [
+        toolName,
+      ]);
+    });
   });
   if (knownToolCanPause) {
     return true;
   }
-  if (approvalGraph.hasLazyToolSurface) {
-    const unresolvedHookCanAsk =
-      resolvedProgrammaticHooks.length > 0 || pluginHookSource?.hasToolApprovalHooks?.() === true;
-    if (isToolApprovalPauseCapable(effectivePolicy, unresolvedHookCanAsk)) {
+  if (approvalGraph.lazyAgentIds.size > 0) {
+    const pluginHookCanAsk = pluginHookSource?.hasToolApprovalHooks?.() === true;
+    const unresolvedHookCanAsk = Array.from(approvalGraph.lazyAgentIds).some(
+      (agentId) =>
+        resolvedProgrammaticHooks.some(
+          ({ agentIds }) => agentIds == null || (agentId != null && agentIds.has(agentId)),
+        ) || pluginHookCanAsk,
+    );
+    const staticPolicyCanAsk = isToolApprovalPauseCapable(effectivePolicy);
+    if (staticPolicyCanAsk || unresolvedHookCanAsk) {
       return true;
     }
   }

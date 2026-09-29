@@ -1,5 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import type { IMessage } from '~/types/message';
+import { agentFadingContextDefinition } from './fading';
 
 const messageSchema: Schema<IMessage> = new Schema(
   {
@@ -125,6 +126,9 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: [String],
       default: undefined,
     },
+    langfuseRunId: {
+      type: String,
+    },
     _meiliIndex: {
       type: Boolean,
       required: false,
@@ -235,6 +239,7 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: {
         calibrationRatio: { type: Number },
         encoding: { type: String },
+        ...agentFadingContextDefinition,
       },
       _id: false,
       default: undefined,
@@ -306,6 +311,15 @@ messageSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 messageSchema.index({ createdAt: 1 });
 messageSchema.index({ messageId: 1, user: 1, tenantId: 1 }, { unique: true });
 messageSchema.index({ tenantId: 1, isTemporary: 1, createdAt: -1, _id: -1 });
+/** Insights attributes assistant activity from the persisted top-level agent model. */
+messageSchema.index({
+  tenantId: 1,
+  isTemporary: 1,
+  isCreatedByUser: 1,
+  model: 1,
+  createdAt: -1,
+  _id: -1,
+});
 messageSchema.index({
   tenantId: 1,
   isTemporary: 1,

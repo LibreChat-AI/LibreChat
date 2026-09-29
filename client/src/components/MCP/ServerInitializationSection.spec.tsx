@@ -7,11 +7,14 @@ import ServerInitializationSection from './ServerInitializationSection';
 const mockInitializeServer = jest.fn();
 const mockConnectionStatus = jest.fn((): MCPServerStatus | undefined => undefined);
 
+const mockMCPRefresh = jest.fn();
+
+jest.mock('~/hooks/MCP/useMCPRefresh', () => ({
+  useMCPRefresh: (options: { enabled: boolean; tools?: boolean }) => mockMCPRefresh(options),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
-  useMCPConnectionStatus: () => ({
-    connectionStatus: { server: mockConnectionStatus() },
-  }),
   useMCPServerManager: () => ({
     getOAuthUrl: () => undefined,
     isCancellable: () => false,
@@ -20,6 +23,7 @@ jest.mock('~/hooks', () => ({
     initializeServer: mockInitializeServer,
     availableMCPServers: [{ serverName: 'server' }],
     availableMCPServersMap: { server: { requestScoped: true } },
+    connectionStatus: { server: mockConnectionStatus() },
     revokeOAuthForServer: jest.fn(),
   }),
 }));

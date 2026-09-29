@@ -671,6 +671,115 @@ describe('web.ts', () => {
       }
     });
 
+    it('should not send a system Jina key to a user-provided API URL', async () => {
+      const originalApiKey = process.env.JINA_API_KEY;
+      const originalApiUrl = process.env.JINA_API_URL;
+      process.env.JINA_API_KEY = 'system-jina-key';
+      process.env.JINA_API_URL = AuthType.USER_PROVIDED;
+      mockIsSSRFTarget.mockReturnValue(false);
+      mockResolveHostnameSSRF.mockResolvedValue(false);
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'JINA_API_KEY') {
+            result[field] = 'system-jina-key';
+          } else if (field === 'JINA_API_URL') {
+            result[field] = 'https://user-jina.example.com/v1/rerank';
+          } else {
+            result[field] =
+              field === 'FIRECRAWL_API_URL' ? 'https://api.firecrawl.dev' : 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      try {
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: {
+            ...webSearchConfig,
+            rerankerType: RerankerTypes.JINA,
+          },
+          loadAuthValues: mockLoadAuthValues,
+        });
+
+        expect(result.authResult.jinaApiKey).toBe('system-jina-key');
+        expect(result.authResult.jinaApiUrl).toBe('https://api.jina.ai/v1/rerank');
+        expect(result.authTypes).toContainEqual([
+          SearchCategories.RERANKERS,
+          AuthType.SYSTEM_DEFINED,
+        ]);
+        expect(mockResolveHostnameSSRF).toHaveBeenCalledWith(
+          'user-jina.example.com',
+          undefined,
+          '443',
+        );
+      } finally {
+        if (originalApiKey == null) {
+          delete process.env.JINA_API_KEY;
+        } else {
+          process.env.JINA_API_KEY = originalApiKey;
+        }
+        if (originalApiUrl == null) {
+          delete process.env.JINA_API_URL;
+        } else {
+          process.env.JINA_API_URL = originalApiUrl;
+        }
+      }
+    });
+
+    it("should keep a user-provided Jina URL with the same user's key", async () => {
+      const originalApiKey = process.env.JINA_API_KEY;
+      const originalApiUrl = process.env.JINA_API_URL;
+      delete process.env.JINA_API_KEY;
+      delete process.env.JINA_API_URL;
+      mockIsSSRFTarget.mockReturnValue(false);
+      mockResolveHostnameSSRF.mockResolvedValue(false);
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          if (field === 'JINA_API_KEY') {
+            result[field] = 'user-jina-key';
+          } else if (field === 'JINA_API_URL') {
+            result[field] = 'https://user-jina.example.com/v1/rerank';
+          } else {
+            result[field] =
+              field === 'FIRECRAWL_API_URL' ? 'https://api.firecrawl.dev' : 'test-api-key';
+          }
+        });
+        return Promise.resolve(result);
+      });
+
+      try {
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: {
+            ...webSearchConfig,
+            rerankerType: RerankerTypes.JINA,
+          },
+          loadAuthValues: mockLoadAuthValues,
+        });
+
+        expect(result.authResult.jinaApiKey).toBe('user-jina-key');
+        expect(result.authResult.jinaApiUrl).toBe('https://user-jina.example.com/v1/rerank');
+        expect(result.authTypes).toContainEqual([
+          SearchCategories.RERANKERS,
+          AuthType.USER_PROVIDED,
+        ]);
+      } finally {
+        if (originalApiKey == null) {
+          delete process.env.JINA_API_KEY;
+        } else {
+          process.env.JINA_API_KEY = originalApiKey;
+        }
+        if (originalApiUrl == null) {
+          delete process.env.JINA_API_URL;
+        } else {
+          process.env.JINA_API_URL = originalApiUrl;
+        }
+      }
+    });
+
     it('should treat a whitespace-only Keenable URL env value as user-provided', async () => {
       const originalApiKey = process.env.KEENABLE_API_KEY;
       const originalApiUrl = process.env.KEENABLE_API_URL;
@@ -2486,7 +2595,7 @@ describe('web.ts', () => {
         loadAuthValues: mockLoadAuthValues,
       });
 
-      expect(result.authResult.jinaApiUrl).toBeUndefined();
+      expect(result.authResult.jinaApiUrl).toBe('https://api.jina.ai/v1/rerank');
       expect(mockIsSSRFTarget).toHaveBeenCalledWith('localhost', undefined, '8080');
     });
 
@@ -2961,7 +3070,7 @@ describe('web.ts', () => {
           loadAuthValues: mockLoadAuthValues,
         });
 
-        expect(result.authResult.jinaApiUrl).toBeUndefined();
+        expect(result.authResult.jinaApiUrl).toBe('https://api.jina.ai/v1/rerank');
         expect(result.authenticated).toBe(true);
         const rerankersAuth = result.authTypes.find(([c]) => c === 'rerankers')?.[1];
         expect(rerankersAuth).toBe(AuthType.SYSTEM_DEFINED);

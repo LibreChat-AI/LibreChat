@@ -10,6 +10,8 @@ import {
 import { OpenSidebar, PresetsMenu, NewChat, HeaderMenu } from './Menus';
 import { TemporaryChat, TemporaryChatIndicator } from './TemporaryChat';
 import ModelSelector from './Menus/Endpoints/ModelSelector';
+import { BackgroundTasksButton } from './BackgroundTasks';
+import { TraceButton, useTraceControl } from './Trace';
 import { useGetStartupConfig } from '~/data-provider';
 import ExportAndShareMenu from './ExportAndShareMenu';
 import SubagentThreadLink from './SubagentThreadLink';
@@ -36,6 +38,7 @@ function Header({
 }) {
   const { data: startupConfig } = useGetStartupConfig();
   const navVisible = useRecoilValue(store.sidebarExpanded);
+  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
 
   /** The mobile row only offers a new chat when there is one to leave. Read
    *  from the route rather than the context conversation, which still holds the
@@ -64,11 +67,21 @@ function Header({
     permission: Permissions.USE,
   });
 
+  /** Child threads are view-only records of their parent's run and have no trace of their own. */
+  const trace = useTraceControl({
+    conversationId: isNewChat ? null : routeConversationId,
+    traceViewer: interfaceConfig.traceViewer,
+    isSubmitting,
+    enabled: parentConversationId == null,
+  });
+
   /** The drawer covers the header on mobile; keep its controls out of the tab order. */
   const hiddenBehindNav = navVisible === true && 'max-md:hidden';
 
   return (
-    <div className="absolute top-0 z-10 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b from-presentation via-presentation/70 to-transparent p-2 font-semibold text-text-primary md:from-presentation/80 md:via-presentation/50 2xl:from-presentation/0 2xl:via-transparent">
+    /* The composer review is in a z-10 stacking context. Keep header controls
+       above it when a tall review reaches the top of a short viewport. */
+    <div className="absolute top-0 z-20 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b from-presentation via-presentation/70 to-transparent p-2 font-semibold text-text-primary md:from-presentation/80 md:via-presentation/50 2xl:from-presentation/0 2xl:via-transparent">
       <div className="flex flex-shrink-0 items-center md:hidden">
         <OpenSidebar testId="header-open-sidebar-button" />
       </div>
@@ -101,8 +114,16 @@ function Header({
       <div className={cn('flex flex-shrink-0 items-center gap-2', hiddenBehindNav)}>
         {hasAccessToTemporaryChat === true && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className="md:hidden" />}
-        <HeaderMenu startupConfig={startupConfig} className="md:hidden" />
+        {!isNewChat && parentConversationId == null && (
+          <BackgroundTasksButton
+            key={routeConversationId}
+            conversationId={routeConversationId}
+            isSubmitting={isSubmitting}
+          />
+        )}
+        <HeaderMenu startupConfig={startupConfig} trace={trace} className="md:hidden" />
         <div className="hidden items-center gap-2 md:flex">
+          {trace.show && <TraceButton onClick={trace.open} />}
           <ExportAndShareMenu isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false} />
           {hasAccessToTemporaryChat === true && <TemporaryChat />}
         </div>

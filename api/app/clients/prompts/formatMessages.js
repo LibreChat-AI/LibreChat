@@ -8,6 +8,12 @@ const {
 } = require('@librechat/agents/langchain/messages');
 
 /**
+ * Stands in for a user turn that carries no text and whose attachments are no longer
+ * being resent, so the turn stays valid without inventing content it never had.
+ */
+const EMPTY_MESSAGE_PLACEHOLDER = '(no text)';
+
+/**
  * Formats a message to OpenAI Vision API payload format.
  *
  * @param {Object} params - The parameters for formatting.
@@ -163,10 +169,32 @@ const formatAgentMessages = (payload) => {
 
   for (const message of payload) {
     if (typeof message.content === 'string') {
-      message.content = [{ type: ContentTypes.TEXT, [ContentTypes.TEXT]: message.content }];
+      /** An empty string yields a blank text block, which strict providers (Bedrock,
+       *  Anthropic) reject outright for the whole request. `formatVisionMessage`
+       *  already guards this for image-bearing sends; history replay of a
+       *  promptless send reaches here with no `image_urls`, so guard it too. */
+      message.content = message.content.trim()
+        ? [{ type: ContentTypes.TEXT, [ContentTypes.TEXT]: message.content }]
+        : [];
     }
     if (message.role !== 'assistant') {
-      messages.push(formatMessage({ message, langChain: true }));
+      const formatted = formatMessage({ message, langChain: true });
+      /** A promptless send replayed from history can reduce to nothing once its
+       *  attachments are no longer resent. Providers reject a blank text block and
+       *  an empty content array alike, but dropping the turn is not safe either:
+       *  nothing merges the assistant turns it would leave adjacent, and the same
+       *  providers reject consecutive assistant messages. Keep the turn, and give
+       *  it the smallest honest stand-in for the content that is no longer there. */
+      const { content: formattedContent } = formatted;
+      const isEmpty = Array.isArray(formattedContent)
+        ? formattedContent.length === 0
+        : typeof formattedContent === 'string' && formattedContent.trim() === '';
+      if (isEmpty) {
+        formatted.content = [
+          { type: ContentTypes.TEXT, [ContentTypes.TEXT]: EMPTY_MESSAGE_PLACEHOLDER },
+        ];
+      }
+      messages.push(formatted);
       continue;
     }
 

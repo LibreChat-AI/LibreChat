@@ -43,6 +43,7 @@ router.post('/logout', middleware.requireJwtAuth, logoutController);
 router.post(
   '/login',
   middleware.logHeaders,
+  middleware.requireSameOrigin,
   middleware.loginLimiter,
   middleware.checkBan,
   middleware.validateEmailLogin,
@@ -91,6 +92,7 @@ router.post('/2fa/enable', middleware.requireJwtAuth, enable2FA);
 router.post('/2fa/verify', middleware.requireJwtAuth, verify2FA);
 router.post(
   '/2fa/verify-temp',
+  middleware.requireSameOrigin,
   middleware.setTwoFactorTempUser,
   middleware.twoFactorTempLimiter,
   middleware.checkBan,

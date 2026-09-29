@@ -18,11 +18,19 @@ jest.mock('~/components/Messages/Content/CopyButton', () => {
   };
 });
 
+jest.mock('@librechat/client', () => {
+  const { createMermaidViewMorphIconMock } = jest.requireActual('~/../test/mockMorphIcon');
+  return {
+    ...jest.requireActual('@librechat/client'),
+    MorphIcon: createMermaidViewMorphIconMock(),
+  };
+});
+
 describe('MermaidHeader', () => {
   it('uses code and preview icons for the exclusive view action', async () => {
     const user = userEvent.setup();
     const onToggleCode = jest.fn();
-    const { container, rerender } = render(
+    const { rerender } = render(
       <MermaidHeader
         codeContent={'graph TD\nA-->B'}
         showCode={false}
@@ -32,7 +40,7 @@ describe('MermaidHeader', () => {
 
     const showCodeButton = screen.getByRole('button', { name: 'com_ui_show_code' });
     expect(showCodeButton).toHaveAttribute('aria-pressed', 'false');
-    expect(container.querySelector('.lucide-code-xml')).not.toBeNull();
+    expect(screen.getByTestId('morph-icon')).toHaveAttribute('data-icon', 'code-2');
     await user.click(showCodeButton);
     expect(onToggleCode).toHaveBeenCalledTimes(1);
 
@@ -42,6 +50,6 @@ describe('MermaidHeader', () => {
 
     const showPreviewButton = screen.getByRole('button', { name: 'com_ui_preview' });
     expect(showPreviewButton).toHaveAttribute('aria-pressed', 'true');
-    expect(container.querySelector('.lucide-eye')).not.toBeNull();
+    expect(screen.getByTestId('morph-icon')).toHaveAttribute('data-icon', 'eye');
   });
 });

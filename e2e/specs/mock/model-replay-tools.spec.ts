@@ -86,7 +86,7 @@ test.describe('recorded tool-call fixture replay', () => {
 
     await sendMessageAndWaitForCompletion(page, TOOL_PROMPT, { timeout: 120_000 });
 
-    const conversationId = /\/c\/([^/]+)/.exec(page.url())?.[1];
+    const conversationId = /\/c\/([^/]+)/.exec(new URL(page.url()).pathname)?.[1];
     expect(conversationId, 'conversation should have a persisted id').toBeTruthy();
     const token = await getAccessToken(page);
     const messages = await fetchJson<TMessage[]>(

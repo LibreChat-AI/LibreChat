@@ -1,10 +1,12 @@
 import { memo, Suspense, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
+import { Constants } from 'librechat-data-provider';
 import { Alert, DelayedRender } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Error from '~/components/Messages/Content/Error';
+import ToolCallLimitNotice from './ToolCallLimitNotice';
 import CollapsibleText from './Parts/CollapsibleText';
 import { useMessageContext } from '~/Providers';
 import EmptyText from './Parts/EmptyText';
@@ -46,7 +48,7 @@ const ErrorBox = ({
     role="alert"
     aria-live="assertive"
     className={cn(
-      'rounded-xl border border-status-error-border bg-status-error-subtle px-3 py-2 text-sm text-text-secondary',
+      'rounded-xl border border-status-error-border bg-status-error-subtle p-3 text-sm text-text-secondary',
       className,
     )}
   >
@@ -61,7 +63,14 @@ const ConnectionError = ({ message }: { message?: TMessage }) => {
     <Suspense fallback={<LoadingFallback />}>
       <DelayedRender delay={DELAYED_ERROR_TIMEOUT}>
         <Container message={message}>
-          <Alert variant="error" icon={false} className="mt-2 shadow-sm transition-all">
+          {/* `text-text-secondary` overrides the variant's `text-status-error`: this card sits in
+              the transcript beside `ErrorBox`, and every other failure there states itself in the
+              ordinary copy color. The red border and fill still mark it as an error. */}
+          <Alert
+            variant="error"
+            icon={false}
+            className="mt-2 text-text-secondary shadow-sm transition-all"
+          >
             {localize('com_ui_error_connection')}
           </Alert>
         </Container>
@@ -82,7 +91,7 @@ export const ErrorMessage = ({
   return (
     <Container message={message}>
       <ErrorBox className={className}>
-        <Error text={text} />
+        <Error text={text} message={message} />
       </ErrorBox>
     </Container>
   );
@@ -130,12 +139,30 @@ const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplay
   );
 };
 
-export const UnfinishedMessage = ({ message }: { message: TMessage }) => (
-  <ErrorMessage
-    message={message}
-    text="The response is incomplete; it's either still processing, was cancelled, or censored. Refresh or try a different prompt."
-  />
-);
+export const UnfinishedMessage = ({ message }: { message: TMessage }) => {
+  const localize = useLocalize();
+
+  /** Ran out of steps, not broken: a distinct, actionable card rather than the
+   *  generic "something went wrong, try again" warning. */
+  if (message.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON) {
+    return (
+      <Container message={message}>
+        <ToolCallLimitNotice message={message} />
+      </Container>
+    );
+  }
+
+  /**
+   * Copy this app authored, not a persisted failure: it goes straight into the error box. Routing
+   * it through `Error` would have the unclassified-text path treat the sentence as provider prose
+   * and headline it with "<provider> could not complete this request".
+   */
+  return (
+    <Container message={message}>
+      <ErrorBox>{localize('com_ui_response_incomplete')}</ErrorBox>
+    </Container>
+  );
+};
 
 const MessageContent = ({
   text,

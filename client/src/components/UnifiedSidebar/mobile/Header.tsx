@@ -1,6 +1,7 @@
 import { memo, lazy, Suspense, useEffect, useRef } from 'react';
 import { Button, Sidebar, Skeleton } from '@librechat/client';
 import type { NavLink } from '~/common';
+import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { useLocalize } from '~/hooks';
@@ -74,6 +75,7 @@ function Header({
         onNavigate={onClose}
         routeActiveId={routeActiveId}
       />
+      <AgentMarketplaceButton side="bottom" onNavigate={onClose} />
       <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
         <AccountSettings collapsed />
       </Suspense>

@@ -10,6 +10,7 @@ const SERIES_FILL = [
   'bg-series-5',
   'bg-series-6',
   'bg-series-7',
+  'bg-series-8',
 ] as const;
 
 const SERIES_TINT = [
@@ -20,6 +21,7 @@ const SERIES_TINT = [
   'bg-series-5/25',
   'bg-series-6/25',
   'bg-series-7/25',
+  'bg-series-8/25',
 ] as const;
 
 const SERIES_EDGE = [
@@ -30,6 +32,7 @@ const SERIES_EDGE = [
   'ring-series-5',
   'ring-series-6',
   'ring-series-7',
+  'ring-series-8',
 ] as const;
 
 export const SERIES_SLOT_COUNT: number = SERIES_FILL.length;

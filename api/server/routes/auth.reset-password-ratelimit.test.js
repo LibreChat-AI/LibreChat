@@ -52,6 +52,7 @@ jest.mock('~/server/middleware', () => {
   const pass = (req, res, next) => next();
   return {
     logHeaders: pass,
+    requireSameOrigin: pass,
     loginLimiter: pass,
     setTwoFactorTempUser: pass,
     twoFactorTempLimiter: pass,

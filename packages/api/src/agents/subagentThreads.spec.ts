@@ -351,6 +351,40 @@ describe('SubagentThreadTaskStore', () => {
     });
   });
 
+  it('inherits the parent retention deadline across the child transcript lifecycle', async () => {
+    const userId = 'retained-subagent-user';
+    const parentConversationId = randomUUID();
+    const expiredAt = new Date('2030-01-01T00:00:00.000Z');
+    await methods.saveConvo(
+      { userId, isTemporary: true, expiredAt },
+      {
+        conversationId: parentConversationId,
+        endpoint: EModelEndpoint.agents,
+        title: 'Retained parent thread',
+        agent_id: 'parent-agent',
+      },
+    );
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+
+    const started = store.start(taskRequest(config.scopeId));
+    await waitForSettled(store, config.scopeId, started);
+    const threadId = requireThreadId(started);
+    const [conversation, messages] = await Promise.all([
+      methods.getConvo(userId, threadId),
+      methods.getMessages({ user: userId, conversationId: threadId }),
+    ]);
+
+    expect(conversation).toMatchObject({ isTemporary: true, expiredAt });
+    expect(messages).toHaveLength(2);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt }),
+        expect.objectContaining({ isTemporary: true, expiredAt }),
+      ]),
+    );
+  });
+
   it('registers a host-safe wakeup before child provider work begins', async () => {
     const userId = 'wakeup-user';
     const parentConversationId = randomUUID();
@@ -396,6 +430,73 @@ describe('SubagentThreadTaskStore', () => {
       createdAt: expect.any(Number),
     });
   });
+
+  it('announces a settled child only after its terminal message is durable', async () => {
+    const userId = 'settled-child-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const saveMessage = jest.spyOn(methods, 'saveMessage');
+    const terminalSavedAtSettle: boolean[] = [];
+    const store = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: jest.fn(),
+      onTaskSettled: (settledUserId, settledConversationId, taskIds) => {
+        expect(taskIds).toHaveLength(1);
+        expect(
+          saveMessage.mock.calls.some(
+            ([, message]) =>
+              (message as { messageId?: string }).messageId === `${taskIds[0]}:assistant`,
+          ),
+        ).toBe(true);
+        expect(settledUserId).toBe(userId);
+        expect(settledConversationId).toBe(parentConversationId);
+        terminalSavedAtSettle.push(
+          saveMessage.mock.calls.some(([, message]) =>
+            String((message as { messageId?: string }).messageId).endsWith(':assistant'),
+          ),
+        );
+      },
+    });
+    const config = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
+    const started = config.store.start(
+      taskRequest(config.scopeId, {
+        parentRunId: 'parent-response-1',
+        parentAgentId: 'agent_parent_1',
+      }),
+    );
+    await waitForSettled(store, config.scopeId, started);
+    saveMessage.mockRestore();
+
+    expect(terminalSavedAtSettle).toEqual([true]);
+  });
+
+  it.each([false, true])(
+    'does not announce a child without an admitted delivery (wakeups enabled: %s)',
+    async (completionWakeups) => {
+      const userId = 'poll-only-settled-user';
+      const parentConversationId = randomUUID();
+      await saveParent(userId, parentConversationId);
+      const onTaskSettled = jest.fn();
+      const store = new SubagentThreadTaskStore(methods, {
+        onTaskPrepared: jest.fn(() => false),
+        onTaskSettled,
+      });
+      const config = buildSubagentThreadTaskConfig(
+        store,
+        { userId, parentConversationId },
+        { completionWakeups },
+      );
+      const started = config.store.start(
+        taskRequest(config.scopeId, { parentRunId: 'parent-response-1' }),
+      );
+      await waitForSettled(store, config.scopeId, started);
+
+      expect(onTaskSettled).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps subagent completion delivery poll-only when wakeups are disabled', async () => {
     const userId = 'poll-only-user';
@@ -917,7 +1018,11 @@ describe('SubagentThreadTaskStore', () => {
       async (_registration: SubagentTaskWakeupRegistration) => undefined,
     );
     const firstWorker = new SubagentThreadTaskStore(methods, { onTaskPrepared: firstWakeup });
-    const secondWorker = new SubagentThreadTaskStore(methods, { onTaskPrepared: replayWakeup });
+    const onReplaySettled = jest.fn();
+    const secondWorker = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: replayWakeup,
+      onTaskSettled: onReplaySettled,
+    });
     const config = buildSubagentThreadTaskConfig(
       firstWorker,
       { userId, parentConversationId },
@@ -965,6 +1070,10 @@ describe('SubagentThreadTaskStore', () => {
 
     expect(firstRun).toHaveBeenCalledTimes(1);
     expect(replayRun).not.toHaveBeenCalled();
+    expect(onReplaySettled).toHaveBeenCalledTimes(1);
+    expect(onReplaySettled).toHaveBeenCalledWith(userId, parentConversationId, [
+      requireAccepted(first).task.taskId,
+    ]);
     expect(firstWakeup).toHaveBeenCalledTimes(1);
     const firstRegistration = firstWakeup.mock.calls[0]?.[0];
     const replayRegistration = replayWakeup.mock.calls[0]?.[0];
@@ -1022,8 +1131,16 @@ describe('SubagentThreadTaskStore', () => {
     const parentConversationId = randomUUID();
     const threadId = randomUUID();
     await saveParent(userId, parentConversationId);
-    const store = new SubagentThreadTaskStore(methods);
-    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const onTaskSettled = jest.fn();
+    const store = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: jest.fn(),
+      onTaskSettled,
+    });
+    const config = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
     await methods.saveConvo(
       { userId },
       {
@@ -1061,7 +1178,7 @@ describe('SubagentThreadTaskStore', () => {
       },
     );
     const run = jest.fn(taskRequest(config.scopeId).run);
-    const retry = store.start(
+    const retry = config.store.start(
       taskRequest(config.scopeId, {
         threadId,
         idempotencyKey: 'abandoned-attempt',
@@ -1072,6 +1189,11 @@ describe('SubagentThreadTaskStore', () => {
     await waitForSettled(store, config.scopeId, retry);
 
     expect(run).not.toHaveBeenCalled();
+    expect(onTaskSettled).toHaveBeenCalledTimes(1);
+    expect(onTaskSettled).toHaveBeenCalledWith(userId, parentConversationId, [
+      requireAccepted(retry).task.taskId,
+      'abandoned',
+    ]);
     expect(store.claim(config.scopeId, requireAccepted(retry).task.taskId)).toMatchObject({
       status: 'error',
       error:
@@ -1082,6 +1204,32 @@ describe('SubagentThreadTaskStore', () => {
       '+subagentTask',
     );
     expect(messages.map((message) => message.subagentTask?.status)).toEqual(['running', 'error']);
+
+    const replaySettled = jest.fn();
+    const replayWorker = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: jest.fn(),
+      onTaskSettled: replaySettled,
+    });
+    const replayConfig = buildSubagentThreadTaskConfig(
+      replayWorker,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
+    const replay = replayConfig.store.start(
+      taskRequest(replayConfig.scopeId, {
+        threadId,
+        idempotencyKey: 'abandoned-attempt',
+        requestFingerprint: 'same-inputs',
+        run,
+      }),
+    );
+    await waitForSettled(replayWorker, replayConfig.scopeId, replay);
+    expect(replaySettled).toHaveBeenCalledTimes(1);
+    expect(replaySettled).toHaveBeenCalledWith(userId, parentConversationId, [
+      requireAccepted(retry).task.taskId,
+      'abandoned',
+    ]);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('holds one active lease per child and exposes provisional ownership safely', async () => {
@@ -1224,7 +1372,12 @@ describe('SubagentThreadTaskStore', () => {
         return methods.getMessages(...args);
       }),
     };
-    const options = { leaseTtlMs: 500, leaseHeartbeatMs: 50 };
+    /** The heartbeat fences itself when a renewal commits after the deadline it was
+     * issued against, so the TTL is this test's tolerance for runner jitter, not just
+     * its pace. Keep it well above the scheduling stalls a loaded shard produces: a
+     * half-second lease turns an ordinary pause into a lapse and the prepared run is
+     * refused instead of executed. */
+    const options = { leaseTtlMs: 2_000, leaseHeartbeatMs: 50 };
     const firstWorker = new SubagentThreadTaskStore(slowMethods, options);
     const secondWorker = new SubagentThreadTaskStore(methods, options);
     const config = buildSubagentThreadTaskConfig(firstWorker, { userId, parentConversationId });
@@ -1250,8 +1403,9 @@ describe('SubagentThreadTaskStore', () => {
     const heartbeatIndex =
       heartbeatCall == null ? -1 : intervalSpy.mock.calls.indexOf(heartbeatCall);
     const heartbeat = intervalSpy.mock.results[heartbeatIndex]?.value as NodeJS.Timeout | undefined;
-    const warningIndex = timeoutSpy.mock.calls.length - 1;
-    expect(timeoutSpy.mock.calls[warningIndex]?.[1]).toBe(5_000);
+    const warningCall = [...timeoutSpy.mock.calls].reverse().find(([, delay]) => delay === 5_000);
+    const warningIndex = warningCall == null ? -1 : timeoutSpy.mock.calls.lastIndexOf(warningCall);
+    expect(warningCall?.[1]).toBe(5_000);
     const warning = timeoutSpy.mock.results[warningIndex]?.value as NodeJS.Timeout | undefined;
     expect(heartbeat?.hasRef()).toBe(true);
     expect(warning?.hasRef()).toBe(true);
@@ -1373,9 +1527,12 @@ describe('SubagentThreadTaskStore', () => {
     let ownerActive = true;
     const options = {
       isOwnerActive: async () => ownerActive,
-      leaseTtlMs: 60,
+      // Exercise owner cancellation, not lease expiry. Keep the lease beyond the
+      // drain deadline so slow CI database operations cannot bypass child startup
+      // or make the drain succeed without the worker releasing its lease.
+      leaseTtlMs: 30_000,
       leaseHeartbeatMs: 10,
-      ownerDrainTimeoutMs: 1_000,
+      ownerDrainTimeoutMs: 5_000,
       ownerDrainPollMs: 5,
     };
     const workerStore = new SubagentThreadTaskStore(methods, options);
@@ -4238,12 +4395,16 @@ describe('SubagentThreadTaskStore', () => {
     );
     const taskId = requireAccepted(started).task.taskId;
     const threadId = requireThreadId(started);
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      if ((await methods.getConvo(userId, threadId)) != null) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
+    await waitUntil(
+      async () =>
+        (
+          await methods.getMessages(
+            { user: userId, conversationId: threadId, messageId: `${taskId}:user` },
+            '+subagentTask',
+          )
+        ).length === 1,
+      'the durable task input',
+    );
     expect(await methods.getConvo(userId, threadId)).not.toBeNull();
 
     const accepted = await ownerStore.controlTask(

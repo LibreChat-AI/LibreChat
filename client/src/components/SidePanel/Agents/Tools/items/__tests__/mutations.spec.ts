@@ -1,7 +1,7 @@
 import { AgentCapabilities, ArtifactModes } from 'librechat-data-provider';
 import type { AgentItem } from '../types';
 import { makePlugin, makeSkill, makeMcpServer, makeAction } from 'test/itemFactories';
-import { computeToggleAction, skillsEnabledTransition } from '../mutations';
+import { computeToggleAction } from '../mutations';
 
 const builtinCode: AgentItem = {
   kind: 'builtin',
@@ -128,28 +128,6 @@ describe('computeToggleAction', () => {
       type: 'action-remove',
       actionId: 'a1',
     });
-  });
-});
-
-describe('skillsEnabledTransition', () => {
-  test('a non-empty selection turns the master flag on when it is off', () => {
-    expect(skillsEnabledTransition(['s1'], undefined)).toBe(true);
-    expect(skillsEnabledTransition(['s1'], false)).toBe(true);
-    expect(skillsEnabledTransition(['s1', 's2'], false)).toBe(true);
-  });
-
-  test('a non-empty selection leaves an already-on flag alone', () => {
-    expect(skillsEnabledTransition(['s1'], true)).toBeUndefined();
-    expect(skillsEnabledTransition(['s1', 's2'], true)).toBeUndefined();
-  });
-
-  test('clearing the selection turns the master flag off', () => {
-    expect(skillsEnabledTransition([], true)).toBe(false);
-  });
-
-  test('an empty selection leaves an off flag alone', () => {
-    expect(skillsEnabledTransition([], false)).toBeUndefined();
-    expect(skillsEnabledTransition([], undefined)).toBeUndefined();
   });
 });
 

@@ -110,6 +110,7 @@ export type NavLink = {
   Component?: React.ComponentType;
   onClick?: (e?: React.MouseEvent) => void;
   variant?: 'default' | 'ghost';
+  disabled?: boolean;
   id: string;
 };
 
@@ -333,6 +334,13 @@ export type TOptions = {
   isRegenerate?: boolean;
   isContinued?: boolean;
   isEdited?: boolean;
+  /**
+   * Manual context compaction: a summarize-only turn hung off the branch's
+   * leaf (`messageId`). Shaped like a regenerate on the client — no new user
+   * bubble, the response placeholder parents onto the leaf — and sent with
+   * `compact: true` so the server runs the graph summarize-only.
+   */
+  compact?: boolean;
   overrideMessages?: t.TMessage[];
   /**
    * Authoritative attachment list for this submission: a rerun replays the edited
@@ -483,7 +491,7 @@ export type ToolDialogProps = {
 };
 
 export type TResError = {
-  response: { data: { message: string } };
+  response: { data: { message: string; code?: string } };
   message: string;
 };
 
@@ -588,6 +596,7 @@ export interface ExtendedFile {
   source?: FileSources;
   attached?: boolean;
   embedded?: boolean;
+  llmDeliveryPath?: t.TFile['llmDeliveryPath'];
   tool_resource?: string;
   metadata?: t.TFile['metadata'];
 }
@@ -668,8 +677,13 @@ export type TThread = { id: string; createdAt: string };
 declare global {
   interface Window {
     google_tag_manager?: unknown;
+    /** Answers the server emits with the document, ahead of the app's own
+     *  scripts, for questions the first render must not guess at. */
     __LIBRECHAT_CONFIG__?: {
       enableQueryDevtools?: boolean;
+      /** Whether this deployment configured footer content of its own, so the
+       *  composer reserves the footer bar's band on its first frame. */
+      hasConfiguredFooter?: boolean;
     };
   }
 }

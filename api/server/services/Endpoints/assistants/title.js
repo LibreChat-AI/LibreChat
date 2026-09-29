@@ -70,7 +70,8 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
 
     const reqCtx = {
       userId: req?.user?.id,
-      isTemporary: req?.body?.isTemporary,
+      isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+      expiredAt: req?.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     };
     await saveConvo(
@@ -103,7 +104,8 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
     await saveConvo(
       {
         userId: req?.user?.id,
-        isTemporary: req?.body?.isTemporary,
+        isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+        expiredAt: req?.resolvedConversation?.expiredAt,
         interfaceConfig: req?.config?.interfaceConfig,
       },
       {

@@ -63,7 +63,10 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
           <div className="fixed inset-0 flex w-screen items-center justify-center p-4">
             <DialogPanel
               className={cn(
-                'flex max-h-[85vh] w-full flex-col overflow-hidden rounded-2xl bg-surface-dialog shadow-2xl',
+                /** Headless UI panel, so it bypasses the shared dialog primitives
+                 *  and needs the contrast edge declared here. `shadow-2xl` is a
+                 *  black shadow with nothing to separate against on a black canvas. */
+                'flex max-h-[85vh] w-full flex-col overflow-hidden rounded-2xl bg-surface-dialog shadow-2xl high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none',
                 'md:h-[85vh] md:w-[900px]',
               )}
             >

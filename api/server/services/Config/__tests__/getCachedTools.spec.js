@@ -431,10 +431,25 @@ describe('MCP tool cache', () => {
     );
   });
 
+  it('reports the rotated generation so its caller can tell its own fence from a foreign one', async () => {
+    mockCache.set.mockResolvedValue(true);
+    mockCache.delete.mockResolvedValue(true);
+
+    const published = await invalidateCachedTools({ userId: 'user1', serverName: 'github' });
+
+    expect(published).toEqual(expect.any(String));
+    expect(mockCache.set).toHaveBeenNthCalledWith(
+      2,
+      ToolCacheKeys.MCP_SERVER_GENERATION('user1', 'github'),
+      published,
+      expect.any(Number),
+    );
+  });
+
   it('invalidates only the static global key for broad config changes', async () => {
     mockCache.delete.mockResolvedValue(true);
 
-    await invalidateCachedTools({ invalidateGlobal: true });
+    await expect(invalidateCachedTools({ invalidateGlobal: true })).resolves.toBeUndefined();
 
     expect(mockCache.delete).toHaveBeenCalledTimes(1);
     expect(mockCache.delete).toHaveBeenCalledWith(ToolCacheKeys.GLOBAL);

@@ -1,4 +1,4 @@
-const { CLIENT_MESSAGE_SELECT } = require('@librechat/data-schemas');
+const { CLIENT_MESSAGE_SELECT, MEILI_SEARCH_LIMIT } = require('@librechat/data-schemas');
 const express = require('express');
 const request = require('supertest');
 
@@ -51,6 +51,9 @@ jest.mock('@librechat/api', () => {
   };
 
   return {
+    /** The real helper, without loading the rest of the package this suite mocks around. */
+    withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
+      .withoutTraceRefs,
     createContentFilter: jest.fn(() => (req, res, next) => next()),
     inspectContent,
     extractChatContent,
@@ -135,6 +138,7 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 jest.mock('~/models', () => ({
+  getConvo: jest.fn(),
   saveConvo: jest.fn(),
   getMessage: jest.fn(),
   saveMessage: jest.fn(),
@@ -212,6 +216,8 @@ describe('message route conversation ownership filters', () => {
     getMessage,
     getMessages,
     getMessagesByCursor,
+    getConvosQueried,
+    searchMessages,
     saveConvo,
     saveMessage,
     updateMessage,
@@ -316,6 +322,102 @@ describe('message route conversation ownership filters', () => {
     ]);
   });
 
+  it('inherits the source message retention when branching', async () => {
+    const expiredAt = new Date('2030-01-01T00:00:00.000Z');
+    getMessage.mockResolvedValue({
+      messageId: 'source-message',
+      conversationId: 'convo-1',
+      parentMessageId: 'parent-1',
+      isCreatedByUser: false,
+      isTemporary: true,
+      expiredAt,
+      content: [{ type: 'text', text: 'Assistant content', agentId: 'agent-1' }],
+    });
+    saveMessage.mockImplementation(async (_ctx, message) => message);
+
+    const response = await request(app).post('/api/messages/branch').send({
+      messageId: 'source-message',
+      agentId: 'agent-1',
+    });
+
+    expect(response.status).toBe(201);
+    expect(saveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ isTemporary: true, expiredAt }),
+      expect.any(Object),
+      { context: 'POST /api/messages/branch' },
+    );
+  });
+
+  it('uses the guard-loaded retention for both writes when a message spoofs the chat type', async () => {
+    const expiredAt = new Date('2030-01-01T00:00:00.000Z');
+    const db = require('~/models');
+    db.getConvo.mockResolvedValue({ conversationId: 'convo-1', isTemporary: true, expiredAt });
+    require('@librechat/api').isSubagentThreadWriteBlocked.mockImplementationOnce(
+      async ({ getConvo }, { userId, conversationId }) => {
+        await getConvo(userId, conversationId);
+        return false;
+      },
+    );
+    saveMessage.mockImplementation(async (_ctx, message) => message);
+
+    const response = await request(app).post('/api/messages/convo-1').send({
+      messageId: 'message-1',
+      text: 'hello',
+      isTemporary: false,
+    });
+
+    expect(response.status).toBe(201);
+    for (const save of [saveMessage, saveConvo]) {
+      expect(save).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isTemporary: true, expiredAt }),
+        expect.any(Object),
+        expect.any(Object),
+      );
+    }
+    expect(db.getConvo).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      name: 'carries server-private context meta onto the branch',
+      contextMeta: {
+        calibrationRatio: 1.25,
+        encoding: 'claude',
+        fading: { v: 1, budgetTokens: 50_000, masked: true },
+      },
+    },
+    { name: 'leaves context meta absent when the source has none', contextMeta: undefined },
+  ])('$name', async ({ contextMeta }) => {
+    getMessage.mockResolvedValue({
+      messageId: 'source-message',
+      conversationId: 'convo-1',
+      parentMessageId: 'parent-1',
+      isCreatedByUser: false,
+      ...(contextMeta == null ? {} : { contextMeta }),
+      content: [
+        { type: 'text', text: 'Different agent content', agentId: 'agent-2' },
+        { type: 'text', text: 'Assistant content', agentId: 'agent-1' },
+      ],
+    });
+    saveMessage.mockImplementation(async (_ctx, message) => message);
+
+    const response = await request(app).post('/api/messages/branch').send({
+      messageId: 'source-message',
+      agentId: 'agent-1',
+    });
+
+    expect(response.status).toBe(201);
+    const savedMessage = saveMessage.mock.calls[0][1];
+    if (contextMeta == null) {
+      expect(savedMessage).not.toHaveProperty('contextMeta');
+    } else {
+      expect(savedMessage.contextMeta).toEqual(contextMeta);
+    }
+    /** Server-private state stays in the database; normal reads strip it, so must this response. */
+    expect(response.body).not.toHaveProperty('contextMeta');
+    expect(response.body.messageId).toBe(savedMessage.messageId);
+  });
+
   it('does not hydrate branch files for an inert file policy', async () => {
     getMessage.mockResolvedValue({
       messageId: 'source-message',
@@ -399,6 +501,12 @@ describe('message route conversation ownership filters', () => {
       isTemporary: false,
       files: [{ file_id: 'file-1' }],
       user: authenticatedUserId,
+      /** An existing server-authored row keeps its stored state through the update. */
+      contextMeta: {
+        calibrationRatio: 1.2,
+        encoding: 'claude',
+        fading: { v: 1, budgetTokens: 50_000, masked: true },
+      },
     };
 
     saveMessage.mockResolvedValue(savedMessage);
@@ -418,6 +526,14 @@ describe('message route conversation ownership filters', () => {
         userSubmittedMessageFieldPaths: [
           { path: '/forged/model/output', field: 'decision_reason' },
         ],
+        contextMeta: {
+          calibrationRatio: 1,
+          encoding: 'claude',
+          fading: { v: 1, budgetTokens: 1, masked: true },
+        },
+        langfuseSampled: true,
+        langfuseDestinationIds: ['forged-destination'],
+        langfuseRunId: 'someone-elses-run',
       });
 
     expect(response.status).toBe(201);
@@ -435,6 +551,12 @@ describe('message route conversation ownership filters', () => {
     expect(saveMessage.mock.calls[0][1].conversationId).not.toBe(bodyConversationId);
     expect(saveMessage.mock.calls[0][1]).not.toHaveProperty('userSubmittedPaths');
     expect(saveMessage.mock.calls[0][1]).not.toHaveProperty('userSubmittedMessageFieldPaths');
+    expect(saveMessage.mock.calls[0][1]).not.toHaveProperty('contextMeta');
+    expect(saveMessage.mock.calls[0][1].langfuseSampled).toBe(false);
+    expect(saveMessage.mock.calls[0][1]).not.toHaveProperty('langfuseDestinationIds');
+    expect(saveMessage.mock.calls[0][1]).not.toHaveProperty('langfuseRunId');
+    expect(response.body.messageId).toBe(savedMessage.messageId);
+    expect(response.body).not.toHaveProperty('contextMeta');
     expect(saveConvo).toHaveBeenCalledWith(
       expect.objectContaining({ userId: authenticatedUserId }),
       {
@@ -460,6 +582,85 @@ describe('message route conversation ownership filters', () => {
       { conversationId: 'convo-1', user: authenticatedUserId },
       CLIENT_MESSAGE_SELECT,
     );
+  });
+
+  it.each([
+    {
+      name: 'default',
+      query: 'search=needle',
+      searchLimit: 25,
+      conversationLimit: 25,
+    },
+    {
+      name: 'custom',
+      query: 'search=needle&pageSize=40',
+      searchLimit: 40,
+      conversationLimit: 40,
+    },
+    {
+      name: 'capped',
+      query: `search=needle&pageSize=${MEILI_SEARCH_LIMIT + 1}`,
+      searchLimit: MEILI_SEARCH_LIMIT,
+      conversationLimit: MEILI_SEARCH_LIMIT + 1,
+    },
+    {
+      name: 'invalid',
+      query: 'search=needle&pageSize=-1',
+      searchLimit: 25,
+      conversationLimit: 25,
+    },
+  ])(
+    'uses the $name page size for message search limits',
+    async ({ query, searchLimit, conversationLimit }) => {
+      searchMessages.mockResolvedValue({ hits: [] });
+      getConvosQueried.mockResolvedValue({ convoMap: {} });
+      getMessages.mockResolvedValue([]);
+
+      const response = await request(app).get(`/api/messages?${query}`);
+
+      expect(response.status).toBe(200);
+      expect(searchMessages).toHaveBeenCalledWith(
+        'needle',
+        { filter: `user = "${authenticatedUserId}"`, limit: searchLimit },
+        true,
+      );
+      expect(getConvosQueried).toHaveBeenCalledWith(
+        authenticatedUserId,
+        [],
+        null,
+        conversationLimit,
+      );
+    },
+  );
+
+  it('strips server-private context meta from hydrated search hits', async () => {
+    searchMessages.mockResolvedValue({
+      hits: [
+        {
+          messageId: 'hit-1',
+          conversationId: 'convo-1',
+          text: 'needle in a haystack',
+          contextMeta: {
+            calibrationRatio: 1.2,
+            encoding: 'claude',
+            fading: { v: 1, budgetTokens: 50_000, masked: true },
+          },
+        },
+      ],
+    });
+    getConvosQueried.mockResolvedValue({
+      convoMap: { 'convo-1': { title: 'Found', model: 'gpt-4' } },
+    });
+    getMessages.mockResolvedValue([
+      { messageId: 'hit-1', isCreatedByUser: false, endpoint: 'agents', iconURL: null },
+    ]);
+
+    const response = await request(app).get('/api/messages?search=needle');
+
+    expect(response.status).toBe(200);
+    expect(response.body.messages).toHaveLength(1);
+    expect(response.body.messages[0]).toMatchObject({ messageId: 'hit-1', title: 'Found' });
+    expect(response.body.messages[0]).not.toHaveProperty('contextMeta');
   });
 
   it('returns indistinguishable not-found responses for child and missing query reads', async () => {
@@ -564,6 +765,27 @@ describe('message route conversation ownership filters', () => {
     expect(canReadActiveJobConversation).toHaveBeenCalledWith(
       expect.objectContaining({ user: { id: authenticatedUserId } }),
       'active-convo',
+    );
+    /** The paginated read projects like every other client read, so persisted
+     *  `contextMeta` never reaches the client through this endpoint. */
+    expect(getMessagesByCursor).toHaveBeenCalledWith(
+      { conversationId: 'active-convo', user: authenticatedUserId },
+      expect.objectContaining({ select: CLIENT_MESSAGE_SELECT }),
+    );
+  });
+
+  it('projects a single-message query read like every other client read', async () => {
+    getConvoOwnership.mockResolvedValue({ conversationId: 'convo-1' });
+    getMessages.mockResolvedValue([{ messageId: 'message-1', conversationId: 'convo-1' }]);
+
+    const response = await request(app).get(
+      '/api/messages?conversationId=convo-1&messageId=message-1',
+    );
+
+    expect(response.status).toBe(200);
+    expect(getMessages).toHaveBeenCalledWith(
+      { conversationId: 'convo-1', messageId: 'message-1', user: authenticatedUserId },
+      CLIENT_MESSAGE_SELECT,
     );
   });
 

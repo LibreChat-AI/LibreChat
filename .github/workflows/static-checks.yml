@@ -131,7 +131,11 @@ jobs:
           # Run ESLint
           # --no-warn-ignored: changed files under config-ignored paths
           # (e.g. packages/data-schemas/misc/**) must not fail --max-warnings=0
-          npx eslint --no-error-on-unmatched-pattern \
+          # Invoke the installed binary, not `npx`: npm exec joins the whole
+          # command into one shell string, and Linux rejects a single argv
+          # string over 128 KiB (MAX_ARG_STRLEN) — past ~2,200 changed files
+          # npx dies with exit 249 and no output.
+          node_modules/.bin/eslint --no-error-on-unmatched-pattern \
             --config eslint.config.mjs \
             --no-warn-ignored \
             --max-warnings=0 \
@@ -162,7 +166,7 @@ jobs:
           # `prettier --check` exits non-zero if any file would be reformatted.
           # Suggest the local fix in the failure message so contributors aren't
           # left guessing how to resolve.
-          if ! npx prettier --check --no-error-on-unmatched-pattern -- "${CHANGED_FILES[@]}"; then
+          if ! node_modules/.bin/prettier --check --no-error-on-unmatched-pattern -- "${CHANGED_FILES[@]}"; then
             echo ""
             echo "::error::Prettier formatting drift detected. Fix locally with:"
             echo "::error::  npx prettier --write <files>"
@@ -235,7 +239,7 @@ jobs:
         if: always() && steps.paths.outputs.eslint_config == 'true'
         continue-on-error: true
         run: |
-          npx eslint --config eslint.config.mjs \
+          node_modules/.bin/eslint --config eslint.config.mjs \
             api/server/index.js client/src/main.jsx packages/api/src/index.ts
 
       - name: Restore data-provider build cache
@@ -808,8 +812,16 @@ jobs:
         run: |
           run_sweep() {
             set +e
+            # Two rules are switched off for the sweep only: `prettier/prettier`
+            # reformats every file (formatting drift is caught per changed file
+            # by the Static checks job and is not a config regression), and
+            # `import/no-cycle` walks the whole import graph from every file
+            # while config/circular-deps.mjs already owns cycle detection.
+            # Together they were ~85% of a full-tree lint.
             timeout -k 15 "$ESLINT_SWEEP_BUDGET_SECONDS" \
-              npx eslint --config "$1" api client packages -f json -o "$2"
+              node_modules/.bin/eslint --config "$1" api client packages -f json -o "$2" \
+                --rule 'prettier/prettier: off' \
+                --rule 'import/no-cycle: off'
             local status=$?
             set -e
             # 124 = timeout sent TERM; 137 = it escalated to KILL.
@@ -837,6 +849,13 @@ jobs:
           # flat-config files/ignores patterns and plugin imports resolve
           # relative to the config's own directory, so a temp-dir copy would
           # scope to nothing and the comparison would pass vacuously.
+          # An unchanged config cannot regress: the head sweep above already
+          # proved this workflow still runs it, so a second identical sweep
+          # would only double the job's runtime.
+          if git diff --quiet "$BASE_SHA" HEAD -- eslint.config.mjs; then
+            echo "::notice title=ESLint sweep::eslint.config.mjs is unchanged from base; skipping the regression comparison."
+            exit 0
+          fi
           trap 'rm -f eslint.config.base.mjs' EXIT
           if ! git show "$BASE_SHA:eslint.config.mjs" > eslint.config.base.mjs 2>/dev/null; then
             echo "::notice title=ESLint sweep::No eslint.config.mjs at base ref; skipping regression comparison."

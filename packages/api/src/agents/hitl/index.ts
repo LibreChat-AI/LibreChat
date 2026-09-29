@@ -8,3 +8,5 @@ export * from './protection';
 export * from './hooks';
 export * from './hookLoader';
 export * from './askUserQuestionTool';
+export * from './answers';
+export * from './byom';

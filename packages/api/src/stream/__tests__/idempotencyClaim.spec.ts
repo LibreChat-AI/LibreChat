@@ -64,6 +64,20 @@ describe('InMemoryJobStore.claimIdempotencyKey', () => {
     await expect(store.hasIdempotencyKey('user:missing')).resolves.toBe(false);
   });
 
+  it('reads an idempotency receipt without creating a missing claim', async () => {
+    const receipt = {
+      streamId: 's1',
+      conversationId: 'c1',
+      claimToken: 'token-1',
+      claimedAt: 1,
+      startedAt: 2,
+    };
+    await expect(store.getIdempotencyClaim('user:missing')).resolves.toBeNull();
+    await store.claimIdempotencyKey('user:existing', receipt, 1200);
+    await expect(store.getIdempotencyClaim('user:existing')).resolves.toEqual(receipt);
+    await expect(store.hasIdempotencyKey('user:missing')).resolves.toBe(false);
+  });
+
   it('does not report an expired claim as existing', async () => {
     jest.useFakeTimers();
     try {
@@ -232,6 +246,27 @@ describe('GenerationJobManager start-generation claim', () => {
     await expect(manager.hasGenerationClaim('user-1', 'req-1')).resolves.toBe(true);
     await expect(manager.hasGenerationClaim('user-1', 'req-2')).resolves.toBe(false);
     await expect(manager.hasGenerationClaim('user-2', 'req-1')).resolves.toBe(false);
+  });
+
+  it('reads durable admission evidence after the live job is gone', async () => {
+    await store.claimIdempotencyKey(
+      '{stream-a}:user-1:req-1',
+      {
+        streamId: 'stream-a',
+        conversationId: 'convo-a',
+        claimToken: 'claim-token',
+        claimedAt: 1,
+        startedAt: 42,
+      },
+      1200,
+    );
+
+    await expect(
+      manager.getGenerationAdmissionEvidence('user-1', 'req-1', 'stream-a', 'convo-a'),
+    ).resolves.toEqual({ generationId: 'stream-a', generationCreatedAt: 42 });
+    await expect(
+      manager.getGenerationAdmissionEvidence('user-1', 'req-2', 'stream-a', 'convo-a'),
+    ).resolves.toBeNull();
   });
 
   it('claims the exact legacy key before the same-slot primary with staggered TTLs', async () => {
@@ -995,10 +1030,11 @@ describe('GenerationJobManager start-generation claim', () => {
       settleAppend = resolve;
     });
     jest.spyOn(store, 'appendChunk').mockImplementationOnce(() => delayedAppend);
-    await manager.emitChunk(streamId, {
+    const predecessorEmission = manager.emitChunk(streamId, {
       event: 'on_message_delta',
       data: { delta: 'in-flight predecessor output' },
     });
+    await Promise.resolve();
 
     const replacement = await manager.createJob(streamId, 'user-1', streamId, {
       initialMetadata: { generationProtocolVersion: 2 },
@@ -1007,6 +1043,7 @@ describe('GenerationJobManager start-generation claim', () => {
     expect(replacement.abortController.signal.aborted).toBe(false);
 
     settleAppend(false);
+    await expect(predecessorEmission).rejects.toThrow('Durable chunk append was fenced out');
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1033,48 +1070,86 @@ describe('GenerationJobManager start-generation claim', () => {
     expect(Object.getOwnPropertyDescriptor(durable!, 'replacedJobs')).toBeUndefined();
   });
 
-  it('terminalizes the exact committed epoch when legacy verification fails during recovery', async () => {
-    const streamId = 'stream-lost-create-legacy-failure';
-    const clientRequestId = 'req-lost-create-legacy-failure';
-    const claim = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
-    const actualCreate = store.createJob.bind(store);
-    jest.spyOn(store, 'createJob').mockImplementationOnce(async (...args) => {
-      await actualCreate(...args);
-      throw new Error('simulated lost atomic create reply');
-    });
-    const actualClaim = store.claimIdempotencyKey.bind(store);
-    let failLegacyProbe = true;
-    jest.spyOn(store, 'claimIdempotencyKey').mockImplementation((key, value, ttlSeconds) => {
-      if (failLegacyProbe && key === `{user-1:${clientRequestId}}`) {
-        failLegacyProbe = false;
-        return Promise.reject(new Error('simulated legacy probe outage'));
+  it.each([
+    { loseTerminalReply: false, replaced: false },
+    { loseTerminalReply: true, replaced: false },
+    { loseTerminalReply: true, replaced: true },
+  ])(
+    'announces only the exact recovered epoch (lost reply: $loseTerminalReply, replaced: $replaced)',
+    async ({ loseTerminalReply, replaced }) => {
+      const settled = jest.fn();
+      manager.onGenerationSettled(settled);
+      const transition = store.transitionStatus.bind(store);
+      jest.spyOn(store, 'transitionStatus').mockImplementation(async (id, input) => {
+        const committed = await transition(id, input);
+        if (loseTerminalReply && input.to === 'error' && committed) {
+          if (replaced) {
+            const previous = await store.getJob(id);
+            const replacement = await actualCreate(id, 'user-1', id);
+            await transition(id, {
+              from: 'running',
+              to: 'error',
+              expectCreatedAt: replacement.createdAt,
+              patch: { error: previous?.error, finalEvent: previous?.finalEvent },
+            });
+          }
+          throw new Error('lost terminal CAS reply');
+        }
+        return committed;
+      });
+      const streamId = 'stream-lost-create-legacy-failure';
+      const clientRequestId = 'req-lost-create-legacy-failure';
+      const claim = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      const actualCreate = store.createJob.bind(store);
+      jest.spyOn(store, 'createJob').mockImplementationOnce(async (...args) => {
+        await actualCreate(...args);
+        throw new Error('simulated lost atomic create reply');
+      });
+      const actualClaim = store.claimIdempotencyKey.bind(store);
+      let failLegacyProbe = true;
+      jest.spyOn(store, 'claimIdempotencyKey').mockImplementation((key, value, ttlSeconds) => {
+        if (failLegacyProbe && key === `{user-1:${clientRequestId}}`) {
+          failLegacyProbe = false;
+          return Promise.reject(new Error('simulated legacy probe outage'));
+        }
+        return actualClaim(key, value, ttlSeconds);
+      });
+
+      await expect(
+        manager.createJob(streamId, 'user-1', streamId, {
+          idempotencyClientRequestId: clientRequestId,
+          idempotencyClaimToken: claim.existing!.claimToken,
+          initialMetadata: { generationProtocolVersion: 2 },
+        }),
+      ).rejects.toThrow('simulated lost atomic create reply');
+
+      const durable = await store.getJob(streamId);
+      expect(durable).toMatchObject({
+        status: 'error',
+        error: 'Generation idempotency rollout fence could not be recovered',
+        finalEvent: expect.stringContaining('terminal_payload_missing'),
+      });
+      if (replaced) {
+        expect(settled).not.toHaveBeenCalled();
+        return;
       }
-      return actualClaim(key, value, ttlSeconds);
-    });
-
-    await expect(
-      manager.createJob(streamId, 'user-1', streamId, {
-        idempotencyClientRequestId: clientRequestId,
-        idempotencyClaimToken: claim.existing!.claimToken,
-        initialMetadata: { generationProtocolVersion: 2 },
-      }),
-    ).rejects.toThrow('simulated lost atomic create reply');
-
-    const durable = await store.getJob(streamId);
-    expect(durable).toMatchObject({
-      status: 'error',
-      error: 'Generation idempotency rollout fence could not be recovered',
-      finalEvent: expect.stringContaining('terminal_payload_missing'),
-    });
-    const retry = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
-    expect(retry).toMatchObject({
-      claimed: false,
-      existing: { startedAt: durable!.createdAt },
-    });
-    await expect(
-      manager.takeoverGeneration('user-1', clientRequestId, streamId, retry.existing!),
-    ).resolves.toMatchObject({ claimed: false });
-  });
+      expect(settled).toHaveBeenCalledTimes(1);
+      expect(settled).toHaveBeenCalledWith({
+        streamId,
+        conversationId: streamId,
+        userId: 'user-1',
+        status: 'error',
+      });
+      const retry = await manager.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      expect(retry).toMatchObject({
+        claimed: false,
+        existing: { startedAt: durable!.createdAt },
+      });
+      await expect(
+        manager.takeoverGeneration('user-1', clientRequestId, streamId, retry.existing!),
+      ).resolves.toMatchObject({ claimed: false });
+    },
+  );
 
   it('terminalizes and preserves the primary fence when the legacy started mark fails', async () => {
     const claim = await manager.claimGeneration(

@@ -1,6 +1,7 @@
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { ValidationError, MongoServerError, CustomError } from '~/types';
+import { MCPAuthenticationRefreshError, MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { ErrorController, createCustomError } from './error';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 
@@ -249,6 +250,39 @@ describe('ErrorController', () => {
 
       expect(mockRes.status).not.toHaveBeenCalledWith(500);
       expect(mockRes.send).not.toHaveBeenCalledWith('An unknown error occurred.');
+    });
+  });
+
+  describe('MCPAuthenticationRejectedError handling', () => {
+    it('projects rejection without triggering the app-auth 401 retry interceptor', () => {
+      const error = new MCPAuthenticationRejectedError('private-mcp', true);
+
+      ErrorController(error, mockReq, mockRes, mockNext);
+
+      expect(mockRes.status).toHaveBeenCalledWith(403);
+      expect(error.statusCode).toBe(403);
+      expect(mockRes.send).toHaveBeenCalledWith({
+        error: 'invalid_token',
+        code: 'MCP_AUTHENTICATION_REJECTED',
+        message: error.message,
+        retryable: true,
+        connectionRefreshed: true,
+      });
+    });
+  });
+
+  describe('MCPAuthenticationRefreshError handling', () => {
+    it('returns a retryable service-unavailable response', () => {
+      const error = new MCPAuthenticationRefreshError(new Error('identity provider unavailable'));
+
+      ErrorController(error, mockReq, mockRes, mockNext);
+
+      expect(mockRes.status).toHaveBeenCalledWith(503);
+      expect(mockRes.send).toHaveBeenCalledWith({
+        code: 'MCP_AUTHENTICATION_REFRESH_FAILED',
+        message: error.message,
+        retryable: true,
+      });
     });
   });
 

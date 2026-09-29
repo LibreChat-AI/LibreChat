@@ -1,5 +1,7 @@
-import { hasActivePiiPatterns, type FiltersConfig } from 'librechat-data-provider';
+import { isValidMemoryKey } from '@librechat/data-schemas';
+import { hasActivePiiPatterns } from 'librechat-data-provider';
 import type { MemoryMethods } from '@librechat/data-schemas';
+import type { FiltersConfig } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { MemoryContentInput } from '../protection/adapters/submissions';
 import type { ProjectedStoredMemory } from './protection';
@@ -90,7 +92,7 @@ export function createMemoryManagementHandlers(deps: MemoryManagementHandlersDep
         error: `Key exceeds maximum length of 1000 characters. Current length: ${key.length} characters.`,
       });
     }
-    if (key != null && !/^[a-z_]+$/.test(key)) {
+    if (key != null && !isValidMemoryKey(key)) {
       return res
         .status(400)
         .json({ error: 'Key must only contain lowercase letters and underscores.' });

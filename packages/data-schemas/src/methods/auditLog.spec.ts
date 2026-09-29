@@ -506,6 +506,32 @@ describe('auditLog methods', () => {
   });
 
   describe('append index safety', () => {
+    it('fails open within the index-build deadline while a peer holds the collection', async () => {
+      const prototype = mongoose.mongo.Collection.prototype;
+      const createIndex = prototype.createIndex;
+      const collectionName = AuditLog.collection.name;
+      prototype.createIndex = async function (this: mongoose.mongo.Collection, spec, options) {
+        if (this.collectionName !== collectionName) {
+          return createIndex.call(this, spec, options);
+        }
+        throw new mongoose.mongo.MongoServerError({
+          ok: 0,
+          code: 40333,
+          errmsg:
+            'Existing index build in progress on the same collection. Collection is limited to a single index build at a time.',
+        });
+      };
+      try {
+        const freshMethods = createAuditLogMethods(mongoose, {
+          indexBuild: { peerBuildPollMs: 1, peerBuildDeadlineMs: 20 },
+        });
+
+        await expect(freshMethods.recordAuditEntry(baseInput())).resolves.toBeNull();
+      } finally {
+        prototype.createIndex = createIndex;
+      }
+    });
+
     it('builds the unique seq index before appending (independent of autoIndex)', async () => {
       const spy = jest.spyOn(AuditLog, 'createIndexes');
       // a fresh methods instance has not yet memoized the index build

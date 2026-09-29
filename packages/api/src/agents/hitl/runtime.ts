@@ -1,17 +1,34 @@
-import { HookRegistry, createToolPolicyHook } from '@librechat/agents';
+import {
+  HookRegistry,
+  createToolPolicyHook,
+  TOOL_APPROVAL_EXECUTION_SCOPE_CONFIG_KEY,
+} from '@librechat/agents';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { ResolvedToolApprovalHook, ToolApprovalHookContext } from './hooks';
 import type { MCPToolAlias } from '~/tools/classification';
 import { isHITLEnabled, mapToolApprovalPolicy } from './policy';
 import { buildToolApprovalHooks } from './hooks';
 
+/** Stable across resumes; the job epoch separates edits that reuse a response id. */
+export function buildToolApprovalExecutionConfig(
+  responseMessageId: string,
+  jobCreatedAt?: number,
+): { [TOOL_APPROVAL_EXECUTION_SCOPE_CONFIG_KEY]: string } {
+  return {
+    [TOOL_APPROVAL_EXECUTION_SCOPE_CONFIG_KEY]: JSON.stringify([
+      responseMessageId,
+      jobCreatedAt ?? null,
+    ]),
+  };
+}
+
 /**
  * The HITL fragment spread onto a `RunConfig` when tool approval is enabled.
  *
- * Kept as one object so the run seam attaches the opt-in switch and the policy
- * hook together — they're meaningless apart. The checkpointer is resolved
- * separately (it's an async, process-wide singleton) and merged into
- * `graphConfig.compileOptions` at the call site.
+ * The policy hooks apply to every caller. Only callers that support pause/resume
+ * also attach the `humanInTheLoop` switch and the durable checkpointer.
+ * The checkpointer is resolved separately (it's an async, process-wide singleton)
+ * and merged into `graphConfig.compileOptions` at the call site.
  */
 export interface HITLRunWiring {
   humanInTheLoop: { enabled: true };
@@ -24,9 +41,9 @@ export interface HITLRunWiring {
 }
 
 /**
- * Assemble the run-level HITL wiring for a tool-approval policy, or `undefined`
- * when HITL is disabled (the default) — in which case the run attaches nothing
- * and behaves exactly as it did before this feature.
+ * Assemble tool-approval policy hooks and optional interactive HITL wiring, or
+ * `undefined` when the policy is disabled. Non-resumable callers attach only
+ * `hooks`; the SDK denies `ask` rather than pausing without a resume surface.
  *
  * The returned `hooks` registry carries the static-config `PreToolUse` policy hook built
  * from {@link mapToolApprovalPolicy} (an enabled policy with no allow/deny/ask lists falls

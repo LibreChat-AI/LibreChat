@@ -1,5 +1,26 @@
+let mockActiveTenantId;
+const mockRunAsSystem = jest.fn(async (fn) => {
+  const previousTenantId = mockActiveTenantId;
+  mockActiveTenantId = '__SYSTEM__';
+  try {
+    return await fn();
+  } finally {
+    mockActiveTenantId = previousTenantId;
+  }
+});
+const mockTenantStorageRun = jest.fn(async (context, fn) => {
+  const previousTenantId = mockActiveTenantId;
+  mockActiveTenantId = context.tenantId;
+  try {
+    return await fn();
+  } finally {
+    mockActiveTenantId = previousTenantId;
+  }
+});
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), debug: jest.fn(), warn: jest.fn(), info: jest.fn() },
+  runAsSystem: (fn) => mockRunAsSystem(fn),
+  tenantStorage: { run: (context, fn) => mockTenantStorageRun(context, fn) },
 }));
 jest.mock('~/server/services/GraphTokenService', () => ({
   getGraphApiToken: jest.fn(),
@@ -24,6 +45,7 @@ jest.mock('~/models', () => ({
   findSession: jest.fn(),
   updateUser: jest.fn(),
   findUser: jest.fn(),
+  deleteTokens: jest.fn(),
 }));
 jest.mock('~/server/services/RefreshTokenBridge', () => ({
   OPENID_REFRESH_BRIDGE_GRACE_MS: 60 * 1000,
@@ -98,7 +120,11 @@ const openIdClient = require('openid-client');
 const jwt = require('jsonwebtoken');
 const { logger } = require('@librechat/data-schemas');
 const { isEnabled, findOpenIDUser, buildOpenIDRefreshParams } = require('@librechat/api');
-const { graphTokenController, refreshController } = require('./AuthController');
+const {
+  graphTokenController,
+  refreshController,
+  registrationController,
+} = require('./AuthController');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const {
   clearOpenIDAuthTokens,
@@ -107,9 +133,10 @@ const {
   storeOpenIDSession,
   setCloudFrontAuthCookies,
   setAuthTokens,
+  registerUser,
 } = require('~/server/services/AuthService');
 const { getOpenIdConfig, getOpenIdEmail } = require('~/strategies');
-const { deleteSession, getUserById, findSession, updateUser } = require('~/models');
+const { deleteSession, getUserById, findSession, updateUser, deleteTokens } = require('~/models');
 const {
   createRefreshTokenBridgeFlightKey,
   deleteRefreshTokenBridges,
@@ -506,6 +533,7 @@ describe('refreshController – OpenID path', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockActiveTenantId = undefined;
     delete process.env.OPENID_SCOPE;
     delete process.env.OPENID_REFRESH_AUDIENCE;
     process.env.JWT_REFRESH_SECRET = 'test-refresh-secret';
@@ -828,6 +856,27 @@ describe('refreshController – OpenID path', () => {
     expect(res.status).toHaveBeenCalledWith(403);
   });
 
+  it('refreshes with the cookie token when the persisted session expired', async () => {
+    req.session.reload = jest.fn((callback) => callback(new Error('failed to load session')));
+
+    await refreshController(req, res);
+
+    expect(clearOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(setOpenIDAuthTokens).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).not.toHaveBeenCalledWith({ code: 'OPENID_SESSION_MISSING' });
+  });
+
+  it('does not classify a session store outage as a missing session', async () => {
+    req.session.reload = jest.fn((callback) => callback(new Error('connection unavailable')));
+
+    await refreshController(req, res);
+
+    expect(clearOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(setOpenIDAuthTokens).not.toHaveBeenCalled();
+  });
+
   it('uses a reloaded advanced session instead of publishing a stale flight result', async () => {
     req.session.reload = jest.fn((callback) => {
       req.session.openidTokens = {
@@ -900,6 +949,7 @@ describe('refreshController – OpenID path', () => {
       'user-db-id',
       '-password -__v -totpSecret -backupCodes -federatedTokens',
     );
+    expect(mockRunAsSystem).toHaveBeenCalledTimes(1);
     expect(setCloudFrontAuthCookies).toHaveBeenCalledWith(req, res, user);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith({
@@ -1049,10 +1099,15 @@ describe('refreshController – OpenID path', () => {
         openidIssuer: baseClaims.iss,
       },
     };
+    findOpenIDUser.mockImplementationOnce(async () => {
+      expect(mockActiveTenantId).toBe('tenant-1');
+      return { user: { ...defaultUser }, error: null, migration: false };
+    });
 
     await refreshController(req, res);
 
     expect(getUserById).toHaveBeenCalled();
+    expect(mockRunAsSystem).toHaveBeenCalledTimes(1);
     expect(setCloudFrontAuthCookies).not.toHaveBeenCalled();
     expectOpenIDRefreshGrant();
   });
@@ -1389,6 +1444,27 @@ describe('refreshController – OpenID path', () => {
     expect(res.redirect).toHaveBeenCalledWith('/login');
   });
 
+  it('rejects a refreshed identity that resolves to a different user', async () => {
+    findOpenIDUser.mockResolvedValue({
+      user: { ...defaultUser, _id: 'different-user-id' },
+      error: null,
+      migration: false,
+    });
+
+    await refreshController(req, res);
+
+    expect(setOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[refreshController] Refreshed identity resolved a different user; refusing token issuance',
+      {
+        refreshUserId: 'user-db-id',
+        resolvedUserId: 'different-user-id',
+      },
+    );
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.redirect).toHaveBeenCalledWith('/login');
+  });
+
   it('should preserve invalid OpenID refresh token behavior', async () => {
     openIdClient.refreshTokenGrant.mockRejectedValue(new Error('invalid_grant'));
 
@@ -1446,7 +1522,10 @@ describe('refreshController – OpenID path', () => {
       tenantId: 'tenant-1',
       openidIssuer: 'https://issuer.example.com',
     });
-    getRefreshTokenBridge.mockResolvedValue('bridged-refresh');
+    getRefreshTokenBridge.mockImplementationOnce(async () => {
+      expect(mockActiveTenantId).toBe('tenant-1');
+      return 'bridged-refresh';
+    });
     const nonRotatingTokenset = { ...mockTokenset };
     delete nonRotatingTokenset.refresh_token;
     openIdClient.refreshTokenGrant
@@ -2307,5 +2386,79 @@ describe('refreshController – LibreChat path', () => {
         email: 'local@example.com',
       },
     });
+  });
+});
+
+describe('registrationController - invite consumption', () => {
+  const invite = { token: 'hashed-invite', email: 'invitee@example.com' };
+
+  const buildRes = () => {
+    const res = {};
+    res.status = jest.fn(() => res);
+    res.send = jest.fn(() => res);
+    res.json = jest.fn(() => res);
+    return res;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('consumes the invite once the account exists', async () => {
+    registerUser.mockResolvedValue({ status: 200, message: 'ok', userCreated: true });
+
+    await registrationController({ body: {}, invite }, buildRes());
+
+    expect(deleteTokens).toHaveBeenCalledWith({ token: 'hashed-invite' });
+  });
+
+  it('leaves the invite when registration is rejected', () => {
+    /** A mistyped password confirmation is the common case; it has to stay retryable. */
+    registerUser.mockResolvedValue({ status: 404, message: 'The passwords did not match' });
+
+    return registrationController({ body: {}, invite }, buildRes()).then(() => {
+      expect(deleteTokens).not.toHaveBeenCalled();
+    });
+  });
+
+  it('leaves the invite when the email is already in use, despite the 200', async () => {
+    /** `registerUser` returns the same status and message whether it created an account
+     *  or found the email taken, so the status alone cannot drive this decision. */
+    registerUser.mockResolvedValue({ status: 200, message: 'ok' });
+
+    await registrationController({ body: {}, invite }, buildRes());
+
+    expect(deleteTokens).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt a deletion for an uninvited registration', async () => {
+    registerUser.mockResolvedValue({ status: 200, message: 'ok', userCreated: true });
+
+    await registrationController({ body: {} }, buildRes());
+
+    expect(deleteTokens).not.toHaveBeenCalled();
+  });
+
+  it('still reports success when consuming the invite fails', async () => {
+    /** The account exists by this point; reporting failure would be worse than
+     *  leaving a usable invite behind. */
+    registerUser.mockResolvedValue({ status: 200, message: 'ok', userCreated: true });
+    deleteTokens.mockRejectedValue(new Error('mongo unavailable'));
+    const res = buildRes();
+
+    await registrationController({ body: {}, invite }, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).toHaveBeenCalledWith({ message: 'ok' });
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('never forwards the creation signal to the client', async () => {
+    registerUser.mockResolvedValue({ status: 200, message: 'ok', userCreated: true });
+    const res = buildRes();
+
+    await registrationController({ body: {}, invite }, res);
+
+    expect(res.send).toHaveBeenCalledWith({ message: 'ok' });
   });
 });

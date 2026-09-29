@@ -11,12 +11,18 @@ export interface LangfuseSessionLinkParams {
   getMessages: MessageMethods['getMessages'];
 }
 
-export async function resolveLangfuseSessionUrl({
+export interface LangfuseSession {
+  url: string;
+  /** Identity of the project `url` opens (see `getLangfuseDestinationId`). */
+  destinationId: string;
+}
+
+export async function resolveLangfuseSession({
   config,
   conversationId,
   userId,
   getMessages,
-}: LangfuseSessionLinkParams): Promise<string | null> {
+}: LangfuseSessionLinkParams): Promise<LangfuseSession | null> {
   if (!isLangfuseConnectionAvailable()) {
     return null;
   }
@@ -45,5 +51,11 @@ export async function resolveLangfuseSessionUrl({
   const sessionUrl = new URL(destination.baseUrl);
   const basePath = sessionUrl.pathname.replace(/\/+$/, '');
   sessionUrl.pathname = `${basePath}/project/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(conversationId)}`;
-  return sessionUrl.toString();
+  return { url: sessionUrl.toString(), destinationId };
+}
+
+export async function resolveLangfuseSessionUrl(
+  params: LangfuseSessionLinkParams,
+): Promise<string | null> {
+  return (await resolveLangfuseSession(params))?.url ?? null;
 }

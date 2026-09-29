@@ -2,10 +2,16 @@ const axios = require('axios');
 const { ResourceType } = require('librechat-data-provider');
 
 jest.mock('axios');
-jest.mock('@librechat/api', () => ({
-  generateShortLivedToken: jest.fn(),
-  logAxiosError: jest.fn(),
-}));
+jest.mock('@librechat/api', () => {
+  const { selectFileCitationSources, executeFileSearchQuery } =
+    jest.requireActual('@librechat/api');
+  return {
+    generateShortLivedToken: jest.fn(),
+    logAxiosError: jest.fn(),
+    selectFileCitationSources,
+    executeFileSearchQuery,
+  };
+});
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -71,6 +77,25 @@ describe('fileSearch.js - tuple return validation', () => {
       expect(result[1]).toBeUndefined();
     });
 
+    it.each(['', '   ', '\n\t', undefined])(
+      'does not query any files when the search query is blank (%j)',
+      async (query) => {
+        const fileSearchTool = await createFileSearchTool({
+          userId: 'user1',
+          files: [
+            { file_id: 'file-1', filename: 'one.pdf' },
+            { file_id: 'file-2', filename: 'two.pdf' },
+          ],
+        });
+
+        const result = await fileSearchTool.func({ query });
+
+        expect(result).toEqual(['A non-empty query is required to search the files.', undefined]);
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(generateShortLivedToken).not.toHaveBeenCalled();
+      },
+    );
+
     it('should return tuple when JWT token generation fails', async () => {
       generateShortLivedToken.mockReturnValue(null);
 
@@ -106,6 +131,56 @@ describe('fileSearch.js - tuple return validation', () => {
   });
 
   describe('success cases should return tuple with artifact object', () => {
+    it.each([
+      [0, [1]],
+      [2, [3]],
+      [undefined, []],
+      [null, []],
+      [-1, []],
+      [1.5, []],
+      ['2', []],
+    ])('maps RAG page index %s to citation pages %j', async (page, pages) => {
+      generateShortLivedToken.mockReturnValue('mock-jwt-token');
+      axios.post.mockResolvedValue({
+        data: [
+          [{ page_content: 'Synthetic passage', metadata: { source: '/test.pdf', page } }, 0.2],
+        ],
+      });
+
+      const fileSearchTool = await createFileSearchTool({
+        userId: 'user1',
+        files: [{ file_id: 'file-123', filename: 'test.pdf' }],
+        fileCitations: true,
+      });
+      const [, artifact] = await fileSearchTool.func({ query: 'Synthetic page check' });
+      const source = artifact.file_search.sources[0];
+
+      expect(source.pages).toEqual(pages);
+      expect(source.pageRelevance).toEqual(pages.length ? { [pages[0]]: expect.any(Number) } : {});
+    });
+
+    it('forwards valid query text unchanged', async () => {
+      generateShortLivedToken.mockReturnValue('mock-jwt-token');
+      axios.post.mockResolvedValue({ data: [] });
+      const fileSearchTool = await createFileSearchTool({
+        userId: 'user1',
+        files: [{ file_id: 'file-1', filename: 'one.pdf' }],
+      });
+
+      await fileSearchTool.func({ query: '  find me  ' });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://localhost:8000/query',
+        { file_id: 'file-1', query: '  find me  ', k: 5 },
+        {
+          headers: {
+            Authorization: 'Bearer mock-jwt-token',
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+    });
+
     it('should return tuple with formatted results and sources artifact', async () => {
       generateShortLivedToken.mockReturnValue('mock-jwt-token');
 
@@ -114,14 +189,14 @@ describe('fileSearch.js - tuple return validation', () => {
           [
             {
               page_content: 'This is test content from the document',
-              metadata: { source: '/path/to/test.pdf', page: 1 },
+              metadata: { source: '/path/to/test.pdf', page: 0 },
             },
             0.2,
           ],
           [
             {
               page_content: 'Additional relevant content',
-              metadata: { source: '/path/to/test.pdf', page: 2 },
+              metadata: { source: '/path/to/test.pdf', page: 1 },
             },
             0.35,
           ],
@@ -201,6 +276,27 @@ describe('fileSearch.js - tuple return validation', () => {
       expect(formattedString).toContain('Anchor:');
       expect(formattedString).toContain('\\ue202turn0file0');
       expect(artifact.file_search.fileCitations).toBe(true);
+    });
+
+    it('keeps a successful file result when another file search fails', async () => {
+      generateShortLivedToken.mockReturnValue('mock-jwt-token');
+      axios.post.mockRejectedValueOnce(new Error('file unavailable')).mockResolvedValueOnce({
+        data: [[{ page_content: 'Found passage', metadata: { source: '/good.pdf' } }, 0.2]],
+      });
+      const fileSearchTool = await createFileSearchTool({
+        userId: 'user1',
+        files: [
+          { file_id: 'missing', filename: 'missing.pdf' },
+          { file_id: 'good', filename: 'good.pdf' },
+        ],
+      });
+
+      const [content, artifact] = await fileSearchTool.func({ query: 'lookup' });
+
+      expect(axios.post).toHaveBeenCalledTimes(2);
+      expect(content).toContain('Found passage');
+      expect(artifact.file_search.sources).toHaveLength(1);
+      expect(artifact.file_search.sources[0].fileId).toBe('good');
     });
 
     it('should handle multiple files correctly', async () => {

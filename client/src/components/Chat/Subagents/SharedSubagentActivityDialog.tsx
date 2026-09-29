@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useRecoilValue, useResetRecoilState } from 'recoil';
+import { useAtom } from 'jotai';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
 import { SubagentActivityScrollSurface } from './SubagentActivity';
 import SubagentConversation from './SubagentConversation';
-import { activeSubagentPanel } from '~/store/subagents';
 import { adaptLivePersistedActivity } from './adapters';
+import { activeSubagentPanel } from './state';
 import { useLocalize } from '~/hooks';
 
 /** Public-share fallback for subagent activity already embedded in the shared message payload. */
 export default function SharedSubagentActivityDialog({ shareId }: { shareId?: string }) {
   const localize = useLocalize();
-  const selected = useRecoilValue(activeSubagentPanel);
-  const resetSelection = useResetRecoilState(activeSubagentPanel);
+  const [selected, setSelected] = useAtom(activeSubagentPanel);
+  const resetSelection = useCallback(() => setSelected(null), [setSelected]);
   const selection = selected?.host === 'share' && selected.shareId === shareId ? selected : null;
   const restoreSelectionRef = useRef(selection);
   if (selection != null) restoreSelectionRef.current = selection;

@@ -8,10 +8,7 @@ type DeleteIconButtonProps = {
 export default function DeleteIconButton({ onClick }: DeleteIconButtonProps) {
   return (
     <div className="w-fit">
-      <Button
-        className="bg-surface-destructive p-3 hover:bg-surface-destructive-hover"
-        onClick={onClick}
-      >
+      <Button variant="destructive" className="p-3" onClick={onClick}>
         <TrashIcon />
       </Button>
     </div>

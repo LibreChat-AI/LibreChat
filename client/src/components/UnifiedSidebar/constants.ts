@@ -63,6 +63,26 @@ export const DRAWER_Z_INDEX = 110;
 export const MOBILE_DRAWER_ID = 'mobile-drawer';
 
 /**
+ * What a closed, settled drawer's `visibility` is.
+ *
+ * Translating the drawer off the viewport hides it without taking it out of the
+ * paint, and iOS Safari composites the scroller inside it separately — that
+ * layer can be left behind at the position it held while open, painting the
+ * Projects and Pinned rows over the conversation. Not painting a closed drawer
+ * removes the layer the artifact is made of.
+ *
+ * Shared because React renders it and the slide's release hands it back (see
+ * useDrawerSwipe): React will not re-assert a style prop whose value it has not
+ * changed, so the release must write this exact value rather than clear the
+ * property, and the two sides cannot be allowed to drift.
+ *
+ * `visibility` and not `display`: the chats list is virtualized against this
+ * subtree and an undisplayed one reports no viewport, and the swipe gesture
+ * measures the closed drawer's width.
+ */
+export const DRAWER_UNPAINTED = 'hidden';
+
+/**
  * Lets a kicked toggle start the scrim fade with the drawer, rather than
  * waiting for the deferred Recoil commit that a large conversation stalls.
  */

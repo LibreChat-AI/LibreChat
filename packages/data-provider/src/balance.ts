@@ -9,6 +9,11 @@ export const REFILL_INTERVAL_UNITS = [
 
 export type RefillIntervalUnit = (typeof REFILL_INTERVAL_UNITS)[number];
 
+/** How long an unreleased in-flight balance reservation keeps counting against the balance. */
+export const DEFAULT_BALANCE_RESERVATION_TTL_MS = 30 * 60 * 1000;
+/** Shortest reservation TTL; a live reservation is renewed every half TTL. */
+export const MIN_BALANCE_RESERVATION_TTL_MS = 10 * 1000;
+
 function ensureExhaustive(value: never): void {
   void value;
 }

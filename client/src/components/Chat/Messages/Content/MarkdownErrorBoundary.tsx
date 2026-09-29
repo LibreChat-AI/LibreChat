@@ -4,7 +4,7 @@ import supersub from 'remark-supersub';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import type { PluggableList } from 'unified';
-import { code, codeNoExecution, a, p, table } from './MarkdownComponents';
+import { code, codeNoExecution, a, p, img, table } from './MarkdownComponents';
 import { langSubset, remarkApproxTilde } from '~/utils';
 import { CodeBlockProvider } from '~/Providers';
 
@@ -73,6 +73,10 @@ class MarkdownErrorBoundary extends React.Component<
                 code: codeExecution ? code : codeNoExecution,
                 a,
                 p,
+                /** The recovery path is exactly where a generated reference
+                 *  must still resolve; the default `img` would send
+                 *  `![chart](chart.png)` to a page-relative URL. */
+                img,
                 table,
               } as {
                 [nodeType: string]: React.ElementType;

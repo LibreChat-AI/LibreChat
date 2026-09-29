@@ -37,10 +37,12 @@ import type {
   ResumeContentInspectionInput,
   ResumeSnapshotAgent,
 } from './inspection';
+import type { LocatorTraversalReporter } from '../../protection/diagnostics';
 import type { TextContentFragment } from '~/protection/types';
 import type { CheckAccessParams } from '~/middleware/access';
 import {
   assertModelBoundContent,
+  collectModelBoundHistoricalFileIdState,
   hasModelBoundContentProtection,
   type ModelBoundContentInput,
 } from '~/middleware/modelBoundContent';
@@ -53,8 +55,10 @@ import { getResumeAgentSnapshot, getResumeContentInspection } from './inspection
 import { extractStoredMessageContent } from '~/protection/adapters/submissions';
 import { agentHasInlineMemoryTools, getMemoryAgentId } from '../memory';
 import { LIBRECHAT_CHECKPOINT_NAMESPACE_KEY } from '../checkpointer';
+import { AttachmentObjectNotFoundError } from '~/files/encode/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
 import { ContentFilterError } from '~/middleware/contentFilter';
+import { applyCheckpointDelivery } from '../files/delivery';
 import { hasActiveFilePolicy } from '~/protection/files';
 import { parseSkillMarkdown } from '../../skills/parse';
 import { inspectContent } from '~/protection/runtime';
@@ -103,6 +107,14 @@ interface ResumeCheckpointMessage {
   readonly metadata?: object;
   readonly additional_kwargs?: {
     readonly skillName?: string;
+    readonly sourceMessageId?: string;
+    readonly sourceMessageIds?: readonly string[];
+    readonly provenance?: {
+      readonly parts?: readonly {
+        readonly attribution?: string;
+        readonly sourceMessageId?: string;
+      }[];
+    };
     readonly tool_calls?: readonly ResumeToolCall[];
   };
   readonly _getType?: () => string;
@@ -157,6 +169,7 @@ const ENCRYPTED_ACTION_METADATA_FIELDS = [
 ] as const;
 
 export interface ResumeContentProtectionDependencies {
+  readonly onTraversalFailure?: LocatorTraversalReporter;
   getAgentCheckpointer: (
     config: TCheckpointerConfig | undefined,
   ) => Promise<ResumeCheckpointer | undefined>;
@@ -165,7 +178,7 @@ export interface ResumeContentProtectionDependencies {
   getFiles: ResumeContentInspectionInput['getFiles'];
   getAgent: (filter: { id: string }) => Promise<Agent | null | undefined>;
   getActions: (
-    filter: { agent_id: { $in: string[] } },
+    query: { agentId: string[] },
     includeSensitive: boolean,
   ) => Promise<ResumeAction[] | null | undefined>;
   getUserMemories: (params: { userId: string; agentId?: string }) => Promise<MemoryContentInput[]>;
@@ -209,11 +222,12 @@ export interface AssertResumeRuntimeContentAllowedInput
 
 export type ResumeRuntimeContentProtectionDependencies = Pick<
   ResumeContentProtectionDependencies,
-  'getAgentCheckpointer' | 'getMessages' | 'getFiles'
+  'getAgentCheckpointer' | 'getMessages' | 'getFiles' | 'onTraversalFailure'
 >;
 
 export interface ResumeRuntimeContentProjection {
   readonly resolvedFiles: ResumeContentInspection['hydratedFiles'];
+  readonly checkpointFiles: ResumeContentInspection['hydratedFiles'];
 }
 
 function hasResumeHistoryProtection(appConfig: ResumeProtectionConfig | undefined): boolean {
@@ -642,7 +656,7 @@ async function getResumeActionSnapshots(
     ENCRYPTED_ACTION_METADATA_FIELDS,
   );
   const actions =
-    (await dependencies.getActions({ agent_id: { $in: agentIds } }, needsEncryptedMetadata)) ?? [];
+    (await dependencies.getActions({ agentId: agentIds }, needsEncryptedMetadata)) ?? [];
   const withFunctions = actions.map((action) => {
     const rawSpec = action.metadata?.raw_spec;
     if (typeof rawSpec !== 'string') {
@@ -789,6 +803,7 @@ async function assertResumeAgentContentAllowed({
     definitionAgents.push(memoryAgentDefinition.definition);
   }
   assertModelBoundContent({
+    onTraversalFailure: dependencies.onTraversalFailure,
     filters: appConfig?.filters,
     legacyPii: appConfig?.messageFilter?.pii,
     agents: definitionAgents,
@@ -811,9 +826,17 @@ type AssertResumeModelBoundContentAllowedInput = Pick<
   | 'checkpointNamespace'
 > & {
   readonly trustLiveFileContent?: boolean;
+  readonly checkpointMessages?: readonly ResumeCheckpointMessage[];
   readonly agents?: ModelBoundContentInput['agents'];
   readonly files?: ModelBoundContentInput['files'];
 };
+
+interface ResumeModelBoundContentProjection {
+  readonly resolvedFiles: ResumeContentInspection['hydratedFiles'];
+  readonly sourceMessages: ResumeContentInspection['originalStoredMessages'];
+  readonly checkpointMessages: readonly ResumeCheckpointMessage[];
+  readonly historyLoaded: boolean;
+}
 
 async function assertResumeModelBoundContentAllowed(
   {
@@ -828,34 +851,44 @@ async function assertResumeModelBoundContentAllowed(
     isTemporary,
     checkpointNamespace = '',
     trustLiveFileContent,
+    checkpointMessages: providedCheckpointMessages,
     agents,
     files,
   }: AssertResumeModelBoundContentAllowedInput,
   dependencies: ResumeRuntimeContentProtectionDependencies,
-): Promise<ResumeContentInspection['hydratedFiles']> {
+): Promise<ResumeModelBoundContentProjection> {
   if (!hasResumeHistoryProtection(appConfig)) {
     assertModelBoundContent({
+      onTraversalFailure: dependencies.onTraversalFailure,
       filters: appConfig?.filters,
       legacyPii: appConfig?.messageFilter?.pii,
       agents,
       files,
     });
-    return [];
+    return {
+      resolvedFiles: [],
+      sourceMessages: storedMessages,
+      checkpointMessages: providedCheckpointMessages ?? [],
+      historyLoaded: false,
+    };
   }
 
   let checkpointMessages: readonly ResumeCheckpointMessage[];
   try {
-    checkpointMessages = await getResumeCheckpointMessages(
-      appConfig,
-      conversationId,
-      checkpointNamespace,
-      dependencies,
-    );
+    checkpointMessages =
+      providedCheckpointMessages ??
+      (await getResumeCheckpointMessages(
+        appConfig,
+        conversationId,
+        checkpointNamespace,
+        dependencies,
+      ));
   } catch {
     throw new ContentTraversalLimitError();
   }
   const checkpointContent = getResumeCheckpointContent(checkpointMessages);
   const contentInspection = await getResumeContentInspection({
+    onTraversalFailure: dependencies.onTraversalFailure,
     appConfig,
     conversationId,
     targetMessageId,
@@ -870,6 +903,7 @@ async function assertResumeModelBoundContentAllowed(
     getFiles: dependencies.getFiles,
   });
   assertModelBoundContent({
+    onTraversalFailure: dependencies.onTraversalFailure,
     filters: appConfig?.filters,
     legacyPii: appConfig?.messageFilter?.pii,
     submittedMessages: contentInspection.submittedMessages,
@@ -880,7 +914,12 @@ async function assertResumeModelBoundContentAllowed(
     resolvedFiles: contentInspection.hydratedFiles,
   });
   assertResumeToolContentAllowed(appConfig?.filters, checkpointMessages, seedContent, resumeValue);
-  return contentInspection.hydratedFiles;
+  return {
+    resolvedFiles: contentInspection.hydratedFiles,
+    sourceMessages: contentInspection.originalStoredMessages,
+    checkpointMessages,
+    historyLoaded: true,
+  };
 }
 
 export async function assertResumeContentAllowed(
@@ -936,17 +975,170 @@ export async function assertResumeRuntimeContentAllowed(
   input: AssertResumeRuntimeContentAllowedInput,
   dependencies: ResumeRuntimeContentProtectionDependencies,
 ): Promise<ResumeRuntimeContentProjection> {
-  if (!hasResumeContentProtection(input.appConfig)) {
-    return { resolvedFiles: [] };
+  let checkpointMessages = hasResumeHistoryProtection(input.appConfig)
+    ? await getResumeCheckpointMessages(
+        input.appConfig,
+        input.conversationId,
+        input.checkpointNamespace ?? '',
+        dependencies,
+      )
+    : undefined;
+  const modelBoundProjection = hasResumeContentProtection(input.appConfig)
+    ? await assertResumeModelBoundContentAllowed(
+        {
+          ...input,
+          trustLiveFileContent: true,
+          checkpointMessages,
+        },
+        dependencies,
+      )
+    : undefined;
+  const resolvedFiles = modelBoundProjection?.resolvedFiles ?? [];
+  if (modelBoundProjection?.historyLoaded === true) {
+    checkpointMessages = modelBoundProjection.checkpointMessages;
   }
-  const resolvedFiles = await assertResumeModelBoundContentAllowed(
-    {
-      ...input,
-      trustLiveFileContent: true,
-    },
+  checkpointMessages ??= await getResumeCheckpointMessages(
+    input.appConfig,
+    input.conversationId,
+    input.checkpointNamespace ?? '',
     dependencies,
   );
-  return { resolvedFiles };
+  const checkpointSourceMessageIds = new Set(
+    checkpointMessages
+      .flatMap((message) => {
+        const additionalKwargs = message.additional_kwargs;
+        return [
+          additionalKwargs?.sourceMessageId,
+          ...(Array.isArray(additionalKwargs?.sourceMessageIds)
+            ? additionalKwargs.sourceMessageIds
+            : []),
+          ...(Array.isArray(additionalKwargs?.provenance?.parts)
+            ? additionalKwargs.provenance.parts
+                .filter((part) => part?.attribution === 'user' || part?.attribution === 'tool')
+                .map((part) => part.sourceMessageId)
+            : []),
+        ];
+      })
+      .filter(
+        (messageId): messageId is string => typeof messageId === 'string' && messageId.length > 0,
+      ),
+  );
+  let sourceMessages = (modelBoundProjection?.sourceMessages ?? input.storedMessages).filter(
+    (message) => {
+      const messageId = message.messageId ?? message.id;
+      return messageId != null && checkpointSourceMessageIds.has(messageId);
+    },
+  );
+  const resolvedSourceMessageIds = new Set(
+    sourceMessages
+      .map((message) => message.messageId ?? message.id)
+      .filter((messageId): messageId is string => messageId != null),
+  );
+  const missingSourceMessageIds = [...checkpointSourceMessageIds].filter(
+    (messageId) => !resolvedSourceMessageIds.has(messageId),
+  );
+  if (
+    modelBoundProjection?.historyLoaded !== true &&
+    !input.isTemporary &&
+    missingSourceMessageIds.length > 0 &&
+    input.user?.id
+  ) {
+    const persistedMessages =
+      (await dependencies.getMessages({
+        conversationId: input.conversationId,
+        user: input.user.id,
+      })) ?? [];
+    const sourceMessagesById = new Map(
+      sourceMessages.map((message) => [message.messageId ?? message.id, message]),
+    );
+    for (const message of persistedMessages) {
+      const messageId = message.messageId ?? message.id;
+      if (messageId != null && checkpointSourceMessageIds.has(messageId)) {
+        sourceMessagesById.set(messageId, message);
+      }
+    }
+    sourceMessages = [...sourceMessagesById.values()];
+  }
+  const availableSourceMessageIds = new Set(
+    sourceMessages
+      .map((message) => message.messageId ?? message.id)
+      .filter((messageId): messageId is string => messageId != null),
+  );
+  const unresolvedSourceMessageId = [...checkpointSourceMessageIds].find(
+    (messageId) => !availableSourceMessageIds.has(messageId),
+  );
+  if (unresolvedSourceMessageId != null) {
+    throw new Error('A checkpoint source message is no longer available');
+  }
+  const checkpointFileInputs = [
+    ...checkpointMessages.map((message) => ({
+      files: message.files,
+      content: message.content,
+    })),
+    ...sourceMessages.map((message) => ({ files: message.files, content: message.content })),
+  ] as ResumeContentInspectionInput['supplementalMessages'];
+  const nonSteerCheckpointFileIds = collectModelBoundHistoricalFileIdState(
+    checkpointFileInputs.map((message) => ({
+      files: message?.files,
+      content: Array.isArray(message?.content)
+        ? message.content.filter((part) => part?.type !== 'steer')
+        : message?.content,
+    })),
+  ).fileIds;
+  const checkpointSteerFileIds: string[] = [];
+  for (const message of checkpointFileInputs) {
+    if (!Array.isArray(message?.content)) {
+      continue;
+    }
+    for (const part of message.content) {
+      if (part?.type !== 'steer' || !Array.isArray(part.files)) {
+        continue;
+      }
+      for (const file of part.files) {
+        if (typeof file?.file_id === 'string' && file.file_id.length > 0) {
+          checkpointSteerFileIds.push(file.file_id);
+        }
+      }
+    }
+  }
+  const checkpointFileIdOccurrences = [...nonSteerCheckpointFileIds, ...checkpointSteerFileIds];
+  const checkpointFileIds = new Set(checkpointFileIdOccurrences);
+  const resolvedFilesById = new Map(
+    resolvedFiles
+      .filter((file) => checkpointFileIds.has(file.file_id ?? ''))
+      .map((file) => [file.file_id, file]),
+  );
+  const missingCheckpointFileIds = [...checkpointFileIds].filter(
+    (fileId) => !resolvedFilesById.has(fileId),
+  );
+  const missingCheckpointFileIdSet = new Set(missingCheckpointFileIds);
+  if (missingCheckpointFileIds.length > 0 && input.user?.id) {
+    const ownerFiles =
+      (await dependencies.getFiles(
+        {
+          file_id: { $in: missingCheckpointFileIds },
+          user: input.user.id,
+          ...(input.user.tenantId != null && { tenantId: input.user.tenantId }),
+        },
+        {},
+        {},
+      )) ?? [];
+    for (const file of ownerFiles) {
+      if (missingCheckpointFileIdSet.has(file.file_id ?? '')) {
+        resolvedFilesById.set(file.file_id, file);
+      }
+    }
+  }
+  const checkpointFiles = checkpointFileIdOccurrences
+    .map((fileId) => resolvedFilesById.get(fileId))
+    .filter((file): file is NonNullable<typeof file> => file != null);
+  if ([...checkpointFileIds].some((fileId) => !resolvedFilesById.has(fileId))) {
+    const unresolvedFileId = [...checkpointFileIds].find(
+      (fileId) => !resolvedFilesById.has(fileId),
+    );
+    throw new AttachmentObjectNotFoundError(unresolvedFileId ?? 'unknown');
+  }
+  return { resolvedFiles, checkpointFiles: applyCheckpointDelivery(checkpointFiles) };
 }
 
 export function getUserFacingResumeError(

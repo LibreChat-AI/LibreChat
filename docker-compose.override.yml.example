@@ -17,7 +17,7 @@
 #     - type: bind
 #       source: ./librechat.yaml
 #       target: /app/librechat.yaml
-#     image: registry.librechat.ai/danny-avila/librechat:latest
+#     image: registry.librechat.ai/librechat-ai/librechat:latest
 
 # ---------------------------------------------------
 
@@ -39,19 +39,19 @@
 
 # # BUILD FROM LATEST IMAGE
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat-dev:latest
+#     image: registry.librechat.ai/librechat-ai/librechat-dev:latest
 
 # # BUILD FROM LATEST IMAGE (NUMBERED RELEASE)
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat:latest
+#     image: registry.librechat.ai/librechat-ai/librechat:latest
 
 # # BUILD FROM LATEST API IMAGE
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat-dev-api:latest
+#     image: registry.librechat.ai/librechat-ai/librechat-dev-api:latest
 
 # # BUILD FROM LATEST API IMAGE (NUMBERED RELEASE)
 #   api:
-#     image: registry.librechat.ai/danny-avila/librechat-api:latest
+#     image: registry.librechat.ai/librechat-ai/librechat-api:latest
 
 # # ADD SAML CERT FILE
 #   api:
@@ -104,7 +104,7 @@
 
 # # USE RAG API IMAGE WITH LOCAL EMBEDDINGS SUPPORT
 #  rag_api:
-#    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev:latest
+#    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev:latest
 # # For Linux user:
 #    extra_hosts:
 #      - "host.docker.internal:host-gateway"

@@ -21,6 +21,11 @@ const MCP_SERVER_TITLE = 'E2E Memory';
 /** Last chunk streamed by the fake model's slow replies (160 chunks, 0-indexed). */
 const SLOW_REPLY_LAST_CHUNK = 'chunk-159';
 const SLOW_REPLY_CONTINUATION_TEXT = 'E2E slow reply continued';
+/** A pasted paragraph wider than the composer at any desktop viewport. */
+const LONG_PASTE = Array.from(
+  { length: 6 },
+  (_, index) => `pasted line ${index + 1}: a follow-up long enough to overflow the composer`,
+).join(' ');
 
 const uniqueLabel = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
@@ -149,6 +154,104 @@ test.describe('mid-run steering and queuing', () => {
     await expect(inFlightSteers(page)).toHaveCount(0);
     await expect(appliedSteerParts(page).filter({ hasText: steerText })).toHaveCount(1);
     await expect(queuedRows(page)).toHaveCount(0);
+  });
+
+  test('keeps a pending fenced-code steer inside the composer at desktop and mobile widths', async ({
+    page,
+  }) => {
+    test.setTimeout(150000);
+    const label = uniqueLabel('steer-code-layout');
+    const steerText = `Please use this example:\n\n\`\`\`js\n${`const payload = '${'x'.repeat(300)}';\n`.repeat(12)}\`\`\``;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, PROVIDER_C);
+    await selectEphemeralMCP(page);
+    await establishConversation(page, `steer-code-setup-${label}`);
+
+    const run = await sendMessage(page, `E2E_STEER_TOOL_REPLY:${label}`);
+    expect(run.ok()).toBeTruthy();
+    await typeDuringRun(page, steerText);
+    const [steerResponse] = await Promise.all([
+      page.waitForResponse(isSteerRequest, { timeout: 15000 }),
+      messageInput(page).press('Enter'),
+    ]);
+    expect(steerResponse.status()).toBe(202);
+
+    const row = inFlightSteers(page).filter({ hasText: 'const payload' });
+    await expect(row.locator('.markdown pre > div')).toHaveCount(1);
+    await expect(row.getByRole('button', { name: 'Show more' })).toBeInViewport();
+    for (const width of [1200, 390]) {
+      await page.setViewportSize({ width, height: 850 });
+      const bounds = await row.evaluate((element) => {
+        const stack = element.closest('[data-testid="in-flight-steers"]')?.getBoundingClientRect();
+        const bubble = element.querySelector('.rounded-theme-surface')?.getBoundingClientRect();
+        const codeBlock = element.querySelector('.markdown pre > div')?.getBoundingClientRect();
+        const code = element.querySelector('.markdown pre code');
+        const codeScroller = code?.parentElement;
+        if (!stack || !bubble || !codeBlock || !code || !codeScroller) {
+          throw new Error('Pending steer code block is missing');
+        }
+        return {
+          stackLeft: stack.left,
+          stackRight: stack.right,
+          bubbleLeft: bubble.left,
+          bubbleRight: bubble.right,
+          codeLeft: codeBlock.left,
+          codeRight: codeBlock.right,
+          codeStartLeft: code.getBoundingClientRect().left,
+          codeScrollWidth: codeScroller.scrollWidth,
+          codeClientWidth: codeScroller.clientWidth,
+        };
+      });
+      expect(bounds.bubbleLeft).toBeGreaterThanOrEqual(bounds.stackLeft);
+      expect(bounds.bubbleRight).toBeLessThanOrEqual(bounds.stackRight);
+      expect(bounds.codeLeft).toBeGreaterThanOrEqual(bounds.bubbleLeft);
+      expect(bounds.codeRight).toBeLessThanOrEqual(bounds.bubbleRight);
+      expect(bounds.codeStartLeft).toBeGreaterThanOrEqual(bounds.codeLeft);
+      await expect(row.locator('.markdown pre').getByText('js', { exact: true })).toBeInViewport();
+      expect(bounds.codeScrollWidth).toBeGreaterThan(bounds.codeClientWidth);
+      await expect(row.getByRole('button', { name: 'Show more' })).toBeInViewport();
+    }
+    await row.getByRole('button', { name: 'Show more' }).click();
+    await expect(row.getByRole('button', { name: 'Show less' })).toBeVisible();
+  });
+
+  test('keeps the beginning of a short code steer visible without expanding', async ({ page }) => {
+    test.setTimeout(150000);
+    const label = uniqueLabel('steer-code-short');
+    const steerText = `\`\`\`js\nconst payload = '${'x'.repeat(300)}';\n\`\`\``;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, PROVIDER_C);
+    await selectEphemeralMCP(page);
+    await establishConversation(page, `steer-code-setup-${label}`);
+
+    const run = await sendMessage(page, `E2E_STEER_TOOL_REPLY:${label}`);
+    expect(run.ok()).toBeTruthy();
+    await typeDuringRun(page, steerText);
+    const [steerResponse] = await Promise.all([
+      page.waitForResponse(isSteerRequest, { timeout: 15000 }),
+      messageInput(page).press('Enter'),
+    ]);
+    expect(steerResponse.status()).toBe(202);
+
+    const row = inFlightSteers(page).filter({ hasText: 'const payload' });
+    await expect(row.locator('.markdown pre code')).toContainText('const payload');
+    for (const width of [1200, 390]) {
+      await page.setViewportSize({ width, height: 850 });
+      const bounds = await row.evaluate((element) => {
+        const stack = element.closest('[data-testid="in-flight-steers"]')?.getBoundingClientRect();
+        const code = element.querySelector('.markdown pre code')?.getBoundingClientRect();
+        if (!stack || !code) {
+          throw new Error('Pending steer code is missing');
+        }
+        return { stackLeft: stack.left, stackRight: stack.right, codeStartLeft: code.left };
+      });
+      expect(bounds.codeStartLeft).toBeGreaterThanOrEqual(bounds.stackLeft);
+      expect(bounds.codeStartLeft).toBeLessThan(bounds.stackRight);
+      await expect(row.locator('.markdown pre').getByText('js', { exact: true })).toBeInViewport();
+      await expect(row.getByRole('button', { name: 'Show more' })).toHaveCount(0);
+    }
   });
 
   /**
@@ -508,7 +611,9 @@ test.describe('mid-run steering and queuing', () => {
   }) => {
     test.setTimeout(120000);
     const label = uniqueLabel('queue');
-    const queueText = `Queued follow-up ${label}`;
+    /** Wider than the composer at every desktop width: the row must truncate
+     *  the text rather than widen the composer column to fit it. */
+    const queueText = `Queued follow-up ${label} ${LONG_PASTE}`;
 
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
@@ -524,6 +629,20 @@ test.describe('mid-run steering and queuing', () => {
     await expect(row).toBeVisible({ timeout: 10000 });
     // Queued means NOT injected into the live thread.
     await expect(inFlightSteers(page)).toHaveCount(0);
+
+    // The queued text's natural width must not leak into the composer's size:
+    // the row ends where the form ends and its controls stay on screen.
+    const overflow = await row.evaluate((element) => {
+      const form = element.closest('form');
+      if (form == null) {
+        return Number.POSITIVE_INFINITY;
+      }
+      return element.getBoundingClientRect().right - form.getBoundingClientRect().right;
+    });
+    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(row.getByRole('button', { name: 'Remove message' })).toBeInViewport({
+      ratio: 1,
+    });
 
     // Clean completion drains exactly one queued message as a new user turn.
     await expect(row).toHaveCount(0, { timeout: 60000 });

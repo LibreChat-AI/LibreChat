@@ -1,9 +1,17 @@
 import { useEffect, useMemo } from 'react';
+import { useAtomValue, useStore } from 'jotai';
 import { Constants } from 'librechat-data-provider';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
 import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin, RunEnd } from '~/store/families';
 import type { TAskFunction } from '~/common';
+import {
+  recoveryDispositionsFamily,
+  recoveryDisposition,
+  canRestoreRecovery,
+} from '~/components/Chat/Steering/recovery';
+import { selectQueuedTurnReveal } from '~/hooks/Chat/useQueuedTurnReveal';
 import { useMarkFilesUsageMutation } from '~/data-provider';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import store from '~/store';
 
 /** Mirrors the server's per-request cap on a usage touch. */
@@ -16,6 +24,9 @@ const QUEUE_USAGE_RENEW_INTERVAL_MS = 30 * 60 * 1000;
 const collectQueuedFileIds = (items: QueuedMessage[]): string[] => {
   const fileIds: string[] = [];
   for (const item of items) {
+    if (item.server != null) {
+      continue;
+    }
     for (const file of item.files ?? []) {
       if (typeof file.file_id === 'string' && file.file_id.length > 0) {
         fileIds.push(file.file_id);
@@ -72,7 +83,9 @@ export default function useQueueDrain(
   index: string | number,
   activeConversationId: string | undefined,
   ask: TAskFunction,
+  revealQueuedTurn?: (item: QueuedMessage, end: RunEnd) => void,
 ) {
+  const jotaiStore = useStore();
   const runEnd = useRecoilValue(store.runEndByIndex(index));
   const parkedRunEnd = useRecoilValue(
     store.pendingRunEndByConvoId(activeConversationId ?? Constants.NEW_CONVO),
@@ -86,6 +99,32 @@ export default function useQueueDrain(
    *  during the first turn stay keyed here until that run ends. Renewing only
    *  the active id would skip them for the whole of that run. */
   const newConvoQueue = useRecoilValue(store.queuedMessagesByConvoId(Constants.NEW_CONVO));
+  /** Receipt settlement can consume the parked terminal boundary without
+   * changing whether another server-owned row remains. Subscribe here so the
+   * drain effect observes that durable transition instead of reading it only
+   * through a callback snapshot whose other dependencies stayed unchanged. */
+  const settledQueuedTurnReceipts = useRecoilValue(
+    store.settledQueuedTurnReceiptsByConvoId(activeConversationId ?? Constants.NEW_CONVO),
+  );
+  const hasServerOwnedQueue = [...ownQueue, ...newConvoQueue].some((item) => item.server != null);
+  // A held head can leave the queue without changing the terminal signal.
+  // Observe its identity so that dismissal wakes the parked boundary.
+  const ownHeadId = ownQueue[0]?.id ?? null;
+  const newConvoHeadId = newConvoQueue[0]?.id ?? null;
+  /** The row the reveal would pick, and whether one is already revealed: a
+   *  revealed head that is cancelled or dies before admission leaves the
+   *  server-owned queue non-empty and its terminal evidence out of the
+   *  settled receipts, so nothing above re-runs the effect for the row the
+   *  backend moves on to. */
+  const revealedQueuedTurn = useAtomValue(
+    revealedQueuedTurnFamily(activeConversationId ?? Constants.NEW_CONVO),
+  );
+  const admissibleHeadId =
+    [...ownQueue, ...newConvoQueue].find(
+      (item) =>
+        item.server?.id != null &&
+        (item.server.status === 'queued' || item.server.status === 'claimed'),
+    )?.id ?? null;
 
   /* Deduped because the two subscriptions are the same atom before migration.
    * Keyed by id list so the effect re-runs when the held set changes, not
@@ -146,7 +185,9 @@ export default function useQueueDrain(
         }
         set(store.pendingRunEndByConvoId(end.conversationId), {
           ...end,
-          ...((end.interruptArmed === true || interruptArmed) && { interruptArmed: true }),
+          ...((end.interruptArmed === true || interruptArmed) && {
+            interruptArmed: true,
+          }),
         });
         set(store.runEndByIndex(index), null);
         return true;
@@ -159,12 +200,16 @@ export default function useQueueDrain(
   // awaits may interleave with the reads.
   const drainNext = useRecoilCallback(
     ({ snapshot, set }) =>
-      (): {
-        next: QueuedMessage;
-        conversationId: string;
-        queuedMessageOrigin: QueuedMessageOrigin;
-        expectedPredecessorCreatedAt?: number;
-      } | null => {
+      ():
+        | {
+            kind: 'drain';
+            next: QueuedMessage;
+            conversationId: string;
+            queuedMessageOrigin: QueuedMessageOrigin;
+            expectedPredecessorCreatedAt?: number;
+          }
+        | { kind: 'reveal'; item: QueuedMessage; end: RunEnd }
+        | null => {
         let end = snapshot.getLoadable(store.runEndByIndex(index)).getValue();
         let fromParked = false;
         if (
@@ -188,7 +233,9 @@ export default function useQueueDrain(
           }
           set(store.pendingRunEndByConvoId(end.conversationId), {
             ...end,
-            ...((end.interruptArmed === true || interruptArmed) && { interruptArmed: true }),
+            ...((end.interruptArmed === true || interruptArmed) && {
+              interruptArmed: true,
+            }),
           });
           set(store.runEndByIndex(index), null);
           return null;
@@ -205,19 +252,8 @@ export default function useQueueDrain(
         if (end == null) {
           return null;
         }
-        // Consume the signal first — a hard double-fire guard even if the
-        // effect re-runs before Recoil propagates.
-        if (fromParked && activeConversationId) {
-          set(store.pendingRunEndByConvoId(activeConversationId), null);
-        } else {
-          set(store.runEndByIndex(index), null);
-        }
-
         const indexArmed = snapshot.getLoadable(store.drainAfterAbortByIndex(index)).getValue();
         const matchingIndexArm = matchesInterruptArm(indexArmed, end);
-        if (matchingIndexArm) {
-          set(store.drainAfterAbortByIndex(index), false);
-        }
         const interruptArmed = matchingIndexArm || end.interruptArmed === true;
 
         const conversationId = end.conversationId;
@@ -241,7 +277,93 @@ export default function useQueueDrain(
           : ownQueue;
 
         const shouldDrain = end.outcome === 'completed' || interruptArmed;
-        const next = shouldDrain ? (merged[0] ?? null) : null;
+        const settledReceipts = snapshot
+          .getLoadable(store.settledQueuedTurnReceiptsByConvoId(conversationId))
+          .getValue();
+        const pendingEnqueueIds = snapshot
+          .getLoadable(store.pendingQueuedTurnEnqueueIdsByConvoId(conversationId))
+          .getValue();
+        const consumedReceiptIndex = settledReceipts.findIndex(
+          (receipt) =>
+            receipt.status === 'admitted' &&
+            receipt.boundaryConsumed !== true &&
+            end.generationCreatedAt != null &&
+            receipt.effectivePredecessorCreatedAt === end.generationCreatedAt,
+        );
+        const consumedByServerAdmission = consumedReceiptIndex >= 0;
+        const consumeEnd = () => {
+          if (fromParked && activeConversationId) {
+            set(store.pendingRunEndByConvoId(activeConversationId), null);
+          } else {
+            set(store.runEndByIndex(index), null);
+          }
+          if (matchingIndexArm) {
+            set(store.drainAfterAbortByIndex(index), false);
+          }
+        };
+        if (consumedByServerAdmission) {
+          /** Admission consumed this terminal boundary on the server. A late
+           * client terminal observation cannot authorize a second successor. */
+          if (shouldMigrate && newConvoQueue.length > 0) {
+            set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), []);
+            set(store.queuedMessagesByConvoId(conversationId), merged);
+          }
+          set(store.settledQueuedTurnReceiptsByConvoId(conversationId), (previous) => {
+            let consumed = false;
+            return previous.flatMap((receipt) => {
+              if (
+                !consumed &&
+                receipt.status === 'admitted' &&
+                receipt.boundaryConsumed !== true &&
+                receipt.effectivePredecessorCreatedAt === end.generationCreatedAt
+              ) {
+                consumed = true;
+                return pendingEnqueueIds.includes(receipt.clientRequestId)
+                  ? [{ ...receipt, boundaryConsumed: true }]
+                  : [];
+              }
+              return [receipt];
+            });
+          });
+          consumeEnd();
+          return null;
+        }
+        /** A server-owned Agent row means the backend owns the next fresh-turn
+         * admission. Do not let a legacy/recovered local row race or overtake
+         * it. Keep this terminal boundary available until the authoritative
+         * queue snapshot proves whether a server-started successor now owns it. */
+        const serverOwnsBoundary = merged.some((item) => item.server != null);
+        if (serverOwnsBoundary) {
+          /** Keep the one-shot terminal signal until the authoritative snapshot
+           * removes the server row. If it was admitted, its own later terminal
+           * signal orders the remaining local queue; if it was cancelled/dead,
+           * this signal still lets the legacy successor make progress. The
+           * head the server is about to admit can already be shown as the
+           * next user turn; the signal itself stays untouched. */
+          const reveal = selectQueuedTurnReveal(end, merged);
+          return reveal == null ? null : { kind: 'reveal', item: reveal, end };
+        }
+
+        const head = merged[0];
+        const held =
+          head != null &&
+          recoveryDisposition(jotaiStore.get(recoveryDispositionsFamily(conversationId)), head) !=
+            null;
+        if (shouldDrain && held) {
+          // The held source cannot spend this completion. Keep its one-shot
+          // boundary so a successor can drain if the user dismisses the hold.
+          if (shouldMigrate && newConvoQueue.length > 0) {
+            set(store.queuedMessagesByConvoId(Constants.NEW_CONVO), []);
+            set(store.queuedMessagesByConvoId(conversationId), merged);
+          }
+          return null;
+        }
+
+        // Consume only after server authority and held recoveries yield the
+        // boundary. A later queue update cannot spend the same end twice.
+        consumeEnd();
+
+        const next = shouldDrain ? (head ?? null) : null;
         const remainder = next ? merged.slice(1) : merged;
 
         if (shouldMigrate && newConvoQueue.length > 0) {
@@ -252,6 +374,7 @@ export default function useQueueDrain(
         }
         return next
           ? {
+              kind: 'drain',
               next,
               conversationId,
               queuedMessageOrigin: {
@@ -264,17 +387,20 @@ export default function useQueueDrain(
             }
           : null;
       },
-    [index, activeConversationId],
+    [index, activeConversationId, jotaiStore],
   );
 
   const restoreQueued = useRecoilCallback(
     ({ set }) =>
       (convoId: string, item: QueuedMessage) => {
         set(store.queuedMessagesByConvoId(convoId), (prev) =>
-          prev.some((queued) => queued.id === item.id) ? prev : [item, ...prev],
+          !canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(convoId)), item) ||
+          prev.some((queued) => queued.id === item.id)
+            ? prev
+            : [item, ...prev],
         );
       },
-    [],
+    [jotaiStore],
   );
 
   useEffect(() => {
@@ -291,6 +417,10 @@ export default function useQueueDrain(
     }
     const drained = drainNext();
     if (drained == null) {
+      return;
+    }
+    if (drained.kind === 'reveal') {
+      revealQueuedTurn?.(drained.item, drained.end);
       return;
     }
     const { next, conversationId, queuedMessageOrigin, expectedPredecessorCreatedAt } = drained;
@@ -334,12 +464,19 @@ export default function useQueueDrain(
   }, [
     runEnd,
     parkedRunEnd,
+    ownHeadId,
+    newConvoHeadId,
     isSubmitting,
     activeConversationId,
     parkForeignRunEnd,
     drainNext,
     restoreQueued,
     markFilesUsage,
+    hasServerOwnedQueue,
+    settledQueuedTurnReceipts,
+    revealedQueuedTurn,
+    admissibleHeadId,
+    revealQueuedTurn,
     ask,
   ]);
 }

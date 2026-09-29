@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useToastContext } from '@librechat/client';
+import { ErrorTypes } from 'librechat-data-provider';
 import { useForm, Controller } from 'react-hook-form';
 import { REGEXP_ONLY_DIGITS, REGEXP_ONLY_DIGITS_AND_CHARS } from 'input-otp';
 import {
@@ -50,11 +51,13 @@ const TwoFactorScreen: React.FC = React.memo(() => {
     },
     onError: (error: unknown) => {
       setIsLoading(false);
-      const err = error as { response?: { data?: { message?: unknown } } };
-      const errorMsg =
-        typeof err.response?.data?.message === 'string'
-          ? err.response.data.message
-          : 'Error verifying 2FA';
+      const data = (error as { response?: { data?: { message?: unknown; code?: unknown } } })
+        .response?.data;
+      if (data?.code === ErrorTypes.AUTH_CROSS_ORIGIN) {
+        showToast({ message: localize('com_auth_error_login_cross_origin'), status: 'error' });
+        return;
+      }
+      const errorMsg = typeof data?.message === 'string' ? data.message : 'Error verifying 2FA';
       showToast({ message: errorMsg, status: 'error' });
     },
   });
@@ -97,6 +100,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
                   value={value != null ? value : ''}
                   onChange={onChange}
                   pattern={REGEXP_ONLY_DIGITS}
+                  aria-label={localize('com_ui_2fa_verification_required')}
                 >
                   <InputOTPGroup>
                     <InputOTPSlot index={0} />
@@ -128,6 +132,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
                   value={value != null ? value : ''}
                   onChange={onChange}
                   pattern={REGEXP_ONLY_DIGITS_AND_CHARS}
+                  aria-label={localize('com_ui_backup_code_verification_required')}
                 >
                   <InputOTPGroup>
                     <InputOTPSlot index={0} />
@@ -151,7 +156,6 @@ const TwoFactorScreen: React.FC = React.memo(() => {
           <Button
             type="submit"
             variant="submit"
-            aria-label={localize('com_auth_continue')}
             data-testid="login-button"
             disabled={isLoading}
             className="w-full rounded-2xl px-4 py-3 text-sm font-medium disabled:opacity-80"

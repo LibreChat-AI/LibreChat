@@ -4,14 +4,14 @@ import type { TFile, TMessage } from 'librechat-data-provider';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
 import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
 import MessageQuotes from '~/components/Chat/Messages/Content/MessageQuotes';
+import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
+import { useFileMapContext, useShareContext } from '~/Providers';
 import SteerReceipt from '~/components/Chat/Steering/Receipt';
 import Image from '~/components/Chat/Messages/Content/Image';
 import CollapsibleText from './CollapsibleText';
-import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 import store from '~/store';
 
 /**
@@ -49,6 +49,7 @@ const SteerPart = memo(function SteerPart({
    *  user into it, and the public share route mounts outside that provider. */
   const user = useRecoilValue(store.user);
   const { isSharedConvo } = useShareContext();
+  const fileMap = useFileMapContext();
   const usernameDisplay = useRecoilValue<boolean>(store.UsernameDisplay);
   const enableUserMsgMarkdown = useRecoilValue<boolean>(store.enableUserMsgMarkdown);
   const collapseLongUserMessages = useRecoilValue<boolean>(store.collapseLongUserMessages);
@@ -65,13 +66,14 @@ const SteerPart = memo(function SteerPart({
     () => (createdAt != null ? new Date(createdAt).toISOString() : null),
     [createdAt],
   );
-  const imageFiles = useMemo(
-    () => files?.filter((file) => file.type?.startsWith('image/')) ?? [],
-    [files],
+  const hydratedFiles = useMemo(
+    () => hydrateFileDeliveryMetadata(files, undefined, fileMap),
+    [files, fileMap],
   );
+  const imageFiles = useMemo(() => hydratedFiles?.filter(usesImagePreview) ?? [], [hydratedFiles]);
   const otherFiles = useMemo(
-    () => files?.filter((file) => !file.type?.startsWith('image/')) ?? [],
-    [files],
+    () => hydratedFiles?.filter((file) => !usesImagePreview(file)) ?? [],
+    [hydratedFiles],
   );
   const [selectedFile, setSelectedFile] = useState<Partial<TFile> | null>(null);
   const handlePreviewClose = useCallback((open: boolean) => {
@@ -124,7 +126,7 @@ const SteerPart = memo(function SteerPart({
         <div className="flex max-w-full flex-col items-start gap-2 rounded-theme-surface rounded-br-theme-control bg-surface-tertiary px-theme-normal py-2.5">
           <MessageQuotes quotes={quotes} />
           {(imageFiles.length > 0 || otherFiles.length > 0) && (
-            <div className="flex flex-wrap gap-2">
+            <div className="flex w-full flex-wrap gap-2">
               {otherFiles.map((file) => (
                 <FileContainer
                   key={file.file_id}
@@ -132,15 +134,19 @@ const SteerPart = memo(function SteerPart({
                   onClick={() => setSelectedFile(file)}
                 />
               ))}
-              {imageFiles.map((file) => (
-                <Image
-                  key={file.file_id}
-                  imagePath={file.preview ?? file.filepath ?? ''}
-                  height={file.height ?? 1920}
-                  width={file.width ?? 1080}
-                  altText={file.filename ?? localize('com_ui_attached_image')}
-                />
-              ))}
+              {imageFiles.length > 0 && (
+                <div className="ml-auto flex max-w-full flex-wrap justify-end gap-2">
+                  {imageFiles.map((file) => (
+                    <Image
+                      key={file.file_id}
+                      imagePath={file.preview ?? file.filepath ?? ''}
+                      height={file.height ?? 1920}
+                      width={file.width ?? 1080}
+                      altText={file.filename ?? localize('com_ui_attached_image')}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <CollapsibleText enabled={collapseLongUserMessages}>
@@ -155,9 +161,13 @@ const SteerPart = memo(function SteerPart({
             </div>
           </CollapsibleText>
         </div>
-        <div className="mt-1 flex min-h-8 items-center justify-end text-text-secondary">
+        {/* The receipt trails the timestamp so the always-visible checks sit
+         *  flush under the bubble's bottom-right corner. Leading them would
+         *  park them wherever the hover-revealed time happens to end, and that
+         *  width changes as the relative string ticks. */}
+        <div className="mt-1 flex min-h-8 items-center justify-end gap-2 text-text-secondary">
+          <MessageTimestamp value={timestamp} className="ml-0" />
           <SteerReceipt state="applied" live={isSubmitting} animateIn={animateIn} />
-          <MessageTimestamp value={timestamp} />
         </div>
       </div>
       {otherFiles.length > 0 && (
@@ -170,6 +180,7 @@ const SteerPart = memo(function SteerPart({
           fileType={selectedFile?.type ?? undefined}
           fileSource={selectedFile?.source}
           fileSize={(selectedFile as TFile | null)?.bytes}
+          deliveryPath={selectedFile?.llmDeliveryPath}
         />
       )}
     </div>

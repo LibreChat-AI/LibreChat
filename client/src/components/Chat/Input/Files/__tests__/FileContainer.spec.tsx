@@ -60,25 +60,47 @@ describe('FileContainer chip label', () => {
 describe('FileContainer subtitle action', () => {
   const subtitleAction = (onClick = jest.fn()) => ({ label: 'Move back into message', onClick });
 
-  it('shows the file type until the chip is hovered', () => {
+  it('states the action on the chip instead of the file type', () => {
     render(
       <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
     );
 
-    /** Both labels are in the DOM; which one shows is a `group-hover` swap CSS owns. */
-    expect(screen.getByText('Plain')).toBeInTheDocument();
+    /** The action is the subtitle now, not something the file type is swapped out for. */
     expect(screen.getByText('Move back into message')).toBeInTheDocument();
+    expect(screen.queryByText('Plain')).not.toBeInTheDocument();
   });
 
-  it('names the subtitle control for screen readers regardless of the visible label', () => {
+  it('leaves the control holding the label and nothing else', () => {
     render(
       <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
     );
 
+    /** The swap this replaced kept BOTH labels mounted and hid one in CSS, so the control read
+     * "PlainMove back into message". Anchoring the text is what catches that, and anchoring is
+     * required: a substring match accepts the gated arrangement.
+     *
+     * It is also the only half of the invariant jsdom can decide. No stylesheet is loaded, so
+     * whether a mounted node is VISUALLY hidden is unobservable here — by `invisible`,
+     * `opacity-[0]`, `text-transparent`, `!hidden`, an ancestor's `opacity-0
+     * group-hover:opacity-100`, or a spelling nobody has written yet. Three attempts to infer
+     * it from class tokens each missed gates and each rejected innocuous styling
+     * (`hover:inline-flex` is layout, not concealment). A guard that reads as sound while
+     * missing gates is worse than no guard, so the claim is narrowed to what holds. A real
+     * visibility assertion needs a browser — `toBeVisible()` under `e2e/`, which has no
+     * composer-paste spec to hang it on yet. */
     const control = screen.getByRole('button', { name: 'Move back into message' });
-    expect(control).toBeInTheDocument();
-    /** The swapped spans are decorative; the accessible name comes from the label. */
-    expect(screen.getByText('Plain')).toHaveAttribute('aria-hidden', 'true');
+    expect(control).toHaveTextContent(/^Move back into message$/);
+  });
+
+  it('names the subtitle control from its own visible label', () => {
+    render(
+      <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
+    );
+
+    /** Visible text and accessible name are the same string, so voice control can act on what
+     * the label says without an `aria-label` shadowing it. */
+    const control = screen.getByRole('button', { name: 'Move back into message' });
+    expect(control).not.toHaveAttribute('aria-label');
   });
 
   it('runs the subtitle action without also opening the chip', async () => {
@@ -124,43 +146,6 @@ describe('FileContainer subtitle action', () => {
     expect(container.querySelector('button button')).toBeNull();
   });
 
-  it('reveals the action from the whole chip rather than the label alone', () => {
-    render(
-      <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
-    );
-
-    /** The swap keys off the chip's own `group`, so pointing anywhere on the chip offers it. */
-    const resting = screen.getByText('Plain');
-    const revealed = screen.getByText('Move back into message');
-    expect(resting.className).toContain('group-hover:hidden');
-    expect(revealed.className).toContain('group-hover:inline');
-    expect(`${resting.className} ${revealed.className}`).not.toContain('group-hover/');
-  });
-
-  it('reveals the action for keyboard users too', () => {
-    render(
-      <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
-    );
-
-    expect(screen.getByText('Plain').className).toContain('group-focus-within:hidden');
-    expect(screen.getByText('Move back into message').className).toContain(
-      'group-focus-within:inline',
-    );
-  });
-
-  it('keeps the action revealed on devices with no hover to reveal it', () => {
-    render(
-      <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
-    );
-
-    /** Touch has no hover or focus to announce the swap with, so the label itself must show:
-     * an inert-looking "Plain Text" subtitle that detaches on tap is a trap, not an affordance. */
-    expect(screen.getByText('Plain').className).toContain('[@media(hover:none)]:hidden');
-    expect(screen.getByText('Move back into message').className).toContain(
-      '[@media(hover:none)]:inline',
-    );
-  });
-
   it('keeps the full-chip focus indicator inside the clipped surface', () => {
     render(
       <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
@@ -173,27 +158,29 @@ describe('FileContainer subtitle action', () => {
     expect(chipControl.className).not.toContain('ring-offset');
   });
 
-  it('styles the action exactly like the subtitle it replaces', () => {
+  it('reads as a control rather than as a description', () => {
     render(
       <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
     );
 
+    /** It keeps the subtitle's weight, but a permanent line of secondary text with no marking
+     * would read as a caption; the underline is what says it can be clicked. */
     const control = screen.getByRole('button', { name: 'Move back into message' });
     expect(control.className).toContain('text-text-secondary');
-    /** No colour of its own: it should read as the subtitle, not as a link. */
-    expect(control.className).not.toContain('hover:text-text-primary');
+    expect(control.className).toContain('underline');
+    expect(control.className).not.toContain('hover:underline');
   });
 
-  it('underlines the action once the pointer is on the label itself', () => {
+  it('gives keyboard focus the same feedback the pointer gets', () => {
     render(
       <FileContainer file={baseFile()} onClick={jest.fn()} subtitleAction={subtitleAction()} />,
     );
 
-    /** Keyed to the control's own hover, not the chip's, so the underline only shows up
-     * under a pointer that is actually on the label. */
+    /** The focus ring already announces focus, so this is parity rather than a missing
+     * indicator: whatever the colour shift signals to a pointer, it signals to a keyboard. */
     const control = screen.getByRole('button', { name: 'Move back into message' });
-    expect(control.className).toContain('hover:underline');
-    expect(control.className).not.toContain('group-hover:underline');
+    expect(control.className).toContain('hover:text-text-primary');
+    expect(control.className).toContain('focus-visible:text-text-primary');
   });
 
   it('leaves the plain subtitle alone when no action is offered', () => {

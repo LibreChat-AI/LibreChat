@@ -8,7 +8,8 @@ const {
   setMCPToolsChangedGenerationRenewalHandler,
   setMCPToolsChangedRevisionHandler,
 } = require('@librechat/api');
-const { syncStaticTools, mergeAppTools, getAppConfig } = require('./Config');
+const { syncStaticTools, mergeAppTools, getAppConfig, invalidateCachedTools } = require('./Config');
+const { startMCPAuthorizationFenceRetryWorker } = require('./MCPAuthorizationFenceRetry');
 const {
   getMCPToolsCacheGeneration,
   renewMCPToolsCacheGeneration,
@@ -113,7 +114,16 @@ async function initializeMCPs() {
   }
 
   try {
-    const mcpManager = await createMCPManager(mcpServers || {});
+    const mcpManager = await createMCPManager(mcpServers || {}, {
+      catalogRecoveryMaxStateEntries: appConfig?.mcpSettings?.catalogRecovery?.maxStateEntries,
+      catalogRecoveryMaxDetachedDiscoveries:
+        appConfig?.mcpSettings?.catalogRecovery?.maxDetachedDiscoveries,
+    });
+    startMCPAuthorizationFenceRetryWorker(invalidateCachedTools, {
+      intervalMs: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceRetryIntervalMs,
+      batchSize: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceRetryBatchSize,
+      attemptTimeoutMs: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceTimeoutMs,
+    });
     setMCPToolsChangedHandler(refreshChangedServerTools);
     setMCPToolsChangedGenerationHandler(getMCPToolsCacheGeneration);
     setMCPToolsChangedGenerationRenewalHandler(renewMCPToolsCacheGeneration);

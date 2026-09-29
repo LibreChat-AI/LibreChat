@@ -1,15 +1,17 @@
 /* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis"] }] */
 import type { Redis, Cluster } from 'ioredis';
 import type { ServerSentEvent, StreamEvent, CreatedEvent } from '~/types';
+import type { IJobStoreV2 } from '~/stream/interfaces/IJobStore';
+import {
+  GenerationJobManagerClass,
+  GENERATION_RECOVERY_FAILED_ERROR,
+  TERMINAL_PUBLICATION_RECONNECT_ERROR,
+} from '~/stream/GenerationJobManager';
 import {
   ioredisClient as staticRedisClient,
   keyvRedisClient as staticKeyvClient,
   keyvRedisClientReady,
 } from '~/cache/redisClients';
-import {
-  GenerationJobManagerClass,
-  TERMINAL_PUBLICATION_RECONNECT_ERROR,
-} from '~/stream/GenerationJobManager';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
@@ -128,11 +130,19 @@ describe('GenerationJobManager Integration Tests', () => {
 
     await manager.emitChunk(streamId, {
       event: 'on_run_step',
-      data: { id: 'step-1', runId: 'run-1', index: 0, stepDetails: { type: 'message_creation' } },
+      data: {
+        id: 'step-1',
+        runId: 'run-1',
+        index: 0,
+        stepDetails: { type: 'message_creation' },
+      },
     });
     await manager.emitChunk(streamId, {
       event: 'on_message_delta',
-      data: { id: 'step-1', delta: { content: { type: 'text', text: 'Hello' } } },
+      data: {
+        id: 'step-1',
+        delta: { content: { type: 'text', text: 'Hello' } },
+      },
     });
 
     await new Promise((resolve) => setTimeout(resolve, delay));
@@ -143,7 +153,10 @@ describe('GenerationJobManager Integration Tests', () => {
 
     await manager.emitChunk(streamId, {
       event: 'on_message_delta',
-      data: { id: 'step-1', delta: { content: { type: 'text', text: ' world' } } },
+      data: {
+        id: 'step-1',
+        delta: { content: { type: 'text', text: ' world' } },
+      },
     });
     await manager.emitChunk(streamId, {
       event: 'on_message_delta',
@@ -185,7 +198,9 @@ describe('GenerationJobManager Integration Tests', () => {
       expect(retrieved?.streamId).toBe(streamId);
 
       // Update job
-      await GenerationJobManager.updateMetadata(streamId, { sender: 'TestAgent' });
+      await GenerationJobManager.updateMetadata(streamId, {
+        sender: 'TestAgent',
+      });
       const updated = await GenerationJobManager.getJob(streamId);
       expect(updated?.metadata?.sender).toBe('TestAgent');
 
@@ -269,7 +284,9 @@ describe('GenerationJobManager Integration Tests', () => {
       expect(hasJob).toBe(true);
 
       // Update and verify
-      await GenerationJobManager.updateMetadata(streamId, { sender: 'RedisAgent' });
+      await GenerationJobManager.updateMetadata(streamId, {
+        sender: 'RedisAgent',
+      });
       const updated = await GenerationJobManager.getJob(streamId);
       expect(updated?.metadata?.sender).toBe('RedisAgent');
 
@@ -1049,12 +1066,18 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await GenerationJobManager.emitChunk(streamId, {
         event: 'on_run_step_delta',
-        data: { id: 'step-1', delta: { type: 'tool_calls', tool_calls: [{ args: '{' }] } },
+        data: {
+          id: 'step-1',
+          delta: { type: 'tool_calls', tool_calls: [{ args: '{' }] },
+        },
       });
 
       await GenerationJobManager.emitChunk(streamId, {
         event: 'on_run_step_delta',
-        data: { id: 'step-1', delta: { type: 'tool_calls', tool_calls: [{ args: '}' }] } },
+        data: {
+          id: 'step-1',
+          delta: { type: 'tool_calls', tool_calls: [{ args: '}' }] },
+        },
       });
 
       await GenerationJobManager.emitChunk(streamId, {
@@ -1116,10 +1139,16 @@ describe('GenerationJobManager Integration Tests', () => {
       const emitPromises: Promise<void>[] = [];
       for (let i = 0; i < 10; i++) {
         emitPromises.push(
-          GenerationJobManager.emitChunk(streamId1, { event: 'test', data: { index: i } }),
+          GenerationJobManager.emitChunk(streamId1, {
+            event: 'test',
+            data: { index: i },
+          }),
         );
         emitPromises.push(
-          GenerationJobManager.emitChunk(streamId2, { event: 'test', data: { index: i * 100 } }),
+          GenerationJobManager.emitChunk(streamId2, {
+            event: 'test',
+            data: { index: i * 100 },
+          }),
         );
       }
       await Promise.all(emitPromises);
@@ -1275,7 +1304,10 @@ describe('GenerationJobManager Integration Tests', () => {
         for (let i = 0; i < 10; i++) {
           await manager.emitChunk(streamId, {
             event: 'on_message_delta',
-            data: { delta: { content: { type: 'text', text: `word${i} ` } }, index: i },
+            data: {
+              delta: { content: { type: 'text', text: `word${i} ` } },
+              index: i,
+            },
           });
         }
 
@@ -1359,7 +1391,10 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { id: 'step-1', delta: { content: { type: 'text', text: ' Live!' } } },
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: ' Live!' } },
+        },
       });
 
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1403,7 +1438,12 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_run_step',
-        data: { id: 'step-1', runId: 'run-1', index: 0, stepDetails: { type: 'message_creation' } },
+        data: {
+          id: 'step-1',
+          runId: 'run-1',
+          index: 0,
+          stepDetails: { type: 'message_creation' },
+        },
       });
       await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -1412,7 +1452,10 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { id: 'step-1', delta: { content: { type: 'text', text: 'buffered' } } },
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: 'buffered' } },
+        },
       });
 
       const sub2Events: ServerSentEvent[] = [];
@@ -1580,7 +1623,10 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { id: 'step-1', delta: { content: { type: 'text', text: ' Live!' } } },
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: ' Live!' } },
+        },
       });
 
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -1619,7 +1665,10 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { id: 'step-1', delta: { content: { type: 'text', text: 'detached-redis' } } },
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: 'detached-redis' } },
+        },
       });
 
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1636,7 +1685,10 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { id: 'step-1', delta: { content: { type: 'text', text: ' live' } } },
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: ' live' } },
+        },
       });
 
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -1656,6 +1708,22 @@ describe('GenerationJobManager Integration Tests', () => {
      * retained in earlyEventBuffer, so heap and GC cost climbed for the whole
      * detached run.
      */
+
+    async function forceEarlyBufferOverflow(
+      manager: GenerationJobManagerClass,
+      streamId: string,
+    ): Promise<void> {
+      const runtime = (
+        manager as unknown as {
+          runtimeState: Map<string, unknown>;
+        }
+      ).runtimeState.get(streamId)!;
+      await (
+        manager as unknown as {
+          overflowEarlyEventBuffer: (id: string, runtime: unknown) => Promise<void>;
+        }
+      ).overflowEarlyEventBuffer(streamId, runtime);
+    }
 
     testRedis(
       'detached generation keeps the local buffer empty after first attachment (Redis)',
@@ -1696,17 +1764,26 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 5; i++) {
         await manager.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { id: 'step-1', delta: { content: { type: 'text', text: bigText } } },
+          data: {
+            id: 'step-1',
+            delta: { content: { type: 'text', text: bigText } },
+          },
         });
       }
 
       const stats = manager.getRuntimeStats();
       expect(stats.earlyBufferedEvents).toBe(0);
       expect(stats.earlyBufferedBytes).toBe(0);
+      const overflow = (await manager.getJob(streamId))?.metadata.earlyBufferOverflow;
+      expect(overflow?.droppedEvents).toBe(4);
+      expect(overflow?.droppedBytes).toBeGreaterThan(8 * 1024 * 1024);
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { id: 'step-1', delta: { content: { type: 'text', text: 'after-overflow' } } },
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: 'after-overflow' } },
+        },
       });
       expect(manager.getRuntimeStats().earlyBufferedEvents).toBe(0);
 
@@ -1730,6 +1807,394 @@ describe('GenerationJobManager Integration Tests', () => {
       await manager.destroy();
     });
 
+    test('replays a completed result after the overflow reconnect was forced', async () => {
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore: new InMemoryJobStore({ ttlAfterComplete: 60000 }),
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: false,
+      });
+      manager.initialize();
+      const streamId = `overflow-complete-reconnect-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      await forceEarlyBufferOverflow(manager, streamId);
+
+      const reconnectErrors: string[] = [];
+      await manager.subscribe(
+        streamId,
+        () => {},
+        undefined,
+        (error) => reconnectErrors.push(error),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(reconnectErrors).toEqual([TERMINAL_PUBLICATION_RECONNECT_ERROR]);
+
+      const finalEvent = {
+        final: true,
+        conversation: { conversationId: streamId },
+        responseMessage: { text: 'complete' },
+      } as ServerSentEvent;
+      await manager.emitDone(streamId, finalEvent);
+      await manager.completeJob(streamId);
+
+      const terminalEvents: ServerSentEvent[] = [];
+      const resumed = await manager.subscribeWithResume(
+        streamId,
+        () => {},
+        (event) => terminalEvents.push(event),
+      );
+      resumed.subscription?.activate();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(terminalEvents).toEqual([finalEvent]);
+      resumed.subscription?.unsubscribe();
+      await manager.destroy();
+    });
+
+    test('reconciles a generation replaced while recovery settles', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `overflow-replaced-during-settlement-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const originalCreatedAt = (await jobStore.getJob(streamId))!.createdAt;
+      await forceEarlyBufferOverflow(manager, streamId);
+      jest.spyOn(jobStore, 'settleEarlyBufferRecovery').mockImplementationOnce(async () => {
+        await jobStore.createJob(streamId, 'user-1');
+        return false;
+      });
+
+      const errors: string[] = [];
+      const result = await manager.subscribeWithResume(
+        streamId,
+        () => {},
+        undefined,
+        (error) => errors.push(error),
+        { expectedCreatedAt: originalCreatedAt },
+      );
+      expect(result.subscription).toBeNull();
+      expect(errors).not.toContain(GENERATION_RECOVERY_FAILED_ERROR);
+      expect((await jobStore.getJob(streamId))!.createdAt).toBeGreaterThan(originalCreatedAt);
+
+      await manager.destroy();
+    });
+
+    test('reconciles a generation replaced while a recovery error settles', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `overflow-replaced-during-error-settlement-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const originalCreatedAt = (await jobStore.getJob(streamId))!.createdAt;
+      await forceEarlyBufferOverflow(manager, streamId);
+      jest
+        .spyOn(manager, 'getResumeState')
+        .mockRejectedValueOnce(new Error('snapshot unavailable'));
+      jest.spyOn(jobStore, 'settleEarlyBufferRecovery').mockImplementationOnce(async () => {
+        await jobStore.createJob(streamId, 'user-1');
+        return false;
+      });
+
+      const errors: string[] = [];
+      const result = await manager.subscribeWithResume(
+        streamId,
+        () => {},
+        undefined,
+        (error) => errors.push(error),
+        { expectedCreatedAt: originalCreatedAt },
+      );
+      expect(result.subscription).toBeNull();
+      expect(errors).not.toContain(GENERATION_RECOVERY_FAILED_ERROR);
+      expect((await jobStore.getJob(streamId))!.createdAt).toBeGreaterThan(originalCreatedAt);
+
+      await manager.destroy();
+    });
+
+    test('does not overwrite recovery settlement when the overflow owner finishes flushing', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: false,
+      });
+      manager.initialize();
+      const streamId = `overflow-finalize-settlement-race-${Date.now()}`;
+      const job = await manager.createJob(streamId, 'user-1');
+      const originalFinalize = jobStore.finalizeEarlyBufferOverflow.bind(jobStore);
+      jest
+        .spyOn(jobStore, 'finalizeEarlyBufferOverflow')
+        .mockImplementationOnce(async (id, createdAt, overflowId, finalizedOverflow) => {
+          await jobStore.settleEarlyBufferRecovery(id, createdAt, overflowId, {
+            recoveryMethod: 'snapshot',
+            recoveryOutcome: 'failed',
+            recoveryCompletedAt: Date.now(),
+            recoveryFailureReason: 'overflow_marker_persistence_failed',
+          });
+          return originalFinalize(id, createdAt, overflowId, finalizedOverflow);
+        });
+
+      await expect(forceEarlyBufferOverflow(manager, streamId)).rejects.toThrow(
+        GENERATION_RECOVERY_FAILED_ERROR,
+      );
+      expect((await jobStore.getJob(streamId))?.earlyBufferOverflow).toMatchObject({
+        recoveryOutcome: 'failed',
+        recoveryFailureReason: 'overflow_marker_persistence_failed',
+      });
+      expect((await jobStore.getJob(streamId))?.createdAt).toBe(job.createdAt);
+
+      await manager.destroy();
+    });
+
+    test('coalesces pending overflow waiters and backs off their store read', async () => {
+      jest.useFakeTimers();
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({ jobStore, eventTransport: new InMemoryEventTransport(), isRedis: false });
+      manager.initialize();
+      const streamId = `overflow-shared-waiter-${Date.now()}`;
+      const job = await manager.createJob(streamId, 'user-1');
+      const pendingOverflow = {
+        id: 'pending-overflow',
+        occurredAt: Date.now(),
+        durableEvents: 1,
+        droppedEvents: 1,
+        droppedBytes: 1,
+        persistencePending: true,
+      };
+      await jobStore.updateJob(streamId, { earlyBufferOverflow: pendingOverflow }, job.createdAt);
+      const pendingJob = (await jobStore.getJob(streamId))!;
+      const getJob = jest.spyOn(jobStore, 'getJob');
+      const waitForFinalized = (
+        manager as unknown as {
+          waitForFinalizedEarlyBufferOverflow: (
+            id: string,
+            data: typeof pendingJob,
+          ) => Promise<typeof pendingJob | null>;
+        }
+      ).waitForFinalizedEarlyBufferOverflow.bind(manager);
+
+      const first = waitForFinalized(streamId, pendingJob);
+      const second = waitForFinalized(streamId, pendingJob);
+      await jest.advanceTimersByTimeAsync(99);
+      expect(getJob).not.toHaveBeenCalled();
+      await jobStore.updateJob(
+        streamId,
+        { earlyBufferOverflow: { ...pendingOverflow, persistencePending: false } },
+        job.createdAt,
+      );
+      await jest.advanceTimersByTimeAsync(1);
+
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        expect.objectContaining({
+          earlyBufferOverflow: expect.objectContaining({ persistencePending: false }),
+        }),
+        expect.objectContaining({
+          earlyBufferOverflow: expect.objectContaining({ persistencePending: false }),
+        }),
+      ]);
+      expect(getJob).toHaveBeenCalledTimes(1);
+
+      await manager.destroy();
+      jest.useRealTimers();
+    });
+
+    test('fences publication only until generation-wide subscriber admission', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const eventTransport = new InMemoryEventTransport();
+      let releaseAppend!: (appended: boolean) => void;
+      const pendingAppend = new Promise<boolean>((resolve) => {
+        releaseAppend = resolve;
+      });
+      const append = jest.spyOn(jobStore, 'appendChunk').mockReturnValueOnce(pendingAppend);
+      jest.spyOn(jobStore, 'hasSubscriberAttached').mockResolvedValue(true);
+      const publish = jest.spyOn(eventTransport, 'emitChunk');
+      const manager = new GenerationJobManagerClass();
+      manager.configure({ jobStore, eventTransport, isRedis: true });
+      manager.initialize();
+      const streamId = `detached-append-before-publish-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+
+      const emission = manager.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: { delta: { content: { type: 'text', text: 'durable first' } } },
+      });
+      await Promise.resolve();
+      expect(publish).not.toHaveBeenCalled();
+      releaseAppend(true);
+      await emission;
+      expect(publish).toHaveBeenCalledTimes(1);
+
+      append.mockReturnValueOnce(new Promise<boolean>(() => {}));
+      await expect(
+        manager.emitChunk(streamId, {
+          event: 'on_message_delta',
+          data: { delta: { content: { type: 'text', text: 'publish without append wait' } } },
+        }),
+      ).resolves.toBeUndefined();
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(jobStore.hasSubscriberAttached).toHaveBeenCalledTimes(1);
+
+      await manager.destroy();
+    });
+
+    test('validates an in-memory HITL snapshot with the event frontier', async () => {
+      const manager = createInMemoryManager();
+      const streamId = `overflow-hitl-memory-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const createdAt = (await manager.getJob(streamId))!.createdAt;
+      await forceEarlyBufferOverflow(manager, streamId);
+      manager.setContentParts(
+        streamId,
+        [{ type: 'text', text: 'complete snapshot' }] as never,
+        createdAt,
+      );
+      const getRuntimeSpy = jest.spyOn(
+        manager as unknown as {
+          getOrCreateRuntimeState: (...args: unknown[]) => Promise<unknown>;
+        },
+        'getOrCreateRuntimeState',
+      );
+
+      await expect(
+        manager.getResumeState(streamId, createdAt, { validateEarlyBufferRecovery: true }),
+      ).resolves.toMatchObject({ aggregatedContent: expect.any(Array) });
+      expect(getRuntimeSpy).toHaveBeenCalledWith(streamId, expect.objectContaining({ createdAt }));
+      expect((await manager.getJob(streamId))?.metadata.earlyBufferOverflow).toMatchObject({
+        durableEvents: 0,
+        recoveryOutcome: 'success',
+      });
+
+      await manager.destroy();
+    });
+
+    test('rejects a durable failed outcome before exposing HITL state', async () => {
+      const manager = createInMemoryManager();
+      const streamId = `overflow-hitl-failed-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const createdAt = (await manager.getJob(streamId))!.createdAt;
+      await forceEarlyBufferOverflow(manager, streamId);
+      const overflow = (await manager.getJob(streamId))!.metadata.earlyBufferOverflow!;
+      await (manager.getJobStore() as IJobStoreV2).settleEarlyBufferRecovery(
+        streamId,
+        createdAt,
+        overflow.id,
+        {
+          recoveryMethod: 'snapshot',
+          recoveryOutcome: 'failed',
+          recoveryCompletedAt: Date.now(),
+          recoveryFailureReason: 'snapshot_missing',
+        },
+      );
+
+      await expect(
+        manager.getResumeState(streamId, createdAt, { validateEarlyBufferRecovery: true }),
+      ).rejects.toThrow(GENERATION_RECOVERY_FAILED_ERROR);
+
+      await manager.destroy();
+    });
+
+    test('contains subscriber lease lookup failure during terminal cleanup', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: false,
+      });
+      manager.initialize();
+      const streamId = `overflow-lease-read-failure-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      await forceEarlyBufferOverflow(manager, streamId);
+      jest.spyOn(jobStore, 'hasActiveSubscriber').mockRejectedValueOnce(new Error('unavailable'));
+
+      await expect(manager.completeJob(streamId)).resolves.toBe(true);
+      expect((await manager.getJob(streamId))?.status).toBe('complete');
+      expect((await manager.getJob(streamId))?.metadata.earlyBufferOverflow).not.toHaveProperty(
+        'recoveryOutcome',
+      );
+
+      await manager.destroy();
+    });
+
+    test('leaves recovery unresolved when terminal lifecycle lookup fails', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: false,
+      });
+      manager.initialize();
+      const streamId = `overflow-lifecycle-read-failure-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      await forceEarlyBufferOverflow(manager, streamId);
+      const originalGetJob = jobStore.getJob.bind(jobStore);
+      jest
+        .spyOn(jobStore, 'getJob')
+        .mockImplementationOnce(originalGetJob)
+        .mockRejectedValueOnce(new Error('unavailable'))
+        .mockImplementation(originalGetJob);
+
+      await expect(manager.completeJob(streamId)).resolves.toBe(true);
+      expect((await manager.getJob(streamId))?.metadata.earlyBufferOverflow).not.toHaveProperty(
+        'recoveryOutcome',
+      );
+
+      await manager.destroy();
+    });
+
+    test('removes in-memory capture handlers when another attachment wins recovery', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: false,
+      });
+      manager.initialize();
+      const streamId = `overflow-recovery-loser-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      await forceEarlyBufferOverflow(manager, streamId);
+      const originalSettle = jobStore.settleEarlyBufferRecovery.bind(jobStore);
+      jest
+        .spyOn(jobStore, 'settleEarlyBufferRecovery')
+        .mockImplementationOnce(async (id, createdAt, recoveryId) => {
+          await originalSettle(id, createdAt, recoveryId, {
+            recoveryMethod: 'snapshot',
+            recoveryOutcome: 'not_required',
+            recoveryCompletedAt: Date.now(),
+          });
+          return false;
+        });
+
+      const result = await manager.subscribeWithResume(streamId, () => {});
+
+      expect(result.subscription).toBeNull();
+      const runtime = (
+        manager as unknown as {
+          runtimeState: Map<string, { resumeCaptureHandlers: Set<unknown> }>;
+        }
+      ).runtimeState.get(streamId);
+      expect(runtime?.resumeCaptureHandlers.size).toBe(0);
+
+      await manager.destroy();
+    });
+
     testRedis('redirects a post-overflow first attachment to resume recovery (Redis)', async () => {
       const manager = createRedisManager();
       const streamId = `overflow-redirect-${Date.now()}`;
@@ -1744,13 +2209,14 @@ describe('GenerationJobManager Integration Tests', () => {
           stepDetails: { type: 'message_creation' },
         },
       });
-      const bigText = 'y'.repeat(2 * 1024 * 1024);
-      for (let i = 0; i < 5; i++) {
-        await manager.emitChunk(streamId, {
-          event: 'on_message_delta',
-          data: { id: 'step-1', delta: { content: { type: 'text', text: bigText } } },
-        });
-      }
+      await manager.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: 'durable-overflow-content' } },
+        },
+      });
+      await forceEarlyBufferOverflow(manager, streamId);
       expect(manager.getRuntimeStats().earlyBufferedEvents).toBe(0);
 
       const errors: string[] = [];
@@ -1767,11 +2233,295 @@ describe('GenerationJobManager Integration Tests', () => {
 
       /** The resume path the client falls back to reconstructs the
        * discarded output from the durable chunk log. */
-      const resumeState = await manager.getResumeState(streamId);
-      expect(JSON.stringify(resumeState?.aggregatedContent ?? [])).toContain('yyyy');
+      const { subscription, resumeState } = await manager.subscribeWithResume(streamId, () => {});
+      expect(JSON.stringify(resumeState?.aggregatedContent ?? [])).toContain(
+        'durable-overflow-content',
+      );
+      subscription?.unsubscribe();
+      const recoveredJob = await manager.getJob(streamId);
+      expect(recoveredJob?.metadata.earlyBufferOverflow).toMatchObject({
+        recoveryMethod: 'redis',
+        recoveryOutcome: 'success',
+      });
 
       await manager.destroy();
     });
+
+    testRedis('refreshes an overflow marker before activating a resume attachment', async () => {
+      const owner = createRedisManager();
+      const streamId = `overflow-marker-attachment-race-${Date.now()}`;
+      await owner.createJob(streamId, 'user-1');
+      await owner.emitChunk(streamId, {
+        event: 'on_run_step',
+        data: {
+          id: 'step-1',
+          runId: 'run-1',
+          index: 0,
+          stepDetails: { type: 'message_creation' },
+        },
+      });
+      await owner.emitChunk(streamId, {
+        event: 'on_message_delta',
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: 'durable-before-marker' } },
+        },
+      });
+      await forceEarlyBufferOverflow(owner, streamId);
+
+      const replica = createRedisManager();
+      const replicaStore = replica.getJobStore();
+      const originalGetJob = replicaStore.getJob.bind(replicaStore);
+      let jobReads = 0;
+      jest.spyOn(replicaStore, 'getJob').mockImplementation(async (id) => {
+        const job = await originalGetJob(id);
+        jobReads++;
+        if (jobReads <= 4 && job != null) {
+          return { ...job, earlyBufferOverflow: undefined };
+        }
+        return job;
+      });
+
+      const result = await replica.subscribeWithResume(streamId, () => {});
+
+      expect(jobReads).toBeGreaterThan(4);
+      expect(JSON.stringify(result.resumeState?.aggregatedContent ?? [])).toContain(
+        'durable-before-marker',
+      );
+      expect((await originalGetJob(streamId))?.earlyBufferOverflow).toMatchObject({
+        recoveryMethod: 'redis',
+        recoveryOutcome: 'success',
+      });
+      result.subscription?.unsubscribe();
+
+      const followup = await replica.subscribeWithResume(streamId, () => {});
+      expect(JSON.stringify(followup.resumeState?.aggregatedContent ?? [])).toContain(
+        'durable-before-marker',
+      );
+      followup.subscription?.unsubscribe();
+
+      await Promise.all([owner.destroy(), replica.destroy()]);
+    });
+
+    testRedis(
+      'reconstructs more than 5,000 pre-attachment events across replica reconnects (Redis)',
+      async () => {
+        const owner = createRedisManager();
+        const streamId = `overflow-cross-replica-${Date.now()}`;
+        await owner.createJob(streamId, 'user-1');
+        const createdAt = (await owner.getJob(streamId))!.createdAt;
+        const firstReplica = createRedisManager();
+        /** Cache a pre-overflow runtime so resume must refresh the later
+         * durable marker rather than trust process-local state. */
+        await firstReplica.getJob(streamId);
+        /** Created envelopes are published but not durably appendable, so they
+         * must not advance the durable recovery frontier. */
+        await owner.emitChunk(streamId, {
+          created: true,
+          message: { text: 'hello' },
+          streamId,
+        } as CreatedEvent);
+        await owner.emitChunk(streamId, {
+          event: 'on_run_step',
+          data: {
+            id: 'step-1',
+            runId: 'run-1',
+            index: 0,
+            stepDetails: { type: 'message_creation' },
+          },
+        });
+        for (let i = 0; i < 5_001; i++) {
+          await firstReplica.emitChunk(streamId, {
+            event: 'on_message_delta',
+            data: {
+              id: 'step-1',
+              delta: { content: { type: 'text', text: `${i},` } },
+            },
+          });
+        }
+
+        const first = await firstReplica.subscribeWithResume(streamId, () => {});
+        expect(first.resumeState?.aggregatedContent).toHaveLength(1);
+        expect(JSON.stringify(first.resumeState?.aggregatedContent)).toContain('5000,');
+        first.subscription?.activate();
+        first.subscription?.unsubscribe();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const firstAttachedAt = await ioredisClient!.hget(
+          `stream:{${streamId}}:job`,
+          'firstSubscriberAttachedAt',
+        );
+        expect(firstAttachedAt).not.toBeNull();
+        expect(
+          await (firstReplica.getJobStore() as IJobStoreV2).hasActiveSubscriber(
+            streamId,
+            createdAt,
+            Date.now(),
+          ),
+        ).toBe(false);
+
+        await owner.emitChunk(streamId, {
+          event: 'on_message_delta',
+          data: {
+            id: 'step-1',
+            delta: { content: { type: 'text', text: 'after-disconnect' } },
+          },
+        });
+
+        const secondReplica = createRedisManager();
+        const second = await secondReplica.subscribeWithResume(streamId, () => {});
+        expect(JSON.stringify(second.resumeState?.aggregatedContent)).toContain('after-disconnect');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(
+          await (secondReplica.getJobStore() as IJobStoreV2).hasActiveSubscriber(
+            streamId,
+            createdAt,
+            Date.now(),
+          ),
+        ).toBe(true);
+        second.subscription?.unsubscribe();
+        expect(
+          await ioredisClient!.hget(`stream:{${streamId}}:job`, 'firstSubscriberAttachedAt'),
+        ).toBe(firstAttachedAt);
+
+        const recoveredJob = await secondReplica.getJob(streamId);
+        expect(recoveredJob?.metadata.earlyBufferOverflow).toMatchObject({
+          durableEvents: 5_002,
+          recoveryMethod: 'redis',
+          recoveryOutcome: 'success',
+        });
+
+        await Promise.all([owner.destroy(), firstReplica.destroy(), secondReplica.destroy()]);
+      },
+      60_000,
+    );
+
+    testRedis(
+      'terminalizes an overflow when durable reconstruction is missing (Redis)',
+      async () => {
+        const owner = createRedisManager();
+        const streamId = `overflow-missing-durable-${Date.now()}`;
+        await owner.createJob(streamId, 'user-1');
+        await forceEarlyBufferOverflow(owner, streamId);
+        await ioredisClient!.del(`stream:{${streamId}}:chunks`);
+
+        const replica = createRedisManager();
+        const errors: string[] = [];
+        const result = await replica.subscribeWithResume(
+          streamId,
+          () => {},
+          undefined,
+          (error) => errors.push(error),
+        );
+
+        expect(result.subscription).toBeNull();
+        expect(errors).toEqual([GENERATION_RECOVERY_FAILED_ERROR]);
+        const failedJob = await replica.getJob(streamId);
+        expect(failedJob?.status).toBe('error');
+        expect(failedJob?.error).toBe(GENERATION_RECOVERY_FAILED_ERROR);
+        expect(failedJob?.metadata.earlyBufferOverflow).toMatchObject({
+          recoveryMethod: 'redis',
+          recoveryOutcome: 'failed',
+          recoveryFailureReason: 'durable_state_missing',
+        });
+
+        await Promise.all([owner.destroy(), replica.destroy()]);
+      },
+    );
+
+    testRedis('replays a durable terminal payload with unresolved overflow (Redis)', async () => {
+      const owner = createRedisManager();
+      const streamId = `overflow-durable-terminal-${Date.now()}`;
+      const job = await owner.createJob(streamId, 'user-1');
+      await forceEarlyBufferOverflow(owner, streamId);
+      const claim = await owner.claimTerminalJob(streamId, 'complete', undefined, job.createdAt, {
+        persistencePending: true,
+      });
+      expect(claim).not.toBeNull();
+      const finalEvent = {
+        final: true,
+        conversation: { conversationId: streamId },
+        responseMessage: { text: 'complete' },
+      } as ServerSentEvent;
+      await owner.publishTerminalClaim(claim!, finalEvent);
+      expect((await owner.getJob(streamId))?.metadata.earlyBufferOverflow).not.toHaveProperty(
+        'recoveryOutcome',
+      );
+
+      const replica = createRedisManager();
+      const terminalEvents: ServerSentEvent[] = [];
+      const errors: string[] = [];
+      const resumed = await replica.subscribeWithResume(
+        streamId,
+        () => {},
+        (event) => terminalEvents.push(event),
+        (error) => errors.push(error),
+        { expectedCreatedAt: job.createdAt },
+      );
+      resumed.subscription?.activate();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(terminalEvents).toEqual([finalEvent]);
+      expect(errors).toEqual([]);
+      expect((await replica.getJob(streamId))?.status).toBe('complete');
+
+      resumed.subscription?.unsubscribe();
+      await Promise.all([owner.destroy(), replica.destroy()]);
+    });
+
+    testRedis('validates overflow recovery before exposing HITL resume state', async () => {
+      const manager = createRedisManager();
+      const streamId = `overflow-hitl-validation-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      await forceEarlyBufferOverflow(manager, streamId);
+      const createdAt = (await manager.getJob(streamId))!.createdAt;
+      await ioredisClient!.del(`stream:{${streamId}}:chunks`);
+
+      await expect(
+        manager.getResumeState(streamId, createdAt, { validateEarlyBufferRecovery: true }),
+      ).rejects.toThrow(GENERATION_RECOVERY_FAILED_ERROR);
+      expect((await manager.getJob(streamId))?.status).toBe('error');
+
+      await manager.destroy();
+    });
+
+    testRedis(
+      'terminalizes a durable failed outcome left running by a crashed replica',
+      async () => {
+        const owner = createRedisManager();
+        const streamId = `overflow-failed-outcome-${Date.now()}`;
+        await owner.createJob(streamId, 'user-1');
+        await forceEarlyBufferOverflow(owner, streamId);
+
+        const overflowJob = await owner.getJob(streamId);
+        const overflow = overflowJob?.metadata.earlyBufferOverflow;
+        expect(overflow).toBeDefined();
+        await (owner.getJobStore() as IJobStoreV2).settleEarlyBufferRecovery(
+          streamId,
+          overflowJob!.createdAt,
+          overflow!.id,
+          {
+            recoveryMethod: 'redis',
+            recoveryOutcome: 'failed',
+            recoveryCompletedAt: Date.now(),
+            recoveryFailureReason: 'reconstruction_error',
+          },
+        );
+
+        const replica = createRedisManager();
+        const errors: string[] = [];
+        const result = await replica.subscribeWithResume(
+          streamId,
+          () => {},
+          undefined,
+          (error) => errors.push(error),
+        );
+        expect(result.subscription).toBeNull();
+        expect(errors).toEqual([GENERATION_RECOVERY_FAILED_ERROR]);
+        expect((await replica.getJob(streamId))?.status).toBe('error');
+
+        await Promise.all([owner.destroy(), replica.destroy()]);
+      },
+    );
 
     test('buffers detached events until the cap in in-memory mode', async () => {
       const manager = createInMemoryManager();
@@ -1839,7 +2589,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 5; i++) {
         await manager.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { id: 'step-1', delta: { content: { type: 'text', text: bigText } } },
+          data: {
+            id: 'step-1',
+            delta: { content: { type: 'text', text: bigText } },
+          },
         });
       }
       releaseGate();
@@ -1870,6 +2623,237 @@ describe('GenerationJobManager Integration Tests', () => {
   });
 
   describe('Atomic subscribeWithResume', () => {
+    test('retries a failed first-subscriber lease claim while attached', async () => {
+      jest.useFakeTimers();
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const originalClaim = jobStore.claimFirstSubscriber.bind(jobStore);
+      const claim = jest
+        .spyOn(jobStore, 'claimFirstSubscriber')
+        .mockRejectedValueOnce(new Error('store unavailable'))
+        .mockImplementation(originalClaim);
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `subscriber-claim-retry-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const createdAt = (await jobStore.getJob(streamId))!.createdAt;
+      const subscription = await manager.subscribe(streamId, () => {});
+      await jest.advanceTimersByTimeAsync(0);
+      expect(claim).toHaveBeenCalledTimes(1);
+      const runtime = (
+        manager as unknown as {
+          runtimeState: Map<string, { onFirstSubscriberLeaseClaim?: (first: boolean) => void }>;
+        }
+      ).runtimeState.get(streamId)!;
+      expect(runtime.onFirstSubscriberLeaseClaim).toBeDefined();
+
+      await jest.advanceTimersByTimeAsync(10_000);
+
+      expect(claim).toHaveBeenCalledTimes(2);
+      expect(runtime.onFirstSubscriberLeaseClaim).toBeUndefined();
+      await expect(jobStore.hasActiveSubscriber(streamId, createdAt, Date.now())).resolves.toBe(
+        true,
+      );
+      subscription?.unsubscribe();
+      await manager.destroy();
+      jest.useRealTimers();
+    });
+
+    test('coalesces subscriber lease renewals while a store write is pending', async () => {
+      jest.useFakeTimers();
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const originalClaim = jobStore.claimFirstSubscriber.bind(jobStore);
+      let releaseRenewal!: (claimed: boolean) => void;
+      const pendingRenewal = new Promise<boolean>((resolve) => {
+        releaseRenewal = resolve;
+      });
+      const claim = jest
+        .spyOn(jobStore, 'claimFirstSubscriber')
+        .mockImplementationOnce(originalClaim)
+        .mockReturnValueOnce(pendingRenewal)
+        .mockImplementation(originalClaim);
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `subscriber-renewal-coalesce-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const subscription = await manager.subscribe(streamId, () => {});
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      expect(claim).toHaveBeenCalledTimes(2);
+      releaseRenewal(false);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(claim).toHaveBeenCalledTimes(3);
+      const lastCall = claim.mock.calls[2];
+      expect(lastCall[4] - lastCall[2]).toBe(30_000);
+
+      subscription?.unsubscribe();
+      await manager.destroy();
+      jest.useRealTimers();
+    });
+
+    test('stops the predecessor lease timer when a durable generation replaces it', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: true,
+      });
+      manager.initialize();
+      const streamId = `subscriber-runtime-replacement-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const subscription = await manager.subscribe(streamId, () => {});
+      const predecessor = (
+        manager as unknown as {
+          runtimeState: Map<string, { subscriberLeaseTimer?: ReturnType<typeof setInterval> }>;
+        }
+      ).runtimeState.get(streamId)!;
+      expect(predecessor.subscriberLeaseTimer).toBeDefined();
+
+      await jobStore.createJob(streamId, 'user-1');
+      await manager.getJob(streamId);
+
+      expect(predecessor.subscriberLeaseTimer).toBeUndefined();
+      subscription?.unsubscribe();
+      await manager.destroy();
+    });
+
+    test('keeps ordinary HITL resume reads on the cached content path', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `hitl-cached-content-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const createdAt = (await jobStore.getJob(streamId))!.createdAt;
+      const getContentParts = jest.spyOn(jobStore, 'getContentParts');
+
+      await manager.getResumeState(streamId, createdAt, {
+        validateEarlyBufferRecovery: true,
+      });
+
+      expect(getContentParts).toHaveBeenCalledWith(streamId, createdAt, {
+        durableOnly: false,
+      });
+      await manager.destroy();
+    });
+
+    test('renews the subscriber lease after an ambiguous detach failure', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const claim = jest.spyOn(jobStore, 'claimFirstSubscriber');
+      jest
+        .spyOn(jobStore, 'detachSubscriber')
+        .mockRejectedValueOnce(new Error('store unavailable'));
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `subscriber-detach-retry-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+
+      const first = await manager.subscribe(streamId, () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      first?.unsubscribe();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const second = await manager.subscribe(streamId, () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(claim).toHaveBeenCalledTimes(2);
+
+      second?.unsubscribe();
+      await manager.destroy();
+    });
+
+    test('tracks active subscriber groups across local reattachments', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `subscriber-lifecycle-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+      const createdAt = (await jobStore.getJob(streamId))!.createdAt;
+
+      const first = await manager.subscribe(streamId, () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await expect(jobStore.hasActiveSubscriber(streamId, createdAt, Date.now())).resolves.toBe(
+        true,
+      );
+      first?.unsubscribe();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await expect(jobStore.hasActiveSubscriber(streamId, createdAt, Date.now())).resolves.toBe(
+        false,
+      );
+
+      const second = await manager.subscribe(streamId, () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await expect(jobStore.hasActiveSubscriber(streamId, createdAt, Date.now())).resolves.toBe(
+        true,
+      );
+      second?.unsubscribe();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await jobStore.claimFirstSubscriber(
+        streamId,
+        createdAt,
+        Date.now(),
+        'crashed-subscriber',
+        Date.now() - 1,
+      );
+      await expect(jobStore.hasActiveSubscriber(streamId, createdAt, Date.now())).resolves.toBe(
+        false,
+      );
+      await manager.destroy();
+    });
+
+    test('keeps the first-subscriber telemetry claim off the attachment path', async () => {
+      const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
+      let releaseClaim!: (claimed: boolean) => void;
+      const pendingClaim = new Promise<boolean>((resolve) => {
+        releaseClaim = resolve;
+      });
+      jest.spyOn(jobStore, 'claimFirstSubscriber').mockReturnValue(pendingClaim);
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+      });
+      manager.initialize();
+      const streamId = `nonblocking-attachment-${Date.now()}`;
+      await manager.createJob(streamId, 'user-1');
+
+      const attachment = manager.subscribe(streamId, () => {});
+      const result = await Promise.race([
+        attachment,
+        new Promise<'timed_out'>((resolve) => setTimeout(() => resolve('timed_out'), 50)),
+      ]);
+      expect(result).not.toBe('timed_out');
+      releaseClaim(true);
+      await pendingClaim;
+      if (result !== 'timed_out') {
+        result?.unsubscribe();
+      }
+      await manager.destroy();
+    });
+
     test('should return empty pendingEvents for pre-snapshot buffer events (in-memory)', async () => {
       const manager = createInMemoryManager();
       const streamId = `atomic-drain-${Date.now()}`;
@@ -1882,11 +2866,19 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_run_step',
-        data: { id: 'step-1', runId: 'run-1', index: 0, stepDetails: { type: 'message_creation' } },
+        data: {
+          id: 'step-1',
+          runId: 'run-1',
+          index: 0,
+          stepDetails: { type: 'message_creation' },
+        },
       });
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { id: 'step-1', delta: { content: { type: 'text', text: 'buffered' } } },
+        data: {
+          id: 'step-1',
+          delta: { content: { type: 'text', text: 'buffered' } },
+        },
       });
 
       const liveEvents: ServerSentEvent[] = [];
@@ -1939,7 +2931,9 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { delta: { content: { type: 'text', text: 'buffered-pre-snapshot' } } },
+        data: {
+          delta: { content: { type: 'text', text: 'buffered-pre-snapshot' } },
+        },
       });
 
       const liveEvents: ServerSentEvent[] = [];
@@ -1984,7 +2978,9 @@ describe('GenerationJobManager Integration Tests', () => {
 
         await manager.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: 'buffered-redis' } } },
+          data: {
+            delta: { content: { type: 'text', text: 'buffered-redis' } },
+          },
         });
         await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -2290,7 +3286,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 5; i++) {
         await replicaA.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: `token${i} ` } }, index: i },
+          data: {
+            delta: { content: { type: 'text', text: `token${i} ` } },
+            index: i,
+          },
         });
       }
 
@@ -2334,7 +3333,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 3; i++) {
         await replicaA.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: `pre-local-${i}` } }, index: i },
+          data: {
+            delta: { content: { type: 'text', text: `pre-local-${i}` } },
+            index: i,
+          },
         });
       }
 
@@ -2350,7 +3352,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 3; i++) {
         await replicaA.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: `post-local-${i}` } }, index: i + 3 },
+          data: {
+            delta: { content: { type: 'text', text: `post-local-${i}` } },
+            index: i + 3,
+          },
         });
       }
 
@@ -2423,7 +3428,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 3; i++) {
         await replicaA.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: `word${i} ` } }, index: i },
+          data: {
+            delta: { content: { type: 'text', text: `word${i} ` } },
+            index: i,
+          },
         });
       }
 
@@ -2486,11 +3494,17 @@ describe('GenerationJobManager Integration Tests', () => {
 
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { delta: { content: { type: 'text', text: 'pre-sub-0' } }, index: 0 },
+        data: {
+          delta: { content: { type: 'text', text: 'pre-sub-0' } },
+          index: 0,
+        },
       });
       await manager.emitChunk(streamId, {
         event: 'on_message_delta',
-        data: { delta: { content: { type: 'text', text: 'pre-sub-1' } }, index: 1 },
+        data: {
+          delta: { content: { type: 'text', text: 'pre-sub-1' } },
+          index: 1,
+        },
       });
 
       const receivedEvents: unknown[] = [];
@@ -2506,7 +3520,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 5; i++) {
         await manager.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: `post-sub-${i}` } }, index: i + 2 },
+          data: {
+            delta: { content: { type: 'text', text: `post-sub-${i}` } },
+            index: i + 2,
+          },
         });
       }
 
@@ -2553,7 +3570,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 0; i < 3; i++) {
         await manager.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: `chunk-${i}` } }, index: i },
+          data: {
+            delta: { content: { type: 'text', text: `chunk-${i}` } },
+            index: i,
+          },
         });
       }
 
@@ -2567,7 +3587,10 @@ describe('GenerationJobManager Integration Tests', () => {
       for (let i = 3; i < 6; i++) {
         await manager.emitChunk(streamId, {
           event: 'on_message_delta',
-          data: { delta: { content: { type: 'text', text: `chunk-${i}` } }, index: i },
+          data: {
+            delta: { content: { type: 'text', text: `chunk-${i}` } },
+            index: i,
+          },
         });
       }
 
@@ -2631,7 +3654,10 @@ describe('GenerationJobManager Integration Tests', () => {
       await sub2.ready;
       expect(callCount).toBe(2);
 
-      await transport.emitChunk(streamId, { event: 'test', data: { value: 'hello' } });
+      await transport.emitChunk(streamId, {
+        event: 'test',
+        data: { value: 'hello' },
+      });
       await new Promise((resolve) => setTimeout(resolve, 100));
 
       expect(receivedEvents.length).toBe(1);
@@ -2782,7 +3808,10 @@ describe('GenerationJobManager Integration Tests', () => {
         status: 'error',
         error: 'Generation predecessor handoff could not be confirmed',
         replacedJobs: [
-          expect.objectContaining({ createdAt: predecessor.createdAt, status: 'running' }),
+          expect.objectContaining({
+            createdAt: predecessor.createdAt,
+            status: 'running',
+          }),
         ],
       });
       bystanderSubscription?.unsubscribe();
@@ -2916,7 +3945,10 @@ describe('GenerationJobManager Integration Tests', () => {
       );
 
       const store = new RedisJobStore(ioredisClient!);
-      const moved = await store.transitionStatus(streamId, { from: 'running', to: 'complete' });
+      const moved = await store.transitionStatus(streamId, {
+        from: 'running',
+        to: 'complete',
+      });
       expect(moved).toBe(true);
 
       const claimed = await store.claimParkedSteers(streamId, 'user-1');

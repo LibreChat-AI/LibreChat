@@ -23,6 +23,21 @@ export function getHeaderModelName(
   );
 }
 
+/** A preset or model spec that configured the sender has chosen what the header
+ *  says, and `message.sender` already honours it. Revealing the model on hover
+ *  would undo that choice, so no hover label is produced at all; the sr-only
+ *  "Model:" text carries the same value and goes with it. Callers pass
+ *  `hasConfiguredSender` first, then the candidates `getHeaderModelName` takes. */
+export function getHeaderHoverLabel(
+  hasConfiguredSender: boolean | undefined,
+  ...candidates: Array<string | null | undefined>
+): string | undefined {
+  if (hasConfiguredSender === true) {
+    return undefined;
+  }
+  return getHeaderModelName(...candidates);
+}
+
 /** Both names occupy one grid cell so the slot is sized by the longer of the
  *  two and neither reflows the header as they cross over.
  *

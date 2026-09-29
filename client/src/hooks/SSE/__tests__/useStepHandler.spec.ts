@@ -1,3 +1,5 @@
+import React from 'react';
+import { useStore, useAtomValue } from 'jotai';
 import { RecoilRoot, useRecoilCallback } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import {
@@ -19,10 +21,15 @@ import type {
   Agents,
 } from 'librechat-data-provider';
 import type { PtcTrace, PtcTraceEntry } from '~/store/ptc';
+import {
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '~/components/Chat/Subagents/state';
 import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/store/ptc';
-import { subagentProgressByToolCallId, subagentProgressKey } from '~/store/subagents';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
+import { sandboxStartingByToolCallId } from '~/store/sandbox';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
+import { IsolatedAtomStore } from 'test/harness';
 
 /** `Constants` is a heterogeneous enum (`string | number`); annotate as
  *  `string` so the member is usable where a `string` field is expected. */
@@ -43,6 +50,7 @@ type TSubmissionForTest = {
   isTemporary: boolean;
   messages: TMessage[];
   isRegenerate?: boolean;
+  compact?: boolean;
   conversation: Partial<TConversation>;
   endpointOption: TEndpointOption;
   initialResponse: TMessage;
@@ -203,6 +211,40 @@ describe('useStepHandler', () => {
       expect(setMessagesCall).toContainEqual(
         expect.objectContaining({ messageId: 'response-msg-1' }),
       );
+    });
+
+    it('keeps an assistant compaction anchor when the response receives its durable ID', () => {
+      const userMessage = createUserMessage();
+      const anchor = createResponseMessage({ messageId: 'anchor-response' });
+      const initialResponse = createResponseMessage({
+        messageId: 'anchor-response_',
+        parentMessageId: anchor.messageId,
+      });
+      const submission = createSubmission({
+        userMessage: { ...anchor, text: '' },
+        messages: [userMessage, anchor],
+        initialResponse,
+        isRegenerate: true,
+        compact: true,
+      });
+      const runStep = createRunStep({ runId: 'summary-response' });
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      act(() => {
+        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP, data: runStep }, submission);
+      });
+
+      const messages = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      expect(messages.map(({ messageId }) => messageId)).toEqual([
+        userMessage.messageId,
+        anchor.messageId,
+        'summary-response',
+      ]);
+      expect(messages[1]).toBe(anchor);
+      expect(messages[2]).toMatchObject({
+        messageId: 'summary-response',
+        parentMessageId: anchor.messageId,
+      });
     });
 
     it('should warn and return early when no responseMessageId', () => {
@@ -1110,6 +1152,93 @@ describe('useStepHandler', () => {
         groupId: 2,
       });
     });
+
+    it('carries a steer landed on the placeholder into the renamed response', () => {
+      const user = createUserMessage({ messageId: 'user-1' });
+      const steerPart = {
+        type: ContentTypes.STEER,
+        [ContentTypes.STEER]: 'change of plan',
+        steerId: 'steer-1',
+      } as TMessageContentParts;
+      const placeholder = createResponseMessage({
+        messageId: 'user-1_',
+        parentMessageId: 'user-1',
+        content: [steerPart],
+      });
+      mockGetMessages.mockReturnValue([user, placeholder]);
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission({
+        userMessage: user,
+        messages: [user, placeholder],
+        initialResponse: createResponseMessage({ messageId: 'user-1_', parentMessageId: 'user-1' }),
+      });
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP,
+            data: createRunStep({ runId: 'server-resp', index: 1 }),
+          },
+          submission,
+        );
+      });
+
+      const calls = mockSetMessages.mock.calls;
+      const written = calls[calls.length - 1][0] as TMessage[];
+      expect(written.map((message) => message.messageId)).toEqual(['user-1', 'server-resp']);
+      expect(written[1].content?.[0]).toEqual(
+        expect.objectContaining({ type: ContentTypes.STEER, steerId: 'steer-1' }),
+      );
+    });
+
+    it('seeds a regenerated response from the submission placeholder, steer included', () => {
+      const user = createUserMessage({ messageId: 'user-1' });
+      const priorResponse = createResponseMessage({
+        messageId: 'prior-resp',
+        parentMessageId: 'user-1',
+        content: [{ type: ContentTypes.TEXT, text: 'old answer' }],
+      });
+      const steerPart = {
+        type: ContentTypes.STEER,
+        [ContentTypes.STEER]: 'change of plan',
+        steerId: 'steer-1',
+      } as TMessageContentParts;
+      const placeholder = createResponseMessage({
+        messageId: 'user-1_',
+        parentMessageId: 'user-1',
+        content: [steerPart],
+      });
+      mockGetMessages.mockReturnValue([user, priorResponse, placeholder]);
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission({
+        userMessage: user,
+        isRegenerate: true,
+        messages: [user, priorResponse],
+        initialResponse: placeholder,
+      });
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP,
+            data: createRunStep({ runId: 'server-resp', index: 1 }),
+          },
+          submission,
+        );
+      });
+
+      const calls = mockSetMessages.mock.calls;
+      const written = calls[calls.length - 1][0] as TMessage[];
+      const ids = written.map((message) => message.messageId);
+      expect(ids).toContain('server-resp');
+      expect(ids).not.toContain('user-1_');
+      const response = written.find((message) => message.messageId === 'server-resp');
+      expect(response?.content?.[0]).toEqual(
+        expect.objectContaining({ type: ContentTypes.STEER, steerId: 'steer-1' }),
+      );
+    });
   });
 
   describe('on_agent_update event', () => {
@@ -1783,6 +1912,105 @@ describe('useStepHandler', () => {
       );
       expect(toolCallContent?.tool_call?.auth).toEqual('oauth-token-123');
     });
+  });
+
+  describe('on_run_step_closed event', () => {
+    it('stamps the failure time onto the visible tool call', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      const closedAt = Date.now() - 1000;
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP_CLOSED,
+            data: {
+              id: 'step-tool-1',
+              index: 0,
+              type: StepTypes.TOOL_CALLS,
+              status: 'failed',
+              created_at: closedAt - 3000,
+              closed_at: closedAt,
+            } as Agents.RunStepClosedEvent,
+          },
+          submission,
+        );
+      });
+
+      const messages = mockSetMessages.mock.lastCall?.[0] as TMessage[];
+      const response = messages.find((message) => message.messageId === 'response-msg-1');
+      expect(response?.content?.[0]).toMatchObject({
+        type: ContentTypes.TOOL_CALL,
+        tool_call: {
+          runStepStatus: 'failed',
+          runStepDurationMs: 3000,
+          runStepClosedAt: closedAt,
+        },
+      });
+    });
+  });
+
+  describe('sandbox startup state', () => {
+    const wrapper = ({ children }: React.PropsWithChildren) =>
+      React.createElement(RecoilRoot, null, React.createElement(IsolatedAtomStore, null, children));
+
+    it.each(['completed', 'cleanup'] as const)(
+      'clears the Jotai startup signal on %s',
+      (terminal) => {
+        mockGetMessages.mockReturnValue([createResponseMessage()]);
+        const { result } = renderHook(
+          () => ({
+            ...useStepHandler(createHookParams()),
+            starting: useAtomValue(sandboxStartingByToolCallId('tool-call-1')),
+          }),
+          { wrapper },
+        );
+        const submission = createSubmission();
+        expect(result.current.starting).toBe(false);
+        act(() => {
+          result.current.stepHandler(
+            { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+            submission,
+          );
+          result.current.stepHandler(
+            { event: StepEvents.ON_SANDBOX_STARTING, data: { tool_call_id: 'tool-call-1' } },
+            submission,
+          );
+        });
+        expect(result.current.starting).toBe(true);
+        act(() => {
+          if (terminal === 'cleanup') {
+            result.current.clearStepMaps();
+            return;
+          }
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_COMPLETED,
+              data: {
+                result: {
+                  id: 'step-tool-1',
+                  index: 0,
+                  tool_call: {
+                    id: 'tool-call-1',
+                    name: 'test_tool',
+                    args: '{}',
+                    output: 'done',
+                    type: ToolCallTypes.TOOL_CALL,
+                  },
+                } as Agents.ToolEndEvent,
+              },
+            },
+            submission,
+          );
+        });
+        expect(result.current.starting).toBe(false);
+      },
+    );
   });
 
   describe('on_run_step_completed event', () => {
@@ -2705,7 +2933,7 @@ describe('useStepHandler', () => {
       expect(summaryPart).toMatchObject({ summarizing: false });
     });
 
-    it('ON_SUMMARIZE_COMPLETE error removes summarizing parts', () => {
+    it('ON_SUMMARIZE_COMPLETE error finalizes the part in place without splicing it out', () => {
       mockLastAnnouncementTimeRef.current = Date.now();
       const responseMessage = createResponseMessage();
       mockGetMessages.mockReturnValue([responseMessage]);
@@ -2776,11 +3004,21 @@ describe('useStepHandler', () => {
       expect(mockSetMessages).toHaveBeenCalled();
       const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
       const responseMsg = lastCall.find((m: TMessage) => m.messageId === 'response-msg-1');
+      /**
+       * Failed rounds must keep their slot: splicing shifts every later part
+       * under the index-keyed renderer and breaks the position == step-index
+       * invariant that updateContent writes rely on. The part is finalized in
+       * place with its streamed content preserved.
+       */
       const summaryParts =
         responseMsg?.content?.filter(
           (c: TMessageContentParts) => c.type === ContentTypes.SUMMARY,
         ) ?? [];
-      expect(summaryParts).toHaveLength(0);
+      expect(summaryParts).toHaveLength(1);
+      expect((summaryParts[0] as SummaryContentPart).summarizing).toBe(false);
+      expect((summaryParts[0] as SummaryContentPart).content).toEqual([
+        { type: ContentTypes.TEXT, text: 'partial' },
+      ]);
     });
 
     it('ON_SUMMARIZE_COMPLETE returns early when target message not in messageMap', () => {
@@ -2987,41 +3225,37 @@ describe('useStepHandler', () => {
 
   describe('on_subagent_update event', () => {
     /**
-     * These tests exercise the real Recoil `atomFamily` via a `RecoilRoot`
-     * wrapper and a `useRecoilCallback`-powered reader mounted alongside
-     * the hook under test. No mocks of the store module — only the same
-     * `setMessages`/`getMessages` spies the rest of this file uses.
+     * These tests exercise the real `atomFamily` through an isolated store and
+     * a reader mounted alongside the hook under test. No mocks of the store
+     * module — only the same `setMessages`/`getMessages` spies the rest of
+     * this file uses.
      */
+    const subagentStoreWrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(RecoilRoot, null, React.createElement(IsolatedAtomStore, null, children));
     const renderStepHandlerWithReader = (): {
       result: ReturnType<typeof renderHook>['result'];
       getProgress: (toolCallId: string, parentMessageId?: string, partIndex?: number) => unknown;
     } => {
-      /** Composite hook: the step handler under test + a `useRecoilCallback`
-       *  reader that shares the same `RecoilRoot` store. Reading via a
-       *  top-level `snapshot_UNSTABLE()` returns a different root, so the
-       *  writes done by the step handler wouldn't be visible. */
+      /** Composite hook: the step handler under test + a reader bound to the
+       *  same store it writes through. Reading from the default store instead
+       *  would answer for a different one, so its writes wouldn't be visible. */
       const hookResult = renderHook(
         () => {
           const stepHandler = useStepHandler(createHookParams());
-          const read = useRecoilCallback(
-            ({ snapshot }) =>
-              (
-                toolCallId: string,
-                parentMessageId: string = 'response-msg-1',
-                partIndex: number = 0,
-              ): unknown =>
-                snapshot
-                  .getLoadable(
-                    subagentProgressByToolCallId(
-                      subagentProgressKey(parentMessageId, toolCallId, partIndex),
-                    ),
-                  )
-                  .valueOrThrow(),
-            [],
-          );
+          const jotaiStore = useStore();
+          const read = (
+            toolCallId: string,
+            parentMessageId: string = 'response-msg-1',
+            partIndex: number = 0,
+          ): unknown =>
+            jotaiStore.get(
+              subagentProgressByToolCallId(
+                subagentProgressKey(parentMessageId, toolCallId, partIndex),
+              ),
+            );
           return { ...stepHandler, read };
         },
-        { wrapper: RecoilRoot },
+        { wrapper: subagentStoreWrapper },
       );
 
       const getProgress = (
@@ -3082,6 +3316,47 @@ describe('useStepHandler', () => {
       ...overrides,
     });
 
+    it('signals parent-index discovery on child lifecycle events, not every progress delta', () => {
+      const onSubagentIndexChange = jest.fn();
+      const { result } = renderHook(
+        () => useStepHandler({ ...createHookParams(), onSubagentIndexChange }),
+        { wrapper: subagentStoreWrapper },
+      );
+      const submission = createSubmission();
+
+      act(() => {
+        for (const phase of ['start', 'run_step_delta', 'stop', 'error'] as const) {
+          result.current.stepHandler(
+            { event: StepEvents.ON_SUBAGENT_UPDATE, data: makeUpdate({ phase }) },
+            submission,
+          );
+        }
+      });
+      expect(onSubagentIndexChange.mock.calls).toEqual([['conv-1'], ['conv-1'], ['conv-1']]);
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_SUBAGENT_UPDATE, data: makeUpdate({ phase: 'start' }) },
+          createSubmission({
+            userMessage: createUserMessage({ conversationId: String(Constants.NEW_CONVO) }),
+            initialResponse: createResponseMessage({ conversationId: String(Constants.NEW_CONVO) }),
+          }),
+        );
+      });
+      expect(onSubagentIndexChange).toHaveBeenCalledTimes(3);
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_SUBAGENT_UPDATE, data: makeUpdate({ phase: 'start' }) },
+          createSubmission({
+            userMessage: createUserMessage({ conversationId: String(Constants.NEW_CONVO) }),
+            initialResponse: createResponseMessage({ conversationId: 'saved-parent' }),
+          }),
+        );
+      });
+      expect(onSubagentIndexChange).toHaveBeenLastCalledWith('saved-parent');
+    });
+
     it('correlates updates to a tool call via parentToolCallId (deterministic path)', () => {
       const { result, getProgress } = renderStepHandlerWithReader();
       const { submission } = seedResponseWithSubagentToolCalls(result, ['call_A']);
@@ -3127,6 +3402,32 @@ describe('useStepHandler', () => {
       expect(bucket.status).toBe('stop');
       expect(bucket.latestLabel).toBe('Subagent "self" finished');
       expect(bucket.subagentType).toBe('self');
+    });
+
+    /** An `atomFamily` caches a member per key for the life of the tab, and every
+     *  invocation key is unique. The drain boundary exists to keep that bounded,
+     *  so it has to release the members, not merely blank them. */
+    it('frees the family members it drains at the conversation boundary', () => {
+      const { result, getProgress } = renderStepHandlerWithReader();
+      const { submission } = seedResponseWithSubagentToolCalls(result, ['call_A']);
+
+      act(() => {
+        (result.current as any).stepHandler(
+          {
+            event: StepEvents.ON_SUBAGENT_UPDATE,
+            data: makeUpdate({ parentToolCallId: 'call_A', phase: 'start' }),
+          },
+          submission,
+        );
+      });
+      const invocationKey = subagentProgressKey('response-msg-1', 'call_A', 0);
+      const held = subagentProgressByToolCallId(invocationKey);
+      expect(getProgress('call_A')).not.toBeNull();
+
+      act(() => (result.current as any).resetSubagentAtoms());
+
+      expect(getProgress('call_A')).toBeNull();
+      expect(subagentProgressByToolCallId(invocationKey)).not.toBe(held);
     });
 
     it('falls back to oldest-unclaimed tool call when parentToolCallId is absent', () => {

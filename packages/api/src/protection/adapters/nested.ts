@@ -71,10 +71,14 @@ export interface VisitNestedStringsOptions {
 export function getBoundedOwnEnumerableEntries(
   value: object,
   limit: number,
-): { readonly entries: [string, unknown][]; readonly complete: boolean } {
+): {
+  readonly entries: [string, unknown][];
+  readonly complete: boolean;
+  readonly reason?: 'object_entries' | 'reflection_error';
+} {
   const entries: [string, unknown][] = [];
   if (limit !== Number.POSITIVE_INFINITY && (!Number.isSafeInteger(limit) || limit < 0)) {
-    return { entries, complete: false };
+    return { entries, complete: false, reason: 'object_entries' };
   }
   try {
     for (const key in value) {
@@ -82,12 +86,12 @@ export function getBoundedOwnEnumerableEntries(
         continue;
       }
       if (entries.length >= limit) {
-        return { entries, complete: false };
+        return { entries, complete: false, reason: 'object_entries' };
       }
       entries.push([key, (value as { readonly [key: string]: unknown })[key]]);
     }
   } catch {
-    return { entries, complete: false };
+    return { entries, complete: false, reason: 'reflection_error' };
   }
   return { entries, complete: true };
 }
@@ -109,14 +113,30 @@ export type ContentTraversalScope = {
 const CONTENT_TRAVERSAL_FRAGMENTS = new WeakMap<object, readonly TextContentFragment[]>();
 const CONTENT_TRAVERSAL_SCOPES = new WeakMap<object, readonly ContentTraversalScope[]>();
 
+export type ContentTraversalLimitReason =
+  | 'max_depth'
+  | 'max_nodes'
+  | 'array_length'
+  | 'object_entries'
+  | 'reflection_error';
+
+export interface ContentTraversalDiagnostics {
+  readonly operation: 'omit_resolved_file_locators';
+  readonly reason: ContentTraversalLimitReason;
+  readonly visitedNodes: number;
+  readonly depth: number;
+}
+
 export class ContentTraversalLimitError extends Error {
   public readonly code = 'content_filter_uninspectable';
   public readonly statusCode = 400;
   public readonly body: UninspectableNestedContentResponse;
+  public readonly diagnostics?: ContentTraversalDiagnostics;
 
   constructor(
     fragments: readonly TextContentFragment[] = [],
     scopes: readonly ContentTraversalScope[] = [],
+    diagnostics?: ContentTraversalDiagnostics,
   ) {
     const primaryScope = scopes.find(({ fields }) => fields.length > 0);
     const body: UninspectableNestedContentResponse = {
@@ -128,6 +148,7 @@ export class ContentTraversalLimitError extends Error {
     super(body.message);
     this.name = 'ContentTraversalLimitError';
     this.body = body;
+    this.diagnostics = diagnostics;
     CONTENT_TRAVERSAL_FRAGMENTS.set(this, fragments);
     CONTENT_TRAVERSAL_SCOPES.set(this, scopes);
     Object.setPrototypeOf(this, ContentTraversalLimitError.prototype);
@@ -187,6 +208,12 @@ function hasActivePatterns(
   );
 }
 
+type PiiActionConfig = Pick<NonNullable<NonNullable<FiltersConfig['messages']>['pii']>, 'action'>;
+
+function blocksFindings(pii: PiiActionConfig | null | undefined): boolean {
+  return pii?.action !== 'audit';
+}
+
 function isScopedTraversalProtected(
   scopes: readonly ContentTraversalScope[],
   source: ContentSource,
@@ -195,11 +222,12 @@ function isScopedTraversalProtected(
         readonly fields?: readonly string[];
         readonly starterPatterns?: readonly string[];
         readonly customPatterns?: readonly unknown[];
+        readonly action?: PiiActionConfig['action'];
       }
     | null
     | undefined,
 ): boolean {
-  if (!hasActivePatterns(pii)) {
+  if (!hasActivePatterns(pii) || !blocksFindings(pii)) {
     return false;
   }
   const sourceScopes = scopes.filter((scope) => scope.source === source);
@@ -216,7 +244,10 @@ function isScopedFileTraversalProtected(
   scopes: readonly ContentTraversalScope[],
   pii: NonNullable<FiltersConfig['files']>['pii'],
 ): boolean {
-  if (pii == null || (!hasActivePatterns(pii) && pii.uninspectable !== 'block')) {
+  if (
+    pii == null ||
+    ((!hasActivePatterns(pii) || !blocksFindings(pii)) && pii.uninspectable !== 'block')
+  ) {
     return false;
   }
   const fileScopes = scopes.filter((scope) => scope.source === 'file');
@@ -237,6 +268,7 @@ export function isNestedMessageTraversalProtected(params: {
   if (
     hasActivePatterns(params.legacyPii) ||
     (hasActivePatterns(params.filters?.messages?.pii) &&
+      blocksFindings(params.filters?.messages?.pii) &&
       (isFieldEnabled(params.filters?.messages?.pii, 'content_part') ||
         isFieldEnabled(params.filters?.messages?.pii, 'assembled_context')))
   ) {
@@ -246,6 +278,7 @@ export function isNestedMessageTraversalProtected(params: {
   if (
     roles.some((role) => role === 'system' || role === 'developer') &&
     hasActivePatterns(params.filters?.agentInstructions?.pii) &&
+    blocksFindings(params.filters?.agentInstructions?.pii) &&
     isFieldEnabled(params.filters?.agentInstructions?.pii, 'instructions')
   ) {
     return true;
@@ -253,6 +286,7 @@ export function isNestedMessageTraversalProtected(params: {
   return (
     roles.some((role) => role === 'tool') &&
     hasActivePatterns(params.filters?.toolArguments?.pii) &&
+    blocksFindings(params.filters?.toolArguments?.pii) &&
     isFieldEnabled(params.filters?.toolArguments?.pii, 'output')
   );
 }
@@ -262,7 +296,7 @@ export function isModelParameterTraversalProtected(params: {
   readonly filters?: FiltersConfig;
 }): boolean {
   const pii = params.filters?.modelParameters?.pii;
-  if (!hasActivePatterns(pii)) {
+  if (!hasActivePatterns(pii) || !blocksFindings(pii)) {
     return false;
   }
   const scopes = getContentTraversalScopes(params.error).filter(

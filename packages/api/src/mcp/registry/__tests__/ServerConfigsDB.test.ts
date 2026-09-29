@@ -24,6 +24,7 @@ let MCPOAuthHandler: MCPOAuthHandlerType;
 let createModels: CreateModelsType;
 let createMethods: CreateMethodsType;
 let RoleBits: RoleBitsType;
+let getMCPAppToolsPublicationGeneration: typeof import('~/mcp/toolsChanged').getMCPAppToolsPublicationGeneration;
 
 // Test data helpers
 const createSSEConfig = (
@@ -71,6 +72,7 @@ beforeAll(async () => {
   ServerConfigsDB = serverConfigsModule.ServerConfigsDB;
   const oauthModule = await import('~/mcp/oauth');
   MCPOAuthHandler = oauthModule.MCPOAuthHandler;
+  ({ getMCPAppToolsPublicationGeneration } = await import('~/mcp/toolsChanged'));
 
   mongoServer = await MongoMemoryServer.create();
   const mongoUri = mongoServer.getUri();
@@ -664,7 +666,7 @@ describe('ServerConfigsDB', () => {
       expect(retrieved?.apiKey?.key).toBe('new-api-key');
     });
 
-    it('should preserve apiKey.key when authorization_type changes (bearer to custom)', async () => {
+    it('should require apiKey.key when authorization_type changes', async () => {
       const config: ParsedServerConfig = {
         type: 'sse',
         url: 'https://example.com/mcp',
@@ -686,16 +688,19 @@ describe('ServerConfigsDB', () => {
           source: 'admin',
           authorization_type: 'custom',
           custom_header: 'X-My-Api-Key',
-          // key not provided - should be preserved
         },
       };
-      await serverConfigsDB.update(created.serverName, updatedConfig, userId);
+      await expect(
+        serverConfigsDB.update(created.serverName, updatedConfig, userId),
+      ).rejects.toMatchObject({
+        code: 'MCP_API_KEY_REENTRY_REQUIRED',
+        changedFields: ['apiKey.authorization_type', 'apiKey.custom_header'],
+      });
 
-      // Verify the key is preserved and authorization_type/custom_header updated
       const retrieved = await serverConfigsDB.get(created.serverName, userId);
       expect(retrieved?.apiKey?.key).toBe('my-api-key');
-      expect(retrieved?.apiKey?.authorization_type).toBe('custom');
-      expect(retrieved?.apiKey?.custom_header).toBe('X-My-Api-Key');
+      expect(retrieved?.apiKey?.authorization_type).toBe('bearer');
+      expect(retrieved?.apiKey?.custom_header).toBeUndefined();
     });
 
     it('should NOT preserve apiKey.key when switching from admin to user source', async () => {
@@ -1040,6 +1045,157 @@ describe('ServerConfigsDB', () => {
     it('should handle non-existent server gracefully', async () => {
       // Should not throw
       await expect(serverConfigsDB.remove('non-existent-server', userId)).resolves.toBeUndefined();
+    });
+  });
+
+  describe.each(['sse', 'streamable-http'] as const)('%s header persistence', (type) => {
+    const safeHeaders = { 'X-Safe': 'value', Authorization: 'Bearer {{MCP_API_KEY}}' };
+    const unsafeHeaders = {
+      ...safeHeaders,
+      'X-Secret': '${SECRET}:{{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+    };
+    const sanitizedHeaders = { ...safeHeaders, 'X-Secret': ':' };
+
+    it.each([
+      { name: 'omitted', maps: {}, expected: {} },
+      {
+        name: 'explicit undefined',
+        maps: { headers: undefined, requestHeaders: undefined },
+        expected: {},
+      },
+      {
+        name: 'empty',
+        maps: { headers: {}, requestHeaders: {} },
+        expected: { headers: {}, requestHeaders: {} },
+      },
+      {
+        name: 'headers only',
+        maps: { headers: unsafeHeaders },
+        expected: { headers: sanitizedHeaders },
+      },
+      {
+        name: 'requestHeaders only',
+        maps: { requestHeaders: unsafeHeaders },
+        expected: { requestHeaders: sanitizedHeaders },
+      },
+      {
+        name: 'both populated',
+        maps: { headers: unsafeHeaders, requestHeaders: unsafeHeaders },
+        expected: { headers: sanitizedHeaders, requestHeaders: sanitizedHeaders },
+      },
+    ])('preserves $name maps through add, update and upsert', async ({ maps, expected }) => {
+      const config = {
+        type,
+        url: 'https://example.com/mcp',
+        title: 'Header Persistence',
+        requiresOAuth: true,
+        ...maps,
+      } satisfies ParsedServerConfig;
+      const original = structuredClone(config);
+      const created = await serverConfigsDB.add('temp-name', config, userId);
+      const assertRoundTrip = async (minimized = false) => {
+        const stored = await mongoose.models.MCPServer.collection.findOne({
+          serverName: created.serverName,
+        });
+        const result = await serverConfigsDB.get(created.serverName, userId);
+        const all = await serverConfigsDB.getAll(userId);
+        expect(result).toBeDefined();
+        for (const key of ['headers', 'requestHeaders'] as const) {
+          const value = expected[key];
+          if (value != null && (!minimized || Object.keys(value).length > 0)) {
+            expect(stored?.config[key]).toEqual(value);
+            expect(result).toHaveProperty(key, expected[key]);
+          } else {
+            expect(stored?.config).not.toHaveProperty(key);
+            expect(result).not.toHaveProperty(key);
+          }
+        }
+        expect(all[created.serverName]).toEqual(result);
+        expect(MCPOptionsSchema.safeParse(result).success).toBe(true);
+        expect(() => getMCPAppToolsPublicationGeneration(result!)).not.toThrow();
+      };
+
+      /** Mongoose minimizes empty objects on create, but preserves them on update. */
+      await assertRoundTrip(true);
+      for (const method of ['update', 'upsert'] as const) {
+        await serverConfigsDB.update(
+          created.serverName,
+          {
+            ...config,
+            headers: { 'X-Old': 'remove me' },
+            requestHeaders: { 'X-Old': 'remove me too' },
+          },
+          userId,
+        );
+        await serverConfigsDB[method](created.serverName, config, userId);
+        await assertRoundTrip();
+      }
+      expect(config).toEqual(original);
+    });
+
+    it.each([
+      { name: 'headers null', maps: { headers: null }, expected: {} },
+      { name: 'requestHeaders null', maps: { requestHeaders: null }, expected: {} },
+      { name: 'both null', maps: { headers: null, requestHeaders: null }, expected: {} },
+      {
+        name: 'headers null with request headers',
+        maps: { headers: null, requestHeaders: safeHeaders },
+        expected: { requestHeaders: safeHeaders },
+      },
+      {
+        name: 'requestHeaders null with headers',
+        maps: { headers: safeHeaders, requestHeaders: null },
+        expected: { headers: safeHeaders },
+      },
+      {
+        name: 'headers null with empty request headers',
+        maps: { headers: null, requestHeaders: {} },
+        expected: { requestHeaders: {} },
+      },
+      {
+        name: 'requestHeaders null with empty headers',
+        maps: { headers: {}, requestHeaders: null },
+        expected: { headers: {} },
+      },
+    ])('normalizes historical $name on single and bulk reads', async ({ maps, expected }) => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        {
+          type,
+          url: 'https://example.com/mcp',
+          title: 'Historical Headers',
+          requiresOAuth: true,
+        },
+        userId,
+      );
+      await mongoose.models.MCPServer.collection.updateOne(
+        { serverName: created.serverName },
+        {
+          $set: { config: { type, url: 'https://example.com/mcp', requiresOAuth: true, ...maps } },
+        },
+      );
+      const stored = await mongoose.models.MCPServer.collection.findOne({
+        serverName: created.serverName,
+      });
+      expect(MCPOptionsSchema.safeParse(stored?.config).success).toBe(false);
+
+      const result = await serverConfigsDB.get(created.serverName, userId);
+      const all = await serverConfigsDB.getAll(userId);
+      expect(result).toBeDefined();
+      for (const key of ['headers', 'requestHeaders'] as const) {
+        if (expected[key] != null) {
+          expect(result).toHaveProperty(key, expected[key]);
+        } else {
+          expect(result).not.toHaveProperty(key);
+        }
+      }
+      expect(all[created.serverName]).toEqual(result);
+      expect(MCPOptionsSchema.safeParse(result).success).toBe(true);
+      const generation = getMCPAppToolsPublicationGeneration(result!);
+      expect(getMCPAppToolsPublicationGeneration(all[created.serverName])).toBe(generation);
+      expect(
+        await mongoose.models.MCPServer.collection.findOne({ serverName: created.serverName }),
+      ).toEqual(stored);
     });
   });
 

@@ -17,10 +17,14 @@ let Balance: mongoose.Model<IBalance>;
 
 const findBalanceByUser = (userId: string) => Balance.findOne({ user: userId }).lean<IBalance>();
 
-const upsertBalanceFields = (userId: string, fields: IBalanceUpdate) =>
+const upsertBalanceFields = (
+  userId: string,
+  fields: IBalanceUpdate,
+  insertOnly: IBalanceUpdate = {},
+) =>
   Balance.findOneAndUpdate(
     { user: userId },
-    { $set: fields },
+    { $set: fields, $setOnInsert: insertOnly },
     { upsert: true, new: true },
   ).lean<IBalance>();
 
@@ -59,6 +63,30 @@ describe('createSetBalanceConfig', () => {
 
   const mockNext: NextFunction = jest.fn();
   describe('Basic Functionality', () => {
+    test('does not overwrite credits another writer set after the balance was read', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const getAppConfig = jest.fn().mockResolvedValue({
+        balance: { enabled: true, startBalance: 1000 },
+      });
+      const findThenCharge = async (id: string) => {
+        const record = await findBalanceByUser(id);
+        await Balance.create({ user: id, tokenCredits: 50 });
+        return record;
+      };
+
+      const middleware = createSetBalanceConfig({
+        getAppConfig,
+        findBalanceByUser: findThenCharge,
+        upsertBalanceFields,
+      });
+      const res = createMockResponse();
+
+      await middleware(createMockRequest(userId) as ServerRequest, res as ServerResponse, mockNext);
+
+      expect((await Balance.findOne({ user: userId }).lean())?.tokenCredits).toBe(50);
+      expect((res.locals as { balanceData?: IBalance }).balanceData?.tokenCredits).toBe(50);
+    });
+
     test('should create balance record for new user with start balance', async () => {
       const userId = new mongoose.Types.ObjectId();
       const getAppConfig = jest.fn().mockResolvedValue({

@@ -1,3 +1,5 @@
+const { maxWorkers } = require('../config/jest.workers.cjs');
+
 const esModules = [
   'openid-client',
   'oauth4webapi',
@@ -7,6 +9,13 @@ const esModules = [
   '@langchain/langgraph-sdk',
   '@mistralai/mistralai',
   'uuid',
+  'sanitize-html',
+  'htmlparser2',
+  'domhandler',
+  'domelementtype',
+  'domutils',
+  'dom-serializer',
+  'entities',
 ].join('|');
 
 module.exports = {
@@ -14,7 +23,7 @@ module.exports = {
   clearMocks: true,
   roots: ['<rootDir>'],
   coverageDirectory: 'coverage',
-  maxWorkers: '50%',
+  maxWorkers,
   testTimeout: 30000, // 30 seconds timeout for all tests
   setupFiles: ['./test/jestSetup.js', './test/__mocks__/logger.js'],
   moduleNameMapper: {
@@ -27,7 +36,10 @@ module.exports = {
     '\\.[jt]sx?$': [
       'babel-jest',
       {
-        presets: [['@babel/preset-env', { targets: { node: 'current' } }]],
+        presets: [
+          ['@babel/preset-env', { targets: { node: 'current' } }],
+          '@babel/preset-typescript',
+        ],
       },
     ],
   },

@@ -9,7 +9,7 @@ const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider'
 const {
   isEnabled,
   logHeaders,
-  safeStringify,
+  logOpenIdRequestBody,
   findOpenIDUser,
   getOpenIdEmail,
   getOpenIdIssuer,
@@ -49,15 +49,7 @@ async function customFetch(url, options) {
     logger.debug(`[openidStrategy] Request method: ${options.method || 'GET'}`);
     logger.debug(`[openidStrategy] Request headers: ${logHeaders(options.headers)}`);
     if (options.body) {
-      let bodyForLogging = '';
-      if (options.body instanceof URLSearchParams) {
-        bodyForLogging = options.body.toString();
-      } else if (typeof options.body === 'string') {
-        bodyForLogging = options.body;
-      } else {
-        bodyForLogging = safeStringify(options.body);
-      }
-      logger.debug(`[openidStrategy] Request body: ${bodyForLogging}`);
+      logger.debug(`[openidStrategy] Request body: ${logOpenIdRequestBody(options.body)}`);
     }
   }
 

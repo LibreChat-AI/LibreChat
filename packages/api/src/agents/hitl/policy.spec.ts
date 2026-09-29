@@ -9,8 +9,10 @@ import {
   buildToolApprovalPayload,
   buildAskUserQuestionPayload,
   buildPendingAction,
+  isToolApprovalPayloadValid,
   toClientPendingAction,
   computeAgentRequestFingerprint,
+  computeLegacyAgentRequestFingerprint,
   captureResumeModelParameters,
   sanitizeResumeModelParameters,
   pickResumeContext,
@@ -72,15 +74,52 @@ describe('isToolDeniedByApprovalPolicy', () => {
 });
 
 describe('resolveToolApprovalPolicy', () => {
-  test('returns the endpoint policy unchanged (single layer wired today)', () => {
+  test('returns the endpoint policy unchanged when BYOM is not active', () => {
     const endpoint: TToolApprovalPolicy = { enabled: true, mode: 'default', deny: ['rm'] };
-    // Identity, not a copy — the resolver is a passthrough until more layers ship.
+    // Identity, not a copy — non-BYOM behavior remains unchanged.
     expect(resolveToolApprovalPolicy({ endpoint })).toBe(endpoint);
   });
 
   test('returns undefined when there is no endpoint policy', () => {
     expect(resolveToolApprovalPolicy({})).toBeUndefined();
     expect(resolveToolApprovalPolicy({ endpoint: undefined })).toBeUndefined();
+  });
+
+  test('enables the safe BYOM baseline without affecting unrelated tools', () => {
+    expect(resolveToolApprovalPolicy({ attachedCodeEnvironment: true })).toEqual({
+      enabled: true,
+      mode: 'bypass',
+    });
+  });
+
+  test.each(['default', 'dontAsk', 'bypass'] as const)(
+    'preserves an enabled endpoint %s policy when BYOM is active',
+    (mode) => {
+      const endpoint: TToolApprovalPolicy = {
+        enabled: true,
+        mode,
+        deny: ['dangerous_tool'],
+      };
+      expect(resolveToolApprovalPolicy({ endpoint, attachedCodeEnvironment: true })).toBe(endpoint);
+    },
+  );
+
+  test('uses the BYOM bypass baseline for a configured but inactive endpoint policy', () => {
+    expect(
+      resolveToolApprovalPolicy({
+        endpoint: { mode: 'dontAsk', deny: ['dangerous_tool'] },
+        attachedCodeEnvironment: true,
+      }),
+    ).toEqual({
+      enabled: true,
+      mode: 'bypass',
+      deny: ['dangerous_tool'],
+    });
+  });
+
+  test('preserves the administrator emergency override for BYOM', () => {
+    const endpoint: TToolApprovalPolicy = { enabled: false };
+    expect(resolveToolApprovalPolicy({ endpoint, attachedCodeEnvironment: true })).toBe(endpoint);
   });
 
   test('ignores the reserved agent/skills layers for now (behaviour-preserving)', () => {
@@ -272,6 +311,54 @@ describe('buildPendingAction', () => {
     expect(typeof action.createdAt).toBe('number');
   });
 
+  test('rejects duplicate tool-call ids before the approval is persisted', () => {
+    const duplicatePayload: Agents.ToolApprovalInterruptPayload = {
+      type: 'tool_approval',
+      action_requests: [
+        { name: 'shell', arguments: { command: 'rm marker' }, tool_call_id: 'duplicate' },
+        { name: 'shell', arguments: { command: 'ls' }, tool_call_id: 'duplicate' },
+      ],
+      review_configs: [
+        {
+          action_name: 'shell',
+          tool_call_id: 'duplicate',
+          allowed_decisions: ['approve', 'reject'],
+        },
+        {
+          action_name: 'shell',
+          tool_call_id: 'duplicate',
+          allowed_decisions: ['approve', 'reject'],
+        },
+      ],
+    };
+
+    expect(isToolApprovalPayloadValid(duplicatePayload)).toBe(false);
+    expect(() => buildPendingAction(duplicatePayload, ctx)).toThrow(
+      'Invalid tool approval payload',
+    );
+  });
+
+  test('rejects review policies that do not map one-to-one to the requested calls', () => {
+    const mismatchedPayload: Agents.ToolApprovalInterruptPayload = {
+      type: 'tool_approval',
+      action_requests: [
+        { name: 'read_file', arguments: { path: 'safe.txt' }, tool_call_id: 'call-1' },
+      ],
+      review_configs: [
+        {
+          action_name: 'read_file',
+          tool_call_id: 'call-2',
+          allowed_decisions: ['approve', 'reject'],
+        },
+      ],
+    };
+
+    expect(isToolApprovalPayloadValid(mismatchedPayload)).toBe(false);
+    expect(() => buildPendingAction(mismatchedPayload, ctx)).toThrow(
+      'Invalid tool approval payload',
+    );
+  });
+
   test('wraps an ask_user_question payload with the same envelope', () => {
     const askPayload: Agents.AskUserQuestionInterruptPayload = {
       type: 'ask_user_question',
@@ -342,9 +429,14 @@ describe('toClientPendingAction', () => {
       streamId: 'stream-1',
       conversationId: 'conv-1',
       requestFingerprint: 'fp-hash',
+      requestFingerprintV2: 'fp-v2-hash',
       resumeContext: {
         endpoint: 'agents',
         model_parameters: { temperature: 0.5 },
+      },
+      codeExecutionBinding: {
+        version: 1,
+        targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
       },
     });
 
@@ -352,12 +444,19 @@ describe('toClientPendingAction', () => {
     expect(clientSafe).toBeDefined();
     expect(clientSafe?.resumeContext).toBeUndefined();
     expect(clientSafe?.requestFingerprint).toBeUndefined();
+    expect(clientSafe?.requestFingerprintV2).toBeUndefined();
+    expect(clientSafe?.codeExecutionBinding).toBeUndefined();
     expect(clientSafe?.actionId).toBe(full.actionId);
     expect(clientSafe?.streamId).toBe('stream-1');
     expect(clientSafe?.payload).toBe(full.payload);
     // Non-mutating: the stored record keeps its replay state for the resume route.
     expect(full.resumeContext).toBeDefined();
     expect(full.requestFingerprint).toBe('fp-hash');
+    expect(full.requestFingerprintV2).toBe('fp-v2-hash');
+    expect(full.codeExecutionBinding).toEqual({
+      version: 1,
+      targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
+    });
   });
 
   test('passes through nullish input', () => {
@@ -610,6 +709,51 @@ describe('computeAgentRequestFingerprint', () => {
     expect(computeAgentRequestFingerprint(base)).not.toBe(
       computeAgentRequestFingerprint({ ...base, agent_id: 'agent-2' }),
     );
+    expect(computeAgentRequestFingerprint(base)).not.toBe(
+      computeAgentRequestFingerprint({ ...base, codeApprovalMode: 'acceptEdits' }),
+    );
+    expect(computeAgentRequestFingerprint(base)).not.toBe(
+      computeAgentRequestFingerprint({ ...base, codeApprovalMode: null }),
+    );
+    expect(computeAgentRequestFingerprint(base)).not.toBe(
+      computeAgentRequestFingerprint({ ...base, codeEnvironmentMode: 'without_attached' }),
+    );
+    expect(computeAgentRequestFingerprint(base)).not.toBe(
+      computeAgentRequestFingerprint({
+        ...base,
+        codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-a' }],
+      }),
+    );
+    expect(
+      computeAgentRequestFingerprint({
+        ...base,
+        codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-a' }],
+      }),
+    ).not.toBe(
+      computeAgentRequestFingerprint({
+        ...base,
+        codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-b' }],
+      }),
+    );
+  });
+
+  it('keeps a legacy-compatible digest while the current digest pins code environments', () => {
+    const base = { endpoint: 'agents', agent_id: 'agent-1' };
+    const withWorkspace = {
+      ...base,
+      codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-a' }],
+    };
+    const withAttachedWorkspace = { ...withWorkspace, codeEnvironmentMode: 'attached' as const };
+
+    expect(computeLegacyAgentRequestFingerprint(base)).not.toBe(
+      computeLegacyAgentRequestFingerprint(withAttachedWorkspace),
+    );
+    expect(computeLegacyAgentRequestFingerprint(withWorkspace)).toBe(
+      computeLegacyAgentRequestFingerprint(withAttachedWorkspace),
+    );
+    expect(computeAgentRequestFingerprint(base)).not.toBe(
+      computeAgentRequestFingerprint(withAttachedWorkspace),
+    );
   });
 
   it('differs when promptPrefix changes (ephemeral instructions)', () => {
@@ -663,6 +807,9 @@ describe('pickResumeContext / applyResumeContext', () => {
       manualSkills: ['code-reviewer'],
       // Graph-determining: feeds the ephemeral agent id / checkpoint namespace (#14253).
       modelLabel: 'My Opus',
+      codeApprovalMode: 'acceptEdits',
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-a' }],
       conversationId: 'c',
       decisions: [],
       actionId: 'x',
@@ -677,7 +824,64 @@ describe('pickResumeContext / applyResumeContext', () => {
       timezone: 'America/New_York',
       manualSkills: ['code-reviewer'],
       modelLabel: 'My Opus',
+      codeApprovalMode: 'acceptEdits',
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-a' }],
     });
+  });
+
+  it('pins code approval mode across resume and removes a forged upgrade', () => {
+    const restored: Record<string, unknown> = {
+      conversationId: 'c',
+      codeApprovalMode: 'acceptEdits',
+    };
+    applyResumeContext(restored, { endpoint: 'agents', codeApprovalMode: 'ask' });
+    expect(restored.codeApprovalMode).toBe('ask');
+
+    const injected: Record<string, unknown> = {
+      conversationId: 'c',
+      codeApprovalMode: 'acceptEdits',
+    };
+    applyResumeContext(injected, { endpoint: 'agents' });
+    expect('codeApprovalMode' in injected).toBe(false);
+  });
+
+  it('pins the attached workspace across resume and removes a forged selection', () => {
+    const restored: Record<string, unknown> = {
+      conversationId: 'c',
+      codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-b' }],
+    };
+    applyResumeContext(restored, {
+      endpoint: 'agents',
+      codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-a' }],
+    });
+    expect(restored.codeWorkspaces).toEqual([{ environmentId: 'env-a', workspaceId: 'project-a' }]);
+
+    const injected: Record<string, unknown> = {
+      conversationId: 'c',
+      codeWorkspaces: [{ environmentId: 'env-a', workspaceId: 'project-b' }],
+    };
+    applyResumeContext(injected, { endpoint: 'agents' });
+    expect('codeWorkspaces' in injected).toBe(false);
+  });
+
+  it('pins the code-environment decision across resume and removes a forged mode', () => {
+    const restored: Record<string, unknown> = {
+      conversationId: 'c',
+      codeEnvironmentMode: 'attached',
+    };
+    applyResumeContext(restored, {
+      endpoint: 'agents',
+      codeEnvironmentMode: 'without_attached',
+    });
+    expect(restored.codeEnvironmentMode).toBe('without_attached');
+
+    const injected: Record<string, unknown> = {
+      conversationId: 'c',
+      codeEnvironmentMode: 'attached',
+    };
+    applyResumeContext(injected, { endpoint: 'agents' });
+    expect('codeEnvironmentMode' in injected).toBe(false);
   });
 
   it('replays a dropped modelLabel so the ephemeral agent id stays stable (#14253)', () => {

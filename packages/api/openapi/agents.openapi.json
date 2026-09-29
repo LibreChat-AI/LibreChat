@@ -1,0 +1,3949 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LibreChat Agents API",
+    "version": "0.1.0",
+    "description": "The public agent and skill management endpoints of the LibreChat Agents API. This API is in beta and may change."
+  },
+  "servers": [
+    {
+      "url": "agents/v1",
+      "description": "Relative to where this document is served (`/api/openapi.json`), so it resolves under any deployment base path."
+    }
+  ],
+  "paths": {
+    "/agents": {
+      "post": {
+        "operationId": "createAgent",
+        "summary": "Create an agent",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The created agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listAgents",
+        "summary": "List agents",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}": {
+      "get": {
+        "operationId": "getAgent",
+        "summary": "Get an agent",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The agent id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateAgent",
+        "summary": "Update an agent",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The agent id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAgent",
+        "summary": "Delete an agent",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The agent id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}/files": {
+      "post": {
+        "operationId": "uploadAgentFile",
+        "summary": "Upload a file to an agent",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The agent id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "purpose"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "file_search",
+                      "execute_code",
+                      "context"
+                    ],
+                    "description": "The tool resource the file is uploaded for."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The uploaded file",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many upload requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listAgentFiles",
+        "summary": "List an agent's files",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The agent id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent's files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}/files/{fileId}": {
+      "delete": {
+        "operationId": "deleteAgentFile",
+        "summary": "Delete an agent's file",
+        "tags": [
+          "Agents"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The agent id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "fileId",
+            "description": "The file id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/skills": {
+      "get": {
+        "operationId": "listSkills",
+        "summary": "List skills",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of skills",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/skills/{id}": {
+      "get": {
+        "operationId": "getSkill",
+        "summary": "Get a skill",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The skill id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The skill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Skill"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateSkill",
+        "summary": "Update a skill",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The skill id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated skill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Skill"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The skill changed since the provided expectedVersion, or the bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AccountDeletionConflict"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/skills/{id}/files": {
+      "get": {
+        "operationId": "listSkillFiles",
+        "summary": "List a skill's files",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The skill id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The skill's files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFileList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/skills/{id}/files/{relativePath}": {
+      "get": {
+        "operationId": "getSkillFile",
+        "summary": "Get a skill's file",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The skill id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "relativePath",
+            "description": "The file path within the skill",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFileContent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateSkillFile",
+        "summary": "Create or update a skill's file",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The skill id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "relativePath",
+            "description": "The file path within the skill",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillFileUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The file was written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFileUpdated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many file-write requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "oidcBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "An OIDC access token, sent as a bearer token."
+      }
+    },
+    "schemas": {
+      "AgentCreateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instructions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "avatar": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "filepath": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "filepath",
+              "source"
+            ]
+          },
+          "model_parameters": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skills_enabled": {
+            "type": "boolean"
+          },
+          "skill_authoring_enabled": {
+            "type": "boolean"
+          },
+          "skills_scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "selected",
+              "none"
+            ]
+          },
+          "memory_scope": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent"
+            ]
+          },
+          "agent_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "to": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "edgeType": {
+                  "type": "string",
+                  "enum": [
+                    "handoff",
+                    "direct"
+                  ]
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "excludeResults": {
+                  "type": "boolean"
+                },
+                "promptKey": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ]
+            }
+          },
+          "end_after_tools": {
+            "type": "boolean"
+          },
+          "hide_sequential_outputs": {
+            "type": "boolean"
+          },
+          "stateful_code_sessions": {
+            "type": "boolean"
+          },
+          "stateful_code_environment": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent-user",
+              "conversation"
+            ]
+          },
+          "code_environment_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "code_workspace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": ""
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            ]
+          },
+          "repositoryInstructions": {
+            "type": "string",
+            "enum": [
+              "prefer",
+              "defer",
+              "off"
+            ]
+          },
+          "git_identity": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "email": {
+                "type": "string",
+                "maxLength": 254
+              }
+            },
+            "required": [
+              "name",
+              "email"
+            ]
+          },
+          "artifacts": {
+            "type": "string"
+          },
+          "recursion_limit": {
+            "type": "number"
+          },
+          "conversation_starters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tool_resources": {
+            "type": "object",
+            "properties": {
+              "image_edit": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "execute_code": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "file_search": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "vector_store_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "context": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "ocr": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "tool_options": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "defer_loading": {
+                  "type": "boolean"
+                },
+                "allowed_callers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "direct",
+                      "code_execution"
+                    ]
+                  }
+                },
+                "run_in_background": {
+                  "type": "boolean"
+                },
+                "describe_intent": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "subagents": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "allowSelf": {
+                "type": "boolean"
+              },
+              "shareFiles": {
+                "type": "boolean"
+              },
+              "agent_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "graphs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "agent_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "maxItems": 32
+                    },
+                    "edges": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "minItems": 1
+                              }
+                            ]
+                          },
+                          "to": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "minItems": 1
+                              }
+                            ]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "edgeType": {
+                            "type": "string",
+                            "const": "direct"
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "excludeResults": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to",
+                          "edgeType"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "entry_agent_id": {
+                      "type": "string"
+                    },
+                    "result_agent_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "name",
+                    "description",
+                    "agent_ids",
+                    "edges",
+                    "entry_agent_id",
+                    "result_agent_id"
+                  ]
+                }
+              }
+            }
+          },
+          "support_contact": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": ""
+                  },
+                  {
+                    "type": "string",
+                    "format": "email"
+                  }
+                ]
+              }
+            }
+          },
+          "category": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ],
+        "additionalProperties": false
+      },
+      "AgentUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "avatar": {
+            "type": "null"
+          },
+          "model_parameters": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skills_enabled": {
+            "type": "boolean"
+          },
+          "skill_authoring_enabled": {
+            "type": "boolean"
+          },
+          "skills_scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "selected",
+              "none"
+            ]
+          },
+          "memory_scope": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent"
+            ]
+          },
+          "agent_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "to": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "edgeType": {
+                  "type": "string",
+                  "enum": [
+                    "handoff",
+                    "direct"
+                  ]
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "excludeResults": {
+                  "type": "boolean"
+                },
+                "promptKey": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ]
+            }
+          },
+          "end_after_tools": {
+            "type": "boolean"
+          },
+          "hide_sequential_outputs": {
+            "type": "boolean"
+          },
+          "stateful_code_sessions": {
+            "type": "boolean"
+          },
+          "stateful_code_environment": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent-user",
+              "conversation"
+            ]
+          },
+          "code_environment_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "code_workspace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": ""
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            ]
+          },
+          "repositoryInstructions": {
+            "type": "string",
+            "enum": [
+              "prefer",
+              "defer",
+              "off"
+            ]
+          },
+          "git_identity": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "email": {
+                "type": "string",
+                "maxLength": 254
+              }
+            },
+            "required": [
+              "name",
+              "email"
+            ]
+          },
+          "artifacts": {
+            "type": "string"
+          },
+          "recursion_limit": {
+            "type": "number"
+          },
+          "conversation_starters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tool_resources": {
+            "type": "object",
+            "properties": {
+              "image_edit": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "execute_code": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "file_search": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "vector_store_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "context": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "ocr": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "tool_options": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "defer_loading": {
+                  "type": "boolean"
+                },
+                "allowed_callers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "direct",
+                      "code_execution"
+                    ]
+                  }
+                },
+                "run_in_background": {
+                  "type": "boolean"
+                },
+                "describe_intent": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "subagents": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "allowSelf": {
+                "type": "boolean"
+              },
+              "shareFiles": {
+                "type": "boolean"
+              },
+              "agent_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "graphs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "agent_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "maxItems": 32
+                    },
+                    "edges": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "minItems": 1
+                              }
+                            ]
+                          },
+                          "to": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "minItems": 1
+                              }
+                            ]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "edgeType": {
+                            "type": "string",
+                            "const": "direct"
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "excludeResults": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to",
+                          "edgeType"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "entry_agent_id": {
+                      "type": "string"
+                    },
+                    "result_agent_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "name",
+                    "description",
+                    "agent_ids",
+                    "edges",
+                    "entry_agent_id",
+                    "result_agent_id"
+                  ]
+                }
+              }
+            }
+          },
+          "support_contact": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": ""
+                  },
+                  {
+                    "type": "string",
+                    "format": "email"
+                  }
+                ]
+              }
+            }
+          },
+          "category": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instructions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "avatar": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "filepath": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filepath",
+                  "source"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_parameters": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skills_enabled": {
+            "type": "boolean"
+          },
+          "skill_authoring_enabled": {
+            "type": "boolean"
+          },
+          "skills_scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "selected",
+              "none"
+            ]
+          },
+          "memory_scope": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent"
+            ]
+          },
+          "agent_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "to": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "edgeType": {
+                  "type": "string",
+                  "enum": [
+                    "handoff",
+                    "direct"
+                  ]
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "excludeResults": {
+                  "type": "boolean"
+                },
+                "promptKey": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ]
+            }
+          },
+          "end_after_tools": {
+            "type": "boolean"
+          },
+          "hide_sequential_outputs": {
+            "type": "boolean"
+          },
+          "stateful_code_sessions": {
+            "type": "boolean"
+          },
+          "stateful_code_environment": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent-user",
+              "conversation"
+            ]
+          },
+          "code_environment_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          },
+          "code_workspace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": ""
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            ]
+          },
+          "repositoryInstructions": {
+            "type": "string",
+            "enum": [
+              "prefer",
+              "defer",
+              "off"
+            ]
+          },
+          "git_identity": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "email": {
+                "type": "string",
+                "maxLength": 254
+              }
+            },
+            "required": [
+              "name",
+              "email"
+            ]
+          },
+          "artifacts": {
+            "type": "string"
+          },
+          "recursion_limit": {
+            "type": "number"
+          },
+          "conversation_starters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tool_resources": {
+            "type": "object",
+            "properties": {
+              "image_edit": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "execute_code": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "file_search": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "vector_store_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "context": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "ocr": {
+                "type": "object",
+                "properties": {
+                  "file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "tool_options": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "defer_loading": {
+                  "type": "boolean"
+                },
+                "allowed_callers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "direct",
+                      "code_execution"
+                    ]
+                  }
+                },
+                "run_in_background": {
+                  "type": "boolean"
+                },
+                "describe_intent": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "subagents": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "allowSelf": {
+                "type": "boolean"
+              },
+              "agent_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "graphs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "agent_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "edges": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "from": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            ]
+                          },
+                          "to": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            ]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "edgeType": {
+                            "type": "string",
+                            "const": "direct"
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "excludeResults": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "from",
+                          "to",
+                          "edgeType"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "entry_agent_id": {
+                      "type": "string"
+                    },
+                    "result_agent_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "name",
+                    "description",
+                    "agent_ids",
+                    "edges",
+                    "entry_agent_id",
+                    "result_agent_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "support_contact": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": ""
+                  },
+                  {
+                    "type": "string",
+                    "format": "email"
+                  }
+                ]
+              }
+            }
+          },
+          "category": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "id",
+          "version",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "AgentList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Agent"
+            }
+          },
+          "first_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "object",
+          "data",
+          "first_id",
+          "last_id",
+          "has_more",
+          "after"
+        ],
+        "additionalProperties": false
+      },
+      "AgentDeleted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ],
+        "additionalProperties": false
+      },
+      "AgentFile": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string",
+            "const": "agent.file"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "purposes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "object",
+          "filename",
+          "bytes",
+          "mime_type",
+          "purposes",
+          "created_at"
+        ]
+      },
+      "AgentFileList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentFile"
+            }
+          }
+        },
+        "required": [
+          "object",
+          "data"
+        ]
+      },
+      "AgentFileDeleted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "invalid_request",
+                  "not_found",
+                  "permission_denied",
+                  "internal_error",
+                  "conflict"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ]
+                      }
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "SkillFrontmatterValue": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          }
+        ]
+      },
+      "Skill": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "displayTitle": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "alwaysApply": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-f\\d]{24}$"
+          },
+          "version": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "fileCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "disableModelInvocation": {
+            "type": "boolean"
+          },
+          "userInvocable": {
+            "type": "boolean"
+          },
+          "allowedTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "body": {
+            "type": "string"
+          },
+          "frontmatter": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "id",
+          "version",
+          "fileCount",
+          "createdAt",
+          "updatedAt",
+          "body"
+        ]
+      },
+      "SkillList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "displayTitle": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "category": {
+                  "type": "string"
+                },
+                "alwaysApply": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-f\\d]{24}$"
+                },
+                "version": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "fileCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "disableModelInvocation": {
+                  "type": "boolean"
+                },
+                "userInvocable": {
+                  "type": "boolean"
+                },
+                "allowedTools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "name",
+                "description",
+                "id",
+                "version",
+                "fileCount",
+                "createdAt",
+                "updatedAt"
+              ]
+            }
+          },
+          "first_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "object",
+          "data",
+          "first_id",
+          "last_id",
+          "has_more",
+          "after"
+        ]
+      },
+      "SkillUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "displayTitle": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "alwaysApply": {
+            "type": "boolean"
+          },
+          "body": {
+            "type": "string"
+          },
+          "frontmatter": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "expectedVersion"
+        ],
+        "additionalProperties": false,
+        "minProperties": 2
+      },
+      "SkillFile": {
+        "type": "object",
+        "properties": {
+          "relativePath": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "relativePath",
+          "filename",
+          "mimeType",
+          "bytes"
+        ]
+      },
+      "SkillFileList": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "list"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFile"
+            }
+          }
+        },
+        "required": [
+          "object",
+          "data"
+        ]
+      },
+      "SkillFileContent": {
+        "type": "object",
+        "properties": {
+          "relativePath": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "content": {
+            "type": "string"
+          },
+          "isBinary": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "relativePath",
+          "filename",
+          "mimeType",
+          "bytes",
+          "isBinary"
+        ]
+      },
+      "SkillFileUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 1048576,
+            "description": "The file content. The accepted maximum is 1 MiB (1,048,576 bytes) of UTF-8-encoded content. The limit is measured in bytes, not characters, so non-ASCII content reaches it at fewer characters."
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "SkillFileUpdated": {
+        "type": "object",
+        "properties": {
+          "relativePath": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "relativePath",
+          "bytes"
+        ]
+      },
+      "ErrorMessage": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "AccountDeletionConflict": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "const": "ACCOUNT_DELETION_IN_PROGRESS"
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "MessageError": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "JsonParseError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "Invalid JSON format"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

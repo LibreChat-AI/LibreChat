@@ -13,6 +13,7 @@
 import React from 'react';
 import { act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { SkillsScope } from 'librechat-data-provider';
 import { render, screen } from '@testing-library/react';
 import type { TSkillSummary } from 'librechat-data-provider';
 
@@ -23,21 +24,27 @@ const mockSetEphemeralAgent = jest.fn();
 const mockSetPendingManualSkills = jest.fn();
 const mockShowSkillsPopover = { current: true };
 
+jest.mock('jotai', () => ({
+  ...jest.requireActual('jotai'),
+  useAtomValue: jest.fn((atom: unknown) =>
+    atom === 'show-skills-popover' ? mockShowSkillsPopover.current : undefined,
+  ),
+  useSetAtom: jest.fn((atom: unknown) =>
+    atom === 'show-skills-popover' ? mockSetShowSkillsPopover : jest.fn(),
+  ),
+}));
+
+jest.mock('../skillsState', () => ({
+  showSkillsPopoverFamily: () => 'show-skills-popover',
+}));
+
 jest.mock('recoil', () => {
   const actual = jest.requireActual('recoil');
   return {
     ...actual,
-    useRecoilValue: jest.fn((atom: unknown) => {
-      if (atom === 'show-skills-popover') {
-        return mockShowSkillsPopover.current;
-      }
-      return undefined;
-    }),
+    useRecoilValue: jest.fn(() => undefined),
     useRecoilState: jest.fn(() => [null, jest.fn()]),
     useSetRecoilState: jest.fn((atom: unknown) => {
-      if (atom === 'show-skills-popover') {
-        return mockSetShowSkillsPopover;
-      }
       if (atom === 'ephemeral-agent') {
         return mockSetEphemeralAgent;
       }
@@ -52,7 +59,6 @@ jest.mock('recoil', () => {
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    showSkillsPopoverFamily: () => 'show-skills-popover',
     pendingManualSkillsByConvoId: () => 'pending-manual-skills',
   },
   ephemeralAgentByConvoId: () => 'ephemeral-agent',
@@ -377,6 +383,39 @@ describe('SkillsCommand', () => {
 
     expect(await screen.findByRole('button', { name: /Brand Guidelines/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Style Guide/i })).toBeInTheDocument();
+  });
+
+  it('shows no catalog entries for an enabled authoring-only agent', () => {
+    mockUseSkillsInfiniteQuery.mockReturnValue({
+      data: twoSkillsResponse,
+      isLoading: false,
+      isError: false,
+      fetchNextPage: jest.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      agent_1: {
+        id: 'agent_1',
+        skills: [],
+        skills_enabled: false,
+        skill_authoring_enabled: true,
+        skills_scope: SkillsScope.none,
+      },
+    });
+
+    const textAreaRef = makeTextarea('$');
+    render(
+      <SkillsCommand
+        index={0}
+        textAreaRef={textAreaRef}
+        conversationId={CONVO_ID}
+        agentId="agent_1"
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: /Brand Guidelines/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Style Guide/i })).toBeNull();
   });
 
   it('treats an ephemeral agent id as unscoped and shows the full ACL catalog', async () => {

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
@@ -9,6 +10,7 @@ import {
   supportsGenerationProtocolV2,
 } from '~/data-provider';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { resolveAbortSteerTarget } from '~/utils';
@@ -104,8 +106,8 @@ export default function useChatHelpers(index = 0, paramId?: string) {
   const latestMessageRef = useRef(latestMessage);
   latestMessageRef.current = latestMessage;
 
-  const setSiblingIdx = useSetRecoilState(
-    store.messagesSiblingIdxFamily(latestMessage?.parentMessageId ?? null),
+  const setSiblingIdx = useSetAtom(
+    siblingIdxFamily(siblingKey(latestMessage?.parentMessageId ?? null)),
   );
 
   const setMessages = useCallback(
@@ -159,6 +161,7 @@ export default function useChatHelpers(index = 0, paramId?: string) {
     conversation,
     latestMessage,
     setSubmission,
+    setConversation,
   });
 
   const askRef = useRef(_ask);

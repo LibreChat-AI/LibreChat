@@ -20,6 +20,7 @@
  */
 const express = require('express');
 const {
+  reportLocatorTraversalFailure,
   createAgentEventBindingHandlers,
   createAgentTriggerIngressHandlers,
   createMessageFilterPii,
@@ -82,7 +83,10 @@ router.post(
 router.post(
   '/events',
   agentEventUserLimiter,
-  createMessageFilterPii({ getConfig: (req) => req.config?.messageFilter?.pii }),
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+  }),
   eventBindingHandlers.resolve,
   checkAgentTriggerPermission,
   eventHandlers.enqueueEvent,

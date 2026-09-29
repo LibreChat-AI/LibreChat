@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { logger } = require('@librechat/data-schemas');
 const {
+  reportLocatorTraversalFailure,
   createContentFilter,
   extractPresetContent,
   projectStoredPresets,
@@ -11,6 +12,7 @@ const { requireJwtAuth, configMiddleware } = require('~/server/middleware');
 
 const router = express.Router();
 const filterPresetContent = createContentFilter({
+  onTraversalFailure: reportLocatorTraversalFailure,
   getFilters: (req) => req.config?.filters,
   extract: (req) => extractPresetContent(req.body),
 });

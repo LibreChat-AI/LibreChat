@@ -60,7 +60,7 @@ const AdminSettings = () => {
             setConfirmAdminUseChange(null);
           },
           selectClasses:
-            'bg-surface-destructive hover:bg-surface-destructive-hover text-white transition-colors duration-200',
+            'bg-surface-destructive hover:bg-surface-destructive-hover text-text-on-status transition-colors duration-200',
           selectText: localize('com_ui_confirm_action'),
           isLoading: false,
         }}

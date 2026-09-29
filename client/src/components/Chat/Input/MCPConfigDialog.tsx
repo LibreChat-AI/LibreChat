@@ -115,7 +115,7 @@ export default function MCPConfigDialog({
                 />
                 {details.description && (
                   <p
-                    className="text-xs text-text-secondary [&_a]:text-link [&_a]:hover:text-link-hover"
+                    className="text-xs text-text-secondary [&_a]:text-link [&_a]:underline [&_a]:hover:text-link-hover"
                     dangerouslySetInnerHTML={{ __html: sanitize(details.description) }}
                   />
                 )}
@@ -128,7 +128,7 @@ export default function MCPConfigDialog({
         }
         selection={{
           selectHandler: handleSubmit(onFormSubmit),
-          selectClasses: 'bg-surface-submit text-white hover:bg-surface-submit-hover',
+          selectClasses: 'bg-surface-submit text-text-on-status hover:bg-surface-submit-hover',
           selectText: isSubmitting ? localize('com_ui_saving') : localize('com_ui_save'),
         }}
         buttons={

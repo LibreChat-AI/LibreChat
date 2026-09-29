@@ -141,10 +141,18 @@ describe('ApiKeyDialog', () => {
     mockUseGetStartupConfig.mockReturnValue({ data: {} });
     render(<ApiKeyDialog {...defaultProps} />);
     // Default is Jina
-    expect(screen.getByText('com_ui_web_search_reranker_jina_key')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'com_ui_web_search_reranker_jina_key' })).toHaveClass(
+      'text-link',
+      'underline',
+      'hover:text-link-hover',
+    );
     // Switch to Cohere
     fireEvent.click(screen.getByText('com_ui_web_search_reranker_cohere'));
-    expect(screen.getByText('com_ui_web_search_reranker_cohere_key')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'com_ui_web_search_reranker_cohere_key' })).toHaveClass(
+      'text-link',
+      'underline',
+      'hover:text-link-hover',
+    );
   });
 
   it('does not render provider section if SYSTEM_DEFINED', () => {

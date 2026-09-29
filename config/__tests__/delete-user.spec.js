@@ -18,6 +18,7 @@ const mockMethods = {
   restoreUserSchedulesFromDeletion: jest.fn(),
   countActiveAgentTriggerDeliveriesByUser: jest.fn(),
   deleteSchedulesByUser: jest.fn(),
+  deleteUserCodeEnvironments: jest.fn(),
   deleteUserById: jest.fn(),
   deleteAgentTriggerDeliveriesByUser: jest.fn(),
   cancelAgentTriggerUserPurge: jest.fn(),
@@ -28,6 +29,8 @@ const mockAbortJob = jest.fn();
 const mockDestroy = jest.fn();
 const mockSilentExit = jest.fn();
 const mockAskQuestion = jest.fn();
+const mockGetAppConfig = jest.fn();
+const mockRevokeUserCodeEnvironmentWorkers = jest.fn();
 
 jest.mock('../connect', () => jest.fn(async () => undefined));
 jest.mock('mongoose', () => ({ disconnect: jest.fn(async () => undefined) }));
@@ -46,8 +49,12 @@ jest.mock('@librechat/api', () => ({
     abortJob: (...args) => mockAbortJob(...args),
     destroy: (...args) => mockDestroy(...args),
   },
+  revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
 }));
 jest.mock('~/cache/getLogStores', () => jest.fn());
+jest.mock('~/server/services/Config', () => ({
+  getAppConfig: (...args) => mockGetAppConfig(...args),
+}));
 jest.mock('../helpers', () => ({
   ...jest.requireActual('../helpers'),
   askQuestion: mockAskQuestion,
@@ -96,6 +103,7 @@ describe('Delete user CLI', () => {
     mockMethods.restoreUserSchedulesFromDeletion.mockReset().mockResolvedValue(undefined);
     mockMethods.countActiveAgentTriggerDeliveriesByUser.mockReset().mockResolvedValue(0);
     mockMethods.deleteSchedulesByUser.mockReset().mockResolvedValue(undefined);
+    mockMethods.deleteUserCodeEnvironments.mockReset().mockResolvedValue(0);
     mockMethods.deleteUserById.mockReset().mockResolvedValue({ deletedCount: 1 });
     mockMethods.deleteAgentTriggerDeliveriesByUser.mockReset().mockResolvedValue(undefined);
     mockMethods.cancelAgentTriggerUserPurge.mockReset().mockResolvedValue(true);
@@ -103,6 +111,8 @@ describe('Delete user CLI', () => {
     mockGetCleanupBlockingJobIdsForUser.mockReset().mockResolvedValue([]);
     mockAbortJob.mockReset().mockResolvedValue({ success: true });
     mockDestroy.mockReset().mockResolvedValue(undefined);
+    mockGetAppConfig.mockReset().mockResolvedValue({});
+    mockRevokeUserCodeEnvironmentWorkers.mockReset().mockResolvedValue(0);
     mockAskQuestion.mockReset().mockResolvedValueOnce('y').mockResolvedValueOnce('n');
   });
 
@@ -198,6 +208,30 @@ describe('Delete user CLI', () => {
 
     expect(mockMethods.deleteSchedulesByUser).toHaveBeenCalledWith(USER_ID);
     expect(mockMethods.restoreUserSchedulesFromDeletion).not.toHaveBeenCalled();
+  });
+
+  it('commits the account before revoking workers and removing environment records', async () => {
+    expect(await runCli()).toBe(0);
+
+    expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+    expect(mockRevokeUserCodeEnvironmentWorkers).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ID }),
+    );
+    expect(mockMethods.deleteUserCodeEnvironments).toHaveBeenCalledWith(USER_ID);
+    expect(mockMethods.deleteUserById.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRevokeUserCodeEnvironmentWorkers.mock.invocationCallOrder[0],
+    );
+    expect(mockRevokeUserCodeEnvironmentWorkers.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMethods.deleteUserCodeEnvironments.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('preserves code environment records when revocation marking fails', async () => {
+    mockRevokeUserCodeEnvironmentWorkers.mockRejectedValueOnce(new Error('mongo unavailable'));
+
+    expect(await runCli()).toBe(0);
+
+    expect(mockMethods.deleteUserCodeEnvironments).not.toHaveBeenCalled();
   });
 
   it('deletes nothing and releases both fences when provider drain fails', async () => {

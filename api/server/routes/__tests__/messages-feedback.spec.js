@@ -135,6 +135,32 @@ describe('PUT /:conversationId/:messageId/feedback', () => {
     );
   });
 
+  it('scores the trace of the run a failed turn stands for', async () => {
+    updateMessage.mockImplementationOnce((userId, { messageId, feedback }) =>
+      Promise.resolve({
+        messageId,
+        conversationId: 'conversation-1',
+        endpoint: 'agents',
+        langfuseSampled: true,
+        langfuseDestinationIds: ['destination-1'],
+        langfuseRunId: 'run-1',
+        feedback,
+      }),
+    );
+
+    const response = await request(app)
+      .put('/api/messages/conversation-1/user-1_/feedback')
+      .send({ feedback: { rating: 'thumbsDown', tag: 'other' } });
+
+    expect(response.status).toBe(200);
+    expect(sendFeedbackScore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        traceId: 'trace-run-1',
+        metadata: expect.objectContaining({ messageId: 'user-1_' }),
+      }),
+    );
+  });
+
   it.each([
     ['an object tag', { rating: 'thumbsDown', tag: { key: 'inaccurate' } }],
     ['a tag for the opposite rating', { rating: 'thumbsUp', tag: 'inaccurate' }],

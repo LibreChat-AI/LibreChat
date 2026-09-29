@@ -239,7 +239,7 @@ export interface MCPCatalogStore {
     userId?: string;
     serverName?: string;
     invalidateGlobal?: boolean;
-  }) => Promise<void>;
+  }) => Promise<string | undefined>;
 }
 
 function isTools(value: unknown): value is LCAvailableTools {
@@ -851,41 +851,46 @@ export function createMCPCatalogStore(deps: CatalogStoreDeps): MCPCatalogStore {
     return Number(written) === 1;
   }
 
+  /** Returns the generation this invalidation published for a user and server, so a caller that
+   *  fenced its own credential mutation can tell that rotation apart from a foreign one. */
   async function invalidateCachedTools(
     options: {
       userId?: string;
       serverName?: string;
       invalidateGlobal?: boolean;
     } = {},
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const cache = await getReadyCache();
     if (options.invalidateGlobal) {
       await runWithGlobalCacheLock(() => deleteGlobalWithinLock(cache));
     }
     const { userId, serverName } = options;
-    if (userId && serverName) {
-      await withUserQueue(userId, serverName, async () => {
-        if (
-          (await cache.set(
-            ToolCacheKeys.MCP_SERVER_LEGACY_FENCE(userId, serverName),
-            true,
-            generationTtl,
-          )) === false
-        ) {
-          throw new Error('Tool cache rejected the legacy migration fence');
-        }
-        if (
-          (await cache.set(
-            ToolCacheKeys.MCP_SERVER_GENERATION(userId, serverName),
-            randomUUID(),
-            generationTtl,
-          )) === false
-        ) {
-          throw new Error('Tool publication generation cache rejected invalidation');
-        }
-        await cache.delete(ToolCacheKeys.MCP_SERVER(userId, serverName));
-      });
+    if (!userId || !serverName) {
+      return undefined;
     }
+    return withUserQueue(userId, serverName, async () => {
+      const generation = randomUUID();
+      if (
+        (await cache.set(
+          ToolCacheKeys.MCP_SERVER_LEGACY_FENCE(userId, serverName),
+          true,
+          generationTtl,
+        )) === false
+      ) {
+        throw new Error('Tool cache rejected the legacy migration fence');
+      }
+      if (
+        (await cache.set(
+          ToolCacheKeys.MCP_SERVER_GENERATION(userId, serverName),
+          generation,
+          generationTtl,
+        )) === false
+      ) {
+        throw new Error('Tool publication generation cache rejected invalidation');
+      }
+      await cache.delete(ToolCacheKeys.MCP_SERVER(userId, serverName));
+      return generation;
+    });
   }
 
   return {

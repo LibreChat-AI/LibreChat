@@ -1,5 +1,5 @@
 const { getInvite: getInviteFn } = require('@librechat/api');
-const { createToken, findToken, deleteTokens } = require('~/models');
+const { createToken, findToken } = require('~/models');
 
 const getInvite = (encodedToken, email) =>
   getInviteFn(encodedToken, email, { createToken, findToken });
@@ -19,7 +19,11 @@ async function checkInviteUser(req, res, next) {
       return res.status(400).json({ message: 'Invalid invite token' });
     }
 
-    await deleteTokens({ token: invite.token });
+    /** The invite is deliberately left in place here. Everything that can still
+     * reject this registration — the schema, the allowed-domain check, an email
+     * already in use — runs after this middleware, and consuming the invite first
+     * meant a mistyped password confirmation destroyed it. `registrationController`
+     * deletes it once an account actually exists. */
     req.invite = invite;
     next();
   } catch (error) {

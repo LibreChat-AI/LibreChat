@@ -1,6 +1,94 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import { mergeAccessibleCodeEnvironments } from './config';
+import {
+  isImplicitStatefulCodeRouteAvailable,
+  mergeAccessibleCodeEnvironments,
+  resolveCodeEnvironmentDecisionVersion,
+  resolveCodeEnvironmentMoveVersion,
+  resolveCodeEnvironmentTransitionVersion,
+  resolveCodeEnvironmentMoveCapabilities,
+} from './config';
+
+describe('resolveCodeEnvironmentDecisionVersion', () => {
+  it('advertises the exact supported protocol version', () => {
+    expect(resolveCodeEnvironmentDecisionVersion('1')).toBe(1);
+  });
+
+  it.each([undefined, '0', '2', '1.0', 'true'])(
+    'keeps unsupported configured version %s on the legacy-safe path',
+    (version) => {
+      expect(resolveCodeEnvironmentDecisionVersion(version)).toBeUndefined();
+    },
+  );
+});
+
+describe('resolveCodeEnvironmentMoveVersion', () => {
+  const withMoves = (conversationMoves?: { enabled?: boolean; allowAttachDetach?: boolean }) =>
+    ({
+      endpoints: {
+        [EModelEndpoint.agents]: {
+          statefulCodeSessions: { allowedEnvironments: ['user'], conversationMoves },
+        },
+      },
+    }) as unknown as AppConfig;
+
+  it('advertises moves only where the effective policy enables them', () => {
+    expect(resolveCodeEnvironmentMoveVersion(withMoves({ enabled: true }))).toBe(1);
+    expect(resolveCodeEnvironmentMoveCapabilities(withMoves({ enabled: true }))).toEqual({
+      codeEnvironmentMoveVersion: 1,
+      codeWorkspaceRecoveryVersion: 1,
+    });
+  });
+
+  /* Attaching and leaving ship under the same policy as the move but on their own number, so a
+   * client that predates them keeps reading a move version it understands. */
+  it.each([undefined, false])(
+    'preserves enabled move-only policy with allowAttachDetach=%s',
+    (allowAttachDetach) => {
+      const config = withMoves({ enabled: true, allowAttachDetach });
+      expect(resolveCodeEnvironmentMoveVersion(config)).toBe(1);
+      expect(resolveCodeEnvironmentTransitionVersion(config)).toBeUndefined();
+    },
+  );
+
+  it('advertises attach and detach separately from the move', () => {
+    expect(
+      resolveCodeEnvironmentTransitionVersion(
+        withMoves({ enabled: true, allowAttachDetach: true }),
+      ),
+    ).toBe(2);
+  });
+
+  it.each([undefined, {}, { enabled: false }])(
+    'keeps attach and detach off wherever moves are off: %j',
+    (conversationMoves) => {
+      expect(resolveCodeEnvironmentTransitionVersion(withMoves(conversationMoves))).toBeUndefined();
+    },
+  );
+
+  it.each([undefined, {}, { enabled: false }])(
+    'keeps sealed decisions immovable by default: %j',
+    (conversationMoves) => {
+      expect(resolveCodeEnvironmentMoveVersion(withMoves(conversationMoves))).toBeUndefined();
+      expect(resolveCodeEnvironmentMoveCapabilities(withMoves(conversationMoves))).toEqual({});
+    },
+  );
+
+  it('keeps moves off without any stateful code configuration', () => {
+    expect(resolveCodeEnvironmentMoveVersion({} as AppConfig)).toBeUndefined();
+    expect(resolveCodeEnvironmentMoveVersion(undefined)).toBeUndefined();
+    expect(resolveCodeEnvironmentMoveCapabilities({} as AppConfig)).toEqual({});
+    expect(resolveCodeEnvironmentMoveCapabilities(undefined)).toEqual({});
+  });
+});
+
+describe('isImplicitStatefulCodeRouteAvailable', () => {
+  it('requires both the deployed protocol version and a non-empty managed base URL', () => {
+    expect(isImplicitStatefulCodeRouteAvailable('1', 'https://code.example/v1')).toBe(true);
+    expect(isImplicitStatefulCodeRouteAvailable(undefined, 'https://code.example/v1')).toBe(false);
+    expect(isImplicitStatefulCodeRouteAvailable('1', '  ')).toBe(false);
+  });
+});
 
 describe('mergeAccessibleCodeEnvironments', () => {
   test('adds principal environments without allowing them to shadow deployment entries', async () => {
@@ -54,7 +142,11 @@ describe('mergeAccessibleCodeEnvironments', () => {
 
     expect(result).not.toBe(appConfig);
     expect(result.endpoints?.agents?.statefulCodeSessions?.environments).toEqual([
-      expect.objectContaining({ id: 'deployment-vm', baseURL: 'https://deployment.example' }),
+      expect.objectContaining({
+        id: 'deployment-vm',
+        baseURL: 'https://deployment.example',
+        default: true,
+      }),
       expect.objectContaining({ id: 'personal-vm', baseURL: 'https://deployment.example' }),
     ]);
     expect(appConfig.endpoints?.agents?.statefulCodeSessions?.environments).toHaveLength(1);
@@ -126,6 +218,14 @@ describe('mergeAccessibleCodeEnvironments', () => {
                 baseURL: 'https://override.example',
                 owner: 'deployment',
                 pairing: { workerId: 'override-worker', tokenEnv: 'OVERRIDE_TOKEN' },
+                configSchema: {
+                  permissions: {
+                    commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
+                  },
+                  limits: {
+                    maxCommandTimeoutMs: 120_000,
+                  },
+                },
               },
             ],
           },
@@ -146,6 +246,7 @@ describe('mergeAccessibleCodeEnvironments', () => {
             baseURL: 'https://persisted.example',
             controlPlaneId: 'approved-plane',
             owner: 'principal',
+            settings: { permissions: { commandExecution: 'deny' } },
           },
         ]),
       },
@@ -157,6 +258,17 @@ describe('mergeAccessibleCodeEnvironments', () => {
     expect(environments?.find((environment) => environment.id === 'personal-vm')?.baseURL).toBe(
       'https://approved.example',
     );
+    expect(environments?.find((environment) => environment.id === 'personal-vm')).toMatchObject({
+      configSchema: {
+        permissions: {
+          commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
+        },
+        limits: {
+          maxCommandTimeoutMs: 120_000,
+        },
+      },
+      settings: { permissions: { commandExecution: 'deny' } },
+    });
   });
 
   test('replaces a merged override that shadows an accessible principal environment', async () => {
@@ -332,5 +444,72 @@ describe('mergeAccessibleCodeEnvironments', () => {
     expect(result.endpoints?.agents?.statefulCodeSessions?.environments).toEqual([
       deploymentEnvironment,
     ]);
+  });
+
+  test.each([
+    ['preserves the configured stateful deployment', 'https://stateful.example/v1', undefined],
+    ['uses the principal environment without a stateful deployment', undefined, true],
+  ])('%s after a pairing-only control plane', async (_name, statefulURL, expectedDefault) => {
+    const originalStatefulURL = process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+    if (statefulURL == null) {
+      delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+    } else {
+      process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = statefulURL;
+    }
+    const pairingOnly = {
+      id: 'self-service',
+      name: 'Self-service',
+      type: 'attached' as const,
+      baseURL: 'https://code.example',
+      owner: 'deployment' as const,
+      default: true,
+      pairing: { allowPrincipalWorkers: true, tokenEnv: 'CODE_ADMIN_TOKEN' },
+    };
+    const appConfig = {
+      endpoints: {
+        [EModelEndpoint.agents]: {
+          statefulCodeSessions: { environments: [pairingOnly] },
+        },
+      },
+    } as unknown as AppConfig;
+
+    try {
+      const result = await mergeAccessibleCodeEnvironments({
+        appConfig,
+        deploymentConfig: appConfig,
+        actor: { userId: '68b2f0c498f24c1e78fa0001', role: 'USER', idOnTheSource: null },
+        registry: {
+          listRegisteredIds: jest.fn().mockResolvedValue(['personal-vm']),
+          listAccessibleConfigurations: jest.fn().mockResolvedValue([
+            {
+              id: 'personal-vm',
+              name: 'Personal VM',
+              type: 'attached',
+              baseURL: 'https://persisted.example',
+              controlPlaneId: 'self-service',
+              owner: 'principal',
+              workerId: 'personal-worker',
+            },
+          ]),
+        },
+      });
+
+      const environments = result.endpoints?.agents?.statefulCodeSessions?.environments;
+      expect(environments?.find((environment) => environment.id === 'personal-vm')).toEqual(
+        expect.objectContaining({ controlPlaneId: 'self-service', baseURL: pairingOnly.baseURL }),
+      );
+      expect(environments?.find((environment) => environment.id === 'self-service')?.default).toBe(
+        false,
+      );
+      expect(environments?.find((environment) => environment.id === 'personal-vm')?.default).toBe(
+        expectedDefault,
+      );
+    } finally {
+      if (originalStatefulURL == null) {
+        delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+      } else {
+        process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = originalStatefulURL;
+      }
+    }
   });
 });

@@ -12,7 +12,9 @@ export interface AgentExecutionContext {
   user?: IUser;
   appConfig?: AppConfig;
   requestBody: RequestBody;
-  /** Server-captured conversation creation time used by prompt variables. */
+  /** Server-captured logical turn start time used by prompt variables. */
+  turnStartedAt: number;
+  /** Server-captured conversation creation time retained as historical metadata. */
   conversationCreatedAt?: string;
   /** Conversation already resolved by ingress. Presence distinguishes "not read" from absent. */
   resolvedConversation?: Partial<IConversation> | null;
@@ -23,6 +25,7 @@ export function createAgentExecutionContext({
   user,
   appConfig,
   requestBody,
+  turnStartedAt = Date.now(),
   conversationCreatedAt,
   resolvedConversation,
   hasResolvedConversation = false,
@@ -30,6 +33,7 @@ export function createAgentExecutionContext({
   user?: IUser;
   appConfig?: AppConfig;
   requestBody: RequestBody;
+  turnStartedAt?: number;
   conversationCreatedAt?: string;
   resolvedConversation?: Partial<IConversation> | null;
   hasResolvedConversation?: boolean;
@@ -38,6 +42,7 @@ export function createAgentExecutionContext({
     user,
     appConfig,
     requestBody,
+    turnStartedAt,
     conversationCreatedAt,
   };
   if (hasResolvedConversation) {
@@ -51,10 +56,13 @@ export function createRequestAgentExecutionContext(
   req: ServerRequest,
   requestBody: RequestBody = req.body ?? {},
 ): AgentExecutionContext {
+  const turnStartedAt = req.turnStartedAt ?? Date.now();
+  req.turnStartedAt = turnStartedAt;
   return createAgentExecutionContext({
     user: req.user,
     appConfig: req.config,
     requestBody,
+    turnStartedAt,
     conversationCreatedAt: req.conversationCreatedAt,
     resolvedConversation: req.resolvedConversation,
     hasResolvedConversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation'),

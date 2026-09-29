@@ -4,8 +4,20 @@ import { useRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
 import { composerSurfaceClasses, composerSurfaceShadow, TextareaAutosize } from '@librechat/client';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
+import type { SetterOrUpdater } from 'recoil';
 import type { ExtendedFile, FileSetter, ConvoGenerator } from '~/common';
 import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
+import {
+  cn,
+  getModelSpec,
+  hasIncompleteFiles,
+  removeFocusRings,
+  getComposerDraftId,
+  getPendingDraftId,
+  clearAllDrafts,
+  getFilesDraftCached,
+  isPastedTextFileMarked,
+} from '~/utils';
 import {
   useTextarea,
   useAutoSave,
@@ -15,22 +27,18 @@ import {
   useQueryParams,
   useSubmitMessage,
   useFocusChatEffect,
+  useCodeWorkspace,
 } from '~/hooks';
-import {
-  cn,
-  getModelSpec,
-  hasIncompleteFiles,
-  removeFocusRings,
-  getComposerDraftId,
-  getFilesDraftCached,
-  isPastedTextFileMarked,
-} from '~/utils';
 import {
   useChatContext,
   useChatFormContext,
   useAddedChatContext,
   useAssistantsMapContext,
 } from '~/Providers';
+import {
+  PendingToolApprovalButton,
+  PendingToolApprovalPanel,
+} from '~/components/Chat/approval/Review';
 import PendingManualSkillsChips from './PendingManualSkillsChips';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
@@ -44,11 +52,14 @@ import { mainTextareaId, BadgeItem } from '~/common';
 import PendingSteerChips from './PendingSteerChips';
 import PendingQuoteChips from './PendingQuoteChips';
 import AttachFileChat from './Files/AttachFileChat';
+import CodeWorkspaceMenu from './CodeWorkspaceMenu';
 import useSteering from '~/hooks/Chat/useSteering';
+import CodeApprovalMenu from './CodeApprovalMenu';
 import FileFormChat from './Files/FileFormChat';
 import InFlightSteers from './InFlightSteers';
 import TextareaHeader from './TextareaHeader';
 import PromptsCommand from './PromptsCommand';
+import { submitFromComposer } from './submit';
 import SkillsCommand from './SkillsCommand';
 import AudioRecorder from './AudioRecorder';
 import AutoPlayAudio from './AutoPlayAudio';
@@ -62,14 +73,47 @@ import BadgeRow from './BadgeRow';
 import Mention from './Mention';
 import store from '~/store';
 
+export function toRestoredComposerFile(
+  file: NonNullable<TMessage['files']>[number],
+): ExtendedFile | null {
+  if (!file.file_id) {
+    return null;
+  }
+  return {
+    file_id: file.file_id,
+    filename: file.filename,
+    filepath: file.filepath,
+    type: file.type ?? '',
+    height: file.height,
+    width: file.width,
+    size: file.bytes ?? 0,
+    progress: 1,
+    attached: true,
+    llmDeliveryPath: file.llmDeliveryPath,
+  };
+}
+
 interface ChatFormProps {
   index: number;
   placeholder?: string;
   project?: TChatProject;
+  /** Owned by ChatView: which layout the composer sits in — the welcome screen
+   *  floats or bottoms it out, a conversation ends the page with it. */
+  isLandingPage: boolean;
+  /** Owned by the host: the app-level preference for where the welcome-screen
+   *  composer sits. The chat feature only consumes it. */
+  centerFormOnLanding: boolean;
+  /** Owned by ChatView: whether a footer bar renders under this band. It is an
+   *  absolutely positioned bar in a zero-height wrapper, so the clearance here
+   *  is the only thing keeping it off the composer. True on the welcome screen,
+   *  which always carries one, and in a conversation whose deployment
+   *  configured footer content of its own. */
+  footerBelow: boolean;
   /** From ChatContext: individual values so memo can compare them */
   files: Map<string, ExtendedFile>;
   setFiles: FileSetter;
   conversation: TConversation | null;
+  setConversation: SetterOrUpdater<TConversation | null>;
   isSubmitting: boolean;
   setFilesLoading: React.Dispatch<React.SetStateAction<boolean>>;
   newConversation: ConvoGenerator;
@@ -77,13 +121,34 @@ interface ChatFormProps {
   stopGenerating: () => void;
 }
 
+/** Targets that own focus themselves: form fields and links, popup disclosures
+ * (Ariakit and Radix both emit `aria-haspopup`), and popup content, which React
+ * bubbles through portals. */
+const focusOwningTargetSelector = [
+  'a',
+  'input',
+  'select',
+  'textarea',
+  'label',
+  '[aria-haspopup]:not([aria-haspopup="false"])',
+  '[role="combobox"]',
+  '[role="menu"]',
+  '[role="listbox"]',
+  '[role="dialog"]',
+  '[role="alertdialog"]',
+].join(', ');
+
 const ChatForm = memo(function ChatForm({
   index,
   placeholder,
   project,
+  isLandingPage,
+  footerBelow,
+  centerFormOnLanding,
   files,
   setFiles,
   conversation,
+  setConversation,
   isSubmitting,
   setFilesLoading,
   newConversation,
@@ -106,7 +171,6 @@ const ChatForm = memo(function ChatForm({
   const chatDirection = useRecoilValue(store.chatDirection);
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
-  const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const isTemporary = useRecoilValue(store.isTemporary);
 
   const [badges, setBadges] = useRecoilState(store.chatBadges);
@@ -139,6 +203,7 @@ const ChatForm = memo(function ChatForm({
     () => conversation?.conversationId ?? Constants.NEW_CONVO,
     [conversation?.conversationId],
   );
+  const isNewConversation = conversationId === '' || conversationId === Constants.NEW_CONVO;
   /**
    * The quote feature merges excerpts server-side in `BaseClient.sendMessage`,
    * which the Assistants endpoints bypass — so hide the UI there rather than
@@ -162,13 +227,37 @@ const ChatForm = memo(function ChatForm({
     [requiresKey, invalidAssistant],
   );
 
-  const handleContainerClick = useCallback(() => {
-    /** Check if the device is a touchscreen */
+  /** Skipped on touchscreens so a tap does not raise the keyboard. */
+  const focusTextArea = useCallback(() => {
     if (window.matchMedia?.('(pointer: coarse)').matches) {
       return;
     }
     textAreaRef.current?.focus();
   }, []);
+
+  /** The surface returns focus to the textarea after any click (send, stop, badge
+   * toggles), except when the target owns focus itself or opens a popup. Ariakit
+   * records `document.activeElement` at open time as a menu's disclosure, so
+   * refocusing the textarea behind a menu button made the textarea the disclosure
+   * and the menu could never close on textarea interaction (#15624). */
+  const handleContainerClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const owner =
+        event.target instanceof Element ? event.target.closest(focusOwningTargetSelector) : null;
+      if (owner && !owner.contains(event.currentTarget)) {
+        return;
+      }
+      focusTextArea();
+    },
+    [focusTextArea],
+  );
+
+  /** Actions that consume the composer from inside a popup (the during-run
+   * hovercard) sit in exempted popup content, so they restore focus themselves. */
+  const consumeComposer = useCallback(() => {
+    methods.reset();
+    focusTextArea();
+  }, [methods, focusTextArea]);
 
   const handleFocusOrClick = useCallback(() => {
     if (isCollapsed) {
@@ -194,7 +283,7 @@ const ChatForm = memo(function ChatForm({
    *  collapsed batch is neither — it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
 
-  useAutoSave({
+  const consumeDraft = useAutoSave({
     index,
     files,
     setFiles,
@@ -233,6 +322,7 @@ const ChatForm = memo(function ChatForm({
   );
 
   const { submitMessage, submitPrompt } = useSubmitMessage();
+  const codeWorkspace = useCodeWorkspace(conversation, addedConvo);
 
   /** Queued/steered sends carry their FULL submission context: explicit
    *  (possibly empty) overrides stop `ask` from vacuuming quotes or skill
@@ -280,20 +370,11 @@ const ChatForm = memo(function ChatForm({
         setFiles((prev) => {
           const next = new Map(prev);
           for (const file of chipFiles) {
-            if (!file.file_id) {
+            const restoredFile = toRestoredComposerFile(file);
+            if (restoredFile == null) {
               continue;
             }
-            next.set(file.file_id, {
-              file_id: file.file_id,
-              filename: file.filename,
-              filepath: file.filepath,
-              type: file.type ?? '',
-              height: file.height,
-              width: file.width,
-              size: file.bytes ?? 0,
-              progress: 1,
-              attached: true,
-            });
+            next.set(restoredFile.file_id, restoredFile);
           }
           return next;
         });
@@ -304,6 +385,8 @@ const ChatForm = memo(function ChatForm({
     [methods, setFiles, restoreComposerContext],
   );
   const steering = useSteering({
+    consumeDraft,
+    addedConversation: addedConvo,
     index,
     conversationId,
     conversation,
@@ -497,8 +580,9 @@ const ChatForm = memo(function ChatForm({
           ref={submitButtonRef}
           control={methods.control}
           steering={steering}
+          isNewConversation={isNewConversation}
           getText={() => methods.getValues('text')}
-          onConsumed={() => methods.reset()}
+          onConsumed={consumeComposer}
           disabled={filesLoading}
         />
       );
@@ -519,38 +603,65 @@ const ChatForm = memo(function ChatForm({
     [isCollapsed, isMoreThanThreeRows],
   );
 
+  /* From `sm` up the band leaves room under itself for the disclaimer, which only
+     the landing page carries — doubled while the centred landing composer floats,
+     and dropped back the moment a submission starts the thread. A started
+     conversation has nothing beneath it, so it keeps only enough to clear the
+     surface's own shadow. Below `sm` the composer runs to the viewport floor in
+     every state. */
+  const landingClearance =
+    centerFormOnLanding && !isSubmitting ? 'transition-all duration-200 sm:mb-28' : 'sm:mb-10';
+  let bottomClearance = 'sm:mb-4';
+  if (isLandingPage) {
+    bottomClearance = landingClearance;
+  } else if (footerBelow) {
+    /* A conversation that carries a configured footer keeps the band that bar
+       needs, exactly as the welcome screen does. */
+    bottomClearance = 'sm:mb-10';
+  }
+
+  /** Answer mode, then during-run steering or queueing (a run in flight, or a
+   *  queued follow-up about to start), then an ordinary send: the same route
+   *  for typed, dictated, and shortcut-bound submissions. */
+  const submitComposerText = useCallback(
+    (data: { text: string }): false | void =>
+      submitFromComposer(
+        {
+          answerMode,
+          steering,
+          submitMessage: (message) => {
+            const result = submitMessage(message);
+            if (result !== false) {
+              clearAllDrafts(getPendingDraftId(index));
+            }
+            return result;
+          },
+          reset: () => methods.reset(),
+        },
+        data,
+      ),
+    [answerMode, steering, submitMessage, methods, index],
+  );
+
   return (
     <form
       onSubmit={methods.handleSubmit((data) => {
-        // Answer mode: composer text answers the paused run instead of
-        // starting a new turn (submitText resets the composer itself).
-        // Dismissing the popover — or collapsing a batch, which answers in its
-        // own card — restores normal sends.
-        if (answerMode.active && answerMode.submitText(data.text)) {
-          return;
-        }
-        // During a run, a submit steers or queues per the effective action
-        // instead of starting a new turn (which would be dropped anyway).
-        if (steering.duringRunActive) {
-          if (steering.submitDuringRun(data.text)) {
-            methods.reset();
-          }
-          return;
-        }
-        return submitMessage(data);
+        submitComposerText(data);
       })}
       className={cn(
-        'mx-auto flex w-full flex-row gap-3 transition-[max-width] duration-300 sm:px-2',
+        /* `margin-bottom` is animated as well as `max-width`: it is what carries
+           the composer between the landing clearance and the conversation one,
+           and the landing page keeps the same form node when a conversation
+           opens, so the band travels instead of jumping. The centred landing
+           composer overrides both with its own `transition-all`, and a reader who
+           asked for less motion gets the new position outright — this one is a
+           slide across the page rather than decoration. */
+        'mx-auto flex w-full flex-row gap-3 transition-[max-width,margin-bottom] duration-300 motion-reduce:transition-none sm:px-2',
         maximizeChatSpace ? 'max-w-full' : 'md:max-w-3xl xl:max-w-4xl',
-        centerFormOnLanding &&
-          (conversationId == null || conversationId === Constants.NEW_CONVO) &&
-          !isSubmitting &&
-          conversation?.messages?.length === 0
-          ? 'transition-all duration-200 sm:mb-28'
-          : 'sm:mb-10',
+        bottomClearance,
       )}
     >
-      <div className="relative flex h-full flex-1 items-stretch md:flex-col">
+      <div className="relative flex h-full min-w-0 flex-1 items-stretch md:flex-col">
         {/* Primary composer owns the selection popup so split-view doesn't double it. */}
         {index === 0 && quotesEnabled && <QuoteButton conversationId={conversationId} />}
         {/* `relative` anchors the in-flight steer overlay, which floats above
@@ -564,6 +675,27 @@ const ChatForm = memo(function ChatForm({
               conversationId={conversationId}
               onRestoreToComposer={restoreReclaimedSteer}
             />
+          )}
+          {(project || codeWorkspace.visible) && (
+            <div
+              data-testid="composer-context-rail"
+              className={cn(
+                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-t-2xl',
+                'border border-border-light bg-surface-secondary px-2 pb-4 pt-1',
+                isRTL && 'flex-row-reverse',
+              )}
+            >
+              {project ? <ProjectLandingChip project={project} /> : null}
+              {codeWorkspace.visible ? (
+                <div className="min-w-0 px-1 pt-1">
+                  <CodeWorkspaceMenu
+                    setConversation={setConversation}
+                    workspace={codeWorkspace}
+                    disabled={disableInputs || isSubmitting}
+                  />
+                </div>
+              ) : null}
+            </div>
           )}
           <div className={cn('flex w-full items-center', isRTL && 'flex-row-reverse')}>
             <Mention
@@ -585,6 +717,9 @@ const ChatForm = memo(function ChatForm({
             {index === 0 && (
               <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
             )}
+            {index === 0 && conversationId != null && (
+              <PendingToolApprovalPanel conversationId={conversationId} />
+            )}
             <SkillsCommand
               index={index}
               textAreaRef={textAreaRef}
@@ -592,20 +727,34 @@ const ChatForm = memo(function ChatForm({
               agentId={conversation?.agent_id}
             />
             <div
+              data-testid="composer-surface"
               onClick={handleContainerClick}
               className={cn(
-                'relative flex w-full flex-grow flex-col overflow-hidden rounded-t-3xl pb-4 sm:rounded-3xl sm:pb-0',
+                /* The surface runs to the viewport floor below `sm`, where it is
+                   squared off at the bottom (`rounded-t-3xl`) and no disclaimer
+                   follows it — so the action row is the last thing in it, with no
+                   band of padding under the buttons. */
+                'relative flex w-full flex-grow flex-col overflow-hidden rounded-t-3xl sm:rounded-3xl',
                 composerSurfaceClasses(),
                 isTextAreaFocused ? composerSurfaceShadow.focused : composerSurfaceShadow.blurred,
                 /* Temporary-chat accent is a ChatForm-only override, not part of
-                   the shared composer-surface decision. */
-                isTemporary && 'border-violet-800/60 bg-violet-950/10',
+                   the shared composer-surface decision. Semantic `series-6`, the
+                   same categorical slot the purple tool badge uses, so the accent
+                   follows the theme instead of the raw `violet-800/60` edge that
+                   composited to 1.48:1 on the high contrast dark canvas.
+                   Held at half alpha in the standard palettes, where series-6 is
+                   a saturated #7e23cd / #ab68fe and a full-strength edge reads as
+                   a warning rather than a quiet mode hint. The contrast modes take
+                   it opaque, because that is the only way it clears the 3:1
+                   non-text floor there. */
+                isTemporary && 'border-series-6/50 bg-series-6/10 high-contrast:border-series-6',
               )}
             >
-              {project ? <ProjectLandingChip project={project} /> : null}
               <TextareaHeader addedConvo={addedConvo} setAddedConvo={setAddedConvo} />
               <PendingManualSkillsChips conversationId={conversationId} />
-              {quotesEnabled && <PendingQuoteChips conversationId={conversationId} />}
+              {quotesEnabled && (
+                <PendingQuoteChips conversationId={conversationId} focusComposer={focusTextArea} />
+              )}
               {steering.enabled && (
                 <PendingSteerChips
                   conversationId={conversationId}
@@ -699,11 +848,11 @@ const ChatForm = memo(function ChatForm({
               )}
               <div
                 className={cn(
-                  '@container items-between flex gap-2 pb-2',
+                  '@container flex flex-wrap items-center gap-2 px-2 pb-2',
                   isRTL ? 'flex-row-reverse' : 'flex-row',
                 )}
               >
-                <div className={`${isRTL ? 'mr-2' : 'ml-2'}`}>
+                <div className="shrink-0">
                   <AttachFileChat
                     conversation={conversation}
                     disableInputs={disableInputs}
@@ -727,12 +876,21 @@ const ChatForm = memo(function ChatForm({
                     Array.isArray(conversation?.messages) && conversation.messages.length >= 1
                   }
                 />
-                <div className="mx-auto flex" />
+                <CodeApprovalMenu
+                  conversation={conversation}
+                  addedConversation={addedConvo}
+                  setConversation={setConversation}
+                  disabled={disableInputs}
+                />
+                {index === 0 && conversationId != null && (
+                  <PendingToolApprovalButton conversationId={conversationId} />
+                )}
+                <div className="grow" />
                 <TokenUsage index={index} conversation={conversation} isSubmitting={isSubmitting} />
                 {SpeechToText && (
                   <AudioRecorder
                     methods={methods}
-                    ask={submitMessage}
+                    ask={submitComposerText}
                     disabled={disableInputs || isNotAppendable}
                     isSubmitting={isSubmitting}
                   />
@@ -740,16 +898,17 @@ const ChatForm = memo(function ChatForm({
                 {steering.duringRunActive &&
                   steering.canControlGeneration &&
                   (textValue?.trim() ?? '') !== '' && (
-                    <div className={`${isRTL ? 'ml-2' : 'mr-2'}`}>
+                    <div className="shrink-0">
                       <InterruptSteerButton
                         steering={steering}
+                        isNewConversation={isNewConversation}
                         getText={() => methods.getValues('text')}
-                        onConsumed={() => methods.reset()}
+                        onConsumed={consumeComposer}
                         disabled={filesLoading}
                       />
                     </div>
                   )}
-                <div className={`${isRTL ? 'ml-2' : 'mr-2'}`}>
+                <div className={cn('shrink-0', isRTL ? 'mr-auto' : 'ml-auto')}>
                   {isSubmitting &&
                   (showStopButton || steering.duringRunActive) &&
                   !answerMode.composerAnswers
@@ -762,6 +921,7 @@ const ChatForm = memo(function ChatForm({
                           disabled={
                             filesLoading ||
                             disableInputs ||
+                            !codeWorkspace.canSubmit ||
                             isNotAppendable ||
                             answerMode.composerLocked ||
                             (isSubmitting && !answerMode.composerAnswers)
@@ -789,15 +949,22 @@ function ChatFormWrapper({
   index = 0,
   placeholder,
   project,
+  isLandingPage,
+  footerBelow,
+  centerFormOnLanding,
 }: {
   index?: number;
   placeholder?: string;
   project?: TChatProject;
+  isLandingPage: boolean;
+  footerBelow: boolean;
+  centerFormOnLanding: boolean;
 }) {
   const {
     files,
     setFiles,
     conversation,
+    setConversation,
     isSubmitting,
     setFilesLoading,
     newConversation,
@@ -823,6 +990,9 @@ function ChatFormWrapper({
       conversation?.useResponsesApi,
       conversation?.model,
       conversation?.maxContextTokens,
+      conversation?.codeApprovalMode,
+      conversation?.codeEnvironmentMode,
+      conversation?.codeWorkspaces,
       hasMessages,
     ],
   );
@@ -854,9 +1024,13 @@ function ChatFormWrapper({
       index={index}
       placeholder={placeholder}
       project={project}
+      isLandingPage={isLandingPage}
+      footerBelow={footerBelow}
+      centerFormOnLanding={centerFormOnLanding}
       files={files}
       setFiles={setFiles}
       conversation={stableConversation}
+      setConversation={setConversation}
       isSubmitting={isSubmitting}
       setFilesLoading={setFilesLoading}
       newConversation={stableNewConversation}

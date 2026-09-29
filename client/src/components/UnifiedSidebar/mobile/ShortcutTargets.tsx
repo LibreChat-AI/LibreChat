@@ -38,6 +38,7 @@ function ShortcutTargets({
           tabIndex={-1}
           data-testid={`nav-panel-${link.id}`}
           aria-pressed={link.id === activeId}
+          disabled={link.disabled}
           onClick={() => {
             if (link.onClick) {
               link.onClick();

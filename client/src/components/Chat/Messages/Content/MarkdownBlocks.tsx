@@ -1,9 +1,10 @@
-import React, { memo, useMemo, useLayoutEffect } from 'react';
+import React, { memo, useMemo, useState, useLayoutEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { PluggableList } from 'unified';
 import type { ElementType } from 'react';
+import type { MarkdownSplitter } from './splitMarkdown';
 import { ArtifactProvider, CodeBlockProvider } from '~/Providers';
-import { splitMarkdownIntoBlocks } from './splitMarkdown';
+import { createMarkdownSplitter } from './splitMarkdown';
 import { createFadePlugin } from './animate';
 
 type SharedProps = {
@@ -86,46 +87,104 @@ MarkdownBlock.displayName = 'MarkdownBlock';
 
 type MarkdownBlocksProps = SharedProps & {
   content: string;
+  /** Whether this message is the one generating right now. */
+  streaming: boolean;
+};
+
+type BlockEntry = {
+  /**
+   * Code and artifact blocks capture their index in a ref when they mount, so a
+   * block has to remount whenever an index it holds could shift, and must not
+   * remount otherwise.
+   */
+  key: string;
+  raw: string;
+  codeBaseIndex: number;
+  artifactBaseIndex: number;
+  mermaidBaseIndex: number;
 };
 
 /**
- * Splits a message into top-level blocks and renders each independently so
- * that, during streaming, only the last block re-parses while earlier blocks
- * (tables, code, etc.) stay memoized. Each block's executable code and artifact
- * indices are preserved in document order via per-block providers seeded with
- * prefix-summed base indices.
+ * Each top-level block, seeded with the code, artifact and Mermaid indices of the
+ * blocks before it. The key carries those bases, so an in-place edit that inserts
+ * a block before existing code or artifacts remounts the blocks it shifted, while
+ * append-only streaming keeps completed blocks mounted.
+ */
+const toBlockEntries = (content: string, splitMarkdown: MarkdownSplitter): BlockEntry[] => {
+  let codeBaseIndex = 0;
+  let artifactBaseIndex = 0;
+  let mermaidBaseIndex = 0;
+  return splitMarkdown(content).map((block, index) => {
+    const entry = {
+      key: `${index}-${codeBaseIndex}-${artifactBaseIndex}-${mermaidBaseIndex}`,
+      raw: block.raw,
+      codeBaseIndex,
+      artifactBaseIndex,
+      mermaidBaseIndex,
+    };
+    codeBaseIndex += block.codeBlockCount;
+    artifactBaseIndex += block.artifactCount;
+    mermaidBaseIndex += block.mermaidCount;
+    return entry;
+  });
+};
+
+/**
+ * The whole message as one block, which numbers its code and artifacts from zero
+ * itself. It only ever renders the message exactly as it mounted, so no index it
+ * assigns can go stale and its key never has to change.
+ */
+const toWholeMessage = (content: string): BlockEntry[] =>
+  content
+    ? [{ key: 'whole', raw: content, codeBaseIndex: 0, artifactBaseIndex: 0, mermaidBaseIndex: 0 }]
+    : [];
+
+/**
+ * Renders a message's markdown.
+ *
+ * While the message streams, each top-level block renders and memoizes on its
+ * own, so only the last, still-growing block re-parses on each token. Each
+ * block's executable code and artifact indices stay in document order through
+ * per-block providers seeded with prefix-summed base indices.
+ *
+ * A message that mounts finished renders as one pipeline instead, for as long as
+ * it stays exactly as it mounted. Splitting it would buy memoization nothing
+ * uses, at the price of a whole extra parse to find block boundaries and one
+ * pipeline per block, which is most of the cost of opening a long conversation.
+ *
+ * Once the message generates or its content changes, it moves to the split for
+ * good. Code and artifact blocks capture their index at mount, and per block only
+ * the blocks a change touches re-render, so finishing an answer never remounts its
+ * blocks and neither do repeated edits such as artifact saves. The move itself
+ * remounts the message once.
  */
 const MarkdownBlocks = memo(function MarkdownBlocks({
   content,
+  streaming,
   remarkPlugins,
   rehypePlugins,
   components,
   animate,
   hydrated,
 }: MarkdownBlocksProps) {
-  const blocks = useMemo(() => {
-    let codeBaseIndex = 0;
-    let artifactBaseIndex = 0;
-    let mermaidBaseIndex = 0;
-    return splitMarkdownIntoBlocks(content).map((block) => {
-      const entry = { raw: block.raw, codeBaseIndex, artifactBaseIndex, mermaidBaseIndex };
-      codeBaseIndex += block.codeBlockCount;
-      artifactBaseIndex += block.artifactCount;
-      mermaidBaseIndex += block.mermaidCount;
-      return entry;
-    });
-  }, [content]);
+  const splitMarkdown = useMemo(() => createMarkdownSplitter(), []);
+  const [mountedContent] = useState(content);
+  const [hasChanged, setHasChanged] = useState(streaming);
+  const changing = streaming || content !== mountedContent;
+  if (changing && !hasChanged) {
+    setHasChanged(true);
+  }
+  const blocks = useMemo(
+    () =>
+      hasChanged || changing ? toBlockEntries(content, splitMarkdown) : toWholeMessage(content),
+    [content, hasChanged, changing, splitMarkdown],
+  );
 
   return (
     <>
-      {blocks.map((block, index) => (
-        // Key includes the base indices so that an in-place edit which inserts a
-        // block before existing code/artifact blocks (shifting their base) forces
-        // a remount, refreshing the index each code/artifact block captures in a
-        // ref. During append-only streaming these stay constant, so completed
-        // blocks keep a stable key and are not remounted.
+      {blocks.map((block) => (
         <MarkdownBlock
-          key={`${index}-${block.codeBaseIndex}-${block.artifactBaseIndex}-${block.mermaidBaseIndex}`}
+          key={block.key}
           content={block.raw}
           codeBaseIndex={block.codeBaseIndex}
           artifactBaseIndex={block.artifactBaseIndex}

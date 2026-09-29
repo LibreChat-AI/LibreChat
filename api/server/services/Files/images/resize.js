@@ -1,4 +1,5 @@
 const sharp = require('sharp');
+const { resolveImageMimeType } = require('@librechat/api');
 const { EModelEndpoint } = require('librechat-data-provider');
 
 /**
@@ -10,7 +11,9 @@ const { EModelEndpoint } = require('librechat-data-provider');
  *                                      'high' for a maximum of 768x2000 resolution,
  *                                      or a custom object with percentage or px values.
  * @param {EModelEndpoint} endpoint - Identifier for specific endpoint handling
- * @returns {Promise<{buffer: Buffer, width: number, height: number}>} An object containing the resized image buffer and its dimensions.
+ * @returns {Promise<{buffer: Buffer, bytes: number, width: number, height: number, type: string | undefined}>}
+ *          The resized image buffer, its dimensions, and the media type of the re-encoded bytes.
+ *          `type` is `undefined` when sharp reports a format with no media type of its own.
  * @throws Will throw an error if the resolution parameter is invalid.
  */
 async function resizeImageBuffer(inputBuffer, resolution, endpoint) {
@@ -86,6 +89,7 @@ async function resizeImageBuffer(inputBuffer, resolution, endpoint) {
     bytes: resizedMetadata.size,
     width: resizedMetadata.width,
     height: resizedMetadata.height,
+    type: resolveImageMimeType(resizedMetadata),
   };
 }
 

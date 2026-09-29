@@ -48,6 +48,7 @@ const mockExtractCodeArtifactInspectionText = jest.fn(async () => ({
   complete: false,
 }));
 const mockExtractCodeArtifactText = jest.fn(async () => null);
+const mockExecuteWorkspaceTool = jest.fn();
 const mockGetExtractedTextFormat = jest.fn((_name, _mime, text) => (text == null ? null : 'text'));
 /* `hasOfficeHtmlPath` gates the persist-then-render split: when true, processCodeOutput
  * returns `{ file, finalize }` with the file persisted at `status: 'pending'`
@@ -55,23 +56,94 @@ const mockGetExtractedTextFormat = jest.fn((_name, _mime, text) => (text == null
  * legacy single-phase tests below (txt/png/etc) exercise the inline path
  * unchanged. The dedicated office/finalize describe block toggles it on. */
 const mockHasOfficeHtmlPath = jest.fn(() => false);
+/* Stands in for the real chunk parser so a transport test can decide what
+ * one `/exec` response means without reaching into `packages/api`. */
+const mockParseSandboxImageChunk = jest.fn((response) => response);
 /* Pass-through `withTimeout`: tests don't drive timeouts here (those live
  * in promise.spec.ts and the finalizePreview unit tests below). */
 const passthroughWithTimeout = async (promise) => promise;
 jest.mock('@librechat/api', () => {
-  const http = require('http');
-  const https = require('https');
   return {
+    processCodeOutput: jest.requireActual('@librechat/api').processCodeOutput,
+    prepareCodeOutputBufferForInspection:
+      jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
+    getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
+    appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
+    resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
+    /* Behaviourally identical to the real predicate in
+     * `packages/api/src/files/code/errors.ts`, which owns the contract and
+     * its own spec. Inlined because this factory replaces the whole module
+     * and `requireActual` here would load the entire package. */
+    isMissingSandboxPathError: (reason) =>
+      /no such file or directory|cannot access|cannot find the path|enoent/i.test(reason),
     getBasePath: jest.fn(() => ''),
     sanitizeArtifactPath: jest.fn((name) => name),
     flattenArtifactPath: jest.fn((name) => name.replace(/\//g, '__')),
     createAxiosInstance: jest.fn(() => mockAxios),
+    normalizeArtifactDeliveryFailure: (value) =>
+      value?.code === 'artifact_delivery_failed'
+        ? {
+            code: value.code,
+            status: value.status,
+            attempted: value.attempted,
+            delivered: value.delivered,
+            failed: value.failed,
+          }
+        : undefined,
+    executeWorkspaceTool: (...args) => mockExecuteWorkspaceTool(...args),
     getCodeApiAuthHeaders: jest.fn(async () => ({})),
+    isAbortError: (error) =>
+      error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || error?.code === 'ERR_CANCELED',
+    /* Windowing, sizing and rate-limit policy are real code in
+     * `packages/api` with their own tests (`files/code/image.spec.ts`,
+     * `utils/code.spec.ts`). These stand-ins are deliberately inert
+     * passthroughs — they assert nothing about that behavior, so the
+     * transport tests below cover only what this file still owns. */
+    createCodeApiRateLimitBudget: jest.fn(() => ({
+      limitMs: 20_000,
+      waitedMs: 0,
+      activeWaitEnds: new Set(),
+    })),
+    getCodeApiUploadOptions: jest.fn(() => ({
+      scope: 'default:user-123',
+      concurrency: 3,
+      retryWaitMs: 20_000,
+    })),
+    withCodeApiRateLimit: jest.fn(async ({ attempt }) => {
+      try {
+        return await attempt();
+      } catch (error) {
+        if (error?.response?.status !== 429) {
+          throw error;
+        }
+        return attempt();
+      }
+    }),
+    withCodeApiUploadRecovery: jest.fn(async ({ openSource, upload }) => {
+      try {
+        return await upload(await openSource());
+      } catch (error) {
+        if (error?.response?.status !== 429) {
+          throw error;
+        }
+        return upload(await openSource());
+      }
+    }),
+    buildSandboxImageReaderCode: jest.fn(
+      ({ filePath, limit, offset, chunkBytes }) =>
+        `read ${filePath} ${limit} ${offset} ${chunkBytes}`,
+    ),
+    parseSandboxImageChunk: jest.fn((response) => mockParseSandboxImageChunk(response)),
+    readWindowedSandboxImage: jest.fn(({ readChunk }) => readChunk({ code: 'read-one-window' })),
     getCodeExecutionBaseUrl: jest.fn((profile) =>
       profile === 'stateful' ? 'https://code-stateful.example.com' : 'https://code-api.example.com',
     ),
     CODE_API_EXPECTED_PROFILE_HEADER: 'X-CodeAPI-Expected-Profile',
+    codeExecutionHeaders: ({ executionProfile, bridgeWorkerId }) => ({
+      'X-CodeAPI-Expected-Profile': executionProfile,
+      ...(bridgeWorkerId ? { 'X-LibreChat-Code-Worker-ID': bridgeWorkerId } : {}),
+    }),
     withTimeout: (...args) => passthroughWithTimeout(...args),
     hasOfficeHtmlPath: (...args) => mockHasOfficeHtmlPath(...args),
     /**
@@ -91,6 +163,8 @@ jest.mock('@librechat/api', () => {
       typeof configured === 'number' && Number.isFinite(configured) && configured > 0
         ? Math.min(configured, 64 * 1024 * 1024)
         : 64 * 1024 * 1024,
+    CODE_OUTPUT_PREFLIGHT_MAX_BYTES: 64 * 1024 * 1024,
+    CODE_OUTPUT_PREFLIGHT_MAX_COUNT: 10,
     /* `processCodeOutput` derives the `textFormat` trust flag for
      * `IMongoFile` from this helper — Codex P1 review on PR #12934.
      * The mock returns 'text' for non-null extractor output and null
@@ -111,8 +185,12 @@ jest.mock('@librechat/api', () => {
       if (version != null) params.set('version', String(version));
       return `?${params.toString()}`;
     }),
-    codeServerHttpAgent: new http.Agent({ keepAlive: false }),
-    codeServerHttpsAgent: new https.Agent({ keepAlive: false }),
+    codeServerHttpAgent: jest.requireActual('@librechat/api').codeServerHttpAgent,
+    codeServerHttpsAgent: jest.requireActual('@librechat/api').codeServerHttpsAgent,
+    selectCodeFiles: jest.requireActual('@librechat/api').selectCodeFiles,
+    getCodeFileInfo: jest.requireActual('@librechat/api').getCodeFileInfo,
+    getUploadedCodeEnvFilename: jest.requireActual('@librechat/api').getUploadedCodeEnvFilename,
+    checkCodeFileActive: jest.requireActual('@librechat/api').checkCodeFileActive,
   };
 });
 
@@ -125,17 +203,20 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/agents', () => ({
+  ...jest.requireActual('@librechat/agents'),
   getCodeBaseURL: jest.fn(() => 'https://code-api.example.com'),
 }));
 
 // Mock models
 const mockClaimCodeFile = jest.fn();
+const mockCommitCodeFile = jest.fn();
 const mockUpdateFile = jest.fn();
 jest.mock('~/models', () => ({
   createFile: jest.fn().mockResolvedValue({}),
   getFiles: jest.fn(),
   updateFile: mockUpdateFile,
   claimCodeFile: (...args) => mockClaimCodeFile(...args),
+  commitCodeFile: mockCommitCodeFile,
 }));
 
 // Mock permissions (must be before process.js import)
@@ -182,6 +263,12 @@ const {
   prepareCodeOutputForInspection,
   getSessionInfo,
   readSandboxFile,
+  readWorkspaceFile,
+  searchWorkspace,
+  listWorkspaceFiles,
+  writeWorkspaceFile,
+  previewWorkspaceEdit,
+  editWorkspaceFile,
   readSandboxImage,
   writeSandboxFile,
   primeFiles,
@@ -218,6 +305,8 @@ describe('Code Process', () => {
     });
     getFiles.mockResolvedValue(null);
     createFile.mockResolvedValue({});
+    mockCommitCodeFile.mockReset();
+    mockCommitCodeFile.mockResolvedValue(true);
     getStrategyFunctions.mockReturnValue({
       saveBuffer: jest.fn().mockResolvedValue('/uploads/mock-file-path.txt'),
     });
@@ -249,7 +338,7 @@ describe('Code Process', () => {
         },
       });
       expect(mockClaimCodeFile).not.toHaveBeenCalled();
-      expect(createFile).not.toHaveBeenCalled();
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
       expect(getStrategyFunctions).not.toHaveBeenCalled();
     });
 
@@ -260,7 +349,7 @@ describe('Code Process', () => {
 
       expect(mockAxios).not.toHaveBeenCalled();
       expect(mockClaimCodeFile).toHaveBeenCalledTimes(1);
-      expect(createFile).toHaveBeenCalledTimes(1);
+      expect(mockCommitCodeFile).toHaveBeenCalledTimes(1);
     });
 
     it('enforces a caller-provided aggregate inspection budget while downloading', async () => {
@@ -280,7 +369,7 @@ describe('Code Process', () => {
         }),
       );
       expect(mockClaimCodeFile).not.toHaveBeenCalled();
-      expect(createFile).not.toHaveBeenCalled();
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
     });
 
     it('extracts text bytes even when the generated filename spoofs an image extension', async () => {
@@ -320,7 +409,150 @@ describe('Code Process', () => {
       });
       expect(mockAxios).not.toHaveBeenCalled();
       expect(mockClaimCodeFile).not.toHaveBeenCalled();
-      expect(createFile).not.toHaveBeenCalled();
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('published run artifacts', () => {
+    const scope = {
+      userId: 'user-123',
+      conversationId: 'conv-123',
+      runId: 'parent-run',
+      executionId: 'child-run',
+      agentId: 'child-agent',
+      sourceFileId: 'file-id-123',
+    };
+    const provenance = {
+      runId: scope.runId,
+      executionId: scope.executionId,
+      agentId: scope.agentId,
+      sourceFileId: scope.sourceFileId,
+      parentExecutionId: 'parent-execution',
+      publishedAt: '2026-09-11T16:00:00.000Z',
+      inputFileIds: ['input-pdf'],
+    };
+
+    it('stores the existing output pipeline result through the publication boundary', async () => {
+      const publish = jest.fn(async ({ file }) => ({
+        ...file,
+        file_id: 'published-id',
+        user: scope.userId,
+        conversationId: scope.conversationId,
+        context: FileContext.run_artifact,
+        metadata: { ...file.metadata, runFile: provenance },
+      }));
+      const discard = jest.fn();
+      const result = await processCodeOutput({
+        ...baseParams,
+        preparedBuffer: Buffer.from('report data'),
+        publication: { scope, provenance, publish, find: jest.fn(), discard },
+      });
+      expect(result.file).toMatchObject({
+        file_id: 'published-id',
+        filename: baseParams.name,
+        context: FileContext.run_artifact,
+        metadata: { runFile: provenance },
+      });
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ scope, provenance }));
+      expect(mockClaimCodeFile).not.toHaveBeenCalled();
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
+      expect(discard).not.toHaveBeenCalled();
+    });
+
+    it('finalizes office previews against the canonical published file identity', async () => {
+      mockHasOfficeHtmlPath.mockReturnValueOnce(true);
+      const publish = jest.fn(async ({ file }) => ({
+        ...file,
+        file_id: 'published-office-id',
+        user: scope.userId,
+        conversationId: scope.conversationId,
+        context: FileContext.run_artifact,
+        metadata: { ...file.metadata, runFile: provenance },
+      }));
+      const result = await processCodeOutput({
+        ...baseParams,
+        name: 'report.csv',
+        preparedBuffer: Buffer.from('a,b\n1,2'),
+        publication: { scope, provenance, publish, find: jest.fn(), discard: jest.fn() },
+      });
+      expect(result.file.file_id).toBe('published-office-id');
+      expect(result.file.status).toBe('pending');
+      await result.finalize();
+      expect(require('~/models').updateFile).toHaveBeenCalledWith(
+        expect.objectContaining({ file_id: 'published-office-id' }),
+        { previewRevision: result.previewRevision },
+      );
+    });
+
+    it('cleans a stored publication attempt when classification fails before metadata commit', async () => {
+      const { createRunArtifactPublisher } = jest.requireActual('@librechat/api');
+      const discard = jest.fn(async () => undefined);
+      const publishRunArtifactFile = jest.fn();
+      mockClassifyCodeArtifact.mockImplementationOnce(() => {
+        throw new Error('Classification failed after storage');
+      });
+      const publish = createRunArtifactPublisher({
+        claimRunArtifactFile: async () => ({ file_id: 'published-id' }),
+        publishRunArtifactFile,
+        findRunArtifactFile: async () => null,
+        processCodeOutput: (input) => processCodeOutput({ ...input, req: mockReq }),
+        prepare: async () => Buffer.from('report data'),
+        discard,
+        finalize: jest.fn(),
+      });
+      await expect(
+        publish({
+          scope,
+          provenance,
+          artifact: { id: baseParams.id, name: baseParams.name, sessionId: baseParams.session_id },
+        }),
+      ).rejects.toThrow('durable storage');
+      expect(publishRunArtifactFile).not.toHaveBeenCalled();
+      expect(discard).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file_id: 'mock-uuid-1234',
+          filepath: '/uploads/mock-file-path.txt',
+          metadata: undefined,
+        }),
+      );
+      expect(discard).toHaveBeenCalledTimes(1);
+    });
+
+    it('cleans a generated image cancelled after conversion without publishing it', async () => {
+      const { createRunArtifactPublisher } = jest.requireActual('@librechat/api');
+      const controller = new AbortController();
+      const discard = jest.fn(async () => undefined);
+      const publishRunArtifactFile = jest.fn();
+      convertImage.mockImplementationOnce(async () => {
+        controller.abort(new Error('Publication generation expired'));
+        return { filepath: '/uploads/generated.webp', bytes: 12, width: 2, height: 2 };
+      });
+      const publish = createRunArtifactPublisher({
+        claimRunArtifactFile: async () => ({ file_id: 'published-id' }),
+        publishRunArtifactFile,
+        findRunArtifactFile: async () => null,
+        processCodeOutput: (input) => processCodeOutput({ ...input, req: mockReq }),
+        prepare: async () => Buffer.from('image data'),
+        discard,
+        finalize: jest.fn(),
+      });
+      await expect(
+        publish({
+          scope,
+          provenance,
+          artifact: { id: baseParams.id, name: 'generated.png', sessionId: baseParams.session_id },
+          signal: controller.signal,
+        }),
+      ).rejects.toThrow('generation expired');
+      expect(publishRunArtifactFile).not.toHaveBeenCalled();
+      expect(discard).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filepath: '/uploads/generated.webp',
+          file_id: 'mock-uuid-1234',
+          metadata: undefined,
+        }),
+      );
+      expect(discard).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -385,6 +617,7 @@ describe('Code Process', () => {
       });
 
       expect(result).toBeNull();
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
     });
 
     it('still reuses the claim when it predates the background run', async () => {
@@ -393,7 +626,7 @@ describe('Code Process', () => {
         filename: 'test-file.txt',
         updatedAt: '2024-01-01T00:00:00.000Z',
       });
-      mockUpdateFile.mockResolvedValue({ file_id: 'existing-file-id' });
+      mockCommitCodeFile.mockResolvedValue(true);
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
 
       const { file: result } = await processCodeOutput({
@@ -402,6 +635,10 @@ describe('Code Process', () => {
       });
 
       expect(result.file_id).toBe('existing-file-id');
+      expect(mockCommitCodeFile).toHaveBeenCalledWith(
+        expect.objectContaining({ file_id: 'existing-file-id' }),
+        new Date('2024-01-02T00:00:00.000Z').getTime(),
+      );
     });
 
     it('skips when a newer task holds an unwritten claim (insert stamp, no updatedAt yet)', async () => {
@@ -422,17 +659,15 @@ describe('Code Process', () => {
       });
 
       expect(result).toBeNull();
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
     });
 
-    it('commits background writes conditionally: an inserter overtaken mid-flight misses', async () => {
-      /* This task INSERTED the claim, then a newer task stamped and wrote
-       * while this one was still downloading — the ownership predicate is in
-       * the write's own filter, so the commit atomically misses. */
+    it('omits output when the commit boundary rejects an overtaken claim', async () => {
       mockClaimCodeFile.mockResolvedValue({
         file_id: 'mock-uuid-1234',
         user: 'user-123',
       });
-      mockUpdateFile.mockResolvedValueOnce(null);
+      mockCommitCodeFile.mockResolvedValueOnce(false);
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
 
       const result = await processCodeOutput({
@@ -441,18 +676,14 @@ describe('Code Process', () => {
       });
 
       expect(result).toBeNull();
-      expect(mockUpdateFile).toHaveBeenCalledWith(
-        expect.objectContaining({ file_id: 'mock-uuid-1234' }),
-        {
-          $or: [
-            { 'metadata.sourceDispatchedAt': { $exists: false } },
-            {
-              'metadata.sourceDispatchedAt': {
-                $lte: new Date('2024-01-01T00:00:00.000Z').getTime(),
-              },
-            },
-          ],
-        },
+      expect(mockCommitCodeFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file_id: 'mock-uuid-1234',
+          metadata: expect.objectContaining({
+            sourceDispatchedAt: new Date('2024-01-01T00:00:00.000Z').getTime(),
+          }),
+        }),
+        new Date('2024-01-01T00:00:00.000Z').getTime(),
       );
     });
 
@@ -462,7 +693,7 @@ describe('Code Process', () => {
         filename: 'test-file.txt',
         updatedAt: '2024-01-01T00:00:00.000Z',
       });
-      mockUpdateFile.mockResolvedValueOnce({ file_id: 'existing-file-id' });
+      mockCommitCodeFile.mockResolvedValueOnce(true);
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
 
       const { file: result } = await processCodeOutput({
@@ -485,7 +716,7 @@ describe('Code Process', () => {
           sourceDispatchedAt: new Date('2024-01-01T00:00:00.000Z').getTime(),
         },
       });
-      mockUpdateFile.mockResolvedValue({ file_id: 'existing-file-id' });
+      mockCommitCodeFile.mockResolvedValue(true);
       mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
 
       const { file: result } = await processCodeOutput({
@@ -507,7 +738,7 @@ describe('Code Process', () => {
 
       await processCodeOutput(baseParams);
 
-      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(mockReq);
+      expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(mockReq, undefined);
       expect(mockAxios).toHaveBeenCalledWith(
         expect.objectContaining({
           method: 'get',
@@ -561,9 +792,9 @@ describe('Code Process', () => {
         expect(mockClaimCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({ tenantId: 'tenantA' }),
         );
-        expect(createFile).toHaveBeenCalledWith(
+        expect(mockCommitCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({ tenantId: 'tenantA' }),
-          true,
+          undefined,
         );
       });
 
@@ -668,7 +899,7 @@ describe('Code Process', () => {
           storageRegion: 'us-east-2',
           status: 'pending',
         });
-        expect(createFile).toHaveBeenCalledWith(
+        expect(mockCommitCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({
             file_id: 'mock-uuid-1234',
             user: 'user-123',
@@ -677,7 +908,7 @@ describe('Code Process', () => {
             storageKey,
             storageRegion: 'us-east-2',
           }),
-          true,
+          undefined,
         );
         expect(typeof finalize).toBe('function');
       });
@@ -703,9 +934,9 @@ describe('Code Process', () => {
         expect(mockSaveBuffer).toHaveBeenCalledWith(
           expect.objectContaining({ tenantId: 'tenantA' }),
         );
-        expect(createFile).toHaveBeenCalledWith(
+        expect(mockCommitCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({ tenantId: 'tenantA' }),
-          true,
+          undefined,
         );
       });
 
@@ -837,9 +1068,9 @@ describe('Code Process', () => {
           'utf8-text',
         );
         expect(result.text).toBe('hello world\n');
-        expect(createFile).toHaveBeenCalledWith(
+        expect(mockCommitCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({ text: 'hello world\n' }),
-          true,
+          undefined,
         );
       });
 
@@ -853,7 +1084,7 @@ describe('Code Process', () => {
         const { file: result } = await processCodeOutput({ ...baseParams, name: 'archive.zip' });
 
         expect(result.text).toBeNull();
-        const createCall = createFile.mock.calls[0][0];
+        const createCall = mockCommitCodeFile.mock.calls[0][0];
         expect(createCall.text).toBeNull();
       });
 
@@ -875,7 +1106,7 @@ describe('Code Process', () => {
         await processCodeOutput({ ...baseParams, name: 'output.bin' });
 
         // null (not omitted) so $set clears any prior `text` value.
-        const createCall = createFile.mock.calls[0][0];
+        const createCall = mockCommitCodeFile.mock.calls[0][0];
         expect(createCall).toHaveProperty('text', null);
       });
 
@@ -909,7 +1140,7 @@ describe('Code Process', () => {
 
         await processCodeOutput({ ...baseParams, name: 'output.txt' });
 
-        const createCall = createFile.mock.calls[0][0];
+        const createCall = mockCommitCodeFile.mock.calls[0][0];
         expect(createCall).toHaveProperty('status', null);
         expect(createCall).toHaveProperty('previewError', null);
         expect(createCall).toHaveProperty('previewRevision', null);
@@ -930,7 +1161,7 @@ describe('Code Process', () => {
           }),
         );
         expect(mockClaimCodeFile).toHaveBeenCalledTimes(1);
-        expect(createFile).toHaveBeenCalledTimes(1);
+        expect(mockCommitCodeFile).toHaveBeenCalledTimes(1);
       });
 
       it('should fallback to download URL when file exceeds size limit', async () => {
@@ -951,8 +1182,8 @@ describe('Code Process', () => {
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('exceeds size limit'));
         expect(result.filepath).toContain('/api/files/code/download/session-123/file-id-123');
         expect(result.expiresAt).toBeDefined();
-        // Should not call createFile for oversized files (fallback path)
-        expect(createFile).not.toHaveBeenCalled();
+        // Oversized files use the download fallback without committing metadata.
+        expect(mockCommitCodeFile).not.toHaveBeenCalled();
 
         // Reset to default for other tests
         fileSizeLimitConfig.value = 20 * 1024 * 1024;
@@ -969,7 +1200,7 @@ describe('Code Process', () => {
           expect.stringContaining('Generated file exceeds size limit'),
         );
         expect(mockClaimCodeFile).not.toHaveBeenCalled();
-        expect(createFile).not.toHaveBeenCalled();
+        expect(mockCommitCodeFile).not.toHaveBeenCalled();
 
         fileSizeLimitConfig.value = 20 * 1024 * 1024;
       });
@@ -984,13 +1215,17 @@ describe('Code Process', () => {
           ...baseParams,
           codeApiBaseUrl: 'https://code-stateful.example.com',
           executionProfile: 'stateful',
+          bridgeWorkerId: 'personal-worker-1',
           executionRouteKey,
         });
 
         expect(mockAxios).toHaveBeenCalledWith(
           expect.objectContaining({
             url: expect.stringContaining('https://code-stateful.example.com/download/'),
-            headers: expect.objectContaining({ 'X-CodeAPI-Expected-Profile': 'stateful' }),
+            headers: expect.objectContaining({
+              'X-CodeAPI-Expected-Profile': 'stateful',
+              'X-LibreChat-Code-Worker-ID': 'personal-worker-1',
+            }),
           }),
         );
         expect(result.filepath).toContain('execution_profile=stateful');
@@ -1178,18 +1413,18 @@ describe('Code Process', () => {
         expect(result.messageId).toBe('msg-123');
       });
 
-      it('should call createFile with upsert enabled', async () => {
+      it('commits foreground output without a background dispatch constraint', async () => {
         const smallBuffer = Buffer.alloc(100);
         mockAxios.mockResolvedValue({ data: smallBuffer });
 
         await processCodeOutput(baseParams);
 
-        expect(createFile).toHaveBeenCalledWith(
+        expect(mockCommitCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({
             file_id: 'mock-uuid-1234',
             context: FileContext.execute_code,
           }),
-          true, // upsert flag
+          undefined,
         );
       });
     });
@@ -1217,18 +1452,18 @@ describe('Code Process', () => {
        */
 
       /**
-       * `processCodeOutput` mutates the file object after `createFile` returns
+       * `processCodeOutput` mutates the file object after `commitCodeFile` returns
        * (`Object.assign(file, { messageId, toolCallId })`) so the runtime
        * caller sees the live messageId on the response. Reading
-       * `createFile.mock.calls[0][0]` directly would therefore reflect the
+       * `mockCommitCodeFile.mock.calls[0][0]` directly would therefore reflect the
        * post-mutation state because JS captures by reference. To assert
        * what was actually PERSISTED, snapshot the args at call time.
        */
-      function snapshotCreateFileArgs() {
+      function snapshotCommitCodeFileArgs() {
         const snapshots = [];
-        createFile.mockImplementation(async (file) => {
+        mockCommitCodeFile.mockImplementation(async (file) => {
           snapshots.push({ ...file });
-          return {};
+          return true;
         });
         return snapshots;
       }
@@ -1241,7 +1476,7 @@ describe('Code Process', () => {
           createdAt: '2024-01-01T00:00:00.000Z',
           messageId: 'turn-1-original-msg',
         });
-        const persisted = snapshotCreateFileArgs();
+        const persisted = snapshotCommitCodeFileArgs();
 
         const smallBuffer = Buffer.alloc(100);
         mockAxios.mockResolvedValue({ data: smallBuffer });
@@ -1264,7 +1499,7 @@ describe('Code Process', () => {
           createdAt: '2024-01-01T00:00:00.000Z',
           // messageId intentionally absent
         });
-        const persisted = snapshotCreateFileArgs();
+        const persisted = snapshotCommitCodeFileArgs();
 
         const smallBuffer = Buffer.alloc(100);
         mockAxios.mockResolvedValue({ data: smallBuffer });
@@ -1283,7 +1518,7 @@ describe('Code Process', () => {
           file_id: 'mock-uuid-1234',
           user: 'user-123',
         });
-        const persisted = snapshotCreateFileArgs();
+        const persisted = snapshotCommitCodeFileArgs();
 
         const smallBuffer = Buffer.alloc(100);
         mockAxios.mockResolvedValue({ data: smallBuffer });
@@ -1307,7 +1542,7 @@ describe('Code Process', () => {
           createdAt: '2024-01-01T00:00:00.000Z',
           messageId: 'turn-1-original-msg',
         });
-        const persisted = snapshotCreateFileArgs();
+        const persisted = snapshotCommitCodeFileArgs();
 
         const smallBuffer = Buffer.alloc(100);
         mockAxios.mockResolvedValue({ data: smallBuffer });
@@ -1334,7 +1569,7 @@ describe('Code Process', () => {
           createdAt: '2024-01-01T00:00:00.000Z',
           messageId: 'turn-1-image-msg',
         });
-        const persisted = snapshotCreateFileArgs();
+        const persisted = snapshotCommitCodeFileArgs();
 
         const imageBuffer = Buffer.alloc(500);
         mockAxios.mockResolvedValue({ data: imageBuffer });
@@ -1388,6 +1623,33 @@ describe('Code Process', () => {
         expect(callConfig.httpsAgent.keepAlive).toBe(false);
       });
 
+      it('forwards cancellation to the freshness request and preserves its error', async () => {
+        const controller = new AbortController();
+        const canceled = Object.assign(new Error('canceled'), {
+          name: 'CanceledError',
+          code: 'ERR_CANCELED',
+        });
+        mockAxios.mockImplementationOnce(async (config) => {
+          expect(config.signal).toBe(controller.signal);
+          controller.abort();
+          throw canceled;
+        });
+
+        await expect(
+          getSessionInfo(
+            {
+              kind: 'user',
+              id: 'user-1',
+              storage_session_id: 'sess',
+              file_id: 'fid',
+            },
+            mockReq,
+            {},
+            controller.signal,
+          ),
+        ).rejects.toBe(canceled);
+      });
+
       it('forwards Code API auth headers when checking session object freshness', async () => {
         getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer freshness-token' });
         mockAxios.mockResolvedValue({
@@ -1404,7 +1666,7 @@ describe('Code Process', () => {
           mockReq,
         );
 
-        expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(mockReq);
+        expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(mockReq, undefined);
         expect(mockAxios).toHaveBeenCalledWith(
           expect.objectContaining({
             method: 'get',
@@ -1488,9 +1750,9 @@ describe('Code Process', () => {
         // Extractor MUST NOT have been called yet — that's deferred preview work.
         expect(mockExtractCodeArtifactText).not.toHaveBeenCalled();
         // Persisted record with the pending status.
-        expect(createFile).toHaveBeenCalledWith(
+        expect(mockCommitCodeFile).toHaveBeenCalledWith(
           expect.objectContaining({ status: 'pending', text: null, textFormat: null }),
-          true,
+          undefined,
         );
       });
 
@@ -1770,6 +2032,373 @@ describe('Code Process', () => {
     });
   });
 
+  describe('readWorkspaceFile', () => {
+    it('forwards the configured rate-limit budget to the workspace transport', async () => {
+      const req = {
+        ...mockReq,
+        config: { ...mockReq.config, endpoints: { agents: { codeApiMaxRetryWaitMs: 0 } } },
+      };
+      mockExecuteWorkspaceTool.mockResolvedValueOnce({ operation: 'read_file' });
+
+      await readWorkspaceFile({
+        file_path: 'src/app.ts',
+        workspace_id: 'primary',
+        start_line: 1,
+        max_lines: 10,
+        codeApiBaseUrl: 'https://attached-code.example.com/v1',
+        executionProfile: 'stateful',
+        req,
+      });
+
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
+        expect.objectContaining({ codeApiMaxRetryWaitMs: 0 }),
+      );
+    });
+
+    it('forwards authenticated reads to the selected attached worker', async () => {
+      const controller = new AbortController();
+      const result = {
+        protocolVersion: 1,
+        operation: 'read_file',
+        workspaceId: 'primary',
+        path: 'src/app.ts',
+        content: 'const ready = true;',
+        startLine: 1,
+        endLine: 1,
+        truncated: false,
+      };
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer workspace-token' });
+      mockExecuteWorkspaceTool.mockResolvedValueOnce(result);
+
+      await expect(
+        readWorkspaceFile({
+          file_path: 'src/app.ts',
+          workspace_id: 'primary',
+          workspace_instance_id: 'a'.repeat(64),
+          start_line: 1,
+          max_lines: 200,
+          codeApiBaseUrl: 'https://attached-code.example.com/v1',
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-user-1',
+          req: mockReq,
+          signal: controller.signal,
+          maxQueueWaitMs: 0,
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
+        }),
+      ).resolves.toBe(result);
+
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
+        baseURL: 'https://attached-code.example.com/v1',
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
+        maxRequestTimeoutMs: 125_000,
+        deadlineAtMs: 160_000,
+        request: {
+          protocolVersion: 1,
+          operation: 'read_file',
+          workspaceId: 'primary',
+          workspaceInstanceId: 'a'.repeat(64),
+          path: 'src/app.ts',
+          startLine: 1,
+          maxLines: 200,
+        },
+        signal: controller.signal,
+      });
+    });
+  });
+
+  describe('searchWorkspace', () => {
+    it('forwards authenticated literal search to the selected attached worker', async () => {
+      const controller = new AbortController();
+      const result = {
+        protocolVersion: 1,
+        operation: 'search_text',
+        workspaceId: 'primary',
+        matches: [],
+        truncated: false,
+      };
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer workspace-token' });
+      mockExecuteWorkspaceTool.mockResolvedValueOnce(result);
+
+      await expect(
+        searchWorkspace({
+          query: 'needle',
+          workspace_id: 'primary',
+          path: 'src',
+          max_results: 20,
+          codeApiBaseUrl: 'https://attached-code.example.com/v1',
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-user-1',
+          req: mockReq,
+          signal: controller.signal,
+          maxQueueWaitMs: 0,
+        }),
+      ).resolves.toBe(result);
+
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
+        baseURL: 'https://attached-code.example.com/v1',
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
+        request: {
+          protocolVersion: 1,
+          operation: 'search_text',
+          workspaceId: 'primary',
+          query: 'needle',
+          path: 'src',
+          maxResults: 20,
+        },
+        signal: controller.signal,
+      });
+    });
+  });
+
+  describe('listWorkspaceFiles', () => {
+    it('forwards authenticated listing to the selected attached worker', async () => {
+      const controller = new AbortController();
+      const result = {
+        protocolVersion: 1,
+        operation: 'list_files',
+        workspaceId: 'primary',
+        paths: ['src/app.ts'],
+        truncated: false,
+      };
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer workspace-token' });
+      mockExecuteWorkspaceTool.mockResolvedValueOnce(result);
+
+      await expect(
+        listWorkspaceFiles({
+          workspace_id: 'primary',
+          path: 'src',
+          after_path: 'src/app.ts',
+          max_results: 20,
+          codeApiBaseUrl: 'https://attached-code.example.com/v1',
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-user-1',
+          req: mockReq,
+          signal: controller.signal,
+          maxQueueWaitMs: 0,
+        }),
+      ).resolves.toBe(result);
+
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
+        baseURL: 'https://attached-code.example.com/v1',
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
+        request: {
+          protocolVersion: 1,
+          operation: 'list_files',
+          workspaceId: 'primary',
+          path: 'src',
+          afterPath: 'src/app.ts',
+          maxResults: 20,
+        },
+        signal: controller.signal,
+      });
+    });
+  });
+
+  describe('workspace mutations', () => {
+    it('forwards create-only writes to the selected attached worker', async () => {
+      const controller = new AbortController();
+      const result = {
+        protocolVersion: 1,
+        operation: 'write_file',
+        workspaceId: 'primary',
+        path: 'src/new.ts',
+        created: true,
+        bytesWritten: 5,
+      };
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer workspace-token' });
+      mockExecuteWorkspaceTool.mockResolvedValueOnce(result);
+
+      await expect(
+        writeWorkspaceFile({
+          file_path: 'src/new.ts',
+          content: 'ready',
+          overwrite: false,
+          workspace_id: 'primary',
+          workspace_instance_id: 'b'.repeat(64),
+          codeApiBaseUrl: 'https://attached-code.example.com/v1',
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-user-1',
+          req: mockReq,
+          signal: controller.signal,
+          maxQueueWaitMs: 0,
+        }),
+      ).resolves.toBe(result);
+
+      expect(getCodeApiAuthHeaders).not.toHaveBeenCalled();
+      const { authHeaders } = mockExecuteWorkspaceTool.mock.calls[0][0];
+      await expect(authHeaders()).resolves.toEqual({
+        Authorization: 'Bearer workspace-token',
+        'X-CodeAPI-Expected-Profile': 'stateful',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer refreshed-token' });
+      await expect(authHeaders()).resolves.toMatchObject({
+        Authorization: 'Bearer refreshed-token',
+        'X-LibreChat-Code-Worker-ID': 'worker-user-1',
+      });
+      expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
+        baseURL: 'https://attached-code.example.com/v1',
+        authHeaders: expect.any(Function),
+        maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: undefined,
+        maxRequestTimeoutMs: undefined,
+        deadlineAtMs: undefined,
+        request: {
+          protocolVersion: 1,
+          operation: 'write_file',
+          workspaceId: 'primary',
+          workspaceInstanceId: 'b'.repeat(64),
+          path: 'src/new.ts',
+          content: 'ready',
+          overwrite: false,
+        },
+        signal: controller.signal,
+      });
+    });
+
+    it('forwards an edit batch as one attached-worker request', async () => {
+      const result = {
+        protocolVersion: 1,
+        operation: 'edit_file',
+        workspaceId: 'primary',
+        path: 'src/app.ts',
+        replacements: 2,
+        bytesWritten: 20,
+      };
+      getCodeApiAuthHeaders.mockResolvedValueOnce({ Authorization: 'Bearer workspace-token' });
+      mockExecuteWorkspaceTool.mockResolvedValueOnce(result);
+
+      await expect(
+        editWorkspaceFile({
+          file_path: 'src/app.ts',
+          edits: [
+            { oldText: 'draft', newText: 'ready' },
+            { oldText: 'false', newText: 'true' },
+          ],
+          workspace_id: 'primary',
+          codeApiBaseUrl: 'https://attached-code.example.com/v1',
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-user-1',
+          req: mockReq,
+          expected_base_sha256: 'a'.repeat(64),
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
+        }),
+      ).resolves.toBe(result);
+
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
+          request: {
+            protocolVersion: 1,
+            operation: 'edit_file',
+            workspaceId: 'primary',
+            path: 'src/app.ts',
+            edits: [
+              { oldText: 'draft', newText: 'ready' },
+              { oldText: 'false', newText: 'true' },
+            ],
+            expectedBaseSha256: 'a'.repeat(64),
+          },
+        }),
+      );
+    });
+
+    it('forwards a non-mutating attached-workspace edit preview', async () => {
+      const result = {
+        protocolVersion: 1,
+        operation: 'preview_edit',
+        workspaceId: 'primary',
+        path: 'src/app.ts',
+        content: 'prefix SECRET',
+        hasUtf8Bom: false,
+        baseSha256: 'b'.repeat(64),
+        replacements: 1,
+        bytesWritten: 13,
+      };
+      mockExecuteWorkspaceTool.mockResolvedValueOnce(result);
+
+      await expect(
+        previewWorkspaceEdit({
+          file_path: 'src/app.ts',
+          edits: [{ oldText: ' SEC', newText: ' SECRET' }],
+          workspace_id: 'primary',
+          codeApiBaseUrl: 'https://attached-code.example.com/v1',
+          executionProfile: 'stateful',
+          req: mockReq,
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
+        }),
+      ).resolves.toBe(result);
+
+      expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxRequestTimeoutMs: 125_000,
+          deadlineAtMs: 160_000,
+          request: {
+            protocolVersion: 1,
+            operation: 'preview_edit',
+            workspaceId: 'primary',
+            path: 'src/app.ts',
+            edits: [{ oldText: ' SEC', newText: ' SECRET' }],
+          },
+        }),
+      );
+    });
+  });
+
   describe('readSandboxFile', () => {
     /**
      * `readSandboxFile` shells `cat <file_path>` through the sandbox
@@ -1853,12 +2482,14 @@ describe('Code Process', () => {
           file_path: '/mnt/data/x.txt',
           codeApiBaseUrl: 'https://stateful-code.example.com',
           executionProfile: 'stateful',
+          bridgeWorkerId: 'personal-worker-1',
           runtime_session_hint: 'v1:user',
         });
 
         const call = mockAxios.mock.calls[0][0];
         expect(call.url).toBe('https://stateful-code.example.com/exec');
         expect(call.headers['X-CodeAPI-Expected-Profile']).toBe('stateful');
+        expect(call.headers['X-LibreChat-Code-Worker-ID']).toBe('personal-worker-1');
         expect(call.data.runtime_session_hint).toBe('v1:user');
       });
 
@@ -1924,7 +2555,7 @@ describe('Code Process', () => {
 
         await readSandboxFile({ file_path: '/mnt/data/x.txt', req: mockReq });
 
-        expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(mockReq);
+        expect(getCodeApiAuthHeaders).toHaveBeenCalledWith(mockReq, undefined);
         expect(mockAxios).toHaveBeenCalledWith(
           expect.objectContaining({
             method: 'post',
@@ -2007,6 +2638,43 @@ describe('Code Process', () => {
           }),
         );
       });
+
+      /* `create_file` reads its target before writing so it can tell a create
+       * from an overwrite, so an absent path is the ordinary case. Reported at
+       * error level it made every file creation look like a lost file — and
+       * `logAxiosError` rendered the sandbox's own stderr as "An error occurred
+       * while setting up the request", which reads as a transport fault. */
+      it('logs an absent path at debug, not through the error-level axios logger', async () => {
+        const { logAxiosError } = require('@librechat/api');
+        mockAxios.mockResolvedValueOnce({
+          data: { stdout: '', stderr: 'cat: /mnt/data/SKILL.md: No such file or directory\n' },
+        });
+
+        await expect(readSandboxFile({ file_path: '/mnt/data/SKILL.md' })).rejects.toThrow(
+          'No such file or directory',
+        );
+
+        expect(logAxiosError).not.toHaveBeenCalled();
+        expect(logger.error).not.toHaveBeenCalled();
+        expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('/mnt/data/SKILL.md'));
+      });
+
+      it('still reports a non-missing sandbox read failure at error level', async () => {
+        const { logAxiosError } = require('@librechat/api');
+        mockAxios.mockResolvedValueOnce({
+          data: { stdout: '', stderr: 'cat: /mnt/data/x.txt: Permission denied\n' },
+        });
+
+        await expect(readSandboxFile({ file_path: '/mnt/data/x.txt' })).rejects.toThrow(
+          'Permission denied',
+        );
+
+        expect(logger.debug).not.toHaveBeenCalled();
+        expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Permission denied'));
+        /* The sandbox answered; nothing about the request failed, so the
+         * axios-shaped logger would misattribute this to the transport. */
+        expect(logAxiosError).not.toHaveBeenCalled();
+      });
     });
 
     describe('timeout', () => {
@@ -2066,6 +2734,38 @@ describe('Code Process', () => {
         session_id: 'sess-new',
         files: [{ id: 'file-new', name: 'new.txt' }],
       });
+    });
+
+    it('forwards only a valid bounded artifact delivery failure', async () => {
+      mockAxios.mockResolvedValueOnce({
+        data: {
+          stdout: 'WROTE 1 bytes to /mnt/data/new.txt\n',
+          session_id: 'sess-new',
+          files: [],
+          artifact_delivery: {
+            code: 'artifact_delivery_failed',
+            status: 'failed',
+            attempted: 1,
+            delivered: 0,
+            failed: 1,
+            detail: 'private object storage failure',
+          },
+        },
+      });
+
+      const result = await writeSandboxFile({
+        file_path: '/mnt/data/new.txt',
+        content: 'x',
+      });
+
+      expect(result.artifact_delivery).toEqual({
+        code: 'artifact_delivery_failed',
+        status: 'failed',
+        attempted: 1,
+        delivered: 0,
+        failed: 1,
+      });
+      expect(JSON.stringify(result)).not.toContain('private object storage failure');
     });
 
     it('encodes path and content in a base64 JSON payload instead of shell-interpolating them', async () => {
@@ -2150,6 +2850,113 @@ describe('Code Process', () => {
       mockAxios.mockResolvedValue({ data: null });
       return { handleFileUpload, getDownloadStream };
     }
+
+    it('recovers a throttled stale-file reupload with a fresh stream', async () => {
+      const controller = new AbortController();
+      const dbFile = {
+        file_id: 'rate-limited-file',
+        filename: 'report.csv',
+        filepath: '/uploads/report.csv',
+        source: 'local',
+        context: 'execute_code',
+        metadata: {
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-123',
+            storage_session_id: 'OLD_SESSION',
+            file_id: 'OLD_ID',
+          },
+        },
+      };
+      const rateLimit = Object.assign(new Error('Request failed with status code 429'), {
+        isAxiosError: true,
+        response: { status: 429, headers: { 'retry-after': '0' } },
+      });
+      const handleFileUpload = jest
+        .fn()
+        .mockRejectedValueOnce(rateLimit)
+        .mockResolvedValueOnce({ storage_session_id: 'NEW_SESSION', file_id: 'NEW_ID' });
+      const getDownloadStream = jest
+        .fn()
+        .mockResolvedValueOnce('first-stream')
+        .mockResolvedValueOnce('second-stream');
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload } : { getDownloadStream },
+      );
+      getFiles.mockResolvedValue([dbFile]);
+      filterFilesByAgentAccess.mockImplementation(({ files }) => Promise.resolve(files));
+      mockAxios.mockResolvedValue({ data: null });
+      updateFile.mockResolvedValue({});
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: [dbFile.file_id], files: [] } },
+        agentId: 'agent-id',
+        signal: controller.signal,
+      });
+
+      const { withCodeApiUploadRecovery } = require('@librechat/api');
+      expect(withCodeApiUploadRecovery).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
+      );
+      expect(handleFileUpload).toHaveBeenCalledTimes(2);
+      expect(handleFileUpload).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
+      );
+      expect(getDownloadStream).toHaveBeenCalledTimes(2);
+      expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), '/uploads/report.csv', {
+        signal: controller.signal,
+      });
+      expect(handleFileUpload.mock.calls.map(([args]) => args.stream)).toEqual([
+        'first-stream',
+        'second-stream',
+      ]);
+      expect(result.files).toEqual([
+        expect.objectContaining({ id: 'NEW_ID', storage_session_id: 'NEW_SESSION' }),
+      ]);
+    });
+
+    it('propagates cancellation from a stale-file reupload', async () => {
+      const controller = new AbortController();
+      const dbFile = {
+        file_id: 'canceled-file',
+        filename: 'report.csv',
+        filepath: '/uploads/report.csv',
+        source: 'local',
+        context: 'execute_code',
+        metadata: {
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-123',
+            storage_session_id: 'OLD_SESSION',
+            file_id: 'OLD_ID',
+          },
+        },
+      };
+      const handleFileUpload = jest.fn(async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      });
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code'
+          ? { handleFileUpload }
+          : { getDownloadStream: jest.fn().mockResolvedValue('stream') },
+      );
+      getFiles.mockResolvedValue([dbFile]);
+      filterFilesByAgentAccess.mockImplementation(({ files }) => Promise.resolve(files));
+      mockAxios.mockResolvedValue({ data: null });
+
+      await expect(
+        primeFiles({
+          req: { user: { id: 'user-123', role: 'USER' } },
+          tool_resources: { execute_code: { file_ids: [dbFile.file_id], files: [] } },
+          agentId: 'agent-id',
+          signal: controller.signal,
+          maxQueueWaitMs: 0,
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(handleFileUpload).toHaveBeenCalledTimes(1);
+    });
 
     it('uses the permission resource type established by the calling route', async () => {
       const files = [
@@ -2277,6 +3084,7 @@ describe('Code Process', () => {
       expect(getDownloadStream).toHaveBeenCalledWith(
         { user: { id: 'user-123', role: 'USER' } },
         '/uploads/trusted.txt',
+        { signal: undefined },
       );
       expect(handleFileUpload).toHaveBeenCalledTimes(1);
     });
@@ -2324,6 +3132,42 @@ describe('Code Process', () => {
           kind: 'user',
         },
       ]);
+    });
+
+    it('reuploads a recovered converted image under its advertised sandbox name', async () => {
+      getFiles.mockResolvedValue([
+        {
+          file_id: 'converted-image',
+          filename: 'photo.png',
+          filepath: '/uploads/photo.webp',
+          type: 'image/webp',
+          source: 'local',
+          context: 'execute_code',
+          metadata: {
+            codeEnvRef: {
+              kind: 'user',
+              id: 'user-123',
+              storage_session_id: 'OLD_SESSION',
+              file_id: 'OLD_ID',
+            },
+          },
+        },
+      ]);
+      const { handleFileUpload } = setupReuploadMocks({
+        storage_session_id: 'NEW_SESSION',
+        file_id: 'NEW_ID',
+      });
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: ['converted-image'], files: [] } },
+        agentId: 'agent-id',
+      });
+
+      expect(handleFileUpload).toHaveBeenCalledWith(
+        expect.objectContaining({ filename: 'photo.webp' }),
+      );
+      expect(result.files?.[0]?.name).toBe('photo.webp');
     });
 
     /* Phase C / option α (codeapi #1455): reupload preserves the
@@ -2401,6 +3245,7 @@ describe('Code Process', () => {
         agentId: 'agent-id',
         codeApiBaseUrl: 'https://stateful-code.example.com',
         executionProfile: 'stateful',
+        bridgeWorkerId: 'personal-worker-1',
       });
 
       expect(mockAxios).not.toHaveBeenCalled();
@@ -2408,6 +3253,7 @@ describe('Code Process', () => {
         expect.objectContaining({
           codeApiBaseUrl: 'https://stateful-code.example.com',
           executionProfile: 'stateful',
+          bridgeWorkerId: 'personal-worker-1',
         }),
       );
       expect(updateFile).toHaveBeenCalledWith(
@@ -2484,6 +3330,7 @@ describe('Code Process', () => {
             storage_session_id: 'NEW_SESSION',
             file_id: 'NEW_ID',
             executionProfile: 'default',
+            sandboxFilename: 'sentinel.txt',
           },
           'metadata.codeEnvRefs.default': {
             kind: 'user',
@@ -2491,6 +3338,7 @@ describe('Code Process', () => {
             storage_session_id: 'NEW_SESSION',
             file_id: 'NEW_ID',
             executionProfile: 'default',
+            sandboxFilename: 'sentinel.txt',
           },
         }),
       );
@@ -2550,6 +3398,7 @@ describe('Code Process', () => {
       ],
       ['Azure BlobNotFound', { code: 'BlobNotFound', statusCode: 404 }, 'missing_backing_object'],
       ['storage access denied', { code: 'AccessDenied', status: 403 }, 'resource_access_denied'],
+      ['Code API throttling', { code: 'CODE_API_RATE_LIMITED', status: 429 }, 'rate_limited'],
     ])(
       'fails with a typed recovery error for %s',
       async (_errorShape, downloadError, expectedCategory) => {
@@ -2676,6 +3525,46 @@ describe('Code Process', () => {
       ]);
     });
 
+    it('mounts a converted image under the name the sandbox actually holds', async () => {
+      /* Image uploads are converted to the configured output type while the record keeps
+       * the original filename. Provisioning uploaded the converted name, so rebuilding
+       * the mount path from the record advertises a file the sandbox does not have. */
+      setupSessionInfoOk();
+      getFiles.mockResolvedValue([
+        makeFile({
+          file_id: 'fid-ready',
+          filename: 'photo.png',
+          type: 'image/webp',
+        }),
+      ]);
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: ['fid-ready'], files: [] } },
+        agentId: 'agent-id',
+      });
+
+      expect(result.files?.[0]?.name).toBe('photo.webp');
+    });
+
+    it('tells the model an attached workspace cannot open primed files', async () => {
+      setupSessionInfoOk();
+      getFiles.mockResolvedValue([makeFile({ status: 'ready' })]);
+
+      const result = await primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: { execute_code: { file_ids: ['fid-ready'], files: [] } },
+        agentId: 'agent-id',
+        codeFileLocation: 'programmatic',
+      });
+
+      expect(result.toolContext).toContain('not in the attached workspace');
+      expect(result.toolContext).toContain('$LIBRECHAT_CODE_DATA_DIR/data-ready.xlsx');
+      expect(result.toolContext).not.toContain('/mnt/data');
+      expect(result.toolContext).not.toContain('tool environment:');
+      expect(result.files).toHaveLength(1);
+    });
+
     it('annotates a pending file with "(preview not yet generated)"', async () => {
       setupSessionInfoOk();
       getFiles.mockResolvedValue([makeFile({ status: 'pending' })]);
@@ -2740,111 +3629,865 @@ describe('Code Process', () => {
   });
 
   /**
-   * These drive the REAL reader against a mocked `/exec` transport (rather
-   * than mocking `readSandboxImage` itself), because the bug this covers
-   * lived entirely in the transport: base64 leaves the sandbox on stdout,
-   * which the runner truncates + SIGKILLs past `SANDBOX_OUTPUT_MAX_SIZE`.
+   * Windowing, window sizing, rate-limit waiting and byte assembly moved to
+   * `packages/api` (`files/code/image.ts`, `utils/code.ts`) and are tested
+   * there against the real implementations. What remains here is the piece
+   * this file still owns: the `/exec` transport — session forwarding, the
+   * profile header, and handing the response to the shared parser.
    */
-  describe('readSandboxImage', () => {
-    const crypto = require('crypto');
-    const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    /** Reply as the sandbox would: serve `buffer` through the windowed reader. */
-    const serveFile = (buffer) =>
-      mockAxios.mockImplementation(async ({ data }) => {
-        const payload = JSON.parse(
-          Buffer.from(JSON.parse(/payload = ("[^"]+")/.exec(data.code)[1]), 'base64').toString(),
-        );
-        const slice = buffer.subarray(payload.offset, payload.offset + payload.chunk);
-        return {
-          data: {
-            stdout: JSON.stringify({
-              total: buffer.length,
-              n: slice.length,
-              b64: slice.toString('base64'),
-            }),
-          },
-        };
-      });
-
+  describe('readSandboxImage transport', () => {
     beforeEach(() => {
       process.env.LIBRECHAT_CODE_BASEURL = 'http://code.test/v1';
-      delete process.env.LIBRECHAT_CODE_IMAGE_CHUNK_BYTES;
       mockAxios.mockReset();
+      mockParseSandboxImageChunk.mockReset();
+      mockParseSandboxImageChunk.mockImplementation((response) => response);
     });
 
-    it('reassembles an image larger than one chunk, byte-for-byte', async () => {
-      /* 200KB of PNG-headed noise: > 6 chunks at the 32KB default, and the
-       * exact shape that used to blow the stdout cap and SIGKILL the job. */
-      const source = Buffer.concat([PNG_HEADER, crypto.randomBytes(200 * 1024)]);
-      serveFile(source);
+    it('reuses the exact artifact preflight buffer without calling /exec', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      const source = Buffer.from('cached-image-bytes');
+      mockAxios.mockResolvedValueOnce({ data: source });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
 
-      const result = await readSandboxImage({ file_path: '/mnt/data/big.png' });
-
-      expect(mockAxios.mock.calls.length).toBeGreaterThan(1);
-      expect(result.bytes).toBe(source.length);
-      expect(Buffer.from(result.base64, 'base64').equals(source)).toBe(true);
-    });
-
-    it('reads a single-chunk image in one round-trip', async () => {
-      const source = Buffer.concat([PNG_HEADER, crypto.randomBytes(1024)]);
-      serveFile(source);
-
-      const result = await readSandboxImage({ file_path: '/mnt/data/small.png' });
-
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'artifact-file',
+        name: 'charts/result.png',
+        session_id: 'artifact-session',
+      });
       expect(mockAxios).toHaveBeenCalledTimes(1);
-      expect(Buffer.from(result.base64, 'base64').equals(source)).toBe(true);
-    });
+      expect(mockAxios.mock.calls[0][0].method).toBe('get');
+      mockAxios.mockClear();
 
-    it('names the real cause when a chunk overflows the runner stdout cap', async () => {
-      /* The runner truncates stdout and SIGKILLs with status `OL`; the old
-       * reader parsed the truncated base64 and reported a misleading
-       * "unexpected output" instead of the fixable limit. */
-      mockAxios.mockResolvedValue({
-        data: { stdout: '{"total":999999,"n":32768,"b64":"iVBORw0KGg', status: 'OL', code: 137 },
+      const result = await readSandboxImage({
+        req,
+        file_path: '/mnt/data/charts/result.png',
+        session_id: 'runtime-session',
+        files: [
+          {
+            id: 'artifact-file',
+            name: 'charts/result.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
       });
 
-      await expect(readSandboxImage({ file_path: '/mnt/data/big.png' })).rejects.toThrow(
-        /exceeded the sandbox stdout limit/,
+      expect(mockAxios).not.toHaveBeenCalled();
+      expect(result).toEqual({ base64: source.toString('base64'), bytes: source.length });
+    });
+
+    it('does not reuse a same-path buffer for a different artifact ref', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('stale') });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'stale-file',
+        name: 'chart.png',
+        session_id: 'artifact-session',
+      });
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req,
+        file_path: '/mnt/data/chart.png',
+        files: [
+          {
+            id: 'current-file',
+            name: 'chart.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios.mock.calls[0][0].method).toBe('post');
+    });
+
+    it('does not reuse an exact artifact ref across requests', async () => {
+      const ownerReq = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      const otherReq = {
+        user: { id: 'other-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('owner-bytes') });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req: ownerReq,
+        id: 'artifact-file',
+        name: 'chart.png',
+        session_id: 'artifact-session',
+      });
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req: otherReq,
+        file_path: '/mnt/data/chart.png',
+        files: [
+          {
+            id: 'artifact-file',
+            name: 'chart.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios.mock.calls[0][0].method).toBe('post');
+    });
+
+    it('does not reuse an artifact ref from a different Code API deployment', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('deployment-a') });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'artifact-file',
+        name: 'chart.png',
+        session_id: 'artifact-session',
+        codeApiBaseUrl: 'https://code-a.example.com',
+        executionProfile: 'stateful',
+        executionRouteKey: 'stateful:deployment-a',
+      });
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req,
+        file_path: '/mnt/data/chart.png',
+        codeApiBaseUrl: 'https://code-b.example.com',
+        executionProfile: 'stateful',
+        executionRouteKey: 'stateful:deployment-b',
+        files: [
+          {
+            id: 'artifact-file',
+            name: 'chart.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios.mock.calls[0][0]).toMatchObject({
+        method: 'post',
+        url: 'https://code-b.example.com/exec',
+      });
+    });
+
+    it('does not reuse a cached artifact for a path containing parent traversal', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('cached-chart') });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'artifact-file',
+        name: 'chart.png',
+        session_id: 'artifact-session',
+      });
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req,
+        file_path: '/mnt/data/link/../chart.png',
+        files: [
+          {
+            id: 'artifact-file',
+            name: 'chart.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios.mock.calls[0][0].method).toBe('post');
+    });
+
+    it('does not treat a literal backslash in a POSIX path as a separator', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('cached-chart') });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'artifact-file',
+        name: 'charts/result.png',
+        session_id: 'artifact-session',
+      });
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req,
+        file_path: '/mnt/data/charts\\result.png',
+        files: [
+          {
+            id: 'artifact-file',
+            name: 'charts/result.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios.mock.calls[0][0].method).toBe('post');
+    });
+
+    it('evicts the oldest prepared buffers when the per-request cache reaches its limit', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      mockAxios.mockResolvedValue({ data: Buffer.from('cached') });
+
+      for (let index = 0; index < 11; index++) {
+        await prepareCodeOutputForInspection({
+          ...baseParams,
+          req,
+          id: `artifact-${index}`,
+          name: `chart-${index}.png`,
+          session_id: 'artifact-session',
+          inspectContent: false,
+        });
+      }
+      mockAxios.mockReset();
+      mockAxios.mockResolvedValueOnce({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        req,
+        file_path: '/mnt/data/chart-0.png',
+        files: [
+          {
+            id: 'artifact-0',
+            name: 'chart-0.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(mockAxios.mock.calls[0][0].method).toBe('post');
+      mockAxios.mockClear();
+
+      const newest = await readSandboxImage({
+        req,
+        file_path: '/mnt/data/chart-10.png',
+        files: [
+          {
+            id: 'artifact-10',
+            name: 'chart-10.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(newest).toEqual({ base64: Buffer.from('cached').toString('base64'), bytes: 6 });
+      expect(mockAxios).not.toHaveBeenCalled();
+    });
+
+    it('applies the inline byte limit before returning a prepared artifact buffer', async () => {
+      const req = {
+        user: { id: 'artifact-user' },
+        config: mockReq.config,
+      };
+      const source = Buffer.alloc(128);
+      mockAxios.mockResolvedValueOnce({ data: source });
+      determineFileType.mockResolvedValueOnce({ mime: 'image/png' });
+      await prepareCodeOutputForInspection({
+        ...baseParams,
+        req,
+        id: 'large-file',
+        name: 'large.png',
+        session_id: 'artifact-session',
+      });
+      mockAxios.mockClear();
+
+      const result = await readSandboxImage({
+        req,
+        file_path: '/mnt/data/large.png',
+        maxBytes: 64,
+        files: [
+          {
+            id: 'large-file',
+            name: 'large.png',
+            storage_session_id: 'artifact-session',
+          },
+        ],
+      });
+
+      expect(result).toEqual({ tooLarge: true, reason: 'size', bytes: source.length });
+      expect(mockAxios).not.toHaveBeenCalled();
+    });
+
+    it('forwards the sandbox session, runtime hint and profile header', async () => {
+      const controller = new AbortController();
+      mockAxios.mockResolvedValue({ data: { stdout: '{}' } });
+
+      await readSandboxImage({
+        file_path: '/mnt/data/chart.png',
+        session_id: 'session-abc',
+        runtime_session_hint: 'hint-xyz',
+        files: [{ id: 'file-1', name: 'seed.csv' }],
+        codeApiBaseUrl: 'https://code-stateful.example.com',
+        executionProfile: 'stateful',
+        signal: controller.signal,
+      });
+
+      expect(mockAxios).toHaveBeenCalledTimes(1);
+      const call = mockAxios.mock.calls[0][0];
+      expect(call.url).toBe('https://code-stateful.example.com/exec');
+      expect(call.data).toMatchObject({
+        lang: 'bash',
+        session_id: 'session-abc',
+        runtime_session_hint: 'hint-xyz',
+        files: [{ id: 'file-1', name: 'seed.csv' }],
+      });
+      expect(call.headers['X-CodeAPI-Expected-Profile']).toBe('stateful');
+      expect(call.signal).toBe(controller.signal);
+      const { withCodeApiRateLimit } = require('@librechat/api');
+      expect(withCodeApiRateLimit).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
       );
     });
 
-    it('honors LIBRECHAT_CODE_IMAGE_CHUNK_BYTES', async () => {
-      process.env.LIBRECHAT_CODE_IMAGE_CHUNK_BYTES = '1024';
-      const source = Buffer.concat([PNG_HEADER, crypto.randomBytes(4 * 1024)]);
-      serveFile(source);
+    it('omits the profile header and optional session fields when unset', async () => {
+      mockAxios.mockResolvedValue({ data: { stdout: '{}' } });
+
+      await readSandboxImage({ file_path: '/mnt/data/chart.png' });
+
+      const call = mockAxios.mock.calls[0][0];
+      expect(call.data.session_id).toBeUndefined();
+      expect(call.data.runtime_session_hint).toBeUndefined();
+      expect(call.data.files).toBeUndefined();
+      expect(call.headers['X-CodeAPI-Expected-Profile']).toBeUndefined();
+    });
+
+    it('hands the raw `/exec` response to the shared chunk parser', async () => {
+      const data = { stdout: '{"total":3,"n":3,"b64":"AAAA"}', status: null };
+      mockAxios.mockResolvedValue({ data });
+      mockParseSandboxImageChunk.mockReturnValue({ total: 3, n: 3, b64: 'AAAA' });
 
       const result = await readSandboxImage({ file_path: '/mnt/data/x.png' });
 
-      expect(mockAxios.mock.calls.length).toBe(5);
-      expect(Buffer.from(result.base64, 'base64').equals(source)).toBe(true);
+      expect(mockParseSandboxImageChunk).toHaveBeenCalledWith(data);
+      expect(result).toEqual({ total: 3, n: 3, b64: 'AAAA' });
     });
 
-    it('parses the reader JSON even when the shell emits a banner first', async () => {
-      const source = Buffer.concat([PNG_HEADER, crypto.randomBytes(64)]);
+    it('returns null when no code base URL is configured', async () => {
+      const { getCodeBaseURL } = require('@librechat/agents');
+      getCodeBaseURL.mockReturnValueOnce('');
+
+      await expect(readSandboxImage({ file_path: '/mnt/data/x.png' })).resolves.toBeNull();
+      expect(mockAxios).not.toHaveBeenCalled();
+    });
+
+    it('logs and rethrows a transport failure', async () => {
+      const { logAxiosError } = require('@librechat/api');
+      mockAxios.mockRejectedValue(new Error('codeapi unreachable'));
+
+      await expect(readSandboxImage({ file_path: '/mnt/data/x.png' })).rejects.toThrow(
+        'codeapi unreachable',
+      );
+      expect(logAxiosError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Error reading sandbox image "/mnt/data/x.png"',
+        }),
+      );
+    });
+  });
+
+  describe('primeFiles keeps one file per sandbox destination (#15443 follow-up)', () => {
+    /**
+     * Codeapi mounts a by-ref input at the filename recorded on the stored
+     * object — the file server's Content-Disposition — and only falls back to
+     * the `name` sent in `/exec` when that header is absent. A suffixed alias
+     * for a same-name duplicate therefore lands on the bare name anyway, and
+     * the sandbox rejects the whole request as conflicting destinations; the
+     * rejection recurs on every later turn because nothing comes back to
+     * collapse the pair. `primeFiles` keeps the newest content at each stored
+     * destination, preserving aliases assigned during upload, and drops collisions — the same collapse `ToolNode.updateCodeSession`
+     * applies once results come back.
+     *
+     * Only code-generated outputs are covered by the `(filename,
+     * conversationId, context, tenantId)` partial unique index; uploads carry
+     * `context: message_attachment`, so a conversation can hold several
+     * records sharing a filename.
+     */
+    const { getFiles } = require('~/models');
+    const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+
+    const codeFile = ({
+      file_id,
+      filename,
+      storage_session_id,
+      createdAt,
+      context,
+      sourceDispatchedAt,
+      sandboxFilename,
+    }) => ({
+      file_id,
+      filename,
+      createdAt,
+      context: context ?? 'message_attachment',
+      source: 'local',
+      filepath: `/uploads/${file_id}`,
+      metadata: {
+        ...(sourceDispatchedAt != null ? { sourceDispatchedAt } : {}),
+        codeEnvRef: {
+          kind: 'user',
+          ...(sandboxFilename ? { sandboxFilename } : {}),
+          id: 'user-123',
+          storage_session_id,
+          file_id: `${file_id}-sandbox`,
+        },
+      },
+    });
+
+    /** Freshness probe answers "uploaded just now", so every file takes the
+     *  cache-hit path and none of them re-upload. */
+    function setupActiveSessions() {
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn(),
+        handleFileUpload: jest.fn(),
+      }));
+      mockAxios.mockResolvedValue({ data: { lastModified: new Date().toISOString() } });
+    }
+
+    const prime = (tool_resources) =>
+      primeFiles({
+        req: { user: { id: 'user-123', role: 'USER' } },
+        tool_resources: tool_resources ?? { execute_code: { file_ids: ['older', 'newer'] } },
+        agentId: 'agent-id',
+      });
+
+    const bySession = (result) =>
+      Object.fromEntries(result.files.map((f) => [f.storage_session_id, f.name]));
+
+    it.each([false, true])('keeps a provisioned alias when expired=%s', async (expired) => {
+      setupActiveSessions();
+      const upload = jest.fn().mockImplementation(async ({ filename }) => ({
+        storage_session_id: `fresh-${filename}`,
+        file_id: `fresh-${filename}`,
+      }));
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue('stream'),
+        handleFileUpload: upload,
+      }));
+      if (expired) mockAxios.mockResolvedValue({ data: null });
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'rows.csv',
+          sandboxFilename: 'rows-alias.csv',
+          storage_session_id: 'old',
+        }),
+        codeFile({
+          file_id: 'newer',
+          filename: 'rows.csv',
+          sandboxFilename: 'rows.csv',
+          storage_session_id: 'new',
+        }),
+      ]);
+      const result = await prime();
+      expect(result.files.map((file) => file.name).sort()).toEqual(['rows-alias.csv', 'rows.csv']);
+      if (expired) {
+        expect(upload.mock.calls.map(([args]) => args.filename).sort()).toEqual([
+          'rows-alias.csv',
+          'rows.csv',
+        ]);
+      } else {
+        expect(upload).not.toHaveBeenCalled();
+      }
+    });
+
+    it('recovers a converted stale image even when its storage session has a fresh sibling', async () => {
+      const upload = jest
+        .fn()
+        .mockResolvedValue({ storage_session_id: 'recovered', file_id: 'recovered-image' });
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue('webp-stream'),
+        handleFileUpload: upload,
+      }));
+      mockAxios.mockImplementation(async ({ url }) => ({
+        data: url.includes('newer-sandbox')
+          ? { lastModified: new Date().toISOString(), originalFilename: 'ready.txt' }
+          : { lastModified: '2020-01-01', originalFilename: 'plot-alias.png' },
+      }));
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'newer',
+          filename: 'ready.txt',
+          storage_session_id: 'shared-session',
+          createdAt: new Date('2026-01-02'),
+        }),
+        {
+          ...codeFile({
+            file_id: 'older',
+            filename: 'plot.png',
+            storage_session_id: 'shared-session',
+            createdAt: new Date('2026-01-01'),
+          }),
+          type: 'image/webp',
+        },
+      ]);
+      const result = await prime();
+      expect(upload).toHaveBeenCalledWith(
+        expect.objectContaining({ filename: 'plot-alias.webp', stream: 'webp-stream' }),
+      );
+      expect(result.files).toContainEqual(
+        expect.objectContaining({
+          name: 'plot-alias.webp',
+          id: 'recovered-image',
+          storage_session_id: 'recovered',
+        }),
+      );
+    });
+
+    it('keeps the selected live image when earlier recovery crosses the freshness cutoff', async () => {
+      const now = Date.parse('2026-09-10T12:00:00Z');
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      const upload = jest.fn().mockImplementation(async () => {
+        clock.mockReturnValue(now + 2_000);
+        return { storage_session_id: 'recovered', file_id: 'recovered-text' };
+      });
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue('stream'),
+        handleFileUpload: upload,
+      }));
+      mockAxios.mockImplementation(async ({ url }) => ({
+        data: url.includes('newer-sandbox')
+          ? { lastModified: '2020-01-01', originalFilename: 'ready.txt' }
+          : {
+              lastModified: new Date(now - 23 * 3_600_000 + 1_000).toISOString(),
+              originalFilename: 'plot-alias.png',
+            },
+      }));
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'newer',
+          filename: 'ready.txt',
+          storage_session_id: 'text-session',
+          createdAt: new Date('2026-01-02'),
+        }),
+        {
+          ...codeFile({
+            file_id: 'older',
+            filename: 'plot.png',
+            storage_session_id: 'image-session',
+            createdAt: new Date('2026-01-01'),
+          }),
+          type: 'image/webp',
+        },
+      ]);
+      try {
+        const result = await prime();
+        expect(upload).toHaveBeenCalledTimes(1);
+        expect(result.files).toContainEqual(
+          expect.objectContaining({ name: 'plot-alias.png', id: 'older-sandbox' }),
+        );
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it('normalizes a recovered nested path and advertises the upload receipt name', async () => {
+      const upload = jest.fn().mockResolvedValue({
+        storage_session_id: 'recovered',
+        file_id: 'receipt-id',
+        filename: 'accepted.csv',
+      });
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue('stream'),
+        handleFileUpload: upload,
+      }));
       mockAxios.mockResolvedValue({
-        data: {
-          stdout: `motd banner\n${JSON.stringify({
-            total: source.length,
-            n: source.length,
-            b64: source.toString('base64'),
-          })}`,
+        data: { originalFilename: 'my dir/file.csv', lastModified: '2020-01-01' },
+      });
+      getFiles.mockResolvedValue([
+        codeFile({ file_id: 'older', filename: 'my dir/file.csv', storage_session_id: 'old' }),
+      ]);
+      const result = await prime();
+      expect(upload).toHaveBeenCalledWith(expect.objectContaining({ filename: 'file.csv' }));
+      expect(result.files).toContainEqual(
+        expect.objectContaining({ name: 'accepted.csv', id: 'receipt-id' }),
+      );
+      expect(result.toolContext).toContain('/mnt/data/accepted.csv');
+      expect(mockUpdateFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          'metadata.codeEnvRef': expect.objectContaining({ sandboxFilename: 'accepted.csv' }),
+        }),
+      );
+    });
+
+    it('keeps only the newest of two uploads sharing a filename', async () => {
+      setupActiveSessions();
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'image.png',
+          storage_session_id: 'sess-older',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        }),
+        codeFile({
+          file_id: 'newer',
+          filename: 'image.png',
+          storage_session_id: 'sess-newer',
+          createdAt: new Date('2026-01-02T00:00:00Z'),
+        }),
+      ]);
+
+      const { files, toolContext } = await prime();
+
+      expect(bySession({ files })).toEqual({ 'sess-newer': 'image.png' });
+      expect(toolContext).toContain('/mnt/data/image.png');
+      expect(toolContext).not.toContain('uploaded as');
+    });
+
+    it('keeps the same file regardless of the order getFiles returns', async () => {
+      /**
+       * `getFiles` sorts by `updatedAt` desc by default, and usage accounting
+       * and re-upload both bump `updatedAt` — so the survivor cannot depend on
+       * the query order, or a path the model has been reading would silently
+       * flip to the other file between turns.
+       */
+      const older = codeFile({
+        file_id: 'older',
+        filename: 'image.png',
+        storage_session_id: 'sess-older',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      });
+      const newer = codeFile({
+        file_id: 'newer',
+        filename: 'image.png',
+        storage_session_id: 'sess-newer',
+        createdAt: new Date('2026-01-02T00:00:00Z'),
+      });
+
+      setupActiveSessions();
+      getFiles.mockResolvedValue([older, newer]);
+      const ascending = await prime();
+      setupActiveSessions();
+      getFiles.mockResolvedValue([newer, older]);
+      const descending = await prime();
+
+      expect(bySession(ascending)).toEqual(bySession(descending));
+      expect(bySession(ascending)).toEqual({ 'sess-newer': 'image.png' });
+    });
+
+    it('lets a code output supersede the upload whose name it reused', async () => {
+      setupActiveSessions();
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'data.csv',
+          storage_session_id: 'sess-upload',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        }),
+        codeFile({
+          file_id: 'newer',
+          filename: 'data.csv',
+          storage_session_id: 'sess-output',
+          createdAt: new Date('2026-01-02T00:00:00Z'),
+          context: 'execute_code',
+        }),
+      ]);
+
+      const { files, toolContext } = await prime();
+
+      expect(bySession({ files })).toEqual({ 'sess-output': 'data.csv' });
+      /* The output keeps the path it wrote, so it stays out of the context
+       * exactly as any other generated file does. */
+      expect(toolContext).not.toContain('/mnt/data/data.csv');
+    });
+
+    it('lets a newer upload supersede the generated output at the same path', async () => {
+      setupActiveSessions();
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'report.png',
+          storage_session_id: 'sess-output',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+          context: 'execute_code',
+        }),
+        codeFile({
+          file_id: 'newer',
+          filename: 'report.png',
+          storage_session_id: 'sess-upload',
+          createdAt: new Date('2026-01-02T00:00:00Z'),
+        }),
+      ]);
+
+      const { files, toolContext } = await prime();
+
+      expect(bySession({ files })).toEqual({ 'sess-upload': 'report.png' });
+      expect(toolContext).toContain('/mnt/data/report.png');
+      expect(toolContext).not.toContain('written earlier as');
+    });
+
+    it('ranks a rewritten output above an upload created after it', async () => {
+      setupActiveSessions();
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'data.csv',
+          storage_session_id: 'sess-output',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+          context: 'execute_code',
+          sourceDispatchedAt: Date.parse('2026-03-01T00:00:00Z'),
+        }),
+        codeFile({
+          file_id: 'newer',
+          filename: 'data.csv',
+          storage_session_id: 'sess-upload',
+          createdAt: new Date('2026-02-01T00:00:00Z'),
+        }),
+      ]);
+
+      const { files } = await prime();
+
+      expect(bySession({ files })).toEqual({ 'sess-output': 'data.csv' });
+    });
+
+    it("lets a conversation file outrank the agent's own file of the same name", async () => {
+      /**
+       * Every agent in a run primes the conversation's files plus its own, so
+       * a private file surviving in one agent and not in another would leave
+       * two agents reading different files at the same path in one mount
+       * namespace.
+       */
+      setupActiveSessions();
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'shared',
+          filename: 'data.csv',
+          storage_session_id: 'sess-shared',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        }),
+        codeFile({
+          file_id: 'agent-own',
+          filename: 'data.csv',
+          storage_session_id: 'sess-agent',
+          createdAt: new Date('2026-06-01T00:00:00Z'),
+        }),
+      ]);
+
+      const { files } = await prime({
+        execute_code: {
+          file_ids: ['agent-own'],
+          files: [{ file_id: 'shared' }],
         },
       });
 
-      const result = await readSandboxImage({ file_path: '/mnt/data/x.png' });
-
-      expect(Buffer.from(result.base64, 'base64').equals(source)).toBe(true);
+      expect(bySession({ files })).toEqual({ 'sess-shared': 'data.csv' });
     });
 
-    it('refuses an oversize file in-sandbox without transferring bytes', async () => {
-      mockAxios.mockResolvedValue({
-        data: { stdout: JSON.stringify({ too_large: true, bytes: 9 * 1024 * 1024 }) },
-      });
+    it('does not re-upload a file it drops', async () => {
+      /**
+       * The destination decision has to come before recovery: a dropped file
+       * never reaches the sandbox, so re-uploading it would only
+       * spend a round trip and, on failure, count against the run.
+       */
+      const handleFileUpload = jest.fn();
+      getStrategyFunctions.mockImplementation(() => ({
+        getDownloadStream: jest.fn(),
+        handleFileUpload,
+      }));
+      mockAxios.mockImplementation(async ({ url }) =>
+        url.includes('sess-newer')
+          ? { data: { lastModified: new Date().toISOString(), originalFilename: 'image.png' } }
+          : { data: { originalFilename: 'image.png' } },
+      );
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'image.png',
+          storage_session_id: 'sess-older',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        }),
+        codeFile({
+          file_id: 'newer',
+          filename: 'image.png',
+          storage_session_id: 'sess-newer',
+          createdAt: new Date('2026-01-02T00:00:00Z'),
+        }),
+      ]);
 
-      const result = await readSandboxImage({ file_path: '/mnt/data/huge.png' });
+      const { files } = await prime();
 
-      expect(result).toEqual({ tooLarge: true, bytes: 9 * 1024 * 1024 });
-      expect(mockAxios).toHaveBeenCalledTimes(1);
+      expect(bySession({ files })).toEqual({ 'sess-newer': 'image.png' });
+      expect(handleFileUpload).not.toHaveBeenCalled();
+    });
+
+    it('drops a file whose path sits under a claimed name', async () => {
+      /**
+       * Codeapi's conflict rule also rejects a destination that is a directory
+       * prefix of another, so `data` and `data/rows.csv` cannot both mount;
+       * the ancestor check has to run at this layer or the pair still reaches
+       * the sandbox and fails the request.
+       */
+      setupActiveSessions();
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'data/rows.csv',
+          storage_session_id: 'sess-older',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        }),
+        codeFile({
+          file_id: 'newer',
+          filename: 'data',
+          storage_session_id: 'sess-newer',
+          createdAt: new Date('2026-01-02T00:00:00Z'),
+        }),
+      ]);
+
+      const { files } = await prime();
+
+      expect(bySession({ files })).toEqual({ 'sess-newer': 'data' });
+    });
+
+    it('leaves a single file on its own filename', async () => {
+      setupActiveSessions();
+      getFiles.mockResolvedValue([
+        codeFile({
+          file_id: 'older',
+          filename: 'report.pdf',
+          storage_session_id: 'sess-only',
+          createdAt: new Date('2026-01-01T00:00:00Z'),
+        }),
+      ]);
+
+      const { files, toolContext } = await prime();
+
+      expect(files.map((f) => f.name)).toEqual(['report.pdf']);
+      expect(toolContext).toContain('/mnt/data/report.pdf');
+      expect(toolContext).not.toContain('uploaded as');
     });
   });
 });

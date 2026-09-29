@@ -24,3 +24,19 @@ export const subagentStatusLabelKey = (status: SubagentThreadStatus) =>
       cancelled: 'com_ui_subagent_thread_status_cancelled',
     }) as const
   )[status];
+
+/** Fixed-size status dot classes: a stable-width indicator that cannot make
+ *  rows shift as status text changes length. The dot only carries color — a
+ *  run announces itself through the same label shimmer main chat uses for a
+ *  running tool call, so the two cues never animate against each other. */
+export const subagentStatusDotClass = (status: SubagentThreadStatus): string => {
+  if (status === 'completed') return 'bg-status-success';
+  if (status === 'running') return 'bg-status-info';
+  if (status === 'failed' || status === 'interrupted') return 'bg-status-error';
+  if (status === 'cancelled') return 'bg-status-warning';
+  return 'bg-text-tertiary';
+};
+
+/** A run is live in both of the statuses the panel treats as in-flight. */
+export const isLiveSubagentStatus = (status: SubagentThreadStatus): boolean =>
+  status === 'running' || status === 'dispatched';

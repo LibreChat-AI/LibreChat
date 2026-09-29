@@ -1,15 +1,16 @@
 import React from 'react';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { ContentTypes, QueryKeys, StepEvents } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '~/store/subagents';
+import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import {
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   subagentProgressKey,
   takeRegisteredSubagentProgressKeys,
-} from '~/store/subagents';
+} from '~/components/Chat/Subagents/state';
 import useSubagentActivityStream from './useSubagentActivityStream';
+import { IsolatedAtomStore } from 'test/harness';
 
 type Listener = (event: MessageEvent) => void;
 type MockStream = {
@@ -65,7 +66,7 @@ const selection: ActiveSubagentPanel = {
 };
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
-  <RecoilRoot>{children}</RecoilRoot>
+  <IsolatedAtomStore>{children}</IsolatedAtomStore>
 );
 
 describe('useSubagentActivityStream', () => {
@@ -79,7 +80,7 @@ describe('useSubagentActivityStream', () => {
     const { result, unmount } = renderHook(
       () => {
         useSubagentActivityStream(selection);
-        return useRecoilValue(
+        return useAtomValue(
           subagentProgressByToolCallId(
             subagentProgressKey(
               selection.parentMessageId,
@@ -145,7 +146,7 @@ describe('useSubagentActivityStream', () => {
     const { result } = renderHook(
       () => {
         useSubagentActivityStream(selection);
-        return useRecoilValue(
+        return useAtomValue(
           subagentProgressByToolCallId(
             subagentProgressKey(
               selection.parentMessageId,
@@ -190,9 +191,9 @@ describe('useSubagentActivityStream', () => {
       () => {
         useSubagentActivityStream(activeSelection);
         return {
-          progress: useRecoilValue(subagentProgressByToolCallId(key)),
-          parentOpen: useRecoilValue(subagentParentStreamOpenByToolCallId(key)),
-          closeParent: useSetRecoilState(subagentParentStreamOpenByToolCallId(key)),
+          progress: useAtomValue(subagentProgressByToolCallId(key)),
+          parentOpen: useAtomValue(subagentParentStreamOpenByToolCallId(key)),
+          closeParent: useSetAtom(subagentParentStreamOpenByToolCallId(key)),
         };
       },
       { wrapper },

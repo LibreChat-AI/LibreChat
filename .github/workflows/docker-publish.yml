@@ -1,0 +1,307 @@
+name: Reusable Docker Publish
+
+# Builds each image once per architecture on a runner of that architecture, pushes
+# untagged digest-addressed manifests, then merges the digests into multi-platform
+# manifest lists. Building linux/arm64 on an amd64 runner needs QEMU, which measured
+# 5-6x slower than native on these images (npm ci 52.6s -> 333.2s, npm run frontend
+# 90.4s -> 442.8s) and made the emulated leg ~84% of the build.
+#
+# Every image-publishing workflow calls this, so a fix here reaches all of them. The
+# prefix-glob bug in #15446 was one artifact-name expression that would otherwise have
+# needed correcting in five separate files.
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: >-
+          JSON array of objects with `target`, `file` and `image_name`, e.g.
+          [{"target":"node","file":"Dockerfile","image_name":"lc-dev"}]
+        required: true
+        type: string
+      tag_suffixes:
+        description: >-
+          Newline-separated tags applied to every image in every registry, e.g.
+          "abc1234\nlatest". Blank lines are ignored.
+        required: true
+        type: string
+      arches:
+        description: JSON array of architectures to build.
+        type: string
+        default: '["amd64","arm64"]'
+      checkout_ref:
+        description: Ref to build. Defaults to the ref that triggered the caller.
+        type: string
+        default: ''
+      build_branch:
+        description: Value for the BUILD_BRANCH build-arg and runtime env.
+        type: string
+        default: ''
+      build_timeout_minutes:
+        type: number
+        default: 90
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+      LEGACY_GHCR_TOKEN:
+        description: >-
+          Token that can write to the LEGACY_GHCR_OWNER namespace. Without it the
+          mirror step is skipped.
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.image.image_name }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: ${{ inputs.build_timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+        arch: ${{ fromJSON(inputs.arches) }}
+
+    steps:
+      # Falls back to the caller's commit SHA rather than an empty ref, so every
+      # build leg of a run checks out the same immutable commit even if the
+      # branch advances mid-run.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+
+      # No QEMU: the runner is already the target architecture.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Prepare environment
+        run: cp .env.example .env
+
+      # Read from the checkout rather than github.sha, so a caller that builds a
+      # specific ref (main-image-workflow) stamps that ref's commit. Registry names
+      # must be lowercase, and the repository owner is not guaranteed to be.
+      - name: Compute build metadata
+        env:
+          BUILD_BRANCH_INPUT: ${{ inputs.build_branch }}
+          IMAGE_NAME: ${{ matrix.image.image_name }}
+        run: |
+          set -euo pipefail
+          printf 'GHCR_IMAGE=ghcr.io/%s/%s\n' "${GITHUB_REPOSITORY_OWNER,,}" "$IMAGE_NAME" >> "$GITHUB_ENV"
+          printf 'BUILD_COMMIT=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          printf 'BUILD_BRANCH=%s\n' "$BUILD_BRANCH_INPUT" >> "$GITHUB_ENV"
+          printf 'BUILD_DATE=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+
+      # The layer cache lives in GHCR beside the image: no 10GB Actions-cache cap,
+      # and readable from every branch and workflow, unlike type=gha which is
+      # branch-scoped. The ref is per-architecture so the platform jobs cannot
+      # clobber each other's cache manifest.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.image.file }}
+          platforms: linux/${{ matrix.arch }}
+          target: ${{ matrix.image.target }}
+          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+          outputs: type=image,"name=${{ env.GHCR_IMAGE }},docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image.image_name }}",push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            BUILD_COMMIT=${{ env.BUILD_COMMIT }}
+            BUILD_BRANCH=${{ env.BUILD_BRANCH }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+
+      - name: Export digest
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="$BUILD_DIGEST"
+          if [ -z "$digest" ]; then
+            echo "Build produced no digest." >&2
+            exit 1
+          fi
+          touch "/tmp/digests/${digest#sha256:}"
+
+      # The `-arch-` separator keeps one image's artifacts out of another's glob.
+      # Image names commonly prefix one another (`librechat` / `librechat-api`,
+      # `lc-dev` / `lc-dev-api`), and a bare `digests-<image>-*` pattern matches
+      # both, which is exactly the failure in #15446.
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image.image_name }}-arch-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          # A full re-run (retry-docker-builds uses `rerun` when a job was
+          # cancelled) keeps the run id, and v4 refuses to upload over an existing
+          # artifact name. Overwrite instead of qualifying the name by
+          # run_attempt: `rerun-failed-jobs` re-runs the merge alone, which must
+          # still find the digests the earlier attempt's build legs uploaded.
+          overwrite: true
+
+  merge:
+    name: Merge manifests (${{ matrix.image.image_name }})
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+
+    steps:
+      # Registry names must be lowercase, and the repository owner is not guaranteed to be.
+      - name: Resolve GHCR image name
+        env:
+          IMAGE_NAME: ${{ matrix.image.image_name }}
+        run: printf 'GHCR_IMAGE=ghcr.io/%s/%s\n' "${GITHUB_REPOSITORY_OWNER,,}" "$IMAGE_NAME" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v7
+        with:
+          pattern: digests-${{ matrix.image.image_name }}-arch-*
+          merge-multiple: true
+          path: /tmp/digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The digests are identical across registries (manifests are content-addressed),
+      # so the same set sources both manifest lists.
+      - name: Create manifest lists and push
+        working-directory: /tmp/digests
+        env:
+          DOCKERHUB_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image.image_name }}
+          EXPECTED_ARCHES: ${{ join(fromJSON(inputs.arches), ' ') }}
+          TAG_SUFFIXES: ${{ inputs.tag_suffixes }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          # One digest per architecture. Assert the exact count: too few would
+          # publish a manifest missing an architecture, too many means the artifact
+          # glob crossed images (#15446). The old guard only rejected an empty
+          # directory, which is why four digests sailed through.
+          expected=$(wc -w <<< "$EXPECTED_ARCHES")
+          digests=(*)
+          if [ "${#digests[@]}" -ne "$expected" ]; then
+            echo "Expected $expected platform digests ($EXPECTED_ARCHES), found ${#digests[@]}: ${digests[*]}" >&2
+            exit 1
+          fi
+
+          tag_args=()
+          while IFS= read -r suffix; do
+            [ -n "$suffix" ] || continue
+            tag_args+=(-t "IMAGE:${suffix}")
+          done <<< "$TAG_SUFFIXES"
+          if [ "${#tag_args[@]}" -eq 0 ]; then
+            echo "No tag suffixes supplied; refusing to publish an untagged manifest." >&2
+            exit 1
+          fi
+
+          echo "Merging ${#digests[@]} digests into $(( ${#tag_args[@]} / 2 )) tag(s) per registry"
+          for image in "$GHCR_IMAGE" "$DOCKERHUB_IMAGE"; do
+            docker buildx imagetools create \
+              "${tag_args[@]/IMAGE:/${image}:}" \
+              "${digests[@]/#/${image}@sha256:}"
+          done
+
+      - name: Inspect image
+        env:
+          TAG_SUFFIXES: ${{ inputs.tag_suffixes }}
+        run: |
+          set -euo pipefail
+          first_tag=$(grep -m1 -v '^[[:space:]]*$' <<< "$TAG_SUFFIXES")
+          docker buildx imagetools inspect "${GHCR_IMAGE}:${first_tag}"
+
+  # After the move to another owner, deployments still pull the old GHCR namespace.
+  # Copying each published tag there keeps them updating until the deprecation window
+  # closes. Copies are cross-repo blob mounts within GHCR, so no image data is rebuilt
+  # or re-uploaded.
+  #
+  # It runs in its own job so the credential that can write to the legacy namespace
+  # lives in an environment, out of reach of workflows on other branches, and so a
+  # mirror failure cannot fail a publish.
+  #
+  # Set the LEGACY_GHCR_OWNER variable and the LEGACY_GHCR_TOKEN secret (a token with
+  # write:packages for that owner) to turn this on. It stays off when either is unset,
+  # and while the owner still matches the one publishing the images.
+  mirror:
+    name: Mirror ${{ matrix.image.image_name }} to the legacy namespace
+    if: ${{ vars.LEGACY_GHCR_OWNER != '' }}
+    needs: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    environment: legacy-mirror
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+
+    steps:
+      - name: Copy the published tags
+        env:
+          LEGACY_OWNER: ${{ vars.LEGACY_GHCR_OWNER }}
+          LEGACY_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}
+          IMAGE_NAME: ${{ matrix.image.image_name }}
+          TAG_SUFFIXES: ${{ inputs.tag_suffixes }}
+        run: |
+          set -euo pipefail
+
+          legacy_owner="${LEGACY_OWNER,,}"
+          if [ "$legacy_owner" = "${GITHUB_REPOSITORY_OWNER,,}" ]; then
+            echo "Legacy owner matches the current owner; nothing to mirror."
+            exit 0
+          fi
+          if [ -z "$LEGACY_TOKEN" ]; then
+            echo "::warning::LEGACY_GHCR_OWNER is set but LEGACY_GHCR_TOKEN is not; skipping the mirror."
+            exit 0
+          fi
+
+          # Registry names must be lowercase, and the repository owner is not guaranteed to be.
+          source_image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}"
+          legacy_image="ghcr.io/${legacy_owner}/${IMAGE_NAME}"
+
+          # This login reads both namespaces: it replaces the default ghcr.io credential.
+          echo "$LEGACY_TOKEN" | docker login ghcr.io -u "$legacy_owner" --password-stdin
+
+          while IFS= read -r suffix; do
+            [ -n "$suffix" ] || continue
+            echo "Mirroring ${source_image}:${suffix} -> ${legacy_image}:${suffix}"
+            docker buildx imagetools create -t "${legacy_image}:${suffix}" "${source_image}:${suffix}"
+          done <<< "$TAG_SUFFIXES"

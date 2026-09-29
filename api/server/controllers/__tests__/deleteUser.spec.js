@@ -22,6 +22,7 @@ const mockDeleteUserSkills = jest.fn();
 const mockDeleteUserCodeEnvironments = jest.fn();
 const mockInvalidateCodeEnvironmentConfigCache = jest.fn();
 const mockGetCleanupBlockingJobIdsForUser = jest.fn();
+const mockGetAgentJob = jest.fn();
 const mockAbortJob = jest.fn();
 const mockDrainAgentTriggerDeliveriesForUser = jest.fn();
 const mockPrepareAgentTriggerUserPurge = jest.fn();
@@ -32,6 +33,7 @@ const mockCancelAgentTriggerUserDeletion = jest.fn();
 const mockCancelAndDrainSubagentThreads = jest.fn();
 const mockQuiesceUserSchedules = jest.fn();
 const mockDeleteSchedulesByUser = jest.fn();
+const mockRevokeUserCodeEnvironmentWorkers = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), info: jest.fn() },
@@ -53,10 +55,28 @@ jest.mock('@librechat/api', () => ({
   needsRefresh: jest.fn(),
   getNewS3URL: jest.fn(),
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
+  revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {
-    getCleanupBlockingJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
+    getAccountCleanupJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
+    getCleanupJob: (...args) => mockGetAgentJob(...args),
     abortJob: (...args) => mockAbortJob(...args),
   },
+  getOwnedAgentCheckpointScope: jest.fn(() => undefined),
+  isStopConfirmed: jest.fn(
+    (result) => result?.success === true || result?.failureReason === 'already_settled',
+  ),
+  deleteOwnedAgentCheckpoints: jest.fn(),
+  waitForGenerationPersistence: jest.requireActual(
+    '../../../../packages/api/src/stream/persistence.ts',
+  ).waitForGenerationPersistence,
+  openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
+    remember: jest.fn(),
+    cleanup: () =>
+      jest
+        .requireMock('@librechat/api')
+        .deleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
+    acknowledge: jest.fn(),
+  })),
 }));
 
 jest.mock('~/models', () => ({
@@ -118,6 +138,11 @@ jest.mock('~/server/services/Config/getCachedTools', () => ({
   invalidateCachedTools: jest.fn(),
 }));
 
+jest.mock('~/server/services/MCPAuthorizationFenceRetry', () => ({
+  clearMCPAuthorizationFenceRetry: jest.fn(),
+  persistMCPAuthorizationFenceRetry: jest.fn(),
+}));
+
 jest.mock('~/server/services/Files/process', () => ({
   processDeleteRequest: (...args) => mockProcessDeleteRequest(...args),
 }));
@@ -138,7 +163,7 @@ jest.mock('~/server/services/Schedules', () => ({
 }));
 
 jest.mock('~/server/services/Config', () => ({
-  getAppConfig: jest.fn(),
+  getAppConfig: jest.fn().mockResolvedValue({}),
   invalidateCodeEnvironmentConfigCache: (...args) =>
     mockInvalidateCodeEnvironmentConfigCache(...args),
 }));
@@ -148,6 +173,7 @@ jest.mock('~/cache', () => ({
 }));
 
 const { deleteUserController } = require('~/server/controllers/UserController');
+const { deleteOwnedAgentCheckpoints } = require('@librechat/api');
 
 function createRes() {
   const res = {};
@@ -176,6 +202,7 @@ function stubDeletionMocks() {
   mockDeleteUserSkills.mockResolvedValue(0);
   mockInvalidateCodeEnvironmentConfigCache.mockResolvedValue(undefined);
   mockGetCleanupBlockingJobIdsForUser.mockResolvedValue([]);
+  mockGetAgentJob.mockResolvedValue(null);
   mockAbortJob.mockResolvedValue({ success: true });
   mockDrainAgentTriggerDeliveriesForUser.mockResolvedValue();
   mockPrepareAgentTriggerUserPurge.mockResolvedValue();
@@ -186,6 +213,7 @@ function stubDeletionMocks() {
   mockCancelAndDrainSubagentThreads.mockResolvedValue();
   mockQuiesceUserSchedules.mockResolvedValue(true);
   mockDeleteSchedulesByUser.mockResolvedValue();
+  mockRevokeUserCodeEnvironmentWorkers.mockResolvedValue(0);
 }
 
 beforeEach(() => {
@@ -208,6 +236,9 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(mockDeleteUserPrompts).toHaveBeenCalledWith('user1');
     expect(mockDeleteUserSkills).toHaveBeenCalledWith('user1');
     expect(mockInvalidateCodeEnvironmentConfigCache).toHaveBeenCalledWith(undefined);
+    expect(mockRevokeUserCodeEnvironmentWorkers).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user1' }),
+    );
     expect(mockVerifyOTPOrBackupCode).not.toHaveBeenCalled();
     expect(mockBeginAgentTriggerUserDeletion.mock.invocationCallOrder[0]).toBeLessThan(
       mockPrepareAgentTriggerUserPurge.mock.invocationCallOrder[0],
@@ -221,6 +252,12 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(mockDeleteMessages.mock.invocationCallOrder[0]).toBeLessThan(
       mockDeleteUserById.mock.invocationCallOrder[0],
     );
+    expect(mockDeleteUserById.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRevokeUserCodeEnvironmentWorkers.mock.invocationCallOrder[0],
+    );
+    expect(mockRevokeUserCodeEnvironmentWorkers.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDeleteUserCodeEnvironments.mock.invocationCallOrder[0],
+    );
     expect(mockCancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
   });
@@ -233,14 +270,58 @@ describe('deleteUserController - 2FA enforcement', () => {
     const res = createRes();
     mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
     mockGetCleanupBlockingJobIdsForUser.mockResolvedValueOnce(['stream-1']);
+    mockGetAgentJob.mockResolvedValueOnce({
+      metadata: { userId: 'user1', tenantId: 'tenant-1' },
+      createdAt: 123,
+    });
+    mockAbortJob.mockResolvedValueOnce({ success: true });
 
     await deleteUserController(req, res);
 
     expect(mockGetCleanupBlockingJobIdsForUser).toHaveBeenCalledWith('user1', 'tenant-1');
-    expect(mockAbortJob).toHaveBeenCalledWith('stream-1', { awaitProviderDrain: true });
+    expect(mockAbortJob).toHaveBeenCalledWith('stream-1', {
+      expectedCreatedAt: 123,
+      awaitProviderDrain: true,
+    });
     expect(mockAbortJob.mock.invocationCallOrder[0]).toBeLessThan(
       mockDeleteMessages.mock.invocationCallOrder[0],
     );
+  });
+
+  it('deletes owner checkpoints before erasing the account after job records expire', async () => {
+    const req = {
+      user: { id: 'user1', _id: 'user1', email: 'a@b.com', tenantId: 'tenant-1' },
+      body: {},
+      config: { endpoints: { agents: { checkpointer: { ttl: 60 } } } },
+    };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+
+    await deleteUserController(req, res);
+
+    expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith('user1', 'tenant-1', undefined, {
+      ttl: 60,
+    });
+    expect(deleteOwnedAgentCheckpoints.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDeleteUserById.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('preserves code environment records when revocation marking fails after deletion', async () => {
+    const req = { user: { id: 'user1', _id: 'user1', email: 'a@b.com' }, body: {} };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+    mockRevokeUserCodeEnvironmentWorkers.mockRejectedValueOnce(new Error('worker unavailable'));
+
+    await deleteUserController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(mockBeginAgentTriggerUserDeletion).toHaveBeenCalledTimes(1);
+    expect(mockDeleteMessages).toHaveBeenCalled();
+    expect(mockDeleteUserById).toHaveBeenCalledWith('user1');
+    expect(mockDeleteUserCodeEnvironments).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
   });
 
   it('proceeds with deletion when user has no 2FA record', async () => {

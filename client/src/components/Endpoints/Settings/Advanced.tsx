@@ -81,7 +81,9 @@ export default function Settings({
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="chatGptLabel" className="text-left text-sm font-medium">
             {localize('com_endpoint_custom_name')}{' '}
-            <small className="opacity-40">({localize('com_endpoint_default_blank')})</small>
+            <small className="opacity-40 high-contrast:opacity-100">
+              ({localize('com_endpoint_default_blank')})
+            </small>
           </Label>
           <Input
             id="chatGptLabel"
@@ -99,7 +101,9 @@ export default function Settings({
         <div className="grid w-full items-center gap-2">
           <Label htmlFor="promptPrefix" className="text-left text-sm font-medium">
             {localize('com_endpoint_prompt_prefix')}{' '}
-            <small className="opacity-40">({localize('com_endpoint_default_blank')})</small>
+            <small className="opacity-40 high-contrast:opacity-100">
+              ({localize('com_endpoint_default_blank')})
+            </small>
           </Label>
           <TextareaAutosize
             id="promptPrefix"
@@ -120,7 +124,7 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="temp-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_temperature')}{' '}
-                <small className="opacity-40">
+                <small className="opacity-40 high-contrast:opacity-100">
                   ({localize('com_endpoint_default_with_num', { 0: '1' })})
                 </small>
               </Label>
@@ -161,7 +165,7 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="top-p-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_top_p')}{' '}
-                <small className="opacity-40">
+                <small className="opacity-40 high-contrast:opacity-100">
                   ({localize('com_endpoint_default_with_num', { 0: '1' })})
                 </small>
               </Label>
@@ -203,7 +207,7 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="freq-penalty-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_frequency_penalty')}{' '}
-                <small className="opacity-40">
+                <small className="opacity-40 high-contrast:opacity-100">
                   ({localize('com_endpoint_default_with_num', { 0: '0' })})
                 </small>
               </Label>
@@ -245,7 +249,7 @@ export default function Settings({
             <div className="flex justify-between">
               <Label htmlFor="pres-penalty-int" className="text-left text-sm font-medium">
                 {localize('com_endpoint_presence_penalty')}{' '}
-                <small className="opacity-40">
+                <small className="opacity-40 high-contrast:opacity-100">
                   ({localize('com_endpoint_default_with_num', { 0: '0' })})
                 </small>
               </Label>

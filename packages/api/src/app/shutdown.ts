@@ -24,6 +24,7 @@ let nextRegistrationOrder = 0;
 let isShuttingDown = false;
 let httpServer: Server | null = null;
 let forceExitTimer: NodeJS.Timeout | null = null;
+let shutdownStartedAt: number | null = null;
 
 /**
  * Register a cleanup task for graceful shutdown. Post-drain is the default phase.
@@ -44,6 +45,48 @@ export function registerShutdownTask(
 }
 
 /** Whether graceful shutdown has started, for admission paths that must fail closed. */
+/**
+ * Milliseconds left before graceful shutdown force-exits, or `null` when not shutting down.
+ * Lets a shutdown task spend the budget it actually has instead of guessing at a fixed cutoff.
+ */
+/**
+ * Milliseconds since graceful shutdown began, or `null` when not shutting down. For a task whose
+ * real deadline is imposed from outside this process — a cluster primary that force-exits the
+ * whole group on its own timer — this is what lets it measure against that deadline instead.
+ */
+export function getShutdownElapsedMs(): number | null {
+  if (shutdownStartedAt == null) {
+    return null;
+  }
+  return Math.max(0, Date.now() - shutdownStartedAt);
+}
+
+export function getRemainingShutdownMs(): number | null {
+  if (shutdownStartedAt == null) {
+    return null;
+  }
+  return Math.max(0, SHUTDOWN_TIMEOUT_MS - (Date.now() - shutdownStartedAt));
+}
+
+export function getClusterShutdownBudgetMs({
+  deadlineAt,
+  forceExitMs,
+  remainingMs = getRemainingShutdownMs(),
+  elapsedMs = getShutdownElapsedMs(),
+  now = Date.now(),
+}: {
+  deadlineAt: number | null;
+  forceExitMs: number;
+  remainingMs?: number | null;
+  elapsedMs?: number | null;
+  now?: number;
+}): number | null {
+  if (remainingMs == null || elapsedMs == null) {
+    return null;
+  }
+  return Math.min(remainingMs, deadlineAt == null ? forceExitMs - elapsedMs : deadlineAt - now);
+}
+
 export function isShutdownInProgress(): boolean {
   return isShuttingDown;
 }
@@ -73,6 +116,7 @@ export function __resetShutdownStateForTests(): void {
   tasks.length = 0;
   nextRegistrationOrder = 0;
   isShuttingDown = false;
+  shutdownStartedAt = null;
   httpServer = null;
   /** A drain that never settles leaves this armed. It is `unref`'d, so it does
    *  not hold the process open — but it does fire if anything else keeps the
@@ -114,6 +158,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     return;
   }
   isShuttingDown = true;
+  shutdownStartedAt = Date.now();
   logger.info(`Received ${signal}, draining HTTP server...`);
 
   /** Owned locally so a late `finally` from a superseded drain cannot clear the

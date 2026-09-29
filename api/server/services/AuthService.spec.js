@@ -1227,6 +1227,26 @@ describe('resendVerificationEmail', () => {
       }),
     );
   });
+
+  it('returns the generic response when delivery fails', async () => {
+    const user = {
+      _id: 'user-delivery-failure',
+      email: 'delivery-failure@example.com',
+      name: 'Delivery Failure',
+    };
+    findUser.mockResolvedValue(user);
+    sendEmail.mockRejectedValue(new Error('mail transport unavailable'));
+
+    const result = await resendVerificationEmail({ body: { email: user.email } });
+
+    expect(result).toEqual({
+      status: 200,
+      message: 'Please check your email to verify your email address.',
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      '[resendVerificationEmail] Error resending verification email: mail transport unavailable',
+    );
+  });
 });
 
 describe('CloudFront cookie integration', () => {

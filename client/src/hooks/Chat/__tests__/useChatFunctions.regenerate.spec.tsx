@@ -1,6 +1,14 @@
+import { getDefaultStore } from 'jotai';
 import { renderHook, act } from '@testing-library/react';
-import { Constants, EModelEndpoint } from 'librechat-data-provider';
-import type { TConversation, TMessage, TSubmission } from 'librechat-data-provider';
+import { Constants, ContentTypes, EModelEndpoint, createPayload } from 'librechat-data-provider';
+import type {
+  CodeEnvironmentMode,
+  CodeWorkspaceSelection,
+  TConversation,
+  TMessage,
+  TSubmission,
+} from 'librechat-data-provider';
+import { revealedQueuedTurnFamily } from '~/store/steer';
 import useChatFunctions from '../useChatFunctions';
 import { isPasteSubmitted } from '~/utils';
 
@@ -13,6 +21,17 @@ const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockGetQueryData = jest.fn(() => ({}));
 const mockLoggerWarn = jest.fn();
+const mockGetLatestConversation = jest.fn(() => null as TConversation | null);
+const mockSetConversation = jest.fn();
+const mockResolveCodeWorkspaceSubmission = jest.fn<
+  | { codeEnvironmentMode?: CodeEnvironmentMode; codeWorkspaces?: CodeWorkspaceSelection[] }
+  | undefined,
+  [CodeWorkspaceSelection[]?, CodeEnvironmentMode?]
+>(() => ({}));
+const mockCodeWorkspace = {
+  resolveSubmission: mockResolveCodeWorkspaceSubmission,
+  rememberSelection: jest.fn(),
+};
 
 jest.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
@@ -40,6 +59,12 @@ jest.mock('recoil', () => ({
 }));
 
 jest.mock('~/hooks/Files/useSetFilesToDelete', () => () => mockSetFilesToDelete);
+jest.mock('~/hooks/Agents/useCodeApprovalMode', () => () => ({
+  modes: ['ask', 'acceptEdits'],
+  selected: 'ask',
+}));
+jest.mock('~/hooks/Agents/useCodeWorkspace', () => () => mockCodeWorkspace);
+jest.mock('~/hooks/Conversations/useGetConversation', () => () => mockGetLatestConversation);
 jest.mock('~/hooks/Conversations/useGetSender', () => () => mockGetSender);
 jest.mock('~/hooks/Input/useUserKey', () => () => ({ getExpiry: mockGetExpiry }));
 jest.mock('~/hooks', () => ({
@@ -55,6 +80,7 @@ jest.mock('~/store', () => ({
     pendingManualSkillsByConvoId: () => 'pendingManualSkills',
     pendingQuotesByConvoId: () => 'pendingQuotes',
     messagesSiblingIdxFamily: () => 'messagesSiblingIdx',
+    conversationByKeySelector: () => 'conversation',
   },
   useGetEphemeralAgent: () => mockGetEphemeralAgent,
 }));
@@ -118,6 +144,7 @@ function renderAsk(
       getMessages,
       setMessages,
       setSubmission,
+      setConversation: mockSetConversation,
     }),
   );
 
@@ -128,6 +155,145 @@ describe('useChatFunctions ask', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetQueryData.mockReturnValue({});
+    mockGetLatestConversation.mockReturnValue(null);
+    mockResolveCodeWorkspaceSubmission.mockReturnValue({});
+  });
+
+  it('reads an approval-mode selection made immediately before send', () => {
+    mockGetLatestConversation.mockReturnValue({
+      ...conversation('conversation-1'),
+      codeApprovalMode: 'acceptEdits',
+    });
+    const { result, setSubmission } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.codeApprovalMode).toBe('acceptEdits');
+    expect(submission.conversation.codeApprovalMode).toBe('acceptEdits');
+  });
+
+  it('preallocates a durable Agents user id for the optimistic response anchor', () => {
+    const { result, setSubmission } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Queue safely', conversationId: 'conversation-1' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    const userMessageId = submission.userMessage.messageId;
+    expect(submission.endpointOption.overrideUserMessageId).toBe(
+      `${userMessageId}${Constants.COMMON_DIVIDER}0`,
+    );
+    expect(createPayload(submission).payload.overrideUserMessageId).toBe(
+      `${userMessageId}${Constants.COMMON_DIVIDER}0`,
+    );
+    expect(submission.initialResponse?.clientQueueParentMessageId).toBe(userMessageId);
+  });
+
+  it('submits the latest validated workspace selection', () => {
+    const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
+    mockResolveCodeWorkspaceSubmission.mockReturnValue({ codeWorkspaces: [selection] });
+    mockGetLatestConversation.mockReturnValue({
+      ...conversation('conversation-1'),
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [selection],
+    });
+    const { result, setSubmission } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(mockResolveCodeWorkspaceSubmission).toHaveBeenCalledWith([selection], 'attached');
+    expect(submission.codeWorkspaces).toEqual([selection]);
+  });
+
+  /* The server seals the decision this run establishes. A chat that becomes saved mid-run must hold
+   * it too, or the composer re-derives an agent default the seal refuses and reports "choose a
+   * workspace" with Send disabled until the page reloads. */
+  it('records the decision the run establishes on the conversation it belongs to', () => {
+    const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
+    mockResolveCodeWorkspaceSubmission.mockReturnValue({
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [selection],
+    });
+    const { result } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' });
+    });
+
+    expect(mockSetConversation).toHaveBeenCalledTimes(1);
+    const update = mockSetConversation.mock.calls[0][0];
+    const current = conversation('conversation-1');
+    expect(update(current)).toEqual({
+      ...current,
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [selection],
+    });
+    /** Another chat's conversation is never stamped with this run's decision. */
+    expect(update(conversation('conversation-2'))).toEqual(conversation('conversation-2'));
+    expect(update(null)).toBeNull();
+  });
+
+  it('leaves a conversation that already holds the decision untouched', () => {
+    const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
+    mockResolveCodeWorkspaceSubmission.mockReturnValue({
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [selection],
+    });
+    const sealed = {
+      ...conversation('conversation-1'),
+      codeEnvironmentMode: 'attached' as const,
+      codeWorkspaces: [selection],
+    };
+    mockGetLatestConversation.mockReturnValue(sealed);
+    const { result } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' });
+    });
+
+    const update = mockSetConversation.mock.calls[0][0];
+    expect(update(sealed)).toBe(sealed);
+  });
+
+  it('refuses every direct send before consuming composer context during handoff', () => {
+    const family = revealedQueuedTurnFamily('conversation-1');
+    getDefaultStore().set(family, {
+      clientRequestId: 'queued',
+      parentMessageId: 'response',
+      generationCreatedAt: 41,
+      text: 'queued',
+      revealedAt: new Date().toISOString(),
+    });
+    try {
+      const { result, setSubmission, getMessages } = renderAsk([]);
+      expect(result.current.ask({ text: 'direct' })).toBe(false);
+      expect(
+        result.current.ask({ text: 'rerun', parentMessageId: 'earlier' }, { isRegenerate: true }),
+      ).toBe(false);
+      expect(mockResolveCodeWorkspaceSubmission).not.toHaveBeenCalled();
+      expect(getMessages).not.toHaveBeenCalled();
+      expect(setSubmission).not.toHaveBeenCalled();
+      expect(mockSetFilesToDelete).not.toHaveBeenCalled();
+    } finally {
+      getDefaultStore().set(family, null);
+    }
+  });
+
+  it('refuses to send when workspace submission resolution is not ready', () => {
+    mockResolveCodeWorkspaceSubmission.mockReturnValue(undefined);
+    const { result, setSubmission } = renderAsk([]);
+
+    expect(result.current.ask({ text: 'Edit the file', conversationId: 'conversation-1' })).toBe(
+      false,
+    );
+    expect(setSubmission).not.toHaveBeenCalled();
   });
 
   it('refuses to send to an existing conversation before its history loads', () => {
@@ -268,6 +434,7 @@ describe('useChatFunctions regenerate', () => {
         getMessages: () => messages,
         setMessages,
         setSubmission,
+        setConversation: mockSetConversation,
       }),
     );
 
@@ -276,10 +443,12 @@ describe('useChatFunctions regenerate', () => {
     });
 
     const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.codeApprovalMode).toBe('ask');
     expect(submission.userMessage.overrideParentMessageId).toBe('user-1');
     expect(submission.userMessage.responseMessageId).toBe('assistant-1_');
     expect(submission.initialResponse?.messageId).toBe('assistant-1_');
     expect(submission.initialResponse?.parentMessageId).toBe('user-1');
+    expect(submission.initialResponse?.clientQueueParentMessageId).toBe('user-1');
     expect(submission.messages.map((message) => message.messageId)).toEqual(['user-1']);
     expect(submission.regenerateMessages?.map((message) => message.messageId)).toEqual([
       'user-1',
@@ -294,6 +463,38 @@ describe('useChatFunctions regenerate', () => {
     ).toEqual(['user-1', 'assistant-1_']);
     expect(messages.at(-1)?.messageId).toBe('assistant-1_');
   });
+
+  it.each(['assistant-1', 'assistant_1_'])(
+    'marks an edited optimistic response %s with its durable user anchor',
+    (responseMessageId) => {
+      const parent = userMessage('user-1');
+      const response = {
+        ...assistantMessage(responseMessageId, parent.messageId),
+        content: [{ type: ContentTypes.TEXT, [ContentTypes.TEXT]: 'before' }],
+      } as TMessage;
+      const { result, setSubmission } = renderAsk([parent, response]);
+
+      act(() => {
+        result.current.ask(
+          { ...parent },
+          {
+            isRegenerate: true,
+            isEdited: true,
+            editedMessageId: responseMessageId,
+            editedContent: {
+              index: 0,
+              type: ContentTypes.TEXT,
+              [ContentTypes.TEXT]: 'after',
+            },
+          },
+        );
+      });
+
+      const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+      expect(submission.initialResponse?.messageId).toBe(responseMessageId);
+      expect(submission.initialResponse?.clientQueueParentMessageId).toBe('user-1');
+    },
+  );
 });
 
 describe('useChatFunctions ask attachments', () => {
@@ -328,6 +529,7 @@ describe('useChatFunctions ask attachments', () => {
         getMessages: () => [],
         setMessages,
         setSubmission,
+        setConversation: mockSetConversation,
         files,
         setFiles,
       }),
@@ -366,6 +568,7 @@ describe('useChatFunctions ask attachments', () => {
         getMessages: () => [],
         setMessages,
         setSubmission,
+        setConversation: mockSetConversation,
         files: new Map(),
         setFiles,
       }),
@@ -382,5 +585,108 @@ describe('useChatFunctions ask attachments', () => {
 
     expect(isPasteSubmitted('queued-override-file')).toBe(true);
     expect(isPasteSubmitted('queued-override-temp-file')).toBe(true);
+  });
+});
+
+describe('useChatFunctions ask compaction', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetQueryData.mockReturnValue({});
+  });
+
+  it('submits a summarize-only turn hung off the leaf without a new user bubble', () => {
+    const messages = [userMessage('u1'), assistantMessage('a1', 'u1')];
+    const { result, setMessages, setSubmission } = renderAsk(messages);
+
+    act(() => {
+      result.current.ask(
+        { text: '', conversationId: 'conversation-1', messageId: 'a1', parentMessageId: 'u1' },
+        { compact: true },
+      );
+    });
+
+    expect(setSubmission).toHaveBeenCalledTimes(1);
+    const submission = setSubmission.mock.calls[0][0] as TSubmission;
+    expect(submission.compact).toBe(true);
+    expect(submission.isRegenerate).toBe(true);
+    expect(submission.initialResponse?.parentMessageId).toBe('a1');
+    expect(submission.initialResponse?.messageId).toBe('a1_');
+    /** The leaf stands in for the user message so an error lands under it. */
+    expect(submission.userMessage.messageId).toBe('a1');
+    expect(submission.userMessage.overrideParentMessageId).toBeNull();
+    expect(submission.userMessage.files).toBeUndefined();
+    expect(submission.messages.map((message) => message.messageId)).toEqual(['u1', 'a1']);
+    expect(submission.regenerateMessages?.map((message) => message.messageId)).toEqual([
+      'u1',
+      'a1',
+    ]);
+
+    const rendered = setMessages.mock.calls[0][0] as TMessage[];
+    expect(rendered.map((message) => message.messageId)).toEqual(['u1', 'a1', 'a1_']);
+  });
+
+  it('does not re-attach the leaf files a user-message leaf carries', () => {
+    const leaf = { ...userMessage('u2', 'a1'), files: [{ file_id: 'f1' }] } as TMessage;
+    const messages = [userMessage('u1'), assistantMessage('a1', 'u1'), leaf];
+    const { result, setSubmission } = renderAsk(messages);
+
+    act(() => {
+      result.current.ask(
+        { text: '', conversationId: 'conversation-1', messageId: 'u2', parentMessageId: 'a1' },
+        { compact: true },
+      );
+    });
+
+    const submission = setSubmission.mock.calls[0][0] as TSubmission;
+    expect(submission.userMessage.files).toBeUndefined();
+    expect(submission.initialResponse?.parentMessageId).toBe('u2');
+  });
+});
+
+describe('useChatFunctions ask compaction and the composer', () => {
+  it('leaves files staged in the composer untouched', () => {
+    const setMessages = jest.fn();
+    const setSubmission = jest.fn();
+    const setFiles = jest.fn();
+    const files = new Map([
+      [
+        'staged-file',
+        {
+          file_id: 'staged-file',
+          filepath: '/uploads/staged-file',
+          filename: 'next-message.pdf',
+          type: 'application/pdf',
+        },
+      ],
+    ]) as unknown as Parameters<typeof useChatFunctions>[0]['files'];
+    const messages = [userMessage('u1'), assistantMessage('a1', 'u1')];
+
+    const { result } = renderHook(() =>
+      useChatFunctions({
+        isSubmitting: false,
+        latestMessage: messages[1],
+        conversation: conversation('conversation-1'),
+        getMessages: () => messages,
+        setMessages,
+        setSubmission,
+        setConversation: mockSetConversation,
+        files,
+        setFiles,
+      }),
+    );
+
+    act(() => {
+      result.current.ask(
+        { text: '', conversationId: 'conversation-1', messageId: 'a1', parentMessageId: 'a1' },
+        { compact: true },
+      );
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.compact).toBe(true);
+    expect(submission.userMessage.files).toBeUndefined();
+    expect(submission.userMessage.parentMessageId).toBe('a1');
+    expect(setFiles).not.toHaveBeenCalled();
+    expect(isPasteSubmitted('staged-file')).toBe(false);
   });
 });

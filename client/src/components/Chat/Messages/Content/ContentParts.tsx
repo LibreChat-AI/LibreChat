@@ -1,4 +1,5 @@
-import { memo, useRef, useMemo, useEffect, useCallback, Fragment } from 'react';
+import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
+import { useStore } from 'jotai';
 import { ContentTypes } from 'librechat-data-provider';
 import type {
   TMessageContentParts,
@@ -7,13 +8,23 @@ import type {
   Agents,
 } from 'librechat-data-provider';
 import type { ReactNode, ReactElement } from 'react';
+import type { ReasoningDisclosures, ToolDisclosures } from './disclosure';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
+import type { ActivityPhaseSegment } from '~/utils/activityLabels';
 import {
   mapAttachments,
   getPartKeyIndex,
+  attachmentRenderKey,
+  buildAttachmentsByName,
   filterAttachmentsForPart,
   groupSequentialToolCalls,
 } from '~/utils';
+import {
+  ReasoningDisclosureContext,
+  reasoningDisclosure,
+  ToolDisclosureContext,
+  ToolDisclosureKeyContext,
+} from './disclosure';
 import {
   groupActivityPhases,
   lastCursorContentIdx,
@@ -21,8 +32,9 @@ import {
 } from '~/utils/activityLabels';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
+import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
-import { MessageContext, SearchContext } from '~/Providers';
+import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
 import PendingSkillCall from './Parts/PendingSkillCall';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
 import { hasPendingApprovalInPart } from '~/utils';
@@ -31,6 +43,7 @@ import { EmptyText, AgentUpdate } from './Parts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
+import { blocksLiveFold } from './live';
 import Container from './Container';
 import Part from './Part';
 
@@ -161,19 +174,38 @@ const PartWithContext = memo(function PartWithContext({
     [messageId, conversationId, idx, nextType, isSubmitting, isLatestMessage],
   );
 
+  /** Being last WITHIN a body is not being last in the message: activity
+   *  phases split one response into several bodies, so every settled phase has
+   *  a trailing part too. Only the body that holds the message's cursor can
+   *  own a live part — otherwise a phase from minutes ago keeps its reasoning
+   *  shimmering and its peek scrolling while later phases stream. */
+  const holdsCursor = isLastPart && isLast;
+  /** Position distinguishes provider-id reuse within a response. Neither the
+   *  final-only stepId nor messageId belongs in the card's disclosure identity. */
+  const toolDisclosureKey =
+    part.type === ContentTypes.TOOL_CALL
+      ? JSON.stringify([
+          getPartAgentId(part) ?? '',
+          getToolCallId(part),
+          getPartKeyIndex(part, idx),
+        ])
+      : undefined;
+
   return (
     <MessageContext.Provider value={contextValue}>
-      <Part
-        part={part}
-        attachments={partAttachments}
-        isSubmitting={isSubmitting}
-        key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
-        isCreatedByUser={isCreatedByUser}
-        isLast={isLastPart}
-        showCursor={isLastPart && isLast}
-        hideAttachments={hideAttachments}
-        onToolExpand={onToolExpand}
-      />
+      <ToolDisclosureKeyContext.Provider value={toolDisclosureKey}>
+        <Part
+          part={part}
+          attachments={partAttachments}
+          isSubmitting={isSubmitting}
+          key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
+          isCreatedByUser={isCreatedByUser}
+          isLast={holdsCursor}
+          showCursor={holdsCursor}
+          hideAttachments={hideAttachments}
+          onToolExpand={onToolExpand}
+        />
+      </ToolDisclosureKeyContext.Provider>
     </MessageContext.Provider>
   );
 });
@@ -202,6 +234,7 @@ type ContentPartsProps = {
   attachments?: TAttachment[];
   searchResults?: { [key: string]: SearchResultData };
   isCreatedByUser: boolean;
+  showThinking: boolean;
   isLast: boolean;
   isSubmitting: boolean;
   isLatestMessage?: boolean;
@@ -212,16 +245,35 @@ type ContentPartsProps = {
     | ((value: number) => void | React.Dispatch<React.SetStateAction<number>>)
     | null
     | undefined;
+  /** Whether the span a run is still writing folds into one row. The host
+   *  decides: false when the reader asked for tools expanded by default, and
+   *  for a surface that IS the detail view of a run — a subagent's activity
+   *  panel — where one row would hide what the panel was opened to watch. */
+  foldLiveActivity?: boolean;
   /** Internal recursion guard for nested phase segments. */
   nestedActivityPhase?: boolean;
+  /** Internal signal that the parent phase card lifted this segment's
+   *  attachments into its own media row — the parts below must not render
+   *  them a second time inside the fold. */
+  hideAttachments?: boolean;
   /** Internal signal that this segment renders inside a completed phase card. */
   withinActivityPhase?: boolean;
+  /** The parent phase owns the failure pill, including while it is live. */
+  parentPhaseOwnsFailurePill?: boolean;
+  /** Internal signal that a phase card already carries this message's
+   *  streaming cursor. A solitary empty provider slot looks like the initial
+   *  waiting state from inside its own segment, so without this it renders a
+   *  second cursor beside the one already on screen. */
+  cursorOwnedElsewhere?: boolean;
   /** Internal signal that the parent already removed message-level workspace attachments. */
   workspaceAttachmentsPartitioned?: boolean;
   /** Absolute transcript index represented by `content[0]` in a phase slice. */
   contentIndexOffset?: number;
   /** Absolute transcript index for each compacted sparse segment entry. */
   contentIndices?: ReadonlyArray<number>;
+  /** Message-wide lane cardinality retained across nested phase segments, so a
+   *  slice holding one agent of a real two-agent group keeps its columns. */
+  laneGroups?: ReadonlySet<number>;
   /** Message-wide steer attribution retained across nested phase segments. */
   resumeAuthors?: ReadonlyMap<number, string | undefined>;
   /** Message-wide tool-group expansion overrides retained across phase slices. */
@@ -253,13 +305,19 @@ const ContentPartsBody = memo(function ContentPartsBody({
   authorHeader,
   conversationId,
   isCreatedByUser,
+  showThinking,
   isLatestMessage,
   createdAt,
+  foldLiveActivity = true,
   nestedActivityPhase = false,
   withinActivityPhase = false,
+  parentPhaseOwnsFailurePill = false,
+  cursorOwnedElsewhere = false,
+  hideAttachments = false,
   workspaceAttachmentsPartitioned = false,
   contentIndexOffset = 0,
   contentIndices,
+  laneGroups,
   resumeAuthors,
   toolGroupExpansionState,
   toolGroupOccurrenceByIndex,
@@ -293,14 +351,38 @@ const ContentPartsBody = memo(function ContentPartsBody({
     }
     return owners;
   }, [toolCallStepOwnersById, content]);
+  const attachmentsForPart = useCallback(
+    (part: TMessageContentParts): TAttachment[] | undefined =>
+      filterAttachmentsForPart(
+        attachmentMap[getToolCallId(part)],
+        getPartAgentId(part),
+        getPartStepId(part),
+        getSiblingStepIds(part, resolvedToolCallStepOwners),
+      ),
+    [attachmentMap, resolvedToolCallStepOwners],
+  );
+  const disclosureStore = useStore();
+  const reasoningDisclosures = useContext(ReasoningDisclosureContext);
   const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
   const localToolGroupExpansionRef = useRef(new Map<string, ToolCallGroupExpansionState>());
   const expansionState = toolGroupExpansionState ?? localToolGroupExpansionRef.current;
   const fallbackScopeRef = useRef({ messageId, scope: 0 });
+  /** Keys a phase card has already rendered under, by its computed key and by
+   *  where its span starts. See `stableCardKey`. */
+  const cardKeyAliasesRef = useRef(new Map<string, string>());
+  const cardScopeRef = useRef(0);
   if (fallbackScopeRef.current.messageId !== messageId) {
     if (!effectiveIsSubmitting) {
       fallbackScopeRef.current.scope += 1;
       expansionState.clear();
+    }
+    cardScopeRef.current += 1;
+    /** Positions belong to one response, even when the next sibling is live.
+     * Tool-backed aliases still bridge placeholder hydration and finalization. */
+    for (const alias of cardKeyAliasesRef.current.keys()) {
+      if (alias.startsWith('start:') || alias.startsWith('key:fallback:')) {
+        cardKeyAliasesRef.current.delete(alias);
+      }
     }
     fallbackScopeRef.current.messageId = messageId;
   }
@@ -319,22 +401,79 @@ const ContentPartsBody = memo(function ContentPartsBody({
   /** Hoisted above the early returns to feed the entrance-detection hook
    *  below, so it is memoized rather than re-walked on every unrelated
    *  re-render of a message that has no phases at all. */
+  /** Resolved once over the whole message and handed to every slice below —
+   *  and to `groupActivityPhases`, so a streamed delta scans content once. */
+  const messageLaneGroups = useMemo(
+    () => laneGroups ?? parallelLaneGroups(content),
+    [laneGroups, content],
+  );
+
+  const foldsLiveTail = foldLiveActivity && isLast && effectiveIsSubmitting;
   const phaseSegments = useMemo(
-    () => (nestedActivityPhase ? undefined : groupActivityPhases(content)),
-    [nestedActivityPhase, content],
+    () =>
+      nestedActivityPhase
+        ? undefined
+        : groupActivityPhases(content, messageLaneGroups, foldsLiveTail),
+    [nestedActivityPhase, content, messageLaneGroups, foldsLiveTail],
+  );
+  /** Every file a phase's parts produced, in transcript order, deduplicated
+   *  across parts that share a tool call. */
+  const collectPhaseAttachments = useCallback(
+    (parts: ReadonlyArray<TMessageContentParts | undefined>): TAttachment[] | undefined => {
+      const collected: TAttachment[] = [];
+      /** Position of each identity already collected, so a repeat REPLACES it
+       *  in place. A tool that writes the same file twice emits two records
+       *  and the later one carries the fresher lifecycle fields — status,
+       *  preview text, generated contents — which is why the attachment
+       *  renderer gives duplicates distinct keys and lets the latest win.
+       *  Hoisting makes this row the only surface for those files, so keeping
+       *  the first-seen record would pin a stale one on screen. */
+      const positionOf = new Map<string, number>();
+      for (const part of parts) {
+        if (part == null) {
+          continue;
+        }
+        for (const attachment of attachmentsForPart(part) ?? []) {
+          /** No identity means nothing to compare against — two rows that
+           *  cannot be told apart are two rows, so both are kept rather than
+           *  silently collapsed onto whichever arrived first. */
+          const identity = attachmentRenderKey(attachment);
+          if (identity == null) {
+            collected.push(attachment);
+            continue;
+          }
+          const at = positionOf.get(identity);
+          if (at != null) {
+            collected[at] = attachment;
+            continue;
+          }
+          positionOf.set(identity, collected.length);
+          collected.push(attachment);
+        }
+      }
+      return collected.length > 0 ? collected : undefined;
+    },
+    [attachmentsForPart],
   );
   const completedPhaseKeys = useMemo(() => {
     const indices = new Set<number>();
     const labels = new Map<string, number>();
     const ordinals = new Map<number, number>();
     for (const segment of phaseSegments ?? []) {
-      if (segment.type === 'phase') {
-        const text = getActivityLabelText(segment.labelPart);
-        const occurrence = (labels.get(text) ?? 0) + 1;
-        indices.add(getPartKeyIndex(segment.labelPart, segment.labelIndex));
-        labels.set(text, occurrence);
-        ordinals.set(getPartKeyIndex(segment.labelPart, segment.labelIndex), occurrence);
+      if (segment.type !== 'phase') {
+        continue;
       }
+      /** Synthesized cards are excluded: their header key moves with the
+       *  ticker, and a moving key reads here as a re-key — which would
+       *  suppress the entrance fold on every real marker after it. */
+      if (segment.synthesized === true) {
+        continue;
+      }
+      const text = getActivityLabelText(segment.labelPart);
+      const occurrence = (labels.get(text) ?? 0) + 1;
+      indices.add(getPartKeyIndex(segment.labelPart, segment.labelIndex));
+      labels.set(text, occurrence);
+      ordinals.set(getPartKeyIndex(segment.labelPart, segment.labelIndex), occurrence);
     }
     return { indices, labels, ordinals };
   }, [phaseSegments]);
@@ -464,27 +603,23 @@ const ContentPartsBody = memo(function ContentPartsBody({
           isCreatedByUser={isCreatedByUser}
           nextType={content?.[localIdx + 1]?.type}
           isSubmitting={effectiveIsSubmitting}
-          partAttachments={filterAttachmentsForPart(
-            attachmentMap[getToolCallId(part)],
-            getPartAgentId(part),
-            getPartStepId(part),
-            getSiblingStepIds(part, resolvedToolCallStepOwners),
-          )}
+          partAttachments={attachmentsForPart(part)}
+          hideAttachments={hideAttachments}
         />
       );
     },
     [
-      attachmentMap,
+      attachmentsForPart,
       content,
       contentIndexOffset,
       localIndexByAbsolute,
       conversationId,
       effectiveIsSubmitting,
+      hideAttachments,
       isCreatedByUser,
       isLast,
       isLatestMessage,
       messageId,
-      resolvedToolCallStepOwners,
     ],
   );
 
@@ -504,19 +639,14 @@ const ContentPartsBody = memo(function ContentPartsBody({
           isCreatedByUser={isCreatedByUser}
           nextType={content?.[localIdx + 1]?.type}
           isSubmitting={effectiveIsSubmitting}
-          partAttachments={filterAttachmentsForPart(
-            attachmentMap[getToolCallId(part)],
-            getPartAgentId(part),
-            getPartStepId(part),
-            getSiblingStepIds(part, resolvedToolCallStepOwners),
-          )}
+          partAttachments={attachmentsForPart(part)}
           hideAttachments
           onToolExpand={onToolExpand}
         />
       );
     },
     [
-      attachmentMap,
+      attachmentsForPart,
       content,
       contentIndexOffset,
       localIndexByAbsolute,
@@ -526,7 +656,6 @@ const ContentPartsBody = memo(function ContentPartsBody({
       isLast,
       isLatestMessage,
       messageId,
-      resolvedToolCallStepOwners,
     ],
   );
 
@@ -589,27 +718,29 @@ const ContentPartsBody = memo(function ContentPartsBody({
       const baseGroupId = getToolGroupId(group.parts, fallbackScope);
       const occurrence =
         resolvedToolGroupOccurrences.get(getToolGroupAnchorIndex(group.parts)) ?? 1;
-      /** Legacy rows lack run-step identity. Their provider ids may repeat,
-       * so preserve the first group's historic stable key and distinguish
-       * later occurrences by sequence rather than a shifting content index. */
       const groupId = occurrence === 1 ? baseGroupId : `${baseGroupId}:occurrence:${occurrence}`;
-      const groupAttachments = group.parts.flatMap(
-        ({ part }) =>
-          filterAttachmentsForPart(
-            attachmentMap[getToolCallId(part)],
-            getPartAgentId(part),
-            getPartStepId(part),
-            getSiblingStepIds(part, resolvedToolCallStepOwners),
-          ) ?? [],
-      );
-      return { ...group, groupId, groupAttachments };
+      /** Collected even when a parent phase hoists the files: the header still
+       *  reads them for the sites a web search visited. */
+      const seenAttachments = new Set<TAttachment>();
+      for (const { part } of group.parts) {
+        for (const attachment of attachmentsForPart(part) ?? []) {
+          seenAttachments.add(attachment);
+        }
+      }
+      const groupAttachments = hideAttachments ? undefined : Array.from(seenAttachments);
+      return {
+        ...group,
+        groupId,
+        groupAttachments,
+        sourceAttachments: Array.from(seenAttachments),
+      };
     });
   }, [
     sequentialParts,
-    attachmentMap,
+    attachmentsForPart,
     fallbackScope,
+    hideAttachments,
     resolvedToolGroupOccurrences,
-    resolvedToolCallStepOwners,
   ]);
 
   /** The re-attribution node for a part resuming after a steer block, shared
@@ -676,12 +807,74 @@ const ContentPartsBody = memo(function ContentPartsBody({
       }
       return absoluteIndexAt(segment.startIndex);
     };
+    /** Stable render identity for a phase card. See the key comment below.
+     *
+     *  Anchored to the first TOOL CALL, not the span's first part, for the
+     *  reason `getToolGroupId` gives: an empty leading TEXT or THINK is
+     *  DROPPED by `preserveStreamedContentIdentity` at settle, which would
+     *  move a first-part anchor and remount the card exactly when the run
+     *  finishes. The tool calls themselves do not move. */
+    const phaseCardKey = (segment: Extract<ActivityPhaseSegment, { type: 'phase' }>): string => {
+      for (let position = 0; position < segment.content.length; position += 1) {
+        const part = segment.content[position];
+        const toolCallId = part == null ? '' : getToolCallId(part);
+        if (toolCallId) {
+          const anchor = getPartKeyIndex(part, absoluteIndexAt(segment.contentIndices[position]));
+          return `${toolCallId}:${anchor}`;
+        }
+      }
+      /** No provider id in the span at all — id-less legacy calls,
+       *  reasoning-only, or children compacted away. A bare position cannot
+       *  separate two siblings whose cards start at the same index, so this
+       *  branch carries the message-change counter, exactly as
+       *  `getToolGroupId` does for its own id-less fallback. The tradeoff is
+       *  the same one accepted there: the counter also advances at settle, so
+       *  these cards remount then. */
+      const position = segment.hasContent
+        ? segmentKeyIndex(segment)
+        : getPartKeyIndex(segment.labelPart, segment.labelIndex);
+      return `fallback:${cardScopeRef.current}:${position}`;
+    };
+    /** A live card can exist before its first tool call — a span that is only
+     *  a thought so far has no provider id, so `phaseCardKey` gives it the
+     *  positional fallback, and would hand it a different, tool-anchored key
+     *  the moment a call is appended. That is a remount mid-thought: the row
+     *  blinks and a reader who opened it is shut out. The first key a span
+     *  renders under is therefore kept, and remembered both by where the span
+     *  starts and by the key it would otherwise move to, so the summary that
+     *  later claims the same calls from a different start still lands on it. */
+    const stableCardKey = (segment: Extract<ActivityPhaseSegment, { type: 'phase' }>): string => {
+      const computed = phaseCardKey(segment);
+      const start = absoluteIndexAt(segment.contentIndices[0] ?? segment.startIndex);
+      const aliases = cardKeyAliasesRef.current;
+      const key = aliases.get(`key:${computed}`) ?? aliases.get(`start:${start}`) ?? computed;
+      aliases.set(`key:${computed}`, key);
+      aliases.set(`start:${start}`, key);
+      return key;
+    };
+    /** Exactly one thing may hold the streaming cursor. A card carries it
+     *  below its own header whenever the tail of the run sits inside its
+     *  span, which puts every sibling segment out of the running. */
+    const cursorOwnedByCard =
+      isLast &&
+      effectiveIsSubmitting &&
+      phaseSegments.some((segment) => {
+        if (segment.type !== 'phase') {
+          return false;
+        }
+        return segment.synthesized === true
+          ? segment.contentIndices.map(absoluteIndexAt).includes(globalLastContentIdx)
+          : absoluteIndexAt(segment.labelIndex) === globalLastContentIdx;
+      });
     const renderSegment = (
       segmentContent: Array<TMessageContentParts | undefined>,
       segmentStartIndex: number,
       segmentIndices: ReadonlyArray<number>,
       key: string,
       withinPhase = false,
+      ownsCursor = false,
+      hoisted = false,
+      underPhase = false,
     ) => {
       return (
         <ContentPartsBody
@@ -694,14 +887,19 @@ const ContentPartsBody = memo(function ContentPartsBody({
           attachments={inlineAttachments}
           searchResults={searchResults}
           isCreatedByUser={isCreatedByUser}
-          isLast={isLast && segmentIndices.includes(globalLastContentIdx)}
+          isLast={!ownsCursor && isLast && segmentIndices.includes(globalLastContentIdx)}
           isSubmitting={isSubmitting}
           isLatestMessage={isLatestMessage}
           nestedActivityPhase
+          showThinking={showThinking}
           withinActivityPhase={withinPhase}
+          parentPhaseOwnsFailurePill={underPhase}
+          cursorOwnedElsewhere={cursorOwnedByCard}
+          hideAttachments={hoisted}
           workspaceAttachmentsPartitioned
           contentIndexOffset={segmentStartIndex}
           contentIndices={segmentIndices}
+          laneGroups={messageLaneGroups}
           resumeAuthors={postSteerAuthors}
           toolGroupExpansionState={expansionState}
           toolGroupOccurrenceByIndex={resolvedToolGroupOccurrences}
@@ -709,7 +907,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
         />
       );
     };
-    const hasParallelContent = content?.some((part) => part?.groupId != null) === true;
+    const hasParallelContent = hasParallelLanes(content, messageLaneGroups);
     return (
       <ApprovalProvider>
         <SearchContext.Provider value={{ searchResults }}>
@@ -727,17 +925,121 @@ const ContentPartsBody = memo(function ContentPartsBody({
                 `phase-adjacent-${segmentKeyIndex(segment)}`,
               );
             }
+            const synthesized = segment.synthesized === true;
+            const live = segment.live === true;
+            /** Entrance bookkeeping still keys on the marker. */
             const phaseKeyIndex = getPartKeyIndex(segment.labelPart, segment.labelIndex);
+            /** The RENDER key is the span, not the header. A synthesized card's
+             *  header ticks with the newest child label, so keying on it would
+             *  remount the card on every tick — and when the summary finally
+             *  lands, a card keyed the same way as the fold it replaces is
+             *  RECONCILED rather than remounted, so a reader who opened the
+             *  ticker keeps it open with no state to hand over. A phase with no
+             *  children has no span to anchor to and keeps its marker key.
+             *
+             *  The first tool call carries it — its provider id paired with
+             *  its own position. No message identity goes into it, and none
+             *  can: `MultiMessage` reuses this instance across siblings, but
+             *  `messageId` moves at settle (batched with
+             *  `setIsSubmitting(false)`, so that commit is indistinguishable
+             *  from a sibling switch) and the positional `siblingIdx` moves
+             *  under background churn that deliberately PRESERVES the viewed
+             *  response. Both halves survive those: the position is
+             *  content-derived, and the provider id is what separates two
+             *  siblings whose cards start at the same index. Pairing them also
+             *  keeps repeated provider ids in one message apart, the way
+             *  `getToolGroupId` uses an occurrence counter. */
+            const cardKey = stableCardKey(segment);
             const labelText = getActivityLabelText(segment.labelPart);
+            const segmentIndices = segment.contentIndices.map(absoluteIndexAt);
+            /** While a run streams, the cursor sits INSIDE a synthesized span.
+             *  A collapsed card would swallow it, so the card carries it below
+             *  the header and the nested body stands down. */
+            const ownsCursor =
+              synthesized &&
+              isLast &&
+              effectiveIsSubmitting &&
+              segmentIndices.includes(globalLastContentIdx);
+            const hasPendingApproval = segment.content.some(
+              (part) => part != null && hasPendingApprovalInPart(part),
+            );
+            /** The span's files, lifted out of the fold into their own row
+             *  under the header.
+             *
+             *  This is why a span carrying attachments no longer has to skip
+             *  folding. `ToolCallGroup` hoists `groupAttachments` outside its
+             *  own panel so generated output survives collapsing the group,
+             *  and folding that group into a card used to put the hoist back
+             *  inside a disclosure — so a synthesized span with any output
+             *  rendered unfolded rather than swallow it. Hoisting one level
+             *  further makes the card safe for exactly that content, and
+             *  agent runs that produce files are the ones with the longest
+             *  lists to fold. */
+            const phaseAttachments = collectPhaseAttachments(segment.content);
+            /** A fold summarizes work that is DONE. An unresolved approval is
+             *  the run asking the reader for something and blocking until it
+             *  gets it — never put that behind a disclosure they have to find.
+             *  A server marker cannot hit this (it is emitted after the batch
+             *  resolves), but a subagent nested in an already-labeled group
+             *  can raise one long after its parent's label filled. The span
+             *  renders exactly as it would without the feature until it
+             *  clears, then folds. */
+            /** "Open thinking dropdowns by default" is the reader asking to
+             *  see reasoning as it streams. A collapsed live row would unmount
+             *  it, so a reasoning-bearing span stays unfolded for them — the
+             *  same exception `ToolCallGroup` makes to its auto-collapse. */
+            const keepsThinkingOpen =
+              live &&
+              showThinking &&
+              segment.content.some((part) => part?.type === ContentTypes.THINK);
+            const awaitsReader = live
+              ? keepsThinkingOpen || segment.content.some(blocksLiveFold)
+              : hasPendingApproval;
+            if (synthesized && awaitsReader) {
+              return renderSegment(
+                segment.content,
+                absoluteIndexAt(segment.startIndex),
+                segmentIndices,
+                `phase-awaiting-${cardKey}`,
+              );
+            }
             return (
               <ActivityPhaseGroup
-                key={`activity-phase-${messageId}-${phaseKeyIndex}`}
+                key={`activity-phase-${cardKey}`}
                 labelPart={segment.labelPart}
                 hasContent={segment.hasContent}
-                hasPendingApproval={segment.content.some(
-                  (part) => part != null && hasPendingApprovalInPart(part),
-                )}
+                attachments={phaseAttachments}
+                hasPendingApproval={hasPendingApproval}
+                onExpansionChange={
+                  live &&
+                  reasoningDisclosures != null &&
+                  !segment.content.some((part) => part?.type === ContentTypes.TOOL_CALL)
+                    ? (expanded) => {
+                        segment.content.forEach((part, position) => {
+                          if (part?.type !== ContentTypes.THINK) {
+                            return;
+                          }
+                          const index = getPartKeyIndex(part, segmentIndices[position]);
+                          disclosureStore.set(
+                            reasoningDisclosure(reasoningDisclosures, index),
+                            expanded,
+                          );
+                        });
+                      }
+                    : undefined
+                }
+                liveParts={live ? segment.content : undefined}
+                spanParts={segment.hasContent ? segment.content : undefined}
                 animateEntrance={
+                  /** Never for a synthesized card. The entrance mounts a card
+                   *  OPEN and folds it shut, and this component remounts
+                   *  mid-run — the key carries `messageId`, which changes when
+                   *  the placeholder hydrates to the server id, and a reconnect
+                   *  mounts straight onto existing labeled content. Either
+                   *  would flash the whole fold back open. Fold GROWTH is
+                   *  already unanimated, so formation matching it is the
+                   *  consistent behavior, not a downgrade. */
+                  !synthesized &&
                   previousPhases != null &&
                   !previousPhases.indices.has(phaseKeyIndex) &&
                   (!hasPhaseRekey ||
@@ -745,16 +1047,26 @@ const ContentPartsBody = memo(function ContentPartsBody({
                       (previousPhases.labels.get(labelText) ?? 0))
                 }
                 showCursor={
-                  isLast &&
-                  effectiveIsSubmitting &&
-                  absoluteIndexAt(segment.labelIndex) === globalLastContentIdx
+                  /** A live header shimmers; a cursor row beneath it would be
+                   *  a second liveness signal and a second row. */
+                  synthesized
+                    ? ownsCursor && !live
+                    : isLast &&
+                      effectiveIsSubmitting &&
+                      absoluteIndexAt(segment.labelIndex) === globalLastContentIdx
                 }
               >
                 {renderSegment(
                   segment.content,
                   absoluteIndexAt(segment.startIndex),
-                  segment.contentIndices.map(absoluteIndexAt),
-                  `phase-content-${phaseKeyIndex}`,
+                  segmentIndices,
+                  `phase-content-${cardKey}`,
+                  /** Opening a live row should show the calls running, so its
+                   *  groups keep their own live expansion rather than the
+                   *  settled-phase default of staying shut. */
+                  !live,
+                  ownsCursor,
+                  true,
                   true,
                 )}
               </ActivityPhaseGroup>
@@ -773,14 +1085,18 @@ const ContentPartsBody = memo(function ContentPartsBody({
    *  flows share the gated header-axis nudge. Never solitary mid-stream, so
    *  empty TEXT after real parts keeps its flush in-flow cursor. */
   const solitaryEmptyText = safeContent.length === 1 && isEmptyTextPart(safeContent[0]);
-  const showEmptyCursor = (safeContent.length === 0 || solitaryEmptyText) && effectiveIsSubmitting;
+  const showEmptyCursor =
+    (safeContent.length === 0 || solitaryEmptyText) &&
+    effectiveIsSubmitting &&
+    !cursorOwnedElsewhere;
   /** Skips trailing blank label reservations and empty provider placeholders,
    * keeping the cursor attached to the last visible output. */
   const relativeLastContentIdx = lastCursorContentIdx(safeContent);
   const lastContentIdx = relativeLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeLastContentIdx);
 
-  // Parallel content: use dedicated renderer with columns (TMessageContentParts includes ContentMetadata)
-  const hasParallelContent = safeContent.some((part) => part?.groupId != null);
+  /** Columns only when at least two agents share a group — a lone group
+   *  renders here, where tool grouping and activity labels apply. */
+  const hasParallelContent = hasParallelLanes(safeContent, messageLaneGroups);
   if (hasParallelContent) {
     const parallelContent = (
       <>
@@ -798,6 +1114,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           showDecorations={!nestedActivityPhase}
           contentIndexOffset={contentIndexOffset}
           contentIndices={contentIndices}
+          laneGroups={messageLaneGroups}
         />
         {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
       </>
@@ -853,16 +1170,20 @@ const ContentPartsBody = memo(function ContentPartsBody({
                *  mark its group as last or nothing holds the streaming
                *  cursor until the next delta. */
               isLast={
-                group.parts.some((p) => p.idx === lastContentIdx) ||
-                group.labelPart?.idx === lastContentIdx
+                isLast &&
+                (group.parts.some((p) => p.idx === lastContentIdx) ||
+                  group.labelPart?.idx === lastContentIdx)
               }
               renderPart={renderGroupedPart}
               lastContentIdx={lastContentIdx}
               groupAttachments={group.groupAttachments}
+              sourceAttachments={group.sourceAttachments}
               initialExpansionState={expansionState.get(groupId)}
+              showThinking={showThinking}
               onExpansionChange={(state) => handleGroupExpansionChange(groupId, state)}
               labelPart={group.labelPart}
               withinActivityPhase={withinActivityPhase}
+              parentPhaseOwnsFailurePill={parentPhaseOwnsFailurePill}
             />,
           );
           return nodes;
@@ -877,7 +1198,61 @@ const ContentPartsBody = memo(function ContentPartsBody({
 });
 
 const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
-  return <ContentPartsBody {...props} />;
+  const { attachments, messageId, conversationId } = props;
+  const toolState = useRef<{
+    messageId: string;
+    conversationId: string | null | undefined;
+    disclosures: ToolDisclosures;
+  } | null>(null);
+  const previous = toolState.current;
+  /** The optimistic assistant id ends in `_`. Finalization replaces it with
+   *  the server id, not a new response. Ordinary sibling/conversation switches
+   *  get a fresh map, even if a provider reuses the same tool-call ids. */
+  const finalizing =
+    previous?.messageId.endsWith('_') === true &&
+    !messageId.endsWith('_') &&
+    props.isLatestMessage === true;
+  if (
+    previous == null ||
+    previous.conversationId !== conversationId ||
+    (previous.messageId !== messageId && !finalizing)
+  ) {
+    toolState.current = { messageId, conversationId, disclosures: new Map() };
+  } else {
+    previous.messageId = messageId;
+  }
+  const toolDisclosures = toolState.current!.disclosures;
+  const reasoningState = useRef<{ messageId: string; disclosures: ReasoningDisclosures } | null>(
+    null,
+  );
+  if (reasoningState.current?.messageId !== messageId) {
+    reasoningState.current = { messageId, disclosures: new Map() };
+  }
+  const reasoningDisclosures = reasoningState.current.disclosures;
+  /** Published once for the whole message so every markdown block below —
+   *  including the ones nested inside phase cards — resolves a bare
+   *  `![DTI](5_dti.png)` against the files this turn actually produced.
+   *
+   *  `buildAttachmentsByName` indexes only what an `<img>` can display, so a
+   *  `![report](report.csv)` keeps its download chip instead of resolving to a
+   *  picture element that shows nothing.
+   *
+   *  Memoized in two steps on purpose. `useAttachments` hands back a fresh
+   *  `[]` whenever its inputs move, and a turn with no files is the common
+   *  case — indexing through the shared empty map keeps the context value
+   *  itself referentially stable there, so a churning array cannot push a new
+   *  value at every markdown block in the message. */
+  const attachmentsByName = useMemo(() => buildAttachmentsByName(attachments), [attachments]);
+  const media = useMemo(() => ({ attachmentsByName }), [attachmentsByName]);
+  return (
+    <MediaContext.Provider value={media}>
+      <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
+        <ToolDisclosureContext.Provider value={toolDisclosures}>
+          <ContentPartsBody {...props} />
+        </ToolDisclosureContext.Provider>
+      </ReasoningDisclosureContext.Provider>
+    </MediaContext.Provider>
+  );
 });
 
 export default ContentParts;

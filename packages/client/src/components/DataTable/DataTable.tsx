@@ -1,7 +1,8 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import { JSX } from 'react/jsx-runtime';
+import { Inbox, SearchX } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ArrowUp, ArrowDown, ArrowDownUp, Inbox, SearchX } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowDownUp } from 'lucide';
 import {
   useReactTable,
   getCoreRowModel,
@@ -18,6 +19,7 @@ import { Table, TableBody, TableHead, TableHeader, TableCell, TableRow } from '.
 import { useDebounced, useOptimizedRowSelection } from './DataTable.hooks';
 import { useMediaQuery, useLocalize } from '~/hooks';
 import { DataTableSearch } from './DataTableSearch';
+import { MorphIcon } from '../MorphIcon';
 import { cn, logger } from '~/utils';
 import { Button } from '../Button';
 import { Label } from '../Label';
@@ -655,14 +657,21 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                       >
                         {renderedHeader}
                         <span aria-hidden="true">
-                          {{
-                            asc: <ArrowUp className="size-3.5" />,
-                            desc: <ArrowDown className="size-3.5" />,
-                          }[header.column.getIsSorted() as string] ?? (
-                            /* The neutral marker is noise on every unsorted column, so it
-                               only surfaces once the header is a pointer or keyboard target. */
-                            <ArrowDownUp className="size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
-                          )}
+                          <MorphIcon
+                            icon={
+                              {
+                                asc: ArrowUp,
+                                desc: ArrowDown,
+                              }[header.column.getIsSorted() as string] ?? ArrowDownUp
+                            }
+                            className={cn(
+                              'size-3.5',
+                              /* The neutral marker is noise on every unsorted column, so it
+                                 only surfaces once the header is a pointer or keyboard target. */
+                              !sortDirection &&
+                                'opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100',
+                            )}
+                          />
                         </span>
                       </Button>
                     );

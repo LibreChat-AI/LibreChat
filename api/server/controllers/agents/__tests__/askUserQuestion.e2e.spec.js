@@ -231,7 +231,8 @@ describe('ask_user_question lifecycle (full wiring, approval policy disabled)', 
       initialMetadata: { generationProtocolVersion: 2 },
     });
     const checkpointNamespace = job.metadata.checkpointNamespace;
-    expect(checkpointNamespace).toBe(String(job.createdAt));
+    expect(checkpointNamespace).toEqual(expect.any(String));
+    expect(checkpointNamespace).not.toBe(String(job.createdAt));
 
     // --- Turn 1: the model calls the ask tool → interrupt() from inside the tool body. ---
     const run = await buildAskRun({
@@ -359,7 +360,8 @@ describe('ask_user_question lifecycle (full wiring, approval policy disabled)', 
       initialMetadata: { generationProtocolVersion: 2 },
     });
     const checkpointNamespace = job.metadata.checkpointNamespace;
-    expect(checkpointNamespace).toBe(String(job.createdAt));
+    expect(checkpointNamespace).toEqual(expect.any(String));
+    expect(checkpointNamespace).not.toBe(String(job.createdAt));
 
     const run = await buildAskRunEventMode({
       saver,

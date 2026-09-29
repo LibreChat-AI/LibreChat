@@ -1,35 +1,20 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
+import { useStore } from 'jotai';
+import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { selectorFamily, useRecoilValue, useRecoilCallback } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
+import {
+  siblingIdxFamily,
+  siblingKey,
+  useSiblingIndexes,
+} from '~/components/Chat/Messages/Thread/state';
 import { getMessageBranchSiblingParentIds, selectActiveBranchTail } from '~/utils';
 import store from '~/store';
 
-const NULL_PARENT_KEY = '__null_parent__';
 const EMPTY_PARENT_IDS: (string | null)[] = [];
-
-const getParentLookupKey = (parentMessageId: string | null | undefined) =>
-  parentMessageId ?? NULL_PARENT_KEY;
-
-const siblingIndexesByParentSelector = selectorFamily<
-  Record<string, number>,
-  readonly (string | null)[]
->({
-  key: 'latestMessageSiblingIndexesByParent',
-  get:
-    (parentIds) =>
-    ({ get }) => {
-      const indexes: Record<string, number> = {};
-
-      for (const parentId of parentIds) {
-        indexes[getParentLookupKey(parentId)] = get(store.messagesSiblingIdxFamily(parentId));
-      }
-
-      return indexes;
-    },
-});
+const getParentLookupKey = siblingKey;
 
 function useMessagesCacheSelect<TData>(
   messagesQueryId: string | null | undefined,
@@ -85,7 +70,8 @@ function useLatestMessageSiblingIndexes(
     [rootSiblingKey],
   );
   const parentIds = useMessagesCacheSelect(messagesQueryId, selectParentIds) ?? EMPTY_PARENT_IDS;
-  return useRecoilValue(siblingIndexesByParentSelector(parentIds));
+  const parentKeys = useMemo(() => parentIds.map(siblingKey), [parentIds]);
+  return useSiblingIndexes(parentKeys);
 }
 
 export function useLatestMessage(
@@ -175,21 +161,18 @@ export function useGetLatestMessage(
   messagesQueryIdOverride?: string | null,
 ): () => TMessage | null {
   const queryClient = useQueryClient();
+  const jotaiStore = useStore();
   const conversationId = useRecoilValue(store.conversationIdByIndex(index));
   const messagesQueryId = useLatestMessagesQueryId(index, conversationId, messagesQueryIdOverride);
 
-  return useRecoilCallback(
-    ({ snapshot }) =>
-      (): TMessage | null => {
-        if (!messagesQueryId) {
-          return null;
-        }
-        const messages =
-          queryClient.getQueryData<TMessage[]>([QueryKeys.messages, messagesQueryId]) ?? [];
-        return selectActiveBranchTail(messages, conversationId, (parentId) =>
-          snapshot.getLoadable(store.messagesSiblingIdxFamily(parentId)).getValue(),
-        );
-      },
-    [queryClient, conversationId, messagesQueryId],
-  );
+  return useCallback((): TMessage | null => {
+    if (!messagesQueryId) {
+      return null;
+    }
+    const messages =
+      queryClient.getQueryData<TMessage[]>([QueryKeys.messages, messagesQueryId]) ?? [];
+    return selectActiveBranchTail(messages, conversationId, (parentId) =>
+      jotaiStore.get(siblingIdxFamily(siblingKey(parentId))),
+    );
+  }, [queryClient, jotaiStore, conversationId, messagesQueryId]);
 }

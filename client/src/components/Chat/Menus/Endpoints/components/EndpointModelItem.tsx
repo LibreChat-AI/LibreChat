@@ -1,6 +1,8 @@
 import React from 'react';
+import { Pin, PinOff } from 'lucide';
+import { MorphIcon } from '@librechat/client';
 import { VisuallyHidden } from '@ariakit/react';
-import { CheckCircle2, EarthIcon, Pin, PinOff } from 'lucide-react';
+import { CheckCircle2, EarthIcon } from 'lucide-react';
 import { isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { Endpoint } from '~/common';
 import { useModelSelectorContext } from '../ModelSelectorContext';
@@ -128,11 +130,7 @@ function EndpointModelItemComponent({
               'group-focus-within:visible group-hover:visible group-data-[active-item]:visible [@media(hover:hover)]:invisible',
         )}
       >
-        {isFavorite ? (
-          <PinOff className="h-4 w-4 text-text-secondary" aria-hidden="true" />
-        ) : (
-          <Pin className="h-4 w-4 text-text-secondary" aria-hidden="true" />
-        )}
+        <MorphIcon icon={isFavorite ? PinOff : Pin} className="h-4 w-4 text-text-secondary" />
       </button>
       {isSelected && (
         <>

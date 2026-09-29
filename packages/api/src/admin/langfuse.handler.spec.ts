@@ -323,6 +323,7 @@ describe('createAdminLangfuseHandlers', () => {
       expect(res.statusCode).toBe(200);
       expect(res.body).toEqual({
         url: 'https://cloud.langfuse.com/project/project-1/sessions/conversation-1',
+        destinationId: getLangfuseDestinationId('https://cloud.langfuse.com', 'project-1'),
       });
       expect(deps.getMessages).toHaveBeenCalledWith(
         {
@@ -387,6 +388,7 @@ describe('createAdminLangfuseHandlers', () => {
 
       expect(linkRes.body).toEqual({
         url: 'https://cloud.langfuse.com/project/tenant-project-1/sessions/conversation-1',
+        destinationId: getLangfuseDestinationId('https://cloud.langfuse.com', 'tenant-project-1'),
       });
       expect(getMessages).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -412,6 +414,7 @@ describe('createAdminLangfuseHandlers', () => {
 
       expect(res.body).toEqual({
         url: 'https://langfuse.example/base/path/project/project-1/sessions/conversation-1',
+        destinationId: getLangfuseDestinationId('https://langfuse.example/base/path', 'project-1'),
       });
     });
 

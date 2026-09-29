@@ -91,8 +91,14 @@
    publishes it here. The token is only the fallback for before that first
    measurement: it matches the `::-webkit-scrollbar` width, which Firefox
    ignores and an overlay scrollbar drops to nothing. */
-.scrollbar-gutter-spacer {
-  padding-inline-end: var(--message-scrollbar-gutter, var(--scrollbar-size));
+/* Below `sm` the composer runs edge to edge (it is squared off at the bottom and
+   carries no horizontal padding there), so holding the band back would leave a
+   dead strip down its right side instead of lining anything up. The message
+   column it aligns to only shares a centre from `sm` up. */
+@media (min-width: 640px) {
+  .scrollbar-gutter-spacer {
+    padding-inline-end: var(--message-scrollbar-gutter, var(--scrollbar-size));
+  }
 }
 
 /* Base wrapper for both preview and editor */

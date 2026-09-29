@@ -58,7 +58,15 @@ export const useScreenshot = () => {
       );
     }
 
-    const backgroundColor = isDark(theme) ? '#171717' : 'white';
+    /** Read the canvas the app is actually painting rather than a fixed pair, so
+     *  an export matches the selected appearance and the state colours keep the
+     *  contrast they were calibrated against. The token is a channel triplet,
+     *  not a colour, so it has to be wrapped before html-to-image sees it. */
+    const canvasTriplet = getComputedStyle(document.documentElement)
+      .getPropertyValue('--surface-primary')
+      .trim();
+    const fallbackBackground = isDark(theme) ? '#171717' : 'white';
+    const backgroundColor = canvasTriplet ? `rgb(${canvasTriplet})` : fallbackBackground;
     const canvas = await toCanvas(node, {
       backgroundColor,
       pixelRatio,

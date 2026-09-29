@@ -10,7 +10,10 @@
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListToolsRequestSchema,
+  InitializeRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { MCPConnection } from '~/mcp/connection';
 
 jest.setTimeout(10_000);
@@ -37,6 +40,52 @@ describe('MCPConnection disposal during connect', () => {
   afterEach(async () => {
     await server?.close().catch(() => undefined);
     server = undefined;
+  });
+
+  it('does not charge a disposed initialize attempt to connection health', async () => {
+    server = new Server({ name: 'cancelled-initialize', version: '1.0.0' }, { capabilities: {} });
+    let started: (() => void) | undefined;
+    const initializeStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let finish: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    server.setRequestHandler(InitializeRequestSchema, async (request) => {
+      started?.();
+      await gate;
+      return {
+        protocolVersion: request.params.protocolVersion,
+        capabilities: {},
+        serverInfo: { name: 'cancelled-initialize', version: '1.0.0' },
+      };
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const connection = new MCPConnection({
+      serverName: 'cancelled-initialize',
+      serverConfig: { type: 'streamable-http', url: 'http://localhost/mcp' },
+      useSSRFProtection: false,
+      directBearerRecoveryEnabled: true,
+    });
+    jest
+      .spyOn(
+        connection as unknown as { constructTransport: () => Promise<unknown> },
+        'constructTransport',
+      )
+      .mockResolvedValue(clientTransport);
+    const recordFailedRound = jest.spyOn(
+      connection as unknown as { recordFailedRound: () => void },
+      'recordFailedRound',
+    );
+    const connecting = connection.connectClient().catch((error: Error) => error);
+    await initializeStarted;
+    await connection.dispose();
+    finish?.();
+    await connecting;
+    expect(recordFailedRound).not.toHaveBeenCalled();
+    expect(await connection.isConnected()).toBe(false);
   });
 
   it('leaves no live session when disposal lands while the transport is being constructed', async () => {

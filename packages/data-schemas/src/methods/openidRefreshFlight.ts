@@ -130,7 +130,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
       const existing = await OpenIDRefreshFlight.findOne({
         key: data.key,
         expiresAt: { $gt: now },
-      }).lean<IOpenIDRefreshFlight>();
+      })
+        .read('primary')
+        .lean<IOpenIDRefreshFlight>();
 
       return { acquired: false, flight: existing };
     } catch (error) {
@@ -243,7 +245,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
       return await OpenIDRefreshFlight.findOne({
         key: query.key,
         expiresAt: { $gt: new Date() },
-      }).lean<IOpenIDRefreshFlight>();
+      })
+        .read('primary')
+        .lean<IOpenIDRefreshFlight>();
     } catch (error) {
       logger.debug('[findOpenIDRefreshFlight] Error finding flight:', error);
       throw error;

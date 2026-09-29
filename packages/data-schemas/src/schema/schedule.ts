@@ -115,6 +115,9 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
     disabledReason: {
       type: String,
       enum: [
+        'mcp_reauth_required',
+        'mcp_configuration_missing',
+        'mcp_permission_denied',
         'too_many_failures',
         'agent_deleted',
         'invalid_schedule',
@@ -223,6 +226,28 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
         conversationId: { type: String },
         status: { type: String, required: true },
         error: { type: String },
+        mcp: {
+          type: [
+            {
+              _id: false,
+              server: { type: String, required: true },
+              agentId: { type: String },
+              detail: { type: String, enum: ['unattended_auth_required'] },
+              status: {
+                type: String,
+                required: true,
+                enum: [
+                  'ready',
+                  'mcp_reauth_required',
+                  'mcp_configuration_missing',
+                  'mcp_permission_denied',
+                  'mcp_unavailable',
+                ],
+              },
+            },
+          ],
+          default: undefined,
+        },
         firedAt: { type: Date, required: true },
         scheduledFor: { type: Date },
       },

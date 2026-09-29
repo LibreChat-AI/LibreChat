@@ -1,9 +1,14 @@
-const crypto = require('crypto');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { batchUploadCodeEnvFiles } = require('~/server/services/Files/Code/crud');
 const {
   getSessionInfo,
   checkIfActive,
+  readWorkspaceFile,
+  searchWorkspace,
+  listWorkspaceFiles,
+  writeWorkspaceFile,
+  previewWorkspaceEdit,
+  editWorkspaceFile,
   readSandboxFile,
   readSandboxImage,
   writeSandboxFile,
@@ -11,11 +16,12 @@ const {
 const {
   checkAccess,
   isMemoryEnabled,
-  getStorageMetadata,
   resolveRequestTenantId,
   enrichWithSkillConfigurable,
   mergeDeploymentSkillIds,
   createDeploymentSkillMethods,
+  createSkillFileSaver,
+  createSkillManagementFileSaver,
   isDeploymentSkillFileSource,
   getDeploymentSkillDownloadStream,
 } = require('@librechat/api');
@@ -71,71 +77,17 @@ function resolveSkillStorage(req, { isImage = false } = {}) {
   return { saveBuffer: strategy.saveBuffer, source };
 }
 
-function basename(relativePath) {
-  const slash = relativePath.lastIndexOf('/');
-  return slash === -1 ? relativePath : relativePath.slice(slash + 1);
-}
+const skillFileSaveDeps = {
+  getSkillFileByPath: db.getSkillFileByPath,
+  upsertSkillFile: db.upsertSkillFile,
+  resolveStorage: resolveSkillStorage,
+  getStrategyFunctions,
+};
+const saveSkillFileContent = createSkillFileSaver(skillFileSaveDeps);
+const saveSkillManagementFileContent = createSkillManagementFileSaver(skillFileSaveDeps);
 
-async function saveSkillFileContent({ req, skillId, relativePath, content, mimeType }) {
-  const existingFile = await db.getSkillFileByPath(skillId, relativePath);
-  const tenantId = resolveRequestTenantId(req);
-  const fileId = crypto.randomUUID();
-  const filename = basename(relativePath);
-  const storageFileName = `${fileId}__${filename}`;
-  const buffer = Buffer.from(content, 'utf8');
-  const storage = resolveSkillStorage(req, { isImage: mimeType.startsWith('image/') });
-  const filepath = await storage.saveBuffer({
-    userId: req.user.id,
-    buffer,
-    fileName: storageFileName,
-    basePath: 'uploads',
-    tenantId,
-  });
-  const storageMetadata = getStorageMetadata({ filepath, source: storage.source });
-
-  let result;
-  try {
-    result = await db.upsertSkillFile({
-      skillId,
-      relativePath,
-      file_id: fileId,
-      filename,
-      filepath,
-      ...storageMetadata,
-      source: storage.source,
-      mimeType,
-      bytes: buffer.length,
-      isExecutable: false,
-      author: req.user._id ?? req.user.id,
-      tenantId,
-    });
-    if (!result) {
-      const error = new Error('Skill file save failed to persist metadata');
-      error.code = 'SKILL_FILE_UPSERT_NOT_FOUND';
-      throw error;
-    }
-  } catch (error) {
-    const { deleteFile } = getStrategyFunctions(storage.source);
-    if (deleteFile) {
-      await deleteFile(req, { filepath, user: req.user.id, tenantId }).catch(() => undefined);
-    }
-    throw error;
-  }
-
-  if (existingFile && existingFile.filepath !== filepath) {
-    const { deleteFile } = getStrategyFunctions(existingFile.source);
-    if (deleteFile) {
-      deleteFile(req, {
-        filepath: existingFile.filepath,
-        storageKey: existingFile.storageKey,
-        storageRegion: existingFile.storageRegion,
-        user: existingFile.author ?? req.user.id,
-        tenantId: existingFile.tenantId ?? tenantId,
-      }).catch(() => undefined);
-    }
-  }
-
-  return { bytes: result.bytes, relativePath: result.relativePath };
+function getSkillManagementFileSaver() {
+  return saveSkillManagementFileContent;
 }
 
 function canCreateSkill({ req }) {
@@ -158,7 +110,11 @@ function canEditSkill({ req, skillId }) {
   });
 }
 
-function isAgentSkillsEnabledForRun({ agent, skillsCapabilityEnabled, ephemeralSkillsToggle }) {
+function isAgentSkillAuthoringEnabledForRun({
+  agent,
+  skillsCapabilityEnabled,
+  ephemeralSkillsToggle,
+}) {
   if (!skillsCapabilityEnabled) {
     return false;
   }
@@ -171,7 +127,7 @@ function isAgentSkillsEnabledForRun({ agent, skillsCapabilityEnabled, ephemeralS
     }
     return ephemeralSkillsToggle === true;
   }
-  return agent.skills_enabled === true;
+  return agent.skills_enabled === true || agent.skill_authoring_enabled === true;
 }
 
 function canAuthorSkillFiles({
@@ -182,7 +138,11 @@ function canAuthorSkillFiles({
   ephemeralSkillsToggle,
 }) {
   return (
-    isAgentSkillsEnabledForRun({ agent, skillsCapabilityEnabled, ephemeralSkillsToggle }) &&
+    isAgentSkillAuthoringEnabledForRun({
+      agent,
+      skillsCapabilityEnabled,
+      ephemeralSkillsToggle,
+    }) &&
     (scopedEditableSkillIds.length > 0 || skillCreateAllowed === true)
   );
 }
@@ -275,6 +235,14 @@ function buildSkillPrimedIdsByName(manualSkillPrimes, alwaysApplySkillPrimes) {
 function buildAgentToolContext({ agent, config }) {
   return {
     agent,
+    fileEncodingAgent: {
+      provider: config.provider,
+      model_parameters: config.model_parameters,
+      imageDetail: config.imageDetail,
+      agentContextAttachments: config.agentContextAttachments,
+      fileConsumers: config.fileConsumers,
+      deliveryRouting: config.deliveryRouting,
+    },
     /** Per-agent resolved endpoint token/pricing config. Retained here because
      *  `agentToolContexts` is the one map that holds every agent — including
      *  pure subagents pruned from `agentConfigs` — so usage can be priced with
@@ -297,6 +265,7 @@ function buildAgentToolContext({ agent, config }) {
     fileAuthoringToolNames: config.fileAuthoringToolNames,
     skillPrimedIdsByName:
       buildSkillPrimedIdsByName(config.manualSkillPrimes, config.alwaysApplySkillPrimes) ?? {},
+    provisionState: config.provisionState,
   };
 }
 
@@ -372,6 +341,12 @@ const skillToolDeps = {
   updateSkillFileCodeEnvIds: deploymentSkillMethods.updateSkillFileCodeEnvIds,
   getSkillFileByPath: deploymentSkillMethods.getSkillFileByPath,
   updateSkillFileContent: deploymentSkillMethods.updateSkillFileContent,
+  readWorkspaceFile,
+  searchWorkspace,
+  listWorkspaceFiles,
+  writeWorkspaceFile,
+  previewWorkspaceEdit,
+  editWorkspaceFile,
   /**
    * `read_file` falls back to a sandbox `cat` for `/mnt/data/...` paths
    * and for `{firstSegment}/...` paths whose first segment isn't a known
@@ -396,8 +371,9 @@ function getSkillToolDeps() {
 
 module.exports = {
   getSkillToolDeps,
+  getSkillManagementFileSaver,
   canAuthorSkillFiles,
-  isAgentSkillsEnabledForRun,
+  isAgentSkillAuthoringEnabledForRun,
   getSkillDbMethods,
   withDeploymentSkillIds,
   getSkillStrategyFunctions,

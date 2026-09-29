@@ -55,6 +55,21 @@ export class ServerConfigsCacheInMemory {
     return true;
   }
 
+  /** Replaces a failed-inspection stub only while it is still that stub — see the interface doc. */
+  public async replaceStub(
+    serverName: string,
+    config: ParsedServerConfig,
+    stubUpdatedAt: number | undefined,
+  ): Promise<ParsedServerConfig | undefined> {
+    const existing = this.cache.get(serverName);
+    if (existing?.inspectionFailed !== true || existing.updatedAt !== stubUpdatedAt) {
+      return undefined;
+    }
+    const storedConfig = { ...config, updatedAt: Date.now() };
+    this.cache.set(serverName, storedConfig);
+    return storedConfig;
+  }
+
   public async remove(serverName: string): Promise<void> {
     if (!this.cache.delete(serverName)) {
       throw new Error(`Failed to remove server "${serverName}" in cache.`);

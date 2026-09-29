@@ -13,6 +13,7 @@ import {
   REDIS_EVENT_REORDER_TIMEOUT_MS,
 } from '~/stream/internal/timing';
 import { registerChunkPublicationCapability } from '~/stream/internal/chunkPublication';
+import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 
 /**
@@ -79,7 +80,7 @@ interface PubSubMessage {
 
 /**
  * Producer-side buffer of coalescable chunk publications for one stream.
- * Payloads are pre-serialized at enqueue so a flush only joins strings, and
+ * Payload suffixes are pre-serialized at enqueue so a flush only passes strings, and
  * each resolver settles its caller's receipt with `baseSeq + index`.
  */
 interface PendingChunkBatch {
@@ -146,12 +147,13 @@ interface PreemptRegistration {
  *     allowRetainedEpoch ("0" | "1"),
  *     generationEpochGraceTtl,
  *     requireActiveJob ("0" | "1"),
- *     sequenceCount
+ *     sequenceCount,
+ *     ...chunkSuffixes (optional, one per event for a coalesced publication)
  *   ]
  *   RETURNS: the 0-indexed first seq assigned to this frame, or -1 when the generation
- *   guard fails. A single-event frame passes count 1 and splices the seq; a coalesced
- *   frame passes its event count, reserves that many consecutive sequences in one INCRBY,
- *   and splices the base — event i in the frame owns base + i.
+ *   guard fails. A single frame splices its seq into prefix/suffix. A coalesced
+ *   publication reserves consecutive sequences in one INCRBY and publishes one
+ *   legacy chunk frame per suffix, keeping pre-batching subscribers compatible.
  *
  * During a rolling deployment, a job created by the previous version can expire without
  * leaving a generation marker. A tagged terminal event may claim that absent marker only
@@ -186,7 +188,13 @@ const PUBLISH_SEQ_LUA =
   'redis.call("EXPIRE", KEYS[1], ttl) ' +
   'end ' +
   'local seq = val - count ' +
+  'if #ARGV > 9 then ' +
+  'for i = 1, count do ' +
+  'redis.call("PUBLISH", ARGV[1], ARGV[2] .. string.format("%d", seq + i - 1) .. ARGV[9 + i]) ' +
+  'end ' +
+  'else ' +
   'redis.call("PUBLISH", ARGV[1], ARGV[2] .. string.format("%d", seq) .. ARGV[3]) ' +
+  'end ' +
   'return seq';
 
 /** A normal generation guard correctly rejects events from an old epoch once
@@ -469,6 +477,7 @@ export class RedisEventTransport implements IEventTransport {
     expectedGenerationId?: number,
     allowRetainedEpoch = false,
     requireActiveJob = false,
+    chunkSuffixes: string[] = [],
   ): Promise<number> {
     const seq = await this.publisher.eval(
       PUBLISH_SEQ_LUA,
@@ -485,6 +494,7 @@ export class RedisEventTransport implements IEventTransport {
       String(GENERATION_EPOCH_GRACE_TTL_SECONDS),
       requireActiveJob ? '1' : '0',
       String(count),
+      ...chunkSuffixes,
     );
     return seq as number;
   }
@@ -547,9 +557,19 @@ export class RedisEventTransport implements IEventTransport {
     }
 
     const batch = pending;
-    const encoded = JSON.stringify(event);
-    batch.events.push(encoded);
-    batch.bytes += encoded.length;
+    const payload = JSON.stringify(event);
+    const [, envelopeSuffix] = RedisEventTransport.buildPayloadParts({
+      type: EventTypes.CHUNK,
+      ...(generationId != null && { generationId }),
+    });
+    batch.events.push(
+      payload === undefined ? envelopeSuffix : `,"data":${payload}${envelopeSuffix}`,
+    );
+    /** Match RedisJobStore's raw JSON length, excluding the publication envelope.
+     * Counting its wrapper would flush publications before their durable appends
+     * near the byte cap, letting a remote resume skip not-yet-durable events.
+     * Reuse the serialized payload so size accounting adds no second traversal. */
+    batch.bytes += payload?.length ?? 0;
     const receipt = new Promise<number | false | undefined>((resolve) => {
       batch.resolvers.push(resolve);
     });
@@ -565,12 +585,12 @@ export class RedisEventTransport implements IEventTransport {
   }
 
   /**
-   * Publish the stream's pending coalesced chunks as one CHUNK_BATCH frame.
+   * Publish the pending window in one EVAL using legacy CHUNK frames.
    *
-   * One INCRBY reserves a consecutive sequence per buffered event, so subscribers
-   * unpack the frame into individually sequenced chunks and the reorder buffer is
-   * none the wiser. The events array is spliced from pre-serialized payloads for
-   * the same reason single frames are: no server-side re-encoding.
+   * One INCRBY reserves consecutive sequences and Lua publishes each serialized
+   * suffix with its own sequence. This saves round trips and repeated guard/TTL
+   * work without requiring older subscribers to understand CHUNK_BATCH. Payloads
+   * are spliced, not decoded/re-encoded by Lua, preserving JSON semantics.
    */
   private flushCoalescedChunks(streamId: string): Promise<void> {
     const pending = this.pendingBatches.get(streamId);
@@ -584,19 +604,17 @@ export class RedisEventTransport implements IEventTransport {
     }
 
     const { generationId, events, resolvers } = pending;
-    const prefix = `{"type":${JSON.stringify(EventTypes.CHUNK_BATCH)},"baseSeq":`;
-    const suffix =
-      (generationId != null ? `,"generationId":${generationId}` : '') +
-      `,"events":[${events.join(',')}]}`;
+    const prefix = `{"type":${JSON.stringify(EventTypes.CHUNK)},"seq":`;
 
     return this.evalPublishSequenced(
       streamId,
       prefix,
-      suffix,
+      '',
       events.length,
       generationId,
       false,
       generationId != null,
+      events,
     ).then(
       (baseSeq) => {
         if (baseSeq === -1) {
@@ -1335,10 +1353,18 @@ export class RedisEventTransport implements IEventTransport {
         true,
       );
       if (sequence === -1) {
-        throw new Error('Generation DONE publication was fenced by a replacement');
+        throw new GenerationPublicationFencedError('done', streamId, generationId);
       }
     } catch (err) {
-      logger.error(`[RedisEventTransport] Failed to publish done:`, err);
+      if (err instanceof GenerationPublicationFencedError) {
+        logger.warn(`[RedisEventTransport] Skipped stale terminal publication:`, {
+          streamId,
+          generationId,
+          eventType: err.eventType,
+        });
+      } else {
+        logger.error(`[RedisEventTransport] Failed to publish done:`, err);
+      }
       throw err;
     }
   }
@@ -1398,10 +1424,18 @@ export class RedisEventTransport implements IEventTransport {
         true,
       );
       if (sequence === -1) {
-        throw new Error('Generation error publication was fenced by a replacement');
+        throw new GenerationPublicationFencedError('error', streamId, generationId);
       }
     } catch (err) {
-      logger.error(`[RedisEventTransport] Failed to publish error:`, err);
+      if (err instanceof GenerationPublicationFencedError) {
+        logger.warn(`[RedisEventTransport] Skipped stale terminal publication:`, {
+          streamId,
+          generationId,
+          eventType: err.eventType,
+        });
+      } else {
+        logger.error(`[RedisEventTransport] Failed to publish error:`, err);
+      }
       throw err;
     }
   }

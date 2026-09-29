@@ -5,6 +5,7 @@ import {
   CONFIG_HTML_MEDIA_ATTR,
   CONFIG_HTML_MEDIA_TAGS,
   createConfigHtmlSanitizer,
+  createConfigHtmlTextSanitizer,
   sanitizeConfigHtml,
 } from '../configHtml';
 
@@ -58,5 +59,15 @@ describe('configHtml', () => {
     expect(sanitized).toBe(
       '<span>Powered by <img src="/assets/brand.svg" alt="Brand"> AI</span><img>',
     );
+  });
+
+  it('extracts inert text from HTML without exposing markup or executable content', () => {
+    const sanitizeText = createConfigHtmlTextSanitizer();
+
+    expect(
+      sanitizeText(
+        '<span onclick="alert(1)">Read<br><a href="javascript:alert(1)">A &amp; B</a></span><script>alert(1)</script><p>Next</p><div>Last</div>',
+      ),
+    ).toBe('Read A & B Next Last');
   });
 });

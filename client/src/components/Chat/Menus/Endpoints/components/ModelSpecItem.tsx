@@ -1,6 +1,8 @@
 import React from 'react';
+import { Pin, PinOff } from 'lucide';
+import { CheckCircle2 } from 'lucide-react';
+import { MorphIcon } from '@librechat/client';
 import { VisuallyHidden } from '@ariakit/react';
-import { CheckCircle2, Pin, PinOff } from 'lucide-react';
 import type { TModelSpec } from 'librechat-data-provider';
 import { useFavorites, useLocalize, useIsActiveItem } from '~/hooks';
 import { useModelSelectorContext } from '../ModelSelectorContext';
@@ -79,11 +81,7 @@ export function ModelSpecItem({ spec, isSelected, posInSet, setSize }: ModelSpec
               'group-focus-within:visible group-hover:visible group-data-[active-item]:visible [@media(hover:hover)]:invisible',
         )}
       >
-        {isFavorite ? (
-          <PinOff className="h-4 w-4 text-text-secondary" aria-hidden="true" />
-        ) : (
-          <Pin className="h-4 w-4 text-text-secondary" aria-hidden="true" />
-        )}
+        <MorphIcon icon={isFavorite ? PinOff : Pin} className="h-4 w-4 text-text-secondary" />
       </button>
       {isSelected && (
         <>

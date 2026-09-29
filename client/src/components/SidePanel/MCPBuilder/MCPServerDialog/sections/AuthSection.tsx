@@ -1,8 +1,16 @@
 import { useMemo, useState } from 'react';
-import { Copy, CopyCheck } from 'lucide-react';
+import { Copy, CopyCheck } from 'lucide';
 import { useFormContext, useWatch } from 'react-hook-form';
 import { Permissions, PermissionTypes, TokenExchangeMethodEnum } from 'librechat-data-provider';
-import { Label, Input, Checkbox, SecretInput, Radio, useToastContext } from '@librechat/client';
+import {
+  Label,
+  Input,
+  Radio,
+  Checkbox,
+  MorphIcon,
+  SecretInput,
+  useToastContext,
+} from '@librechat/client';
 import type { MCPServerFormData } from '../hooks/useMCPServerForm';
 import { AuthTypeEnum, AuthorizationTypeEnum } from '../hooks/useMCPServerForm';
 import { useLocalize, useCopyToClipboard, useHasAccess } from '~/hooks';
@@ -329,7 +337,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
                   className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border-light text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
                   aria-label={localize('com_ui_copy_link')}
                 >
-                  {isCopying ? <CopyCheck className="size-4" /> : <Copy className="size-4" />}
+                  <MorphIcon icon={isCopying ? CopyCheck : Copy} className="size-4" />
                 </button>
               </div>
             </div>

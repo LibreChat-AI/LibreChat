@@ -1,22 +1,29 @@
 import { useState, useMemo } from 'react';
-import { Button, Clipboard, CheckMark, TooltipAnchor } from '@librechat/client';
+import { Copy, Check } from 'lucide';
+import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { TMessage, SearchResultData } from 'librechat-data-provider';
-import { useLocalize, useCopyToClipboard, hasCopyableText } from '~/hooks';
+import type { MarkdownVariant } from '~/utils/richtext';
+import { useLocalize, useCopyMessageToClipboard, hasCopyableText } from '~/hooks';
 import { revealOnRowHoverClasses } from './styles';
 import { cn } from '~/utils';
 
 type THoverButtons = {
   message: TMessage;
   searchResults?: { [key: string]: SearchResultData };
+  /** The renderer this row's message was displayed with, when it is not the authorship default. */
+  variant?: MarkdownVariant;
 };
 
-export default function MinimalHoverButtons({ message, searchResults }: THoverButtons) {
+export default function MinimalHoverButtons({ message, searchResults, variant }: THoverButtons) {
   const localize = useLocalize();
   const [isCopied, setIsCopied] = useState(false);
-  const copyToClipboard = useCopyToClipboard({
+  const copyToClipboard = useCopyMessageToClipboard({
     text: message.text,
     content: message.content,
     searchResults,
+    isCreatedByUser: message.isCreatedByUser,
+    error: message.error,
+    variant,
   });
   const canCopy = useMemo(
     () => hasCopyableText({ text: message.text, content: message.content, searchResults }),
@@ -47,11 +54,7 @@ export default function MinimalHoverButtons({ message, searchResults }: THoverBu
             disabled={!canCopy}
             onClick={() => copyToClipboard(setIsCopied)}
           >
-            {isCopied ? (
-              <CheckMark className="h-[19px] w-[19px]" />
-            ) : (
-              <Clipboard className="h-[19px] w-[19px]" />
-            )}
+            <MorphIcon icon={isCopied ? Check : Copy} size={19} />
           </Button>
         }
       />

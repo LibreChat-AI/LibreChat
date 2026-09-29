@@ -11,6 +11,7 @@ import AskUserQuestionProgress from './AskUserQuestionProgress';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import ProgressText from './ProgressText';
 import EmptyText from './Parts/EmptyText';
+import { TOOL_ROW_CLASSES } from './rows';
 import Container from './Container';
 import store from '~/store';
 
@@ -147,12 +148,9 @@ export default function AskUserQuestionCall({
 
   return (
     <>
-      <div
-        className="relative my-1.5 flex h-5 shrink-0 items-center gap-2.5"
-        data-testid="ask-user-question-call"
-      >
+      <div className={TOOL_ROW_CLASSES} data-testid="ask-user-question-call">
         <ProgressText
-          phase="completed"
+          phase={terminalFailure ? 'failed' : 'completed'}
           onClick={toggleExpanded}
           inProgressText={statusLabel}
           finishedText={statusLabel}

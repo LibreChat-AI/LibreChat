@@ -43,13 +43,24 @@ export const shouldShowElapsed = ({
  * re-render on its account. The compact reading is hidden from assistive
  * technology in favor of a spoken equivalent; neither is an `aria-live` region,
  * so the tick never announces.
+ *
+ * The reading carries the same shimmer a running tool call's label carries. It
+ * only ever renders mid-generation (see `shouldShowElapsed`), so there is no
+ * settled state for the animation to misrepresent.
  */
 const Elapsed = memo(function Elapsed({ index }: { index: number }) {
+  const submissionStart = useRecoilValue(store.submissionStartFamily(index));
+  return <ElapsedTimer start={submissionStart ?? undefined} />;
+});
+
+/** The bare ticker behind `Elapsed`, for surfaces whose start time does not
+ *  come from the chat submission store (e.g. subagent turns started by their
+ *  trigger). Falls back to mount time when no start is known. */
+export const ElapsedTimer = memo(function ElapsedTimer({ start: startAt }: { start?: number }) {
   const localize = useLocalize();
   const { i18n } = useTranslation();
-  const submissionStart = useRecoilValue(store.submissionStartFamily(index));
   const [mountTime] = useState(() => Date.now());
-  const start = submissionStart ?? mountTime;
+  const start = startAt ?? mountTime;
   const [seconds, setSeconds] = useState(() => elapsedSeconds(start));
 
   useEffect(() => {
@@ -66,7 +77,7 @@ const Elapsed = memo(function Elapsed({ index }: { index: number }) {
    *  the alignment holds in RTL. */
   return (
     <span className="flex items-center ps-1.5 text-text-secondary">
-      <span aria-hidden="true" className="tabular-nums" data-testid="stream-elapsed">
+      <span aria-hidden="true" className="shimmer tabular-nums" data-testid="stream-elapsed">
         {localize(labels.key, labels.values)}
       </span>
       <span className="sr-only">{localize(labels.announcedKey, labels.announcedValues)}</span>

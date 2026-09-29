@@ -12,10 +12,9 @@
  * bare `R G B` channel triplets, so `cssVar` wraps them as
  * `rgb(var(--x) / <alpha-value>)`. This makes opacity modifiers work, e.g.
  * `bg-surface-primary/50`. Tokens with an intrinsic alpha use a companion
- * `--x-alpha` variable that is multiplied by Tailwind's opacity modifier.
- * shadcn-compatible tokens still hold HSL triplets, so they are wrapped in
- * `hsl(...)`; any direct `var(--token)` usage in plain CSS must wrap the channel
- * triplet itself, e.g. `color: rgb(var(--text-primary))`.
+ * `--x-alpha` variable that is multiplied by Tailwind's opacity modifier. Every
+ * token is an `R G B` triplet, so a direct `var(--token)` usage in plain CSS
+ * must wrap the channel triplet itself, e.g. `color: rgb(var(--text-primary))`.
  */
 
 const palette = {
@@ -51,7 +50,6 @@ const palette = {
 
 const cssVar = (name) => `rgb(var(${name}) / <alpha-value>)`;
 const cssVarWithAlpha = (name) => `rgb(var(${name}) / calc(var(${name}-alpha, 1) * <alpha-value>))`;
-const hslVar = (name) => `hsl(var(${name}))`;
 
 /**
  * Creates the Tailwind `theme.extend.colors` object backed by CSS variables.
@@ -69,6 +67,9 @@ function createTailwindColors() {
     'text-secondary': cssVar('--text-secondary'),
     'text-secondary-alt': cssVar('--text-secondary-alt'),
     'text-tertiary': cssVar('--text-tertiary'),
+    'text-muted': cssVar('--text-muted'),
+    'chart-widget-surface': cssVar('--chart-widget-surface'),
+    'chart-widget-stroke': cssVar('--chart-widget-stroke'),
     'text-warning': cssVar('--text-warning'),
     'text-destructive': cssVar('--text-destructive'),
 
@@ -139,6 +140,7 @@ function createTailwindColors() {
     'status-neutral': cssVar('--status-neutral'),
     'status-neutral-subtle': cssVar('--status-neutral-subtle'),
     'status-neutral-border': cssVar('--status-neutral-border'),
+    'status-verified': cssVar('--status-verified'),
     'text-on-status': cssVar('--text-on-status'),
 
     'series-1': cssVar('--series-1'),
@@ -148,8 +150,9 @@ function createTailwindColors() {
     'series-5': cssVar('--series-5'),
     'series-6': cssVar('--series-6'),
     'series-7': cssVar('--series-7'),
+    'series-8': cssVar('--series-8'),
 
-    'switch-unchecked': hslVar('--switch-unchecked'),
+    'switch-unchecked': cssVar('--switch-unchecked'),
   };
 }
 

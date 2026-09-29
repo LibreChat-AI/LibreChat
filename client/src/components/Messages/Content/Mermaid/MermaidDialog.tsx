@@ -1,11 +1,11 @@
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
+import { X } from 'lucide-react';
 import copy from 'copy-to-clipboard';
-import { X, ChevronUp, ChevronDown } from 'lucide-react';
+import { Copy, Check, ChevronUp, ChevronDown } from 'lucide';
 import {
   Button,
   OGDialog,
-  Clipboard,
-  CheckMark,
+  MorphIcon,
   OGDialogClose,
   OGDialogTitle,
   OGDialogContent,
@@ -103,11 +103,7 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
                 className="size-8 min-w-0 gap-1 rounded-sm p-0 text-xs text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
                 onClick={handleToggleCode}
               >
-                {showCode ? (
-                  <ChevronUp className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <ChevronDown className="h-4 w-4" aria-hidden="true" />
-                )}
+                <MorphIcon icon={showCode ? ChevronUp : ChevronDown} className="h-4 w-4" />
                 <span className="hidden sm:inline">
                   {showCode ? localize('com_ui_hide_code') : localize('com_ui_show_code')}
                 </span>
@@ -120,11 +116,7 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
                 className="size-8 min-w-0 gap-1 rounded-sm p-0 text-xs text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
                 onClick={handleCopy}
               >
-                {isCopied ? (
-                  <CheckMark className="h-[18px] w-[18px]" aria-hidden="true" />
-                ) : (
-                  <Clipboard className="size-4" aria-hidden="true" />
-                )}
+                <MorphIcon icon={isCopied ? Check : Copy} size={18} />
                 <span className="hidden sm:inline">{localize('com_ui_copy_code')}</span>
               </Button>
               <OGDialogClose className="rounded-sm p-1 text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy">

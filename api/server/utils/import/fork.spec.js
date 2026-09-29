@@ -185,6 +185,44 @@ describe('forkConversation', () => {
     ).toBe(true);
   });
 
+  test('does not carry the source messages trace sampling onto their copies', async () => {
+    getMessages.mockResolvedValue([
+      {
+        messageId: 'user-1',
+        parentMessageId: Constants.NO_PARENT,
+        isCreatedByUser: true,
+        text: 'Hello',
+      },
+      {
+        messageId: 'response-1',
+        parentMessageId: 'user-1',
+        isCreatedByUser: false,
+        text: 'Hi',
+        langfuseSampled: true,
+        langfuseDestinationIds: ['destination-a'],
+        langfuseRunId: 'run-a',
+      },
+    ]);
+
+    await forkConversation({
+      originalConvoId: 'abc123',
+      targetMessageId: 'response-1',
+      requestUserId: 'user1',
+      option: ForkOptions.DIRECT_PATH,
+    });
+
+    const savedMessages = bulkSaveMessages.mock.calls[0][0];
+    expect(savedMessages.map((message) => message.text)).toEqual(['Hello', 'Hi']);
+    expect(
+      savedMessages.every(
+        (message) =>
+          message.langfuseSampled === false &&
+          !('langfuseDestinationIds' in message) &&
+          !('langfuseRunId' in message),
+      ),
+    ).toBe(true);
+  });
+
   test('drops child execution metadata while retaining its visible transcript', async () => {
     getConvo.mockResolvedValue({
       ...mockConversation,

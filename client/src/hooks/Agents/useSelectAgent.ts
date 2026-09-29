@@ -11,8 +11,8 @@ import type { TConversation, TPreset, Agent } from 'librechat-data-provider';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDefaultConvo from '~/hooks/Conversations/useDefaultConvo';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { logger, specDisplayFieldReset } from '~/utils';
 import useNewConvo from '~/hooks/useNewConvo';
-import { logger } from '~/utils';
 
 export default function useSelectAgent() {
   const queryClient = useQueryClient();
@@ -39,10 +39,22 @@ export default function useSelectAgent() {
         });
         return;
       }
-      const currentConvo = getDefaultConversation({
-        conversation: { ...(conversation ?? {}), agent_id: agent.id },
+      const switchesAgent = conversation?.agent_id !== agent.id;
+      const resolvedConvo = getDefaultConversation({
+        conversation: {
+          ...(conversation ?? {}),
+          agent_id: agent.id,
+          codeEnvironmentMode: switchesAgent ? undefined : conversation?.codeEnvironmentMode,
+          codeWorkspaces: switchesAgent ? undefined : conversation?.codeWorkspaces,
+          ...specDisplayFieldReset,
+        },
         preset: template,
       });
+      const currentConvo = {
+        ...resolvedConvo,
+        codeEnvironmentMode: switchesAgent ? undefined : conversation?.codeEnvironmentMode,
+        codeWorkspaces: switchesAgent ? undefined : conversation?.codeWorkspaces,
+      };
       newConversation({
         template: currentConvo,
         preset: template as Partial<TPreset>,
@@ -63,6 +75,9 @@ export default function useSelectAgent() {
         endpoint: EModelEndpoint.agents,
         agent_id: agent.id,
         conversationId: Constants.NEW_CONVO as string,
+        codeEnvironmentMode: undefined,
+        codeWorkspaces: undefined,
+        ...specDisplayFieldReset,
       };
 
       await updateConversation({ id: agent.id }, template);

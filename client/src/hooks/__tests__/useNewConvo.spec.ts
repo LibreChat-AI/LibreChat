@@ -1,4 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
+import { Constants, EModelEndpoint } from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
 
 const mockDeleteFiles = jest.fn();
 const mockSetFiles = jest.fn();
@@ -113,7 +115,53 @@ jest.mock('~/store', () => ({
   },
 }));
 
-import useNewConvo from '../useNewConvo';
+import useNewConvo, { clearInheritedAgentWorkspace } from '../useNewConvo';
+
+describe('clearInheritedAgentWorkspace', () => {
+  const workspaceBinding = [{ environmentId: 'machine-a', workspaceId: 'project-a' }];
+
+  it('clears a workspace inherited by a new chat when the agent changes', () => {
+    expect(
+      clearInheritedAgentWorkspace(
+        {
+          conversationId: Constants.NEW_CONVO,
+          endpoint: EModelEndpoint.agents,
+          agent_id: 'agent-b',
+          codeWorkspaces: workspaceBinding,
+        } as TConversation,
+        { agent_id: 'agent-a' } as TConversation,
+      ).codeWorkspaces,
+    ).toBeUndefined();
+  });
+
+  it('preserves an existing conversation workspace binding', () => {
+    expect(
+      clearInheritedAgentWorkspace(
+        {
+          conversationId: 'conversation-1',
+          endpoint: EModelEndpoint.agents,
+          agent_id: 'agent-b',
+          codeWorkspaces: workspaceBinding,
+        } as TConversation,
+        { agent_id: 'agent-a' } as TConversation,
+      ).codeWorkspaces,
+    ).toEqual(workspaceBinding);
+  });
+
+  it('preserves a new-chat workspace binding when the agent is unchanged', () => {
+    expect(
+      clearInheritedAgentWorkspace(
+        {
+          conversationId: Constants.NEW_CONVO,
+          endpoint: EModelEndpoint.agents,
+          agent_id: 'agent-a',
+          codeWorkspaces: workspaceBinding,
+        } as TConversation,
+        { agent_id: 'agent-a' } as TConversation,
+      ).codeWorkspaces,
+    ).toEqual(workspaceBinding);
+  });
+});
 
 describe('useNewConvo reset cleanup', () => {
   beforeEach(() => {

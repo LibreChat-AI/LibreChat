@@ -1,4 +1,5 @@
 import { RE2JS, RE2Set } from 're2js';
+import { logger } from '@librechat/data-schemas';
 import { FILTER_PII_STARTER_PATTERNS } from 'librechat-data-provider';
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
 import type { ContentFieldMap, ContentSource, TextContentFragment } from './types';
@@ -156,6 +157,141 @@ describe('configured content inspection', () => {
       fragmentPath: '/prompt/instructions',
     });
     expect(JSON.stringify(finding)).not.toContain(secret);
+  });
+
+  it('records audit-only findings without returning an enforcement finding or raw text', () => {
+    const filters: FiltersConfig = {
+      messages: {
+        pii: {
+          action: 'audit',
+          starterPatterns: [],
+          customPatterns: [BLOCK_PATTERN],
+        },
+      },
+    };
+    const secret = 'ORG-DO-NOT-ECHO';
+
+    expect(inspectContent([fragment('message', 'text', secret)], { filters })).toBeNull();
+    const metadata = {
+      action: 'audit',
+      detectorId: 'pii-pattern',
+      ruleId: 'org-token',
+      label: 'organization token',
+      source: 'message',
+      field: 'text',
+      provenance: 'user',
+      occurrences: 1,
+    };
+    expect(logger.info).toHaveBeenCalledWith(
+      `[content-filter] Audit-only finding ${JSON.stringify(metadata)}`,
+      metadata,
+    );
+    const calls = (logger.info as jest.Mock).mock.calls;
+    expect(JSON.stringify(calls[calls.length - 1])).not.toContain(secret);
+  });
+
+  it('continues past audit-only findings to enforce blocking policies', () => {
+    const filters: FiltersConfig = {
+      messages: {
+        pii: {
+          action: 'audit',
+          starterPatterns: [],
+          customPatterns: [BLOCK_PATTERN],
+        },
+      },
+      prompts: {
+        pii: {
+          starterPatterns: [],
+          customPatterns: [BLOCK_PATTERN],
+        },
+      },
+    };
+
+    expect(
+      inspectContent([fragment('message', 'text'), fragment('prompt', 'instructions')], {
+        filters,
+      }),
+    ).toMatchObject({ source: 'prompt', field: 'instructions' });
+  });
+
+  it('records audit findings even when an earlier legacy rule blocks the same fragment', () => {
+    const filters: FiltersConfig = {
+      messages: {
+        pii: {
+          action: 'audit',
+          starterPatterns: [],
+          customPatterns: [BLOCK_PATTERN],
+        },
+      },
+    };
+    const legacyPii: MessageFilterPiiConfig = {
+      starterPatterns: [],
+      customPatterns: [BLOCK_PATTERN],
+    };
+
+    expect(
+      inspectContent([{ ...fragment('message', 'text'), id: 'chat.text' }], {
+        filters,
+        legacyPii,
+      }),
+    ).toMatchObject({ ruleId: 'org-token' });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining('"action":"audit"'),
+      expect.objectContaining({ action: 'audit', ruleId: 'org-token' }),
+    );
+  });
+
+  it('does not fail closed on incomplete audit-only traversal', () => {
+    const filters: FiltersConfig = {
+      skills: {
+        pii: {
+          action: 'audit',
+          fields: ['frontmatter'],
+          starterPatterns: [],
+          customPatterns: [BLOCK_PATTERN],
+        },
+      },
+    };
+    const error = new ContentTraversalLimitError(
+      [fragment('skill', 'frontmatter', 'safe visible value')],
+      [{ source: 'skill', fields: ['frontmatter'] }],
+    );
+
+    expect(
+      inspectContentWithTraversal(
+        () => {
+          throw error;
+        },
+        { filters },
+      ),
+    ).toEqual({ finding: null, traversalError: null });
+  });
+
+  it('keeps explicit opaque-file blocking active during an audit-only rollout', () => {
+    const filters: FiltersConfig = {
+      files: {
+        pii: {
+          action: 'audit',
+          fields: ['content'],
+          starterPatterns: [],
+          customPatterns: [BLOCK_PATTERN],
+          uninspectable: 'block',
+        },
+      },
+    };
+    const error = new ContentTraversalLimitError(
+      [fragment('file', 'content', 'safe visible value')],
+      [{ source: 'file', fields: ['content'] }],
+    );
+
+    expect(
+      inspectContentWithTraversal(
+        () => {
+          throw error;
+        },
+        { filters },
+      ),
+    ).toEqual({ finding: null, traversalError: error });
   });
 
   it('treats an omitted fields list as every field within only that source', () => {

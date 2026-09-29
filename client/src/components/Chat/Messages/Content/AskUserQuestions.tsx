@@ -107,27 +107,29 @@ export default function AskUserQuestions({
       {(onExpand != null || onDismiss != null) && (
         <div className="flex shrink-0 items-center justify-end border-b border-border-light px-2 py-1">
           {onExpand != null && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-sm"
               aria-label={localize('com_ui_expand')}
-              className="rounded p-1 text-text-secondary hover:bg-surface-hover"
+              className="text-text-secondary"
               onClick={onExpand}
             >
               <ChevronUp className="h-4 w-4" aria-hidden="true" />
-            </button>
+            </Button>
           )}
           {/** The collapsed card is the ONLY surface left for a collapsed
            *   batch, so it has to carry the popover's dismiss too — without it
            *   the pause can only be answered or skipped. */}
           {onDismiss != null && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-sm"
               aria-label={localize('com_ui_close')}
-              className="rounded p-1 text-text-secondary hover:bg-surface-hover"
+              className="text-text-secondary"
               onClick={onDismiss}
             >
               <X className="h-4 w-4" aria-hidden="true" />
-            </button>
+            </Button>
           )}
         </div>
       )}

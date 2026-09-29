@@ -57,6 +57,60 @@ describe('filtersConfigSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts opt-in redact, audit, and block actions while rejecting unsupported actions', () => {
+    expect(filtersConfigSchema.parse({ messages: { pii: {} } })).toEqual({
+      messages: { pii: {} },
+    });
+    expect(
+      filtersConfigSchema.parse({
+        messages: { pii: { action: 'audit' } },
+        prompts: { pii: { action: 'block' } },
+      }),
+    ).toEqual({
+      messages: { pii: { action: 'audit' } },
+      prompts: { pii: { action: 'block' } },
+    });
+    expect(filtersConfigSchema.safeParse({ messages: { pii: { action: 'redact' } } }).success).toBe(
+      true,
+    );
+    expect(
+      filtersConfigSchema.safeParse({ messages: { pii: { action: 'forward' } } }).success,
+    ).toBe(false);
+  });
+
+  it('bounds opt-in transformation controls and validates placeholder categories', () => {
+    expect(filtersConfigSchema.parse({ messages: { pii: { action: 'redact' } } })).toEqual({
+      messages: { pii: { action: 'redact' } },
+    });
+    expect(filtersConfigSchema.safeParse({ messages: { pii: { maxCharacters: 0 } } }).success).toBe(
+      false,
+    );
+    expect(
+      filtersConfigSchema.safeParse({ messages: { pii: { maxMatches: 4_097 } } }).success,
+    ).toBe(false);
+    expect(
+      filtersConfigSchema.safeParse({
+        messages: {
+          pii: {
+            action: 'redact',
+            customPatterns: [{ id: 'email', label: 'Email', regex: 'a@b', category: 'email' }],
+          },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      filtersConfigSchema.safeParse({
+        messages: {
+          pii: {
+            customPatterns: [
+              { id: 'email', label: 'Email', regex: 'a@b', category: 'secret-value' },
+            ],
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it('combines active-pattern and selected-field checks', () => {
     expect(hasActivePiiFields({}, ['arguments'])).toBe(true);
     expect(hasActivePiiFields({ fields: ['name'] }, ['arguments'])).toBe(false);

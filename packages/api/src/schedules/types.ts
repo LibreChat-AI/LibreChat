@@ -4,6 +4,7 @@ import type {
   AgentTriggerDeliveryStatus,
   AgentTriggerDeliveryFailure,
 } from '@librechat/data-schemas';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { AgentTriggerEnqueueOptions, AgentTriggerEnvelope } from '../agents/triggers';
 import type { SlotClaimResult } from './capacity';
@@ -14,7 +15,13 @@ export interface ScheduleLimits {
   maxPerUser: number;
   minIntervalMinutes: number;
   autoDisableAfterFailures: number;
+  /** Maximum claimed occurrences concurrently passing readiness admission per replica. */
+  admissionConcurrency: number;
   fireConcurrency: number;
+  /** Maximum MCP readiness probes active during one schedule admission. */
+  mcpPreflightConcurrency: number;
+  /** Maximum wall-clock time for one unattended MCP readiness admission. */
+  mcpPreflightTimeoutMs: number;
   /** Every schedule must be filed under a chat project. A pinned `projectId`
    *  implies this, so callers only ever have to read one flag. */
   requireProject: boolean;
@@ -29,7 +36,10 @@ export const DEFAULT_SCHEDULE_LIMITS: ScheduleLimits = {
   maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
+  admissionConcurrency: 20,
   fireConcurrency: 5,
+  mcpPreflightConcurrency: 3,
+  mcpPreflightTimeoutMs: 5 * 60_000,
   requireProject: false,
 };
 
@@ -170,6 +180,7 @@ export interface ScheduleFileRef {
 }
 
 export interface ScheduleEngineDeps {
+  preflightMCP: ScheduleMCPPreflight;
   methods: ScheduleMethods;
   /** Resolves interface.schedules limits, per-principal when a user is given. */
   getLimits: (user?: ScheduleUserContext) => Promise<ScheduleLimits>;
@@ -275,6 +286,7 @@ export interface JobIdentity {
 /** Job-store state plus the job's scheduled identity (absent on a replacement turn). */
 export interface JobState {
   status: string;
+  checkpointNamespace?: string;
   createdAt?: number;
   scheduleId?: string;
   scheduledFor?: string;
@@ -291,6 +303,8 @@ export interface JobState {
 }
 
 export interface FireResult {
+  mcp?: ScheduleMCPOutcome[];
+  mcpPreflightUnavailable?: boolean;
   fired: boolean;
   conversationId?: string;
   skipped?:
@@ -311,3 +325,9 @@ export interface FireResult {
 }
 
 export type FireableSchedule = ISchedule;
+
+export type ScheduleMCPPreflight = (
+  agentId: string,
+  user: ScheduleUserContext,
+  options: { concurrency: number; signal?: AbortSignal; deadlineMs?: number; scheduleId?: string },
+) => Promise<ScheduleMCPOutcome[]>;

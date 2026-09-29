@@ -7,3 +7,6 @@ export * from './transactions';
 export * from './objectId';
 export * from './yaml';
 export * from './stripUIResourceMarkers';
+export * from './fading';
+export { buildIndexWithRetry, createIndexesWithRetry, isIndexBuildInProgress } from './retry';
+export type { IndexBuildOptions } from './retry';

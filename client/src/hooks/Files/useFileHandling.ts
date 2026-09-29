@@ -35,6 +35,7 @@ import {
   validateFileDuplicates,
 } from '~/utils';
 import { useGetFileConfig, useUploadFileMutation } from '~/data-provider';
+import useAgentUploadTarget from '~/hooks/Agents/useAgentUploadTarget';
 import useLocalize, { TranslationKeys } from '~/hooks/useLocalize';
 import { useDelayedUploadToast } from './useDelayedUploadToast';
 import { useChatContext } from '~/Providers/ChatContext';
@@ -214,6 +215,12 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
     () => endpointOverride ?? conversation?.endpoint ?? 'default',
     [endpointOverride, conversation?.endpoint],
   );
+  const uploadTarget = useAgentUploadTarget(conversation);
+  /** An agent's file policy lives under its provider, which is the entry the server
+   *  validates against. An explicit override names its own endpoint and keeps it. */
+  const agentProvider = endpointOverride != null ? undefined : uploadTarget.agentProvider;
+  const agentEndpointType = endpointOverride != null ? undefined : uploadTarget.endpointType;
+  const usesResponsesApi = uploadTarget.useResponsesApi;
 
   const { data: fileConfig = null } = useGetFileConfig({
     select: (data) => mergeFileConfig(data),
@@ -304,6 +311,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
               filename: data.filename,
               source: data.source,
               embedded: data.embedded,
+              llmDeliveryPath: data.llmDeliveryPath,
             },
             assistant_id ? true : false,
           );
@@ -360,6 +368,13 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
     const formData = new FormData();
     formData.append('endpoint', endpoint);
     formData.append('endpointType', endpointType ?? '');
+    /* Azure carries native documents only through the Responses API, so routing needs to
+     * know which one this conversation uses. A saved agent holds the setting on its own
+     * record when the conversation does not carry one, which is the same fallback the
+     * attach menu and the drop handler resolve. */
+    if (usesResponsesApi === true) {
+      formData.append('useResponsesApi', 'true');
+    }
     formData.append('file', extendedFile.file as File, encodeURIComponent(filename));
     formData.append('file_id', extendedFile.file_id);
     if (
@@ -489,9 +504,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       : filesRef.current;
     const currentFileConfig = fileConfigRef.current;
     const endpointFileConfig = getEndpointFileConfig({
-      endpoint,
+      endpoint: agentProvider ?? endpoint,
       fileConfig: currentFileConfig,
-      endpointType,
+      endpointType: agentProvider != null ? agentEndpointType : endpointType,
     });
     /** The source remains visible until success, so exclude only its matching entry from this
      * upload's validation tallies. All other callers validate against the complete file map. */

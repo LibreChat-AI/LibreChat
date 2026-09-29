@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Label, OGDialog, OGDialogTrigger } from '@librechat/client';
 import type t from 'librechat-data-provider';
+import Description, { getPlainDescription } from '~/components/ui/Description';
 import { useLocalize, TranslationKeys, useAgentCategories } from '~/hooks';
 import AgentDetailContent from './AgentDetailContent';
 import { cn, renderAgentAvatar } from '~/utils';
@@ -19,6 +20,7 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent, onSelect, className = '' }
   const localize = useLocalize();
   const { categories } = useAgentCategories();
   const [isOpen, setIsOpen] = useState(false);
+  const description = useMemo(() => getPlainDescription(agent.description), [agent.description]);
 
   const categoryLabel = useMemo(() => {
     if (!agent.category) return '';
@@ -55,9 +57,9 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent, onSelect, className = '' }
           )}
           aria-label={localize('com_agents_agent_card_label', {
             name: agent.name,
-            description: agent.description ?? '',
+            description,
           })}
-          aria-describedby={agent.description ? `agent-${agent.id}-description` : undefined}
+          aria-describedby={description ? `agent-${agent.id}-description` : undefined}
           tabIndex={0}
           role="button"
           onKeyDown={(e) => {
@@ -89,16 +91,17 @@ const AgentCard: React.FC<AgentCardProps> = ({ agent, onSelect, className = '' }
             </Label>
 
             {/* Agent description */}
-            {agent.description && (
-              <p
+            {description && (
+              <Description
+                as="p"
                 id={`agent-${agent.id}-description`}
                 className="mt-0.5 line-clamp-2 text-sm leading-snug text-text-secondary md:line-clamp-5"
                 aria-label={localize('com_agents_description_card', {
-                  description: agent.description,
+                  description,
                 })}
-              >
-                {agent.description}
-              </p>
+                description={description}
+                plainText
+              />
             )}
 
             <AgentContact

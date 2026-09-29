@@ -1,5 +1,6 @@
+import type { TDefaultLLMDeliveryPathConfig } from '../file-config';
 import type { CodeEnvRef, CodeEnvRefMap } from '../codeEnvRef';
-import { EToolResources } from './assistants';
+import { EToolResources } from './tools';
 
 export enum FileSources {
   local = 'local',
@@ -30,6 +31,7 @@ export enum FileContext {
   image_generation = 'image_generation',
   assistants_output = 'assistants_output',
   message_attachment = 'message_attachment',
+  run_artifact = 'run_artifact',
   skill_file = 'skill_file',
   filename = 'filename',
   updatedAt = 'updatedAt',
@@ -48,6 +50,11 @@ export type EndpointFileConfig = {
   fileSizeLimit?: number;
   totalSizeLimit?: number;
   supportedMimeTypes?: RegexLike[];
+  defaultLLMDeliveryPath?: TDefaultLLMDeliveryPathConfig;
+  legacyFileUploadUX?: boolean;
+  /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
+   *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
+  textFallbackWithoutTools?: boolean;
 };
 
 export type FileConfig = {
@@ -55,9 +62,15 @@ export type FileConfig = {
     [key: string]: EndpointFileConfig;
   };
   skills?: {
+    /** Maximum concurrent blob deletions during failed archive import cleanup. */
+    importCleanupConcurrency?: number;
     fileSizeLimit?: number;
   };
   fileTokenLimit?: number;
+  /** Maximum aggregate model-bound attachment bytes admitted into one agent turn. */
+  fileContextSizeLimit?: number;
+  /** Maximum aggregate extracted-text characters admitted into one agent turn. */
+  fileContextCharLimit?: number;
   serverFileSizeLimit?: number;
   avatarSizeLimit?: number;
   clientImageResize?: {
@@ -78,6 +91,11 @@ export type FileConfig = {
     supportedMimeTypes?: RegexLike[];
   };
   checkType?: (fileType: string, supportedTypes: RegexLike[]) => boolean;
+  defaultLLMDeliveryPath?: TDefaultLLMDeliveryPathConfig;
+  legacyFileUploadUX?: boolean;
+  /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
+   *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
+  textFallbackWithoutTools?: boolean;
 };
 
 export type FileConfigInput = {
@@ -85,10 +103,14 @@ export type FileConfigInput = {
     [key: string]: EndpointFileConfig;
   };
   skills?: {
+    /** Maximum concurrent blob deletions during failed archive import cleanup. */
+    importCleanupConcurrency?: number;
     fileSizeLimit?: number;
   };
   serverFileSizeLimit?: number;
   avatarSizeLimit?: number;
+  fileContextSizeLimit?: number;
+  fileContextCharLimit?: number;
   clientImageResize?: {
     enabled?: boolean;
     maxWidth?: number;
@@ -105,6 +127,24 @@ export type FileConfigInput = {
     supportedMimeTypes?: string[];
   };
   checkType?: (fileType: string, supportedTypes: RegexLike[]) => boolean;
+  defaultLLMDeliveryPath?: TDefaultLLMDeliveryPathConfig;
+  legacyFileUploadUX?: boolean;
+  /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
+   *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
+  textFallbackWithoutTools?: boolean;
+};
+
+/** The immutable origin of a file explicitly published from an agent execution. */
+export type RunFileProvenance = {
+  runId: string;
+  executionId: string;
+  agentId: string;
+  parentExecutionId?: string;
+  parentAgentId?: string;
+  recipientAgentIds?: string[];
+  sourceFileId: string;
+  publishedAt: string;
+  inputFileIds: string[];
 };
 
 export type TFile = {
@@ -157,6 +197,7 @@ export type TFile = {
    */
   previewError?: string;
   metadata?: {
+    runFile?: RunFileProvenance;
     fileIdentifier?: string;
     /**
      * Structured form of `fileIdentifier`. Persisted alongside the
@@ -167,7 +208,14 @@ export type TFile = {
     codeEnvRefs?: CodeEnvRefMap;
     /** Dispatch-order stamp for the current source artifact generation. */
     sourceDispatchedAt?: number;
+    /** Vector namespaces this file has been embedded into. */
+    embeddedEntities?: string[];
+    /** The user named this destination, so absent ones were declined. */
+    destinationChosen?: boolean;
+    /** The type the delivery route was resolved against, when conversion changed it. */
+    routingMimeType?: string;
   };
+  llmDeliveryPath?: 'provider' | 'text' | 'none';
   createdAt?: string | Date;
   updatedAt?: string | Date;
 };

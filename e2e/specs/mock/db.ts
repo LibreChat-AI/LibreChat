@@ -87,6 +87,12 @@ export interface SeedMessage {
   text: string;
   isCreatedByUser: boolean;
   sender: string;
+  /** Structured parts, for turns the mock model cannot produce: a summary a
+   *  compaction persisted, an error part, an artifact. */
+  content?: Record<string, unknown>[];
+  /** Why the turn stopped; the hover Continue is offered only for some values. */
+  finish_reason?: string;
+  model?: string;
 }
 
 /**

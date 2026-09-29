@@ -130,6 +130,38 @@ describe('executeAgentRun', () => {
     expect(events).toEqual(['rendered', 'settled']);
   });
 
+  it('passes the canonical aborted signal to execution error handling', async () => {
+    let closeListener: (() => void) | undefined;
+    const handleExecutionError = jest.fn<string, [unknown, AbortSignal?]>(() => 'handled');
+    const abortError = Object.assign(new Error('request aborted'), { name: 'AbortError' });
+
+    await expect(
+      executeAgentRun({
+        envelope: createEnvelope(),
+        runId: 'run-1',
+        conversationId: 'conversation-1',
+        connection: {
+          isClosed: () => false,
+          onClose: (listener) => {
+            closeListener = listener;
+            return () => undefined;
+          },
+        },
+        isPrincipalActive: async () => true,
+        execute: async () => {
+          closeListener?.();
+          throw abortError;
+        },
+        handleExecutionError,
+      }),
+    ).resolves.toBe('handled');
+
+    expect(handleExecutionError).toHaveBeenCalledWith(abortError, expect.any(AbortSignal));
+    const executionSignal = handleExecutionError.mock.calls[0]?.[1];
+    expect(executionSignal).toBeDefined();
+    expect(executionSignal?.aborted).toBe(true);
+  });
+
   it('settles even when trailing-write registration fails', async () => {
     const failure = new Error('trailing write registration failed');
 

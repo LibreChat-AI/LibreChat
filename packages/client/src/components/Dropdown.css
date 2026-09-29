@@ -24,6 +24,14 @@
   margin-right: -2px;
 }
 
+/* Elevation here is a black shadow, which carries no separation at all against
+ * a pure black surface. Lives with the primitive rather than in the app
+ * stylesheet, which the published package does not include. */
+html.high-contrast .popover-ui {
+  border: 1px solid rgb(var(--border-medium));
+  box-shadow: none;
+}
+
 .popover-animate {
   opacity: 0;
   transform: scale(0.95) translateY(-0.5rem);
@@ -38,7 +46,7 @@
 
 .popover-ui:focus-visible,
 .popover-ui[data-focus-visible] {
-  outline: var(--bg-surface-hover);
+  outline: 2px solid rgb(var(--text-primary));
   outline-offset: -1px;
 }
 

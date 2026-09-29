@@ -1,5 +1,8 @@
 import { logger } from '@librechat/data-schemas';
-import type { ICompactionSemanticIndexProjection } from '@librechat/data-schemas';
+import type {
+  IAgentEventActorContextMeta,
+  ICompactionSemanticIndexProjection,
+} from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type {
   IJobStoreV2,
@@ -32,7 +35,10 @@ export interface ApprovalPauseOptions {
   discoveredTools?: string[];
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
+  /** Calibration and fading state at the pause; seeds the resumed run's pruner. */
+  contextMeta?: IAgentEventActorContextMeta;
   /** Generation identity observed by the interrupted run. */
+
   expectedCreatedAt?: number;
   /** Hold Stop/resume until the paused assistant row is durably unfinished. */
   persistencePending?: boolean;
@@ -116,6 +122,7 @@ export class ApprovalLifecycle {
     const discoveredTools = options.discoveredTools;
     const activityPhaseSnapshot = options.activityPhaseSnapshot;
     const compactionSemanticIndex = options.compactionSemanticIndex;
+    const contextMeta = options.contextMeta;
     /** The normal receipt TTL matches a running job, but a review pause can
      * live for 24h or an explicit later expiry. The store extends every
      * receipt in the SAME CAS that closes running enqueues: a separate pass
@@ -148,10 +155,14 @@ export class ApprovalLifecycle {
             : {}),
           ...(activityPhaseSnapshot != null ? { activityPhaseSnapshot } : {}),
           ...(compactionSemanticIndex != null ? { compactionSemanticIndex } : {}),
+          ...(contextMeta != null ? { contextMeta } : {}),
           ...(options.agentEventSuspension != null
             ? { agentEventSuspension: options.agentEventSuspension }
             : {}),
         },
+        /** A re-pause with nothing persistable must not leave the previous
+         * segment's calibration and tier on the job for the next resume. */
+        ...(contextMeta == null ? { clear: ['contextMeta' as const] } : {}),
         expectCreatedAt: expectedCreatedAt,
         notAfterMs: pendingAction.expiresAt,
         steerReceiptTtlSeconds: pauseReceiptTtl,

@@ -9,14 +9,17 @@ import {
   getBlockedOpaqueFileField,
   getBlockedUninspectableFileField,
   getBlockedUninspectableSkillFileField,
+  getCanonicalFileInspectionCoverage,
   getUploadExtractedTextPlan,
   hasActiveFileFieldPolicy,
   hasActiveFilePolicy,
   omitResolvedCanonicalFileLocators,
   resolveCanonicalFileReferences,
+  resolveCanonicalFileReferenceUnits,
   UPLOAD_EXTRACTED_TEXT_PLANS,
   UninspectableFileError,
 } from './files';
+import { ContentTraversalLimitError } from './adapters/nested';
 
 describe('file content inspection policy', () => {
   it('defers extracted-text fail-close only to supported agent context extraction paths', () => {
@@ -65,6 +68,10 @@ describe('file content inspection policy', () => {
       }),
     ).toBe(false);
 
+    /* An explicitly narrowed text list names types the built-in parser does not handle.
+     * Processing sends those to RAG with native fallback off and passes the result
+     * through extractInspectableFileText, so the extraction step exists and fail-closing
+     * here would reject an upload that does get inspected. */
     const configuredNonDocumentText = mergeFileConfig({
       ocr: { supportedMimeTypes: [] },
       text: { supportedMimeTypes: ['application/x-rag-document'] },
@@ -75,6 +82,15 @@ describe('file content inspection policy', () => {
         mimeType: 'application/x-rag-document',
         fileConfig: configuredNonDocumentText,
         ragConfigured: true,
+      }),
+    ).toBe(true);
+    /* Only when RAG is actually configured: without it nothing extracts the type. */
+    expect(
+      canInspectUploadExtractedTextAfterProcessing({
+        ...baseInput,
+        mimeType: 'application/x-rag-document',
+        fileConfig: configuredNonDocumentText,
+        ragConfigured: false,
       }),
     ).toBe(false);
 
@@ -178,6 +194,38 @@ describe('file content inspection policy', () => {
         sttSupported: true,
       }),
     ).toBe(false);
+  });
+
+  it('treats a text-delivery audio file as carrying its own transcript', () => {
+    const coverage = getCanonicalFileInspectionCoverage({
+      type: 'audio/mpeg',
+      source: 'local',
+      llmDeliveryPath: 'text',
+      text: 'spoken words',
+    });
+
+    expect(coverage.transcript).toBe('spoken words');
+    expect(coverage.textProvidesTranscript).toBe(true);
+  });
+
+  it('still requires provenance before treating audio text as a transcript', () => {
+    const coverage = getCanonicalFileInspectionCoverage({
+      type: 'audio/mpeg',
+      source: 'local',
+      text: 'spoken words',
+    });
+
+    expect(coverage.transcript).toBeUndefined();
+  });
+
+  it('keeps recognizing the legacy text source as provenance', () => {
+    const coverage = getCanonicalFileInspectionCoverage({
+      type: 'audio/mpeg',
+      source: 'text',
+      text: 'spoken words',
+    });
+
+    expect(coverage.transcript).toBe('spoken words');
   });
 
   it('rejects applicable audio when no downstream transcript inspection is available', () => {
@@ -376,6 +424,17 @@ describe('file content inspection policy', () => {
         skills: { pii: { fields: ['file_text'], starterPatterns: [] } },
       } as FiltersConfig),
     ).toBeNull();
+    expect(
+      getBlockedUninspectableSkillFileField({
+        skills: { pii: { action: 'audit', fields: ['file_text'] } },
+      } as FiltersConfig),
+    ).toBeNull();
+    expect(
+      getBlockedUninspectableSkillFileField({
+        skills: { pii: { action: 'audit', fields: ['file_text'] } },
+        files: { pii: { fields: ['content'], uninspectable: 'block' } },
+      } as FiltersConfig),
+    ).toBe('content');
   });
 
   it('returns a stable raw-free block response', () => {
@@ -889,7 +948,42 @@ describe('file content inspection policy', () => {
     },
   );
 
+  it('allows an oversized canonical file subtree for an audit-only policy', async () => {
+    const input = {
+      files: Array.from({ length: 4_200 }, (_, index) => ({
+        file_id: `file-${index}`,
+      })),
+    };
+    const getFiles = jest.fn();
+
+    await expect(
+      resolveCanonicalFileReferences({
+        filters: {
+          files: {
+            pii: {
+              action: 'audit',
+              fields: ['uri'],
+              starterPatterns: [],
+              customPatterns: [
+                {
+                  id: 'private-file-field',
+                  label: 'private file field',
+                  regex: 'PRIVATE-FILE-[A-Z]+',
+                },
+              ],
+            },
+          },
+        },
+        input,
+        user: { id: 'user-1' },
+        getFiles,
+      }),
+    ).resolves.toMatchObject({ sanitizedInput: input, hydratedFiles: [] });
+    expect(getFiles).not.toHaveBeenCalled();
+  });
+
   it('hydrates discovered file names without rejecting an unrelated oversized subtree', async () => {
+    const onTraversalFailure = jest.fn();
     const canonicalFile = {
       file_id: 'owned-file',
       filename: 'safe-report.txt',
@@ -923,11 +1017,21 @@ describe('file content inspection policy', () => {
         input,
         user: { id: 'user-1' },
         getFiles,
+        onTraversalFailure,
+        messageCount: input.messages.length,
       }),
     ).resolves.toMatchObject({
       sanitizedInput: input,
       hydratedFiles: [canonicalFile],
     });
+    expect(onTraversalFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'omit_resolved_file_locators',
+        reason: 'array_length',
+        messageCount: 4200,
+        resolvedFileCount: 1,
+      }),
+    );
     expect(getFiles).toHaveBeenCalledWith(
       { file_id: { $in: ['owned-file'] }, user: 'user-1' },
       {},
@@ -1287,6 +1391,90 @@ describe('file content inspection policy', () => {
     ).resolves.toMatchObject({
       hydratedFiles: [liveFile],
     });
+  });
+
+  it.each([
+    [
+      'max_depth',
+      () => {
+        let value: object = {};
+        for (let i = 0; i < 26; i++) value = { child: value };
+        return value;
+      },
+    ],
+    ['max_nodes', () => [...Array.from({ length: 2047 }, () => ({ child: {} })), {}, {}]],
+    ['array_length', () => new Array(4096)],
+    [
+      'object_entries',
+      () => Object.fromEntries(Array.from({ length: 4096 }, (_, i) => [i, 'safe'])),
+    ],
+    [
+      'reflection_error',
+      () =>
+        Object.defineProperty({}, 'payload', {
+          enumerable: true,
+          get() {
+            throw new Error('PRIVATE-CONTENT');
+          },
+        }),
+    ],
+    [
+      'reflection_error',
+      () =>
+        Object.defineProperty([], '0', {
+          get() {
+            throw new Error('PRIVATE-CONTENT');
+          },
+        }),
+    ],
+    [
+      'reflection_error',
+      () => {
+        const { proxy, revoke } = Proxy.revocable({}, {});
+        revoke();
+        return proxy;
+      },
+    ],
+  ] as const)('reports safe %s diagnostics for locator sanitization', (reason, makeInput) => {
+    const report = jest.fn();
+    let failure: ContentTraversalLimitError | undefined;
+    try {
+      omitResolvedCanonicalFileLocators(makeInput(), new Map([['owned', { file_id: 'owned' }]]), {
+        onTraversalFailure: report,
+        messageCount: 58,
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(ContentTraversalLimitError);
+      failure = error as ContentTraversalLimitError;
+    }
+    expect(failure).toBeDefined();
+    expect(failure?.diagnostics).toEqual({
+      operation: 'omit_resolved_file_locators',
+      reason,
+      visitedNodes: expect.any(Number),
+      depth: expect.any(Number),
+    });
+    expect(failure?.body).not.toHaveProperty('diagnostics');
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report).toHaveBeenCalledWith({
+      ...failure?.diagnostics,
+      messageCount: 58,
+      resolvedFileCount: 1,
+    });
+    expect(JSON.stringify(report.mock.calls)).not.toContain('PRIVATE-CONTENT');
+  });
+
+  it('preserves own __proto__ opaque payloads in a null-prototype inspection copy', () => {
+    const input = JSON.parse('{"file_id":"owned","__proto__":{"file_id":"unresolved"}}');
+    const sanitized = omitResolvedCanonicalFileLocators(
+      input,
+      new Map([['owned', { file_id: 'owned' }]]),
+    );
+    expect(Object.getPrototypeOf(sanitized)).toBeNull();
+    expect(Object.prototype.hasOwnProperty.call(sanitized, '__proto__')).toBe(true);
+    expect(
+      getBlockedOpaqueFileField({ files: { pii: { uninspectable: 'block' } } }, sanitized),
+    ).not.toBeNull();
   });
 
   it('omits only locators that exactly match the resolved canonical row', () => {
@@ -1828,5 +2016,60 @@ describe('file content inspection policy', () => {
     });
 
     expect(getBlockedOpaqueFileField(filters, inspection.sanitizedInput)).toBe('extracted_text');
+  });
+});
+
+describe('canonical file inspection units', () => {
+  const filters: FiltersConfig = {
+    files: {
+      pii: {
+        fields: ['extracted_text'],
+        starterPatterns: [],
+        uninspectable: 'block',
+      },
+    },
+  };
+
+  it('retains a single oversized-unit rejection before owner lookup', async () => {
+    const getFiles = jest.fn(async () => [{ file_id: 'owned', text: 'safe' }]);
+    await expect(
+      resolveCanonicalFileReferenceUnits({
+        filters,
+        user: { id: 'owner' },
+        getFiles,
+        input: [
+          {
+            files: [{ file_id: 'owned' }],
+            content: Array.from({ length: 4200 }, () => ({ text: 'safe' })),
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'content_filter_uninspectable' });
+    expect(getFiles).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch array map or iterators while sanitizing units', async () => {
+    const units = [{ file_id: 'owned' }, { file_id: 'missing' }];
+    const map = jest.fn(() => []);
+    const iterator = jest.fn(() => {
+      throw new Error('iterator must not execute');
+    });
+    Object.defineProperty(units, 'map', { value: map });
+    Object.defineProperty(units, Symbol.iterator, { value: iterator });
+    const input = {
+      filters,
+      input: units,
+      user: { id: 'owner' },
+      getFiles: jest.fn(async () => [{ file_id: 'owned', text: 'safe' }]),
+    };
+    await expect(resolveCanonicalFileReferenceUnits(input)).rejects.toMatchObject({
+      code: 'content_filter_uninspectable',
+    });
+    units.pop();
+    await expect(resolveCanonicalFileReferenceUnits(input)).resolves.toMatchObject({
+      sanitizedInput: [{}],
+    });
+    expect(map).not.toHaveBeenCalled();
+    expect(iterator).not.toHaveBeenCalled();
   });
 });

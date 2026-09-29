@@ -23,6 +23,7 @@ import type {
   SkillSyncProvider,
   SkillSyncCredentialSummary,
   SkillSyncStatusInput,
+  DeleteSkillResult,
 } from '@librechat/data-schemas';
 import type { SkillSyncConfig, SkillSyncGitHubSourceConfig } from 'librechat-data-provider';
 import type {
@@ -206,7 +207,7 @@ export type GitHubSkillSyncDeps = {
     skillId: string | Types.ObjectId,
     relativePath: string,
   ) => Promise<{ deleted: boolean }>;
-  deleteSkill: (id: string) => Promise<{ deleted: boolean }>;
+  deleteSkill: (id: string) => Promise<DeleteSkillResult>;
   saveBuffer: (params: {
     userId: string;
     buffer: Buffer;
@@ -1072,7 +1073,20 @@ async function deleteSyncedSkillForRestore(
   skill: ISkill & { _id: Types.ObjectId },
 ): Promise<{ deletedFileCount: number; deletedSkill: DeletedSyncedSkillJournal }> {
   const files = await deps.listSkillFiles(skill._id);
-  await deps.deleteSkill(skill._id.toString());
+  const deletion = await deps.deleteSkill(skill._id.toString());
+  if (!deletion.cleanupComplete) {
+    if (!deletion.failedCleanupSteps.includes('skill_files')) {
+      await cleanupStoredFiles({
+        deps,
+        files: files.map(toStoredFileRefFromSkillFile),
+        logMessage: '[GitHubSkillSync] Failed to clean up partially deleted stale skill file:',
+        throwOnError: true,
+      });
+    }
+    throw new Error(
+      `Skill cleanup did not finish: ${deletion.failedCleanupSteps.join(', ') || 'unknown step'}`,
+    );
+  }
   return {
     deletedFileCount: files.length,
     deletedSkill: { skill, files },
@@ -1396,16 +1410,23 @@ async function deleteSyncedSkill(
   skill: ISkill & { _id: Types.ObjectId },
 ): Promise<number> {
   const files = await deps.listSkillFiles(skill._id);
+  const deletion = await deps.deleteSkill(skill._id.toString());
   let deletedFiles = 0;
   const cleanupErrors: unknown[] = [];
-  for (const file of files) {
-    await cleanupFile(deps, file).catch((cleanupError) => {
-      cleanupErrors.push(cleanupError);
-      logger.error('[GitHubSkillSync] Failed to clean up mirrored skill file:', cleanupError);
-    });
-    deletedFiles++;
+  if (!deletion.failedCleanupSteps.includes('skill_files')) {
+    for (const file of files) {
+      await cleanupFile(deps, file).catch((cleanupError) => {
+        cleanupErrors.push(cleanupError);
+        logger.error('[GitHubSkillSync] Failed to clean up mirrored skill file:', cleanupError);
+      });
+      deletedFiles++;
+    }
   }
-  await deps.deleteSkill(skill._id.toString());
+  if (!deletion.cleanupComplete) {
+    throw new Error(
+      `Skill cleanup did not finish: ${deletion.failedCleanupSteps.join(', ') || 'unknown step'}`,
+    );
+  }
   if (cleanupErrors.length > 0) {
     throw cleanupErrors[0];
   }

@@ -1,12 +1,16 @@
 import type {
+  IAgentEventActorContextMeta,
+  ICompactionSemanticIndexProjection,
+} from '@librechat/data-schemas';
+import type {
   Agents,
   TFile,
   TPendingSteer,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
-import type { ICompactionSemanticIndexProjection } from '@librechat/data-schemas';
 import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
+import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
@@ -99,9 +103,13 @@ export type JobStatus = 'running' | 'complete' | 'error' | 'aborted' | 'requires
  * Missing markers on pre-rollout records are interpreted as protocol v1. */
 export type GenerationProtocolVersion = 1 | 2;
 
-/**
- * Serializable job data - no object references, suitable for Redis/external storage
- */
+/** Read-only durable evidence, without attaching a runtime or recovering a slow save. */
+export type GenerationSettlementState = Pick<
+  SerializableJobData,
+  'createdAt' | 'status' | 'terminalPersistencePending'
+>;
+
+/** Serializable job data without object references, suitable for external storage. */
 export interface SerializableJobData {
   streamId: string;
   userId: string;
@@ -109,14 +117,25 @@ export interface SerializableJobData {
   status: JobStatus;
   createdAt: number;
   generationProtocolVersion?: GenerationProtocolVersion;
-  /** Saver-level checkpoint scope for this exact generation. New jobs use
-   * their final store-assigned epoch; LangGraph still sees an empty root
+  /** Saver-level checkpoint scope for this exact generation. New jobs use a
+   * globally unique opaque identity; LangGraph still sees an empty root
    * `checkpoint_ns`, which the saver adapter maps to this storage scope.
    * Legacy paused jobs omit it and use the historical unscoped storage. */
   checkpointNamespace?: string;
   completedAt?: number;
   conversationId?: string;
   error?: string;
+
+  /** Durable, non-sensitive identity and one-shot outcome for an early replay
+   * buffer overflow. This lets another replica account for recovery. */
+  earlyBufferOverflow?: EarlyBufferOverflowState;
+
+  /** Generation-level first subscriber claim shared across replicas. */
+  firstSubscriberAttachedAt?: number;
+  /** Expiring local subscriber-group leases (in-memory store only). */
+  activeSubscriberLeases?: Record<string, number>;
+  /** Generation-wide durable chunk frontier maintained by the store. */
+  durableEventCount?: number;
 
   /** Stable identity of the HTTP submission that created this generation.
    * Internal-only: lets an expired idempotency lease recognize the same live
@@ -177,6 +196,8 @@ export interface SerializableJobData {
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
+  /** Calibration and fading state captured atomically with a HITL pause, so a resume seeds its rebuilt pruner from the same tier. */
+  contextMeta?: IAgentEventActorContextMeta;
   /**
    * Whether the replica that OWNS this generation can seal mid-stream
    * (`PreemptBoundary` wiring). Recorded at createJob because the steer route
@@ -303,6 +324,8 @@ export interface SerializableJobData {
    * resume request can't be trusted to re-send the flag.
    */
   isTemporary?: boolean;
+  /** Original server-authenticated retention deadline, serialized across replicas. */
+  retentionExpiresAt?: string;
   agentEventDeliveryKey?: string;
   /** Original actor invocation when an internal completion delivery owns this generation. */
   agentEventInvocationKey?: string;
@@ -436,6 +459,7 @@ export type JobMetadataPatch = Partial<
     | 'model'
     | 'agent_id'
     | 'isTemporary'
+    | 'retentionExpiresAt'
     | 'agentEventDeliveryKey'
     | 'agentEventInvocationKey'
     | 'agentEventInvocationGenerationCreatedAt'
@@ -456,6 +480,7 @@ export type JobMetadataPatch = Partial<
     | 'discoveredTools'
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'
+    | 'contextMeta'
     | 'preemptCapable'
     | 'steerQuotesCapable'
     | 'steerQuotesExecutionId'
@@ -860,6 +885,8 @@ export interface ResumeState {
     data?: unknown;
     [key: string]: unknown;
   }>;
+  /** Pending MCP authorization prompts projected from durable stream state. */
+  pendingOAuthPrompts?: Agents.PendingMCPOAuthPrompt[];
 }
 
 /**
@@ -903,6 +930,10 @@ export interface IJobStore {
    * where every request remains subject to the limiter. */
   hasIdempotencyKey?(key: string): Promise<boolean>;
 
+  /** Read-only claim receipt used by durable source reconcilers. Optional
+   * stores fall back to inspecting the current generation only. */
+  getIdempotencyClaim?(key: string): Promise<IdempotencyClaimValue | null>;
+
   deleteJob(streamId: string, expectedCreatedAt?: number): Promise<boolean>;
   hasJob(streamId: string): Promise<boolean>;
   getRunningJobs(): Promise<SerializableJobData[]>;
@@ -929,6 +960,15 @@ export interface IJobStore {
   getJobCountByStatus(status: JobStatus): Promise<number>;
   destroy(): Promise<void>;
   getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]>;
+
+  /** Complete owner cleanup query, including terminal host work and legacy-index recovery.
+   * Managers retain the global-index fallback for older third-party stores. */
+  getCleanupJobIdsByUser?(userId: string, tenantId?: string): Promise<string[]>;
+
+  /** Enumerates every extant job in the owner's retained index, including a
+   * stale paused generation that account deletion must erase before its worker
+   * finalizes it. Optional custom stores fall back to cleanup-blocking jobs. */
+  getRetainedJobIdsByUser?(userId: string, tenantId?: string): Promise<string[]>;
   setGraph(streamId: string, graph: StandardGraph, expectedCreatedAt?: number): void;
   setContentParts(
     streamId: string,
@@ -938,7 +978,13 @@ export interface IJobStore {
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-  ): Promise<{ content: Agents.MessageContentComplex[] } | null>;
+    options?: { durableOnly?: boolean },
+  ): Promise<{
+    content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
+  } | null>;
+
   getRunSteps(streamId: string, expectedCreatedAt?: number): Promise<Agents.RunStep[]>;
 
   /** Legacy stores returned `void`; v2 stores return whether the epoch-fenced
@@ -1257,9 +1303,57 @@ export interface IJobStoreV2 extends IJobStore {
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
+    options?: { durableOnly?: boolean },
   ): Promise<{
     content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
   } | null>;
+
+  /** Atomically records the only recovery outcome for one overflow identity. */
+  settleEarlyBufferRecovery(
+    streamId: string,
+    expectedCreatedAt: number,
+    overflowId: string,
+    settlement: Pick<
+      EarlyBufferOverflowState,
+      'recoveryMethod' | 'recoveryOutcome' | 'recoveryCompletedAt' | 'recoveryFailureReason'
+    >,
+  ): Promise<boolean>;
+
+  /** Atomically replaces an unresolved pending overflow marker with its
+   * finalized durable frontier. A concurrent recovery settlement wins over
+   * this owner-side finalization. */
+  finalizeEarlyBufferOverflow(
+    streamId: string,
+    expectedCreatedAt: number,
+    overflowId: string,
+    overflow: EarlyBufferOverflowState,
+  ): Promise<boolean>;
+
+  /** Whether this generation has admitted any subscriber on any replica. */
+  hasSubscriberAttached(streamId: string, expectedCreatedAt: number): Promise<boolean>;
+
+  /** Atomically claims the first subscriber for one generation epoch. */
+  claimFirstSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    attachedAt: number,
+    subscriberId: string,
+    leaseExpiresAt: number,
+  ): Promise<boolean>;
+
+  detachSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    subscriberId: string,
+  ): Promise<void>;
+
+  hasActiveSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    observedAt: number,
+  ): Promise<boolean>;
 
   /**
    * Get run steps for a job (for resume state).
@@ -1525,6 +1619,27 @@ export interface IJobStoreV2 extends IJobStore {
 
   /** Drop any queued steers (terminal cleanup backstop). */
   clearSteers(streamId: string): Promise<void>;
+}
+
+export type GenerationTerminalEventType = 'done' | 'error';
+
+/** A terminal publication lost the generation fence to a replacement. This is
+ * an expected safety outcome: the successor owns all further stream output. */
+export class GenerationPublicationFencedError extends Error {
+  readonly code = 'GENERATION_PUBLICATION_FENCED';
+
+  constructor(
+    readonly eventType: GenerationTerminalEventType,
+    readonly streamId: string,
+    readonly generationId?: number,
+  ) {
+    super(
+      eventType === 'done'
+        ? 'Generation DONE publication was fenced by a replacement'
+        : 'Generation error publication was fenced by a replacement',
+    );
+    this.name = 'GenerationPublicationFencedError';
+  }
 }
 
 /**

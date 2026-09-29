@@ -1,7 +1,5 @@
-import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
 import ScrollToBottom from '../ScrollToBottom';
-import store from '~/store';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -17,17 +15,12 @@ const renderButton = ({
   interactive?: boolean;
 } = {}) =>
   render(
-    <RecoilRoot
-      initializeState={({ set }) => {
-        set(store.maximizeChatSpace, maximizeChatSpace);
-      }}
-    >
-      <ScrollToBottom
-        scrollHandler={jest.fn()}
-        overlayHeight={overlayHeight}
-        interactive={interactive}
-      />
-    </RecoilRoot>,
+    <ScrollToBottom
+      scrollHandler={jest.fn()}
+      maximizeChatSpace={maximizeChatSpace}
+      overlayHeight={overlayHeight}
+      interactive={interactive}
+    />,
   );
 
 describe('ScrollToBottom', () => {
@@ -35,8 +28,21 @@ describe('ScrollToBottom', () => {
     const { container } = renderButton();
     const column = container.querySelector('.sm\\:px-2');
 
-    expect(column).toHaveClass('px-4', 'md:max-w-3xl', 'xl:max-w-4xl');
+    expect(column).toHaveClass('md:max-w-3xl', 'xl:max-w-4xl');
+    expect(column).not.toHaveClass('px-4');
     expect(container.firstChild).toHaveClass('scrollbar-gutter-spacer');
+  });
+
+  /* The send button sits one row below at the composer's `mr-2`. Sharing its
+     end inset and control geometry is what makes the two read as one rail
+     instead of a stagger: the column edge is 8px out, and `size-10` is 4px
+     larger than every other control in the band. */
+  it('stacks over the send button on the composer rail', () => {
+    renderButton();
+    const button = screen.getByRole('button');
+
+    expect(button).toHaveClass('me-2', 'size-theme-control', 'rounded-theme-control-round');
+    expect(button).not.toHaveClass('size-10');
   });
 
   /* The gutter has to be reserved with padding rather than by reserving a real

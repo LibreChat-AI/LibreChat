@@ -22,7 +22,7 @@ Anchor pattern: \\ue202turn{N}{type}{index} where N=turn number, type=search|new
 **CRITICAL:** Output escape sequences EXACTLY as shown. Do NOT substitute with † or other symbols. Place anchors AFTER punctuation. Cite every non-obvious fact/quote. NEVER use markdown links, [1], footnotes, or HTML tags.`.trim();
 }
 
-/** Builds dynamic web search context scoped to the conversation anchor time. */
+/** Builds dynamic web search context scoped to the logical turn start time. */
 export function buildWebSearchDynamicContext(now?: string | number | Date): string {
   return `# \`${Tools.web_search}\` Runtime Context
 Conversation Date & Time: ${replaceSpecialVars({ text: '{{iso_datetime}}', now })}`.trim();

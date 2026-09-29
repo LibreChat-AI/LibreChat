@@ -178,7 +178,7 @@ function DynamicInput({
             >
               {labelCode ? localize(label as TranslationKeys) || label : label || settingKey}{' '}
               {showDefault && (
-                <small className="opacity-40">
+                <small className="opacity-40 high-contrast:opacity-100">
                   (
                   {typeof defaultValue === 'undefined' || !(defaultValue as string).length
                     ? localize('com_endpoint_default_blank')

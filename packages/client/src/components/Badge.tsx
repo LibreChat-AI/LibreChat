@@ -1,9 +1,10 @@
-import { X, Plus } from 'lucide-react';
+import { X, Plus } from 'lucide';
 import { motion } from 'framer-motion';
 import { JSX } from 'react/jsx-runtime';
 import type { ButtonHTMLAttributes } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import type React from 'react';
+import { MorphIcon } from './MorphIcon';
 import { cn } from '~/utils';
 
 interface BadgeProps
@@ -108,7 +109,7 @@ export default function Badge({
             onBadgeAction?.();
           }}
         >
-          {isAvailable ? <X className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+          <MorphIcon icon={isAvailable ? X : Plus} className="h-3 w-3" />
         </motion.button>
       )}
     </>

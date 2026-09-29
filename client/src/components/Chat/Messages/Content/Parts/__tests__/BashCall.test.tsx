@@ -261,6 +261,36 @@ describe('BashCall backgrounded calls', () => {
     expect(screen.getByTestId('progress-text')).toHaveTextContent('tool failed');
   });
 
+  it('surfaces a live cancelled marker as cancellation rather than failure', () => {
+    renderBackgrounded([
+      {
+        type: 'background_task_status',
+        file_id: 'bg-tc-1',
+        toolCallId: 'tc-1',
+        status: 'cancelled',
+      },
+    ]);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+  });
+
+  it('restores a persisted background cancellation as cancellation', () => {
+    render(
+      <RecoilRoot>
+        <BashCall
+          initialProgress={1}
+          isSubmitting={false}
+          args={{ command: 'sleep 600' }}
+          output="Error: [bash_tool] tool call failed: Background task cancellation requested"
+          backgrounded={true}
+          backgroundCancelled={true}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+  });
+
   it('renders real stdout normally after the background result patches the output', () => {
     render(
       <RecoilRoot>

@@ -275,8 +275,8 @@ export type OutputItem = MessageItem | FunctionCallItem | FunctionCallOutputItem
 export interface FunctionTool {
   type: 'function';
   name: string;
-  description?: string;
-  parameters?: Record<string, unknown>;
+  description?: string | null;
+  parameters?: Record<string, unknown> | null;
   strict?: boolean;
 }
 
@@ -326,6 +326,10 @@ export type Metadata = Record<string, string>;
 
 /** Open Responses API Request */
 export interface ResponseRequest {
+  /** Immutable attached-environment choice (LibreChat extension). */
+  code_environment_mode?: import('librechat-data-provider').CodeEnvironmentMode;
+  /** Explicit registered workspaces for attached agents (LibreChat extension). */
+  code_workspaces?: import('librechat-data-provider').CodeWorkspaceSelection[];
   /** Model/agent ID to use */
   model: string;
 
@@ -779,6 +783,11 @@ export interface ResponseContext {
   previousResponseId?: string;
   /** Instructions */
   instructions?: string;
+  /**
+   * The caller's function tools that were actually declared to the model,
+   * echoed back on the response. Absent until the run resolves them.
+   */
+  tools?: FunctionTool[];
 }
 
 /** Validation result for requests */

@@ -3,6 +3,7 @@ import type { FiltersConfig } from 'librechat-data-provider';
 import {
   getContentTraversalFragments,
   isContentTraversalLimitError,
+  isContentTraversalProtected,
 } from '../protection/adapters/nested';
 import { extractToolArgumentContent } from '../protection/adapters/submissions';
 import { ContentFilterError } from '../middleware/contentFilter';
@@ -34,6 +35,8 @@ export function assertDirectToolOutputAllowed(
       throw error;
     }
     assertToolOutputFragmentsAllowed(filters, getContentTraversalFragments(error));
-    throw error;
+    if (isContentTraversalProtected({ error, filters })) {
+      throw error;
+    }
   }
 }

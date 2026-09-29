@@ -1,5 +1,5 @@
 import React from 'react';
-import { ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { FileCitation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import EditContentParts from '../EditContentParts';
@@ -32,6 +32,9 @@ const parentMessage = {
   text: 'Check the service',
 } as TMessage;
 
+/** The rows the editor resolves this message and its parent from. */
+let mockThread: TMessage[] = [parentMessage, message];
+
 jest.mock('librechat-data-provider/react-query', () => ({
   useUpdateMessageContentMutation: () => ({
     mutateAsync: mockMutateAsync,
@@ -45,7 +48,7 @@ jest.mock('~/Providers', () => ({
   }),
   useMessagesOperations: () => ({
     ask: mockAsk,
-    getMessages: () => [parentMessage, message],
+    getMessages: () => mockThread,
     setMessages: mockSetMessages,
   }),
 }));
@@ -75,6 +78,7 @@ describe('EditContentParts', () => {
     mockMutateAsync.mockResolvedValue({});
     mockChatDirection = 'LTR';
     message.content = undefined;
+    mockThread = [parentMessage, message];
   });
 
   it('uses one editor footer and keeps non-editable parts visible', () => {
@@ -94,6 +98,73 @@ describe('EditContentParts', () => {
     expect(screen.getByTestId(`read-only-${ContentTypes.TOOL_CALL}`)).toBeInTheDocument();
     expect(screen.getByTestId(`read-only-${ContentTypes.ERROR}`)).toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(3);
+  });
+
+  /** A rerun replays the parent as the turn's user message. A model turn chained
+   *  onto another model turn has none, so the action is withheld instead of offered
+   *  and silently refused; Save still applies. */
+  it('offers no rerun when the parent to replay is not a user turn', () => {
+    const chainedAnswer = {
+      messageId: 'assistant-2',
+      parentMessageId: message.messageId,
+      conversationId: 'conversation-1',
+      isCreatedByUser: false,
+    } as TMessage;
+    mockThread = [parentMessage, message, chainedAnswer];
+
+    render(
+      <EditContentParts
+        content={content}
+        messageId={chainedAnswer.messageId}
+        isSubmitting={false}
+        enterEdit={jest.fn()}
+        siblingIdx={0}
+        setSiblingIdx={jest.fn()}
+        renderReadOnlyPart={() => null}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'com_ui_rerun' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'com_ui_update_rerun' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeInTheDocument();
+    /** The footer's status slot answers why the action it usually carries is gone. */
+    expect(screen.getByText('com_ui_rerun_needs_user_turn')).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', ctrlKey: true });
+    expect(mockAsk).not.toHaveBeenCalled();
+  });
+
+  /** The importer chains each saved message onto the previous one, so a thread whose
+   *  first human message was empty leaves its reply at the root: the rerun has no
+   *  parent in the thread at all, not merely a model one. */
+  it('offers no rerun when the response has no parent turn in the thread', () => {
+    const rootAnswer = {
+      messageId: 'assistant-root',
+      parentMessageId: Constants.NO_PARENT,
+      conversationId: 'conversation-1',
+      isCreatedByUser: false,
+    } as TMessage;
+    mockThread = [rootAnswer];
+
+    render(
+      <EditContentParts
+        content={content}
+        messageId={rootAnswer.messageId}
+        isSubmitting={false}
+        enterEdit={jest.fn()}
+        siblingIdx={0}
+        setSiblingIdx={jest.fn()}
+        renderReadOnlyPart={() => null}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'com_ui_rerun' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'com_ui_update_rerun' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeInTheDocument();
+    expect(screen.getByText('com_ui_rerun_needs_user_turn')).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', ctrlKey: true });
+    expect(mockAsk).not.toHaveBeenCalled();
   });
 
   it('saves changed text parts before closing the editor', async () => {
@@ -337,6 +408,42 @@ describe('EditContentParts', () => {
 
     expect(screen.getByRole('button', { name: 'com_ui_update_rerun' })).toBeDisabled();
     expect(screen.getByText('com_ui_save_before_rerun')).toBeInTheDocument();
+  });
+
+  /** The save-before-rerun precondition describes an action this editor does not
+   *  offer, so a save-only editor reports unsaved changes instead. */
+  it('reports unsaved changes rather than a rerun precondition when no rerun is offered', () => {
+    const chainedAnswer = {
+      messageId: 'assistant-2',
+      parentMessageId: message.messageId,
+      conversationId: 'conversation-1',
+      isCreatedByUser: false,
+    } as TMessage;
+    mockThread = [parentMessage, message, chainedAnswer];
+    const multiPartContent = [
+      { type: ContentTypes.TEXT, text: 'First response' },
+      { type: ContentTypes.TEXT, text: 'Second response' },
+    ] as TMessageContentParts[];
+
+    render(
+      <EditContentParts
+        content={multiPartContent}
+        messageId={chainedAnswer.messageId}
+        isSubmitting={false}
+        enterEdit={jest.fn()}
+        siblingIdx={0}
+        setSiblingIdx={jest.fn()}
+        renderReadOnlyPart={() => null}
+      />,
+    );
+
+    const editors = screen.getAllByRole('textbox');
+    fireEvent.change(editors[0], { target: { value: 'Updated first response' } });
+    fireEvent.change(editors[1], { target: { value: 'Updated second response' } });
+
+    expect(screen.getByText('com_ui_unsaved_changes')).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_save_before_rerun')).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeEnabled();
   });
 
   it('reconciles the parts that were persisted when a later part is refused', async () => {

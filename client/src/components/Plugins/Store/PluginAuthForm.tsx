@@ -183,11 +183,7 @@ function PluginAuthForm({
                     </span>
                   )}
                   {showHint && (
-                    <span
-                      id={`${authField}-hint`}
-                      aria-live="polite"
-                      className="text-amber-600 dark:text-amber-500"
-                    >
+                    <span id={`${authField}-hint`} aria-live="polite" className="text-text-warning">
                       {localize('com_ui_auth_format_hint', { 0: expectedPrefix })}
                     </span>
                   )}

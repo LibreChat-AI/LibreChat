@@ -77,6 +77,7 @@ jest.mock('~/server/routes/agents/chat', () => require('express').Router());
 jest.mock('~/server/routes/agents/v1', () => ({
   v1: require('express').Router(),
 }));
+jest.mock('~/server/routes/agents/management', () => require('express').Router());
 
 // Import after mocks
 const agentRoutes = require('~/server/routes/agents/index');
@@ -424,8 +425,78 @@ describe('Agent Abort Endpoint', () => {
         );
       });
 
+      it('carries the context meta the run published onto the stopped response', async () => {
+        const contextMeta = {
+          calibrationRatio: 1.2,
+          encoding: 'claude',
+          fading: { v: 1, budgetTokens: 50_000, masked: true },
+          fadingTiers: [{ agentId: 'agent-a', v: 1, budgetTokens: 50_000, masked: true }],
+        };
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'test-user-123' },
+        });
+        const abortResult = {
+          success: true,
+          jobData: {
+            userMessage: { messageId: 'user-msg-123' },
+            responseMessageId: 'response-msg-456',
+            conversationId: 'test-stream-123',
+            contextMeta,
+          },
+          content: [{ type: 'text', text: 'Partial response...' }],
+          text: 'Partial response...',
+        };
+        mockGenerationJobManager.abortJob.mockImplementation(async (_streamId, options) => {
+          await options.beforePublish(abortResult);
+          return abortResult;
+        });
+
+        const response = await request(app)
+          .post('/api/agents/chat/abort')
+          .send({ conversationId: 'test-stream-123' });
+
+        expect(response.status).toBe(200);
+        expect(mockSaveMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ messageId: 'response-msg-456', contextMeta }),
+          expect.objectContaining({
+            context: 'api/server/routes/agents/index.js - abort endpoint',
+          }),
+        );
+      });
+
+      it('unsets context meta on the stopped response when the job has none', async () => {
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'test-user-123' },
+        });
+        const abortResult = {
+          success: true,
+          jobData: {
+            userMessage: { messageId: 'user-msg-123' },
+            responseMessageId: 'response-msg-456',
+            conversationId: 'test-stream-123',
+          },
+          content: [{ type: 'text', text: 'Partial response...' }],
+          text: 'Partial response...',
+        };
+        mockGenerationJobManager.abortJob.mockImplementation(async (_streamId, options) => {
+          await options.beforePublish(abortResult);
+          return abortResult;
+        });
+
+        await request(app)
+          .post('/api/agents/chat/abort')
+          .send({ conversationId: 'test-stream-123' });
+
+        const [, savedResponse] = mockSaveMessage.mock.calls.find(
+          ([, message]) => message.messageId === 'response-msg-456',
+        );
+        expect(savedResponse.contextMeta).toBeNull();
+      });
+
       it('saves the aborted partial as temporary from job metadata, not the request body', async () => {
         const jobStreamId = 'test-stream-123';
+        const expiredAt = new Date('2030-01-01T00:00:00.000Z');
 
         mockGenerationJobManager.getJob.mockResolvedValue({
           metadata: { userId: 'test-user-123' },
@@ -439,6 +510,7 @@ describe('Agent Abort Endpoint', () => {
             responseMessageId: 'response-msg-456',
             conversationId: jobStreamId,
             isTemporary: true,
+            retentionExpiresAt: expiredAt.toISOString(),
           },
           content: [{ type: 'text', text: 'Partial...' }],
           text: 'Partial...',
@@ -454,7 +526,7 @@ describe('Agent Abort Endpoint', () => {
 
         expect(response.status).toBe(200);
         expect(mockSaveMessage).toHaveBeenCalledWith(
-          expect.objectContaining({ isTemporary: true }),
+          expect.objectContaining({ isTemporary: true, expiredAt }),
           expect.anything(),
           expect.anything(),
         );

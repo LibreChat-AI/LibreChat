@@ -10,6 +10,7 @@ export type ConvoActionsProps = {
   chatProjectId?: string | null;
   title: string | null;
   isPinned?: boolean;
+  isArchived?: boolean;
   isActiveConvo: boolean;
   isShiftHeld?: boolean;
   isPopoverActive: boolean;

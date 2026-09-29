@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
 import {
@@ -19,13 +20,28 @@ import {
   applyPendingAction,
   carriedSteerContext,
   getBranchSiblingIndexesForTarget,
+  hydrateFileDeliveryMetadata,
+  isCompactionAnchorProjection,
 } from '~/utils';
+import {
+  useStreamStatus,
+  useActiveJobs,
+  useAgentQueuedTurns,
+  streamStatusQueryKey,
+  isQueuedTurnSuccessorOwed,
+  extendActiveJobsGrace,
+  ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
+} from '~/data-provider';
 import {
   getGenerationProtocolVersion,
   supportsGenerationProtocolV2,
 } from '~/data-provider/SSE/protocol';
-import { useStreamStatus, useActiveJobs, streamStatusQueryKey } from '~/data-provider';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { revealedQueuedTurnFamily } from '~/store/steer';
+import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
 /**
@@ -70,13 +86,27 @@ function resumeStateMatchesSubmission(
   return !!responseMessageId && resumeState.responseMessageId === responseMessageId;
 }
 
+/**
+ * The row that names the branch a resumed run belongs to when its own response
+ * is not in the loaded history yet. A compaction's user-message slot is the leaf
+ * it summarizes up to and carries no parent (`projectCompactionAnchor`), so
+ * there the anchor itself names the branch — without this the pane restores no
+ * sibling selection and a compaction started on an older branch comes back on
+ * whichever branch the default lands on.
+ */
+function getResumeBranchFallbackMessageId(
+  resumeState: Agents.ResumeState,
+): string | null | undefined {
+  return resumeState.userMessage?.parentMessageId ?? resumeState.userMessage?.messageId;
+}
+
 function getResumeBranchTargetMessageId(
   resumeState: Agents.ResumeState,
   messages: TMessage[],
 ): string | null | undefined {
   const responseMessageId = resumeState.responseMessageId;
   if (!responseMessageId) {
-    return resumeState.userMessage?.parentMessageId;
+    return getResumeBranchFallbackMessageId(resumeState);
   }
 
   const unpaddedResponseMessageId = responseMessageId.replace(/_+$/, '');
@@ -102,7 +132,7 @@ function getResumeBranchTargetMessageId(
     return unpaddedResponseMessageId;
   }
 
-  return resumeState.userMessage?.parentMessageId;
+  return getResumeBranchFallbackMessageId(resumeState);
 }
 
 function preferDefinedString(value?: string | null, fallback?: string): string | undefined {
@@ -125,10 +155,22 @@ function buildSubmissionFromResumeState(
   const responseMessageId =
     resumeState.responseMessageId ?? `${userMessageData?.messageId ?? 'resume'}_`;
 
-  // Try to find existing user message in the messages array (from database)
-  const existingUserMessage = messages.find(
-    (m) => m.isCreatedByUser && m.messageId === userMessageData?.messageId,
-  );
+  /**
+   * The run's user-message slot as the loaded history already holds it. Message
+   * ids are unique per row, so a match is that row whoever wrote it: a
+   * compaction submits no user turn and puts the LEAF it summarizes up to in
+   * this slot (`useCompactConversation` client-side, `projectCompactionAnchor`
+   * server-side), which is usually the assistant answer. Adopting the row keeps
+   * the anchor's own identity — synthesizing an empty, parentless USER row over
+   * it rewrites that answer into a phantom root and folds the thread.
+   */
+  const existingSlotMessage = messages.find((m) => m.messageId === userMessageData?.messageId);
+  /** An anchored run — a compaction — created no user turn: the slot names a row
+   *  the transcript already holds. Judged from the projection's shape, never from
+   *  the anchor's author, which is a user message as often as an answer. Either
+   *  way the run is regenerate-shaped for every consumer: no user turn of its
+   *  own, the response parented onto an existing message. */
+  const isAnchoredRun = isCompactionAnchorProjection(userMessageData);
 
   // A trailing underscore distinguishes an in-flight regeneration from the persisted
   // response it replaces. Only the exact response id proves generation ownership.
@@ -143,7 +185,7 @@ function buildSubmissionFromResumeState(
       : undefined;
   const responseMetadataMessage = existingResponseMessage ?? persistedRegenerationResponse;
   const isRegenerateResume =
-    resumeState.isRegenerate === true || persistedRegenerationResponse != null;
+    resumeState.isRegenerate === true || persistedRegenerationResponse != null || isAnchoredRun;
   let regenerateMessages: TMessage[] | undefined;
   if (isRegenerateResume) {
     regenerateMessages =
@@ -152,9 +194,9 @@ function buildSubmissionFromResumeState(
         : messages.filter((message) => message.messageId !== responseMessageId);
   }
 
-  // Create or use existing user message
+  // Create or use the row the slot already names
   const userMessage: TMessage =
-    existingUserMessage ??
+    existingSlotMessage ??
     (userMessageData
       ? (tMessageSchema.parse({
           messageId: userMessageData.messageId,
@@ -215,6 +257,7 @@ function buildSubmissionFromResumeState(
     initialResponse,
     conversation,
     isRegenerate: isRegenerateResume,
+    ...(isAnchoredRun && { compact: true }),
     ...(regenerateMessages && { regenerateMessages }),
     isTemporary: false,
     endpointOption: {},
@@ -246,10 +289,16 @@ export default function useResumeOnLoad(
   runIndex = 0,
   messagesLoaded = true,
 ) {
+  const fileMap = useFileMapContext();
+  const jotaiStore = useStore();
   const queryClient = useQueryClient();
   const setSubmission = useSetRecoilState(store.submissionByIndex(runIndex));
   const setSubmissionStart = useSetRecoilState(store.submissionStartFamily(runIndex));
   const currentSubmission = useRecoilValue(store.submissionByIndex(runIndex));
+  const isSubmitting = useRecoilValue(store.isSubmittingFamily(runIndex));
+  const attachedGenerationCreatedAt = useRecoilValue(
+    store.activeGenerationCreatedAtByConvoId(conversationId ?? ''),
+  );
   const currentConversation = useRecoilValue(store.conversationByIndex(runIndex));
   const endpoint = currentConversation?.endpoint;
   const endpointType = currentConversation?.endpointType;
@@ -266,6 +315,9 @@ export default function useResumeOnLoad(
    * repeatable, and still one status read per interval at worst.
    */
   const answeredActiveJobRef = useRef<{ conversationId: string; at: number } | null>(null);
+  /** Receipt state at the last arm, so history is refetched on a transition
+   *  rather than on every heartbeat of an unchanged queued turn. */
+  const lastArmedReceiptSignatureRef = useRef<string | null>(null);
   /**
    * Bumped when an announcement is answered. Clearing `processedConvoRef` alone
    * cannot restart the check below: a ref mutation neither schedules a render
@@ -278,21 +330,20 @@ export default function useResumeOnLoad(
    * enter a resume→404→resume loop. A genuinely newer handoff has a different
    * createdAt key and remains eligible. */
   const consumedHandoffGenerationRef = useRef<string | null>(null);
-  const restoreResumeBranch = useRecoilCallback(
-    ({ set }) =>
-      (resumeState: Agents.ResumeState, messages: TMessage[], activeConversationId: string) => {
-        const targetMessageId = getResumeBranchTargetMessageId(resumeState, messages);
-        const branchIndexes = getBranchSiblingIndexesForTarget(
-          messages,
-          targetMessageId,
-          activeConversationId,
-        );
+  const restoreResumeBranch = useCallback(
+    (resumeState: Agents.ResumeState, messages: TMessage[], activeConversationId: string) => {
+      const targetMessageId = getResumeBranchTargetMessageId(resumeState, messages);
+      const branchIndexes = getBranchSiblingIndexesForTarget(
+        messages,
+        targetMessageId,
+        activeConversationId,
+      );
 
-        for (const { parentMessageId, siblingIdx } of branchIndexes) {
-          set(store.messagesSiblingIdxFamily(parentMessageId), siblingIdx);
-        }
-      },
-    [],
+      for (const { parentMessageId, siblingIdx } of branchIndexes) {
+        jotaiStore.set(siblingIdxFamily(siblingKey(parentMessageId)), siblingIdx);
+      }
+    },
+    [jotaiStore],
   );
 
   /** Restore pending-steer chips for steers the server still has queued
@@ -335,13 +386,18 @@ export default function useResumeOnLoad(
               const keepLocalPreempt =
                 (localChip?.preemptRevision ?? 0) > (steer.preemptRevision ?? 0);
               const chipGenerationCreatedAt = generationCreatedAt ?? localChip?.generationCreatedAt;
+              const restoredFiles = hydrateFileDeliveryMetadata(
+                steer.files,
+                localChip?.files,
+                fileMap,
+              );
               return {
                 steerId: steer.steerId,
                 ...(steer.clientSteerId && { clientSteerId: steer.clientSteerId }),
                 text: steer.text,
                 status: 'pending' as const,
                 createdAt: steer.createdAt ?? Date.now(),
-                ...(steer.files && steer.files.length > 0 && { files: steer.files }),
+                ...(restoredFiles && restoredFiles.length > 0 && { files: restoredFiles }),
                 ...((keepLocalPreempt ? localChip?.preempt : steer.preempt) === true && {
                   preempt: true,
                 }),
@@ -366,7 +422,7 @@ export default function useResumeOnLoad(
           ];
         });
       },
-    [],
+    [fileMap],
   );
 
   const settleAppliedSteerParts = useRecoilCallback(
@@ -425,6 +481,23 @@ export default function useResumeOnLoad(
     !!currentSubmission && (hasExplicitSubmissionMatch || hasHydratedMessageMatch);
   const hasStaleSubmissionForDifferentConvo =
     !!currentSubmission && submissionConvoId != null && submissionConvoId !== conversationId;
+  /**
+   * A submission only stands in for an attachment while one is actually live.
+   * The FINAL path never clears the atom, so a pane that just finished a run
+   * keeps holding the submission it completed — bookkeeping, not a stream.
+   *
+   * Two signals, because neither covers the whole lifetime on its own.
+   * `isSubmitting` is raised by `ask` before a submission is installed and held
+   * across reconnect backoff, so sends and recovery both read as attached. It
+   * is not raised for a resumed attachment until that stream opens, though, and
+   * this effect installs the submission well before then — so an announcement
+   * landing in that window would tear down the attachment it had just built.
+   * The generation epoch closes it: this hook stamps it immediately before
+   * installing a resume submission, `subscribeToStream` stamps it for every
+   * other attachment, and terminal teardown is what clears it.
+   */
+  const hasLiveSubmissionForThisConvo =
+    hasActiveSubmissionForThisConvo && (isSubmitting || attachedGenerationCreatedAt != null);
 
   /**
    * A run this pane did not start — another tab, another device, a scheduled
@@ -446,12 +519,312 @@ export default function useResumeOnLoad(
    * and an effect keyed on it would run once and never again. The stamp moves
    * on every fetch, which is the heartbeat this needs.
    */
-  const { data: activeJobsData, dataUpdatedAt: activeJobsUpdatedAt } =
-    useActiveJobs(resumableEnabled);
+  /**
+   * Positive evidence that the backend owes this conversation a run: a queued
+   * turn it has taken ownership of. The client never builds a submission for
+   * one — `useQueueDrain` declines the boundary — so the resulting run has to
+   * be recognised from the active-job list, and finishing the previous run is
+   * what empties that list. Saying so outright keeps the listening exact
+   * instead of betting on how long admission takes.
+   *
+   * Read from the server's own receipts rather than the chip projection, so
+   * admission semantics stay beside the queue's own predicate instead of being
+   * restated here. `useSteering` owns the fetch; subscribing with
+   * `enabled: false` observes that cache without competing for it, and an
+   * unpopulated cache simply falls back to the handover window.
+   */
+  const { data: queuedTurnReceipts, dataUpdatedAt: queuedTurnsObservedAt } = useAgentQueuedTurns(
+    conversationId ?? '',
+    false,
+  );
+  /**
+   * Receipts whose successor this pane has already attached to, per turn and
+   * per conversation. An `admitted` receipt stays in the cache for a fetch
+   * after delivery and still reads as owed; without remembering it was
+   * delivered, the latch would clear on the attachment and be re-recorded from
+   * the same receipt on the next render, synchronously, until the cache moved
+   * on. Tracked per turn rather than per receipt set: two turns queued behind
+   * the same generation deliver one at a time, and marking the whole set on
+   * the first would let the still-attached first successor pass as delivery of
+   * the second. Entries are pruned once the conversation's receipts no longer
+   * mention them.
+   */
+  const [deliveredTurnIdsByConvo, setDeliveredTurnIdsByConvo] = useState<
+    ReadonlyMap<string, ReadonlySet<string>>
+  >(() => new Map());
+  /**
+   * What the receipts say, reduced to the two facts this hook keys on. The
+   * signature drives re-arming: a `queued` receipt is refetched every two
+   * seconds during a long wait and advances `dataUpdatedAt` without changing,
+   * and re-arming on that heartbeat would invalidate status and history every
+   * throttle interval while nothing has happened. Only a transition — a status
+   * change, a receipt appearing or being dropped — is an announcement.
+   *
+   * The boundary is the generation the owed turn waits behind, which the
+   * receipt knows better than this pane does: `expectedPredecessorCreatedAt`
+   * is stamped from the live epoch at enqueue, and `effectivePredecessorCreatedAt`
+   * is the boundary admission actually consumed once turns chain. It is what
+   * lets delivery be judged by generation rather than by "some run exists".
+   */
+  const receiptSignature = Array.isArray(queuedTurnReceipts)
+    ? queuedTurnReceipts
+        .map((receipt) => `${receipt.queuedTurnId}:${receipt.status}`)
+        .sort()
+        .join('|')
+    : '';
+  const deliveredTurnIds =
+    conversationId != null ? deliveredTurnIdsByConvo.get(conversationId) : undefined;
+  const owedReceipts = useMemo(
+    () =>
+      Array.isArray(queuedTurnReceipts)
+        ? queuedTurnReceipts.filter(
+            (receipt) =>
+              !deliveredTurnIds?.has(receipt.queuedTurnId) && isQueuedTurnSuccessorOwed([receipt]),
+          )
+        : [],
+    [queuedTurnReceipts, deliveredTurnIds],
+  );
+  const successorOwedByReceipt = owedReceipts.length > 0;
+  /** A turn still `queued`/`claimed` has not produced a run: whatever generation
+   *  is live right now is its predecessor — including a sibling turn's
+   *  successor that this pane is attached to. The boundary it enqueued with
+   *  names the root of the chain, not the link it now waits behind. */
+  const owedReceiptStillWaiting = owedReceipts.some(
+    (receipt) => receipt.status === 'queued' || receipt.status === 'claimed',
+  );
+  const receiptBoundary = owedReceipts.reduce<number | null>((boundary, receipt) => {
+    const candidate =
+      receipt.effectivePredecessorCreatedAt ?? receipt.expectedPredecessorCreatedAt ?? null;
+    return candidate != null && (boundary == null || candidate > boundary) ? candidate : boundary;
+  }, null);
+
+  /**
+   * The latch remembers the generation the owed turn waits behind, because
+   * the successor is usually announced while that predecessor is still live —
+   * attached here, or merely listed because another client owns it. Neither
+   * is delivery. The active-job list carries no generation identity at all, so
+   * "the conversation is listed" can never prove the successor exists; only
+   * attachment to a generation other than the predecessor's can. Judging
+   * delivery by anything weaker clears the latch in exactly the window it is
+   * for, and a successor that starts and finishes between two list polls is
+   * then never seen.
+   *
+   * `quietSince` is the absolute start of the expiry window. It begins when
+   * the receipt stops reporting the turn — or when its conversation leaves the
+   * screen, where no receipt is observed at all — and is never pushed back by
+   * a remount, so returning later cannot reopen a spent window.
+   */
+  type OwedSuccessor = { predecessorCreatedAt: number | null; quietSince: number | null };
+  /** Keyed by conversation: navigating to a conversation that also owes a run
+   *  must not evict another's latch, or its expiry — and the history repair it
+   *  performs — is lost. */
+  const [owedSuccessors, setOwedSuccessors] = useState<ReadonlyMap<string, OwedSuccessor>>(
+    () => new Map(),
+  );
+  const owedSuccessor =
+    conversationId != null ? (owedSuccessors.get(conversationId) ?? null) : null;
+  const successorOwed =
+    !hasLiveSubmissionForThisConvo && (successorOwedByReceipt || owedSuccessor != null);
+  const { data: activeJobsData, dataUpdatedAt: activeJobsUpdatedAt } = useActiveJobs(
+    resumableEnabled,
+    successorOwed,
+  );
   const hasActiveJobForThisConvo =
     !!conversationId &&
     conversationId !== Constants.NEW_CONVO &&
     activeJobsData?.activeJobIds?.includes(conversationId) === true;
+  /**
+   * The predecessor a turn actually waits behind is the LATEST link known:
+   * receipts can still name the chain's root long after a sibling's successor
+   * became the live link, and the latch may have learned that link while the
+   * turn was waiting. Generations are timestamps, so "latest" is the max of
+   * what the receipt says, what the latch learned, and — while the turn still
+   * waits — whatever is live right now.
+   */
+  const knownPredecessorCreatedAt = [
+    owedReceiptStillWaiting ? attachedGenerationCreatedAt : null,
+    receiptBoundary,
+    owedSuccessor?.predecessorCreatedAt ?? null,
+  ].reduce<number | null>(
+    (latest, candidate) =>
+      candidate != null && (latest == null || candidate > latest) ? candidate : latest,
+    null,
+  );
+  /** Delivery needs a boundary to compare against. With none known, a live
+   *  generation could as easily be the predecessor as the successor, and
+   *  guessing "delivered" would silence the poll while the run is still owed;
+   *  the expiry window is the bounded fallback for that ambiguity. */
+  const attachedToSuccessor =
+    owedSuccessor != null &&
+    attachedGenerationCreatedAt != null &&
+    !owedReceiptStillWaiting &&
+    knownPredecessorCreatedAt != null &&
+    attachedGenerationCreatedAt !== knownPredecessorCreatedAt;
+
+  useEffect(() => {
+    if (!conversationId) {
+      return;
+    }
+    if (Array.isArray(queuedTurnReceipts)) {
+      const stillMentioned = new Set(queuedTurnReceipts.map((receipt) => receipt.queuedTurnId));
+      setDeliveredTurnIdsByConvo((current) => {
+        const delivered = current.get(conversationId);
+        if (!delivered) {
+          return current;
+        }
+        const kept = [...delivered].filter((turnId) => stillMentioned.has(turnId));
+        if (kept.length === delivered.size) {
+          return current;
+        }
+        const next = new Map(current);
+        if (kept.length === 0) {
+          next.delete(conversationId);
+        } else {
+          next.set(conversationId, new Set(kept));
+        }
+        return next;
+      });
+    }
+    if (attachedToSuccessor) {
+      setDeliveredTurnIdsByConvo((current) => {
+        const next = new Map(current);
+        const merged = new Set(current.get(conversationId) ?? []);
+        for (const receipt of owedReceipts) {
+          merged.add(receipt.queuedTurnId);
+        }
+        next.set(conversationId, merged);
+        return next;
+      });
+      /**
+       * The list may never have seen this run — it can start and finish
+       * between two polls — so its "recently active" clock is stale and would
+       * leave nothing polling once the latch clears. A live generation was
+       * just observed; restart the handover window from it so an unpredicted
+       * continuation after this run is still discovered.
+       */
+      extendActiveJobsGrace();
+      setOwedSuccessors((current) => {
+        if (!current.has(conversationId)) {
+          return current;
+        }
+        const next = new Map(current);
+        next.delete(conversationId);
+        return next;
+      });
+      return;
+    }
+    if (!successorOwedByReceipt) {
+      return;
+    }
+    setOwedSuccessors((current) => {
+      const existing = current.get(conversationId);
+      if (existing == null) {
+        /** The receipt's boundary when it has one; otherwise whatever is live
+         *  right now — a turn that is still owed cannot have started, so a live
+         *  generation at the moment it is first seen is its predecessor. */
+        const next = new Map(current);
+        next.set(conversationId, {
+          predecessorCreatedAt: knownPredecessorCreatedAt ?? attachedGenerationCreatedAt,
+          quietSince: null,
+        });
+        return next;
+      }
+      /** Still reporting. A boundary learned later (admission consumed it, or a
+       *  sibling's successor is now the live link) supersedes what was
+       *  guessed. The window is reopened only by an observation newer than the
+       *  moment it started: a remount first exposes the cached receipt from
+       *  before the turn went quiet, and that stale data must not extend an
+       *  expiry that is meant to be absolute. */
+      const refined = knownPredecessorCreatedAt ?? existing.predecessorCreatedAt;
+      const reopen = existing.quietSince != null && queuedTurnsObservedAt > existing.quietSince;
+      if (!reopen && refined === existing.predecessorCreatedAt) {
+        return current;
+      }
+      const next = new Map(current);
+      next.set(conversationId, {
+        predecessorCreatedAt: refined,
+        quietSince: reopen ? null : existing.quietSince,
+      });
+      return next;
+    });
+  }, [
+    conversationId,
+    queuedTurnReceipts,
+    owedReceipts,
+    successorOwedByReceipt,
+    attachedToSuccessor,
+    knownPredecessorCreatedAt,
+    attachedGenerationCreatedAt,
+    queuedTurnsObservedAt,
+  ]);
+
+  /** Only a server observation newer than the window's start counts as the
+   *  turn still reporting; a remount's cached receipt predates it. Reporting
+   *  is observable only for the conversation on screen. */
+  const owedIsReporting =
+    owedSuccessor != null &&
+    successorOwedByReceipt &&
+    (owedSuccessor.quietSince == null || queuedTurnsObservedAt > owedSuccessor.quietSince);
+  useEffect(() => {
+    const now = Date.now();
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let needsQuietStamp = false;
+    for (const [owedConversationId, latch] of owedSuccessors) {
+      if (owedConversationId === conversationId && owedIsReporting) {
+        continue;
+      }
+      if (latch.quietSince == null) {
+        needsQuietStamp = true;
+        continue;
+      }
+      const remaining = Math.max(0, ACTIVE_JOBS_SUCCESSOR_GRACE_MS - (now - latch.quietSince));
+      timers.push(
+        setTimeout(() => {
+          setOwedSuccessors((current) => {
+            if (!current.has(owedConversationId)) {
+              return current;
+            }
+            const next = new Map(current);
+            next.delete(owedConversationId);
+            return next;
+          });
+          /** The window closed without the successor being seen. If it ran
+           *  and finished inside a poll gap, its turns are on the server and
+           *  nowhere else; one refetch is the whole repair, and marking an
+           *  off-screen conversation stale costs nothing until it is opened. */
+          const revealFamily = revealedQueuedTurnFamily(owedConversationId);
+          const pendingReveal = jotaiStore.get(revealFamily);
+          if (
+            pendingReveal != null &&
+            Date.parse(pendingReveal.revealedAt) <= latch.quietSince! &&
+            !isQueuedTurnSuccessorOwed(
+              queryClient.getQueryData(agentQueuedTurnsQueryKey(owedConversationId)),
+            )
+          ) {
+            jotaiStore.set(revealFamily, null);
+          }
+          queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, owedConversationId] });
+        }, remaining),
+      );
+    }
+    if (needsQuietStamp) {
+      setOwedSuccessors((current) => {
+        const next = new Map(current);
+        for (const [owedConversationId, latch] of current) {
+          const reporting = owedConversationId === conversationId && owedIsReporting;
+          if (!reporting && latch.quietSince == null) {
+            next.set(owedConversationId, { ...latch, quietSince: now });
+          }
+        }
+        return next;
+      });
+    }
+    return () => {
+      for (const timer of timers) {
+        clearTimeout(timer);
+      }
+    };
+  }, [owedSuccessors, owedIsReporting, conversationId, queryClient, jotaiStore]);
 
   const shouldCheck =
     resumableEnabled &&
@@ -520,6 +893,14 @@ export default function useResumeOnLoad(
       return;
     }
 
+    const statusPendingAction =
+      streamStatus.pendingAction ?? streamStatus.resumeState?.pendingAction;
+    if (statusPendingAction != null) {
+      jotaiStore.set(pendingApprovalActionFamily(conversationId), statusPendingAction);
+    } else if (!streamStatus.active) {
+      jotaiStore.set(pendingApprovalActionFamily(conversationId), null);
+    }
+
     /** useResumableSSE detected that this conversation-scoped stream now
      * belongs to a newer generation. It cleared the stale submission and
      * cached the replacement snapshot; allow the same conversation to be
@@ -565,6 +946,30 @@ export default function useResumeOnLoad(
 
     if (!streamStatus.active || !streamStatus.streamId) {
       console.log('[ResumeOnLoad] No active job to resume for:', conversationId);
+      const revealFamily = revealedQueuedTurnFamily(conversationId);
+      const pendingReveal = jotaiStore.get(revealFamily);
+      /** A remounted pane may have missed attachment and the quiet-window
+       * timer. An expired job has no epoch; require a fresh inactive read
+       * after restored history before retiring its surviving handoff guard. */
+      const historyUpdatedAt = queryClient.getQueryState([
+        QueryKeys.messages,
+        conversationId,
+      ])?.dataUpdatedAt;
+      if (
+        pendingReveal != null &&
+        streamStatus.active === false &&
+        streamStatus.createdAt == null &&
+        historyUpdatedAt != null &&
+        streamStatusUpdatedAt >= historyUpdatedAt &&
+        streamStatusUpdatedAt > Date.parse(pendingReveal.revealedAt) &&
+        !isQueuedTurnSuccessorOwed(queuedTurnReceipts) &&
+        (getMessages() ?? []).some(
+          (message) => message.parentMessageId === pendingReveal.parentMessageId,
+        )
+      ) {
+        jotaiStore.set(revealFamily, null);
+      }
+
       // A terminal drain may have parked acknowledged steers no subscriber
       // received (tab closed / reload racing the final event) — the status
       // claim returns them exactly once; restore as queued follow-up chips.
@@ -695,6 +1100,8 @@ export default function useResumeOnLoad(
     isFetching,
     streamStatus,
     streamStatusUpdatedAt,
+    queuedTurnReceipts,
+    queryClient,
     getMessages,
     setSubmission,
     setSubmissionStart,
@@ -703,6 +1110,7 @@ export default function useResumeOnLoad(
     settleAppliedSteerParts,
     convertSteersToQueued,
     setActiveGenerationCreatedAt,
+    jotaiStore,
     externalRunArm,
   ]);
 
@@ -740,16 +1148,20 @@ export default function useResumeOnLoad(
    * ever collect those turns. The refetch also re-gates `messagesLoaded`, which
    * defers the effect above until the authoritative history has landed.
    */
+  /**
+   * Two announcement sources, one arm. The active-job list is the general one.
+   * An owed queued turn is the specific one, and it must be able to arm on its
+   * own: the run it announces can start and finish between two list polls, and
+   * the status read this arm enables is the authoritative answer either way —
+   * active attaches, inactive means the history refetch below is the repair.
+   */
+  const successorAnnounced = hasActiveJobForThisConvo || successorOwed;
   useEffect(() => {
-    if (
-      !resumableEnabled ||
-      !hasActiveJobForThisConvo ||
-      !conversationId ||
-      hasActiveSubmissionForThisConvo
-    ) {
-      if (!hasActiveJobForThisConvo) {
-        answeredActiveJobRef.current = null;
-      }
+    if (!successorAnnounced) {
+      answeredActiveJobRef.current = null;
+      return;
+    }
+    if (!resumableEnabled || !conversationId || hasLiveSubmissionForThisConvo) {
       return;
     }
 
@@ -765,16 +1177,44 @@ export default function useResumeOnLoad(
     answeredActiveJobRef.current = { conversationId, at: now };
 
     console.log('[ResumeOnLoad] Active job announced without an attachment', { conversationId });
+    /**
+     * A finished submission still installed here is the one thing standing
+     * between this announcement and the attachment: it is what the check below
+     * reads as "already attached", and what disables the status query. The run
+     * it describes is over, so release it — a server-side continuation such as
+     * a background tool dispatch finishing is a different generation, and the
+     * resume path is what owns building the submission for it.
+     */
+    if (hasActiveSubmissionForThisConvo) {
+      setSubmission(null);
+    }
     queryClient.invalidateQueries({ queryKey: streamStatusQueryKey(conversationId) });
-    queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+    /**
+     * History is refetched only when this arm can actually change what the
+     * pane shows: a run is listed (attachment is imminent and must not be
+     * grafted onto a stale snapshot), or the receipts just transitioned (the
+     * turn was admitted, or dropped after finishing inside a poll gap). A
+     * long wait behind an unadmitted turn re-arms status on the heartbeat but
+     * must not download the conversation again each time.
+     */
+    const receiptsTransitioned = lastArmedReceiptSignatureRef.current !== receiptSignature;
+    lastArmedReceiptSignatureRef.current = receiptSignature;
+    if (hasActiveJobForThisConvo || receiptsTransitioned) {
+      queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+    }
     processedConvoRef.current = null;
     setExternalRunArm((arm) => arm + 1);
   }, [
     conversationId,
     resumableEnabled,
+    successorAnnounced,
     hasActiveJobForThisConvo,
     hasActiveSubmissionForThisConvo,
+    hasLiveSubmissionForThisConvo,
+    attachedGenerationCreatedAt,
     activeJobsUpdatedAt,
+    receiptSignature,
+    setSubmission,
     queryClient,
   ]);
 }

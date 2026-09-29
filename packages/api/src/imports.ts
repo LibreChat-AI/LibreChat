@@ -14,6 +14,7 @@ import type {
   StoredMessageContentInput,
 } from './protection/adapters/submissions';
 import type { ModelBoundContentInput } from './middleware/modelBoundContent';
+import type { LocatorTraversalReporter } from './protection/diagnostics';
 import {
   getContentTraversalFragments,
   getContentTraversalScopes,
@@ -24,7 +25,7 @@ import {
 import {
   getBlockedOpaqueFileField,
   hasActiveFilePolicy,
-  resolveCanonicalFileReferences,
+  resolveCanonicalFileReferenceUnits,
   UninspectableFileError,
 } from './protection/files';
 import { assertModelBoundContent as assertModelBoundContentAtBoundary } from './middleware/modelBoundContent';
@@ -35,6 +36,7 @@ import {
 import { createConfiguredContentInspector, inspectContent } from './protection/runtime';
 import { extractConversationImportContent } from './protection/adapters/submissions';
 import { ContentFilterError } from './middleware/contentFilter';
+import { aggregateAuditFindings } from './protection/audit';
 
 export interface ConversationImportMessage extends StoredMessageContentInput {
   readonly isCreatedByUser?: boolean;
@@ -49,6 +51,7 @@ export interface ConversationImportSnapshot {
 }
 
 export interface ConversationImportProtectionContext {
+  readonly onTraversalFailure?: LocatorTraversalReporter;
   readonly user?: CanonicalFileInspectionUser;
   readonly getFiles?: GetCanonicalFilesForInspection;
   readonly trustedLiveFiles?: readonly CanonicalFileInspectionFile[];
@@ -64,11 +67,21 @@ const hitlMessageFilterFieldSet = new Set<string>(HITL_MESSAGE_FILTER_FIELDS);
  * Applies the active policy to the complete normalized import snapshot before
  * the legacy importer starts any writes. Canonical resolution operates on an
  * inspection copy, so a rejected preflight never mutates the pending batch.
+ * Audit findings are aggregated across the snapshot so a large conversation
+ * reports each finding once instead of once per matching fragment.
  */
 export async function assertConversationImportContentAllowed(
   filters: FiltersConfig | null | undefined,
   snapshot: ConversationImportSnapshot,
   context: ConversationImportProtectionContext = {},
+): Promise<void> {
+  return aggregateAuditFindings(() => inspectConversationImportContent(filters, snapshot, context));
+}
+
+async function inspectConversationImportContent(
+  filters: FiltersConfig | null | undefined,
+  snapshot: ConversationImportSnapshot,
+  context: ConversationImportProtectionContext,
 ): Promise<void> {
   const activeFilters = filters ?? undefined;
   const legacyPii = context.legacyPii ?? undefined;
@@ -119,7 +132,9 @@ export async function assertConversationImportContentAllowed(
   let storedMessages = snapshot.messages;
   let resolvedFiles: CanonicalFileInspectionFile[] = [];
   if (hasActiveFilePolicy(activeFilters)) {
-    const fileInspection = await resolveCanonicalFileReferences({
+    const fileInspection = await resolveCanonicalFileReferenceUnits({
+      messageCount: snapshot.messages.length,
+      onTraversalFailure: context.onTraversalFailure,
       filters: activeFilters,
       input: snapshot.messages,
       user: context.user,
@@ -134,6 +149,7 @@ export async function assertConversationImportContentAllowed(
     context.assertModelBoundContent ?? assertModelBoundContentAtBoundary;
   if (resolvedFiles.length > 0) {
     assertModelBoundContent({
+      onTraversalFailure: context.onTraversalFailure,
       filters: activeFilters,
       resolvedFiles,
     });
@@ -142,6 +158,7 @@ export async function assertConversationImportContentAllowed(
   for (const message of storedMessages) {
     try {
       assertModelBoundContent({
+        onTraversalFailure: context.onTraversalFailure,
         filters: activeFilters,
         legacyPii,
         storedMessages: [message],

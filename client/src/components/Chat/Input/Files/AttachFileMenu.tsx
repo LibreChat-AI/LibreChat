@@ -9,6 +9,7 @@ import {
   TerminalSquareIcon,
 } from 'lucide-react';
 import {
+  IconButton,
   FileUpload,
   TooltipAnchor,
   DropdownPopup,
@@ -19,6 +20,7 @@ import {
   Providers,
   EToolResources,
   EModelEndpoint,
+  isExplicitMimeConfig,
   getConfiguredMimeAccept,
   bedrockDocumentMimeTypes,
   defaultAgentCapabilities,
@@ -51,7 +53,8 @@ type FileUploadType =
   | 'document'
   | 'image_document'
   | 'image_document_extended'
-  | 'image_document_video_audio';
+  | 'image_document_video_audio'
+  | 'image_document_video_audio_configured';
 
 /** What each provider upload path can actually send, used to scope the picker filter to selectable files. */
 const fileTypeCapabilities: Record<FileUploadType, MimeUploadCapability> = {
@@ -67,6 +70,10 @@ const fileTypeCapabilities: Record<FileUploadType, MimeUploadCapability> = {
     categories: ['image', 'document', 'audio', 'video'],
     documentMimeTypes: ['application/pdf'],
   },
+  /** Custom endpoint with an admin-configured allowlist: the config decides, including video/audio. */
+  image_document_video_audio_configured: {
+    categories: ['image', 'document', 'audio', 'video'],
+  },
 };
 
 interface AttachFileMenuProps {
@@ -76,6 +83,8 @@ interface AttachFileMenuProps {
   conversationId: string;
   endpointType?: EModelEndpoint | string;
   endpointFileConfig?: EndpointFileConfig;
+  /** Resolved by the parent, which knows whether the file config has landed. */
+  isUnifiedMode: boolean;
   useResponsesApi?: boolean;
   files: Map<string, ExtendedFile>;
   setFiles: FileSetter;
@@ -90,6 +99,7 @@ const AttachFileMenu = ({
   endpointType,
   conversationId,
   endpointFileConfig,
+  isUnifiedMode,
   useResponsesApi,
   files,
   setFiles,
@@ -160,13 +170,44 @@ const AttachFileMenu = ({
         inputRef.current.accept = `image/*,.heif,.heic,${bedrockDocumentExtensions}`;
       } else if (fileType === 'image_document_video_audio') {
         inputRef.current.accept = 'image/*,.heif,.heic,.pdf,application/pdf,video/*,audio/*';
+      } else if (fileType === 'image_document_video_audio_configured') {
+        /** Only reached with an explicit allowlist the accept string cannot represent; leave the
+         * picker open so it never hides a file the admin allowed (backend still enforces). */
+        inputRef.current.accept = '';
       } else {
         inputRef.current.accept = '';
       }
       inputRef.current.click();
-      inputRef.current.accept = '';
     },
     [endpointFileConfig?.supportedMimeTypes],
+  );
+
+  /** Unified mode: single click triggers file upload with no tool_resource */
+  const handleUnifiedUpload = useCallback(() => {
+    toolResourceRef.current = undefined;
+    handleUploadClick();
+  }, [handleUploadClick]);
+
+  /** Unified mode removed the destination chooser, not the source chooser. SharePoint has
+   *  no trigger of its own, so without this the picker becomes unreachable whenever the
+   *  composer is in unified mode. Destination stays implicit on both sources. */
+  const unifiedSourceItems = useMemo<MenuItemProps[]>(
+    () => [
+      {
+        label: localize('com_files_upload_local_machine'),
+        onClick: handleUnifiedUpload,
+        icon: <FileImageIcon className="icon-md" />,
+      },
+      {
+        label: localize('com_files_upload_sharepoint'),
+        onClick: () => {
+          toolResourceRef.current = undefined;
+          setIsSharePointDialogOpen(true);
+        },
+        icon: <SharePointIcon className="icon-md" />,
+      },
+    ],
+    [localize, handleUnifiedUpload, setIsSharePointDialogOpen],
   );
 
   const dropdownItems = useMemo(() => {
@@ -206,6 +247,11 @@ const AttachFileMenu = ({
               endpointType === EModelEndpoint.bedrock
             ) {
               fileType = 'image_document_extended';
+            } else if (
+              endpointType === EModelEndpoint.custom &&
+              isExplicitMimeConfig(endpointFileConfig?.supportedMimeTypes)
+            ) {
+              fileType = 'image_document_video_audio_configured';
             }
             onAction(fileType);
           },
@@ -293,6 +339,7 @@ const AttachFileMenu = ({
     handleUploadClick,
     setEphemeralAgent,
     sharePointEnabled,
+    endpointFileConfig?.supportedMimeTypes,
     codeAllowedByAgent,
     fileSearchAllowedByAgent,
     setIsSharePointDialogOpen,
@@ -329,6 +376,63 @@ const AttachFileMenu = ({
       console.error('SharePoint file processing error:', error);
     }
   };
+
+  if (isUnifiedMode) {
+    return (
+      <>
+        <FileUpload
+          ref={inputRef}
+          handleFileChange={(e) => {
+            handleFileChange(e, toolResourceRef.current);
+          }}
+        >
+          {sharePointEnabled === true ? (
+            <DropdownPopup
+              menuId="attach-file-menu"
+              className="overflow-visible"
+              isOpen={isPopoverActive}
+              setIsOpen={setIsPopoverActive}
+              modal={false}
+              portal={true}
+              unmountOnHide={true}
+              trigger={menuTrigger}
+              items={unifiedSourceItems}
+              iconClassName="mr-0"
+            />
+          ) : (
+            <TooltipAnchor
+              render={
+                <IconButton
+                  type="button"
+                  size="theme"
+                  shape="theme"
+                  disabled={isUploadDisabled}
+                  id="attach-file-button"
+                  label={localize('com_sidepanel_attach_files')}
+                  onClick={handleUnifiedUpload}
+                  aria-keyshortcuts={uploadFileAriaKey}
+                  className="p-1 hover:bg-surface-composer-hover"
+                >
+                  <AttachmentIcon />
+                </IconButton>
+              }
+              id="attach-file-button"
+              description={uploadFileTooltip}
+              disabled={isUploadDisabled}
+            />
+          )}
+        </FileUpload>
+        <SharePointPickerDialog
+          isOpen={isSharePointDialogOpen}
+          onOpenChange={setIsSharePointDialogOpen}
+          onFilesSelected={handleSharePointFilesSelected}
+          isDownloading={isProcessing}
+          downloadProgress={downloadProgress}
+          maxSelectionCount={endpointFileConfig?.fileLimit}
+        />
+      </>
+    );
+  }
 
   return (
     <>

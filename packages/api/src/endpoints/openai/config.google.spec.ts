@@ -153,7 +153,7 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         expect(result.tools).toEqual([]);
       });
 
-      it.each(['gemini-3.6-flash', 'gemini-3.7-flash'])(
+      it.each(['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash'])(
         'should strip Flash-blocked addParams so the transform cannot re-add them (%s)',
         (model) => {
           const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });

@@ -15,6 +15,7 @@ jest.mock('@keyv/redis', () => ({
 const mockKeyvRedisClient = { scanIterator: jest.fn() };
 
 jest.mock('../../redisClients', () => ({
+  handleKeyvRedisError: jest.fn(),
   keyvRedisClient: mockKeyvRedisClient,
   ioredisClient: null,
 }));

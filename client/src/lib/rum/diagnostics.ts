@@ -1,5 +1,6 @@
 import type { FCPMetricWithAttribution } from 'web-vitals/attribution';
 import { normalizeRumPath } from './routes';
+import { getClientBuildId } from './build';
 
 export type RumActionAttributes = Record<string, string | number | boolean>;
 
@@ -185,12 +186,13 @@ export function restoreRumEmitter(HyperDX: HyperDXActionClient): void {
 }
 
 function installRumEmitter(HyperDX: HyperDXActionClient): void {
+  const clientBuildId = getClientBuildId();
   window.__lcRumPush = (type, attributes) => {
     emitEarlyRumEvent(HyperDX, {
       type,
       at: performance.now(),
       visibilityState: document.visibilityState,
-      attributes,
+      attributes: { ...attributes, clientBuildId },
     });
   };
 }
@@ -217,6 +219,7 @@ function emitEarlyRumEvent(HyperDX: HyperDXActionClient, event: RumQueuedEvent):
       compact({
         at: round(event.at),
         visibilityState: nonEmptyString(event.visibilityState),
+        clientBuildId: 'unknown',
         ...sanitizeQueuedAttributes(event.attributes),
       }),
     );

@@ -27,6 +27,8 @@ const RESERVATION_RECOVERY_MS = 60_000;
 const RUNNING_RECOVERY_MS = 30 * 60_000;
 export const EVENT_ACTOR_DETACHED_COMPLETION_TYPE = 'librechat.event_actor.detached_completion';
 export const EVENT_ACTOR_DETACHED_COMPLETION_SOURCE = 'librechat-event-actor';
+const DETACHED_COMPLETION_INPUT =
+  'Resume the suspended event actor with the detached tool completion supplied by the host.';
 
 export function parseAgentEventDetachedTerminalEvidence(
   value: unknown,
@@ -176,20 +178,6 @@ interface DetachedResumeDependencies {
   now?(): number;
 }
 
-function renderDetachedCompletion(action: AgentEventActorDetachedAction): string {
-  const terminal =
-    action.status === 'succeeded'
-      ? `succeeded with this result:\n${action.result ?? ''}`
-      : `${action.status} with this error:\n${action.error ?? 'No error detail was recorded.'}`;
-  return [
-    'A detached expected action from your preceding event turn has now reached an authoritative terminal state.',
-    `Tool: ${action.toolName}`,
-    `Tool call: ${action.toolCallId}`,
-    `The action ${terminal}`,
-    'Continue the same event invocation using this trusted internal completion. Do not launch the same action again.',
-  ].join('\n');
-}
-
 /** Builds the exact internal continuation in the typed trigger layer. The app
  * server supplies only persistence and dispatch composition dependencies. */
 export function createAgentEventDetachedResumeHandler(deps: DetachedResumeDependencies) {
@@ -241,7 +229,7 @@ export function createAgentEventDetachedResumeHandler(deps: DetachedResumeDepend
         },
       },
       target,
-      input: renderDetachedCompletion(action),
+      input: DETACHED_COMPLETION_INPUT,
       expectedAction: envelope.expectedAction,
     });
     await deps.enqueueAgentTrigger(continuation, {

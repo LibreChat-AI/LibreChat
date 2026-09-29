@@ -1,12 +1,16 @@
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), debug: jest.fn() },
 }));
-jest.mock('@librechat/api', () => ({
-  sendEvent: jest.fn(),
-  emitEvent: jest.fn(),
-  createToolExecuteHandler: jest.fn(),
-  markSummarizationUsage: (usage) => usage,
-}));
+jest.mock('@librechat/api', () => {
+  const { getModelRefusalInfo } = jest.requireActual('@librechat/api');
+  return {
+    sendEvent: jest.fn(),
+    emitEvent: jest.fn(),
+    createToolExecuteHandler: jest.fn(),
+    markSummarizationUsage: (usage) => usage,
+    getModelRefusalInfo,
+  };
+});
 jest.mock('~/server/services/Files/Citations', () => ({
   processFileCitations: jest.fn(),
 }));

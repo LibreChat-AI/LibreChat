@@ -1,5 +1,6 @@
 const express = require('express');
-const { createAdminUsersHandlers } = require('@librechat/api');
+const mongoose = require('mongoose');
+const { createAdminUsersHandlers, revokeUserCodeEnvironmentWorkers } = require('@librechat/api');
 const { SystemCapabilities } = require('@librechat/data-schemas');
 const { requireCapability } = require('~/server/middleware/roles/capabilities');
 const { requireJwtAuth } = require('~/server/middleware');
@@ -10,7 +11,7 @@ const {
   purgeAgentTriggerDeliveriesForUser,
 } = require('~/server/services/Agents/triggers');
 const db = require('~/models');
-const { invalidateCodeEnvironmentConfigCache } = require('~/server/services/Config');
+const { getAppConfig, invalidateCodeEnvironmentConfigCache } = require('~/server/services/Config');
 
 const router = express.Router();
 
@@ -27,6 +28,12 @@ const handlers = createAdminUsersHandlers({
   prepareAgentTriggerUserPurge,
   cancelAgentTriggerUserPurge,
   purgeAgentTriggerDeliveriesForUser,
+  revokeUserCodeEnvironmentWorkers: async (userId) =>
+    revokeUserCodeEnvironmentWorkers({
+      mongoose,
+      userId,
+      appConfig: await getAppConfig({ baseOnly: true }),
+    }),
   deleteUserById: db.deleteUserById,
   deleteUserCodeEnvironments: db.deleteUserCodeEnvironments,
   invalidateCodeEnvironmentConfigCache,

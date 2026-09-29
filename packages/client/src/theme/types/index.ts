@@ -8,8 +8,14 @@ export interface IThemeRGB {
   'rgb-text-secondary'?: string;
   'rgb-text-secondary-alt'?: string;
   'rgb-text-tertiary'?: string;
+  'rgb-text-muted'?: string;
   'rgb-text-warning'?: string;
   'rgb-text-destructive'?: string;
+  /** Bright and dipped stops of the in-flight label sweep (`.shimmer`). Their
+   *  opacities stay in CSS as `--shimmer-*-alpha`, the way the border roles
+   *  keep `--border-*-alpha`. */
+  'rgb-shimmer-base'?: string;
+  'rgb-shimmer-dip'?: string;
 
   // Link and accent colors
   'rgb-link'?: string;
@@ -33,6 +39,8 @@ export interface IThemeRGB {
   'rgb-surface-hover-alt'?: string;
   'rgb-surface-composer-hover'?: string;
   'rgb-surface-primary'?: string;
+  'rgb-chart-widget-surface'?: string;
+  'rgb-chart-widget-stroke'?: string;
   'rgb-surface-primary-alt'?: string;
   'rgb-surface-primary-contrast'?: string;
   'rgb-surface-secondary'?: string;
@@ -46,6 +54,7 @@ export interface IThemeRGB {
   'rgb-surface-destructive'?: string;
   'rgb-surface-destructive-hover'?: string;
   'rgb-surface-chat'?: string;
+  'rgb-surface-code'?: string;
   'rgb-surface-inverted'?: string;
   'rgb-surface-inverted-hover'?: string;
   'rgb-text-inverted'?: string;
@@ -81,10 +90,37 @@ export interface IThemeRGB {
   'rgb-status-neutral'?: string;
   'rgb-status-neutral-subtle'?: string;
   'rgb-status-neutral-border'?: string;
+  /**
+   * Solid fill of the verified mark — the badge a first-party item carries next
+   * to its name. The one status with no family around it: the mark is the only
+   * thing it paints, so there is no subtle fill, border or text weight to go
+   * with it. Blue rather than a reuse of `status-success-strong`, because a
+   * green check is the selected/complete cue everywhere else in the product
+   * (including the selected-tool check on the very same card) while blue is the
+   * cross-product convention for provenance. It carries `text-on-status`.
+   * A theme that repaints the mark's surroundings — the old
+   * `status-success-strong` fill, the check, or the card surfaces — keeps the
+   * mark on that success fill, which is what it wore before this token existed.
+   */
+  'rgb-status-verified'?: string;
   'rgb-text-on-status'?: string;
 
   // Brand colors
   'rgb-brand-purple'?: string;
+
+  /**
+   * Code syntax highlighting. Declared here rather than left as literals in the
+   * stylesheet so a palette stays in one place, is covered by the registry's
+   * completeness check, and can be contrast-tested.
+   */
+  'rgb-syntax-text'?: string;
+  'rgb-syntax-comment'?: string;
+  'rgb-syntax-meta'?: string;
+  'rgb-syntax-builtin'?: string;
+  'rgb-syntax-keyword'?: string;
+  'rgb-syntax-string'?: string;
+  'rgb-syntax-attr'?: string;
+  'rgb-syntax-title'?: string;
 
   /**
    * Categorical data-visualisation scale. Slots carry series identity only — the
@@ -98,6 +134,15 @@ export interface IThemeRGB {
   'rgb-series-5'?: string;
   'rgb-series-6'?: string;
   'rgb-series-7'?: string;
+  'rgb-series-8'?: string;
+
+  /**
+   * Unchecked track of the shared `Switch`. A control state rather than a
+   * palette entry, but it lives here because the package's own control renders
+   * it: left in the application stylesheet, a consumer of `@librechat/client`
+   * got a switch with no track at all.
+   */
+  'rgb-switch-unchecked'?: string;
 
   // Presentation
   'rgb-presentation'?: string;
@@ -111,8 +156,11 @@ export interface IThemeVariables {
   '--text-secondary': string;
   '--text-secondary-alt': string;
   '--text-tertiary': string;
+  '--text-muted': string;
   '--text-warning': string;
   '--text-destructive': string;
+  '--shimmer-base': string;
+  '--shimmer-dip': string;
   '--link': string;
   '--link-hover': string;
   '--link-visited': string;
@@ -128,6 +176,8 @@ export interface IThemeVariables {
   '--surface-hover-alt': string;
   '--surface-composer-hover': string;
   '--surface-primary': string;
+  '--chart-widget-surface': string;
+  '--chart-widget-stroke': string;
   '--surface-primary-alt': string;
   '--surface-primary-contrast': string;
   '--surface-secondary': string;
@@ -141,6 +191,7 @@ export interface IThemeVariables {
   '--surface-destructive': string;
   '--surface-destructive-hover': string;
   '--surface-chat': string;
+  '--surface-code': string;
   '--surface-inverted': string;
   '--surface-inverted-hover': string;
   '--text-inverted': string;
@@ -176,8 +227,18 @@ export interface IThemeVariables {
   '--status-neutral': string;
   '--status-neutral-subtle': string;
   '--status-neutral-border': string;
+  '--status-verified': string;
   '--text-on-status': string;
   '--brand-purple': string;
+
+  '--syntax-text': string;
+  '--syntax-comment': string;
+  '--syntax-meta': string;
+  '--syntax-builtin': string;
+  '--syntax-keyword': string;
+  '--syntax-string': string;
+  '--syntax-attr': string;
+  '--syntax-title': string;
 
   '--series-1': string;
   '--series-2': string;
@@ -186,6 +247,9 @@ export interface IThemeVariables {
   '--series-5': string;
   '--series-6': string;
   '--series-7': string;
+  '--series-8': string;
+
+  '--switch-unchecked': string;
 
   '--presentation': string;
 }
@@ -198,6 +262,7 @@ export interface IThemeColors {
   'text-secondary'?: string;
   'text-secondary-alt'?: string;
   'text-tertiary'?: string;
+  'text-muted'?: string;
   'text-warning'?: string;
   'text-destructive'?: string;
   link?: string;
@@ -215,6 +280,8 @@ export interface IThemeColors {
   'surface-hover-alt'?: string;
   'surface-composer-hover'?: string;
   'surface-primary'?: string;
+  'chart-widget-surface'?: string;
+  'chart-widget-stroke'?: string;
   'surface-primary-alt'?: string;
   'surface-primary-contrast'?: string;
   'surface-secondary'?: string;
@@ -228,6 +295,7 @@ export interface IThemeColors {
   'surface-destructive'?: string;
   'surface-destructive-hover'?: string;
   'surface-chat'?: string;
+  'surface-code'?: string;
   'surface-inverted'?: string;
   'surface-inverted-hover'?: string;
   'text-inverted'?: string;
@@ -259,6 +327,7 @@ export interface IThemeColors {
   'status-neutral'?: string;
   'status-neutral-subtle'?: string;
   'status-neutral-border'?: string;
+  'status-verified'?: string;
   'text-on-status'?: string;
   'brand-purple'?: string;
 
@@ -269,6 +338,8 @@ export interface IThemeColors {
   'series-5'?: string;
   'series-6'?: string;
   'series-7'?: string;
+  'switch-unchecked'?: string;
+  'series-8'?: string;
   presentation?: string;
 
   // Retained for excluded SidePanel/Agents + SidePanel/Builder (pending migration)
@@ -302,6 +373,13 @@ export interface IThemeAppearance {
 export interface ThemeModeDefinition {
   colors?: IThemeRGB;
   appearance?: Partial<IThemeAppearance>;
+  /**
+   * Brand overrides for this mode only, applied over the theme-wide `brands`.
+   * A brand fill carries a glyph and has to stand out from the canvas, and both
+   * of those flip between light and dark, so a single set cannot serve both at
+   * enhanced contrast.
+   */
+  brands?: Partial<IThemeBrands>;
 }
 
 export interface IThemeBrands {

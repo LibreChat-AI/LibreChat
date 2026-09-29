@@ -4,6 +4,7 @@ import { createMethods, createModels } from '@librechat/data-schemas';
 import type { AgentTriggerDeliveryPersistence, AgentTriggerService } from './service';
 import type { AgentTriggerFetch } from './host';
 import { __resetShutdownStateForTests } from '../../app/shutdown';
+import { prepareAgentTriggerDelivery } from './delivery';
 import { createAgentTriggerEnvelope } from './envelope';
 import { createAgentTriggerService } from './service';
 
@@ -83,6 +84,79 @@ async function eventuallySucceeded(deliveryKey: string) {
 }
 
 describe('durable trigger delivery integration', () => {
+  it('recovers an abandoned publication across two idle workers without a producer wake', async () => {
+    const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 'started',
+            streamId: 'cross-replica',
+            conversationId: 'cross-replica',
+            generationCreatedAt: 25,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const bundles = [createMethods(mongoose), createMethods(mongoose)];
+    const scans = bundles.map((methods) =>
+      jest.spyOn(methods, 'recoverAgentTriggerLanePublications'),
+    );
+    const workers = bundles.map((methods) =>
+      createAgentTriggerService({
+        methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+        fetch: fetcher,
+        mintToken: () => 'trigger-token',
+        purgeRecoveryIntervalMs: 20,
+        deliveryOptions: {
+          concurrency: 1,
+          tickMs: 5,
+          maxIdleTickMs: 40,
+        },
+      }),
+    );
+    const until = async (condition: () => boolean | Promise<boolean>) => {
+      const deadline = Date.now() + 5_000;
+      while (!(await condition())) {
+        if (Date.now() >= deadline) throw new Error('Timed out waiting for cross-replica recovery');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    try {
+      for (const worker of workers)
+        await worker.initialize({
+          address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+          idlePolling: { maintenanceMaxIntervalMs: 80 },
+        });
+      await until(() => scans.every((scan) => scan.mock.calls.length >= 3));
+      const prepared = prepareAgentTriggerDelivery(envelope(), { orderingKey: 'crashed-producer' });
+      // A producer died after its staging write. Neither worker receives enqueue()
+      // or wake(); both must discover and fence publication via their Mongo fallback.
+      await mongoose.models.AgentTriggerDelivery.create({
+        ...prepared,
+        laneSequence: 0,
+        status: 'staging',
+        attempts: 0,
+        requeueCount: 0,
+        claimAvailableAt: prepared.availableAt,
+        stagingRecoveryAt: new Date(),
+      });
+      await until(
+        async () =>
+          (await bundles[0].getAgentTriggerDelivery(prepared.deliveryKey))?.status === 'succeeded',
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const delivered = await bundles[1].getAgentTriggerDelivery(prepared.deliveryKey);
+      expect(delivered).toMatchObject({
+        status: 'succeeded',
+        attempts: 1,
+        history: [{ outcome: 'succeeded' }],
+      });
+    } finally {
+      await Promise.all(workers.map((worker) => worker.stop()));
+      scans.forEach((scan) => scan.mockRestore());
+    }
+  });
+
   it('moves a trusted envelope through Mongo, the lease worker, and host admission', async () => {
     const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
       async () =>

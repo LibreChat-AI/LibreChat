@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import { emitChunkWithReceipt, emitObservedChunk } from '~/stream/internal/chunkPublication';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
+import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { createMockPublisher } from './helpers/publisher';
@@ -1429,19 +1430,47 @@ describe('RedisEventTransport', () => {
       mockPublisher as unknown as Redis,
       mockSubscriber as unknown as Redis,
     );
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
 
-    mockPublisher.eval.mockResolvedValueOnce(-1);
-    await expect(
-      transport.emitReplacedDoneConfirmed('stale-replacement', { final: true }, 1234, 'wrong'),
-    ).rejects.toThrow('replacement DONE receipt is no longer current');
-    mockPublisher.eval.mockResolvedValueOnce(-1);
-    await expect(transport.emitDone('stale-done', { final: true }, 1234)).rejects.toThrow(
-      'DONE publication was fenced',
-    );
-    mockPublisher.eval.mockResolvedValueOnce(-1);
-    await expect(transport.emitError('stale-error', 'failed', 1234)).rejects.toThrow(
-      'error publication was fenced',
-    );
+    try {
+      mockPublisher.eval.mockResolvedValueOnce(-1);
+      await expect(
+        transport.emitReplacedDoneConfirmed('stale-replacement', { final: true }, 1234, 'wrong'),
+      ).rejects.toThrow('replacement DONE receipt is no longer current');
+      mockPublisher.eval.mockResolvedValueOnce(-1);
+      await expect(transport.emitDone('stale-done', { final: true }, 1234)).rejects.toBeInstanceOf(
+        GenerationPublicationFencedError,
+      );
+      mockPublisher.eval.mockResolvedValueOnce(-1);
+      await expect(transport.emitError('stale-error', 'failed', 1234)).rejects.toBeInstanceOf(
+        GenerationPublicationFencedError,
+      );
+
+      expect(warn).toHaveBeenNthCalledWith(
+        1,
+        '[RedisEventTransport] Skipped stale terminal publication:',
+        { streamId: 'stale-done', generationId: 1234, eventType: 'done' },
+      );
+      expect(warn).toHaveBeenNthCalledWith(
+        2,
+        '[RedisEventTransport] Skipped stale terminal publication:',
+        { streamId: 'stale-error', generationId: 1234, eventType: 'error' },
+      );
+      expect(error).not.toHaveBeenCalled();
+
+      mockPublisher.eval.mockRejectedValueOnce(new Error('Redis unavailable'));
+      await expect(transport.emitDone('failed-done', { final: true }, 1234)).rejects.toThrow(
+        'Redis unavailable',
+      );
+      expect(error).toHaveBeenCalledWith(
+        '[RedisEventTransport] Failed to publish done:',
+        expect.objectContaining({ message: 'Redis unavailable' }),
+      );
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
 
     transport.destroy();
   });

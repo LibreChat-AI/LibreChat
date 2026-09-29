@@ -1,4 +1,5 @@
 const { Strategy: GitHubStrategy } = require('passport-github2');
+const { createOAuthStateStore } = require('@librechat/api');
 const socialLogin = require('./socialLogin');
 
 const getProfileDetails = ({ profile }) => ({
@@ -30,9 +31,13 @@ const getGitHubConfig = (callbackURL) => ({
   }),
 });
 
-const githubStrategy = () =>
+/** @param {Omit<import('@librechat/api').OAuthStateStoreOptions, 'provider'>} stateOptions */
+const githubStrategy = (stateOptions) =>
   new GitHubStrategy(
-    getGitHubConfig(`${process.env.DOMAIN_SERVER}${process.env.GITHUB_CALLBACK_URL}`),
+    {
+      ...getGitHubConfig(`${process.env.DOMAIN_SERVER}${process.env.GITHUB_CALLBACK_URL}`),
+      store: createOAuthStateStore({ ...stateOptions, provider: 'github' }),
+    },
     githubLogin,
   );
 

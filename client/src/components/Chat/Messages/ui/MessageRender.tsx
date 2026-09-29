@@ -11,8 +11,8 @@ import {
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { parseWakeupText } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
+import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
-import { getHeaderModelName } from '~/components/Chat/Messages/ui/HeaderLabel';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
@@ -96,6 +96,7 @@ const MessageRender = memo(function MessageRender({
     getCanCopy,
     regenerateMessage,
     latestMessageDepth,
+    hasConfiguredSender,
   } = useMessageActions({
     message: msg,
     currentEditId,
@@ -157,7 +158,8 @@ const MessageRender = memo(function MessageRender({
       id={msg.messageId}
       icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}
-      hoverLabel={getHeaderModelName(
+      hoverLabel={getHeaderHoverLabel(
+        hasConfiguredSender,
         agent?.model,
         assistant?.model,
         msg.model,
@@ -170,9 +172,20 @@ const MessageRender = memo(function MessageRender({
       hasParallelContent={hasParallelContent}
       fullWidth={maximizeChatSpace}
       isEditing={edit}
-      plain={wakeupDisplay != null && !edit}
+      systemLabel={wakeupDisplay != null && !edit ? localize('com_ui_system_event') : undefined}
       footer={
         <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
+          {/* The reading holds the column start: it takes over the slot the streaming
+              dot vacates, so the retry navigation beside it — whose width the footer
+              reserves whether or not hover has revealed it — must never push the
+              timer inboard of that column. */}
+          {shouldShowElapsed({
+            isSubmitting,
+            isLatestMessage,
+            isCreatedByUser: msg.isCreatedByUser,
+            siblingIdx,
+            siblingCount,
+          }) && <Elapsed index={index} />}
           {/* A user turn is right-aligned, so its retry navigation belongs at the
               outer edge under the bubble rather than inboard of the actions.
 
@@ -188,13 +201,6 @@ const MessageRender = memo(function MessageRender({
               isSubmitting && isLatestMessage && revealOnRowHoverClasses,
             )}
           />
-          {shouldShowElapsed({
-            isSubmitting,
-            isLatestMessage,
-            isCreatedByUser: msg.isCreatedByUser,
-            siblingIdx,
-            siblingCount,
-          }) && <Elapsed index={index} />}
           <HoverButtons
             index={index}
             isEditing={edit}

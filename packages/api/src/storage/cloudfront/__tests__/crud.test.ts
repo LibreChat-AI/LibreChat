@@ -1,4 +1,5 @@
 import { Readable } from 'stream';
+import { finished } from 'stream/promises';
 import type { TFile } from 'librechat-data-provider';
 import type { CloudFrontFullConfig } from '~/cdn/cloudfront';
 import type { ServerRequest } from '~/types';
@@ -10,17 +11,20 @@ const mockSaveURLToS3WithMetadata = jest.fn();
 const mockUploadFileToS3 = jest.fn();
 const mockDeleteFileFromS3 = jest.fn();
 const mockGetS3FileStream = jest.fn();
+const mockParseS3Key = jest.fn();
 const mockExtractKeyFromS3Url = jest.fn<string, [string]>();
 const mockResolveStoredS3Key = jest.fn<string, [TFile]>();
 const mockCloudFrontSend = jest.fn();
 const mockGetSignedUrl = jest.fn<string, [object]>();
 const mockLogger = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+const originalFetch = global.fetch;
 
 jest.mock('~/cdn/cloudfront', () => ({
   getCloudFrontConfig: mockGetCloudFrontConfig,
 }));
 
 jest.mock('~/storage/s3/crud', () => ({
+  parseS3Key: mockParseS3Key,
   getS3Key: mockGetS3Key,
   saveBufferToS3: mockSaveBufferToS3,
   saveURLToS3WithMetadata: mockSaveURLToS3WithMetadata,
@@ -62,6 +66,10 @@ function makeConfig(overrides: Partial<CloudFrontFullConfig> = {}): CloudFrontFu
 }
 
 describe('CloudFront CRUD', () => {
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetS3Key.mockImplementation(
@@ -90,6 +98,28 @@ describe('CloudFront CRUD', () => {
       const url = await getCloudFrontURL({ userId: 'user1', fileName: 'photo.webp' });
       expect(url).toBe('https://d123.cloudfront.net/i/images/user1/photo.webp');
       expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('percent-encodes non-ASCII characters in the key', async () => {
+      const { getCloudFrontURL } = await import('~/storage/cloudfront/crud');
+      const url = await getCloudFrontURL({ userId: 'user1', fileName: 'Ársreikningur.pdf' });
+      expect(url).toBe('https://d123.cloudfront.net/i/images/user1/%C3%81rsreikningur.pdf');
+    });
+
+    it('percent-encodes a literal % so it cannot be read back as an escape', async () => {
+      const { getCloudFrontURL } = await import('~/storage/cloudfront/crud');
+      const url = await getCloudFrontURL({ userId: 'user1', fileName: 'report%20final.pdf' });
+      expect(url).toBe('https://d123.cloudfront.net/i/images/user1/report%2520final.pdf');
+    });
+
+    it('leaves path separators literal', async () => {
+      const { getCloudFrontURL } = await import('~/storage/cloudfront/crud');
+      const url = await getCloudFrontURL({
+        userId: 'user1',
+        fileName: 'doc.pdf',
+        basePath: 'documents',
+      });
+      expect(url).toBe('https://d123.cloudfront.net/documents/user1/doc.pdf');
     });
 
     it('uses custom basePath when provided', async () => {
@@ -512,6 +542,26 @@ describe('CloudFront CRUD', () => {
       );
     });
 
+    it('encodes the invalidation path the same way as the viewer URL', async () => {
+      mockResolveStoredS3Key.mockReturnValue('images/u/report%20final \u0151.webp');
+      mockGetCloudFrontConfig.mockReturnValue(
+        makeConfig({ invalidateOnDelete: true, distributionId: 'E123' }),
+      );
+      mockCloudFrontSend.mockResolvedValue({});
+
+      const { deleteFileFromCloudFront } = await import('~/storage/cloudfront/crud');
+      await deleteFileFromCloudFront(mockReq, mockFile);
+
+      const { CreateInvalidationCommand } = await import('@aws-sdk/client-cloudfront');
+      expect(CreateInvalidationCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          InvalidationBatch: expect.objectContaining({
+            Paths: { Quantity: 1, Items: ['/images/u/report%2520final%20%C5%91.webp'] },
+          }),
+        }),
+      );
+    });
+
     it('prefixes key with / for invalidation path', async () => {
       mockResolveStoredS3Key.mockReturnValue('images/u/file.webp'); // no leading slash
       mockGetCloudFrontConfig.mockReturnValue(
@@ -568,9 +618,137 @@ describe('CloudFront CRUD', () => {
   });
 
   describe('getCloudFrontFileStream', () => {
-    it('delegates to getS3FileStream', async () => {
+    const remoteKey = 'i/r/eu-west-1/images/u/f.webp';
+    const responseFor = (body: Readable) =>
+      new Response(Readable.toWeb(body) as unknown as BodyInit);
+
+    beforeEach(() => {
+      mockExtractKeyFromS3Url.mockReturnValue(remoteKey);
+      mockParseS3Key.mockReturnValue({ storageRegion: 'eu-west-1' });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('forwards a body error to the returned stream', async () => {
+      const body = new Readable({ read() {} });
+      jest.spyOn(global, 'fetch').mockResolvedValue(responseFor(body));
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      const stream = await getCloudFrontFileStream({} as ServerRequest, remoteKey);
+      const result = finished(stream);
+      body.destroy(new Error('terminated'));
+      await expect(result).rejects.toThrow('terminated');
+    });
+
+    it('forwards caller cancellation after headers and cancels the body', async () => {
+      const body = new Readable({ read() {} });
+      const controller = new AbortController();
+      jest.spyOn(global, 'fetch').mockResolvedValue(responseFor(body));
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      const stream = await getCloudFrontFileStream({} as ServerRequest, remoteKey, {
+        signal: controller.signal,
+      });
+      const result = finished(stream);
+      controller.abort();
+      await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+      expect(body.destroyed).toBe(true);
+    });
+
+    it('cancels the body when the returned stream is destroyed', async () => {
+      const body = new Readable({ read() {} });
+      jest.spyOn(global, 'fetch').mockResolvedValue(responseFor(body));
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      const stream = await getCloudFrontFileStream({} as ServerRequest, remoteKey);
+      const result = finished(stream);
+      stream.destroy();
+      await expect(result).rejects.toThrow('Premature close');
+      expect(body.destroyed).toBe(true);
+    });
+
+    it('cancels the body when the streamed byte limit is exceeded', async () => {
+      const limits = await import('~/storage/url');
+      jest.spyOn(limits, 'getRemoteFileFetchMaxBytes').mockReturnValue(3);
+      const body = new Readable({ read() {} });
+      jest.spyOn(global, 'fetch').mockResolvedValue(responseFor(body));
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      const stream = await getCloudFrontFileStream({} as ServerRequest, remoteKey);
+      const result = finished(stream);
+      stream.resume();
+      body.push('large');
+      await expect(result).rejects.toThrow('Remote file response too large');
+      expect(body.destroyed).toBe(true);
+    });
+
+    it('preserves caller cancellation before headers and clears the timeout', async () => {
+      jest.useFakeTimers();
+      jest.spyOn(global, 'fetch').mockImplementation(
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            });
+          }),
+      );
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      const controller = new AbortController();
+      const result = getCloudFrontFileStream({} as ServerRequest, remoteKey, {
+        signal: controller.signal,
+      });
+      controller.abort();
+      await expect(result).rejects.toMatchObject({ name: 'AbortError' });
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it.each([false, true])(
+      'times out response headers with caller signal=%s',
+      async (withSignal) => {
+        jest.useFakeTimers();
+        jest.spyOn(global, 'fetch').mockImplementation(
+          (_url, init) =>
+            new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+                once: true,
+              });
+            }),
+        );
+        const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+        const { getRemoteFileFetchTimeoutMs } = await import('~/storage/url');
+        const controller = new AbortController();
+        const result = getCloudFrontFileStream(
+          {} as ServerRequest,
+          remoteKey,
+          withSignal ? { signal: controller.signal } : undefined,
+        );
+        await Promise.all([
+          expect(result).rejects.toMatchObject({ name: 'AbortError' }),
+          jest.advanceTimersByTimeAsync(getRemoteFileFetchTimeoutMs()),
+        ]);
+        expect(controller.signal.aborted).toBe(false);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it('clears the header timeout while the body is still streaming', async () => {
+      jest.useFakeTimers();
+      const body = new Readable({ read() {} });
+      jest.spyOn(global, 'fetch').mockResolvedValue(responseFor(body));
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      const stream = await getCloudFrontFileStream({} as ServerRequest, remoteKey);
+      expect(jest.getTimerCount()).toBe(0);
+      jest.useRealTimers();
+      const result = finished(stream);
+      stream.resume();
+      body.push('remote');
+      body.push(null);
+      await result;
+    });
+
+    it('reads a local-region key directly from S3', async () => {
       const readable = new Readable();
       mockGetS3FileStream.mockResolvedValue(readable);
+      mockExtractKeyFromS3Url.mockReturnValue('r/us-east-1/images/u/f.webp');
+      mockParseS3Key.mockReturnValue({ storageRegion: 'us-east-1' });
 
       const mockReq = { user: { id: 'u' } } as ServerRequest;
       const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
@@ -581,9 +759,84 @@ describe('CloudFront CRUD', () => {
 
       expect(mockGetS3FileStream).toHaveBeenCalledWith(
         mockReq,
-        'https://d123.cloudfront.net/images/u/f.webp',
+        'r/us-east-1/images/u/f.webp',
+        undefined,
       );
       expect(result).toBe(readable);
+    });
+
+    it('reads a cross-region key through CloudFront', async () => {
+      mockGetCloudFrontConfig.mockReturnValue(
+        makeConfig({ privateKey: 'pk-secret', keyPairId: 'K123' }),
+      );
+      mockExtractKeyFromS3Url.mockReturnValue('i/r/eu-west-1/images/u/f.webp');
+      mockParseS3Key.mockReturnValue({ storageRegion: 'eu-west-1' });
+      mockGetSignedUrl.mockReturnValue(
+        'https://d123.cloudfront.net/i/r/eu-west-1/images/u/f.webp?Policy=abc',
+      );
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: () => '6' },
+        body: Readable.toWeb(Readable.from('remote')),
+      }) as unknown as typeof fetch;
+
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      const stream = await getCloudFrontFileStream(
+        { user: { id: 'u' } } as ServerRequest,
+        'i/r/eu-west-1/images/u/f.webp',
+      );
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.from(chunk));
+      }
+
+      expect(Buffer.concat(chunks).toString()).toBe('remote');
+      expect(mockGetS3FileStream).not.toHaveBeenCalled();
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://d123.cloudfront.net/i/r/eu-west-1/images/u/f.webp?Policy=abc',
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
+    });
+
+    it('preserves a cross-region CloudFront 404 for missing-attachment handling', async () => {
+      mockExtractKeyFromS3Url.mockReturnValue('i/r/eu-west-1/images/u/missing.webp');
+      mockParseS3Key.mockReturnValue({ storageRegion: 'eu-west-1' });
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        body: { cancel },
+      }) as unknown as typeof fetch;
+
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      await expect(
+        getCloudFrontFileStream(
+          { user: { id: 'u' } } as ServerRequest,
+          'i/r/eu-west-1/images/u/missing.webp',
+        ),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(cancel).toHaveBeenCalled();
+    });
+
+    it('cancels an oversized cross-region response', async () => {
+      mockExtractKeyFromS3Url.mockReturnValue('i/r/eu-west-1/images/u/large.webp');
+      mockParseS3Key.mockReturnValue({ storageRegion: 'eu-west-1' });
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: () => String(513 * 1024 * 1024) },
+        body: { cancel },
+      }) as unknown as typeof fetch;
+
+      const { getCloudFrontFileStream } = await import('~/storage/cloudfront/crud');
+      await expect(
+        getCloudFrontFileStream(
+          { user: { id: 'u' } } as ServerRequest,
+          'i/r/eu-west-1/images/u/large.webp',
+        ),
+      ).rejects.toThrow('Remote file response too large');
+      expect(cancel).toHaveBeenCalled();
     });
   });
 
