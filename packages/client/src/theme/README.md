@@ -309,6 +309,14 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `focus-outline` - The app-wide keyboard focus outline. Defaults to black in
   light and white in dark; a theme that names only `rgb-ring-primary` draws its
   outline in that ring.
+- `bg-surface-pressed` / `bg-surface-inverted-pressed` - The fill a neutral or
+  inverted control takes while held (`hover:active:`). Defaults to the hover fill,
+  which a pointer press has always shown; a theme that names only its hover fills
+  presses in them.
+- `bg-surface-disabled` / `text-text-disabled` / `border-border-disabled` - The
+  disabled fill, ink and edge, painted through the `theme-disabled:` variant only
+  when the theme's `disabledStyle` appearance role is `fill`. The default `dim`
+  keeps the half-opacity treatment every primitive carries.
 - `ring-focus-control` - The keyboard focus ring of the shared primitives
   (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
   the primary text ink; a theme that names only `rgb-text-primary` rings its

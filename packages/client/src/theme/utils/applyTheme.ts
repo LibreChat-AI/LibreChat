@@ -2,6 +2,7 @@ import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition
 import {
   controlBorderFallback,
   focusFallbacks,
+  pressedFallbacks,
   MARK_NEIGHBOURHOOD,
   themeAppearanceProperties,
   themeBrandTokens,
@@ -85,6 +86,17 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--focus-control', focus['rgb-focus-control']]);
   }
 
+  const pressed = pressedFallbacks(colors);
+  if (colors['rgb-surface-pressed'] === undefined && pressed['rgb-surface-pressed'] !== undefined) {
+    variables.push(['--surface-pressed', pressed['rgb-surface-pressed']]);
+  }
+  if (
+    colors['rgb-surface-inverted-pressed'] === undefined &&
+    pressed['rgb-surface-inverted-pressed'] !== undefined
+  ) {
+    variables.push(['--surface-inverted-pressed', pressed['rgb-surface-inverted-pressed']]);
+  }
+
   /**
    * Same rule as `resolveTheme`: a theme that paints what the mark is measured
    * against coordinated the `status-success-strong` the mark wore before it had
@@ -113,9 +125,16 @@ function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
   ]);
 }
 
+/**
+ * Mirrors the applied theme's `disabledStyle` on the root, where the
+ * `theme-disabled:` variant reads it. Absent means the default `dim` style.
+ */
+export const THEME_DISABLED_ATTRIBUTE = 'data-theme-disabled';
+
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
 }
 
 export function applyResolvedTheme(
@@ -132,6 +151,11 @@ export function applyResolvedTheme(
 
   variables.forEach(([property, value]) => root.style.setProperty(property, value));
   root.dataset.theme = theme.name;
+  if (theme.appearance.disabledStyle === 'fill') {
+    root.setAttribute(THEME_DISABLED_ATTRIBUTE, 'fill');
+  } else {
+    root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  }
 }
 
 /**

@@ -89,6 +89,20 @@ export function controlBorderFallback(colors: IThemeRGB): string | undefined {
 }
 
 /**
+ * The pressed fills for a theme that predates them. A pointer press lands on a
+ * hovered control, so the press showed the hover fill; a theme that painted a
+ * hover keeps it for the press, and one that names a pressed fill keeps it.
+ */
+export function pressedFallbacks(colors: IThemeRGB): IThemeRGB {
+  const pressed = colors['rgb-surface-pressed'] ?? colors['rgb-surface-hover'];
+  const inverted = colors['rgb-surface-inverted-pressed'] ?? colors['rgb-surface-inverted-hover'];
+  return {
+    ...(pressed !== undefined ? { 'rgb-surface-pressed': pressed } : {}),
+    ...(inverted !== undefined ? { 'rgb-surface-inverted-pressed': inverted } : {}),
+  };
+}
+
+/**
  * The focus roles for a stored or environment theme that predates them. The
  * global outline followed a theme's `rgb-ring-primary` whenever it named one,
  * and the shared primitives drew their ring in `rgb-text-primary`, so a theme
@@ -120,6 +134,7 @@ export const themeAppearanceProperties: Readonly<
   controlHeight: '--theme-control-height',
   spaceCompact: '--theme-space-compact',
   spaceNormal: '--theme-space-normal',
+  disabledStyle: '--theme-disabled-style',
   fontFamily: '--theme-font-family',
   monoFontFamily: '--theme-mono-font-family',
   elevationSurface: '--theme-elevation-surface',
@@ -148,6 +163,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   controlHeight: '2.25rem',
   spaceCompact: '0.375rem',
   spaceNormal: '0.75rem',
+  disabledStyle: 'dim',
   fontFamily: 'Inter, sans-serif',
   monoFontFamily:
     "'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, 'Cascadia Mono', 'Liberation Mono', Consolas, monospace",
@@ -356,6 +372,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const borderControlFallback =
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
   const focusFallback = customColors != null ? focusFallbacks(customColors) : {};
+  const pressedFallback = customColors != null ? pressedFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -417,6 +434,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...chartWidgetStrokeFallback,
       ...borderControlFallback,
       ...focusFallback,
+      ...pressedFallback,
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,

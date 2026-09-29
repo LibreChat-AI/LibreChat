@@ -321,6 +321,7 @@ html {
   --theme-control-height: 2.25rem;
   --theme-space-compact: 0.375rem;
   --theme-space-normal: 0.75rem;
+  --theme-disabled-style: dim;
   --theme-font-family: Inter, sans-serif;
   /* Roboto Mono is self-hosted (the `@font-face` block below), so code renders the same on every
    * platform with real bold and italic faces. The tail is reached while the font loads, if it

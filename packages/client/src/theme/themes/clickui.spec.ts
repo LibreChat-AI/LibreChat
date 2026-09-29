@@ -44,6 +44,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-active-alt': 'palette.slate.200',
     'rgb-surface-hover': 'palette.slate.100',
     'rgb-surface-hover-alt': 'palette.slate.200',
+    'rgb-surface-pressed': 'click.button.iconButton.color.primary.background.active',
     'rgb-surface-composer-hover': 'palette.slate.100',
     'rgb-surface-primary': 'global.color.background.default',
     'rgb-chart-widget-surface': 'global.color.background.default',
@@ -65,6 +66,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-code-body': 'click.codeblock.lightMode.color.background.default',
     'rgb-surface-inverted': 'palette.neutral.900',
     'rgb-surface-inverted-hover': 'palette.neutral.712',
+    'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
     'rgb-text-inverted': 'palette.neutral.0',
     'rgb-surface-fixed': 'palette.neutral.0',
     'rgb-surface-fixed-hover': 'palette.slate.100',
@@ -76,6 +78,9 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-xheavy': 'palette.slate.500',
     'rgb-border-destructive': 'palette.danger.600',
     'rgb-border-control': 'palette.slate.500',
+    'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
+    'rgb-text-disabled': 'global.color.text.disabled',
+    'rgb-border-disabled': 'click.field.color.stroke.disabled',
     'rgb-status-success': 'palette.success.800',
     'rgb-status-success-subtle': 'global.color.feedback.success.background',
     'rgb-status-success-border': 'palette.success.200',
@@ -142,6 +147,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-active-alt': 'palette.neutral.712',
     'rgb-surface-hover': 'palette.neutral.712',
     'rgb-surface-hover-alt': 'palette.neutral.700',
+    'rgb-surface-pressed': 'click.button.iconButton.color.primary.background.active',
     'rgb-surface-composer-hover': 'palette.neutral.712',
     'rgb-surface-primary': 'global.color.background.default',
     'rgb-chart-widget-surface': 'global.color.background.muted',
@@ -162,6 +168,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-code-body': 'click.codeblock.darkMode.color.background.default',
     'rgb-surface-inverted': 'click.button.basic.color.primary.background.default',
     'rgb-surface-inverted-hover': 'click.button.basic.color.primary.background.hover',
+    'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
     'rgb-text-inverted': 'click.button.basic.color.primary.text.default',
     'rgb-surface-fixed': 'palette.neutral.0',
     'rgb-surface-fixed-hover': 'palette.slate.100',
@@ -173,6 +180,9 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-xheavy': 'palette.neutral.500',
     'rgb-border-destructive': 'palette.danger.300',
     'rgb-border-control': 'palette.neutral.500',
+    'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
+    'rgb-text-disabled': 'global.color.text.disabled',
+    'rgb-border-disabled': 'click.field.color.stroke.disabled',
     'rgb-status-success': 'global.color.feedback.success.foreground',
     'rgb-status-success-subtle': 'global.color.feedback.success.background',
     'rgb-status-success-border': 'palette.success.800',
@@ -223,6 +233,16 @@ const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>
     'rgb-surface-overlay':
       'Click UI dark dialog.color.opaqueBackground is a gray that leaves the dialog under 3:1',
   },
+};
+
+/**
+ * Appearance choices that are a reading of Click UI rather than one of its values, and the
+ * evidence for each. Click UI gives every disabled control a fixed fill, ink and edge
+ * (`button.basic.color.primary.*.disabled`, `field.color.*.disabled`, `global.color.text.disabled`)
+ * and never fades one, so the theme paints them instead of dimming.
+ */
+const appearanceDecisions: Partial<Record<keyof IThemeAppearance, string>> = {
+  disabledStyle: 'fill: Click UI paints disabled controls in fixed disabled tokens, never opacity',
 };
 
 const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
@@ -362,7 +382,9 @@ describe('ClickHouse theme drift against Click UI', () => {
   it.each(modes)('matches every %s shape, font and motion value to its Click UI token', (mode) => {
     const appearance = clickHouseTheme.modes[mode]?.appearance ?? {};
     const unsourced = Object.keys(appearance).filter(
-      (key) => appearanceSources[key as keyof IThemeAppearance] === undefined,
+      (key) =>
+        appearanceSources[key as keyof IThemeAppearance] === undefined &&
+        appearanceDecisions[key as keyof IThemeAppearance] === undefined,
     );
     const drift = Object.entries(appearanceSources).flatMap(([name, token]) => {
       const key = name as keyof IThemeAppearance;

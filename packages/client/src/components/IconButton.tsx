@@ -19,14 +19,16 @@ type IconButtonVariantProps = {
 };
 
 const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string = cva(
-  'inline-flex shrink-0 items-center justify-center text-text-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex shrink-0 items-center justify-center text-text-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary disabled:pointer-events-none disabled:opacity-50 theme-disabled:text-text-disabled theme-disabled:bg-surface-disabled theme-disabled:opacity-100',
   {
     variants: {
       variant: {
-        default: 'bg-surface-secondary hover:bg-surface-hover',
-        primary: 'bg-surface-inverted text-text-inverted hover:bg-surface-inverted-hover',
-        secondary: 'border border-border-light bg-surface-secondary hover:bg-surface-hover',
-        ghost: 'bg-transparent hover:bg-surface-hover',
+        default: 'bg-surface-secondary hover:bg-surface-hover hover:active:bg-surface-pressed',
+        primary:
+          'bg-surface-inverted text-text-inverted hover:bg-surface-inverted-hover hover:active:bg-surface-inverted-pressed',
+        secondary:
+          'border border-border-light bg-surface-secondary hover:bg-surface-hover hover:active:bg-surface-pressed theme-disabled:border-border-disabled',
+        ghost: 'bg-transparent hover:bg-surface-hover hover:active:bg-surface-pressed',
         /** An action inside a list row whose highlight is already `surface-hover`,
          *  so its own hover takes the active fill to stay visible on top of it. */
         'row-action': 'bg-transparent hover:bg-surface-active',

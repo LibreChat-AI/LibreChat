@@ -38,6 +38,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-active-alt': '227 227 227', // #e3e3e3 (gray-200)
   'rgb-surface-hover': '227 227 227', // #e3e3e3 (gray-200)
   'rgb-surface-hover-alt': '205 205 205', // #cdcdcd (gray-300)
+  'rgb-surface-pressed': '227 227 227', // #e3e3e3 (gray-200), the hover fill
   'rgb-surface-composer-hover': '227 227 227', // #e3e3e3 (gray-200)
   'rgb-surface-primary': '255 255 255', // #fff (white)
   'rgb-chart-widget-surface': '255 255 255', // #fff (Click UI chart widget)
@@ -59,6 +60,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-code-body': '255 255 255', // #fff (white)
   'rgb-surface-inverted': '23 23 23', // #171717 (gray-850)
   'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f (gray-700)
+  'rgb-surface-inverted-pressed': '47 47 47', // #2f2f2f (gray-700), the hover fill
   'rgb-text-inverted': '255 255 255', // #fff (white)
   'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
   'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark
@@ -72,6 +74,9 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-xheavy': '89 89 89', // #595959 (gray-500)
   'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
   'rgb-border-control': '227 227 227', // #e3e3e3 (gray-200), the stock field edge
+  'rgb-surface-disabled': '236 236 236', // #ececec (gray-100)
+  'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
+  'rgb-border-disabled': '227 227 227', // #e3e3e3 (gray-200)
 
   // Status colors
   'rgb-status-success': '4 120 87', // #047857 (green-700)

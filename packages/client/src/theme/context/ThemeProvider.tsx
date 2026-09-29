@@ -16,7 +16,11 @@ import {
   resolveTheme,
   validateThemeDefinition,
 } from '../registry';
-import applyTheme, { applyResolvedTheme, themeOwnedProperties } from '../utils/applyTheme';
+import applyTheme, {
+  applyResolvedTheme,
+  themeOwnedProperties,
+  THEME_DISABLED_ATTRIBUTE,
+} from '../utils/applyTheme';
 import { defaultTheme } from '../themes/default';
 import { darkTheme } from '../themes/dark';
 import '../highContrast.css';
@@ -48,6 +52,7 @@ type ThemeDOMSnapshot = {
   properties: Map<string, { value: string; priority: string }>;
   colorScheme: { value: string; priority: string };
   dataTheme: string | null;
+  disabledStyle: string | null;
 };
 
 type ThemeClassSnapshot = {
@@ -282,6 +287,7 @@ const captureThemeDOM = (root: HTMLElement): ThemeDOMSnapshot => ({
     priority: root.style.getPropertyPriority('color-scheme'),
   },
   dataTheme: root.getAttribute('data-theme'),
+  disabledStyle: root.getAttribute(THEME_DISABLED_ATTRIBUTE),
 });
 
 const restoreThemeDOM = (snapshot: ThemeDOMSnapshot, root: HTMLElement): void => {
@@ -307,6 +313,11 @@ const restoreThemeDOM = (snapshot: ThemeDOMSnapshot, root: HTMLElement): void =>
     root.removeAttribute('data-theme');
   } else {
     root.setAttribute('data-theme', snapshot.dataTheme);
+  }
+  if (snapshot.disabledStyle === null) {
+    root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  } else {
+    root.setAttribute(THEME_DISABLED_ATTRIBUTE, snapshot.disabledStyle);
   }
 };
 

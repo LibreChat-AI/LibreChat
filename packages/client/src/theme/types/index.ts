@@ -39,6 +39,8 @@ export interface IThemeRGB {
   'rgb-surface-active-alt'?: string;
   'rgb-surface-hover'?: string;
   'rgb-surface-hover-alt'?: string;
+  /** Fill of a neutral control while pressed; follows `rgb-surface-hover` when a theme omits it. */
+  'rgb-surface-pressed'?: string;
   'rgb-surface-composer-hover'?: string;
   'rgb-surface-primary'?: string;
   'rgb-chart-widget-surface'?: string;
@@ -60,6 +62,8 @@ export interface IThemeRGB {
   'rgb-surface-code-body'?: string;
   'rgb-surface-inverted'?: string;
   'rgb-surface-inverted-hover'?: string;
+  /** Fill of an inverted control while pressed; follows `rgb-surface-inverted-hover` when omitted. */
+  'rgb-surface-inverted-pressed'?: string;
   'rgb-text-inverted'?: string;
   'rgb-surface-fixed'?: string;
   'rgb-surface-fixed-hover'?: string;
@@ -76,6 +80,10 @@ export interface IThemeRGB {
    *  3:1 non-text floor on every canvas, so it is kept apart from the separator
    *  roles above, which stay quiet. */
   'rgb-border-control'?: string;
+  /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
+  'rgb-surface-disabled'?: string;
+  'rgb-text-disabled'?: string;
+  'rgb-border-disabled'?: string;
 
   // Status colors
   'rgb-status-success'?: string;
@@ -183,6 +191,7 @@ export interface IThemeVariables {
   '--surface-active-alt': string;
   '--surface-hover': string;
   '--surface-hover-alt': string;
+  '--surface-pressed': string;
   '--surface-composer-hover': string;
   '--surface-primary': string;
   '--chart-widget-surface': string;
@@ -204,6 +213,7 @@ export interface IThemeVariables {
   '--surface-code-body': string;
   '--surface-inverted': string;
   '--surface-inverted-hover': string;
+  '--surface-inverted-pressed': string;
   '--text-inverted': string;
   '--surface-fixed': string;
   '--surface-fixed-hover': string;
@@ -219,6 +229,9 @@ export interface IThemeVariables {
   '--border-xheavy-alpha': string;
   '--border-destructive': string;
   '--border-control': string;
+  '--surface-disabled': string;
+  '--text-disabled': string;
+  '--border-disabled': string;
   '--status-success': string;
   '--status-success-subtle': string;
   '--status-success-border': string;
@@ -291,6 +304,7 @@ export interface IThemeColors {
   'surface-active-alt'?: string;
   'surface-hover'?: string;
   'surface-hover-alt'?: string;
+  'surface-pressed'?: string;
   'surface-composer-hover'?: string;
   'surface-primary'?: string;
   'chart-widget-surface'?: string;
@@ -312,6 +326,7 @@ export interface IThemeColors {
   'surface-code-body'?: string;
   'surface-inverted'?: string;
   'surface-inverted-hover'?: string;
+  'surface-inverted-pressed'?: string;
   'text-inverted'?: string;
   'surface-fixed'?: string;
   'surface-fixed-hover'?: string;
@@ -323,6 +338,9 @@ export interface IThemeColors {
   'border-xheavy'?: string;
   'border-destructive'?: string;
   'border-control'?: string;
+  'surface-disabled'?: string;
+  'text-disabled'?: string;
+  'border-disabled'?: string;
   'status-success'?: string;
   'status-success-subtle'?: string;
   'status-success-border'?: string;
@@ -385,6 +403,8 @@ export interface IThemeAppearance {
   controlHeight: string;
   spaceCompact: string;
   spaceNormal: string;
+  /** `dim` fades a disabled control to half opacity; `fill` paints it in the disabled roles. */
+  disabledStyle: 'dim' | 'fill';
   fontFamily: string;
   monoFontFamily: string;
   elevationSurface: string;

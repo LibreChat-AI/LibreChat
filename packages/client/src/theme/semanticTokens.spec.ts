@@ -701,3 +701,36 @@ describe('focus role defaults', () => {
     expect(declared).toEqual([defaultTheme['rgb-focus-control'], darkTheme['rgb-focus-control']]);
   });
 });
+
+describe('state role defaults', () => {
+  /** A pointer press lands on a hovered control, so the default press shows the
+   *  hover fill it always did; only a theme that names a pressed fill changes it. */
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('presses %s controls in their hover fills', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-surface-pressed']).toBe(theme['rgb-surface-hover']);
+    expect(theme['rgb-surface-inverted-pressed']).toBe(theme['rgb-surface-inverted-hover']);
+  });
+
+  it('keeps the package CSS in step with the runtime themes', () => {
+    const controls = readFileSync(join(__dirname, 'controls.css'), 'utf8');
+    const roles = [
+      'rgb-surface-pressed',
+      'rgb-surface-inverted-pressed',
+      'rgb-surface-disabled',
+      'rgb-text-disabled',
+      'rgb-border-disabled',
+    ] as const;
+
+    roles.forEach((role) => {
+      const declared = [
+        ...controls.matchAll(new RegExp(`--${role.slice(4)}:\\s*([^;]+);`, 'g')),
+      ].map((match) => match[1].trim());
+
+      expect(declared).toEqual([defaultTheme[role], darkTheme[role]]);
+    });
+  });
+});

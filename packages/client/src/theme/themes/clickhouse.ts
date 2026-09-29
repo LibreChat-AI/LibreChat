@@ -63,6 +63,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-active-alt': '204 207 211', // #cccfd3 (palette.slate.200)
   'rgb-surface-hover': '230 231 233', // #e6e7e9 (palette.slate.100)
   'rgb-surface-hover-alt': '204 207 211', // #cccfd3 (palette.slate.200)
+  'rgb-surface-pressed': '221 222 225', // #dddee1 (button.iconButton.color.primary.background.active)
   'rgb-surface-composer-hover': '230 231 233', // #e6e7e9 (palette.slate.100)
   'rgb-surface-primary': '255 255 255', // #ffffff (background.default)
   'rgb-chart-widget-surface': '255 255 255', // #ffffff (background.default)
@@ -84,6 +85,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-code-body': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
+  'rgb-surface-inverted-pressed': '22 21 23', // #161517 (button.basic.color.primary.background.active)
   'rgb-text-inverted': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-fixed': '255 255 255', // #ffffff (palette.neutral.0, same in light and dark)
   'rgb-surface-fixed-hover': '230 231 233', // #e6e7e9 (palette.slate.100, same in light and dark)
@@ -97,6 +99,9 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-xheavy': '128 134 145', // #808691 (palette.slate.500, two steps past stroke.intense #b3b6bd (2.03:1 on white))
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
+  'rgb-surface-disabled': '223 223 223', // #dfdfdf (button.basic.color.primary.background.disabled)
+  'rgb-text-disabled': '160 160 160', // #a0a0a0 (text.disabled)
+  'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
 
   // Status colors
   'rgb-status-success': '0 97 8', // #006108 (palette.success.800, one step past feedback.success.foreground #008a0b (4.27:1 on its fill))
@@ -185,6 +190,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-active-alt': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-hover': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-hover-alt': '65 65 65', // #414141 (palette.neutral.700)
+  'rgb-surface-pressed': '36 36 36', // #242424 (button.iconButton.color.primary.background.active)
   'rgb-surface-composer-hover': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-primary': '31 31 28', // #1f1f1c (background.default)
   'rgb-chart-widget-surface': '40 40 40', // #282828 (background.muted)
@@ -209,6 +215,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
+  'rgb-surface-inverted-pressed': '231 236 97', // #e7ec61 (button.basic.color.primary.background.active)
   'rgb-text-inverted': '31 31 28', // #1f1f1c (button.basic.color.primary.text.default)
   'rgb-surface-fixed': '255 255 255', // #ffffff (palette.neutral.0, same in light and dark)
   'rgb-surface-fixed-hover': '230 231 233', // #e6e7e9 (palette.slate.100, same in light and dark)
@@ -222,6 +229,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-xheavy': '128 128 128', // #808080 (palette.neutral.500, three steps past stroke.intense #414141 (1.62:1 on the canvas))
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
+  'rgb-surface-disabled': '65 65 65', // #414141 (button.basic.color.primary.background.disabled)
+  'rgb-text-disabled': '128 128 128', // #808080 (text.disabled)
+  'rgb-border-disabled': '65 65 65', // #414141 (field.color.stroke.disabled)
 
   // Status colors
   'rgb-status-success': '204 255 208', // #ccffd0 (feedback.success.foreground)
@@ -313,6 +323,8 @@ const clickHouseShape = {
   shadowXs: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   controlHeight: '2rem', // genericMenu.panel.size.height
+  /** Click UI paints disabled controls in fixed fills (`#dfdfdf` / `#414141`) rather than fading them. */
+  disabledStyle: 'fill' as const,
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
   motionNormal: '150ms', // transition.duration.smooth
 };

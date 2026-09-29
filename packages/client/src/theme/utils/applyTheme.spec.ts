@@ -3,6 +3,7 @@ import applyTheme, {
   applyResolvedTheme,
   clearAppliedTheme,
   themeOwnedProperties,
+  THEME_DISABLED_ATTRIBUTE,
 } from './applyTheme';
 import { defaultAppearance, highContrastTheme, resolveTheme } from '../registry';
 import { defaultTheme } from '../themes/default';
@@ -330,6 +331,38 @@ describe('applyTheme', () => {
 
     expect(root.style.getPropertyValue('--chart-widget-surface')).toBe('40 41 42');
     expect(root.style.getPropertyValue('--chart-widget-stroke')).toBe('50 51 52');
+  });
+
+  it('carries a legacy hover onto the pressed fills', () => {
+    const root = document.documentElement;
+
+    applyTheme(
+      { 'rgb-surface-hover': '110 111 112', 'rgb-surface-inverted-hover': '20 21 22' },
+      root,
+      defaultTheme,
+    );
+
+    expect(root.style.getPropertyValue('--surface-pressed')).toBe('110 111 112');
+    expect(root.style.getPropertyValue('--surface-inverted-pressed')).toBe('20 21 22');
+  });
+
+  it('marks the root only for a theme that fills its disabled controls, and clears it', () => {
+    const root = document.documentElement;
+    const fill: ThemeDefinition = {
+      version: 1,
+      name: 'fill-reference',
+      modes: { light: { appearance: { disabledStyle: 'fill' } } },
+    };
+
+    applyResolvedTheme(resolveTheme(fill, 'light'), root);
+    expect(root.getAttribute(THEME_DISABLED_ATTRIBUTE)).toBe('fill');
+
+    applyResolvedTheme(resolveTheme({ ...fill, modes: {} }, 'light'), root);
+    expect(root.hasAttribute(THEME_DISABLED_ATTRIBUTE)).toBe(false);
+
+    applyResolvedTheme(resolveTheme(fill, 'light'), root);
+    clearAppliedTheme(root);
+    expect(root.hasAttribute(THEME_DISABLED_ATTRIBUTE)).toBe(false);
   });
 
   it('carries a legacy light border onto the control outline', () => {

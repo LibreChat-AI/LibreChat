@@ -71,6 +71,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-surface-active-alt': '212 212 212', // #d4d4d4
   'rgb-surface-hover': '212 212 212', // #d4d4d4
   'rgb-surface-hover-alt': '184 184 184', // #b8b8b8
+  'rgb-surface-pressed': '212 212 212', // #d4d4d4, the hover fill
   'rgb-surface-composer-hover': '212 212 212', // #d4d4d4
   'rgb-surface-primary': '255 255 255', // #ffffff
   /** The chart widget canvas and its edge, which default to `surface-primary`
@@ -95,6 +96,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-surface-code-body': '255 255 255', // #ffffff, matching surface-chat
   'rgb-surface-inverted': '0 0 0', // #000000
   'rgb-surface-inverted-hover': '51 51 51', // #333333
+  'rgb-surface-inverted-pressed': '51 51 51', // #333333, the hover fill
   'rgb-text-inverted': '255 255 255', // #ffffff
   'rgb-surface-fixed': '255 255 255', // #ffffff
   'rgb-surface-fixed-hover': '212 212 212', // #d4d4d4
@@ -108,6 +110,9 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-border-xheavy': '0 0 0', // #000000
   'rgb-border-destructive': '161 0 0', // #a10000
   'rgb-border-control': '0 0 0', // #000000
+  'rgb-surface-disabled': '255 255 255', // #ffffff
+  'rgb-text-disabled': '87 87 87', // #575757
+  'rgb-border-disabled': '87 87 87', // #575757
 
   // Status colors
   'rgb-status-success': '0 92 46', // #005c2e
@@ -216,6 +221,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-surface-active-alt': '61 61 61', // #3d3d3d
   'rgb-surface-hover': '61 61 61', // #3d3d3d
   'rgb-surface-hover-alt': '87 87 87', // #575757
+  'rgb-surface-pressed': '61 61 61', // #3d3d3d, the hover fill
   'rgb-surface-composer-hover': '61 61 61', // #3d3d3d
   'rgb-surface-primary': '0 0 0', // #000000
   /** See the light mode note: the widget takes the plain canvas and a pure-ink
@@ -239,6 +245,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-surface-code-body': '0 0 0', // #000000, matching surface-primary-alt
   'rgb-surface-inverted': '255 255 255', // #ffffff
   'rgb-surface-inverted-hover': '212 212 212', // #d4d4d4
+  'rgb-surface-inverted-pressed': '212 212 212', // #d4d4d4, the hover fill
   'rgb-text-inverted': '0 0 0', // #000000
   'rgb-surface-fixed': '255 255 255', // #ffffff
   'rgb-surface-fixed-hover': '212 212 212', // #d4d4d4
@@ -252,6 +259,9 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-border-xheavy': '255 255 255', // #ffffff
   'rgb-border-destructive': '255 143 143', // #ff8f8f
   'rgb-border-control': '255 255 255', // #ffffff
+  'rgb-surface-disabled': '0 0 0', // #000000
+  'rgb-text-disabled': '184 184 184', // #b8b8b8
+  'rgb-border-disabled': '184 184 184', // #b8b8b8
 
   // Status colors
   'rgb-status-success': '127 240 179', // #7ff0b3

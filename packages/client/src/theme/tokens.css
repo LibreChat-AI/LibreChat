@@ -30,6 +30,7 @@
   --color-surface-active-alt: rgb(var(--surface-active-alt));
   --color-surface-hover: rgb(var(--surface-hover));
   --color-surface-hover-alt: rgb(var(--surface-hover-alt));
+  --color-surface-pressed: rgb(var(--surface-pressed));
   --color-surface-composer-hover: rgb(var(--surface-composer-hover));
   --color-surface-primary: rgb(var(--surface-primary));
   --color-surface-primary-alt: rgb(var(--surface-primary-alt));
@@ -50,8 +51,10 @@
   --color-surface-qr: rgb(var(--surface-qr));
   --color-surface-inverted: rgb(var(--surface-inverted));
   --color-surface-inverted-hover: rgb(var(--surface-inverted-hover));
+  --color-surface-inverted-pressed: rgb(var(--surface-inverted-pressed));
   --color-surface-fixed: rgb(var(--surface-fixed));
   --color-surface-fixed-hover: rgb(var(--surface-fixed-hover));
+  --color-surface-disabled: rgb(var(--surface-disabled));
 
   /* text */
   --color-text-primary: rgb(var(--text-primary));
@@ -64,6 +67,7 @@
   --color-text-inverted: rgb(var(--text-inverted));
   --color-text-fixed: rgb(var(--text-fixed));
   --color-text-on-status: rgb(var(--text-on-status));
+  --color-text-disabled: rgb(var(--text-disabled));
 
   /* links */
   --color-link: rgb(var(--link));
@@ -78,6 +82,7 @@
   --color-border-xheavy: rgb(var(--border-xheavy) / var(--border-xheavy-alpha, 1));
   --color-border-destructive: rgb(var(--border-destructive));
   --color-border-control: rgb(var(--border-control));
+  --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */
   --color-status-success: rgb(var(--status-success));
@@ -116,3 +121,10 @@
   --color-chart-widget-stroke: rgb(var(--chart-widget-stroke));
   --color-switch-unchecked: rgb(var(--switch-unchecked));
 }
+
+/* A theme whose `disabledStyle` is `fill` paints a disabled control in the
+ * disabled roles instead of fading it; `ThemeProvider` mirrors that choice as
+ * `data-theme-disabled` on the root. The default `dim` style keeps the
+ * `disabled:opacity-50` every primitive already carries. `:is()` carries the
+ * attribute's weight, so the fill outranks a checked or variant fill. */
+@custom-variant theme-disabled (&:is([data-theme-disabled='fill'] *):disabled);
