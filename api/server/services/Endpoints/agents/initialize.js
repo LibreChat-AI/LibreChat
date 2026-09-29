@@ -204,6 +204,7 @@ const initializeClientWithProvider = async ({
   checkpointNamespace,
   foregroundRunId,
   requestBody,
+  toolTimingReplayEvents,
   upstreamTokenProvider,
   upstreamTokenProviderResolver,
 }) => {
@@ -1824,6 +1825,7 @@ const initializeClientWithProvider = async ({
     usageEmitSink,
     eventChildActivity,
     resolveMcpServerName,
+    toolTimingReplayEvents,
   });
 
   const client = new AgentClient({

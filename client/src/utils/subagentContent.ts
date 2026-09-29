@@ -1,4 +1,4 @@
-import { ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { ContentTypes, ToolCallTypes, getToolTimingDurations } from 'librechat-data-provider';
 import type { SubagentUpdateEvent } from 'librechat-data-provider';
 
 /**
@@ -35,6 +35,8 @@ type RunStepData = {
 
 type RunStepCompletedData = {
   result?: {
+    id?: string;
+    completed_at?: number;
     type?: string;
     tool_call?: {
       id?: string;
@@ -49,6 +51,17 @@ type RunStepCompletedData = {
 
 type RunStepClosedData = {
   id?: string;
+};
+
+type ToolDispatchData = {
+  dispatched_at?: number;
+  toolCalls?: Array<{ id?: string; stepId?: string }>;
+};
+
+type ToolPreparationData = {
+  id?: string;
+  toolCallId?: string;
+  observed_at?: number;
 };
 
 type MessageDeltaData = {
@@ -81,6 +94,11 @@ type ToolCallPart = {
     progress: number;
     inputValidationError?: true;
     type?: string;
+    stepId?: string;
+    toolPreparationStartedAt?: number;
+    toolDispatchedAt?: number;
+    toolPreparationDurationMs?: number;
+    toolExecutionDurationMs?: number;
   };
 };
 
@@ -269,6 +287,7 @@ export function foldSubagentEvent(
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           id: tc.id,
+          ...(typeof data?.id === 'string' ? { stepId: data.id } : {}),
           name: tc.name ?? '',
           args: stringifyArgs(tc.args),
           progress: 0.1,
@@ -291,6 +310,57 @@ export function foldSubagentEvent(
     };
   }
 
+  if (event.phase === 'tool_preparation') {
+    const data = event.data as ToolPreparationData | undefined;
+    const id = data?.toolCallId;
+    const at = data?.observed_at;
+    if (!id || typeof at !== 'number' || !Number.isFinite(at) || at < 0) return { parts, state };
+    const idx = state.toolCallIndexById[id];
+    const part = idx == null ? undefined : parts[idx];
+    if (
+      part?.type !== ContentTypes.TOOL_CALL ||
+      part.tool_call.stepId !== data.id ||
+      part.tool_call.progress >= 1
+    )
+      return { parts, state };
+    const next = parts.slice();
+    next[idx] = {
+      ...part,
+      tool_call: {
+        ...part.tool_call,
+        toolPreparationStartedAt: Math.min(part.tool_call.toolPreparationStartedAt ?? at, at),
+      },
+    };
+    return { parts: next, state };
+  }
+
+  if (event.phase === 'tool_calls_dispatched') {
+    const data = event.data as ToolDispatchData | undefined;
+    const at = data?.dispatched_at;
+    if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) return { parts, state };
+    let next = parts;
+    for (const call of data?.toolCalls ?? []) {
+      if (!call.id || !call.stepId) continue;
+      const idx = state.toolCallIndexById[call.id];
+      const part = idx == null ? undefined : next[idx];
+      if (
+        part?.type !== ContentTypes.TOOL_CALL ||
+        part.tool_call.stepId !== call.stepId ||
+        part.tool_call.progress >= 1
+      )
+        continue;
+      if (next === parts) next = parts.slice();
+      next[idx] = {
+        ...part,
+        tool_call: {
+          ...part.tool_call,
+          toolDispatchedAt: Math.min(part.tool_call.toolDispatchedAt ?? at, at),
+        },
+      };
+    }
+    return { parts: next, state };
+  }
+
   if (event.phase === 'run_step_completed') {
     const data = event.data as RunStepCompletedData | undefined;
     const tc = data?.result?.tool_call;
@@ -298,10 +368,19 @@ export function foldSubagentEvent(
     const existingIdx = state.toolCallIndexById[tc.id];
     if (existingIdx != null) {
       const existing = parts[existingIdx] as ToolCallPart;
+      const timings =
+        data?.result?.id === existing.tool_call.stepId
+          ? getToolTimingDurations({
+              observedAt: existing.tool_call.toolPreparationStartedAt,
+              dispatchedAt: existing.tool_call.toolDispatchedAt,
+              completedAt: data?.result?.completed_at,
+            })
+          : {};
       const merged: ToolCallPart = {
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           ...existing.tool_call,
+          ...timings,
           ...(tc.name ? { name: tc.name } : {}),
           ...(tc.args != null ? { args: stringifyArgs(tc.args) } : {}),
           ...(tc.output != null ? { output: tc.output } : {}),

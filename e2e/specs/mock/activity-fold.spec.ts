@@ -89,7 +89,7 @@ test.describe('activity fold', () => {
     const pill = messagesView(page).getByTestId('failed-reveal-pill');
     const peek = messagesView(page).getByTestId('activity-phase-failed-peek');
     await expect(pill).toBeVisible();
-    await expect(pill).toHaveAccessibleName('Show failed call');
+    await expect(pill).toHaveAccessibleName('Show 1 failed call out of 4 calls');
     await expect(peek).toBeVisible();
     await expect(peek).toContainText('Failed:');
     await expect(peek).toContainText('Show error');

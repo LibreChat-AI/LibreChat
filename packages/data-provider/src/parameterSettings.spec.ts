@@ -79,6 +79,25 @@ describe('applyModelAwareDefaults', () => {
     expect(hasSetting(result, 'effort')).toBe(true);
   });
 
+  it.each(['claude-sonnet-5-5', 'claude-sonnet-5.5'])(
+    'keeps the thinking toggle but hides budget and sampling controls for %s',
+    (model) => {
+      const result = applyModelAwareDefaults(anthropicParams, EModelEndpoint.anthropic, model);
+
+      expect(hasSetting(result, 'thinking')).toBe(true);
+      expect(result.find((setting) => setting.key === 'thinking')?.description).toBe(
+        'com_endpoint_anthropic_thinking_between_tools',
+      );
+      expect(hasSetting(result, 'thinkingBudget')).toBe(false);
+      expect(hasSetting(result, 'temperature')).toBe(false);
+      expect(hasSetting(result, 'topP')).toBe(false);
+      expect(hasSetting(result, 'topK')).toBe(false);
+      expect(hasSetting(result, 'effort')).toBe(true);
+      expect(hasSetting(result, 'thinkingDisplay')).toBe(true);
+      expect(hasSetting(result, 'promptCache')).toBe(true);
+    },
+  );
+
   it('returns settings unchanged when no model is provided', () => {
     expect(applyModelAwareDefaults(googleParams, EModelEndpoint.google, '')).toBe(googleParams);
   });

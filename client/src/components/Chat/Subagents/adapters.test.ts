@@ -19,6 +19,86 @@ import {
 } from '~/utils/subagentContent';
 
 describe('child activity adapters', () => {
+  it('passes child dispatch and completed durations to the generic tool card', () => {
+    const progress = {
+      subagentRunId: 'child',
+      subagentType: 'researcher',
+      status: 'tool_calls_dispatched' as const,
+      contentParts: aggregateSubagentContent([
+        {
+          runId: 'parent',
+          subagentRunId: 'child',
+          subagentType: 'researcher',
+          subagentAgentId: 'agent',
+          timestamp: '2026-09-28T00:00:00Z',
+          phase: 'run_step',
+          data: {
+            id: 'step-child',
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [{ id: 'call-child', name: 'query', args: '{}' }],
+            },
+          },
+        },
+        {
+          runId: 'parent',
+          subagentRunId: 'child',
+          subagentType: 'researcher',
+          subagentAgentId: 'agent',
+          timestamp: '2026-09-28T00:00:00Z',
+          phase: 'tool_calls_dispatched',
+          data: {
+            dispatched_at: 500,
+            toolCalls: [{ id: 'call-child', stepId: 'step-child' }],
+          },
+        },
+      ]),
+      aggregatorState: initSubagentAggregatorState(),
+      tickerState: initSubagentTickerState(),
+      coverage: 'complete' as const,
+    };
+    expect(
+      adaptLivePersistedActivity({
+        title: 'researcher',
+        progress,
+        persistedContent: undefined,
+        initialProgress: 0.1,
+        isSubmitting: true,
+      }).items[0],
+    ).toMatchObject({
+      type: 'tool',
+      toolCallId: 'call-child',
+      toolDispatchedAt: 500,
+      status: 'running',
+    });
+    const persisted = adaptLivePersistedActivity({
+      title: 'researcher',
+      progress: null,
+      persistedContent: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'call-child',
+            name: 'query',
+            args: '{}',
+            output: 'ok',
+            progress: 1,
+            toolPreparationDurationMs: 400,
+            toolExecutionDurationMs: 40,
+          },
+        },
+      ] as TMessageContentParts[],
+      initialProgress: 1,
+      isSubmitting: false,
+    });
+    expect(persisted.items[0]).toMatchObject({
+      type: 'tool',
+      toolCallId: 'call-child',
+      toolPreparationDurationMs: 400,
+      toolExecutionDurationMs: 40,
+      status: 'completed',
+    });
+  });
   it('prefers authoritative parent persistence over a partial live foreground trace', () => {
     const activity = adaptLivePersistedActivity({
       title: 'researcher',

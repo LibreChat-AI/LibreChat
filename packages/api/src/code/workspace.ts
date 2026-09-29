@@ -1,9 +1,11 @@
 import {
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
+  CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS,
   CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS,
   CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS,
 } from 'librechat-data-provider';
 import type { CodeBridgeFetch } from './bridge';
+import { CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS } from './limits';
 
 const WORKSPACE_TOOL_TIMEOUT_MS = 30_000;
 const MAX_PATH_LENGTH = 4096;
@@ -30,6 +32,24 @@ const WORKSPACE_QUEUE_WAIT_HEADER = 'X-LibreChat-Workspace-Queue-Wait-Ms';
 export const WORKSPACE_QUEUE_MAX_WAIT_MS: number = CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS;
 const WORKSPACE_QUEUE_RETRY_DELAY_MS = 1_000;
 const WORKSPACE_COMMAND_SETTLEMENT_GRACE_MS = 5_000;
+
+/**
+ * Longest command timeout a total HTTP budget can carry: the budget minus settlement and delivery
+ * grace and a minimum admission allowance. A command whose reserve reaches the budget is refused
+ * before dispatch, so a larger ceiling would only advertise timeouts that can never start.
+ */
+export function fitWorkspaceCommandTimeoutToBudget(
+  maxRequestTimeoutMs: number,
+  minCommandAdmissionMs: number = CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS,
+): number {
+  return Math.max(
+    1,
+    maxRequestTimeoutMs -
+      WORKSPACE_COMMAND_SETTLEMENT_GRACE_MS -
+      WORKSPACE_COMMAND_TRANSPORT_GRACE_MS -
+      minCommandAdmissionMs,
+  );
+}
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 4096;
 const ERROR_BODY_TIMEOUT_MS = 1000;
@@ -274,12 +294,17 @@ export class WorkspaceToolHttpError extends Error {
     public readonly upstreamBodyTruncated = false,
   ) {
     let message = `Workspace tool request ${reason}`;
-    if (
-      reason === 'rejected' &&
-      isWorkspaceAdmissionTimeout(upstreamStatus, upstreamBody, upstreamBodyTruncated)
-    ) {
+    const admissionRejection =
+      reason === 'rejected'
+        ? getWorkspaceAdmissionRejection(upstreamStatus, upstreamBody, upstreamBodyTruncated)
+        : undefined;
+    if (admissionRejection === 'queue_timeout') {
       message =
         'Workspace capacity was unavailable before the queue deadline. The operation was not started. Wait for active work to finish or select an independent workspace on a machine with available capacity.';
+    }
+    if (admissionRejection === 'rate_limited') {
+      message =
+        'The Code API request rate limit was reached. The operation was not started. Wait a few seconds before retrying, or make fewer concurrent workspace calls.';
     }
     if (reason === 'insufficient_time') {
       message =
@@ -295,15 +320,38 @@ export class WorkspaceToolHttpError extends Error {
   }
 }
 
-function isWorkspaceAdmissionTimeout(status?: number, body?: string, truncated = false): boolean {
-  if (status !== 503 || !body || truncated || body.length > MAX_ERROR_BODY_BYTES) {
-    return false;
+type WorkspaceAdmissionRejection = 'queue_timeout' | 'rate_limited';
+
+/**
+ * Rejections the Code API issues before an operation is assigned, so retrying cannot repeat a
+ * mutation: a queue deadline that expired before admission, or its rate limiter, which runs as
+ * middleware ahead of the workspace router. Anything else, including an unparsable body under
+ * either status, keeps an unknown outcome and is never retried.
+ */
+function getWorkspaceAdmissionRejection(
+  status?: number,
+  body?: string,
+  truncated = false,
+): WorkspaceAdmissionRejection | undefined {
+  if (
+    (status !== 503 && status !== 429) ||
+    !body ||
+    truncated ||
+    body.length > MAX_ERROR_BODY_BYTES
+  ) {
+    return undefined;
   }
   try {
-    const parsed: { code?: string } | null = JSON.parse(body);
-    return parsed?.code === 'WORKSPACE_QUEUE_TIMEOUT';
+    const parsed: { code?: string; error?: string } | null = JSON.parse(body);
+    if (status === 503 && parsed?.code === 'WORKSPACE_QUEUE_TIMEOUT') {
+      return 'queue_timeout';
+    }
+    if (status === 429 && parsed?.error === 'rate_limited') {
+      return 'rate_limited';
+    }
+    return undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -326,9 +374,25 @@ function waitForWorkspaceAdmission(delayMs: number, signal?: AbortSignal): Promi
   });
 }
 
-function workspaceAdmissionRetryDelay(value: string | null): number {
-  if (value == null || !/^\d+$/.test(value)) return WORKSPACE_QUEUE_RETRY_DELAY_MS;
-  return Math.max(100, Math.min(Number(value) * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+function workspaceAdmissionRetryDelay(value: string | null, rateLimitBody?: string): number {
+  if (value != null && /^\d+$/.test(value)) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) {
+      return Math.max(100, Math.min(seconds * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+    }
+  }
+  if (rateLimitBody) {
+    try {
+      const parsed: { retry_after_seconds?: number } | null = JSON.parse(rateLimitBody);
+      const seconds = parsed?.retry_after_seconds;
+      if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0) {
+        return Math.max(100, Math.min(seconds * 1_000, WORKSPACE_QUEUE_TIMEOUT_MS));
+      }
+    } catch {
+      // Fall back when the delay hint is unusable.
+    }
+  }
+  return WORKSPACE_QUEUE_RETRY_DELAY_MS;
 }
 
 /** Keep a received HTTP status even if reading its diagnostic body fails or stalls. */
@@ -801,6 +865,7 @@ export async function executeWorkspaceTool({
   signal,
   fetchImpl = fetch,
   maxQueueWaitMs = WORKSPACE_QUEUE_MAX_WAIT_MS,
+  codeApiMaxRetryWaitMs = CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS,
   maxRequestTimeoutMs,
   deadlineAtMs,
 }: {
@@ -810,6 +875,8 @@ export async function executeWorkspaceTool({
   signal?: AbortSignal;
   fetchImpl?: CodeBridgeFetch;
   maxQueueWaitMs?: number;
+  /** Maximum time waiting for Code API rate-limit admission, independent of queue retries. */
+  codeApiMaxRetryWaitMs?: number;
   /** End-to-end HTTP budget for this call. Omission keeps legacy per-attempt timeouts. */
   maxRequestTimeoutMs?: number;
   /** Optional earlier caller deadline; a signal alone has no remaining-time value. */
@@ -820,6 +887,9 @@ export async function executeWorkspaceTool({
     !Number.isSafeInteger(maxQueueWaitMs) ||
     maxQueueWaitMs < 0 ||
     maxQueueWaitMs > WORKSPACE_QUEUE_MAX_WAIT_MS ||
+    !Number.isSafeInteger(codeApiMaxRetryWaitMs) ||
+    codeApiMaxRetryWaitMs < 0 ||
+    codeApiMaxRetryWaitMs > 300_000 ||
     (maxRequestTimeoutMs !== undefined &&
       (!Number.isSafeInteger(maxRequestTimeoutMs) ||
         maxRequestTimeoutMs < 1 ||
@@ -836,9 +906,11 @@ export async function executeWorkspaceTool({
     maxRequestTimeoutMs == null ? Infinity : Date.now() + maxRequestTimeoutMs,
   );
   const queueDeadlineAt = Date.now() + maxQueueWaitMs;
-  const retryDeadlineAt = Math.min(queueDeadlineAt, callerDeadlineAt - completionReserveMs);
+  const callerRetryDeadlineAt = callerDeadlineAt - completionReserveMs;
   const body = JSON.stringify(request);
   let lastAdmissionRejection: WorkspaceToolHttpError | undefined;
+  let lastRetryDeadlineAt = Infinity;
+  let rateLimitWaitedMs = 0;
   while (true) {
     try {
       signal?.throwIfAborted();
@@ -871,7 +943,7 @@ export async function executeWorkspaceTool({
       if (timeoutSignal.aborted) {
         throw lastAdmissionRejection ?? new WorkspaceToolHttpError('insufficient_time');
       }
-      if (lastAdmissionRejection && Date.now() >= retryDeadlineAt) {
+      if (lastAdmissionRejection && Date.now() >= lastRetryDeadlineAt) {
         throw lastAdmissionRejection;
       }
       const remainingMs = Math.min(
@@ -903,20 +975,35 @@ export async function executeWorkspaceTool({
         const { body, truncated } = await readErrorBody(response, requestSignal);
         signal?.throwIfAborted();
         const rejection = new WorkspaceToolHttpError('rejected', response.status, body, truncated);
+        const admission = getWorkspaceAdmissionRejection(response.status, body, truncated);
+        if (admission == null) throw rejection;
+        const retryDeadlineAt = Math.min(
+          admission === 'queue_timeout' ? queueDeadlineAt : Infinity,
+          callerRetryDeadlineAt,
+        );
+        if (Date.now() >= retryDeadlineAt) throw rejection;
+        const retryAfterMs = workspaceAdmissionRetryDelay(
+          response.headers.get('Retry-After'),
+          admission === 'rate_limited' ? body : undefined,
+        );
         if (
-          !isWorkspaceAdmissionTimeout(response.status, body, truncated) ||
-          Date.now() >= queueDeadlineAt
+          admission === 'rate_limited' &&
+          retryAfterMs > codeApiMaxRetryWaitMs - rateLimitWaitedMs
         ) {
           throw rejection;
         }
-        const delayMs = Math.min(
-          workspaceAdmissionRetryDelay(response.headers.get('Retry-After')),
-          retryDeadlineAt - Date.now(),
-        );
+        const delayMs = Math.min(retryAfterMs, retryDeadlineAt - Date.now());
         lastAdmissionRejection = rejection;
+        lastRetryDeadlineAt = retryDeadlineAt;
         if (delayMs <= 0) throw rejection;
+        const waitStartedAt = Date.now();
         await waitForWorkspaceAdmission(delayMs, signal);
-        /** A clamped delay can land exactly on either deadline. Never open
+        if (admission === 'rate_limited') {
+          /** A timer may run late. Charge the actual wait, but honor the retry that
+           * was authorized before waiting; another 429 cannot exceed the balance. */
+          rateLimitWaitedMs += Math.max(retryAfterMs, Date.now() - waitStartedAt);
+        }
+        /** A clamped delay can land exactly on this admission's retry deadline. Never open
          * another admission window without the full execution reserve. */
         if (Date.now() >= retryDeadlineAt) {
           throw rejection;

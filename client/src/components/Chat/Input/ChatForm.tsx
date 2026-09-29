@@ -203,6 +203,7 @@ const ChatForm = memo(function ChatForm({
     () => conversation?.conversationId ?? Constants.NEW_CONVO,
     [conversation?.conversationId],
   );
+  const isNewConversation = conversationId === '' || conversationId === Constants.NEW_CONVO;
   /**
    * The quote feature merges excerpts server-side in `BaseClient.sendMessage`,
    * which the Assistants endpoints bypass — so hide the UI there rather than
@@ -579,6 +580,7 @@ const ChatForm = memo(function ChatForm({
           ref={submitButtonRef}
           control={methods.control}
           steering={steering}
+          isNewConversation={isNewConversation}
           getText={() => methods.getValues('text')}
           onConsumed={consumeComposer}
           disabled={filesLoading}
@@ -899,6 +901,7 @@ const ChatForm = memo(function ChatForm({
                     <div className="shrink-0">
                       <InterruptSteerButton
                         steering={steering}
+                        isNewConversation={isNewConversation}
                         getText={() => methods.getValues('text')}
                         onConsumed={consumeComposer}
                         disabled={filesLoading}

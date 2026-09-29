@@ -61,6 +61,42 @@ describe('getFailedLines', () => {
     ]);
   });
 
+  it('records a host close time for a failed tool step', () => {
+    const failedAt = Date.now() - 60_000;
+    expect(
+      getFailedLines(
+        [toPart({ name: 'lookup', runStepStatus: 'failed', runStepClosedAt: failedAt }, 'failed')],
+        localize,
+        [],
+      ),
+    ).toEqual([{ text: 'Failed: lookup', detail: '', iconName: 'lookup', failedAt }]);
+  });
+
+  it('uses a detached task settlement time instead of the earlier dispatch time', () => {
+    const settledAt = new Date();
+    const call = toPart(
+      {
+        name: 'lookup',
+        output: 'Error: tool call failed: timed out',
+        runStepClosedAt: Date.now() - 120_000,
+        backgrounded: true,
+        backgroundTask: { settledAt },
+      },
+      'detached',
+    );
+    expect(getFailedLines([call], localize, [])[0].failedAt).toBe(settledAt);
+    const withoutReceipt = toPart(
+      {
+        name: 'lookup',
+        output: 'Error: tool call failed: timed out',
+        backgrounded: true,
+        runStepClosedAt: Date.now() - 120_000,
+      },
+      'pending',
+    );
+    expect(getFailedLines([withoutReceipt], localize, [])[0].failedAt).toBeUndefined();
+  });
+
   it('is empty when nothing failed', () => {
     expect(
       getFailedLines([toPart({ name: 'lookup', output: 'rows' }, 'ok')], localize, []),

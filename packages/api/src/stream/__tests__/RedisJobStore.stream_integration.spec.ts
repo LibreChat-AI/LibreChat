@@ -1971,6 +1971,95 @@ describe('RedisJobStore Integration Tests', () => {
       await store.destroy();
     });
 
+    test('reconstructs split tool timings and close metadata across instances', async () => {
+      if (!ioredisClient) return;
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const producer = new RedisJobStore(ioredisClient);
+      const consumer = new RedisJobStore(ioredisClient);
+      await producer.initialize();
+      await consumer.initialize();
+      const streamId = `tool-timing-recon-${Date.now()}`;
+      const job = await producer.createJob(streamId, 'user-1', streamId);
+      const events = [
+        {
+          event: 'on_run_step',
+          data: {
+            id: 'step-1',
+            runId: 'response-1',
+            index: 0,
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [{ id: 'call-1', name: 'lookup', args: '{}' }],
+            },
+          },
+        },
+        {
+          event: 'on_run_step_delta',
+          data: {
+            id: 'step-1',
+            observed_at: 1_000,
+            delta: { type: 'tool_calls', tool_calls: [{ id: 'call-1', index: 0, args: '{' }] },
+          },
+        },
+        {
+          event: 'on_tool_preparation',
+          data: {
+            id: 'step-1',
+            toolCallId: 'call-1',
+            index: 0,
+            observed_at: 1_000,
+          },
+        },
+        {
+          event: 'on_tool_calls_dispatched',
+          data: {
+            dispatched_at: 248_000,
+            toolCalls: [{ id: 'call-1', name: 'lookup', stepId: 'step-1' }],
+          },
+        },
+        {
+          event: 'on_run_step_completed',
+          data: {
+            result: {
+              id: 'step-1',
+              index: 0,
+              type: 'tool_call',
+              completed_at: 248_340,
+              tool_call: { id: 'call-1', name: 'lookup', args: '{}', output: 'done', progress: 1 },
+            },
+          },
+        },
+        {
+          event: 'on_run_step_closed',
+          data: {
+            id: 'step-1',
+            type: 'tool_calls',
+            index: 0,
+            status: 'completed',
+            created_at: 1_000,
+            closed_at: 248_340,
+          },
+        },
+      ];
+      for (const event of events) {
+        await producer.appendChunk(streamId, event);
+      }
+      const result = await consumer.getContentParts(streamId, job.createdAt, { durableOnly: true });
+      expect(result?.content[0]).toMatchObject({
+        type: 'tool_call',
+        tool_call: {
+          id: 'call-1',
+          runStepStatus: 'completed',
+          runStepClosedAt: 248_340,
+          runStepDurationMs: 247_340,
+          toolPreparationDurationMs: 247_000,
+          toolExecutionDurationMs: 340,
+        },
+      });
+      await producer.destroy();
+      await consumer.destroy();
+    });
+
     test('should share run steps between instances', async () => {
       if (!ioredisClient) {
         return;
