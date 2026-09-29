@@ -178,21 +178,18 @@ describe('LibreChat Tailwind preset', () => {
     expect(packageJson.exports['./tailwind-preset']).toBe('./tailwind.preset.cjs');
   });
 
-  it('keeps application CSS defaults aligned with the appearance registry', () => {
-    const applicationStyles = fs.readFileSync(
-      path.resolve(__dirname, '../../../../client/src/style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS defaults aligned with the appearance registry', () => {
+    const stockStyles = fs.readFileSync(path.resolve(__dirname, 'defaults.css'), 'utf8');
 
     /** Prettier wraps a long font stack, so declarations compare with whitespace collapsed. */
-    const collapsed = applicationStyles.replace(/\s+/g, ' ');
+    const collapsed = stockStyles.replace(/\s+/g, ' ');
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       expect(collapsed).toContain(`${property}: ${defaultAppearance[key]};`);
     });
   });
 });
 
-describe('application radius, font and shadow scales', () => {
+describe('radius, font and shadow scales', () => {
   const scale = [
     ['rounded-sm', '--theme-radius-sm', 'radiusSm'],
     ['rounded-md', '--theme-radius-md', 'radiusMd'],
@@ -252,6 +249,39 @@ describe('application radius, font and shadow scales', () => {
     expect(rule(css, 'shadow-theme-surface')).toContain(
       `--tw-shadow: var(--theme-elevation-surface, ${defaultAppearance.elevationSurface});`,
     );
+  });
+
+  /** The app and the library compile the same `tokens.css`, so every scale utility, and every
+   *  color role, must come out of both entries as the same declarations. */
+  it('publishes the same scale and color utilities the application compiles', async () => {
+    const tokens = fs.readFileSync(path.resolve(__dirname, 'tokens.css'), 'utf8');
+    const colors = Array.from(tokens.matchAll(/--color-([\w-]+):/g), (match) => `bg-${match[1]}`);
+    const candidates = [
+      'rounded',
+      ...scale.map(([candidate]) => candidate),
+      'font-sans',
+      'font-mono',
+      'shadow',
+      ...shadows.map(([candidate]) => candidate),
+      'rounded-theme-control',
+      'font-theme-ui',
+      'shadow-theme-surface',
+      ...colors,
+    ];
+    const [application, library] = await Promise.all([
+      generateApplication(candidates),
+      generate(candidates),
+    ]);
+
+    candidates.forEach((candidate) => {
+      expect(rule(library, candidate)).toBeDefined();
+      expect([candidate, rule(library, candidate)]).toEqual([
+        candidate,
+        rule(application, candidate),
+      ]);
+    });
+    /** `rounded-sm` is the step the preset used to pin to 0.125rem for consumers. */
+    expect(rule(library, 'rounded-sm')).toBe('border-radius: var(--theme-radius-sm);');
   });
 
   it('defaults to the values the utilities resolved to before the remap', () => {

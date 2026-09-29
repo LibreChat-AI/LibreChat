@@ -26,7 +26,6 @@ import { defaultTheme } from '../themes/default';
 import { darkTheme } from '../themes/dark';
 import '../highContrast.css';
 import '../preflight.css';
-import '../controls.css';
 
 const THEME_KEY = 'color-theme';
 const THEME_COLORS_KEY = 'theme-colors';

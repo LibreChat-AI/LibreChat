@@ -41,8 +41,14 @@ keeps its original validation, so a released theme holding `var()` there still l
 shadow role, `none` is written as a transparent layer so Tailwind can still compose it with ring
 utilities.
 The defaults reproduce the scale those utilities had before, so a theme that names none of them
-changes nothing. The mapping lives in the app stylesheet (`client/src/style.css`), not the
-published `theme.css`, whose preset keeps its own `rounded-sm`.
+changes nothing. The mapping lives in `tokens.css`, which the app stylesheet imports and
+`@librechat/client/theme.css` publishes, so a consumer's utilities are the app's.
+
+> **Breaking change:** the preset used to pin `rounded-sm`, `rounded-md` and `rounded-lg` to
+> `--radius` (0.125rem, 0.375rem and 0.5rem by default). They now read `--theme-radius-sm`,
+> `--theme-radius-md` and `--theme-radius-lg` like the app's, so `rounded-sm` renders at
+> `calc(0.5rem - 4px)` and `--radius` no longer retunes them. Set the `radiusSm` through
+> `radius3xl` appearance roles, or the properties behind them, to reshape the scale.
 
 The bundled ClickHouse theme (`themes/clickhouse.ts`) is the reference for a theme that changes
 shape as well as color: it tightens the radius scale to Click UI's `border.radii` steps, sets the
@@ -82,13 +88,14 @@ The theme system provides:
 
 The theme system operates in three layers:
 
-1. **CSS Variables Layer**: Default colors defined in your app's CSS
+1. **CSS Variables Layer**: Default colors, shape, type and elevation shipped by the package
 2. **ThemeProvider Layer**: React context that manages theme state and applies CSS variables
 3. **Tailwind Layer**: Maps CSS variables to Tailwind utility classes
 
 ### Default Behavior (No Custom Theme)
 
-- CSS variables cascade from your app's `style.css` definitions
+- CSS variables cascade from the stock values `@librechat/client/theme.css` ships
+  (`defaults.css`), which the LibreChat app reads through the same import
 - Light mode uses variables under `html` selector
 - Dark mode uses variables under `.dark` selector
 - No JavaScript intervention in color values
@@ -124,39 +131,34 @@ function App() {
 
 ### 3. Set Up Your Base CSS
 
-Import the published token stylesheet and define the variables it resolves. Every theme
-variable must hold a **bare `R G B` channel triplet**, not a complete CSS color, because
-each token wraps them as `rgb(var(--x))` so that opacity modifiers such as
-`bg-surface-primary/50` work:
+Import the published token stylesheet. It declares every token and the stock value of every
+property the tokens read, for light (`html`) and dark (`.dark`), so the components render the
+LibreChat palette with nothing else defined. Restate only what you change, after the import.
+Every theme color must hold a **bare `R G B` channel triplet**, not a complete CSS color,
+because each token wraps them as `rgb(var(--x))` so that opacity modifiers such as
+`bg-surface-primary/50` work. The stock roles are written against primitive scales under
+`:root` (`--white`, `--gray-*`, `--green-*`, `--red-*`, `--amber-*`, `--blue-*`), so
+redefining a step retints every role that reads it:
 
 ```css
 /* style.css */
 @import 'tailwindcss';
 /* Declares --color-text-primary, --color-surface-primary and the rest of the tokens as
- * `@theme inline`, so every utility resolves the custom property below at runtime. */
+ * `@theme inline`, so every utility resolves its custom property at runtime, along with the
+ * stock value of each property. */
 @import '@librechat/client/theme.css';
 /* v4 reads no config by default: this is what loads the preset, the content globs and
  * class-based dark mode from step 4. This app's own entry does the same
  * (`client/src/style.css`), and so does the library's (`src/theme/theme.css`). */
 @config './tailwind.config.js';
 
-:root {
-  --white: 255 255 255;
-  --gray-800: 33 33 33;
-  --gray-100: 236 236 236;
-  /* ... other color definitions */
-}
-
+/* Optional: only what differs from the stock palette. */
 html {
-  --text-primary: var(--gray-800);
-  --surface-primary: var(--white);
-  /* ... other theme variables */
+  --surface-primary: 250 250 249;
 }
 
 .dark {
-  --text-primary: var(--gray-100);
-  --surface-primary: var(--gray-900);
-  /* ... other dark theme variables */
+  --surface-primary: 12 10 9;
 }
 ```
 
@@ -322,7 +324,7 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `font-display` - Headings and dialog titles (`displayFontFamily`). Follows the
   theme's `fontFamily` when it names no display family.
 - `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
-  `leadingXs`..`leading2xl` (app only, like the radius scale); the defaults are
+  `leadingXs`..`leading2xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.
 - `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,

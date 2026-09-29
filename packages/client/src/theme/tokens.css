@@ -5,15 +5,18 @@
  * rewrites at runtime, which is what `@theme inline` is for: the value is inlined into each
  * utility instead of being frozen into a `--color-*` variable, so switching a theme
  * re-colors the app without regenerating CSS. Those properties hold bare `R G B` triplets
- * (see client/src/style.css), hence the `rgb()` wrapper; a token with an intrinsic alpha
+ * (see `defaults.css`), hence the `rgb()` wrapper; a token with an intrinsic alpha
  * multiplies in its companion `--x-alpha` property, and Tailwind composes any `/50`
  * modifier on top through color-mix.
  *
- * client/src/style.css imports this file, and `@librechat/client/theme.css` publishes it.
+ * client/src/style.css imports this file, and `@librechat/client/theme.css` publishes it, with the
+ * stock value of every property it reads (`defaults.css`, imported below).
  * Declaring a token here is what makes `bg-<token>` exist; @shadcn/lint reads these
  * declarations, so a name that is not here is reported rather than silently rendering
  * nothing.
  */
+@import './defaults.css';
+
 @theme inline {
   /* brand and surfaces */
   --color-brand-purple: rgb(var(--brand-purple));
@@ -129,10 +132,47 @@
   --color-switch-unchecked: rgb(var(--switch-unchecked));
 }
 
-/* The display family the shared dialog titles compose as `font-display`. A
- * theme definition paints `--theme-display-font-family`; without one a title
- * keeps the family it inherits, so a consumer that never sets the role sees no
- * change. */
+/* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
+ * definition reshapes the existing `rounded-*`, `font-sans`, `font-mono`, `text-*` and `shadow-*`
+ * call sites without a migration, in the app and in a consumer alike. The defaults in `defaults.css` reproduce the scale
+ * the app's utilities resolved to before. Bare `rounded` stays Tailwind's fixed 0.25rem: `sm` keeps
+ * its px offset, so the two part at a non-16px root. Bare `shadow` reads `--shadow`, which has
+ * always equalled `sm`, and follows it. A shadow held in a variable cannot be recolored by a
+ * `shadow-<color>` modifier; nothing in the app or the package uses one. */
+@theme inline {
+  --radius-sm: var(--theme-radius-sm);
+  --radius-md: var(--theme-radius-md);
+  --radius-lg: var(--theme-radius-lg);
+  --radius-xl: var(--theme-radius-xl);
+  --radius-2xl: var(--theme-radius-2xl);
+  --radius-3xl: var(--theme-radius-3xl);
+  --font-sans: var(--theme-font-family);
+  --font-mono: var(--theme-mono-font-family);
+  --text-xs: var(--theme-text-xs);
+  --text-xs--line-height: var(--theme-text-xs-leading);
+  --text-sm: var(--theme-text-sm);
+  --text-sm--line-height: var(--theme-text-sm-leading);
+  --text-base: var(--theme-text-base);
+  --text-base--line-height: var(--theme-text-base-leading);
+  --text-lg: var(--theme-text-lg);
+  --text-lg--line-height: var(--theme-text-lg-leading);
+  --text-xl: var(--theme-text-xl);
+  --text-xl--line-height: var(--theme-text-xl-leading);
+  --text-2xl: var(--theme-text-2xl);
+  --text-2xl--line-height: var(--theme-text-2xl-leading);
+  --shadow: var(--theme-shadow-sm);
+  --shadow-2xs: var(--theme-shadow-2xs);
+  --shadow-xs: var(--theme-shadow-xs);
+  --shadow-sm: var(--theme-shadow-sm);
+  --shadow-md: var(--theme-shadow-md);
+  --shadow-lg: var(--theme-shadow-lg);
+  --shadow-xl: var(--theme-shadow-xl);
+  --shadow-2xl: var(--theme-shadow-2xl);
+}
+
+/* The display family the shared dialog titles compose as `font-display`.
+ * `defaults.css` sets it to the stock family and a theme definition repaints
+ * it; a host that unsets it lets a title keep the family it inherits. */
 @theme inline {
   --font-display: var(--theme-display-font-family, inherit);
 }

@@ -12,8 +12,8 @@ import { repoRoot, run } from './lint.helpers';
  *   - an uncoloured `border-b` is painted with `currentColor`, so a divider
  *     drawn by a primitive follows the text ink unless the primitive names a
  *     role.
- *   - the radius scale is Tailwind's, not ours, so `rounded-sm` means whatever
- *     the current major says it means.
+ *   - the radius scale is Tailwind's unless the package states its own, so
+ *     `rounded-sm` would mean whatever the current major says it means.
  *
  * The scenario builds what a consumer actually installs: the package's own
  * stylesheet and its published preset, compiled by Tailwind through the
@@ -121,10 +121,10 @@ Promise.all(${JSON.stringify([
     expect(compile.status, `the consumer stylesheet did not compile:\n${compile.output}`).toBe(0);
     const consumerCss = readFileSync(compiled, 'utf8');
 
-    /** The consumer's own page sets no `--radius`: the setup in the theme README
-     *  never mentions one, so this is what a consumer following it gets. The
-     *  border token is set because the ThemeProvider writes those as channel
-     *  triplets. */
+    /** The consumer's own page restates two roles as channel triplets, the way
+     *  the ThemeProvider writes them, so the probe can tell them from the stock
+     *  values `theme.css` ships. Everything else is what a consumer following
+     *  the theme README gets. */
     await page.setContent(
       `<!doctype html><html><head><style>
         :root { --border-light: 10 20 30; --text-secondary: 40 50 60; }
@@ -155,25 +155,24 @@ Promise.all(${JSON.stringify([
       defaultPalette,
     );
 
-    /** Tailwind 4 renamed the radius steps — the old `sm` is `xs`, and `sm` is
-     *  0.25rem — so a checkbox that says `rounded-sm` doubles its corners unless
-     *  the preset states the step. 2px is what this preset produced under
-     *  Tailwind 3; 4px would mean Tailwind's scale won. */
+    /** Tailwind 4 renamed the radius steps (the old `sm` is `xs`, and `sm` is
+     *  0.25rem), so the package states its own: `rounded-sm` reads the theme's
+     *  `--theme-radius-sm`, which ships at the app's `calc(0.5rem - 4px)`. */
     const box = await read('box', ['border-radius']);
-    expect(box['border-radius']).toBe('2px');
+    expect(box['border-radius']).toBe('4px');
 
-    /** And the step is still a variable, so a theme retunes the whole family:
-     *  at `--radius: 1rem` the small step is 1rem - 0.375rem. (The SPA's own 4px
-     *  comes from its config restating the family in `px`, not from here.) */
-    await page.evaluate(() => document.documentElement.style.setProperty('--radius', '1rem'));
+    /** And the step is a theme property, so a theme retunes it the way the
+     *  ThemeProvider does, by writing the property on the root. */
+    await page.evaluate(() =>
+      document.documentElement.style.setProperty('--theme-radius-sm', '10px'),
+    );
     expect((await read('box', ['border-radius']))['border-radius']).toBe('10px');
-    await page.evaluate(() => document.documentElement.style.removeProperty('--radius'));
+    await page.evaluate(() => document.documentElement.style.removeProperty('--theme-radius-sm'));
 
-    /** The scale is in `rem` on both sides of the subtraction, so a host that
-     *  moves the root font size keeps the proportions instead of collapsing the
-     *  small step to a square corner. */
+    /** The px offset holds the corner the app draws at any root font size: at a
+     *  10px root the step is 5px - 4px, exactly as in the app. */
     await page.evaluate(() => document.documentElement.style.setProperty('font-size', '10px'));
-    expect((await read('box', ['border-radius']))['border-radius']).toBe('1.25px');
+    expect((await read('box', ['border-radius']))['border-radius']).toBe('1px');
     await page.evaluate(() => document.documentElement.style.removeProperty('font-size'));
 
     /** A search field's placeholder reads as secondary text, not as the field's

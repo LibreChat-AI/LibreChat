@@ -71,39 +71,30 @@ describe('shared component color guardrail', () => {
 
 describe('dark dialog surface', () => {
   it('matches the legacy rendered background in CSS and the runtime theme', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--gray-875:\s*18 18 18;/);
-    expect(appStyles).toMatch(/--surface-dialog:\s*var\(--gray-875\);/);
+    expect(stockStyles).toMatch(/--gray-875:\s*18 18 18;/);
+    expect(stockStyles).toMatch(/--surface-dialog:\s*var\(--gray-875\);/);
     expect(darkTheme['rgb-surface-dialog']).toBe('18 18 18');
   });
 });
 
 describe('dark hover surface', () => {
   it('uses the gray-650 midpoint in both CSS and the runtime theme', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--gray-650:\s*57 57 57;/);
-    expect(appStyles).toMatch(/--surface-hover:\s*var\(--gray-650\);/);
+    expect(stockStyles).toMatch(/--gray-650:\s*57 57 57;/);
+    expect(stockStyles).toMatch(/--surface-hover:\s*var\(--gray-650\);/);
     expect(darkTheme['rgb-surface-hover']).toBe('57 57 57');
   });
 });
 
 describe('composer hover surface', () => {
   it('keeps light hover unchanged and uses the lighter dark hover surface', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-200\);/);
-    expect(appStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-600\);/);
+    expect(stockStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-200\);/);
+    expect(stockStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-600\);/);
     expect(defaultTheme['rgb-surface-composer-hover']).toBe('227 227 227');
     expect(darkTheme['rgb-surface-composer-hover']).toBe('66 66 66');
   });
@@ -111,12 +102,9 @@ describe('composer hover surface', () => {
 
 describe('dark destructive text', () => {
   it('uses red-400 without changing the status error token', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--text-destructive:\s*var\(--red-400\);/);
+    expect(stockStyles).toMatch(/--text-destructive:\s*var\(--red-400\);/);
     expect(darkTheme['rgb-text-destructive']).toBe('248 113 113');
     expect(darkTheme['rgb-status-error']).toBe('252 165 165');
   });
@@ -307,15 +295,12 @@ describe('categorical series scale', () => {
     });
   });
 
-  it('keeps the app CSS defaults in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS defaults in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
     seriesTokens.forEach((token) => {
       const property = token.slice(4);
-      const declared = [...appStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
+      const declared = [...stockStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
         (match) => match[1].trim(),
       );
 
@@ -446,14 +431,11 @@ describe.each([
 describe('success fill defaults', () => {
   /** Both copies have to move together: the value is a tuned hex rather than a
    *  palette step, so the stylesheet cannot alias it to a `--green-*` step. */
-  it('keeps the app CSS in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    const declared = [...appStyles.matchAll(/--status-success-strong:\s*([^;]+);/g)].map((match) =>
-      match[1].trim(),
+    const declared = [...stockStyles.matchAll(/--status-success-strong:\s*([^;]+);/g)].map(
+      (match) => match[1].trim(),
     );
 
     /** One declaration for `html`, one for `.dark`, and both must match. */
@@ -509,13 +491,10 @@ describe.each([
 describe('verified fill defaults', () => {
   /** Tuned values rather than palette steps in either mode, so the stylesheet
    *  cannot alias them to a `--blue-*` step and both copies move together. */
-  it('keeps the app CSS in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    const declared = [...appStyles.matchAll(/--status-verified:\s*([^;]+);/g)].map((match) =>
+    const declared = [...stockStyles.matchAll(/--status-verified:\s*([^;]+);/g)].map((match) =>
       match[1].trim(),
     );
 
@@ -555,13 +534,10 @@ describe('switch track defaults', () => {
   /** The app stylesheet only restates the registry now: the contrast modes used
    *  to carry their own `html.high-contrast` overrides here, which the published
    *  package never shipped. */
-  it('keeps the app CSS in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    const declared = [...appStyles.matchAll(/--switch-unchecked:\s*([^;]+);/g)].map((match) =>
+    const declared = [...stockStyles.matchAll(/--switch-unchecked:\s*([^;]+);/g)].map((match) =>
       match[1].trim(),
     );
 
@@ -587,15 +563,12 @@ describe('syntax highlighting palette', () => {
     });
   });
 
-  it('keeps the app CSS defaults in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS defaults in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
     syntaxTokens.forEach((token) => {
       const property = token.slice(4);
-      const declared = [...appStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
+      const declared = [...stockStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
         (match) => match[1].trim(),
       );
 
@@ -640,20 +613,6 @@ describe.each([
   });
 });
 
-describe('control border defaults', () => {
-  /** The app stylesheet does not declare this role; the package does, so the
-   *  stock palette has an outline before and without a theme definition. */
-  it('keeps the package CSS in step with the runtime themes', () => {
-    const controls = readFileSync(join(__dirname, 'controls.css'), 'utf8');
-    const declared = [...controls.matchAll(/--border-control:\s*([^;]+);/g)].map((match) =>
-      match[1].trim(),
-    );
-
-    /** One declaration for `html`, one for `.dark`, and both must match. */
-    expect(declared).toEqual([defaultTheme['rgb-border-control'], darkTheme['rgb-border-control']]);
-  });
-});
-
 /** WCAG 2.4.13 holds a focus indicator to 3:1 against what it is drawn on. The
  *  global outline and the primitives' ring are theme roles, so every bundled
  *  palette carries both at that floor on its canvases. */
@@ -692,15 +651,6 @@ describe('focus role defaults', () => {
       darkTheme['rgb-text-primary'],
     ]);
   });
-
-  it('keeps the package CSS in step with the runtime themes', () => {
-    const controls = readFileSync(join(__dirname, 'controls.css'), 'utf8');
-    const declared = [...controls.matchAll(/--focus-control:\s*([^;]+);/g)].map((match) =>
-      match[1].trim(),
-    );
-
-    expect(declared).toEqual([defaultTheme['rgb-focus-control'], darkTheme['rgb-focus-control']]);
-  });
 });
 
 describe('state role defaults', () => {
@@ -714,25 +664,6 @@ describe('state role defaults', () => {
   ])('presses %s controls in their hover fills', (_name, theme: IThemeRGB) => {
     expect(theme['rgb-surface-pressed']).toBe(theme['rgb-surface-hover']);
     expect(theme['rgb-surface-inverted-pressed']).toBe(theme['rgb-surface-inverted-hover']);
-  });
-
-  it('keeps the package CSS in step with the runtime themes', () => {
-    const controls = readFileSync(join(__dirname, 'controls.css'), 'utf8');
-    const roles = [
-      'rgb-surface-pressed',
-      'rgb-surface-inverted-pressed',
-      'rgb-surface-disabled',
-      'rgb-text-disabled',
-      'rgb-border-disabled',
-    ] as const;
-
-    roles.forEach((role) => {
-      const declared = [
-        ...controls.matchAll(new RegExp(`--${role.slice(4)}:\\s*([^;]+);`, 'g')),
-      ].map((match) => match[1].trim());
-
-      expect(declared).toEqual([defaultTheme[role], darkTheme[role]]);
-    });
   });
 });
 
