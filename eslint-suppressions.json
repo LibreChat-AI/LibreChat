@@ -62,7 +62,7 @@
   },
   "client/src/components/Agents/SortDropdown.tsx": {
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 4
     }
   },
   "client/src/components/Agents/VirtualizedAgentGrid.tsx": {
@@ -1514,7 +1514,7 @@
   },
   "client/src/components/Prompts/sidebar/FilterPrompts.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     },
     "shadcn/require-static-classes": {
       "count": 1

@@ -8,6 +8,8 @@ import { cn, disabledFillClasses } from '~/utils';
 import { fieldControl } from './Field';
 import './Dropdown.css';
 
+type DropdownShape = 'default' | 'theme' | 'round';
+
 interface DropdownProps {
   value?: string;
   label?: string;
@@ -28,6 +30,13 @@ interface DropdownProps {
   portal?: boolean;
   /** `field` matches the `Input` primitive so this can sit in a form row. */
   variant?: 'default' | 'field';
+  /**
+   * The trigger's corner, in `Button`'s vocabulary: `default` is `Button`'s own
+   * `rounded-lg`, `theme` the theme's control radius, `round` its pill. Omitted,
+   * the trigger takes the control radius, which is what it drew before the prop
+   * existed in the default theme. A `field` trigger keeps the field's corner.
+   */
+  shape?: DropdownShape;
   /** Renders the popover into this element instead of document.body */
   portalElement?: ((element: HTMLElement) => HTMLElement | null) | HTMLElement | null;
   disabled?: boolean;
@@ -35,6 +44,12 @@ interface DropdownProps {
   searchPlaceholder?: string;
   searchEmptyText?: string;
 }
+
+const shapeClasses: Record<DropdownShape, string> = {
+  default: 'rounded-lg',
+  theme: 'rounded-theme-control',
+  round: 'rounded-theme-control-round',
+};
 
 const isDivider = (item: string | Option | { divider: true }): item is { divider: true } =>
   typeof item === 'object' && 'divider' in item;
@@ -61,6 +76,7 @@ const Dropdown: React.FC<DropdownProps> = ({
   'aria-labelledby': ariaLabelledBy,
   portal = true,
   variant = 'default',
+  shape = 'theme',
   portalElement,
   disabled = false,
   searchable = false,
@@ -150,7 +166,8 @@ const Dropdown: React.FC<DropdownProps> = ({
         store={selectProps}
         disabled={disabled}
         className={cn(
-          'border-border-control text-text-primary hover:bg-surface-hover hover:text-text-primary relative inline-flex items-center justify-between rounded-xl border bg-transparent py-2 text-sm transition-all duration-200 ease-in-out',
+          'border-border-control text-text-primary hover:bg-surface-hover hover:text-text-primary relative inline-flex items-center justify-between border bg-transparent py-2 text-sm transition-all duration-200 ease-in-out',
+          variant !== 'field' && shapeClasses[shape],
           'disabled:hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
           disabledFillClasses,
           /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */

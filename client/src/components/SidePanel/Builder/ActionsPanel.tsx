@@ -104,7 +104,7 @@ export default function ActionsPanel({
                   setAction(undefined);
                 }}
                 aria-label={localize('com_ui_back_to_builder')}
-                className="border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition-colors focus:outline-hidden focus-visible:ring-2"
+                className="border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary rounded-theme-control inline-flex h-10 w-10 shrink-0 items-center justify-center border transition-colors focus:outline-hidden focus-visible:ring-2"
               >
                 <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
               </button>
@@ -118,7 +118,7 @@ export default function ActionsPanel({
                       type="button"
                       disabled={!(assistant_id ?? '') || !action.action_id}
                       aria-label={localize('com_ui_delete_action')}
-                      className="border-border-light hover:bg-surface-secondary focus-visible:ring-ring-primary text-text-destructive inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition-colors focus:outline-hidden focus-visible:ring-2 disabled:opacity-50"
+                      className="border-border-light hover:bg-surface-secondary focus-visible:ring-ring-primary text-text-destructive rounded-theme-control inline-flex h-10 w-10 shrink-0 items-center justify-center border transition-colors focus:outline-hidden focus-visible:ring-2 disabled:opacity-50"
                     >
                       <TrashIcon className="h-4 w-4" />
                     </button>

@@ -1,6 +1,28 @@
+import { createElement } from 'react';
+import { cleanup, render } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import type { IThemeAppearance, IThemeRGB, ThemeMode } from '../types';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../../components/Table';
+import { OGDialog, OGDialogContent, OGDialogTitle } from '../../components/OriginalDialog';
+import { Button } from '../../components/Button';
+import { Switch } from '../../components/Switch';
+import Dropdown from '../../components/Dropdown';
+import { Input } from '../../components/Input';
 import { clickHouseTheme } from './clickhouse';
+import Badge from '../../components/Badge';
+import { resolveTheme } from '../registry';
 import snapshot from './clickui.json';
+
+jest.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
 
 /**
  * Drift guard for the ClickHouse theme. `clickui.json` is a snapshot of the Click UI tokens the
@@ -300,6 +322,36 @@ function lchGray(lightness: number): number {
   return srgb * 255;
 }
 
+/**
+ * A chromatic CSS `lch()` (D50) converted to sRGB channels: Lab to XYZ, Bradford to D65, then the
+ * sRGB matrix and transfer curve. Click UI writes a few component colors this way, such as the
+ * light dialog title.
+ */
+function lchColor(lightness: number, chroma: number, hue: number): [number, number, number] {
+  const radians = (hue * Math.PI) / 180;
+  const fy = (lightness + 16) / 116;
+  const fx = fy + (chroma * Math.cos(radians)) / 500;
+  const fz = fy - (chroma * Math.sin(radians)) / 200;
+  const epsilon = 216 / 24389;
+  const kappa = 24389 / 27;
+  const inverse = (t: number) => (t ** 3 > epsilon ? t ** 3 : (116 * t - 16) / kappa);
+  const x50 = 0.96422 * inverse(fx);
+  const y50 = lightness > kappa * epsilon ? fy ** 3 : lightness / kappa;
+  const z50 = 0.82521 * inverse(fz);
+  const x = 0.9554734527 * x50 - 0.0230985369 * y50 + 0.0632593087 * z50;
+  const y = -0.028369707 * x50 + 1.009995458 * y50 + 0.021041399 * z50;
+  const z = 0.0123140017 * x50 - 0.0205076964 * y50 + 1.3303659366 * z50;
+  const linear = [
+    3.2409699419 * x - 1.5373831776 * y - 0.4986107603 * z,
+    -0.9692436363 * x + 1.8759675015 * y + 0.0415550574 * z,
+    0.0556300797 * x - 0.2039769589 * y + 1.0569715142 * z,
+  ];
+  const [r, g, b] = linear.map(
+    (v) => 255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055),
+  );
+  return [r, g, b];
+}
+
 function channel(value: string): number {
   return value.endsWith('%') ? (parseFloat(value) / 100) * 255 : Number(value);
 }
@@ -320,7 +372,7 @@ function parseColor(value: string): Rgba {
     return [channel(parts[0]), channel(parts[1]), channel(parts[2]), a];
   }
   if (Number(parts[1]) !== 0) {
-    throw new Error(`Only achromatic lch() is supported: ${value}`);
+    return [...lchColor(Number(parts[0]), Number(parts[1]), Number(parts[2])), a];
   }
   const gray = lchGray(Number(parts[0]));
   return [gray, gray, gray, a];
@@ -372,6 +424,368 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
     return firstFamily(value);
   }
   return value.replace(/;$/, '').trim();
+}
+
+/**
+ * Color and shape parity of the shared primitives against Click UI's own components. Each probe
+ * renders a primitive, reads the utility it paints for one decision (`bg-*`, `text-*`, a
+ * `border-*` color on an element that draws a border, `rounded-*`), resolves that role under the
+ * ClickHouse theme, and compares it with the Click UI component token. A primitive that paints
+ * nothing for a decision reads as transparent, no border or square, and text with no color of its
+ * own inherits the body copy (`text-primary`).
+ *
+ * The score is how many decisions match, per mode. Run with `CLICKUI_PARITY_REPORT=1` to print
+ * every decision; the floors below only move up.
+ */
+type ParityKind = 'color' | 'shape';
+type Utility = 'bg' | 'text' | 'border' | 'rounded';
+
+interface ParityProbe {
+  /** The Click UI component token the primitive should reproduce. */
+  token: string;
+  kind: ParityKind;
+  utility: Utility;
+  /** A state the utility is written under, such as `data-[state=checked]:`. */
+  variant?: string;
+  /** Renders the primitive and returns the element that paints the decision. */
+  element: () => Element;
+  /** Why the theme departs from Click UI on purpose, when it does. */
+  deviation?: string;
+}
+
+function mount(tree: ReactElement, selector: string): Element {
+  const { baseElement } = render(tree);
+  const element = baseElement.querySelector(selector);
+  if (!element) {
+    throw new Error(`Parity probe found no ${selector}`);
+  }
+  return element;
+}
+
+const switchProbe = (checked: boolean) => () =>
+  mount(createElement(Switch, { 'aria-label': 'probe', checked }), '[role="switch"]');
+
+const tableProbe = (selector: string) => () =>
+  mount(
+    createElement(
+      Table,
+      null,
+      createElement(
+        TableHeader,
+        null,
+        createElement(TableRow, null, createElement(TableHead, null, 'Name')),
+      ),
+      createElement(
+        TableBody,
+        null,
+        createElement(TableRow, null, createElement(TableCell, null, 'Row')),
+      ),
+    ),
+    selector,
+  );
+
+const dialogProbe = (selector: string) => () =>
+  mount(
+    createElement(
+      OGDialog,
+      { open: true },
+      createElement(OGDialogContent, null, createElement(OGDialogTitle, null, 'Title')),
+    ),
+    selector,
+  );
+
+const badgeProbe = () =>
+  mount(createElement(Badge, { label: 'Tools', isAvailable: true }), 'button');
+
+const inputProbe = () => mount(createElement(Input, { 'aria-label': 'probe' }), 'input');
+
+const dropdownProbe = () =>
+  mount(
+    createElement(Dropdown, {
+      value: 'a',
+      options: [{ value: 'a', label: 'A' }],
+      ariaLabel: 'probe',
+      onChange: () => undefined,
+    }),
+    '[role="combobox"]',
+  );
+
+const buttonProbe = (variant: 'default' | 'outline') => () =>
+  mount(createElement(Button, { variant }, 'Save'), 'button');
+
+const parityProbes: Record<string, ParityProbe> = {
+  'Button primary fill': {
+    token: 'click.button.basic.color.primary.background.default',
+    kind: 'color',
+    utility: 'bg',
+    element: buttonProbe('default'),
+  },
+  'Button primary label': {
+    token: 'click.button.basic.color.primary.text.default',
+    kind: 'color',
+    utility: 'text',
+    element: buttonProbe('default'),
+  },
+  'Button secondary stroke': {
+    token: 'click.button.basic.color.secondary.stroke.default',
+    kind: 'color',
+    utility: 'border',
+    element: buttonProbe('outline'),
+  },
+  'Button corner': {
+    token: 'border.radii.1',
+    kind: 'shape',
+    utility: 'rounded',
+    element: buttonProbe('default'),
+  },
+  'Field fill': {
+    token: 'click.field.color.background.default',
+    kind: 'color',
+    utility: 'bg',
+    element: inputProbe,
+  },
+  'Field stroke': {
+    token: 'click.field.color.stroke.default',
+    kind: 'color',
+    utility: 'border',
+    element: inputProbe,
+    deviation: 'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
+  },
+  'Field text': {
+    token: 'click.field.color.text.default',
+    kind: 'color',
+    utility: 'text',
+    element: inputProbe,
+  },
+  'Field corner': {
+    token: 'border.radii.1',
+    kind: 'shape',
+    utility: 'rounded',
+    element: inputProbe,
+  },
+  'Dropdown trigger stroke': {
+    token: 'click.field.color.stroke.default',
+    kind: 'color',
+    utility: 'border',
+    element: dropdownProbe,
+    deviation: 'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
+  },
+  'Dropdown trigger corner': {
+    token: 'border.radii.1',
+    kind: 'shape',
+    utility: 'rounded',
+    element: dropdownProbe,
+  },
+  'Dialog surface': {
+    token: 'click.dialog.color.background.default',
+    kind: 'color',
+    utility: 'bg',
+    element: dialogProbe('[role="dialog"]'),
+  },
+  'Dialog stroke': {
+    token: 'click.dialog.stroke.default',
+    kind: 'color',
+    utility: 'border',
+    element: dialogProbe('[role="dialog"]'),
+  },
+  'Dialog title': {
+    token: 'click.dialog.color.title.default',
+    kind: 'color',
+    utility: 'text',
+    element: dialogProbe('h2'),
+  },
+  'Dialog scrim': {
+    token: 'click.dialog.color.opaqueBackground.default',
+    kind: 'color',
+    utility: 'bg',
+    element: dialogProbe('.inset-0'),
+  },
+  'Dialog corner': {
+    token: 'click.dialog.radii.all',
+    kind: 'shape',
+    utility: 'rounded',
+    element: dialogProbe('[role="dialog"]'),
+  },
+  'Switch track, on': {
+    token: 'click.switch.color.background.active',
+    kind: 'color',
+    utility: 'bg',
+    variant: 'data-[state=checked]:',
+    element: switchProbe(true),
+  },
+  'Switch track, off': {
+    token: 'click.switch.color.background.default',
+    kind: 'color',
+    utility: 'bg',
+    variant: 'data-[state=unchecked]:',
+    element: switchProbe(false),
+    deviation: 'switch-unchecked holds the off track to the 3:1 non-text floor #cccfd3 misses',
+  },
+  'Switch thumb': {
+    token: 'click.switch.color.indicator.default',
+    kind: 'color',
+    utility: 'bg',
+    element: () => switchProbe(false)().firstElementChild ?? document.body,
+  },
+  'Switch corner': {
+    token: 'click.switch.radii.all',
+    kind: 'shape',
+    utility: 'rounded',
+    element: switchProbe(false),
+  },
+  'Table header fill': {
+    token: 'click.table.header.color.background.default',
+    kind: 'color',
+    utility: 'bg',
+    element: tableProbe('thead'),
+  },
+  'Table header title': {
+    token: 'click.table.header.color.title.default',
+    kind: 'color',
+    utility: 'text',
+    element: tableProbe('th'),
+  },
+  'Table row stroke': {
+    token: 'click.table.row.color.stroke.default',
+    kind: 'color',
+    utility: 'border',
+    element: tableProbe('tbody tr'),
+  },
+  'Table corner': {
+    token: 'click.table.radii.all',
+    kind: 'shape',
+    utility: 'rounded',
+    element: tableProbe('div'),
+  },
+  'Badge fill': {
+    token: 'click.badge.opaque.color.background.default',
+    kind: 'color',
+    utility: 'bg',
+    element: badgeProbe,
+  },
+  'Badge label': {
+    token: 'click.badge.opaque.color.text.default',
+    kind: 'color',
+    utility: 'text',
+    element: badgeProbe,
+  },
+  'Badge stroke': {
+    token: 'click.badge.opaque.color.stroke.default',
+    kind: 'color',
+    utility: 'border',
+    element: badgeProbe,
+  },
+  'Badge corner': {
+    token: 'click.badge.radii.all',
+    kind: 'shape',
+    utility: 'rounded',
+    element: badgeProbe,
+  },
+};
+
+/** The fewest decisions per mode that must match; raise a floor when a change closes a gap. */
+const parityFloors: Record<ThemeMode, Record<ParityKind, number>> = {
+  light: { color: 6, shape: 6 },
+  dark: { color: 6, shape: 6 },
+};
+
+const radiusRoles: Record<string, keyof IThemeAppearance> = {
+  sm: 'radiusSm',
+  md: 'radiusMd',
+  lg: 'radiusLg',
+  xl: 'radiusXl',
+  '2xl': 'radius2xl',
+  '3xl': 'radius3xl',
+  'theme-control': 'controlRadius',
+  'theme-control-round': 'roundControlRadius',
+  'theme-surface': 'surfaceRadius',
+  'theme-surface-lg': 'largeSurfaceRadius',
+};
+
+const fixedRadii: Record<string, string> = { full: '9999px', none: '0px' };
+
+/** A `border`, `border-2` or one-sided `border-b` class, the width a border color needs to show. */
+const drawsBorder = (classes: string[]) =>
+  classes.some((name) => /^border(-[0-9]+|-[xytblrse](-[0-9]+)?)?$/.test(name));
+
+type Resolved = ReturnType<typeof resolveTheme>;
+
+function roleColor(resolved: Resolved, name: string): Rgba | undefined {
+  const [role, alpha] = name.split('/');
+  if (role === 'transparent') {
+    return [0, 0, 0, 0];
+  }
+  const triplet = resolved.colors[`rgb-${role}` as keyof IThemeRGB];
+  if (triplet === undefined) {
+    return undefined;
+  }
+  const [r, g, b] = triplet.split(' ').map(Number);
+  return [r, g, b, alpha === undefined ? 1 : Number(alpha) / 100];
+}
+
+/** The role a probe paints, or `undefined` when the primitive paints nothing for it. */
+function paintedRole(element: Element, probe: ParityProbe, resolved: Resolved): string | undefined {
+  const prefix = `${probe.variant ?? ''}${probe.utility}-`;
+  const classes = (element.getAttribute('class') ?? '').split(/\s+/);
+  const names = classes
+    .filter((name) => name.startsWith(prefix))
+    .map((name) => name.slice(prefix.length));
+  if (probe.utility === 'rounded') {
+    return names.find((name) => name in radiusRoles || name in fixedRadii);
+  }
+  if (probe.utility === 'border' && !drawsBorder(classes)) {
+    return undefined;
+  }
+  return names.find((name) => roleColor(resolved, name) !== undefined);
+}
+
+function inheritedTextRole(element: Element, probe: ParityProbe, resolved: Resolved): string {
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    const role = paintedRole(node, probe, resolved);
+    if (role !== undefined) {
+      return role;
+    }
+  }
+  return 'text-primary';
+}
+
+const clickColor = (value: string): Rgba =>
+  parseColor(/(#[0-9a-f]{6}|(?:rgba?|lch)\([^)]*\))\s*;?$/i.exec(value.trim())?.[1] ?? value);
+
+const sameColor = (a: Rgba, b: Rgba) =>
+  (a[3] === 0 && b[3] === 0) ||
+  (a.slice(0, 3).every((value, index) => Math.abs(value - b[index]) < 1) &&
+    Math.abs(a[3] - b[3]) < 0.01);
+
+interface ParityResult {
+  decision: string;
+  kind: ParityKind;
+  match: boolean;
+  theme: string;
+  clickUi: string;
+  deviation?: string;
+}
+
+function measure(mode: ThemeMode, decision: string, probe: ParityProbe): ParityResult {
+  const resolved = resolveTheme(clickHouseTheme, mode);
+  const element = probe.element();
+  const source = tokens[mode][probe.token];
+  const role =
+    probe.utility === 'text'
+      ? inheritedTextRole(element, probe, resolved)
+      : paintedRole(element, probe, resolved);
+  cleanup();
+  const base = { decision, kind: probe.kind, clickUi: source, deviation: probe.deviation };
+  if (probe.kind === 'shape') {
+    const theme =
+      role === undefined ? '0px' : (fixedRadii[role] ?? resolved.appearance[radiusRoles[role]]);
+    const painted = role === undefined ? 'unpainted' : `${probe.utility}-${role}`;
+    return { ...base, theme: `${painted} = ${theme}`, match: theme === source };
+  }
+  const color = role === undefined ? ([0, 0, 0, 0] as Rgba) : roleColor(resolved, role);
+  const painted = role === undefined ? 'unpainted' : `${probe.utility}-${role}`;
+  const theme = `${painted} = ${color ? formatRgba(color) : 'unresolved'}`;
+  return { ...base, theme, match: color !== undefined && sameColor(color, clickColor(source)) };
 }
 
 describe('ClickHouse theme drift against Click UI', () => {
@@ -441,8 +855,44 @@ describe('ClickHouse theme drift against Click UI', () => {
     const cited = new Set([
       ...Object.values(colorSources[mode]),
       ...Object.values(appearanceSources),
+      ...Object.values(parityProbes).map((probe) => probe.token),
     ]);
 
     expect(Object.keys(tokens[mode]).filter((token) => !cited.has(token))).toEqual([]);
+  });
+});
+
+describe('ClickHouse primitive parity against Click UI components', () => {
+  it.each(modes)('matches at least the recorded number of %s decisions', (mode) => {
+    const results = Object.entries(parityProbes).map(([decision, probe]) =>
+      measure(mode, decision, probe),
+    );
+    const score = (kind: ParityKind) => {
+      const scoped = results.filter((result) => result.kind === kind);
+      const matched = scoped.filter((result) => result.match).length;
+      return { matched, total: scoped.length };
+    };
+    const color = score('color');
+    const shape = score('shape');
+
+    if (process.env.CLICKUI_PARITY_REPORT) {
+      const verdict = ({ match, deviation }: ParityResult) => {
+        if (match) {
+          return 'match';
+        }
+        return deviation ? 'deviation' : 'gap';
+      };
+      const rows = results.map(
+        (result) => `${verdict(result)}\t${result.decision}\t${result.theme}\t${result.clickUi}`,
+      );
+      const percent = ({ matched, total }: { matched: number; total: number }) =>
+        `${matched}/${total} (${((matched / total) * 100).toFixed(1)}%)`;
+      console.info(
+        [`${mode}: color ${percent(color)}, shape ${percent(shape)}`, ...rows].join('\n'),
+      );
+    }
+
+    expect(color.matched).toBeGreaterThanOrEqual(parityFloors[mode].color);
+    expect(shape.matched).toBeGreaterThanOrEqual(parityFloors[mode].shape);
   });
 });

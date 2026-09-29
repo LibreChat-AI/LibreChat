@@ -47,7 +47,8 @@ const SortDropdown: React.FC<SortDropdownProps> = ({ value, onChange }) => {
         options={options}
         sizeClasses="w-40"
         icon={<ArrowDownWideNarrow className="size-3.5 shrink-0" aria-hidden="true" />}
-        triggerClassName="h-8 w-40 rounded-lg px-2.5 py-0 text-xs transition-none"
+        shape="default"
+        triggerClassName="h-8 w-40 px-2.5 py-0 text-xs transition-none"
         testId="agent-sort-dropdown"
         aria-labelledby={labelId}
       />

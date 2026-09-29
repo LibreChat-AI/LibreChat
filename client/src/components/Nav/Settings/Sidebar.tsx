@@ -69,7 +69,7 @@ export default function Sidebar({
               value={tab.id}
               onClick={() => onSelectTab(tab.id)}
               className={cn(
-                'text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:py-2',
+                'text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary rounded-theme-control flex items-center justify-between gap-2 px-3 py-2.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:py-2',
                 'data-[state=active]:bg-surface-tertiary data-[state=active]:text-text-primary',
               )}
             >

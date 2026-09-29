@@ -47,3 +47,41 @@ describe('Dropdown accessible name', () => {
     expect(screen.getByRole('combobox', { name: 'Clock Format' })).toBeInTheDocument();
   });
 });
+
+describe('Dropdown shape', () => {
+  const trigger = () => screen.getByRole('combobox', { name: 'Clock Format' });
+
+  it('draws the trigger at the theme control radius when no shape is given', () => {
+    render(<Dropdown value="12h" options={OPTIONS} ariaLabel="Clock Format" />);
+
+    expect(trigger()).toHaveClass('rounded-theme-control');
+    expect(trigger()).not.toHaveClass('rounded-xl');
+  });
+
+  it.each([
+    ['default', 'rounded-lg'],
+    ['theme', 'rounded-theme-control'],
+    ['round', 'rounded-theme-control-round'],
+  ] as const)('maps shape="%s" to %s, as Button does', (shape, radius) => {
+    render(
+      <Dropdown value="12h" options={OPTIONS} ariaLabel="Clock Format" shape={shape} disabled />,
+    );
+
+    expect(trigger()).toHaveClass(radius);
+  });
+
+  it('keeps the field radius on a field trigger whatever the shape', () => {
+    render(
+      <Dropdown
+        value="12h"
+        options={OPTIONS}
+        ariaLabel="Clock Format"
+        variant="field"
+        shape="round"
+      />,
+    );
+
+    expect(trigger()).toHaveClass('rounded-lg');
+    expect(trigger()).not.toHaveClass('rounded-theme-control-round');
+  });
+});

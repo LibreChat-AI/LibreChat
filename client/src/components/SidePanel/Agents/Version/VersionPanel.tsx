@@ -145,6 +145,7 @@ export default function VersionPanel() {
         <Button
           variant="subtle"
           size="icon"
+          shape="theme"
           onClick={() => setActivePanel(Panel.builder)}
           aria-label={localize('com_ui_back_to_builder')}
           className="text-text-secondary hover:text-text-primary shrink-0"

@@ -116,7 +116,8 @@ export default function FilterPrompts({
             onChange={onSelect}
             options={filterOptions}
             className={cn('shrink-0 [&>button]:size-9', dropdownClassName)}
-            triggerClassName="rounded-lg bg-transparent"
+            shape="default"
+            triggerClassName="bg-transparent"
             icon={<ListFilter className="h-4 w-4" />}
             label="Filter: "
             ariaLabel={localize('com_ui_filter_prompts')}
