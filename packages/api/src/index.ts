@@ -44,13 +44,11 @@ export * from './utils';
 export { default as Tokenizer, countTokens } from './utils/tokenizer';
 export type { EncodingName } from './utils/tokenizer';
 export * from './db/utils';
-export * from './dynamo/client';
 export * from './bedrock-kb/client';
 export * from './bedrock-kb/service';
 export * from './bedrock-kb/ingestionQueue';
 export * from './bedrock-kb/ingest';
 export * from './bedrock-kb/scope';
-export * from './http/unsupported';
 /* HTML */
 export * from './html';
 /* OAuth */

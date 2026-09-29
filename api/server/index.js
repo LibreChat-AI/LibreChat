@@ -7,7 +7,7 @@ require('module-alias')({ base: path.resolve(__dirname, '..') });
 const cors = require('cors');
 const axios = require('axios');
 const express = require('express');
-// const mongoose = require('mongoose');
+const mongoose = require('mongoose');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
@@ -25,7 +25,7 @@ const {
   ErrorController,
   memoryDiagnostics,
   createSecurityHeaders,
-  // performStartupChecks,
+  performStartupChecks,
   handleJsonParseError,
   GenerationJobManager,
   QUERY_DEVTOOLS_HEADER,
@@ -33,15 +33,15 @@ const {
   agentStartupIngressMiddleware,
   agentStartupTelemetryMiddleware,
   initializeFileStorage,
-  // initializeDeploymentSkills,
-  // initializeDeploymentPlugins,
-  // getDeploymentPluginSkills,
-  // getDeploymentPluginHookCapabilities,
-  // registerDeploymentPluginHooks,
-  // hasDeploymentPluginHooks,
-  // hasDeploymentPluginToolApprovalHooks,
-  // setPluginHookSource,
-  // loadToolApprovalHooks,
+  initializeDeploymentSkills,
+  initializeDeploymentPlugins,
+  getDeploymentPluginSkills,
+  getDeploymentPluginHookCapabilities,
+  registerDeploymentPluginHooks,
+  hasDeploymentPluginHooks,
+  hasDeploymentPluginToolApprovalHooks,
+  setPluginHookSource,
+  loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
   preAuthTenantMiddleware,
@@ -53,32 +53,31 @@ const {
   updateInterfacePermissions,
   configureMessageFilterRegexValidator,
   configureFileConfigRegexEngine,
-  // configureAgentEventRuntime,
-  // createAgentEventTerminalHandler,
-  // createScheduleWriteGate,
-  // startCodeEnvironmentLifecycleReconciler,
+  configureAgentEventRuntime,
+  createAgentEventTerminalHandler,
+  createScheduleWriteGate,
+  startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
-  // warnOnUnreachableDeliveryPaths,
+  warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
 } = require('@librechat/api');
-// const { connectDb, indexSync } = require('~/db');
-const { connectDb } = require('~/db');
+const { connectDb, indexSync } = require('~/db');
 const {
   updateAccessPermissions,
-  // sweepOrphanedPreviews,
+  sweepOrphanedPreviews,
   getRoleByName,
   seedDatabase,
 } = require('~/models');
-// const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
+const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
 const { capabilityContextMiddleware } = require('./middleware/roles/capabilities');
 const createValidateImageRequest = require('./middleware/validateImageRequest');
-// const { initializeGitHubSkillSync } = require('./services/Skills/sync');
-// const { initializeAgentTriggerService } = require('./services/Agents/triggers');
-// const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
-// const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
+const { initializeGitHubSkillSync } = require('./services/Skills/sync');
+const { initializeAgentTriggerService } = require('./services/Agents/triggers');
+const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
+const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
-// const { startExpiredFileSweep } = require('./services/Files/process');
-// const { checkMigrations } = require('./services/start/migration');
+const { startExpiredFileSweep } = require('./services/Files/process');
+const { checkMigrations } = require('./services/start/migration');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
@@ -107,7 +106,7 @@ const app = express();
 app.locals.codeApiUploadRegistry = createCodeApiUploadRegistry();
 let serverReady = false;
 /** @type {import('@librechat/api').ScheduleEngineState} */
-// let scheduleEngineState = 'starting';
+let scheduleEngineState = 'starting';
 
 const SERVER_NOT_READY_CODE = 'SERVER_NOT_READY';
 const CHAT_START_RETRY_AFTER_SECONDS = '1';
@@ -124,10 +123,10 @@ const rejectChatStartsUntilReady = (req, res, next) => {
   });
 };
 
-// const rejectScheduleWritesUntilReady = createScheduleWriteGate({
-//   getState: () => scheduleEngineState,
-//   retryAfterSeconds: CHAT_START_RETRY_AFTER_SECONDS,
-// });
+const rejectScheduleWritesUntilReady = createScheduleWriteGate({
+  getState: () => scheduleEngineState,
+  retryAfterSeconds: CHAT_START_RETRY_AFTER_SECONDS,
+});
 
 const configureGenerationStreams = () => {
   const streamServices = createStreamServices();
@@ -135,12 +134,12 @@ const configureGenerationStreams = () => {
     ...streamServices,
     cleanupOnComplete: !isEnabled(process.env.STREAM_KEEP_COMPLETED_JOBS),
   });
-  // GenerationJobManager.setApprovalExpiredHandler(recordExpiredScheduleApproval);
-  // GenerationJobManager.setTerminalHostActionHandler(
-  //   createAgentEventTerminalHandler(agentEventMethods, {
-  //     resumeDetachedAction: resumeAgentEventDetachedAction,
-  //   }),
-  // );
+  GenerationJobManager.setApprovalExpiredHandler(recordExpiredScheduleApproval);
+  GenerationJobManager.setTerminalHostActionHandler(
+    createAgentEventTerminalHandler(agentEventMethods, {
+      resumeDetachedAction: resumeAgentEventDetachedAction,
+    }),
+  );
   GenerationJobManager.initialize();
   // Stop active generations and close their SSE streams while the HTTP server drains.
   registerShutdownTask(
@@ -196,11 +195,11 @@ const startServer = async () => {
   }
   await connectDb();
 
-  // logger.info('Connected to MongoDB');
-  // startCodeEnvironmentLifecycleReconciler({ mongoose });
-  // indexSync().catch((err) => {
-  //   logger.error('[indexSync] Background sync failed:', err);
-  // });
+  logger.info('Connected to MongoDB');
+  startCodeEnvironmentLifecycleReconciler({ mongoose });
+  indexSync().catch((err) => {
+    logger.error('[indexSync] Background sync failed:', err);
+  });
 
   app.disable('x-powered-by');
   app.set('trust proxy', trusted_proxy);
@@ -228,45 +227,45 @@ const startServer = async () => {
    * `runAsSystem` is required — `File` is tenant-isolated and strict
    * mode rejects unscoped queries. Lazy sweep in the preview endpoint
    * covers anything younger than the boot cutoff. */
-  // runAsSystem(sweepOrphanedPreviews).catch((err) => {
-  //   logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
-  // });
+  runAsSystem(sweepOrphanedPreviews).catch((err) => {
+    logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
+  });
   const appConfig = await getAppConfig({ baseOnly: true });
-  // configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
-  // warnOnUnreachableDeliveryPaths(appConfig);
+  configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
+  warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
-  // const projectRoot = path.resolve(__dirname, '../..');
+  const projectRoot = path.resolve(__dirname, '../..');
   // Plugin hooks execute only when the operator opts in via DEPLOYMENT_PLUGIN_HOOKS;
   // without it, declared hook documents load as parsed-but-inert with a warning.
-  // await initializeDeploymentPlugins({
-  //   projectRoot,
-  //   hookCapabilities: getDeploymentPluginHookCapabilities(),
-  // });
+  await initializeDeploymentPlugins({
+    projectRoot,
+    hookCapabilities: getDeploymentPluginHookCapabilities(),
+  });
   // Hand the run seam its plugin-hook source without a packages/api-internal
   // agents -> plugins import (see agents/hooks/source.ts).
-  // setPluginHookSource({
-  //   hasHooks: hasDeploymentPluginHooks,
-  //   hasToolApprovalHooks: hasDeploymentPluginToolApprovalHooks,
-  //   register: registerDeploymentPluginHooks,
-  // });
-  // await initializeDeploymentSkills({
-  //   projectRoot,
-  //   additionalSkills: getDeploymentPluginSkills(),
-  // });
-  // initializeGitHubSkillSync(appConfig);
-  // startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
+  setPluginHookSource({
+    hasHooks: hasDeploymentPluginHooks,
+    hasToolApprovalHooks: hasDeploymentPluginToolApprovalHooks,
+    register: registerDeploymentPluginHooks,
+  });
+  await initializeDeploymentSkills({
+    projectRoot,
+    additionalSkills: getDeploymentPluginSkills(),
+  });
+  initializeGitHubSkillSync(appConfig);
+  startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
   // Register any programmatic tool-approval policy hooks declared in
   // `endpoints.agents.toolApproval.hooks`. Honor the `enabled` kill switch: when tool
   // approval is off we pass no hooks, so a disabled endpoint imports/runs nothing (and any
   // previously loaded batch is unregistered). Hooks are read from the BASE config only —
   // they register once, process-wide; per-user/tenant differences belong inside the hook
   // (via its context), not in per-override module lists.
-  // const toolApproval = appConfig?.endpoints?.agents?.toolApproval;
-  // await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
-  //   basePath: path.resolve(__dirname, '../..'),
-  // });
+  const toolApproval = appConfig?.endpoints?.agents?.toolApproval;
+  await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
+    basePath: path.resolve(__dirname, '../..'),
+  });
   await runAsSystem(async () => {
-    // await performStartupChecks(appConfig);
+    await performStartupChecks(appConfig);
     await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
   });
 
@@ -440,8 +439,7 @@ const startServer = async () => {
   app.use('/api/agents', routes.agents);
   app.use('/api/banner', routes.banner);
   app.use('/api/memories', routes.memories);
-  // app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
-  app.use('/api/schedules', routes.schedules);
+  app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
   app.use('/api/permissions', routes.accessPermissions);
 
   app.use('/api/tags', routes.tags);
@@ -490,25 +488,26 @@ const startServer = async () => {
     try {
       await runAsSystem(async () => {
         await initializeMCPs();
-        // await initializeOAuthReconnectManager();
+        await initializeOAuthReconnectManager();
       });
-      // await checkMigrations();
+      await checkMigrations();
+
       const inspectFlags = process.execArgv.some((arg) => arg.startsWith('--inspect'));
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
-      // await initializeAgentTriggerService({ address: server.address() });
-      // const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
-      // scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
-      // if (!scheduleEngineArmed) {
-      //   // Terminal, not transient: arming is attempted once, so schedule writes are refused
-      //   // for the life of this process. Logged at error level because the only other signal
-      //   // an operator gets is a 503 on every write — every other health signal stays green.
-      //   logger.error(
-      //     '[schedules] write routes are PERMANENTLY unavailable in this process: the engine did not arm. ' +
-      //       'Resolve the cause logged above and restart.',
-      //   );
-      // }
+      await initializeAgentTriggerService({ address: server.address() });
+      const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
+      scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
+      if (!scheduleEngineArmed) {
+        // Terminal, not transient: arming is attempted once, so schedule writes are refused
+        // for the life of this process. Logged at error level because the only other signal
+        // an operator gets is a 503 on every write — every other health signal stays green.
+        logger.error(
+          '[schedules] write routes are PERMANENTLY unavailable in this process: the engine did not arm. ' +
+            'Resolve the cause logged above and restart.',
+        );
+      }
       serverReady = true;
       logger.info('Server readiness checks passing.');
     } catch (initErr) {

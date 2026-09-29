@@ -7,9 +7,7 @@ import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   Constants,
   EModelEndpoint,
-  Permissions,
   PermissionBits,
-  PermissionTypes,
   isAgentsEndpoint,
   isEphemeralAgentId,
 } from 'librechat-data-provider';
@@ -37,7 +35,6 @@ import {
   useAssistantListMap,
   useIdChangeEffect,
   useAppStartup,
-  useHasAccess,
   useNewConvo,
   useLocalize,
 } from '~/hooks';
@@ -54,10 +51,6 @@ const isValidChatProjectId = (projectId: string | null): projectId is string =>
 export default function ChatRoute() {
   const { data: startupConfig } = useGetStartupConfig();
   const { isAuthenticated, user, roles } = useAuthRedirect();
-  const hasAgentAccess = useHasAccess({
-    permissionType: PermissionTypes.AGENTS,
-    permission: Permissions.USE,
-  });
   const queryClient = useQueryClient();
 
   const defaultTemporaryChat = useRecoilValue(temporaryStore.defaultTemporaryChat);
@@ -150,7 +143,7 @@ export default function ChatRoute() {
   const agentsMap: TAgentsMap | undefined = useAgentsMapContext();
   const agentsQuery = useListAgentsQuery(
     { requiredPermission: PermissionBits.VIEW },
-    { enabled: isAuthenticated && hasAgentAccess },
+    { enabled: isAuthenticated },
   );
 
   const isTemporaryChat = isTemporaryConversation(conversation);

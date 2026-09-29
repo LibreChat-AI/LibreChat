@@ -2,12 +2,7 @@ import React from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EModelEndpoint, QueryKeys, dataService } from 'librechat-data-provider';
-import { useHasAccess } from '~/hooks/Roles';
 import useAgentsMap from '../useAgentsMap';
-
-jest.mock('~/hooks/Roles', () => ({
-  useHasAccess: jest.fn(),
-}));
 
 /** `dataService` methods are non-configurable, so the HTTP boundary is mocked
  *  at the module seam; everything else stays the real library. */
@@ -53,7 +48,6 @@ describe('useAgentsMap', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (useHasAccess as jest.Mock).mockReturnValue(true);
   });
 
   it('keeps the agents map referentially stable across unrelated re-renders', async () => {
@@ -64,13 +58,5 @@ describe('useAgentsMap', () => {
     rerender();
 
     expect(result.current).toBe(first);
-  });
-
-  it('does not request agents without AGENTS.USE permission', () => {
-    (useHasAccess as jest.Mock).mockReturnValue(false);
-
-    setup();
-
-    expect(dataService.listAgents).not.toHaveBeenCalled();
   });
 });

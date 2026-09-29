@@ -128,8 +128,6 @@ auth.json
 
 # User uploads
 uploads/
-/ollama/
-/ministack/state/
 
 # owner
 release/
@@ -196,5 +194,8 @@ scripts/activity-labels/results/
 /.lighthouse/
 /e2e/lighthouse/.test-results/
 
-# Kiro spec/workflow artifacts
+# Infrastructure and development artifacts
 .kiro/
+infra/
+/ministack/state/
+/ollama/

@@ -75,7 +75,6 @@
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
-    "@aws-sdk/lib-dynamodb": "^3.1013.0",
     "jsonwebtoken": "^9.0.2",
     "klona": "^2.0.6",
     "librechat-data-provider": "*",

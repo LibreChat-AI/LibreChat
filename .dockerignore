@@ -9,8 +9,6 @@
 # Specific patterns to ignore
 data-node
 meili_data*
-ministack/state
-ollama
 librechat*
 Dockerfile*
 docs
