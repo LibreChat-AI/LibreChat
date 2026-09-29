@@ -92,3 +92,44 @@ describe('FileAttachmentGroup identity dedup (B12)', () => {
     expect(names).not.toContain('old-name.zip');
   });
 });
+
+describe('FileAttachmentGroup identity dedup (B18)', () => {
+  it('keeps two id-less attachments with the same filename but different filepaths as two chips', () => {
+    const first = baseAttachment({
+      file_id: undefined,
+      filename: 'output.csv',
+      filepath: '/uploads/session-a/output.csv',
+    });
+    const second = baseAttachment({
+      file_id: undefined,
+      filename: 'output.csv',
+      filepath: '/uploads/session-b/output.csv',
+    });
+
+    const { container } = renderWith(<AttachmentGroup attachments={[first, second]} />);
+
+    const toggle = screen.getByRole('button', { name: 'com_ui_show_n_files' });
+    fireEvent.click(toggle);
+    const chips = container.querySelectorAll('[data-testid="file-container"]');
+    expect(chips.length).toBe(2);
+  });
+
+  it('collapses two id-less attachments sharing the same filepath into one chip', () => {
+    const first = baseAttachment({
+      file_id: undefined,
+      filename: 'output.csv',
+      filepath: '/uploads/session-a/output.csv',
+    });
+    const second = baseAttachment({
+      file_id: undefined,
+      filename: 'output.csv',
+      filepath: '/uploads/session-a/output.csv',
+    });
+
+    const { container } = renderWith(<AttachmentGroup attachments={[first, second]} />);
+
+    expect(screen.queryByRole('button', { name: 'com_ui_show_n_files' })).not.toBeInTheDocument();
+    const chips = container.querySelectorAll('[data-testid="file-container"]');
+    expect(chips.length).toBe(1);
+  });
+});

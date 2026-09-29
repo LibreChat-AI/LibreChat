@@ -10,7 +10,7 @@ import { toolArtifactKey } from './artifacts';
  * `toolArtifactKey` would otherwise fall back to `filename` and collapse two
  * different files that happen to share a display name.
  */
-const fileIdentity = (attachment: t.TAttachment): string | null => {
+export const fileIdentity = (attachment: t.TAttachment): string | null => {
   const file = attachment as Partial<t.TFile>;
   if (file.file_id != null) {
     return toolArtifactKey(file);
