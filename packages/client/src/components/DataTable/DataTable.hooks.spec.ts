@@ -5,7 +5,7 @@ import {
   useOptimizedRowSelection,
   useColumnStyles,
   useKeyboardNavigation,
-  useDenseRowHeight,
+  useTableRowHeight,
 } from './DataTable.hooks';
 
 describe('DataTable Hooks', () => {
@@ -470,20 +470,20 @@ describe('DataTable Hooks', () => {
   });
 });
 
-describe('useDenseRowHeight', () => {
+describe('useTableRowHeight', () => {
   afterEach(() => {
     document.documentElement.style.removeProperty('--theme-table-cell-space-y');
     document.documentElement.style.removeProperty('--theme-table-row-stroke');
   });
 
-  it('is 40px without a theme: 32px of content and a quarter of 1rem above and below', () => {
-    const { result } = renderHook(() => useDenseRowHeight());
-
-    expect(result.current).toBe(40);
+  it('is 40px dense and 48px titled without a theme, the heights the tables always drew', () => {
+    expect(renderHook(() => useTableRowHeight('dense')).result.current).toBe(40);
+    expect(renderHook(() => useTableRowHeight('titled')).result.current).toBe(48);
   });
 
   it('follows a theme that repaints the cell space and rules its rows', async () => {
-    const { result } = renderHook(() => useDenseRowHeight());
+    const { result } = renderHook(() => useTableRowHeight('dense'));
+    const titled = renderHook(() => useTableRowHeight('titled'));
 
     act(() => {
       document.documentElement.style.setProperty('--theme-table-cell-space-y', '8px');
@@ -491,5 +491,6 @@ describe('useDenseRowHeight', () => {
     });
 
     await waitFor(() => expect(result.current).toBe(37));
+    expect(titled.result.current).toBe(33);
   });
 });

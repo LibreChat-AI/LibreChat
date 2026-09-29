@@ -16,6 +16,7 @@ import {
 import type { Table as TTable } from '@tanstack/react-table';
 import { Table, TableRow, TableBody, TableCell, TableHead, TableHeader } from './Table';
 import { useMediaQuery, useLocalize, TranslationKeys } from '~/hooks';
+import { useTableRowHeight } from './DataTable/DataTable.hooks';
 import AnimatedSearchInput from './AnimatedSearchInput';
 import { TrashIcon, Spinner } from '~/svgs';
 import { Skeleton } from './Skeleton';
@@ -290,12 +291,19 @@ export default function DataTable<TData, TValue>({
 
   const { rows } = table.getRowModel();
 
+  /** Each row is as tall as its title cell, which follows the theme's cell space and row rule. */
+  const rowHeight = useTableRowHeight('titled');
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => tableContainerRef.current,
-    estimateSize: useCallback(() => 48, []),
+    estimateSize: useCallback(() => rowHeight, [rowHeight]),
     overscan: 10,
   });
+
+  /** The virtualizer caches row sizes, so a theme that changes the row height drops them. */
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [rowHeight, rowVirtualizer]);
 
   const virtualRows = rowVirtualizer.getVirtualItems();
   const totalSize = rowVirtualizer.getTotalSize();

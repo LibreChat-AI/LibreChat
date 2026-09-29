@@ -152,7 +152,6 @@ export const useKeyboardNavigation = (
 };
 
 const DEFAULT_CELL_SPACE_PX = 16;
-const DENSE_ROW_CONTENT_PX = 32;
 
 /**
  * A root custom property in px. The table roles only accept px or rem (zero allowed), so the value
@@ -172,13 +171,21 @@ function readRootLength(property: string, fallbackRem: number): number {
   return Number(match[1]) * (match[2] === 'rem' ? rootSize : 1);
 }
 
-/** A dense row: its content, a quarter of the cell space above and below, and the row rule. */
-function readDenseRowHeight(): number {
-  return (
-    DENSE_ROW_CONTENT_PX +
-    readRootLength('--theme-table-cell-space-y', 1) / 2 +
-    readRootLength('--theme-table-row-stroke', 0)
-  );
+type TableRowKind = 'dense' | 'titled';
+
+/**
+ * A row's height in px. A dense row holds 2rem of controls between a quarter of the cell space
+ * above and below; a titled row is as tall as its title cell, a header-sized cell of twice the
+ * space around a 1rem line. Both carry the row rule under them.
+ */
+function readTableRowHeight(kind: TableRowKind): number {
+  const rootSize =
+    typeof document === 'undefined'
+      ? DEFAULT_CELL_SPACE_PX
+      : parseFloat(getComputedStyle(document.documentElement).fontSize) || DEFAULT_CELL_SPACE_PX;
+  const space = readRootLength('--theme-table-cell-space-y', 1);
+  const stroke = readRootLength('--theme-table-row-stroke', 0);
+  return kind === 'dense' ? 2 * rootSize + space / 2 + stroke : 2 * space + rootSize + stroke;
 }
 
 /** The theme paints its appearance onto the root's inline style and class, so those are the
@@ -196,13 +203,13 @@ function subscribeToGeometry(onChange: () => void): () => void {
 }
 
 /**
- * The height of a dense table row in px, 40px by default, for geometry JavaScript has to know,
- * such as a virtualized row. Follows a theme switch.
+ * A table row's height in px (dense 40px and titled 48px by default), for geometry JavaScript has
+ * to know, such as a virtualized row. Follows a theme switch.
  */
-export function useDenseRowHeight(): number {
+export function useTableRowHeight(kind: TableRowKind): number {
   return useSyncExternalStore(
     subscribeToGeometry,
-    readDenseRowHeight,
-    () => DENSE_ROW_CONTENT_PX + DEFAULT_CELL_SPACE_PX / 2,
+    () => readTableRowHeight(kind),
+    () => (kind === 'dense' ? 40 : 48),
   );
 }

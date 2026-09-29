@@ -14,7 +14,7 @@ import {
   type Table as TTable,
 } from '@tanstack/react-table';
 import type { DataTableProps, ProcessedDataRow } from './DataTable.types';
-import { useDebounced, useDenseRowHeight, useOptimizedRowSelection } from './DataTable.hooks';
+import { useDebounced, useTableRowHeight, useOptimizedRowSelection } from './DataTable.hooks';
 import { SelectionCheckbox, MemoizedTableRow, SkeletonRows } from './DataTableComponents';
 import { Table, TableBody, TableHead, TableHeader, TableCell, TableRow } from '../Table';
 import { useMediaQuery, useLocalize } from '~/hooks';
@@ -71,7 +71,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
 
   /** A dense row follows the theme's cell space and row rule, 40px by default; a caller that
    *  sizes its own rows still wins. */
-  const denseRowHeight = useDenseRowHeight();
+  const denseRowHeight = useTableRowHeight('dense');
   const rowHeight = configuredRowHeight ?? denseRowHeight;
 
   const virtualizationActive = data.length >= minRows;
