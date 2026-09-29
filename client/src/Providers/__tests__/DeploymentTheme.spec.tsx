@@ -172,10 +172,31 @@ describe('DeploymentTheme', () => {
     expect(snapshotStorage()).toEqual(before);
   });
 
+  it('applies an inline definition carrying a color role this build predates', async () => {
+    serveTheme({
+      ...inlineTheme,
+      modes: {
+        ...inlineTheme.modes,
+        light: {
+          ...inlineTheme.modes.light,
+          colors: { ...inlineTheme.modes.light.colors, 'rgb-future-role': '1 2 3' },
+        },
+      },
+    });
+    renderTheme(queryClient);
+
+    await waitFor(() => expect(root().dataset.theme).toBe('acme'));
+    expect(root().style.getPropertyValue('--surface-primary')).toBe('10 20 30');
+    expect(root().getAttribute('style')).not.toContain('--future-role');
+    expect(warn).toHaveBeenCalledWith(
+      '[ThemeProvider] Unknown light color token ignored: rgb-future-role',
+    );
+  });
+
   it('ignores an invalid inline definition with a warning and keeps the stored theme', async () => {
     serveTheme({
       ...inlineTheme,
-      modes: { light: { colors: { 'rgb-not-a-token': '1 2 3' } } },
+      modes: { light: { colors: { 'rgb-not-a-token': 'red' } } },
     });
     renderTheme(queryClient);
 

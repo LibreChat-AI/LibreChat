@@ -38,6 +38,7 @@ export const composerSubmitClasses = (): string =>
     'rounded-theme-control-round bg-text-primary p-theme-compact text-text-primary',
     'outline-offset-4 transition-all duration-theme-normal',
     'disabled:cursor-not-allowed disabled:text-text-secondary disabled:opacity-10',
+    'theme-disabled:bg-surface-disabled theme-disabled:text-text-disabled theme-disabled:opacity-100',
   );
 
 /**
