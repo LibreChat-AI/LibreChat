@@ -1,4 +1,5 @@
 import type { MimeUploadCapability } from './file-config';
+import type { ResponsesApiRouting } from './types';
 import type { FileConfig } from './types/files';
 import {
   fileConfig as baseFileConfig,
@@ -2135,7 +2136,7 @@ describe('server-effective Responses routing', () => {
   it('routes a native point release by its family until the server publishes its own policy', () => {
     const optIn = { default: false, on: true, off: false };
     const familyOnly = { 'gpt-6-sol': enabled, '*': disabled };
-    const route = (endpoint: EModelEndpoint, model: string, routing: typeof familyOnly) =>
+    const route = (endpoint: EModelEndpoint, model: string, routing: ResponsesApiRouting) =>
       resolveEffectiveUseResponsesApi({ endpoint, model, routing });
     expect(prefersResponsesApiByModel('gpt-6.1-sol')).toBe(true);
     expect(route(EModelEndpoint.openAI, 'gpt-6.1-sol', familyOnly)).toBe(true);
