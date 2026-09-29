@@ -185,7 +185,7 @@ export default function ExecuteCode({
               <pre
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
-                className="bg-surface-chat dark:bg-surface-primary-alt max-h-[300px] overflow-auto p-4 font-mono text-xs"
+                className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
               >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? code}

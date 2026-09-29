@@ -249,7 +249,7 @@ export default function FileAuthoringCall({
                 <pre
                   ref={previewPaneRef}
                   onScroll={onPreviewPaneScroll}
-                  className="bg-surface-chat dark:bg-surface-primary-alt max-h-[300px] overflow-auto p-4 font-mono text-xs"
+                  className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
                 >
                   <code className={`hljs language-${previewLang} !whitespace-pre`}>
                     {highlighted ?? preview}
