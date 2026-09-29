@@ -567,10 +567,7 @@ describe('switch track defaults', () => {
   });
 
   it('declares table column names on the secondary text they were before the role', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const appStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
     expect([...appStyles.matchAll(/--table-header-text:\s*([^;]+);/g)].map((m) => m[1])).toEqual([
       'var(--text-secondary)',
@@ -580,10 +577,7 @@ describe('switch track defaults', () => {
   });
 
   it('declares the self-sticking header fill on the dialog surface it was before the role', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const appStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
     expect([...appStyles.matchAll(/--table-header-fill:\s*([^;]+);/g)].map((m) => m[1])).toEqual([
       'var(--surface-dialog)',
@@ -594,9 +588,9 @@ describe('switch track defaults', () => {
   });
 
   it('ships the no-rule table default with the package', () => {
-    const controls = readFileSync(join(__dirname, 'controls.css'), 'utf8');
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(controls).toContain(`--theme-table-row-stroke: ${defaultAppearance.tableRowStroke};`);
+    expect(stockStyles).toContain(`--theme-table-row-stroke: ${defaultAppearance.tableRowStroke};`);
   });
 
   it('declares the stock thumb the registry paints', () => {
