@@ -133,7 +133,9 @@ async function keyboardFocusRing(page: Page): Promise<string> {
   const probe = page.locator(`#${id}`);
   await expect(probe).toBeFocused();
   const shadow = await probe.evaluate((node) => getComputedStyle(node).boxShadow);
-  return /rgba?\([^)]*\)/.exec(shadow)?.[0] ?? shadow;
+  /** Tailwind lists transparent offset and shadow layers beside the ring; the ring is the opaque one. */
+  const layers = shadow.match(/rgba?\([^)]*\)/g) ?? [];
+  return layers.find((color) => !/,\s*0\)$/.test(color)) ?? shadow;
 }
 
 async function openChat(page: Page, appearance: Appearance, definition?: { name: string }) {
