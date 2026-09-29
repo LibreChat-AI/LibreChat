@@ -8,6 +8,17 @@ import type { SetterOrUpdater } from 'recoil';
 import type { ExtendedFile, FileSetter, ConvoGenerator } from '~/common';
 import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import {
+  cn,
+  getModelSpec,
+  hasIncompleteFiles,
+  removeFocusRings,
+  getComposerDraftId,
+  getPendingDraftId,
+  clearAllDrafts,
+  getFilesDraftCached,
+  isPastedTextFileMarked,
+} from '~/utils';
+import {
   useTextarea,
   useAutoSave,
   useLocalize,
@@ -18,15 +29,6 @@ import {
   useFocusChatEffect,
   useCodeWorkspace,
 } from '~/hooks';
-import {
-  cn,
-  getModelSpec,
-  hasIncompleteFiles,
-  removeFocusRings,
-  getComposerDraftId,
-  getFilesDraftCached,
-  isPastedTextFileMarked,
-} from '~/utils';
 import {
   useChatContext,
   useChatFormContext,
@@ -201,6 +203,7 @@ const ChatForm = memo(function ChatForm({
     () => conversation?.conversationId ?? Constants.NEW_CONVO,
     [conversation?.conversationId],
   );
+  const isNewConversation = conversationId === '' || conversationId === Constants.NEW_CONVO;
   /**
    * The quote feature merges excerpts server-side in `BaseClient.sendMessage`,
    * which the Assistants endpoints bypass — so hide the UI there rather than
@@ -577,6 +580,7 @@ const ChatForm = memo(function ChatForm({
           ref={submitButtonRef}
           control={methods.control}
           steering={steering}
+          isNewConversation={isNewConversation}
           getText={() => methods.getValues('text')}
           onConsumed={consumeComposer}
           disabled={filesLoading}
@@ -625,12 +629,18 @@ const ChatForm = memo(function ChatForm({
         {
           answerMode,
           steering,
-          submitMessage,
+          submitMessage: (message) => {
+            const result = submitMessage(message);
+            if (result !== false) {
+              clearAllDrafts(getPendingDraftId(index));
+            }
+            return result;
+          },
           reset: () => methods.reset(),
         },
         data,
       ),
-    [answerMode, steering, submitMessage, methods],
+    [answerMode, steering, submitMessage, methods, index],
   );
 
   return (
@@ -891,6 +901,7 @@ const ChatForm = memo(function ChatForm({
                     <div className="shrink-0">
                       <InterruptSteerButton
                         steering={steering}
+                        isNewConversation={isNewConversation}
                         getText={() => methods.getValues('text')}
                         onConsumed={consumeComposer}
                         disabled={filesLoading}

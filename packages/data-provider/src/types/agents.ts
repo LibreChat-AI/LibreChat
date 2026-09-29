@@ -137,6 +137,7 @@ export namespace Agents {
   export type ToolEndEvent = {
     /** The Step Id of the Tool Call */
     id: string;
+    completed_at?: number;
     /** The Completed Tool Call */
     tool_call?: ToolCall;
     /** The content index of the tool call */
@@ -258,6 +259,19 @@ export namespace Agents {
    * because the caller aborted — which is the only signal that distinguishes
    * a stopped step from one still in flight.
    */
+  export type ToolPreparationMarker = {
+    id: string;
+    index?: number;
+    toolCallId?: string;
+    observed_at: number;
+  };
+
+  export type ToolCallsDispatchedEvent = {
+    dispatched_at: number;
+    runId?: string;
+    toolCalls: Array<{ id: string; name: string; stepId?: string }>;
+  };
+
   export type RunStepClosedEvent = {
     id: string;
     index: number;
@@ -361,6 +375,8 @@ export namespace Agents {
      * The delta containing the fields that have changed on the run step.
      */
     delta: ToolCallDelta;
+    /** SDK receipt timestamp before awaited step dispatch, when available. */
+    observed_at?: number;
   }
   export type StepDetails = MessageCreationDetails | ToolCallsDetails;
   export type MessageCreationDetails = {

@@ -1,4 +1,4 @@
-import { Tools, Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
+import { Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type {
   Agents,
   TAttachment,
@@ -12,9 +12,8 @@ import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activit
 import { hasPendingApprovalInPart, hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
+import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
 import { boundIntentLabel, getToolCallIntent } from './Parts/intent';
-import { isBashProgrammaticToolCall } from './routing';
-import { getToolMeta, summarizeSpan } from './outcome';
 import { isError } from './ToolOutput';
 
 /** How often a live fold's header may repaint. A streamed intent moves the
@@ -43,13 +42,15 @@ export type LiveActivity = {
   isBackgroundTaskCheck?: boolean;
   /** Failed and stopped calls anywhere in the span, not just the newest line. */
   outcome: SpanOutcome;
+  /** All calls in the span, including ones still running. */
+  total: number;
 };
 
 type Localize = (phraseKey: TranslationKeys, options?: TOptions) => string;
 
 type LiveToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] } & Pick<
     PartMetadata,
-    'runStepStatus'
+    'runStepStatus' | 'runStepClosedAt' | 'backgrounded'
   > & { progress?: number };
 
 /**
@@ -246,7 +247,7 @@ export function getSpanIconNames(parts: ReadonlyArray<TMessageContentParts | und
     const toolCall = part == null ? undefined : getStandardToolCall(part);
     if (toolCall != null) {
       const name = toolCall.name ?? '';
-      icons.add(isBashProgrammaticToolCall(name, toolCall.args) ? Tools.bash_tool : name);
+      icons.add(getToolIconName(name, toolCall.args, toolCall.output));
       continue;
     }
     const legacy = part == null ? null : getToolMeta(part);
@@ -394,6 +395,7 @@ export function getLiveActivity(
   return {
     ...newestLine(parts, localize, serverNames, span, preferLabels),
     outcome: { failed: span.failed, cancelled: span.cancelled },
+    total: span.total,
     iconNames: getSpanIconNames(parts),
   };
 }
@@ -404,6 +406,8 @@ export type FailedLine = {
   /** The first line of what the tool returned, with the error prefix removed. */
   detail: string;
   iconName: string;
+  /** The failure time, if the host recorded it. Detached tasks use settlement, not dispatch. */
+  failedAt?: number | Date;
 };
 
 const PROCESSING_PREFIX = /^Error processing tool:?\s*/i;
@@ -457,10 +461,14 @@ export function getFailedLines(
     const subject =
       getToolCallIntent(toolCall.args) ??
       (parsed.mcpServer ? parsed.toolName : getToolDisplayLabel(parsed.raw, localize, serverNames));
+    const failedAt =
+      toolCall.backgroundTask?.settledAt ??
+      (meta.background != null || toolCall.backgrounded ? undefined : toolCall.runStepClosedAt);
     lines.push({
       text: subject ? localize('com_ui_failed_subject', { 0: subject }) : localize('com_ui_failed'),
       detail: firstErrorLine(toolCall.output),
       iconName: meta.iconName,
+      ...(failedAt != null && { failedAt }),
     });
   }
   return lines;

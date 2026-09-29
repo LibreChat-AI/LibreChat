@@ -6,6 +6,49 @@ import {
 } from './activity';
 
 describe('durable subagent activity projection', () => {
+  it('drops negative or non-finite persisted child timings', () => {
+    const result = projectPersistedMessageActivity([
+      {
+        type: 'tool',
+        toolCallId: 'call-child',
+        name: 'query',
+        runStepStatus: 'completed',
+        toolPreparationStartedAt: -1,
+        toolDispatchedAt: Infinity,
+        toolPreparationDurationMs: -400,
+        toolExecutionDurationMs: NaN,
+      },
+    ]);
+    expect(result.activity[0]).toEqual({
+      type: 'tool',
+      toolCallId: 'call-child',
+      name: 'query',
+      status: 'completed',
+    });
+  });
+
+  it('preserves split tool timing through a bounded persisted child view', () => {
+    const result = projectPersistedMessageActivity([
+      {
+        type: 'tool',
+        toolCallId: 'call-child',
+        name: 'query',
+        runStepStatus: 'completed',
+        toolPreparationStartedAt: 100,
+        toolDispatchedAt: 500,
+        toolPreparationDurationMs: 400,
+        toolExecutionDurationMs: 40,
+      },
+    ]);
+    expect(result.activity[0]).toMatchObject({
+      type: 'tool',
+      toolCallId: 'call-child',
+      toolPreparationStartedAt: 100,
+      toolDispatchedAt: 500,
+      toolPreparationDurationMs: 400,
+      toolExecutionDurationMs: 40,
+    });
+  });
   it('projects ordinary persisted chat content into the shared activity vocabulary', () => {
     const projection = projectPersistedMessageActivity([
       { type: 'reasoning' },

@@ -728,9 +728,16 @@ endpoints:
   #             # ingress, and caller can all outlast this value. The Nginx example
   #             # (120s) cannot establish the live limit. Omission keeps 30s admission.
   #             # With 125s total, a read can queue <=90s, a default command <=85s,
-  #             # a 90s command <=25s. Commands >115s cannot fit; the 120s command
-  #             # ceiling above requires a larger VERIFIED total budget to be usable.
+  #             # a 90s command <=25s. With the default 10s admission reserve,
+  #             # commands >105s cannot fit; the 120s command ceiling above requires
+  #             # a VERIFIED total budget of at least 140s to be usable.
   #             # maxRequestTimeoutMs: 125000
+  #             # Optional command admission allowance before local dispatch overhead.
+  #             # Omission reserves 10s; valid range: 1000–300000 ms. The HTTP budget
+  #             # must exceed this allowance plus 10s settlement/delivery grace;
+  #             # with the 10s default, a budget of 20s or less is rejected.
+  #             # Smaller allowances give a busy worker less time to accept the call.
+  #             # minCommandAdmissionMs: 10000
   #           permissions:
   #             fileWrite:
   #               allowed: [allow, ask, deny]

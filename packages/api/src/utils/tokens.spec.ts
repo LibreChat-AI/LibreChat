@@ -297,6 +297,20 @@ describe('Opus 5.5 token limits', () => {
   });
 });
 
+describe('Sonnet 5.5 token limits', () => {
+  it.each([
+    'claude-sonnet-5-5',
+    'claude-sonnet-5.5',
+    'anthropic/claude-sonnet-5-5',
+    'global.anthropic.claude-sonnet-5-5',
+  ])('resolves %s to the modern Claude profile', (model) => {
+    expect(getModelMaxTokens(model)).toBe(1000000);
+    expect(getModelMaxOutputTokens(model)).toBe(128000);
+    expect(getModelMaxTokens(model, EModelEndpoint.anthropic)).toBe(1000000);
+    expect(getModelMaxOutputTokens(model, EModelEndpoint.anthropic)).toBe(128000);
+  });
+});
+
 describe.each(['gpt-6-sol', 'gpt-6-luna'])('%s token limits', (model) => {
   it('resolves exact, snapshot, and provider-prefixed IDs', () => {
     for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {

@@ -22,7 +22,8 @@ jest.mock('~/hooks', () => {
   const expandCollapse = jest.requireActual('~/hooks/Messages/useExpandCollapse');
   const lazyCollapseBody = jest.requireActual('~/hooks/Messages/useLazyCollapseBody');
   return {
-    useLocalize: () => (key: string) => key,
+    useLocalize: () => (key: string, values?: Record<string | number, string>) =>
+      key === 'com_ui_n_of_n_actions_failed' ? `${values?.[0]}/${values?.[1]} failed` : key,
     useExpandCollapse: expandCollapse.default,
     useLazyCollapseBody: lazyCollapseBody.default,
     EXPAND_TRANSITION: expandCollapse.EXPAND_TRANSITION,
@@ -164,6 +165,45 @@ describe('ActivityPhaseGroup', () => {
     }
     expect(screen.getByText(LABEL).parentElement).toHaveClass('flex-1', 'text-left');
   });
+
+  test.each([
+    ['create_file', '', 'lucide-file-plus-2'],
+    ['edit_file', '', 'lucide-file-pen-line'],
+    ['create_file', 'Created skills/demo/SKILL.md', 'lucide-file-plus-2'],
+    ['create_file', 'Updated AGENTS.md with safe diagnostic guidance', 'lucide-file-pen-line'],
+    ['edit_file', 'Edited AGENTS.md', 'lucide-file-pen-line'],
+  ])(
+    'shows the file-row glyph on settled and live phase headers for %s: %s',
+    (name, output, glyph) => {
+      const part = {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 'file-1',
+          name,
+          args: '{"path":"AGENTS.md"}',
+          output,
+          type: 'tool_call',
+        },
+      } as unknown as TMessageContentParts;
+      const { rerender } = render(
+        <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[part]}>
+          <div data-testid="phase-content" />
+        </ActivityPhaseGroup>,
+      );
+
+      expect(screen.getByRole('button', { name: LABEL }).querySelector(`.${glyph}`)).not.toBeNull();
+      expect(
+        screen.getByRole('button', { name: LABEL }).querySelector('.lucide-wrench'),
+      ).toBeNull();
+
+      rerender(
+        <ActivityPhaseGroup labelPart={labelPart} hasContent liveParts={[part]}>
+          <div data-testid="phase-content" />
+        </ActivityPhaseGroup>,
+      );
+      expect(screen.getByRole('button').querySelector(`.${glyph}`)).not.toBeNull();
+    },
+  );
 
   test('keeps the focus ring inside the clipped header', () => {
     render(
@@ -430,6 +470,25 @@ describe('ActivityPhaseGroup failure fast path', () => {
     return <div data-testid="phase-content" />;
   };
 
+  test('counts only tool calls in the phase, not reasoning, labels or missing stream slots', () => {
+    const thought = {
+      type: ContentTypes.THINK,
+      think: 'Checking a source',
+    } as TMessageContentParts;
+    render(
+      <ActivityPhaseGroup
+        labelPart={labelPart}
+        hasContent
+        spanParts={[okCall, undefined, thought, failedCall, okCall]}
+      >
+        <div />
+      </ActivityPhaseGroup>,
+    );
+
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/3 failed');
+    expect(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' })).toBeInTheDocument();
+  });
+
   test('peeks the first failed call under a collapsed card and reaches it in one click', () => {
     const onReveal = jest.fn();
     render(
@@ -440,6 +499,7 @@ describe('ActivityPhaseGroup failure fast path', () => {
     const peek = screen.getByTestId('activity-phase-failed-peek');
     expect(peek).toHaveTextContent('HTTP 429');
     expect(peek).toHaveTextContent('com_ui_show_error');
+    expect(screen.queryByTestId('activity-phase-failed-time')).not.toBeInTheDocument();
     expect(screen.queryByTestId('phase-content')).not.toBeInTheDocument();
 
     fireEvent.click(peek);
@@ -447,6 +507,23 @@ describe('ActivityPhaseGroup failure fast path', () => {
     expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.queryByTestId('activity-phase-failed-peek')).not.toBeInTheDocument();
     expect(onReveal).toHaveBeenCalledTimes(1);
+  });
+
+  test('shows when the first failure happened, even after the conversation is restored', () => {
+    const failedAt = Date.now() - 2 * 60_000;
+    const timed = toPart(
+      { name: 'fetch_page', runStepStatus: 'failed', runStepClosedAt: failedAt },
+      'timed',
+    );
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[timed, okCall]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+
+    const time = screen.getByTestId('activity-phase-failed-time');
+    expect(time).toHaveAttribute('dateTime', new Date(failedAt).toISOString());
+    expect(time).toHaveTextContent(/2 minutes ago/);
   });
 
   test('keeps the error action and remaining count outside the shrinking peek label', () => {
@@ -475,10 +552,21 @@ describe('ActivityPhaseGroup failure fast path', () => {
       </ActivityPhaseGroup>,
     );
     fireEvent.click(screen.getByRole('button', { name: LABEL }));
-    const pill = screen.getByRole('button', { name: 'com_ui_show_failed_n' });
+    const pill = screen.getByRole('button', { name: 'com_ui_show_failed_n_of_n' });
+    expect(pill).toHaveTextContent('2/2 failed');
     fireEvent.click(pill);
     expect(onReveal).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  test('announces the same failed-over-total count while later calls are still running', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent liveParts={[failedCall, okCall]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
   });
 
   test('a card with no failure shows neither pill nor peek', () => {

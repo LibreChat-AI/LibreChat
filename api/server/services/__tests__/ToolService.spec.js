@@ -713,6 +713,43 @@ describe('ToolService - Action Capability Gating', () => {
     });
   });
 
+  it.each([true, false])(
+    'passes the Code API retry limit to repository instructions (definitionsOnly=%s)',
+    async (definitionsOnly) => {
+      const capabilities = [
+        AgentCapabilities.tools,
+        AgentCapabilities.execute_code,
+        AgentCapabilities.stateful_code_sessions,
+      ];
+      const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].codeApiMaxRetryWaitMs = 0;
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      mockResolveCodeExecutionContext.mockReturnValueOnce({
+        baseUrl: 'https://attached-code.example.com/v1',
+        codeSessionKey: 'attached-session',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        environmentId: 'personal-machine',
+      });
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: {
+          id: 'attached-agent',
+          tools: [Tools.execute_code],
+          stateful_code_sessions: true,
+        },
+        definitionsOnly,
+      });
+
+      expect(result.repositoryInstructionSource).toEqual(
+        expect.objectContaining({ codeApiMaxRetryWaitMs: 0 }),
+      );
+    },
+  );
+
   describe('isActionTool — cross-delimiter collision guard', () => {
     it('should identify real action tools', () => {
       expect(isActionTool(`get_weather${actionDelimiter}api_example_com`)).toBe(true);
@@ -2930,6 +2967,7 @@ describe('ToolService - Action Capability Gating', () => {
         AgentCapabilities.stateful_code_sessions,
       ];
       const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].codeApiMaxRetryWaitMs = 0;
       req.body = {
         codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
       };
@@ -2942,7 +2980,14 @@ describe('ToolService - Action Capability Gating', () => {
         environmentType: 'attached',
         environmentId: 'personal-machine',
         bridgeWorkerId: 'worker-abc',
-        codeEnvironmentConfigSchema: { limits: { maxCommandTimeoutMs: 120000, maxQueueWaitMs: 0 } },
+        codeEnvironmentConfigSchema: {
+          limits: {
+            maxCommandTimeoutMs: 80_000,
+            maxQueueWaitMs: 0,
+            maxRequestTimeoutMs: 90_000,
+            minCommandAdmissionMs: 15_000,
+          },
+        },
       });
       const toolRegistry = new Map([
         [AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }],
@@ -2968,8 +3013,11 @@ describe('ToolService - Action Capability Gating', () => {
         baseUrl: 'http://attached-code.test/v1',
         workspaceId: 'project-a',
         gitIdentity: { name: 'LibreChat Agent', email: 'agent@example.com' },
-        maxTimeoutMs: 120000,
+        maxTimeoutMs: 65_000,
         maxQueueWaitMs: 0,
+        codeApiMaxRetryWaitMs: 0,
+        maxRequestTimeoutMs: 90_000,
+        minCommandAdmissionMs: 15_000,
       });
       expect(mockResolveCodeExecutionWorkspaceContext).toHaveBeenCalledWith(
         expect.objectContaining({ requestedSelections: req.body.codeWorkspaces }),

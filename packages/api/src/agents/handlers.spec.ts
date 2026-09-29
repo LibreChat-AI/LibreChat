@@ -5843,11 +5843,11 @@ describe('createToolExecuteHandler', () => {
     it.each([
       { budget: 1200, elapsed: 0, remaining: 1200 },
       { budget: 1200, elapsed: 400, remaining: 800 },
-      { budget: 1200, elapsed: 1200, remaining: null },
-      { budget: 1200, elapsed: 1500, remaining: null },
+      { budget: 1200, elapsed: 1200, remaining: 0 },
+      { budget: 1200, elapsed: 1500, remaining: 0 },
       { budget: 0, elapsed: 400, remaining: 0 },
     ])(
-      'shares a protected edit retry horizon ($budget ms, preview $elapsed ms)',
+      'shares a protected edit capacity retry horizon ($budget ms, preview $elapsed ms)',
       async ({ budget, elapsed, remaining }) => {
         const startedAt = Date.now();
         let nowMs = startedAt;
@@ -5931,12 +5931,6 @@ describe('createToolExecuteHandler', () => {
             deadlineAtMs: startedAt + 125_000,
           }),
         );
-        if (remaining == null) {
-          expect(result.status).toBe('error');
-          expect(result.errorMessage).toContain('The file was not modified');
-          expect(editWorkspaceFile).not.toHaveBeenCalled();
-          return;
-        }
         expect(result.status).toBe('success');
         expect(editWorkspaceFile).toHaveBeenCalledWith(
           expect.objectContaining({

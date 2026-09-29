@@ -160,6 +160,105 @@ describe('aggregateSubagentContent', () => {
     expect((parts[0] as { tool_call: { progress: number } }).tool_call.progress).toBe(0.1);
   });
 
+  it('folds a child handoff into its own running tool card and measured call time', () => {
+    const events = [
+      makeEvent({
+        phase: 'run_step',
+        data: {
+          id: 'step-child',
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: 'call-child', name: 'query', args: '{}' }],
+          },
+        },
+      }),
+      makeEvent({
+        phase: 'tool_preparation',
+        data: {
+          id: 'step-child',
+          toolCallId: 'call-child',
+          observed_at: 100,
+        },
+      }),
+      makeEvent({
+        phase: 'tool_calls_dispatched',
+        data: {
+          dispatched_at: 500,
+          toolCalls: [
+            { id: 'call-child', stepId: 'step-child', name: 'query' },
+            { id: 'other-child', stepId: 'other-step', name: 'query' },
+          ],
+        },
+      }),
+    ];
+    const running = aggregateSubagentContent(events);
+    expect(running[0]).toMatchObject({
+      tool_call: {
+        id: 'call-child',
+        stepId: 'step-child',
+        toolPreparationStartedAt: 100,
+        toolDispatchedAt: 500,
+        progress: 0.1,
+      },
+    });
+    const completed = aggregateSubagentContent([
+      ...events,
+      makeEvent({
+        phase: 'run_step_completed',
+        data: {
+          result: {
+            id: 'step-child',
+            completed_at: 540,
+            type: 'tool_call',
+            tool_call: { id: 'call-child', name: 'query', args: '{}', output: 'ok', progress: 1 },
+          },
+        },
+      }),
+    ]);
+    expect(completed[0]).toMatchObject({
+      tool_call: {
+        id: 'call-child',
+        toolPreparationDurationMs: 400,
+        toolExecutionDurationMs: 40,
+        output: 'ok',
+        progress: 1,
+      },
+    });
+  });
+
+  it('ignores a late handoff for a settled child tool', () => {
+    const completed = aggregateSubagentContent([
+      makeEvent({
+        phase: 'run_step',
+        data: {
+          id: 'step-child',
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: 'call-child', name: 'query', args: '{}' }],
+          },
+        },
+      }),
+      makeEvent({
+        phase: 'run_step_completed',
+        data: {
+          result: {
+            id: 'step-child',
+            completed_at: 540,
+            tool_call: { id: 'call-child', name: 'query', output: 'ok', progress: 1 },
+          },
+        },
+      }),
+      makeEvent({
+        phase: 'tool_calls_dispatched',
+        data: {
+          dispatched_at: 500,
+          toolCalls: [{ id: 'call-child', stepId: 'step-child' }],
+        },
+      }),
+    ]);
+    expect(completed[0]).not.toHaveProperty('tool_call.toolDispatchedAt');
+  });
+
   it('finalizes a TOOL_CALL part on run_step_completed with output and progress=1', () => {
     const parts = aggregateSubagentContent([
       makeEvent({
