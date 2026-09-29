@@ -1126,9 +1126,10 @@ function syntheticRoot(): string {
 
 /**
  * What `packages/client/package.json` promises inside `dist`: its entry fields
- * and every string leaf of `exports`. A build is only finished when these are
- * there, which is what the runner checks and what the miniature repository has
- * to reproduce to stand in for one.
+ * and every string leaf of `exports` except a subpath pattern, which names no
+ * single file. A build is only finished when these are there, which is what the
+ * runner checks and what the miniature repository has to reproduce to stand in
+ * for one.
  */
 function bundleEntries(): string[] {
   const manifest = JSON.parse(
@@ -1138,7 +1139,7 @@ function bundleEntries(): string[] {
   const collect = (value: unknown): void => {
     if (typeof value === 'string') {
       const path = value.replace(/^\.\//, '');
-      if (path.startsWith('dist/')) declared.push(path);
+      if (path.startsWith('dist/') && !path.includes('*')) declared.push(path);
       return;
     }
     if (typeof value === 'object' && value !== null) Object.values(value).forEach(collect);

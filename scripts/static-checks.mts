@@ -1592,7 +1592,7 @@ function designMetadataIsFresh(): boolean {
  * a caller — and so the design rules, resolving `@librechat/client` — actually
  * loads, which is what makes their absence a build that did not happen rather
  * than a build that is merely old. A subpath pattern (`./dist/fonts/*`) names no
- * single file, so it stands for the directory it maps into.
+ * file a caller loads as an entry, so it is not one of them.
  */
 function declaredBundleFiles(): string[] {
   let manifest: Record<string, unknown>;
@@ -1606,8 +1606,8 @@ function declaredBundleFiles(): string[] {
   const declared: string[] = [];
   const collect = (value: unknown): void => {
     if (typeof value === 'string') {
-      const path = value.replace(/^\.\//, '').replace(/\/[^/]*\*.*$/, '');
-      if (path.startsWith('dist/')) declared.push(path);
+      const path = value.replace(/^\.\//, '');
+      if (path.startsWith('dist/') && !path.includes('*')) declared.push(path);
       return;
     }
     if (typeof value === 'object' && value !== null) Object.values(value).forEach(collect);
