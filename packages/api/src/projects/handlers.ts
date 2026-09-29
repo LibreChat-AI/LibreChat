@@ -24,6 +24,7 @@ import type { Request, Response } from 'express';
 import type { GetProjectFiles } from './resources';
 import { toRuntimeFile, listChatProjectFileViews } from './resources';
 import { normalizeLimit, queryString } from '~/utils';
+import { isSameChatProjectTenant } from './context';
 
 const CHAT_PROJECT_CONFLICT = 'Project revision conflict';
 const PROJECT_NOT_FOUND = 'Project not found';
@@ -307,7 +308,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
 
     try {
       const project = await deps.getChatProject(getUserId(req), projectId);
-      if (!project || (project.tenantId ?? null) !== (req.user?.tenantId ?? null)) {
+      if (!project || !isSameChatProjectTenant(project.tenantId, req.user?.tenantId)) {
         return res.status(404).json({ error: PROJECT_NOT_FOUND });
       }
       const files = await listChatProjectFileViews({
@@ -339,7 +340,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       parseAvailableProjectFilesCursor(cursor);
       const userId = getUserId(req);
       const project = await deps.getChatProject(userId, projectId);
-      if (!project || (project.tenantId ?? null) !== (req.user?.tenantId ?? null)) {
+      if (!project || !isSameChatProjectTenant(project.tenantId, req.user?.tenantId)) {
         return res.status(404).json({ error: PROJECT_NOT_FOUND });
       }
       const result = await deps.getAvailableProjectFiles({

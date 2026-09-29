@@ -47,6 +47,14 @@ export interface ChatProjectTenantSource {
   _agentEventBindingTenantId?: string | null;
 }
 
+/** An empty tenant id is no tenant, as the project file queries already treat it. */
+export function isSameChatProjectTenant(
+  actual: string | null | undefined,
+  expected: string | null | undefined,
+): boolean {
+  return (actual || null) === (expected || null);
+}
+
 /** Bound child conversations resolve project context in the event binding's tenant. */
 export function getChatProjectTenantId(req: ChatProjectTenantSource): string | null | undefined {
   return req._agentEventBindingParentConversationId != null
@@ -186,7 +194,7 @@ export async function resolveChatProjectContext(
     const suppliedUserId = suppliedConversation.user;
     if (
       (suppliedUserId != null && suppliedUserId !== userId) ||
-      (suppliedConversation.tenantId ?? null) !== (tenantId ?? null)
+      !isSameChatProjectTenant(suppliedConversation.tenantId, tenantId)
     ) {
       throw new Error(CHAT_PROJECT_CONTEXT_UNAVAILABLE);
     }
@@ -223,7 +231,7 @@ export async function resolveChatProjectContext(
   }
 
   const project = await deps.getChatProject(userId, projectId);
-  if (project == null || (project.tenantId ?? null) !== (tenantId ?? null)) {
+  if (project == null || !isSameChatProjectTenant(project.tenantId, tenantId)) {
     if (conversationIsAuthoritative) {
       return null;
     }

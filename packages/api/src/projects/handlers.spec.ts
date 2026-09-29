@@ -158,6 +158,21 @@ describe('ChatProject handlers', () => {
     expect(result.body).toEqual([{ file_id: 'gone', availability: 'unavailable' }]);
   });
 
+  it.each(['listProjectFiles', 'listAvailableProjectFiles'] as const)(
+    '%s treats an empty caller tenant as no tenant for a tenantless project',
+    async (handler) => {
+      const { handlers } = setup({
+        getChatProject: jest.fn().mockResolvedValue({ _id: projectId, file_ids: [] }),
+      });
+      const { res, result } = response();
+      await handlers[handler](
+        request({ user: { id: 'owner', tenantId: '' }, params: { projectId } }),
+        res,
+      );
+      expect(result.statusCode).toBe(200);
+    },
+  );
+
   it('denies attached-file metadata for a foreign tenant', async () => {
     const { handlers, deps } = setup({
       getChatProject: jest.fn().mockResolvedValue({
