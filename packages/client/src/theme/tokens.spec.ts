@@ -82,11 +82,17 @@ describe('theme color tokens', () => {
   });
 
   it('resolves a token to the custom property the theme rewrites at runtime', async () => {
-    const css = await generate(['bg-surface-primary', 'text-text-secondary', 'bg-series-1']);
+    const css = await generate([
+      'bg-surface-primary',
+      'text-text-secondary',
+      'bg-series-1',
+      'bg-switch-thumb',
+    ]);
 
     expect(css).toContain('rgb(var(--surface-primary))');
     expect(css).toContain('rgb(var(--text-secondary))');
     expect(css).toContain('rgb(var(--series-1))');
+    expect(css).toContain('rgb(var(--switch-thumb, var(--surface-primary)))');
   });
 
   it('keeps a border token on its intrinsic alpha and still takes an opacity modifier', async () => {

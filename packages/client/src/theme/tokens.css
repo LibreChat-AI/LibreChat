@@ -132,7 +132,8 @@
   --color-chart-widget-surface: rgb(var(--chart-widget-surface));
   --color-chart-widget-stroke: rgb(var(--chart-widget-stroke));
   --color-switch-unchecked: rgb(var(--switch-unchecked));
-  --color-switch-thumb: rgb(var(--switch-thumb));
+  /* Falls back to the surface it was painted before the role, for a stylesheet that predates it. */
+  --color-switch-thumb: rgb(var(--switch-thumb, var(--surface-primary)));
 }
 
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
