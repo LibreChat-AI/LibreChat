@@ -753,6 +753,7 @@ describe('attached code environment user config schema', () => {
                 name: 'Personal VM',
                 type: 'attached',
                 baseURL: 'https://code.example.com/v1',
+                default: true,
                 configSchema: { workspaces },
               },
             ],
