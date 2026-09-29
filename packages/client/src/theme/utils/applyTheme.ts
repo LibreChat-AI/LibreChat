@@ -69,6 +69,11 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--chart-widget-surface', colors['rgb-surface-primary']]);
   }
 
+  /** The switch knob was painted `surface-primary` before it had a role, as in `resolveTheme`. */
+  if (colors['rgb-switch-thumb'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--switch-thumb', colors['rgb-surface-primary']]);
+  }
+
   if (colors['rgb-chart-widget-stroke'] === undefined && colors['rgb-border-light'] !== undefined) {
     variables.push(['--chart-widget-stroke', colors['rgb-border-light']]);
   }

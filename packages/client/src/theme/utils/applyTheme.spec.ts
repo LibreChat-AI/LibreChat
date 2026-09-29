@@ -18,6 +18,7 @@ const semanticProperties = [
   '--text-muted',
   '--chart-widget-surface',
   '--chart-widget-stroke',
+  '--switch-thumb',
   '--border-destructive',
   '--border-control',
   '--status-success',
@@ -363,6 +364,22 @@ describe('applyTheme', () => {
     applyResolvedTheme(resolveTheme(fill, 'light'), root);
     clearAppliedTheme(root);
     expect(root.hasAttribute(THEME_DISABLED_ATTRIBUTE)).toBe(false);
+  });
+
+  it('keeps the switch knob of a legacy theme on the surface it repainted', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22' }, root);
+
+    expect(root.style.getPropertyValue('--switch-thumb')).toBe('20 21 22');
+  });
+
+  it('leaves an explicit switch knob alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-switch-thumb': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--switch-thumb')).toBe('1 2 3');
   });
 
   it('carries a legacy light border onto the control outline', () => {
