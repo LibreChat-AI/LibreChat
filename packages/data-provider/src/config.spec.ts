@@ -602,14 +602,29 @@ describe('attached code environment user config schema', () => {
     },
   );
 
-  it('preserves omission of the command admission allowance alongside a request budget', () => {
-    expect(
-      codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs: 90_000 } }),
-    ).toEqual({ limits: { maxRequestTimeoutMs: 90_000 } });
-    expect(
-      codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs: 5_000 } }),
-    ).toEqual({ limits: { maxRequestTimeoutMs: 5_000 } });
-  });
+  it.each([20_001, 90_000])(
+    'preserves omission of the command admission allowance with a fitting %i ms budget',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([5_000, 10_002, 15_000, 20_000])(
+    'rejects an undersized %i ms request budget with the default command reserve',
+    (maxRequestTimeoutMs) => {
+      const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: ['limits', 'maxRequestTimeoutMs'] }),
+          ]),
+        );
+      }
+    },
+  );
 
   it.each([
     { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 79_999 },
@@ -641,7 +656,10 @@ describe('attached code environment user config schema', () => {
     ).toEqual({ limits: { minCommandAdmissionMs: 300_000 } });
   });
 
-  it('rejects an impossible reserve in the top-level deployment config', () => {
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 15_000 },
+  ])('rejects an impossible command reserve in the top-level deployment config: %j', (limits) => {
     expect(
       configSchema.safeParse({
         version: '1.0',
@@ -655,9 +673,7 @@ describe('attached code environment user config schema', () => {
                   name: 'Personal VM',
                   type: 'attached',
                   baseURL: 'https://code.example.com/v1',
-                  configSchema: {
-                    limits: { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
-                  },
+                  configSchema: { limits },
                 },
               ],
             },

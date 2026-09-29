@@ -1275,15 +1275,17 @@ export const codeEnvironmentUserConfigSchema = z
       .superRefine((limits, context) => {
         if (
           limits.maxRequestTimeoutMs == null ||
-          limits.minCommandAdmissionMs == null ||
           limits.maxRequestTimeoutMs >
-            limits.minCommandAdmissionMs + CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS
+            (limits.minCommandAdmissionMs ?? CODE_ENVIRONMENT_COMMAND_ADMISSION_DEFAULT_MS) +
+              CODE_ENVIRONMENT_COMMAND_BUDGET_GRACE_MS
         ) {
           return;
         }
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['minCommandAdmissionMs'],
+          path: [
+            limits.minCommandAdmissionMs == null ? 'maxRequestTimeoutMs' : 'minCommandAdmissionMs',
+          ],
           message: 'Command admission and settlement reserves must leave time for execution',
         });
       })
