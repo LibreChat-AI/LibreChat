@@ -7,6 +7,11 @@
 export const disabledFillClasses =
   'theme-disabled:border-border-disabled theme-disabled:bg-surface-disabled theme-disabled:text-text-disabled theme-disabled:placeholder:text-text-disabled theme-disabled:opacity-100';
 
+/** The same recipe for a wrapper around the disabled control rather than the control itself; the
+ *  control inherits the ink and shows the fill through its transparent background. */
+export const disabledWithinFillClasses =
+  'theme-disabled-within:border-border-disabled theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-within:opacity-100';
+
 export const applyFontSize = (val: string): void => {
   const root = document.documentElement;
   const size = val.split('-')[1]; // This will be 'xs', 'sm', 'base', 'lg', or 'xl'

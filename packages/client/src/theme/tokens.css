@@ -130,3 +130,8 @@
  * marks a disabled part that is not a form control (a slider thumb) with
  * `data-disabled`, which counts too. */
 @custom-variant theme-disabled (&:is([data-theme-disabled='fill'] *):is(:disabled, [data-disabled]));
+
+/* The same fill for a wrapper whose disabled control sits inside it, as
+ * `rc-input-number` renders its input inside the element that takes the
+ * component's classes. */
+@custom-variant theme-disabled-within (&:is([data-theme-disabled='fill'] *):has(:disabled));
