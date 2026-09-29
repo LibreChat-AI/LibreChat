@@ -1198,7 +1198,17 @@ const ContentPartsBody = memo(function ContentPartsBody({
 });
 
 const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
-  const { attachments, messageId, conversationId } = props;
+  const { attachments, messageId, conversationId, isSubmitting, isLatestMessage } = props;
+  const messageContext = useMemo(
+    () => ({
+      messageId,
+      conversationId,
+      isExpanded: false as const,
+      isSubmitting: isLatestMessage === true && isSubmitting,
+      isLatestMessage,
+    }),
+    [messageId, conversationId, isSubmitting, isLatestMessage],
+  );
   const toolState = useRef<{
     messageId: string;
     conversationId: string | null | undefined;
@@ -1245,13 +1255,15 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
   const attachmentsByName = useMemo(() => buildAttachmentsByName(attachments), [attachments]);
   const media = useMemo(() => ({ attachmentsByName }), [attachmentsByName]);
   return (
-    <MediaContext.Provider value={media}>
-      <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
-        <ToolDisclosureContext.Provider value={toolDisclosures}>
-          <ContentPartsBody {...props} />
-        </ToolDisclosureContext.Provider>
-      </ReasoningDisclosureContext.Provider>
-    </MediaContext.Provider>
+    <MessageContext.Provider value={messageContext}>
+      <MediaContext.Provider value={media}>
+        <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
+          <ToolDisclosureContext.Provider value={toolDisclosures}>
+            <ContentPartsBody {...props} />
+          </ToolDisclosureContext.Provider>
+        </ReasoningDisclosureContext.Provider>
+      </MediaContext.Provider>
+    </MessageContext.Provider>
   );
 });
 

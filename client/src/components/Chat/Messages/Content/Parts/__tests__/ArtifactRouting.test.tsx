@@ -4,6 +4,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import Attachment, { AttachmentGroup } from '../Attachment';
+import { MessageContext } from '~/Providers/MessageContext';
 import store from '~/store';
 
 jest.mock('~/hooks', () => ({
@@ -85,12 +86,20 @@ const baseAttachment = (overrides: Partial<TAttachment> = {}): TAttachment =>
  * the way each test expects. Default `streaming: true` matches the
  * legacy SSE-arrival flow that the bulk of these tests exercise.
  */
+const inMessage = (ui: React.ReactElement, isSubmitting: boolean) => (
+  <MessageContext.Provider value={{ messageId: 'test-response', isExpanded: true, isSubmitting }}>
+    {ui}
+  </MessageContext.Provider>
+);
+
 const renderWith = (ui: React.ReactElement, opts: { streaming?: boolean } = {}) => {
   const streaming = opts.streaming ?? true;
   const initializeState = (snapshot: MutableSnapshot) => {
     snapshot.set(store.isSubmittingFamily(0), streaming);
   };
-  return render(<RecoilRoot initializeState={initializeState}>{ui}</RecoilRoot>);
+  return render(
+    <RecoilRoot initializeState={initializeState}>{inMessage(ui, streaming)}</RecoilRoot>,
+  );
 };
 
 interface ArtifactsSnapshot {
@@ -130,7 +139,7 @@ const renderWithProbe = (ui: React.ReactElement, opts: { streaming?: boolean } =
           snapshot = snap;
         }}
       />
-      {ui}
+      {inMessage(ui, streaming)}
     </RecoilRoot>,
   );
   return {
@@ -443,6 +452,36 @@ describe('ToolArtifactCard click behaviour', () => {
     expect(snap.currentArtifactId).toBeNull();
   });
 
+  it('does not open a historical artifact remounted while another response regenerates', () => {
+    const html = baseAttachment({
+      file_id: 'previous-answer',
+      filename: 'previous.html',
+      text: '<h1>previous answer</h1>',
+    });
+    const initializeState = (snap: MutableSnapshot) => {
+      snap.set(store.isSubmittingFamily(0), true);
+      snap.set(store.artifactsVisibility, false);
+    };
+    let snapshot: ArtifactsSnapshot = {
+      visibility: false,
+      currentArtifactId: null,
+      artifactIds: [],
+    };
+    render(
+      <RecoilRoot initializeState={initializeState}>
+        <StateProbe onSnapshot={(next) => (snapshot = next)} />
+        <MessageContext.Provider
+          value={{ messageId: 'previous-response', isExpanded: true, isSubmitting: false }}
+        >
+          <Attachment attachment={html} />
+        </MessageContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(snapshot.artifactIds).toContain('tool-artifact-previous-answer');
+    expect(snapshot.currentArtifactId).toBeNull();
+    expect(snapshot.visibility).toBe(false);
+  });
+
   it('does NOT auto-open a streaming CODE artifact (test.py is click-to-open)', () => {
     // Source-code artifacts are excluded from streaming auto-open even
     // when isSubmitting=true. The agent often emits supporting `.py` /
@@ -470,7 +509,7 @@ describe('ToolArtifactCard click behaviour', () => {
             snapshot = snap;
           }}
         />
-        <Attachment attachment={py} />
+        {inMessage(<Attachment attachment={py} />, true)}
       </RecoilRoot>,
     );
     // Artifact registered (so the panel can find it on click)…
@@ -507,7 +546,7 @@ describe('ToolArtifactCard click behaviour', () => {
             snapshot = snap;
           }}
         />
-        <Attachment attachment={html} />
+        {inMessage(<Attachment attachment={html} />, true)}
       </RecoilRoot>,
     );
     expect(snapshot.visibility).toBe(true);

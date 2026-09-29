@@ -9,6 +9,7 @@ import {
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
 import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
+import { useMessageContext } from '~/Providers/MessageContext';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
 import ArtifactRow from './ArtifactRow';
@@ -47,7 +48,7 @@ interface ToolArtifactCardProps {
  *     and trade overwrites in a loop.
  *
  *  3. **Focus + open on mount** (deps: artifact.id, artifact.type) —
- *     gated on `isSubmitting` captured at first render via a ref AND
+ *     gated on this message's `isSubmitting` captured on mount AND
  *     on `artifact.type !== CODE`. A card mounted *during* streaming
  *     for a rich-preview bucket (HTML, React, Markdown, plain text)
  *     steals panel focus and forces `artifactsVisibility = true` so
@@ -66,6 +67,7 @@ interface ToolArtifactCardProps {
  */
 const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) => {
   const claimKey = useId();
+  const { isSubmitting } = useMessageContext();
   const file = attachment as TFile & TAttachmentMetadata;
   const fileId = file.file_id;
   const setVisible = useSetRecoilState(store.artifactsVisibility);
@@ -93,30 +95,9 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
       },
     [],
   );
-  /**
-   * Captured at first render via a non-subscribing snapshot read so the
-   * downstream effect doesn't re-fire (and the component doesn't
-   * re-render) every time `isSubmittingFamily(0)` flips. Cards that mount
-   * mid-stream stay "fresh" for the rest of their lifetime; cards that
-   * mount post-stream stay "history" even if the user sends a new
-   * message while this card stays mounted.
-   */
-  const readInitialIsSubmitting = useRecoilCallback(
-    ({ snapshot }) =>
-      () =>
-        // `valueMaybe()` returns `undefined` if the atom is in an error
-        // or loading state instead of throwing — defensive against an
-        // upstream selector failure surfacing during card mount. The
-        // `?? false` default is correct because a card we can't classify
-        // as streaming is one we should treat as history (don't steal
-        // focus / open the panel).
-        snapshot.getLoadable(store.isSubmittingFamily(0)).valueMaybe() ?? false,
-    [],
-  );
-  const mountedDuringStreamRef = useRef<boolean | null>(null);
-  if (mountedDuringStreamRef.current === null) {
-    mountedDuringStreamRef.current = readInitialIsSubmitting();
-  }
+  /** Preserve the message's submission state at mount: a previous sibling's
+   * artifact can remount while regeneration is submitting a different response. */
+  const mountedDuringStreamRef = useRef(isSubmitting === true);
 
   useLayoutEffect(() => {
     // Always (re)claim on mount — a later card for the same id displaces

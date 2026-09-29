@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useRecoilCallback, useSetRecoilState } from 'recoil';
 import type { TAttachment, TFile, TFilePreview } from 'librechat-data-provider';
+import { useMessageContext } from '~/Providers/MessageContext';
 import { useFilePreview } from '~/data-provider';
 import { useShareContext } from '~/Providers';
 import store from '~/store';
@@ -61,6 +62,7 @@ export default function useAttachmentPreviewSync(
   attachment: TAttachment | undefined,
 ): UseAttachmentPreviewSyncResult {
   const setAttachmentsMap = useSetRecoilState(store.messageAttachmentsMap);
+  const { isSubmitting } = useMessageContext();
   /* `useRecoilCallback` reads/writes without subscribing this hook to
    * the per-file_id flag — we only ever set it on the pending→ready
    * edge, so subscribing would cause needless re-renders. */
@@ -71,29 +73,9 @@ export default function useAttachmentPreviewSync(
       },
     [],
   );
-  /* Capture `isAnySubmitting` at first render via a non-subscribing
-   * snapshot read. Mirrors `ToolArtifactCard`'s `mountedDuringStreamRef`
-   * pattern so this hook applies the same "is the user actively in a
-   * turn?" classification as the card itself. The ref is the gate that
-   * distinguishes a *fresh* deferred-preview resolution (auto-open
-   * eligible) from a *stale* DB-pending record resolving on a history
-   * load (auto-open must NOT fire — the user is scrolling old data,
-   * not awaiting a result). Without this gate, navigating back to a
-   * conversation whose immediate-persist snapshot left the message's
-   * attachments at `status: 'pending'` would re-trigger auto-open
-   * every time the polling layer caught up — which is exactly the
-   * pre-PR "panel pops open on every visit" UX the team explicitly
-   * removed. */
-  const readInitialIsSubmitting = useRecoilCallback(
-    ({ snapshot }) =>
-      () =>
-        snapshot.getLoadable(store.isSubmittingFamily(0)).valueMaybe() ?? false,
-    [],
-  );
-  const mountedDuringStreamRef = useRef<boolean | null>(null);
-  if (mountedDuringStreamRef.current === null) {
-    mountedDuringStreamRef.current = readInitialIsSubmitting();
-  }
+  /* Preserve this message's status at mount so a pending file in another
+   * response cannot mark itself freshly resolved during regeneration. */
+  const mountedDuringStreamRef = useRef(isSubmitting === true);
 
   const file = (attachment ?? undefined) as Partial<TFile> | undefined;
   const fileId = file?.file_id;
@@ -116,8 +98,8 @@ export default function useAttachmentPreviewSync(
    * pending→ready edge exactly once per session. Two gates have to
    * pass for the auto-open flag to flip:
    *   1. We actually observed the transition (prev → curr).
-   *   2. The hook mounted during an active stream — i.e. the file is
-   *      part of the user's current turn, not a history load. A
+   *   2. This message mounted during its own active stream, not a
+   *      historical sibling displayed while another turn submits. A
    *      page-navigation mount (or refresh) of a stale-pending DB
    *      record will see the same transition when polling catches
    *      up, but we must NOT auto-open in that case — the user is

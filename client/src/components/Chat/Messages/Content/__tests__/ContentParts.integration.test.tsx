@@ -82,13 +82,19 @@ jest.mock('../Parts', () => ({
   StreamingThoughtPeek: ({ text }: { text: string }) => (
     <div data-testid="streaming-thought-peek">{text}</div>
   ),
-  AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
-    <div
-      data-testid="attachment-group"
-      data-count={attachments?.length ?? 0}
-      data-paths={(attachments ?? []).map((a) => a.filepath).join(',')}
-    />
-  ),
+  AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => {
+    const { isSubmitting } = jest
+      .requireActual<typeof import('~/Providers/MessageContext')>('~/Providers/MessageContext')
+      .useMessageContext();
+    return (
+      <div
+        data-testid="attachment-group"
+        data-count={attachments?.length ?? 0}
+        data-paths={(attachments ?? []).map((a) => a.filepath).join(',')}
+        data-submitting={String(isSubmitting)}
+      />
+    );
+  },
   ExecuteCode: () => <div data-testid="execute-code" />,
   ImageGen: () => <div data-testid="image-gen" />,
   AgentUpdate: () => <div data-testid="agent-update" />,
@@ -259,6 +265,27 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     // One AttachmentGroup hoisted at the group level — inner ToolCalls skip rendering theirs.
     expect(groups).toHaveLength(1);
     expect(groups[0].getAttribute('data-count')).toBe('2');
+  });
+
+  it('marks grouped artifacts as history while another response regenerates', () => {
+    const content = [makeMcpToolCall('t1'), makeMcpToolCall('t2')];
+    const attachments = [imageAttachment('t1'), imageAttachment('t2')];
+
+    const { rerender } = renderContentParts({
+      ...baseProps,
+      isSubmitting: true,
+      isLatestMessage: false,
+      content,
+      attachments,
+    });
+    expect(screen.getByTestId('attachment-group')).toHaveAttribute('data-submitting', 'false');
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={content} attachments={attachments} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('attachment-group')).toHaveAttribute('data-submitting', 'true');
   });
 
   it('does not group a single tool call — image renders inline (no hoist)', () => {

@@ -26,6 +26,7 @@ import type {
   TFilePreview,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import { MessageContext } from '~/Providers/MessageContext';
 import store from '~/store';
 
 type AttachmentFixture = TFile & TAttachmentMetadata;
@@ -126,7 +127,9 @@ function setup({
           children: (
             <>
               <Bridge />
-              {children}
+              <MessageContext.Provider value={{ messageId, isExpanded: true, isSubmitting }}>
+                {children}
+              </MessageContext.Provider>
             </>
           ),
         }),
@@ -158,7 +161,10 @@ function setup({
  */
 function setupWithTransitions(
   initialPreview?: TFilePreview,
-  { isSubmittingAtMount = true }: { isSubmittingAtMount?: boolean } = {},
+  {
+    isSubmittingAtMount = true,
+    messageIsSubmittingAtMount = isSubmittingAtMount,
+  }: { isSubmittingAtMount?: boolean; messageIsSubmittingAtMount?: boolean } = {},
 ) {
   let currentPreview = initialPreview;
   mockUseFilePreview.mockReset();
@@ -192,7 +198,11 @@ function setupWithTransitions(
           }}
         >
           <FlagProbe id={fileId} />
-          {children}
+          <MessageContext.Provider
+            value={{ messageId, isExpanded: true, isSubmitting: messageIsSubmittingAtMount }}
+          >
+            {children}
+          </MessageContext.Provider>
         </RecoilRoot>
       ),
     },
@@ -426,6 +436,20 @@ describe('useAttachmentPreviewSync', () => {
         textFormat: 'html',
       });
       expect(ctx.justResolved).toBe(true);
+    });
+
+    it('does not flag a previous response preview as newly resolved during regeneration', () => {
+      const ctx = setupWithTransitions(
+        { file_id: fileId, status: 'pending' },
+        { isSubmittingAtMount: true, messageIsSubmittingAtMount: false },
+      );
+      ctx.setPreview({
+        file_id: fileId,
+        status: 'ready',
+        text: '<table>old response</table>',
+        textFormat: 'html',
+      });
+      expect(ctx.justResolved).toBe(false);
     });
 
     it('does NOT flip the flag when the polled status is "failed"', () => {
