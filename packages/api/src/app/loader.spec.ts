@@ -64,6 +64,9 @@ describe('createCustomConfigLoader interface.theme', () => {
     expect(config?.interface?.modelSelect).toBe(true);
     expect(config?.cache).toBe(true);
     expect(warnings(warn)).toContain(
+      'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown color token: rgb-surfce-secondary',
+    );
+    expect(warnings(warn)).toContain(
       'interface.theme.modes.light.colors.surface-tertiary: Unknown color token: surface-tertiary',
     );
     expect(warnings(warn)).toContain('the default theme applies instead');
@@ -130,16 +133,6 @@ describe('createCustomConfigLoader interface.theme', () => {
     expect(warnings(warn)).not.toContain('the default theme applies instead');
   });
 
-  it('keeps a theme whose only problem is a color role this version ignores', async () => {
-    const config = await load('unknown-color');
-
-    expect(config?.interface?.theme).toEqual(raw('unknown-color').interface?.theme);
-    expect(warnings(warn)).toContain(
-      'interface.theme.modes.light.colors.rgb-future-role: Unknown light color token ignored: rgb-future-role',
-    );
-    expect(warnings(warn)).not.toContain('the default theme applies instead');
-  });
-
   it('still exits at startup when something other than the theme is invalid', async () => {
     await expect(load('unrelated-error')).rejects.toThrow('process.exit(1)');
     expect(exit).toHaveBeenCalledWith(1);
@@ -153,7 +146,7 @@ describe('createCustomConfigLoader interface.theme', () => {
       expect(config?.interface).not.toHaveProperty('theme');
       expect(config?.interface?.modelSelect).toBe(true);
       expect(warnings(warn)).toContain(
-        'interface.theme.modes.light.colors.surface-tertiary: Unknown color token',
+        'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown color token',
       );
     });
 

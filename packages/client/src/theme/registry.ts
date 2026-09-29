@@ -331,16 +331,6 @@ function knownAppearance(appearance?: Partial<IThemeAppearance>): Partial<ITheme
   );
 }
 
-const colorTokenSet: ReadonlySet<string> = new Set<string>(themeColorTokens);
-
-/** A newer definition's colors minus the roles this reader cannot paint, which it ignores. */
-function knownColors(colors?: IThemeRGB): IThemeRGB | undefined {
-  if (!colors) {
-    return colors;
-  }
-  return Object.fromEntries(Object.entries(colors).filter(([key]) => colorTokenSet.has(key)));
-}
-
 const shadowAppearanceKeys: ReadonlyArray<keyof IThemeAppearance> = [
   'elevationSurface',
   'shadow2xs',
