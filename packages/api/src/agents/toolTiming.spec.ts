@@ -1,9 +1,50 @@
-import { createToolTimingTracker, emitToolPreparationEvents } from './toolTiming';
+import { StepEvents } from 'librechat-data-provider';
+import { createToolTimingAdapter, createToolTimingTracker } from './toolTiming';
 
 describe('createToolTimingTracker', () => {
+  it('projects child dispatch and completion only onto its own persisted tool part', () => {
+    const part = { type: 'tool_call', tool_call: { id: 'child-call' } };
+    const aggregator = { contentParts: [part], stepMap: new Map([['child-step', { index: 0 }]]) };
+    const adapter = createToolTimingAdapter({ emit: async () => undefined });
+    adapter.child(aggregator, {
+      phase: 'tool_preparation',
+      data: {
+        id: 'child-step',
+        toolCallId: 'child-call',
+        observed_at: 100,
+      },
+    });
+    adapter.child(aggregator, {
+      phase: 'tool_calls_dispatched',
+      data: {
+        dispatched_at: 1_000,
+        toolCalls: [
+          { id: 'different-call', stepId: 'child-step' },
+          { id: 'child-call', stepId: 'other-step' },
+          { id: 'child-call', stepId: 'child-step' },
+        ],
+      },
+    });
+    expect(part.tool_call).toMatchObject({ toolDispatchedAt: 1_000 });
+    const completedPart = { type: 'tool_call', tool_call: { id: 'child-call', output: 'ok' } };
+    aggregator.contentParts[0] = completedPart;
+    adapter.child(aggregator, {
+      phase: 'run_step_completed',
+      data: {
+        result: { id: 'child-step', completed_at: 1_340, tool_call: { id: 'child-call' } },
+      },
+    });
+    expect(completedPart.tool_call).toMatchObject({
+      toolPreparationStartedAt: 100,
+      toolPreparationDurationMs: 900,
+      toolDispatchedAt: 1_000,
+      toolExecutionDurationMs: 340,
+    });
+  });
+
   it('publishes each first fragment once without forwarding tool arguments', async () => {
-    const tracker = createToolTimingTracker();
     const publish = jest.fn(async () => undefined);
+    const adapter = createToolTimingAdapter({ emit: publish });
     const fragment = {
       id: 'step-1',
       observed_at: 100,
@@ -12,14 +53,12 @@ describe('createToolTimingTracker', () => {
         tool_calls: [{ id: 'call-1', index: 0, args: 'secret' }],
       },
     };
-    await emitToolPreparationEvents(tracker, fragment, publish);
-    await emitToolPreparationEvents(tracker, { ...fragment, observed_at: 200 }, publish);
+    await adapter.delta(fragment);
+    await adapter.delta({ ...fragment, observed_at: 200 });
     expect(publish).toHaveBeenCalledTimes(1);
     expect(publish).toHaveBeenCalledWith({
-      id: 'step-1',
-      index: 0,
-      toolCallId: 'call-1',
-      observed_at: 100,
+      event: StepEvents.ON_TOOL_PREPARATION,
+      data: { id: 'step-1', index: 0, toolCallId: 'call-1', observed_at: 100 },
     });
   });
   it('records each call separately even when results complete out of order', () => {

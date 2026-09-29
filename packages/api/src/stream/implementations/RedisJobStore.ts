@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import { createContentAggregator } from '@librechat/agents';
 import {
   ContentTypes,
+  StepEvents,
   getRunStepDurationMs,
   getRunStepCloseMetadata,
 } from 'librechat-data-provider';
@@ -53,6 +54,7 @@ import {
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
+import { createToolTimingTracker } from '~/agents/toolTiming';
 import { evalScript } from '~/cache/redisScript';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
@@ -4120,6 +4122,7 @@ export class RedisJobStore implements IJobStoreV2 {
 
     // Use the same content aggregator as live streaming
     const { contentParts, aggregateContent } = createContentAggregator();
+    const toolTiming = createToolTimingTracker();
 
     // Step ID -> content index, rebuilt from the replayed `on_run_step`
     // payloads. Those carry the index the offset wrappers shifted, whereas a
@@ -4233,6 +4236,24 @@ export class RedisJobStore implements IJobStoreV2 {
         continue;
       }
 
+      if (event.event === StepEvents.ON_TOOL_PREPARATION) {
+        toolTiming.prepare(event.data as Agents.ToolPreparationMarker);
+        continue;
+      }
+      if (event.event === StepEvents.ON_TOOL_CALLS_DISPATCHED) {
+        toolTiming.dispatched(event.data as Agents.ToolCallsDispatchedEvent);
+        continue;
+      }
+      if (event.event === StepEvents.ON_RUN_STEP_DELTA) {
+        toolTiming.observe(event.data as Agents.RunStepDeltaEvent);
+      }
+      if (event.event === StepEvents.ON_RUN_STEP_COMPLETED) {
+        const completion = (event.data as { result?: Agents.ToolEndEvent }).result;
+        if (completion?.tool_call?.id) {
+          toolTiming.completed(completion.id, completion.tool_call.id, completion.completed_at);
+        }
+      }
+
       // Step closures are host-authored like steers and labels: the SDK
       // aggregator has no notion of the event, so the terminal status is
       // stamped onto the part the replayed steps already rebuilt. Resolved by
@@ -4250,6 +4271,7 @@ export class RedisJobStore implements IJobStoreV2 {
         const part = index != null ? contentParts[index] : undefined;
         if (closed.status && part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
           part.tool_call.runStepStatus = closed.status;
+          Object.assign(part.tool_call, toolTiming.take(part.tool_call.id ?? '', closed.id ?? ''));
           Object.assign(part.tool_call, getRunStepCloseMetadata(closed));
           const durationMs = getRunStepDurationMs(closed);
           if (durationMs != null) {
