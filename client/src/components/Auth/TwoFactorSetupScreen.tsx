@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@librechat/client';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { clearTwoFactorSetupToken, readTwoFactorSetupToken } from 'librechat-data-provider';
+import {
+  readTwoFactorSetupToken,
+  clearTwoFactorSetupToken,
+  subscribeTwoFactorSetupToken,
+} from 'librechat-data-provider';
 import {
   useAcknowledgeTwoFactorSetupMutation,
   useConfirmTwoFactorSetupMutation,
@@ -56,10 +60,11 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
   const { completeAuthentication } = useAuthContext();
   const phaseRef = useRef<HTMLDivElement>(null);
   /**
-   * Read once at mount: the credential arrives out of band rather than in the query string, and
-   * consuming it on completion must not flip the screen to the expired state mid-navigation.
+   * Read at mount and adopted later only while empty: the credential arrives out of band rather
+   * than in the query string, a refresh on this route can hand one off after the screen rendered,
+   * and consuming it on completion must not flip the screen to the expired state mid-navigation.
    */
-  const [tempToken] = useState(readTwoFactorSetupToken);
+  const [tempToken, setTempToken] = useState(readTwoFactorSetupToken);
   const [phase, setPhase] = useState<SetupPhaseName>('setup');
   const [secret, setSecret] = useState('');
   const [otpauthUrl, setOtpauthUrl] = useState('');
@@ -83,6 +88,14 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
   useEffect(() => {
     phaseRef.current?.focus();
   }, [phase]);
+
+  useEffect(
+    () =>
+      subscribeTwoFactorSetupToken(() =>
+        setTempToken((current) => current || readTwoFactorSetupToken()),
+      ),
+    [],
+  );
 
   const restartLogin = useCallback(() => {
     clearTwoFactorSetupToken();

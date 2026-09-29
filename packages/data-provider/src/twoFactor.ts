@@ -14,6 +14,7 @@
  */
 
 const SETUP_TOKEN_STORAGE_KEY = 'two_factor_setup_token';
+const SETUP_TOKEN_EVENT = 'librechat:two-factor-setup-token';
 
 interface TwoFactorSetupWindow extends Window {
   __librechatTwoFactorSetupToken?: string;
@@ -26,13 +27,24 @@ interface TwoFactorSetupWindow extends Window {
 export function persistTwoFactorSetupToken(tempToken: string): boolean {
   const trimmed = tempToken.trim();
   (window as TwoFactorSetupWindow).__librechatTwoFactorSetupToken = trimmed;
+  let durable = true;
   try {
     window.sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, trimmed);
-    return true;
   } catch {
     // Session storage can be blocked in embedded or private contexts.
-    return false;
+    durable = false;
   }
+  window.dispatchEvent(new Event(SETUP_TOKEN_EVENT));
+  return durable;
+}
+
+/**
+ * Notifies a mounted setup screen when a token arrives after it rendered, as when a refresh on the
+ * setup route itself hands one off without navigating. Returns the unsubscribe function.
+ */
+export function subscribeTwoFactorSetupToken(listener: () => void): () => void {
+  window.addEventListener(SETUP_TOKEN_EVENT, listener);
+  return () => window.removeEventListener(SETUP_TOKEN_EVENT, listener);
 }
 
 export function readTwoFactorSetupToken(): string {

@@ -3,8 +3,12 @@
  */
 import React, { useCallback, useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { readTwoFactorSetupToken, persistTwoFactorSetupToken } from 'librechat-data-provider';
 import { createMemoryRouter, MemoryRouter, RouterProvider, useNavigate } from 'react-router-dom';
+import {
+  readTwoFactorSetupToken,
+  clearTwoFactorSetupToken,
+  persistTwoFactorSetupToken,
+} from 'librechat-data-provider';
 import type { TUser } from 'librechat-data-provider';
 import TwoFactorSetupScreen from '../TwoFactorSetupScreen';
 import StartupLayout from '~/routes/Layouts/Startup';
@@ -106,6 +110,7 @@ describe('TwoFactorSetupScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     sessionStorage.clear();
+    clearTwoFactorSetupToken();
     mockCompleteAuthenticationImpl = mockCompleteAuthentication;
     URL.createObjectURL = jest.fn(() => 'blob:backup-codes');
     URL.revokeObjectURL = jest.fn();
@@ -121,6 +126,33 @@ describe('TwoFactorSetupScreen', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('com_auth_two_factor_setup_expired');
     expect(screen.queryByTestId('generate')).not.toBeInTheDocument();
+  });
+
+  it('adopts a setup token handed off after it mounted without one', () => {
+    renderScreen(null);
+    expect(screen.queryByTestId('generate')).not.toBeInTheDocument();
+
+    act(() => {
+      persistTwoFactorSetupToken('refreshed-token');
+    });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('generate'));
+    expect(mockEnableMutate).toHaveBeenCalledWith(
+      { tempToken: 'refreshed-token' },
+      expect.any(Object),
+    );
+  });
+
+  it('keeps the token it started with when another is handed off mid-flow', () => {
+    renderScreen('setup-token');
+
+    act(() => {
+      persistTwoFactorSetupToken('other-token');
+    });
+
+    fireEvent.click(screen.getByTestId('generate'));
+    expect(mockEnableMutate).toHaveBeenCalledWith({ tempToken: 'setup-token' }, expect.any(Object));
   });
 
   it('offers a way back to sign-in when the setup credential is missing', () => {

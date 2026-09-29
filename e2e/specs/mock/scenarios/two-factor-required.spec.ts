@@ -57,6 +57,31 @@ test.describe('required two-factor enrollment · unauthenticated arrival', () =>
     });
   });
 
+  test('a direct visit to setup adopts the token a later refresh hands off @scenario:required-2fa-setup-adopts-refreshed-token', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    let releaseRefresh!: () => void;
+    const refreshReleased = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    /** Held until the screen has rendered without a credential, so the hand-off arrives late. */
+    await page.route('**/api/auth/refresh', async (route) => {
+      await refreshReleased;
+      await json(route, ENFORCEMENT_PAYLOAD);
+    });
+
+    await page.goto('/login/2fa/setup');
+    const expired = page.getByRole('alert').filter({ hasText: 'missing or expired' });
+    await expect(expired).toBeVisible();
+
+    releaseRefresh();
+
+    await expect(page.getByRole('button', { name: 'Generate QR Code' })).toBeVisible();
+    await expect(expired).toHaveCount(0);
+    await expect(page).toHaveURL(SETUP_ROUTE_PATTERN);
+  });
+
   test('completing enrollment lands on the original deep link @scenario:required-2fa-enrollment-preserves-deep-link', async ({
     page,
     request,
