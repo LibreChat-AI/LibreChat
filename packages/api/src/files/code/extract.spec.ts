@@ -6,6 +6,7 @@ import {
   extractCodeArtifactInspectionText,
   extractCodeArtifactText,
   getExtractedTextFormat,
+  officePreviewByteLimit,
   resolveMaxTextExtractBytes,
   MAX_TEXT_CACHE_BYTES,
   MAX_TEXT_EXTRACT_BYTES,
@@ -50,10 +51,17 @@ jest.mock('~/files/documents/crud', () => ({
 const mockOfficeHtml = jest.fn(
   async (_buffer: Buffer, _name: string, _mime: string) => null as string | null,
 );
+const mockShellRender = jest.fn(
+  async (_buffer: Buffer, _options: { fileShell?: boolean }) => null as string | null,
+);
 jest.mock('~/files/documents/html', () => {
   const actual =
     jest.requireActual<typeof import('~/files/documents/html')>('~/files/documents/html');
   return {
+    pptxToHtml: (buffer: Buffer, options: { fileShell?: boolean }) =>
+      mockShellRender(buffer, options),
+    wordDocToHtml: (buffer: Buffer, options: { fileShell?: boolean }) =>
+      mockShellRender(buffer, options),
     bufferToOfficeHtml: (buffer: Buffer, name: string, mime: string) =>
       mockOfficeHtml(buffer, name, mime),
     officeHtmlBucket: actual.officeHtmlBucket,
@@ -853,5 +861,144 @@ describe('resolveMaxTextExtractBytes', () => {
     expect(MAX_TEXT_EXTRACT_BYTES).toBe(
       resolveMaxTextExtractBytes(process.env.FILE_PREVIEW_MAX_EXTRACT_BYTES),
     );
+  });
+});
+
+describe('office preview shell routing', () => {
+  const INLINE_CAP = 350 * 1024;
+  const LIMIT = 25 * 1024 * 1024;
+  const pptx = 'deck.pptx';
+  const pptxMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  const docx = 'report.docx';
+  const docxMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const on = { enabled: true, fileSizeLimit: LIMIT };
+
+  beforeEach(() => {
+    mockOfficeHtml.mockReset();
+    mockShellRender.mockReset();
+    mockOfficeHtml.mockResolvedValue('<html>inline</html>');
+    mockShellRender.mockResolvedValue('<html>shell</html>');
+  });
+
+  it('keeps a file of exactly 350 KB on the inline path', async () => {
+    const text = await extractCodeArtifactText(
+      Buffer.alloc(INLINE_CAP),
+      pptx,
+      pptxMime,
+      'presentation',
+      on,
+    );
+    expect(text).toBe('<html>inline</html>');
+    expect(mockShellRender).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [pptx, pptxMime, 'presentation'],
+    [docx, docxMime, 'document'],
+  ] as const)('renders a shell for %s at 350 KB + 1 byte', async (name, mime, category) => {
+    const buffer = Buffer.alloc(INLINE_CAP + 1);
+    const text = await extractCodeArtifactText(buffer, name, mime, category, on);
+    expect(text).toBe('<html>shell</html>');
+    expect(mockShellRender).toHaveBeenCalledWith(buffer, { fileShell: true });
+    expect(mockOfficeHtml).not.toHaveBeenCalled();
+  });
+
+  it('renders a shell for a 4 MB deck', async () => {
+    const text = await extractCodeArtifactText(
+      Buffer.alloc(4 * 1024 * 1024),
+      pptx,
+      pptxMime,
+      'presentation',
+      on,
+    );
+    expect(text).toBe('<html>shell</html>');
+  });
+
+  it('renders a shell at exactly the limit and returns null one byte above', async () => {
+    const atLimit = await extractCodeArtifactText(
+      Buffer.alloc(LIMIT),
+      pptx,
+      pptxMime,
+      'presentation',
+      on,
+    );
+    const above = await extractCodeArtifactText(
+      Buffer.alloc(LIMIT + 1),
+      pptx,
+      pptxMime,
+      'presentation',
+      on,
+    );
+    expect(atLimit).toBe('<html>shell</html>');
+    expect(above).toBeNull();
+    expect(mockShellRender).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null when the shell render fails', async () => {
+    mockShellRender.mockResolvedValueOnce(null);
+    const text = await extractCodeArtifactText(
+      Buffer.alloc(INLINE_CAP + 1),
+      pptx,
+      pptxMime,
+      'presentation',
+      on,
+    );
+    expect(text).toBeNull();
+  });
+
+  it('restores the 2 MB gate and inline routing when disabled', async () => {
+    const disabled = { enabled: false, fileSizeLimit: LIMIT };
+    const mid = await extractCodeArtifactText(
+      Buffer.alloc(INLINE_CAP + 1),
+      pptx,
+      pptxMime,
+      'presentation',
+      disabled,
+    );
+    const big = await extractCodeArtifactText(
+      Buffer.alloc(MAX_TEXT_EXTRACT_BYTES + 1),
+      pptx,
+      pptxMime,
+      'presentation',
+      disabled,
+    );
+    expect(mid).toBe('<html>inline</html>');
+    expect(big).toBeNull();
+    expect(mockShellRender).not.toHaveBeenCalled();
+  });
+
+  it('does not shell spreadsheets above the inline cap', async () => {
+    const text = await extractCodeArtifactText(
+      Buffer.alloc(INLINE_CAP + 1),
+      'data.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'document',
+      on,
+    );
+    expect(text).toBe('<html>inline</html>');
+    expect(mockShellRender).not.toHaveBeenCalled();
+  });
+
+  describe('officePreviewByteLimit', () => {
+    it('is the configured limit for pptx and docx when enabled', () => {
+      expect(officePreviewByteLimit(pptx, pptxMime, on)).toBe(LIMIT);
+      expect(officePreviewByteLimit(docx, docxMime, on)).toBe(LIMIT);
+    });
+
+    it('never drops below the extract ceiling', () => {
+      expect(officePreviewByteLimit(pptx, pptxMime, { enabled: true, fileSizeLimit: 1 })).toBe(
+        MAX_TEXT_EXTRACT_BYTES,
+      );
+    });
+
+    it('is the extract ceiling when disabled, unset, or for other files', () => {
+      expect(officePreviewByteLimit(pptx, pptxMime, { enabled: false, fileSizeLimit: LIMIT })).toBe(
+        MAX_TEXT_EXTRACT_BYTES,
+      );
+      expect(officePreviewByteLimit(pptx, pptxMime)).toBe(MAX_TEXT_EXTRACT_BYTES);
+      expect(officePreviewByteLimit('data.xlsx', 'application/vnd.ms-excel', on)).toBe(
+        MAX_TEXT_EXTRACT_BYTES,
+      );
+    });
   });
 });

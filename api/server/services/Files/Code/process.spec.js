@@ -48,6 +48,7 @@ const mockExtractCodeArtifactInspectionText = jest.fn(async () => ({
   complete: false,
 }));
 const mockExtractCodeArtifactText = jest.fn(async () => null);
+const mockOfficePreviewByteLimit = jest.fn(() => 2 * 1024 * 1024);
 const mockExecuteWorkspaceTool = jest.fn();
 const mockGetExtractedTextFormat = jest.fn((_name, _mime, text) => (text == null ? null : 'text'));
 /* `hasOfficeHtmlPath` gates the persist-then-render split: when true, processCodeOutput
@@ -159,6 +160,7 @@ jest.mock('@librechat/api', () => {
     extractCodeArtifactRawText: (...args) => mockExtractCodeArtifactRawText(...args),
     extractCodeArtifactInspectionText: (...args) => mockExtractCodeArtifactInspectionText(...args),
     extractCodeArtifactText: (...args) => mockExtractCodeArtifactText(...args),
+    officePreviewByteLimit: (...args) => mockOfficePreviewByteLimit(...args),
     getBoundedCodeOutputByteLimit: (configured) =>
       typeof configured === 'number' && Number.isFinite(configured) && configured > 0
         ? Math.min(configured, 64 * 1024 * 1024)
@@ -1806,6 +1808,47 @@ describe('Code Process', () => {
             previewError: 'parser-error',
           }),
           { previewRevision: 'mock-uuid-1234' },
+        );
+      });
+
+      it('finalize() labels a failed preview too-large when the buffer exceeds the byte limit', async () => {
+        mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
+        determineFileType.mockResolvedValue({
+          mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        });
+        mockExtractCodeArtifactText.mockResolvedValueOnce(null);
+        mockOfficePreviewByteLimit.mockReturnValueOnce(50);
+
+        const { finalize } = await processCodeOutput({ ...baseParams, name: 'deck.pptx' });
+        await finalize();
+
+        expect(mockOfficePreviewByteLimit).toHaveBeenCalledWith(
+          'deck.pptx',
+          expect.any(String),
+          expect.objectContaining({ enabled: true }),
+        );
+        expect(updateFile).toHaveBeenCalledWith(
+          expect.objectContaining({ status: 'failed', previewError: 'too-large' }),
+          { previewRevision: 'mock-uuid-1234' },
+        );
+      });
+
+      it('finalize() passes the resolved officePreview setting to the extractor', async () => {
+        mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
+        determineFileType.mockResolvedValue({
+          mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        });
+        mockExtractCodeArtifactText.mockResolvedValueOnce('<html></html>');
+
+        const { finalize } = await processCodeOutput({ ...baseParams, name: 'deck.pptx' });
+        await finalize();
+
+        expect(mockExtractCodeArtifactText).toHaveBeenCalledWith(
+          expect.any(Buffer),
+          'deck.pptx',
+          expect.any(String),
+          expect.any(String),
+          expect.objectContaining({ enabled: true, fileSizeLimit: 25 * 1024 * 1024 }),
         );
       });
 
