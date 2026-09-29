@@ -1,9 +1,13 @@
 /**
- * Stylesheet defaults for `--border-control`, the form-control boundary role.
+ * Stylesheet defaults for the roles the package's own primitives paint:
+ * `--border-control`, the form-control boundary, and `--focus-control`, the
+ * keyboard focus ring of `Checkbox`, `Switch`, `Field` and their siblings.
  *
- * Every other color role is declared by the app stylesheet, but this one ships
- * with the package so a consumer rendering `Input`, `Select` or `InputOTP` gets
- * an outline without restating it. The stock values match `border-light`.
+ * Every other color role is declared by the app stylesheet, but these ship
+ * with the package so a consumer rendering `Input`, `Select` or `Checkbox` gets
+ * an outline and a focus ring without restating them. The stock boundary
+ * matches `border-light`, and the stock ring matches `text-primary`, the ink
+ * the primitives drew their ring in before the role existed.
  * `ThemeProvider` paints the registry value inline whenever a theme is active,
  * which outranks these; they only cover the stock palette before and without a
  * theme definition, and `semanticTokens.spec.ts` keeps them in step with
@@ -11,8 +15,10 @@
  */
 html {
   --border-control: 227 227 227;
+  --focus-control: 33 33 33;
 }
 
 .dark {
   --border-control: 33 33 33;
+  --focus-control: 236 236 236;
 }

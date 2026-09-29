@@ -29,6 +29,8 @@ export const themeColorTokens = Object.freeze([
   'rgb-accent-primary',
   'rgb-accent-primary-hover',
   'rgb-ring-primary',
+  'rgb-focus-outline',
+  'rgb-focus-control',
   'rgb-header-primary',
   'rgb-header-hover',
   'rgb-header-button-hover',

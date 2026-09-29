@@ -84,7 +84,7 @@ export default function ComboboxComponent({
             isCollapsed
               ? 'flex h-9 w-9 shrink-0 items-center justify-center p-0 [&>span]:w-auto [&>svg]:hidden'
               : '',
-            'bg-surface-secondary text-text-primary hover:bg-surface-hover focus-visible:ring-text-primary focus-visible:ring-2',
+            'bg-surface-secondary text-text-primary hover:bg-surface-hover focus-visible:ring-focus-control focus-visible:ring-2',
           )}
         >
           <SelectValue placeholder={selectPlaceholder}>

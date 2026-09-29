@@ -40,7 +40,7 @@ const AnimatedSearchInput = ({
             onChange={onChange}
             placeholder={placeholder}
             aria-label={localize('com_ui_search')}
-            className={`peer bg-surface-secondary placeholder:text-text-secondary focus:ring-text-primary relative z-20 w-full rounded-lg py-2 pl-10 outline-hidden backdrop-blur-xs transition-all duration-500 ease-in-out`}
+            className={`peer bg-surface-secondary placeholder:text-text-secondary focus:ring-focus-control relative z-20 w-full rounded-lg py-2 pl-10 outline-hidden backdrop-blur-xs transition-all duration-500 ease-in-out`}
           />
 
           {/* Gradient overlay */}

@@ -51,6 +51,8 @@ export const highContrastLightTheme: IThemeRGB = {
 
   // Ring colors
   'rgb-ring-primary': '0 0 0', // #000000
+  'rgb-focus-outline': '0 0 0', // #000000
+  'rgb-focus-control': '0 0 0', // #000000
 
   // Header colors
   'rgb-header-primary': '255 255 255', // #ffffff
@@ -197,6 +199,8 @@ export const highContrastDarkTheme: IThemeRGB = {
 
   // Ring colors
   'rgb-ring-primary': '255 255 255', // #ffffff
+  'rgb-focus-outline': '255 255 255', // #ffffff
+  'rgb-focus-control': '255 255 255', // #ffffff
 
   // Header colors
   'rgb-header-primary': '0 0 0', // #000000

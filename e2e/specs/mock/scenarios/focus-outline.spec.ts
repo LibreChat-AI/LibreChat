@@ -4,11 +4,13 @@ import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/cl
 import { NEW_CHAT_PATH } from '../helpers';
 
 /**
- * The app-wide keyboard focus outline. The default light and dark themes draw it in black and
- * white, a theme definition that names its own `ring-primary` draws it in that ring, one that
- * leaves the ring to the default keeps black and white, and the contrast modes keep their heavier
- * text-colored outline. The probe is a bare button reached with Tab, so nothing but the
- * global rule styles its outline.
+ * The app-wide keyboard focus outline and the shared primitives' focus ring, the `focus-outline`
+ * and `focus-control` theme roles. The default light and dark themes draw the outline in black and
+ * white and the ring in their primary ink, a theme definition that names only its own
+ * `ring-primary` draws the outline in that ring, one that leaves the ring to the default keeps
+ * black and white, one that names the roles draws both in them, and the contrast modes keep their
+ * heavier outline. The probes are bare buttons reached with Tab, so nothing but the global rule
+ * and the primitives' ring classes styles them.
  */
 
 type Appearance = 'light' | 'dark' | 'high-contrast-light' | 'high-contrast-dark';
@@ -22,6 +24,28 @@ const CUSTOM_RING_THEME = {
   modes: {
     light: { colors: { 'rgb-ring-primary': '10 20 30' } },
     dark: { colors: { 'rgb-ring-primary': '200 210 220' } },
+  },
+} as const;
+
+/** Names the roles apart from its ring and ink, so an outline or ring that followed either shows. */
+const FOCUS_ROLE_THEME = {
+  version: 1,
+  name: 'e2e-focus-roles',
+  modes: {
+    light: {
+      colors: {
+        'rgb-ring-primary': '10 20 30',
+        'rgb-focus-outline': '180 0 110',
+        'rgb-focus-control': '0 90 160',
+      },
+    },
+    dark: {
+      colors: {
+        'rgb-ring-primary': '200 210 220',
+        'rgb-focus-outline': '255 140 200',
+        'rgb-focus-control': '120 200 255',
+      },
+    },
   },
 } as const;
 
@@ -82,6 +106,34 @@ async function keyboardFocusOutline(page: Page): Promise<Outline> {
       offset: style.outlineOffset,
     };
   });
+}
+
+/** The ring classes `Checkbox`, `Switch` and `IconButton` draw keyboard focus with. */
+const CONTROL_RING_CLASSES =
+  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control';
+
+/** Tabs onto a bare button carrying the primitives' ring classes and reads the ring's color. */
+async function keyboardFocusRing(page: Page): Promise<string> {
+  const id = `${PROBE}-ring`;
+  await page.evaluate(
+    ([probeId, classes]) => {
+      const sentinel = document.createElement('span');
+      sentinel.tabIndex = -1;
+      const probe = document.createElement('button');
+      probe.id = probeId;
+      probe.className = classes;
+      probe.textContent = 'Ring probe';
+      document.body.prepend(sentinel, probe);
+      sentinel.focus();
+    },
+    [id, CONTROL_RING_CLASSES],
+  );
+  await page.keyboard.press('Tab');
+
+  const probe = page.locator(`#${id}`);
+  await expect(probe).toBeFocused();
+  const shadow = await probe.evaluate((node) => getComputedStyle(node).boxShadow);
+  return /rgba?\([^)]*\)/.exec(shadow)?.[0] ?? shadow;
 }
 
 async function openChat(page: Page, appearance: Appearance, definition?: { name: string }) {
@@ -170,6 +222,72 @@ test.describe('keyboard focus outline', () => {
       await openChat(page, appearance, definition);
 
       expect(await keyboardFocusOutline(page)).toEqual(expected);
+    });
+  }
+
+  test('a theme that names the focus roles draws the outline and the control ring in them @scenario:focus-roles-follow-reference-theme', async ({
+    page,
+  }) => {
+    const expected: Record<'light' | 'dark', { outline: string; ring: string }> = {
+      light: { outline: 'rgb(180, 0, 110)', ring: 'rgb(0, 90, 160)' },
+      dark: { outline: 'rgb(255, 140, 200)', ring: 'rgb(120, 200, 255)' },
+    };
+    for (const mode of ['light', 'dark'] as const) {
+      const modePage = mode === 'light' ? page : await page.context().newPage();
+      await openChat(modePage, mode, FOCUS_ROLE_THEME);
+
+      expect(await keyboardFocusOutline(modePage)).toEqual(outline(expected[mode].outline));
+      expect(await keyboardFocusRing(modePage)).toBe(expected[mode].ring);
+    }
+  });
+
+  /** Each tag is written out whole: the runner finds a scenario by its literal tag. */
+  const RING_CASES: Array<{
+    title: string;
+    appearance: Appearance;
+    definition?: { name: string };
+    ring: string;
+  }> = [
+    {
+      title:
+        'the default light theme keeps its primitives ring in the primary ink @scenario:focus-control-default-light-unchanged',
+      appearance: 'light',
+      ring: 'rgb(33, 33, 33)',
+    },
+    {
+      title:
+        'the default dark theme keeps its primitives ring in the primary ink @scenario:focus-control-default-dark-unchanged',
+      appearance: 'dark',
+      ring: 'rgb(236, 236, 236)',
+    },
+    {
+      title:
+        'the ClickHouse light theme rings its primitives in the Click UI outline @scenario:focus-control-clickhouse-light',
+      appearance: 'light',
+      definition: clickHouseTheme,
+      ring: 'rgb(67, 126, 239)',
+    },
+    {
+      title:
+        'the ClickHouse dark theme rings its primitives in the Click UI outline @scenario:focus-control-clickhouse-dark',
+      appearance: 'dark',
+      definition: clickHouseTheme,
+      ring: 'rgb(250, 255, 105)',
+    },
+    {
+      title:
+        'high contrast dark rings its primitives in its white ink @scenario:focus-control-high-contrast-dark',
+      appearance: 'high-contrast-dark',
+      definition: clickHouseTheme,
+      ring: 'rgb(255, 255, 255)',
+    },
+  ];
+
+  for (const { title, appearance, definition, ring } of RING_CASES) {
+    test(title, async ({ page }) => {
+      await openChat(page, appearance, definition);
+
+      expect(await keyboardFocusRing(page)).toBe(ring);
     });
   }
 

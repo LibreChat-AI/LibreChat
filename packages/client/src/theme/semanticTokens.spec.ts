@@ -136,7 +136,7 @@ describe('shared field and dropdown interaction styles', () => {
     expect(field).toMatch(/\bborder-border-control\b/);
     expect(field).not.toMatch(/\bborder-border-(?:light|medium)\b/);
     expect(field).toMatch(/focus-visible:ring-2/);
-    expect(field).toMatch(/focus-visible:ring-text-primary/);
+    expect(field).toMatch(/focus-visible:ring-focus-control/);
 
     const composers: Array<[string, RegExp]> = [
       ['Input.tsx', /\bfieldControl\b/],
@@ -161,7 +161,7 @@ describe('shared field and dropdown interaction styles', () => {
     );
     expect(appStyles).toMatch(/html\[data-input-modality='pointer'\]/);
     expect(appStyles).toMatch(/html\[data-input-modality='keyboard'\]/);
-    expect(appStyles).toMatch(/outline:\s*2px solid rgb\(var\(--text-primary\)\) !important;/);
+    expect(appStyles).toMatch(/outline:\s*2px solid rgb\(var\(--focus-control\)\) !important;/);
     expect(appStyles).not.toMatch(/textarea\s*\n\):hover,/);
   });
 
@@ -650,5 +650,54 @@ describe('control border defaults', () => {
 
     /** One declaration for `html`, one for `.dark`, and both must match. */
     expect(declared).toEqual([defaultTheme['rgb-border-control'], darkTheme['rgb-border-control']]);
+  });
+});
+
+/** WCAG 2.4.13 holds a focus indicator to 3:1 against what it is drawn on. The
+ *  global outline and the primitives' ring are theme roles, so every bundled
+ *  palette carries both at that floor on its canvases. */
+describe.each([
+  ['default light', defaultTheme],
+  ['default dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s focus roles', (_name, theme: IThemeRGB) => {
+  it.each(['rgb-focus-outline', 'rgb-focus-control'] as const)(
+    'keeps %s at the 3:1 floor on every canvas',
+    (role) => {
+      const focus = toRgb(theme, role);
+      const failures = canvasSurfaces.flatMap((surface) => {
+        const ratio = contrast(focus, toRgb(theme, surface));
+        return ratio < WCAG_MARK_MIN ? [`${surface}: ${ratio.toFixed(2)}:1`] : [];
+      });
+
+      expect(failures).toEqual([]);
+    },
+  );
+});
+
+describe('focus role defaults', () => {
+  /** The default theme's outline was literal black and white and its primitives
+   *  drew their ring in the primary ink; the roles reproduce both. */
+  it('reproduces the outline and ring the default theme drew before the roles', () => {
+    expect([defaultTheme['rgb-focus-outline'], darkTheme['rgb-focus-outline']]).toEqual([
+      '0 0 0',
+      '255 255 255',
+    ]);
+    expect([defaultTheme['rgb-focus-control'], darkTheme['rgb-focus-control']]).toEqual([
+      defaultTheme['rgb-text-primary'],
+      darkTheme['rgb-text-primary'],
+    ]);
+  });
+
+  it('keeps the package CSS in step with the runtime themes', () => {
+    const controls = readFileSync(join(__dirname, 'controls.css'), 'utf8');
+    const declared = [...controls.matchAll(/--focus-control:\s*([^;]+);/g)].map((match) =>
+      match[1].trim(),
+    );
+
+    expect(declared).toEqual([defaultTheme['rgb-focus-control'], darkTheme['rgb-focus-control']]);
   });
 });

@@ -1,6 +1,7 @@
 import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
 import {
   controlBorderFallback,
+  focusFallbacks,
   MARK_NEIGHBOURHOOD,
   themeAppearanceProperties,
   themeBrandTokens,
@@ -76,6 +77,14 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--border-control', legacyControlBorder]);
   }
 
+  const focus = focusFallbacks(colors);
+  if (colors['rgb-focus-outline'] === undefined && focus['rgb-focus-outline'] !== undefined) {
+    variables.push(['--focus-outline', focus['rgb-focus-outline']]);
+  }
+  if (colors['rgb-focus-control'] === undefined && focus['rgb-focus-control'] !== undefined) {
+    variables.push(['--focus-control', focus['rgb-focus-control']]);
+  }
+
   /**
    * Same rule as `resolveTheme`: a theme that paints what the mark is measured
    * against coordinated the `status-success-strong` the mark wore before it had
@@ -104,17 +113,9 @@ function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
   ]);
 }
 
-/**
- * Marks a root whose applied theme names its own `rgb-ring-primary`. The app's global focus
- * outline follows the ring only then: a theme that leaves the ring to the default resolves it to a
- * mid gray that a dark surface cannot carry at 3:1, so it keeps the default outline instead.
- */
-export const THEME_RING_ATTRIBUTE = 'data-theme-ring';
-
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
-  root.removeAttribute(THEME_RING_ATTRIBUTE);
 }
 
 export function applyResolvedTheme(

@@ -291,6 +291,69 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-border-control']).toBe(darkTheme['rgb-border-control']);
   });
 
+  it('draws the focus outline in the ring of a theme that predates the role', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'ring-only-reference',
+        modes: { dark: { colors: { 'rgb-ring-primary': '200 210 220' } } },
+      },
+      'dark',
+    );
+
+    expect(resolved.colors['rgb-focus-outline']).toBe('200 210 220');
+  });
+
+  it('draws the control focus ring in the ink of a theme that predates the role', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'ink-only-reference',
+        modes: { light: { colors: { 'rgb-text-primary': '20 30 40' } } },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-focus-control']).toBe('20 30 40');
+  });
+
+  it('gives a theme that names neither the bundled focus roles', () => {
+    const light = resolveTheme(
+      {
+        version: 1,
+        name: 'focusless-reference',
+        modes: { light: { colors: { 'rgb-accent-primary': '1 2 3' } } },
+      },
+      'light',
+    );
+
+    expect(light.colors['rgb-focus-outline']).toBe('0 0 0');
+    expect(light.colors['rgb-focus-control']).toBe(defaultTheme['rgb-text-primary']);
+  });
+
+  it('preserves explicit focus roles over the ring and ink they would follow', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'focus-reference',
+        modes: {
+          light: {
+            colors: {
+              'rgb-ring-primary': '10 20 30',
+              'rgb-text-primary': '40 50 60',
+              'rgb-focus-outline': '200 0 120',
+              'rgb-focus-control': '0 120 200',
+            },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-focus-outline']).toBe('200 0 120');
+    expect(resolved.colors['rgb-focus-control']).toBe('0 120 200');
+  });
+
   it('preserves an explicit control outline', () => {
     const resolved = resolveTheme(
       {

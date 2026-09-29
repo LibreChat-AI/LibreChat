@@ -88,6 +88,22 @@ export function controlBorderFallback(colors: IThemeRGB): string | undefined {
   return colors['rgb-border-light'] ?? colors['rgb-border-medium'];
 }
 
+/**
+ * The focus roles for a stored or environment theme that predates them. The
+ * global outline followed a theme's `rgb-ring-primary` whenever it named one,
+ * and the shared primitives drew their ring in `rgb-text-primary`, so a theme
+ * that painted either keeps that focus color. A theme that painted neither
+ * keeps the bundled roles, and one that names a role keeps it as written.
+ */
+export function focusFallbacks(colors: IThemeRGB): IThemeRGB {
+  const outline = colors['rgb-focus-outline'] ?? colors['rgb-ring-primary'];
+  const control = colors['rgb-focus-control'] ?? colors['rgb-text-primary'];
+  return {
+    ...(outline !== undefined ? { 'rgb-focus-outline': outline } : {}),
+    ...(control !== undefined ? { 'rgb-focus-control': control } : {}),
+  };
+}
+
 export const themeAppearanceProperties: Readonly<
   Record<keyof IThemeAppearance, `--theme-${string}`>
 > = Object.freeze({
@@ -339,6 +355,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors != null ? controlBorderFallback(customColors) : undefined;
   const borderControlFallback =
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
+  const focusFallback = customColors != null ? focusFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -399,6 +416,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...borderControlFallback,
+      ...focusFallback,
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,

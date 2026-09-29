@@ -28,7 +28,7 @@ const InfoHoverCard = ({
       <HoverCardTrigger asChild>
         <button
           type="button"
-          className="focus-visible:ring-text-primary inline-flex cursor-help items-center justify-center rounded-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden"
+          className="focus-visible:ring-focus-control inline-flex cursor-help items-center justify-center rounded-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden"
           onFocus={() => setIsOpen(true)}
           onBlur={() => setIsOpen(false)}
           aria-label={text}

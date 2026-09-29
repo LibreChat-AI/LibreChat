@@ -119,7 +119,7 @@ function SelectDropDown({
                   }
                 }}
                 className={cn(
-                  'border-border-control bg-surface-secondary focus-visible:ring-text-primary disabled:bg-surface-secondary relative flex w-full cursor-default flex-col rounded-md border py-2 pr-10 pl-3 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden sm:text-sm',
+                  'border-border-control bg-surface-secondary focus-visible:ring-focus-control disabled:bg-surface-secondary relative flex w-full cursor-default flex-col rounded-md border py-2 pr-10 pl-3 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden sm:text-sm',
                   className ?? '',
                 )}
               >

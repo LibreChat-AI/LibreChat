@@ -50,6 +50,8 @@ export const clickHouseLightTheme: IThemeRGB = {
 
   // Ring colors
   'rgb-ring-primary': '67 126 239', // #437eef (outline.default)
+  'rgb-focus-outline': '67 126 239', // #437eef (outline.default)
+  'rgb-focus-control': '67 126 239', // #437eef (outline.default)
 
   // Header colors
   'rgb-header-primary': '255 255 255', // #ffffff (background.default)
@@ -170,6 +172,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
 
   // Ring colors
   'rgb-ring-primary': '250 255 105', // #faff69 (outline.default)
+  'rgb-focus-outline': '250 255 105', // #faff69 (outline.default)
+  'rgb-focus-control': '250 255 105', // #faff69 (outline.default)
 
   // Header colors
   'rgb-header-primary': '31 31 28', // #1f1f1c (background.default)

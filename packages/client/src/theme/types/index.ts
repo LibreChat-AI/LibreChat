@@ -26,6 +26,8 @@ export interface IThemeRGB {
 
   // Ring colors
   'rgb-ring-primary'?: string;
+  'rgb-focus-outline'?: string;
+  'rgb-focus-control'?: string;
 
   // Header colors
   'rgb-header-primary'?: string;
@@ -172,6 +174,8 @@ export interface IThemeVariables {
   '--accent-primary': string;
   '--accent-primary-hover': string;
   '--ring-primary': string;
+  '--focus-outline': string;
+  '--focus-control': string;
   '--header-primary': string;
   '--header-hover': string;
   '--header-button-hover': string;
@@ -278,6 +282,8 @@ export interface IThemeColors {
   'accent-primary'?: string;
   'accent-primary-hover'?: string;
   'ring-primary'?: string;
+  'focus-outline'?: string;
+  'focus-control'?: string;
   'header-primary'?: string;
   'header-hover'?: string;
   'header-button-hover'?: string;

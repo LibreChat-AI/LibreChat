@@ -73,7 +73,7 @@ const DialogContent: React.ForwardRefExoticComponent<
         >
           {children}
           {showCloseButton && (
-            <DialogPrimitive.Close className="focus:ring-text-primary data-[state=open]:bg-surface-hover absolute top-[1.6rem] right-6 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+            <DialogPrimitive.Close className="focus:ring-focus-control data-[state=open]:bg-surface-hover absolute top-[1.6rem] right-6 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
               <X className="text-text-primary h-5 w-5" aria-hidden="true" />
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
@@ -147,7 +147,7 @@ const DialogClose: React.ForwardRefExoticComponent<
       'border-border-light text-text-primary hover:bg-surface-hover mt-2 inline-flex h-10 items-center justify-center rounded-lg border bg-transparent px-4 py-2 text-sm font-semibold transition-colors focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0',
       className ?? '',
       /* Important: for accessibility */
-      'focus:ring-text-primary focus:ring-2 focus:ring-offset-2',
+      'focus:ring-focus-control focus:ring-2 focus:ring-offset-2',
     )}
     {...props}
   />
@@ -165,10 +165,10 @@ const DialogButton: React.ForwardRefExoticComponent<
     ref={ref}
     variant="outline"
     className={cn(
-      'border-border-light text-text-primary hover:bg-surface-hover focus:ring-text-primary mt-2 inline-flex h-10 items-center justify-center rounded-lg border bg-transparent px-4 py-2 text-sm font-semibold transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0',
+      'border-border-light text-text-primary hover:bg-surface-hover focus:ring-focus-control mt-2 inline-flex h-10 items-center justify-center rounded-lg border bg-transparent px-4 py-2 text-sm font-semibold transition-colors focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0',
       className ?? '',
       /* Important: for accessibility */
-      'focus:ring-text-primary focus:ring-2 focus:ring-offset-2',
+      'focus:ring-focus-control focus:ring-2 focus:ring-offset-2',
     )}
     {...props}
   />

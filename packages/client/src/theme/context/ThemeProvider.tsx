@@ -16,11 +16,7 @@ import {
   resolveTheme,
   validateThemeDefinition,
 } from '../registry';
-import applyTheme, {
-  applyResolvedTheme,
-  themeOwnedProperties,
-  THEME_RING_ATTRIBUTE,
-} from '../utils/applyTheme';
+import applyTheme, { applyResolvedTheme, themeOwnedProperties } from '../utils/applyTheme';
 import { defaultTheme } from '../themes/default';
 import { darkTheme } from '../themes/dark';
 import '../highContrast.css';
@@ -52,7 +48,6 @@ type ThemeDOMSnapshot = {
   properties: Map<string, { value: string; priority: string }>;
   colorScheme: { value: string; priority: string };
   dataTheme: string | null;
-  themeRing: boolean;
 };
 
 type ThemeClassSnapshot = {
@@ -287,7 +282,6 @@ const captureThemeDOM = (root: HTMLElement): ThemeDOMSnapshot => ({
     priority: root.style.getPropertyPriority('color-scheme'),
   },
   dataTheme: root.getAttribute('data-theme'),
-  themeRing: root.hasAttribute(THEME_RING_ATTRIBUTE),
 });
 
 const restoreThemeDOM = (snapshot: ThemeDOMSnapshot, root: HTMLElement): void => {
@@ -314,7 +308,6 @@ const restoreThemeDOM = (snapshot: ThemeDOMSnapshot, root: HTMLElement): void =>
   } else {
     root.setAttribute('data-theme', snapshot.dataTheme);
   }
-  root.toggleAttribute(THEME_RING_ATTRIBUTE, snapshot.themeRing);
 };
 
 export function ThemeProvider({
@@ -648,16 +641,11 @@ export function ThemeProvider({
       if (!highContrast && legacyThemeRGB) {
         applyTheme(legacyThemeRGB, root, mode === 'dark' ? darkTheme : defaultTheme);
         root.dataset.theme = definition.name;
-        root.toggleAttribute(THEME_RING_ATTRIBUTE, legacyThemeRGB['rgb-ring-primary'] != null);
         return;
       }
 
       try {
         applyResolvedTheme(resolveTheme(definition, mode), root);
-        root.toggleAttribute(
-          THEME_RING_ATTRIBUTE,
-          definition.modes[mode]?.colors?.['rgb-ring-primary'] != null,
-        );
       } catch (error) {
         restoreAppliedTheme(root);
         console.error('Unable to apply theme definition', error);

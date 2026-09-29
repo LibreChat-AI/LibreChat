@@ -73,7 +73,7 @@ class DataTableErrorBoundaryInner extends Component<
             aria-labelledby="datatable-error-title"
             aria-describedby="datatable-error-desc"
             tabIndex={-1}
-            className="border-border-light bg-surface-primary-alt before:bg-surface-destructive/80 focus:ring-text-primary relative w-full max-w-md overflow-hidden rounded-lg border p-6 shadow-xs outline-hidden before:absolute before:top-0 before:left-0 before:h-full before:w-1 focus:ring-2 focus:ring-offset-2"
+            className="border-border-light bg-surface-primary-alt before:bg-surface-destructive/80 focus:ring-focus-control relative w-full max-w-md overflow-hidden rounded-lg border p-6 shadow-xs outline-hidden before:absolute before:top-0 before:left-0 before:h-full before:w-1 focus:ring-2 focus:ring-offset-2"
           >
             <div className="flex items-center gap-2">
               <RefreshCw className="text-surface-destructive h-4 w-4" />

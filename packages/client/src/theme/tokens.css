@@ -21,6 +21,8 @@
   --color-accent-primary: rgb(var(--accent-primary));
   --color-accent-primary-hover: rgb(var(--accent-primary-hover));
   --color-ring-primary: rgb(var(--ring-primary));
+  --color-focus-outline: rgb(var(--focus-outline));
+  --color-focus-control: rgb(var(--focus-control));
   --color-header-primary: rgb(var(--header-primary));
   --color-header-hover: rgb(var(--header-hover));
   --color-header-button-hover: rgb(var(--header-button-hover));

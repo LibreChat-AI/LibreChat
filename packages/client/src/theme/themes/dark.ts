@@ -25,6 +25,8 @@ export const darkTheme: IThemeRGB = {
 
   // Ring colors (not defined in dark mode, using default)
   'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
+  'rgb-focus-outline': '255 255 255', // #ffffff
+  'rgb-focus-control': '236 236 236', // #ececec (gray-100)
 
   // Header colors
   'rgb-header-primary': '47 47 47', // #2f2f2f (gray-700)

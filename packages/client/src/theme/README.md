@@ -305,7 +305,14 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 
 - `bg-brand-purple` - Brand purple color
 - `bg-presentation` - Presentation background
-- `ring-ring-primary` - Focus ring color
+- `ring-ring-primary` - Decorative ring color (selection and hover rings)
+- `focus-outline` - The app-wide keyboard focus outline. Defaults to black in
+  light and white in dark; a theme that names only `rgb-ring-primary` draws its
+  outline in that ring.
+- `ring-focus-control` - The keyboard focus ring of the shared primitives
+  (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
+  the primary text ink; a theme that names only `rgb-text-primary` rings its
+  controls in that ink.
 
 ## Creating Custom Themes
 

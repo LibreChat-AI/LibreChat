@@ -222,6 +222,7 @@ html {
   --accent-primary: 18 110 107;
   --accent-primary-hover: 10 79 83;
   --ring-primary: var(--gray-500);
+  --focus-outline: 0 0 0;
   --header-primary: var(--white);
   --header-hover: var(--gray-50);
   --header-button-hover: var(--gray-50);
@@ -353,6 +354,7 @@ html {
   --brand-purple: 171 104 255;
   --presentation: var(--gray-800);
   --text-primary: var(--gray-100);
+  --focus-outline: 255 255 255;
   --text-secondary: var(--gray-300);
   --text-secondary-alt: var(--gray-400);
   --text-tertiary: var(--gray-400);
@@ -551,11 +553,10 @@ html.high-contrast ::selection {
   color: rgb(var(--surface-primary));
 }
 /* WCAG 2.4.13 wants a 2px perimeter as the floor; a contrast mode should exceed
- * it. The global pair below hard-codes #000/#fff instead of reading the ink
- * token, and the keyboard-modality rule for text fields sits at 2px. */
+ * it. The global rule and the keyboard-modality rule for text fields sit at 2px. */
 html.high-contrast :focus-visible,
 html.high-contrast.dark :focus-visible {
-  outline: 3px solid rgb(var(--text-primary));
+  outline: 3px solid rgb(var(--focus-outline));
   outline-offset: 2px;
 }
 /* Selection perimeters and placeholder ink used to live here, but they complete
@@ -583,7 +584,7 @@ html[data-input-modality='keyboard'].high-contrast
     ),
     textarea
   ):not(.lc-field):focus-visible {
-  outline: 3px solid rgb(var(--text-primary)) !important;
+  outline: 3px solid rgb(var(--focus-control)) !important;
   outline-offset: 2px !important;
 }
 /* The WCAG 1.4.1 link treatment moved to
@@ -2461,33 +2462,23 @@ html[data-input-modality='keyboard']
     ),
     textarea
   ):not(.lc-field):focus-visible {
-  outline: 2px solid rgb(var(--text-primary)) !important;
+  outline: 2px solid rgb(var(--focus-control)) !important;
   outline-offset: 2px !important;
 }
 
-/* Black and white are the default theme's focus outline. A theme that names its
- * own `ring-primary` (`data-theme-ring` on the root) draws the outline in it,
- * at the same specificity and layer as the rule it recolours, so every utility
- * that beat the outline before still does. A theme that leaves the ring to the
- * default keeps black and white, and the contrast modes keep their own rule. */
+/* The focus outline is the theme's `focus-outline` role: black and white in the
+ * default theme, and whatever a theme names, or its `ring-primary` when it names
+ * only that (see `resolveTheme`). The contrast modes keep their own 3px rule. */
 @layer base {
   :focus-visible {
-    outline: 2px solid #000;
+    outline: 2px solid rgb(var(--focus-outline));
     outline-offset: 2px;
-  }
-
-  :where(html[data-theme-ring]:not(.high-contrast)) :focus-visible {
-    outline-color: rgb(var(--ring-primary));
   }
 }
 
 .dark :focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid rgb(var(--focus-outline));
   outline-offset: 2px;
-}
-
-.dark:where([data-theme-ring]:not(.high-contrast)) :focus-visible {
-  outline-color: rgb(var(--ring-primary));
 }
 
 .popover-ui {

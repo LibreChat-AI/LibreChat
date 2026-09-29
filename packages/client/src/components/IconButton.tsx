@@ -19,7 +19,7 @@ type IconButtonVariantProps = {
 };
 
 const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string = cva(
-  'inline-flex shrink-0 items-center justify-center text-text-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex shrink-0 items-center justify-center text-text-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 focus-visible:ring-offset-surface-primary disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
       variant: {

@@ -8,6 +8,7 @@ import {
   useTheme,
 } from './ThemeProvider';
 import { highContrastDarkTheme, highContrastLightTheme } from '../themes/highContrast';
+import { darkTheme } from '../themes/dark';
 
 const matchMedia = (matches: boolean): MediaQueryList =>
   ({
@@ -71,7 +72,6 @@ beforeEach(() => {
   document.documentElement.removeAttribute('class');
   document.documentElement.removeAttribute('style');
   document.documentElement.removeAttribute('data-theme');
-  document.documentElement.removeAttribute('data-theme-ring');
   window.matchMedia = jest.fn(() => matchMedia(false));
 });
 
@@ -1138,8 +1138,10 @@ describe('ThemeProvider', () => {
     expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
     expect(matchMediaSpy).toHaveBeenCalled();
   });
-  describe('the ring mark the global focus outline follows', () => {
-    it('marks only the modes whose definition names its ring, and clears it on unmount', async () => {
+  describe('the focus outline a theme paints', () => {
+    const focusOutline = () => document.documentElement.style.getPropertyValue('--focus-outline');
+
+    it('follows the ring of the mode that names one, and clears on unmount', async () => {
       const { unmount } = render(
         <ThemeProvider
           initialTheme="light"
@@ -1157,7 +1159,7 @@ describe('ThemeProvider', () => {
       );
 
       await waitFor(() => {
-        expect(document.documentElement).toHaveAttribute('data-theme-ring');
+        expect(focusOutline()).toBe('10 20 30');
       });
 
       act(() => screen.getByRole('button', { name: 'Dark' }).click());
@@ -1166,14 +1168,14 @@ describe('ThemeProvider', () => {
         expect(document.documentElement).toHaveClass('dark');
       });
       expect(document.documentElement.dataset.theme).toBe('ringed');
-      expect(document.documentElement).not.toHaveAttribute('data-theme-ring');
+      expect(focusOutline()).toBe(darkTheme['rgb-focus-outline']);
 
       unmount();
 
-      expect(document.documentElement).not.toHaveAttribute('data-theme-ring');
+      expect(focusOutline()).toBe('');
     });
 
-    it('marks legacy RGB props only when they carry a ring', async () => {
+    it('follows a legacy RGB ring only when the props carry one', async () => {
       const { rerender } = render(
         <ThemeProvider
           initialTheme="dark"
@@ -1185,7 +1187,7 @@ describe('ThemeProvider', () => {
       );
 
       await waitFor(() => {
-        expect(document.documentElement).toHaveAttribute('data-theme-ring');
+        expect(focusOutline()).toBe('1 2 3');
       });
 
       rerender(
@@ -1199,7 +1201,7 @@ describe('ThemeProvider', () => {
       );
 
       await waitFor(() => {
-        expect(document.documentElement).not.toHaveAttribute('data-theme-ring');
+        expect(focusOutline()).toBe('');
       });
       expect(document.documentElement.dataset.theme).toBe('legacy');
     });

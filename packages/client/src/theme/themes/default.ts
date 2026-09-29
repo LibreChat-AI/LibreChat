@@ -25,6 +25,8 @@ export const defaultTheme: IThemeRGB = {
 
   // Ring colors
   'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
+  'rgb-focus-outline': '0 0 0', // #000000
+  'rgb-focus-control': '33 33 33', // #212121 (gray-800)
 
   // Header colors
   'rgb-header-primary': '255 255 255', // #fff (white)
