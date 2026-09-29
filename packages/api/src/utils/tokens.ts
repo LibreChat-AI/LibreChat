@@ -66,6 +66,7 @@ const openAIModels = {
   'gpt-5.6-luna': 1050000,
   'gpt-6-astra': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'gpt-6-sol': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
+  'gpt-6.1-sol': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'gpt-6-luna': 1050000, // >272K input prices at the long-context tier (2x input/cache, 1.5x output)
   'chat-latest': 400000,
   'gpt-5-mini': 400000,
@@ -430,6 +431,7 @@ const openAIBedrockModels = {
   'openai.gpt-5.6': bedrockOpenAIContext,
   'openai.gpt-6-astra': bedrockOpenAIContext,
   'openai.gpt-6-sol': bedrockOpenAIContext,
+  'openai.gpt-6.1-sol': bedrockOpenAIContext,
   'openai.gpt-6-luna': bedrockOpenAIContext,
 };
 
@@ -534,6 +536,7 @@ export const modelMaxOutputs = {
   'gpt-5.6-luna': 128000,
   'gpt-6-astra': 128000,
   'gpt-6-sol': 128000,
+  'gpt-6.1-sol': 128000,
   'gpt-6-luna': 128000,
   'chat-latest': 128000,
   'gpt-5-mini': 128000,

@@ -3355,7 +3355,7 @@ export const alternateName = {
 const responsesOnlyOpenAIModels = ['gpt-6-astra'];
 /** Tool calls with Sol/Luna's default reasoning require Responses. Do not offer
  * these on Assistants, which cannot use the native request-routing path. */
-const responsesReasoningOpenAIModels = ['gpt-6-sol', 'gpt-6-luna'];
+const responsesReasoningOpenAIModels = ['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-luna'];
 
 const sharedOpenAIModels = [
   'gpt-5.6',

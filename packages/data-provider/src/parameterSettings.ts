@@ -1339,7 +1339,7 @@ export function applyModelAwareDefaults(
         : setting,
     );
   }
-  if (/^gpt-6-(?:sol|luna)(?:$|-)/i.test(model)) {
+  if (/^gpt-6(?:\.[0-9]+)?-(?:sol|luna)(?:$|-)/i.test(model)) {
     return settings.map((setting) => {
       if (setting.key === 'reasoning_effort') {
         return {
