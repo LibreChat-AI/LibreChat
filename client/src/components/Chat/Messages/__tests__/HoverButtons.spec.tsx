@@ -1,7 +1,7 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen } from '@testing-library/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Constants,
@@ -550,11 +550,13 @@ describe('HoverButtons feedback affordance', () => {
       handleFeedback,
     });
 
-  it('offers feedback on a settled response when a handler is supplied', () => {
+  it('offers feedback on a settled response when a handler is supplied', async () => {
     renderSettledResponse(jest.fn());
 
-    expect(screen.getByTitle('Love this')).toBeInTheDocument();
-    expect(screen.getByTitle('Needs improvement')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Rate response' }));
+
+    expect(await screen.findByRole('button', { name: 'Love this' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Needs improvement' })).toBeInTheDocument();
   });
 
   /** `useMessageActions` withholds the handler when `interface.feedback` is false, so
@@ -562,8 +564,7 @@ describe('HoverButtons feedback affordance', () => {
   it('hides feedback when no handler is supplied', () => {
     renderSettledResponse();
 
-    expect(screen.queryByTitle('Love this')).toBeNull();
-    expect(screen.queryByTitle('Needs improvement')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Rate response' })).toBeNull();
     expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
   });
 });
