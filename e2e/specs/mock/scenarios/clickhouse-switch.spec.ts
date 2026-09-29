@@ -55,8 +55,15 @@ async function settingsSwitch(page: Page, theme: ThemeChoice, mode: Mode): Promi
 }
 
 /** The switch's own hit area: the invisible layer that keeps a compact track tappable. */
-const hitHeight = (control: Locator) =>
-  control.evaluate((node) => parseFloat(getComputedStyle(node, '::before').height));
+const hitArea = (control: Locator) =>
+  control.evaluate((node) => {
+    const layer = getComputedStyle(node, '::before');
+    return {
+      width: parseFloat(layer.width),
+      height: parseFloat(layer.height),
+      coarse: matchMedia('(any-pointer: coarse)').matches,
+    };
+  });
 
 async function measure(control: Locator) {
   /** Layout sizes, not client rects: the dialog is still zooming in when this reads. */
@@ -88,7 +95,10 @@ test.describe('theme switch', () => {
         thumb: 12,
         thumbColor: rgb(knob),
       });
-      expect(await hitHeight(control)).toBeGreaterThanOrEqual(24);
+      const hit = await hitArea(control);
+      const floor = hit.coarse ? 44 : 24;
+      expect(hit.height).toBeGreaterThanOrEqual(floor);
+      expect(hit.width).toBeGreaterThanOrEqual(Math.max(32, floor));
     }
   });
 
