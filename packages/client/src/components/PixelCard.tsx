@@ -355,8 +355,16 @@ export default function PixelCard({
     if (containerRef.current) {
       obs.observe(containerRef.current);
     }
+    /** A mode switch or an applied theme rewrites the root's class or inline variables, which
+     *  the resolved palette has already been read from, so lay the pixels out again. */
+    const themeObs = new MutationObserver(initPixels);
+    themeObs.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    });
     return () => {
       obs.disconnect();
+      themeObs.disconnect();
       cancelAnimationFrame(animationRef.current!);
     };
   }, [initPixels]);
