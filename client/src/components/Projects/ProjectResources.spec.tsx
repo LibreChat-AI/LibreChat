@@ -304,6 +304,34 @@ describe('ProjectResources', () => {
     expect(screen.queryByText('No eligible indexed files')).not.toBeInTheDocument();
   });
 
+  it('names the file limit when attaching an existing file to a full project', async () => {
+    mockAddMutateAsync.mockRejectedValueOnce({
+      message: 'unsafe association detail',
+      response: { status: 409, data: { error: 'Project file limit reached' } },
+    });
+    mockAvailableFilesState = {
+      ...mockAvailableFilesState,
+      data: {
+        pages: [
+          {
+            files: [{ ...uploadedFile, file_id: 'ready-id', filename: 'ready.txt' }] as TFile[],
+            nextCursor: null,
+          },
+        ],
+      },
+    };
+    renderResources();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add files' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Choose an existing file' }));
+    await user.click(await screen.findByRole('button', { name: /ready.txt/ }));
+    await waitFor(() =>
+      expect(mockShowToast).toHaveBeenLastCalledWith(
+        expect.objectContaining({ message: 'This project can use up to 50 reference files.' }),
+      ),
+    );
+  });
+
   it('keeps eligible existing files available when device upload is denied', async () => {
     mockCanUseFileSearch.mockReturnValue(false);
     mockAvailableFilesState = {

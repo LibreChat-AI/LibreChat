@@ -146,12 +146,30 @@ describe('ChatProject handlers', () => {
 
   it('keeps missing resource references as unavailable placeholders', async () => {
     const { handlers } = setup({
-      getChatProject: jest.fn().mockResolvedValue({ _id: projectId, file_ids: ['gone'] }),
+      getChatProject: jest.fn().mockResolvedValue({
+        _id: projectId,
+        tenantId: 'tenant-a',
+        file_ids: ['gone'],
+      }),
     });
     const { res, result } = response();
     await handlers.listProjectFiles(request({ params: { projectId } }), res);
     expect(result.statusCode).toBe(200);
     expect(result.body).toEqual([{ file_id: 'gone', availability: 'unavailable' }]);
+  });
+
+  it('denies attached-file metadata for a foreign tenant', async () => {
+    const { handlers, deps } = setup({
+      getChatProject: jest.fn().mockResolvedValue({
+        _id: projectId,
+        tenantId: 'tenant-b',
+        file_ids: ['attached'],
+      }),
+    });
+    const { res, result } = response();
+    await handlers.listProjectFiles(request({ params: { projectId } }), res);
+    expect(result.statusCode).toBe(404);
+    expect(deps.getProjectFiles).not.toHaveBeenCalled();
   });
 
   it('excludes extracted text from available-file metadata', async () => {

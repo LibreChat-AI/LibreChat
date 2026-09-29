@@ -210,9 +210,9 @@ export default function ProjectResources({ project }: ProjectResourcesProps) {
     try {
       await addFile.mutateAsync({ projectId: project._id, file_id: fileId });
       setIsPickerOpen(false);
-    } catch {
+    } catch (error: unknown) {
       showToast({
-        message: localize('com_ui_project_file_attach_error'),
+        message: getAssociationErrorMessage(error, localize, projectFileLimit),
         severity: NotificationSeverity.ERROR,
         showIcon: true,
       });

@@ -307,7 +307,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
 
     try {
       const project = await deps.getChatProject(getUserId(req), projectId);
-      if (!project) {
+      if (!project || (project.tenantId ?? null) !== (req.user?.tenantId ?? null)) {
         return res.status(404).json({ error: PROJECT_NOT_FOUND });
       }
       const files = await listChatProjectFileViews({
