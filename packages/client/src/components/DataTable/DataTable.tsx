@@ -654,7 +654,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                       <Button
                         type="button"
                         variant="ghost"
-                        className="group text-text-secondary hover:text-text-primary h-auto w-full justify-start gap-1 px-0 py-0 text-xs font-medium tracking-wide uppercase hover:bg-transparent md:gap-1.5"
+                        className="group text-table-header-text hover:text-text-primary h-auto w-full justify-start gap-1 px-0 py-0 text-xs font-medium tracking-wide uppercase hover:bg-transparent md:gap-1.5"
                         onClick={header.column.getToggleSortingHandler()}
                       >
                         {renderedHeader}
@@ -679,7 +679,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                     );
                   } else {
                     headerContent = (
-                      <div className="text-text-secondary flex items-center text-xs font-medium tracking-wide uppercase">
+                      <div className="text-table-header-text flex items-center text-xs font-medium tracking-wide uppercase">
                         {renderedHeader}
                       </div>
                     );

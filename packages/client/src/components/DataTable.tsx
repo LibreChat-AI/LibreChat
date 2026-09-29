@@ -99,7 +99,7 @@ const TableRowComponent = <TData, TValue>({
   return (
     <TableRow
       data-state={row.getIsSelected() ? 'selected' : undefined}
-      className="motion-safe:animate-fadeIn border-b border-border-light transition-all duration-300 ease-out hover:bg-surface-secondary"
+      className="motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out"
       style={{
         animationDelay: `${index * 20}ms`,
         transform: `translateY(${isSearching ? '4px' : '0'})`,
@@ -121,9 +121,11 @@ const TableRowComponent = <TData, TValue>({
 
         if (cell.column.id === 'title') {
           return (
+            /* A row's title, not a column name: it keeps the secondary text rather than the
+               column-header role the cell would otherwise take. */
             <TableHead
               key={cell.id}
-              className="w-0 max-w-0 px-2 py-1 align-middle text-xs transition-all duration-300 sm:px-4 sm:py-2 sm:text-sm"
+              className="text-text-secondary w-0 max-w-0 px-2 py-1 align-middle text-xs transition-all duration-300 sm:px-4 sm:py-2 sm:text-sm"
               style={getColumnStyle(
                 cell.column.columnDef as TableColumn<TData, TValue>,
                 isSmallScreen,
@@ -198,7 +200,7 @@ const DeleteButton = memo(
           <Spinner className="size-4" />
         ) : (
           <>
-            <TrashIcon className="size-3.5 text-text-destructive sm:size-4" />
+            <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
             {!isSmallScreen && <span className="ml-2">Delete</span>}
           </>
         )}
@@ -378,7 +380,7 @@ export default function DataTable<TData, TValue>({
     const firstDataColumnIndex = tableColumns[0]?.id === 'select' ? 1 : 0;
 
     return (
-      <TableRow key={index} className="motion-safe:animate-fadeIn border-b border-border-light">
+      <TableRow key={index} className="motion-safe:animate-fadeIn border-border-light border-b">
         {tableColumns.map((column, columnIndex) => {
           const style = getColumnStyle(column as TableColumn<TData, TValue>, isSmallScreen);
           const isFirstDataColumn = columnIndex === firstDataColumnIndex;
@@ -429,7 +431,7 @@ export default function DataTable<TData, TValue>({
       <div
         ref={tableContainerRef}
         className={cn(
-          'relative min-h-0 max-w-full flex-1 overflow-x-auto overflow-y-auto rounded-md border border-border-light',
+          'border-border-light relative min-h-0 max-w-full flex-1 overflow-x-auto overflow-y-auto rounded-md border',
           'transition-all duration-300 ease-out',
           isSearching && 'bg-surface-secondary/50',
           className,
@@ -439,13 +441,13 @@ export default function DataTable<TData, TValue>({
           unwrapped
           className="w-full min-w-[300px] table-fixed border-separate border-spacing-0"
         >
-          <TableHeader className="sticky top-0 z-50 bg-surface-secondary">
+          <TableHeader className="bg-surface-secondary sticky top-0 z-50">
             {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id} className="border-b border-border-light">
+              <TableRow key={headerGroup.id} className="border-border-light border-b">
                 {headerGroup.headers.map((header) => (
                   <TableHead
                     key={header.id}
-                    className="whitespace-nowrap bg-surface-secondary px-2 py-2 text-left text-sm font-medium text-text-secondary sm:px-4"
+                    className="bg-surface-secondary text-table-header-text px-2 py-2 text-left text-sm font-medium whitespace-nowrap sm:px-4"
                     style={getColumnStyle(
                       header.column.columnDef as TableColumn<TData, TValue>,
                       isSmallScreen,

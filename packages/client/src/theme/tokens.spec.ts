@@ -87,12 +87,14 @@ describe('theme color tokens', () => {
       'text-text-secondary',
       'bg-series-1',
       'bg-switch-thumb',
+      'text-table-header-text',
     ]);
 
     expect(css).toContain('rgb(var(--surface-primary))');
     expect(css).toContain('rgb(var(--text-secondary))');
     expect(css).toContain('rgb(var(--series-1))');
     expect(css).toContain('rgb(var(--switch-thumb, var(--surface-primary)))');
+    expect(css).toContain('rgb(var(--table-header-text, var(--text-secondary)))');
   });
 
   it('keeps a border token on its intrinsic alpha and still takes an opacity modifier', async () => {
