@@ -2,6 +2,17 @@ import { z } from 'zod';
 import type { ZodError } from 'zod';
 import type { TEndpointsConfig, TModelsConfig, TConfig } from './types';
 import {
+  MAX_SUBAGENTS,
+  MAX_SUBAGENTS_CEILING,
+  MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
+  MAX_CHAT_PROJECT_FILES,
+  MAX_CHAT_PROJECT_FILES_CEILING,
+  MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING,
+  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+} from './limits';
+import {
   filtersConfigSchema,
   MAX_PII_CUSTOM_REGEX_CHARACTERS,
   MAX_PII_CUSTOM_REGEX_INSTRUCTIONS,
@@ -26,11 +37,6 @@ import {
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
 export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
-import {
-  MAX_SUBAGENTS,
-  MAX_SUBAGENTS_CEILING,
-  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
-} from './limits';
 import {
   DEFAULT_MCP_APP_CSP_LIMITS,
   resolveMCPAppCspLimits,
@@ -60,6 +66,11 @@ export {
   MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
   DEFAULT_RETAINED_ANSWER_TOKENS,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
+  MAX_CHAT_PROJECT_FILES,
+  MAX_CHAT_PROJECT_FILES_CEILING,
+  MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING,
 } from './limits';
 
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
@@ -2780,6 +2791,7 @@ export type TStartupConfig = {
   adminPanelURL?: string;
   customFooter?: string;
   modelSpecs?: TSpecsConfig;
+  projects?: TChatProjectsConfig;
   modelDescriptions?: Record<string, Record<string, string>>;
   sharedLinksEnabled: boolean;
   publicSharedLinksEnabled: boolean;
@@ -2793,6 +2805,8 @@ export type TStartupConfig = {
   rum?: TRumConfig;
   bundlerURL?: string;
   staticBundlerURL?: string;
+  /** Whether the deployment has a configured RAG service. */
+  ragEnabled?: boolean;
   sharePointFilePickerEnabled?: boolean;
   sharePointBaseUrl?: string;
   sharePointPickerGraphScope?: string;
@@ -3333,6 +3347,37 @@ export const openIdDiscoverySchema = z.object({
 });
 
 export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
+export const chatProjectsConfigSchema = z
+  .object({
+    /** Maximum number of reference files attached to one Chat Project. Defaults to 50. */
+    maxFiles: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CHAT_PROJECT_FILES_CEILING)
+      .optional()
+      .default(MAX_CHAT_PROJECT_FILES),
+    /** Maximum instruction characters stored for one Chat Project. Defaults to 16000. */
+    maxInstructionsLength: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING)
+      .optional()
+      .default(MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH),
+    /** Maximum description characters stored for one Chat Project. Defaults to 1000. */
+    maxDescriptionLength: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING)
+      .optional()
+      .default(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH),
+  })
+  .strict()
+  .default({});
+
+export type TChatProjectsConfig = z.infer<typeof chatProjectsConfigSchema>;
 
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);
@@ -3357,6 +3402,7 @@ export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
+  projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),

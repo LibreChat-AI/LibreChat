@@ -77,6 +77,17 @@ describe('agent context compatibility', () => {
       createAgentContextFingerprint(original).digest,
     );
   });
+  it('invalidates warm context when the project identity or revision changes', () => {
+    const original = createAgentContextFingerprint({
+      ...context(),
+      projectContextKey: 'project:p1:r1',
+    });
+    const changed = createAgentContextFingerprint({
+      ...context(),
+      projectContextKey: 'project:p1:r2',
+    });
+    expect(changed.digest).not.toBe(original.digest);
+  });
 
   it('excludes credential values from compatibility', () => {
     const left = context();

@@ -3,6 +3,7 @@ import type { RerankerTypes, SearchProviders, ScraperProviders } from '../config
 import type * as p from '../accessPermissions';
 import type * as a from '../types/agents';
 import type * as s from '../schemas';
+import type { TFile } from './files';
 import type * as t from '../types';
 
 export type Conversation = {
@@ -81,6 +82,16 @@ export type ProjectListResponse = {
 };
 
 export type ProjectData = InfiniteData<ProjectListResponse>;
+export type ProjectAvailableFilesParams = {
+  cursor?: string;
+  limit?: number;
+  search?: string;
+};
+
+export type ProjectAvailableFilesResponse = {
+  files: TFile[];
+  nextCursor: string | null;
+};
 
 /* Messages */
 export type MessagesListParams = {

@@ -305,6 +305,17 @@ export function formatBytes(bytes: number, decimals = 2) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm));
 }
 
+/** Formats bytes with unit suffix (differs from ~/utils/formatBytes which returns a raw number). */
+export function formatFileSize(bytes: number): string {
+  if (bytes >= 1048576) {
+    return `${(bytes / 1048576).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
+
 const { checkType } = defaultFileConfig;
 
 type FileSizeValidationParams = {

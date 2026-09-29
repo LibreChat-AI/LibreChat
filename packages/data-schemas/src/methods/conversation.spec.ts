@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createChatProjectMethods } from './chatProject';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -255,6 +256,52 @@ describe('Conversation Operations', () => {
         .lean();
       expect(saved?.initial_agent_id).toBe('agent-a');
       expect(saved?.agent_id).toBe('agent-b');
+    });
+    it('does not undo explicit Project moves or removal when a stale turn completes', async () => {
+      const firstProject = await ChatProject.create({
+        user: mockCtx.userId,
+        name: 'Insert Project A',
+        conversationCount: 0,
+        lastConversationAt: null,
+        lastConversationId: null,
+      });
+      const secondProject = await ChatProject.create({
+        user: mockCtx.userId,
+        name: 'Insert Project B',
+        conversationCount: 0,
+        lastConversationAt: null,
+        lastConversationId: null,
+      });
+      const conversationId = uuidv4();
+
+      await saveConvo(mockCtx, {
+        conversationId,
+        title: 'Project turn',
+        chatProjectId: firstProject._id!.toString(),
+      });
+      const projects = createChatProjectMethods(mongoose);
+      await projects.assignConversationToProject(
+        mockCtx.userId,
+        conversationId,
+        secondProject._id!.toString(),
+      );
+      await saveConvo(mockCtx, {
+        conversationId,
+        title: 'Stale turn',
+        chatProjectId: firstProject._id!.toString(),
+      });
+      expect((await Conversation.findOne({ conversationId }).lean())?.chatProjectId).toBe(
+        secondProject._id!.toString(),
+      );
+      await projects.assignConversationToProject(mockCtx.userId, conversationId, null);
+      await saveConvo(mockCtx, {
+        conversationId,
+        title: 'Another stale turn',
+        chatProjectId: firstProject._id!.toString(),
+      });
+
+      const saved = await Conversation.findOne({ conversationId }).lean();
+      expect(saved?.chatProjectId == null).toBe(true);
     });
 
     it('stores explicit null attribution for a new non-agent conversation', async () => {
@@ -507,7 +554,7 @@ describe('Conversation Operations', () => {
       expect(saved).toHaveProperty('initial_agent_id', null);
     });
 
-    it('refreshes both projects when a save moves a conversation between them', async () => {
+    it('does not reassign membership or Project counts from a stale save payload', async () => {
       const projectA = await ChatProject.create({
         user: mockCtx.userId,
         name: 'Project A',
@@ -528,7 +575,7 @@ describe('Conversation Operations', () => {
         endpoint: EModelEndpoint.openAI,
         chatProjectId: projectAId,
       });
-      // A stale tab re-submits with the new project id, moving the chat A -> B.
+      // Only explicit Project assignment may move this existing conversation.
       await saveConvo(mockCtx, {
         conversationId,
         endpoint: EModelEndpoint.openAI,
@@ -537,10 +584,10 @@ describe('Conversation Operations', () => {
 
       const refreshedA = await ChatProject.findById(projectA._id).lean<IChatProject>();
       const refreshedB = await ChatProject.findById(projectB._id).lean<IChatProject>();
-      expect(refreshedA?.conversationCount).toBe(0);
-      expect(refreshedA?.lastConversationId == null).toBe(true);
-      expect(refreshedB?.conversationCount).toBe(1);
-      expect(refreshedB?.lastConversationId).toBe(conversationId);
+      expect(refreshedA?.conversationCount).toBe(1);
+      expect(refreshedA?.lastConversationId).toBe(conversationId);
+      expect(refreshedB?.conversationCount).toBe(0);
+      expect(refreshedB?.lastConversationId == null).toBe(true);
     });
 
     it('bulkSaveConvos refreshes the project a conversation leaves', async () => {
@@ -1054,6 +1101,16 @@ describe('Conversation Operations', () => {
             updatedAt: when,
           });
         }
+        await ChatProject.updateOne(
+          { _id: project._id },
+          {
+            $set: {
+              conversationCount: 2,
+              lastConversationAt: newerAt,
+              lastConversationId: newer,
+            },
+          },
+        );
 
         await saveConvo(
           { userId: 'user123' },

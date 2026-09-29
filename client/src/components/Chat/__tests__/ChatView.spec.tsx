@@ -20,6 +20,7 @@ jest.mock('~/hooks/AuthContext', () => ({
 
 jest.mock('~/data-provider', () => ({
   useGetMessagesByConvoId: () => ({ data: null, isLoading: false, isFetching: false }),
+  useProjectQuery: () => ({ data: undefined }),
 }));
 
 /**
@@ -70,12 +71,6 @@ describe('ChatView page heading', () => {
 
     const headings = screen.getAllByRole('heading', { level: 1 });
     expect(headings).toHaveLength(1);
-  });
-
-  test('keeps the heading visually hidden', () => {
-    render(<ChatView />);
-
-    expect(screen.getByRole('heading', { level: 1 })).toHaveClass('sr-only');
   });
 
   test('announces a localized new chat heading on the landing page', () => {

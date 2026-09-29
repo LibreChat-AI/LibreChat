@@ -544,6 +544,11 @@ export namespace Agents {
      */
     threadId?: string;
     /**
+     * Stable server-only project context identity captured when this action paused.
+     * This is intentionally omitted from all client-facing projections.
+     */
+    projectContextKey?: string;
+    /**
      * Fingerprint of the request fields that determine the agent/graph + tool set
      * (endpoint, agent_id, model, spec, ephemeralAgent), captured at pause time. The
      * resume route recomputes it from the resume request and rejects a mismatch — the

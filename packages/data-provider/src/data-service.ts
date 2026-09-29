@@ -1042,6 +1042,31 @@ export function deleteProject(projectId: string): Promise<t.TDeleteChatProjectRe
   return request.delete(endpoints.projectById(projectId));
 }
 
+export function getProjectFiles(projectId: string): Promise<t.TChatProjectFile[]> {
+  return request.get(endpoints.projectFiles(projectId));
+}
+
+export function getAvailableProjectFiles(
+  projectId: string,
+  params: q.ProjectAvailableFilesParams = {},
+): Promise<q.ProjectAvailableFilesResponse> {
+  return request.get(endpoints.projectAvailableFiles(projectId, params));
+}
+
+export function addProjectFile(payload: {
+  projectId: string;
+  file_id: string;
+}): Promise<t.TChatProject> {
+  return request.post(endpoints.projectFiles(payload.projectId), { file_id: payload.file_id });
+}
+
+export function removeProjectFile(payload: {
+  projectId: string;
+  file_id: string;
+}): Promise<t.TChatProject> {
+  return request.delete(endpoints.projectFile(payload.projectId, payload.file_id));
+}
+
 export function assignConversationToProject(
   payload: t.TAssignConversationToProjectRequest,
 ): Promise<t.TAssignConversationToProjectResponse> {

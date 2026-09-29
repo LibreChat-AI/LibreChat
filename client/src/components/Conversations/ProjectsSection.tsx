@@ -41,7 +41,6 @@ import {
 } from '~/data-provider';
 import ProjectCreateDialog from '~/components/Projects/ProjectCreateDialog';
 import ProjectDeleteDialog from '~/components/Projects/ProjectDeleteDialog';
-import ProjectEditDialog from '~/components/Projects/ProjectEditDialog';
 import { useLocalize, useLocalStorage, useNewConvo } from '~/hooks';
 import { clearMessagesCache, cn, rowActionClasses } from '~/utils';
 import { Collapse } from '~/components/ui';
@@ -188,8 +187,8 @@ const ProjectItem = memo(
     const menuId = useId();
     const [expanded, setExpanded] = useState(defaultExpanded);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
-    const [isRenameOpen, setIsRenameOpen] = useState(false);
     const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+    const deleteMenuRef = useRef<HTMLButtonElement>(null);
     const projectChatPath = `/c/${Constants.NEW_CONVO}?projectId=${encodeURIComponent(project._id)}`;
 
     /* The whole item, header plus its expanded chats, is the drop target for
@@ -272,23 +271,29 @@ const ProjectItem = memo(
           id: `${menuId}-rename`,
           label: localize('com_ui_edit_project'),
           icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
-          onClick: () => setIsRenameOpen(true),
+          onClick: () => {
+            navigate(`/projects/${encodeURIComponent(project._id)}?edit=1`);
+            toggleNav();
+          },
         },
         {
           id: `${menuId}-delete`,
           label: localize('com_ui_delete'),
           icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
           onClick: () => setIsDeleteOpen(true),
+          hideOnClick: false,
+          ref: deleteMenuRef,
+          render: (props) => <button {...props} />,
         },
       ],
-      [localize, menuId, openProject],
+      [localize, menuId, navigate, openProject, project._id, toggleNav],
     );
 
     return (
-      <li className="list-none" ref={projectRowRef}>
+      <li className="max-w-full min-w-0 list-none" ref={projectRowRef}>
         <div
           className={cn(
-            'group text-text-primary hover:bg-surface-active-alt relative flex h-9 items-center rounded-lg text-sm',
+            'group/project-row text-text-primary hover:bg-surface-active-alt relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
             isActive && 'bg-surface-active-alt hover:bg-surface-active-alt',
             !isActive && isMenuOpen && 'bg-surface-active-alt',
             isDropOver && canDrop && 'bg-surface-active-alt ring-border-medium ring-1 ring-inset',
@@ -300,7 +305,7 @@ const ProjectItem = memo(
             onClick={() => setExpanded((prev) => !prev)}
             aria-expanded={expanded}
             aria-label={project.name}
-            className="focus-visible:ring-text-primary flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pr-16 pl-1.5 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
+            className="focus-visible:ring-text-primary flex w-full max-w-full min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pr-16 pl-1.5 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
           >
             <ChevronRight
               className={cn(
@@ -310,7 +315,7 @@ const ProjectItem = memo(
               aria-hidden="true"
             />
             <Folder className="text-text-secondary h-4 w-4 shrink-0" aria-hidden="true" />
-            <span className="min-w-0 truncate">{project.name}</span>
+            <span className="max-w-full min-w-0 truncate wrap-anywhere">{project.name}</span>
           </button>
           <div
             /* The 4px between the two controls, and from the row's trailing edge,
@@ -360,8 +365,12 @@ const ProjectItem = memo(
             onShowAll={openProject}
           />
         </Collapse>
-        <ProjectEditDialog open={isRenameOpen} onOpenChange={setIsRenameOpen} project={project} />
-        <ProjectDeleteDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen} project={project} />
+        <ProjectDeleteDialog
+          open={isDeleteOpen}
+          onOpenChange={setIsDeleteOpen}
+          project={project}
+          triggerRef={deleteMenuRef}
+        />
       </li>
     );
   },

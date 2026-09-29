@@ -28,6 +28,7 @@ import { QueuedTurnPortalProvider } from './Steering/QueuedTurnPortal';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
+import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { composerLiftFamily } from './Input/Composer/state';
 import { showComposerTipsAtom } from '~/store/composerTips';
 import { useGetMessagesByConvoId } from '~/data-provider';
@@ -113,6 +114,7 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
       ? chatHelpers.conversation
       : undefined;
   const activeSubagentThread = activeConversation?.subagentThread;
+  const chatProjectId = activeConversation?.chatProjectId || undefined;
 
   useAdaptiveSSE(rootSubmission, chatHelpers, false, index);
 
@@ -190,6 +192,9 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                           readOnly={isSubagentThreadReadOnly}
                         />
                       </div>
+                      {!isLandingPage && chatProjectId && (
+                        <ProjectBadge projectId={chatProjectId} />
+                      )}
                       <>
                         <div
                           data-chat-pane={index}
@@ -211,6 +216,7 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                                puts it and slides sideways on the way in. */
                                 'scrollbar-gutter-spacer flex-1 items-center justify-end sm:justify-center'
                               : 'h-full overflow-y-auto',
+                            !isLandingPage && chatProjectId && 'pt-9',
                           )}
                         >
                           {content}

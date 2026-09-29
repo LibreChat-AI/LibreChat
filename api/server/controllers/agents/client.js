@@ -184,6 +184,7 @@ const {
   isAgentRunCancellation,
   markCompactionOutcome,
   resolvePersistableCodeEnvironmentDecision,
+  getChatProjectContextKey,
 } = require('@librechat/api');
 const {
   Run,
@@ -1955,7 +1956,7 @@ class AgentClient extends BaseClient {
         {
           spec: this.options.spec,
           iconURL: this.options.iconURL,
-          chatProjectId: this.options.chatProjectId,
+          chatProjectId: this.options.req?.chatProjectContext?.projectId,
           endpoint: this.options.endpoint,
           agent_id: this.options.agent.id,
           modelLabel: this.options.modelLabel,
@@ -2208,6 +2209,7 @@ class AgentClient extends BaseClient {
         memory,
         discoveredToolNames,
         checkpointerType: agentsConfig?.checkpointer?.type,
+        projectContextKey: getChatProjectContextKey(this.options.req?.chatProjectContext),
       }),
       skillManifest,
       discoveredToolNames,
@@ -3322,8 +3324,10 @@ class AgentClient extends BaseClient {
         },
         codeEnvAvailable: memoryCodeEnabled && memoryToolGrants?.runCode === true,
         statefulSessionsAvailable: memoryCapabilities.has(AgentCapabilities.stateful_code_sessions),
+        useChatProjectContext: false,
       },
       {
+        getProjectFiles: db.getProjectFiles,
         getFiles: db.getFiles,
         getUserKey: db.getUserKey,
         getConvoFiles: db.getConvoFiles,
@@ -4339,6 +4343,9 @@ class AgentClient extends BaseClient {
       // fall back to it when the SDK doesn't echo threadId on the interrupt.
       threadId: interrupt.threadId ?? this.conversationId,
       ttlMs: getApprovalTtlMs(checkpointerCfg),
+      // Bind the pause to the authoritative project identity/revision. The key is
+      // server-only and is checked before provider/tool startup on resume.
+      projectContextKey: getChatProjectContextKey(this.options.req?.chatProjectContext),
       expiresAt: this.options.req?._agentEventBindingRetention?.expiredAt,
       // Pin the graph-determining request fields so resume can't rebuild this paused
       // run on a different agent/tool set (esp. ephemeral agents, whose agent_id is

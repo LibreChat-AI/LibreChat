@@ -6,6 +6,7 @@ import {
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
   configSchema,
+  chatProjectsConfigSchema,
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
   interfaceSchema,
@@ -232,6 +233,31 @@ describe('run-scoped subagent file sharing config', () => {
     { ttlMs: 1.5 },
   ])('rejects invalid manifest limits: %j', (fileSharing) => {
     expect(agentsEndpointSchema.safeParse({ fileSharing }).success).toBe(false);
+  });
+});
+
+describe('Chat Projects config', () => {
+  it('defaults project limits and accepts operator overrides', () => {
+    const defaults = configSchema.parse({ version: '1.2.1' });
+    expect(defaults.projects).toEqual({
+      maxFiles: 50,
+      maxInstructionsLength: 16000,
+      maxDescriptionLength: 1000,
+    });
+
+    const configured = configSchema.parse({
+      version: '1.2.1',
+      projects: {
+        maxFiles: 75,
+        maxInstructionsLength: 24000,
+        maxDescriptionLength: 2000,
+      },
+    });
+    expect(configured.projects).toEqual({
+      maxFiles: 75,
+      maxInstructionsLength: 24000,
+      maxDescriptionLength: 2000,
+    });
   });
 });
 
@@ -2075,5 +2101,15 @@ describe('interface theme config', () => {
         modes: { light: { colors: { 'surface-primary': '255 255 255' } } },
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts the ceilings and rejects values above them', () => {
+    const atCeiling = { maxFiles: 500, maxInstructionsLength: 200000, maxDescriptionLength: 10000 };
+    expect(chatProjectsConfigSchema.parse(atCeiling)).toEqual(atCeiling);
+    expect(chatProjectsConfigSchema.safeParse({ maxFiles: 501 }).success).toBe(false);
+    expect(chatProjectsConfigSchema.safeParse({ maxInstructionsLength: 200001 }).success).toBe(
+      false,
+    );
+    expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: 10001 }).success).toBe(false);
   });
 });

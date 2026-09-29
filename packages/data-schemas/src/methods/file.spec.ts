@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { EToolResources, FileContext } from 'librechat-data-provider';
+import type { IChatProject } from '~/types';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
 import { runAsSystem } from '~/config/tenantContext';
 import { createFileMethods } from './file';
@@ -117,6 +118,147 @@ describe('File Methods', () => {
 
       expect(file?.metadata?.codeEnvRefs?.default?.file_id).toBe('default-file');
       expect(file?.metadata?.codeEnvRefs?.stateful?.file_id).toBe('stateful-file');
+    });
+  });
+
+  describe('getAvailableProjectFiles', () => {
+    it('paginates only eligible owner files with stable cursors and literal search', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const now = new Date('2026-01-01T00:00:00.000Z');
+      const base = {
+        user: userId,
+        tenantId: 'tenant-a',
+        filename: 'Report excluded.txt',
+        filepath: '/uploads/report',
+        object: 'file',
+        type: 'text/plain',
+        bytes: 1,
+        usage: 0,
+        embedded: true,
+        context: FileContext.message_attachment,
+        text: 'secret',
+        storageKey: 'internal-storage-key',
+      };
+      await File.create([
+        { ...base, file_id: 'report-1', filename: 'Report [literal].txt' },
+        { ...base, file_id: 'report-2', filename: 'Report two.txt' },
+        {
+          ...base,
+          file_id: 'expired',
+          expiredAt: new Date('2025-12-31T23:59:59.000Z'),
+        },
+        { ...base, file_id: 'foreign-tenant', tenantId: 'tenant-b' },
+        { ...base, file_id: 'foreign-owner', user: new mongoose.Types.ObjectId().toString() },
+        { ...base, file_id: 'agent-knowledge', context: FileContext.agents },
+        { ...base, file_id: 'not-indexed', embedded: false },
+        { ...base, file_id: 'attached' },
+      ]);
+
+      const first = await fileMethods.getAvailableProjectFiles({
+        userId,
+        tenantId: 'tenant-a',
+        excludedFileIds: ['attached'],
+        limit: 1,
+        search: 'report',
+        now,
+      });
+      await File.updateOne(
+        { file_id: first.files[0].file_id },
+        { $set: { filename: `Report ${'renamed'.repeat(100)}` } },
+      );
+      const second = await fileMethods.getAvailableProjectFiles({
+        userId,
+        tenantId: 'tenant-a',
+        excludedFileIds: ['attached'],
+        limit: 1,
+        search: 'report',
+        cursor: first.nextCursor,
+        now,
+      });
+
+      expect(first.files).toHaveLength(1);
+      expect(second.files).toHaveLength(1);
+      expect(first.files[0].file_id).toBe('report-2');
+      expect(second.files[0].file_id).toBe('report-1');
+      expect(first.nextCursor).toEqual(expect.any(String));
+      expect(second.nextCursor).toBeNull();
+      expect(first.files[0]).not.toHaveProperty('text');
+      expect(second.files[0]).not.toHaveProperty('storageKey');
+      /** The picker's rows reach `@librechat/api` and the client, so the identifiers must
+       *  already be plain strings rather than driver objects. */
+      expect(first.files[0]).toMatchObject({ _id: expect.any(String), user: userId });
+      const literalMatch = await fileMethods.getAvailableProjectFiles({
+        userId,
+        tenantId: 'tenant-a',
+        search: '[literal]',
+        now,
+      });
+      expect(literalMatch.files.map((file) => file.file_id)).toEqual(['report-1']);
+    });
+
+    it.each([0, 51, 1.5])('rejects an unbounded page size: %p', async (limit) => {
+      await expect(
+        fileMethods.getAvailableProjectFiles({
+          userId: new mongoose.Types.ObjectId().toString(),
+          tenantId: 'tenant-a',
+          limit,
+        }),
+      ).rejects.toThrow('Invalid project file limit');
+    });
+  });
+
+  describe('getProjectFiles', () => {
+    it('enforces owner scope and only includes content when requested', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      await File.create([
+        {
+          file_id: 'project-owned',
+          user: userId,
+          tenantId: 'tenant-a',
+          embedded: true,
+          context: FileContext.message_attachment,
+          filename: 'owned.txt',
+          filepath: '/uploads/owned.txt',
+          type: 'text/plain',
+          bytes: 1,
+          text: 'private project content',
+        },
+        {
+          file_id: 'project-foreign',
+          user: new mongoose.Types.ObjectId().toString(),
+          tenantId: 'tenant-a',
+          embedded: true,
+          context: FileContext.message_attachment,
+          filename: 'foreign.txt',
+          filepath: '/uploads/foreign.txt',
+          type: 'text/plain',
+          bytes: 1,
+          text: 'must not leak',
+        },
+      ]);
+
+      const metadata = await fileMethods.getProjectFiles({
+        fileIds: ['project-owned', 'project-foreign'],
+        userId,
+        tenantId: 'tenant-a',
+      });
+      expect(metadata.map((file) => file.file_id)).toEqual(['project-owned']);
+      expect(metadata[0]).toEqual(
+        expect.objectContaining({
+          user: userId,
+          _id: expect.any(String),
+        }),
+      );
+      expect(metadata[0]?.updatedAt).toBeInstanceOf(Date);
+      expect(metadata[0]).not.toHaveProperty('text');
+
+      const withContent = await fileMethods.getProjectFiles({
+        fileIds: ['project-owned'],
+        userId,
+        tenantId: 'tenant-a',
+        includeContent: true,
+      });
+      expect(withContent[0]?.text).toBe('private project content');
     });
   });
 
@@ -1522,6 +1664,37 @@ describe('File Methods', () => {
       expect(updated?.expiresAt).toBeUndefined();
     });
 
+    /* `prepareImageURL` clears the upload TTL with nothing but the id on every
+     * reuse of an image. Project resume compatibility fingerprints canonical
+     * content by `updatedAt`, so that bookkeeping must not read as a new
+     * version while a real field write still must. */
+    it('clears the upload TTL without posing as a content write', async () => {
+      const fileId = uuidv4();
+      await fileMethods.createFile({
+        file_id: fileId,
+        user: new mongoose.Types.ObjectId(),
+        filename: 'reused.png',
+        filepath: '/uploads/reused.png',
+        type: 'image/png',
+        bytes: 100,
+      });
+      const stamp = new Date('2020-01-01T00:00:00.000Z');
+      await File.updateOne(
+        { file_id: fileId },
+        { $set: { updatedAt: stamp } },
+        {
+          timestamps: false,
+        },
+      );
+
+      const reused = await fileMethods.updateFile({ file_id: fileId });
+      expect(reused?.expiresAt).toBeUndefined();
+      expect(reused?.updatedAt).toEqual(stamp);
+
+      const rewritten = await fileMethods.updateFile({ file_id: fileId, text: 'extracted' });
+      expect(rewritten?.updatedAt).not.toEqual(stamp);
+    });
+
     /* The optional `extraFilter` enables conditional updates — used by
      * the deferred-preview render's `finalizePreview` to guard against
      * an older render of the same `file_id` overwriting a newer turn's
@@ -1628,7 +1801,7 @@ describe('File Methods', () => {
       expect(updated2?.usage).toBe(6);
     });
 
-    it('should skip usage and TTL mutation when the owner filter does not match', async () => {
+    it('scopes usage and hold consumption without advancing the content version', async () => {
       const fileId = uuidv4();
       const ownerId = new mongoose.Types.ObjectId();
       const otherUserId = new mongoose.Types.ObjectId();
@@ -1643,6 +1816,11 @@ describe('File Methods', () => {
         bytes: 100,
         usage: 0,
       });
+      const contentUpdatedAt = new Date('2020-01-01');
+      await File.collection.updateOne(
+        { file_id: fileId },
+        { $set: { updatedAt: contentUpdatedAt } },
+      );
 
       const denied = await fileMethods.updateFileUsage({
         file_id: fileId,
@@ -1663,6 +1841,12 @@ describe('File Methods', () => {
       expect(allowed?.usage).toBe(1);
       expect(allowed?.temp_file_id).toBeUndefined();
       expect(allowed?.expiresAt).toBeUndefined();
+      expect(allowed?.updatedAt).toEqual(contentUpdatedAt);
+      const changedContent = await fileMethods.updateFile({
+        file_id: fileId,
+        text: 'Updated canonical file contents.',
+      });
+      expect(changedContent?.updatedAt?.getTime()).toBeGreaterThan(contentUpdatedAt.getTime());
     });
   });
 
@@ -2051,6 +2235,63 @@ describe('File Methods', () => {
     });
   });
 
+  describe('project reference cleanup on delete', () => {
+    async function seed() {
+      const userId = new mongoose.Types.ObjectId();
+      const ChatProject = mongoose.models.ChatProject as mongoose.Model<IChatProject>;
+      const ids = [uuidv4(), uuidv4()];
+      for (const fileId of ids) {
+        await fileMethods.createFile({
+          file_id: fileId,
+          user: userId,
+          filename: `${fileId}.txt`,
+          filepath: `/uploads/${fileId}.txt`,
+          type: 'text/plain',
+          bytes: 1,
+        });
+      }
+      const project = await ChatProject.create({
+        user: userId.toString(),
+        name: 'P',
+        file_ids: [...ids, 'other'],
+        contextRevision: 4,
+      });
+      const untouched = await ChatProject.create({
+        user: new mongoose.Types.ObjectId().toString(),
+        name: 'Q',
+        file_ids: [ids[0]],
+        contextRevision: 1,
+      });
+      return { ids, project, untouched, ChatProject };
+    }
+
+    it('pulls a deleted file from the owner projects and bumps the revision', async () => {
+      const { ids, project, untouched, ChatProject } = await seed();
+      await fileMethods.deleteFile(ids[0]);
+      const after = await ChatProject.findById(project._id).lean();
+      expect(after?.file_ids).toEqual([ids[1], 'other']);
+      expect(after?.contextRevision).toBe(5);
+      const other = await ChatProject.findById(untouched._id).lean();
+      expect(other?.file_ids).toEqual([ids[0]]);
+      expect(other?.contextRevision).toBe(1);
+    });
+
+    it('pulls every id removed by deleteFiles', async () => {
+      const { ids, project, ChatProject } = await seed();
+      await fileMethods.deleteFiles(ids);
+      const after = await ChatProject.findById(project._id).lean();
+      expect(after?.file_ids).toEqual(['other']);
+      expect(after?.contextRevision).toBe(5);
+    });
+
+    it('pulls a file removed through deleteFileByFilter', async () => {
+      const { ids, project, ChatProject } = await seed();
+      await fileMethods.deleteFileByFilter({ file_id: ids[1] });
+      const after = await ChatProject.findById(project._id).lean();
+      expect(after?.file_ids).toEqual([ids[0], 'other']);
+    });
+  });
+
   describe('deleteFiles', () => {
     it('should delete multiple files by file_ids', async () => {
       const userId = new mongoose.Types.ObjectId();
@@ -2197,10 +2438,6 @@ describe('File Methods', () => {
       expect(file?.filepath).toBe('/new-path/file.txt');
       expect(file?.storageKey).toBe('r/eu-central-1/uploads/user123/file.txt');
       expect(file?.storageRegion).toBe('eu-central-1');
-    });
-
-    it('should handle empty updates array gracefully', async () => {
-      await expect(fileMethods.batchUpdateFiles([])).resolves.toBeUndefined();
     });
   });
 

@@ -104,6 +104,7 @@ afterEach(() => {
   delete process.env.SAML_SESSION_SECRET;
   delete process.env.ALLOW_ACCOUNT_DELETION;
   delete process.env.ALLOW_EMAIL_CHANGE;
+  delete process.env.RAG_API_URL;
   delete process.env.ADMIN_PANEL_URL;
   delete process.env.ENABLE_INSIGHTS;
   delete process.env.ANALYTICS_GTM_ID;
@@ -357,6 +358,26 @@ describe('GET /api/config', () => {
   });
 
   describe('authenticated (req.user exists)', () => {
+    it('exposes retrieval availability only after login without exposing the service URL', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const app = createApp(mockUser);
+      delete process.env.RAG_API_URL;
+
+      const disabled = await request(app).get('/api/config');
+      expect(disabled.statusCode).toBe(200);
+      expect(disabled.body.ragEnabled).toBe(false);
+
+      process.env.RAG_API_URL = 'http://rag.internal:8000';
+      const enabled = await request(app).get('/api/config');
+      expect(enabled.statusCode).toBe(200);
+      expect(enabled.body.ragEnabled).toBe(true);
+      expect(JSON.stringify(enabled.body)).not.toContain(process.env.RAG_API_URL);
+
+      const anonymous = await request(createApp()).get('/api/config');
+      expect(anonymous.statusCode).toBe(200);
+      expect(anonymous.body).not.toHaveProperty('ragEnabled');
+    });
+
     it('should call getAppConfig with role, userId, and tenantId', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       mockGetTenantId.mockReturnValue('fallback-tenant');

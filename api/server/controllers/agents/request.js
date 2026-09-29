@@ -24,6 +24,9 @@ const {
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
   isUnpersistedPreliminaryParent,
+  startAgentProjectContextResolution,
+  assertChatProjectInstructions,
+  getChatProjectTurnFailure,
   resolveConversationAnchor,
   getAgentStartupTelemetry,
   acceptAgentStartupTelemetry,
@@ -68,6 +71,8 @@ const {
   saveConvo,
   getMessages,
   getConvo,
+  getChatProject,
+  getProjectFiles,
   getAgentEventActorSnapshot,
   commitAgentEventActorState,
   storeAgentEventActorSuspension,
@@ -117,6 +122,11 @@ function getInitializationFailure(error) {
       code: ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
       error: error.message || 'Attached resources must be restored before retrying.',
     };
+  }
+
+  const projectFailure = getChatProjectTurnFailure(error);
+  if (projectFailure) {
+    return projectFailure;
   }
 
   const metadata = getAgentErrorMetadata(error);
@@ -521,7 +531,7 @@ async function saveErrorTurn(
     }
 
     const agentId = endpointOption?.agent_id ?? req.body?.agent_id;
-    const chatProjectId = endpointOption?.chatProjectId ?? req.body?.chatProjectId;
+    const chatProjectId = req.chatProjectContext?.projectId;
     const seedConvo = isNewConvo || req.resolvedConversation === null;
     /** A stored turn seals the decision it ran under, on a saved chat as much as on a new one: the
      * error turn below enters the conversation, so leaving its validated decision out would let a
@@ -918,6 +928,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     conversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation')
       ? req.resolvedConversation
       : undefined,
+  });
+  // Resolve the authoritative project context while idempotency and admission
+  // gates proceed below. The promise is awaited before createJob, so rejected
+  // project policy never receives an HTTP generation ACK.
+  const chatProjectContextPromise = startAgentProjectContextResolution({
+    req,
+    endpointOption,
+    conversationId,
+    isNewConvo,
+    conversationAnchorPromise,
+    getConvo,
+    getChatProject,
+    getProjectFiles,
   });
 
   /** A newly bound actor conversation has no child messages yet, so its first
@@ -1539,18 +1562,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
   ) {
     preallocatedResponseMessageId = crypto.randomUUID();
   }
-  const mcpRequestBody = createMCPRuntimeRequestBody({
-    messageId: preallocatedResponseMessageId,
-    conversationId: effectiveConversationId,
-    codeEnvironmentMode: req.body.codeEnvironmentMode,
-    codeWorkspaces: resolveRunCodeWorkspaces({
-      conversationId: effectiveConversationId,
-      requestedSelections: req.body.codeWorkspaces,
-      conversation: req.resolvedConversation,
-    }),
-    parentMessageId:
-      editedContent != null ? preallocatedResponseMessageId : preallocatedUserMessageId,
-  });
 
   let client = null;
   let verifiedInitialAgentId = null;
@@ -1607,6 +1618,22 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
   req._agentEventTriggerProjection = getAgentEventTriggerProjection(agentEventDelivery);
 
   try {
+    assertChatProjectInstructions({
+      context: await chatProjectContextPromise,
+      filters: req.config?.filters,
+    });
+    const mcpRequestBody = createMCPRuntimeRequestBody({
+      messageId: preallocatedResponseMessageId,
+      conversationId: effectiveConversationId,
+      codeEnvironmentMode: req.body.codeEnvironmentMode,
+      codeWorkspaces: resolveRunCodeWorkspaces({
+        conversationId: effectiveConversationId,
+        requestedSelections: req.body.codeWorkspaces,
+        conversation: req.resolvedConversation,
+      }),
+      parentMessageId:
+        editedContent != null ? preallocatedResponseMessageId : preallocatedUserMessageId,
+    });
     logger.debug(`[ResumableAgentController] Creating job`, {
       streamId,
       conversationId,

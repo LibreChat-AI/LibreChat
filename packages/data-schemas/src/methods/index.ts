@@ -1,3 +1,12 @@
+import type {
+  FileMethods,
+  FileOwnerScope,
+  AvailableProjectFileRecord,
+  AvailableProjectFilesOptions,
+  AvailableProjectFilesResult,
+  ProjectFileRecord,
+  ProjectFilesOptions,
+} from './file';
 import type { RoleMethods, RoleDeps } from './role';
 import {
   createOpenIDRefreshFlightMethods,
@@ -14,10 +23,10 @@ import {
 import { createSessionMethods, DEFAULT_REFRESH_TOKEN_EXPIRY, type SessionMethods } from './session';
 import { createPasskeyMethods, type PasskeyMethods } from './passkey';
 import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
-import { createFileMethods, type FileMethods, type FileOwnerScope } from './file';
 import { createTokenMethods, type TokenMethods } from './token';
 import { createRoleMethods, RoleConflictError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
+import { createFileMethods } from './file';
 /* Memories */
 import { createMemoryMethods, type MemoryMethods } from './memory';
 /* Tool Favorites */
@@ -518,6 +527,13 @@ export function createMethods(
   };
 }
 
+export {
+  InvalidAvailableProjectFilesCursorError,
+  parseAvailableProjectFilesCursor,
+  MAX_AVAILABLE_PROJECT_FILES_LIMIT,
+  DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT,
+} from './file';
+
 export type {
   UserMethods,
   PasskeyMethods,
@@ -527,9 +543,14 @@ export type {
   OpenIDRefreshFlightMethods,
   RoleMethods,
   KeyMethods,
+  MemoryMethods,
   FileMethods,
   FileOwnerScope,
-  MemoryMethods,
+  AvailableProjectFileRecord,
+  AvailableProjectFilesOptions,
+  AvailableProjectFilesResult,
+  ProjectFileRecord,
+  ProjectFilesOptions,
   ToolFavoriteMethods,
   AgentCategoryMethods,
   AgentApiKeyMethods,

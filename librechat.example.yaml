@@ -7,6 +7,16 @@ version: 1.3.17
 # Cache settings: Set to true to enable caching
 cache: true
 
+# Chat Projects: the ceilings a single project may reach. Every field is optional and
+# defaults to the value shown, which is the behavior when the block is absent.
+projects:
+  # Reference files that may be attached to one project (maximum 500).
+  maxFiles: 50
+  # Characters of project instructions stored and sent as guidance (maximum 200000).
+  maxInstructionsLength: 16000
+  # Characters of the project description shown in the workspace and sidebar (maximum 10000).
+  maxDescriptionLength: 1000
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central

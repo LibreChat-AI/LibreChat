@@ -176,6 +176,15 @@ export const projects = (params: q.ProjectListParams = {}) => {
 
 export const projectById = (id: string) => `${projectsRoot}/${encodeURIComponent(id)}`;
 
+export const projectFiles = (projectId: string) => `${projectById(projectId)}/files`;
+export const projectAvailableFiles = (
+  projectId: string,
+  params: q.ProjectAvailableFilesParams = {},
+) => `${projectById(projectId)}/files/available${buildQuery(params)}`;
+
+export const projectFile = (projectId: string, fileId: string) =>
+  `${projectFiles(projectId)}/${encodeURIComponent(fileId)}`;
+
 export const projectConversation = (conversationId: string) =>
   `${projectsRoot}/conversations/${encodeURIComponent(conversationId)}`;
 

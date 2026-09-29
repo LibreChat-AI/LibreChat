@@ -52,6 +52,8 @@ export interface AgentTurnSemanticContext {
   memory?: readonly AgentContextMemorySnapshot[];
   checkpointerType?: string;
   discoveredToolNames?: readonly string[];
+  /** Server-owned ChatProject identity/revision; instruction text is hashed on agents. */
+  projectContextKey?: string;
   checkpointFormatVersion?: number;
   graphSchemaVersion?: number;
 }
@@ -253,6 +255,7 @@ export function createAgentContextFingerprint(
     discoveredToolNames: normalizeAgentEventActorDiscoveredTools(input.discoveredToolNames),
     approvalPolicy: input.approvalPolicy,
     retainedAnswers: input.retainedAnswers,
+    projectContextKey: input.projectContextKey,
     agents: input.agents.map((agent) => ({
       ...agent,
       modelParameters: redactModelParameterCredentials(agent.modelParameters),
@@ -306,6 +309,8 @@ export function createInitializedAgentContextFingerprint(input: {
   memory?: readonly AgentContextMemorySnapshot[];
   checkpointerType?: string;
   discoveredToolNames?: readonly string[];
+  /** Server-owned ChatProject identity/revision; instruction text is hashed on agents. */
+  projectContextKey?: string;
 }): AgentContextFingerprint {
   return createAgentContextFingerprint({
     checkpointerType: input.checkpointerType,
@@ -313,6 +318,7 @@ export function createInitializedAgentContextFingerprint(input: {
     retainedAnswers: input.retainedAnswers,
     memory: input.memory,
     discoveredToolNames: input.discoveredToolNames,
+    projectContextKey: input.projectContextKey,
     agents: input.agents.map((agent, index) => ({
       id: agent.id,
       version: agent.version,

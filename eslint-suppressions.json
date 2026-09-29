@@ -1343,9 +1343,6 @@
   "client/src/components/Projects/ProjectChatList.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Projects/ProjectChatOptions.tsx": {
@@ -1358,25 +1355,9 @@
       "count": 3
     }
   },
-  "client/src/components/Projects/ProjectEditDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
-  "client/src/components/Projects/ProjectWorkspace.tsx": {
-    "shadcn/no-restyle": {
-      "count": 7
-    }
-  },
   "client/src/components/Projects/ProjectsView.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 1
     }
   },
   "client/src/components/Prompts/buttons/AutoSendPrompt.tsx": {

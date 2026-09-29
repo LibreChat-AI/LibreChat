@@ -1,3 +1,4 @@
+import { Types } from 'mongoose';
 import { createHash } from 'crypto';
 import { EToolResources, FileContext, FileSources } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
@@ -11,8 +12,166 @@ import type {
   RunArtifactRunScope,
   PublishRunArtifactInput,
 } from '~/types/file';
+import type { IChatProjectDocument } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { escapeRegExp } from '~/utils/string';
 import logger from '../config/winston';
+
+export const DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT = 20;
+export const MAX_AVAILABLE_PROJECT_FILES_LIMIT = 50;
+
+/** Plain projection of a candidate file. The picker's response crosses into `@librechat/api`
+ * and the client, so this names no Mongoose type: `_id` and `user` are already strings here. */
+export type AvailableProjectFileRecord = {
+  _id: string;
+  file_id: string;
+  filename: string;
+  filepath: string;
+  object: 'file';
+  type: string;
+  bytes: number;
+  usage: number;
+  embedded?: boolean;
+  context?: string;
+  user: string;
+  tenantId?: string;
+};
+
+type AvailableProjectFileRecordSource = Pick<
+  IMongoFile,
+  | '_id'
+  | 'file_id'
+  | 'filename'
+  | 'filepath'
+  | 'object'
+  | 'type'
+  | 'bytes'
+  | 'usage'
+  | 'embedded'
+  | 'context'
+  | 'user'
+  | 'tenantId'
+>;
+
+function normalizeAvailableProjectFileRecord(
+  file: AvailableProjectFileRecordSource,
+): AvailableProjectFileRecord {
+  return {
+    _id: file._id.toString(),
+    file_id: file.file_id,
+    filename: file.filename,
+    filepath: file.filepath,
+    object: file.object,
+    type: file.type,
+    bytes: file.bytes,
+    usage: file.usage,
+    ...(file.embedded !== undefined ? { embedded: file.embedded } : {}),
+    ...(file.context !== undefined ? { context: file.context } : {}),
+    user: file.user.toString(),
+    ...(file.tenantId !== undefined ? { tenantId: file.tenantId } : {}),
+  };
+}
+
+export type AvailableProjectFilesOptions = FileOwnerScope & {
+  excludedFileIds?: string[];
+  limit?: number;
+  cursor?: string | null;
+  search?: string;
+  now?: Date;
+};
+
+export type AvailableProjectFilesResult = {
+  files: AvailableProjectFileRecord[];
+  nextCursor: string | null;
+};
+
+export type ProjectFileRecord = {
+  _id: string;
+  file_id: string;
+  filename: string;
+  filepath: string;
+  object: 'file';
+  type: string;
+  bytes: number;
+  usage: number;
+  embedded?: boolean;
+  context?: string;
+  expiredAt?: Date | null;
+  user: string;
+  tenantId?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+  previewRevision?: string;
+  status?: 'pending' | 'ready' | 'failed';
+  text?: string;
+};
+
+type ProjectFileRecordSource = Pick<
+  IMongoFile,
+  | '_id'
+  | 'file_id'
+  | 'filename'
+  | 'filepath'
+  | 'object'
+  | 'type'
+  | 'bytes'
+  | 'usage'
+  | 'embedded'
+  | 'context'
+  | 'expiredAt'
+  | 'user'
+  | 'tenantId'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'previewRevision'
+  | 'status'
+  | 'text'
+>;
+
+function normalizeProjectFileRecord(file: ProjectFileRecordSource): ProjectFileRecord {
+  return {
+    _id: file._id.toString(),
+    file_id: file.file_id,
+    filename: file.filename,
+    filepath: file.filepath,
+    object: file.object,
+    type: file.type,
+    bytes: file.bytes,
+    usage: file.usage,
+    ...(file.embedded !== undefined ? { embedded: file.embedded } : {}),
+    ...(file.context !== undefined ? { context: file.context } : {}),
+    ...(file.expiredAt !== undefined ? { expiredAt: file.expiredAt } : {}),
+    user: file.user.toString(),
+    ...(file.tenantId !== undefined ? { tenantId: file.tenantId } : {}),
+    ...(file.createdAt !== undefined ? { createdAt: file.createdAt } : {}),
+    ...(file.updatedAt !== undefined ? { updatedAt: file.updatedAt } : {}),
+    ...(file.previewRevision !== undefined ? { previewRevision: file.previewRevision } : {}),
+    ...(file.status !== undefined ? { status: file.status } : {}),
+    ...(file.text !== undefined ? { text: file.text } : {}),
+  };
+}
+
+export type ProjectFilesOptions = FileOwnerScope & {
+  fileIds: string[];
+  includeContent?: boolean;
+};
+
+export class InvalidAvailableProjectFilesCursorError extends Error {
+  constructor() {
+    super('Invalid project file cursor');
+    this.name = 'InvalidAvailableProjectFilesCursorError';
+  }
+}
+
+export function parseAvailableProjectFilesCursor(cursor?: string | null): string | null {
+  if (cursor == null || cursor === '') {
+    return null;
+  }
+  if (cursor.length !== 24 || !Types.ObjectId.isValid(cursor)) {
+    throw new InvalidAvailableProjectFilesCursorError();
+  }
+  return cursor;
+}
 
 export type FileOwnerScope = {
   userId: string;
@@ -136,6 +295,10 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     selectFields?: Record<string, 0 | 1> | string | null,
     limit?: number | null,
   ) => Promise<IMongoFile[] | null>;
+  getProjectFiles: (options: ProjectFilesOptions) => Promise<ProjectFileRecord[]>;
+  getAvailableProjectFiles: (
+    options: AvailableProjectFilesOptions,
+  ) => Promise<AvailableProjectFilesResult>;
   getExpiredFiles: (limit?: number, options?: ExpiredFileQueryOptions) => Promise<IMongoFile[]>;
   incrementFileDeletionAttempts: (file_id: string) => Promise<number>;
   deferExpiredFile: (file_id: string, deletionRetryAt: Date) => Promise<void>;
@@ -385,6 +548,115 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       query.limit(limit);
     }
     return await query.sort(sortOptions).lean<IMongoFile[]>();
+  }
+  async function getProjectFiles({
+    fileIds,
+    userId,
+    tenantId,
+    includeContent = false,
+  }: ProjectFilesOptions): Promise<ProjectFileRecord[]> {
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const query = File.find({
+      file_id: { $in: fileIds },
+      user: userId,
+      embedded: true,
+      context: FileContext.message_attachment,
+      // Mongo's null predicate matches explicit null and legacy missing tenant fields.
+      tenantId: tenantId != null && tenantId !== '' ? tenantId : null,
+    });
+    if (includeContent) {
+      query.select({});
+    } else {
+      query.select({
+        _id: 1,
+        file_id: 1,
+        filename: 1,
+        filepath: 1,
+        object: 1,
+        type: 1,
+        bytes: 1,
+        usage: 1,
+        embedded: 1,
+        context: 1,
+        expiredAt: 1,
+        user: 1,
+        tenantId: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        previewRevision: 1,
+        status: 1,
+      });
+    }
+    const files = (await query.lean<ProjectFileRecordSource[]>()) ?? [];
+    return files.map(normalizeProjectFileRecord);
+  }
+
+  async function getAvailableProjectFiles({
+    userId,
+    tenantId,
+    excludedFileIds = [],
+    limit = DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT,
+    cursor,
+    search,
+    now = new Date(),
+  }: AvailableProjectFilesOptions): Promise<AvailableProjectFilesResult> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_AVAILABLE_PROJECT_FILES_LIMIT) {
+      throw new RangeError('Invalid project file limit');
+    }
+
+    const decodedCursor = parseAvailableProjectFilesCursor(cursor);
+    const filters: FilterQuery<IMongoFile>[] = [
+      {
+        user: userId,
+        tenantId: tenantId ?? null,
+        embedded: true,
+        context: FileContext.message_attachment,
+        $or: [{ expiredAt: null }, { expiredAt: { $gt: now } }],
+      },
+    ];
+    if (excludedFileIds.length > 0) {
+      filters[0].file_id = { $nin: excludedFileIds };
+    }
+    const normalizedSearch = search?.trim();
+
+    if (normalizedSearch) {
+      filters.push({
+        filename: { $regex: escapeRegExp(normalizedSearch), $options: 'i' },
+      });
+    }
+    if (decodedCursor) {
+      filters.push({ _id: { $lt: new Types.ObjectId(decodedCursor) } });
+    }
+
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const files = await File.find(filters.length === 1 ? filters[0] : { $and: filters })
+      .select({
+        _id: 1,
+        file_id: 1,
+        filename: 1,
+        filepath: 1,
+        object: 1,
+        type: 1,
+        bytes: 1,
+        usage: 1,
+        embedded: 1,
+        context: 1,
+        user: 1,
+        tenantId: 1,
+      })
+      .sort({ _id: -1 })
+      .limit(limit + 1)
+      .lean<AvailableProjectFileRecordSource[]>();
+
+    let nextCursor: string | null = null;
+    if (files.length > limit) {
+      files.pop();
+      const lastFile = files[files.length - 1];
+      if (lastFile) {
+        nextCursor = lastFile._id.toString();
+      }
+    }
+    return { files: files.map(normalizeAvailableProjectFileRecord), nextCursor };
   }
 
   /**
@@ -845,6 +1117,12 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
    * same `file_id` overwriting a newer turn's record on cross-turn
    * filename reuse.
    *
+   * Content timestamps advance only when the caller actually writes a
+   * field. Clearing the upload TTL alone is bookkeeping: image reuse
+   * calls this with nothing but the id on every turn, and consumers that
+   * fingerprint content by `updatedAt` (Project resume compatibility)
+   * would otherwise read a new version and reject an approved turn.
+   *
    * @param data - The data to update, must contain file_id
    * @param extraFilter - Optional extra equality filter merged into the query.
    * @returns A promise that resolves to the updated file document, or
@@ -864,6 +1142,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const query: FilterQuery<IMongoFile> = extraFilter ? { file_id, ...extraFilter } : { file_id };
     return File.findOneAndUpdate(query, updateOperation, {
       new: true,
+      timestamps: Object.keys(update).length > 0,
     }).lean<IMongoFile>();
   }
 
@@ -964,9 +1243,37 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     const query: FilterQuery<IMongoFile> = user
       ? withOwnerScope({ file_id }, { userId: user, tenantId })
       : { file_id };
+    /** Usage and temporary-upload cleanup are bookkeeping, not content writes. */
     return File.findOneAndUpdate(query, updateOperation, {
       new: true,
+      timestamps: false,
     }).lean<IMongoFile>();
+  }
+
+  /**
+   * Removes deleted file ids from the owner's Chat Projects so a project never
+   * keeps a dangling reference, bumping the revision of every project it changes.
+   */
+  async function detachFilesFromProjects(
+    files: Pick<IMongoFile, 'file_id' | 'user'>[],
+  ): Promise<void> {
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument> | undefined;
+    if (!ChatProject || files.length === 0) {
+      return;
+    }
+    const idsByUser = new Map<string, string[]>();
+    for (const file of files) {
+      const user = String(file.user);
+      idsByUser.set(user, [...(idsByUser.get(user) ?? []), file.file_id]);
+    }
+    await Promise.all(
+      [...idsByUser].map(([user, fileIds]) =>
+        ChatProject.updateMany(
+          { user, file_ids: { $in: fileIds } },
+          { $pull: { file_ids: { $in: fileIds } }, $inc: { contextRevision: 1 } },
+        ),
+      ),
+    );
   }
 
   /**
@@ -976,7 +1283,11 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
    */
   async function deleteFile(file_id: string): Promise<IMongoFile | null> {
     const File = mongoose.models.File as Model<IMongoFile>;
-    return File.findOneAndDelete({ file_id }).lean<IMongoFile>();
+    const deleted = await File.findOneAndDelete({ file_id }).lean<IMongoFile>();
+    if (deleted) {
+      await detachFilesFromProjects([deleted]);
+    }
+    return deleted;
   }
 
   /**
@@ -986,7 +1297,11 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
    */
   async function deleteFileByFilter(filter: FilterQuery<IMongoFile>): Promise<IMongoFile | null> {
     const File = mongoose.models.File as Model<IMongoFile>;
-    return File.findOneAndDelete(filter).lean<IMongoFile>();
+    const deleted = await File.findOneAndDelete(filter).lean<IMongoFile>();
+    if (deleted) {
+      await detachFilesFromProjects([deleted]);
+    }
+    return deleted;
   }
 
   /**
@@ -1004,7 +1319,12 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     if (user) {
       deleteQuery = { user: user };
     }
-    return File.deleteMany(deleteQuery);
+    const doomed = await File.find(deleteQuery)
+      .select({ file_id: 1, user: 1 })
+      .lean<IMongoFile[]>();
+    const result = await File.deleteMany(deleteQuery);
+    await detachFilesFromProjects(doomed);
+    return result;
   }
 
   /**
@@ -1037,7 +1357,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       },
     }));
 
-    const result = await tenantSafeBulkWrite(File, bulkOperations);
+    const result = await tenantSafeBulkWrite(File, bulkOperations, { timestamps: false });
     logger.info(`Updated ${result.modifiedCount} files with new S3 URLs`);
   }
 
@@ -1212,6 +1532,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     listRunArtifacts,
     findFileById,
     getFiles,
+    getProjectFiles,
+    getAvailableProjectFiles,
     getExpiredFiles,
     incrementFileDeletionAttempts,
     deferExpiredFile,

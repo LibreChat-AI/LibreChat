@@ -169,12 +169,15 @@ async function writeConversation(
 ): Promise<TurnConversationResult> {
   const { req, ctx, conversationId, endpoint, endpointType, endpointOptions = {} } = write;
   const agentOwned = isAgentOwned(write);
+  const inserting = write.initialized !== true && existing == null;
+  const { chatProjectId, ...storedOptions } = endpointOptions;
   const conversation = await deps.saveConvo(
     ctx,
     {
       endpoint,
       endpointType,
-      ...endpointOptions,
+      ...storedOptions,
+      ...(inserting && chatProjectId !== undefined ? { chatProjectId } : {}),
       conversationId: endpointOptions.conversationId ?? conversationId,
     },
     {
@@ -182,8 +185,7 @@ async function writeConversation(
       unsetFields: existing != null ? getUnsetFields(existing, endpointOptions, agentOwned) : {},
       noUpsert: req?._agentEventBindingParentConversationId != null,
       initialAgentId: agentOwned ? (write.agentId ?? null) : null,
-      createdAtOnInsert:
-        write.initialized !== true && existing == null ? getCreatedAtOnInsert(req) : undefined,
+      createdAtOnInsert: inserting ? getCreatedAtOnInsert(req) : undefined,
       ...(appendMessageIds != null ? { appendMessageIds } : {}),
       ...getReplyStamp(write),
     },

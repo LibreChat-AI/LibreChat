@@ -246,6 +246,11 @@ Multi-line imports count total character length across all lines. Consolidate va
 - Semantic HTML with ARIA labels (`role`, `aria-label`) for accessibility.
 - Group related components in feature directories (e.g., `SidePanel/Memories/`).
 - Use index files for clean exports.
+- Use the chat Share/Export action-menu pattern: `DropdownPopup` from `@librechat/client`
+  with `Ariakit.MenuButton` (see `HeaderMenu.tsx` and `useExportShare.tsx`). Never introduce
+  or reintroduce the Radix `DropdownMenu` family for app action or sort menus. Preserve
+  the Share/Export dialog-item contract (`hideOnClick: false`, item ref, button render,
+  and dialog `triggerRef`) when a menu action opens a dialog.
 
 ### Theming and styling
 

@@ -85,6 +85,7 @@ const {
   executeAgentRun,
   waitForAgentExecutionWrites,
   resolveToolRoleGrants,
+  resolveApiConversationProject,
   resolveAdmittedCodeEnvironmentDecision,
   resolvePersistableCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
@@ -524,16 +525,14 @@ const executeResponse = async (envelope, { req, res }) => {
   // Request-backed tool adapters still observe the validated envelope payload;
   // shared initialization receives the transport-free runtime below.
   req.body = request;
-  req.turnStartedAt = envelope.receivedAt;
-  const agentRuntime = createAgentExecutionContext({
-    user: req.user,
-    appConfig,
-    requestBody: request,
-    turnStartedAt: envelope.receivedAt,
-    conversationCreatedAt: req.conversationCreatedAt,
-    resolvedConversation: req.resolvedConversation,
-    hasResolvedConversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation'),
-  });
+  if (request.previous_response_id != null && typeof request.previous_response_id !== 'string') {
+    return sendResponsesErrorResponse(
+      res,
+      400,
+      'previous_response_id must be a string',
+      'invalid_request',
+    );
+  }
   const agentId = request.model;
   const manualSkills = extractManualSkills(req.body);
   const isStreaming = request.stream === true;
@@ -615,18 +614,6 @@ const executeResponse = async (envelope, { req, res }) => {
     );
   }
 
-  // Look up the agent
-  const agent = await db.getAgent({ id: agentId });
-  if (!agent) {
-    return sendResponsesErrorResponse(
-      res,
-      404,
-      `Agent not found: ${agentId}`,
-      'not_found',
-      'model_not_found',
-    );
-  }
-
   // Generate IDs
   const responseId = generateResponseId();
   const terminalRunError = createTerminalRunErrorObserver({
@@ -689,24 +676,27 @@ const executeResponse = async (envelope, { req, res }) => {
       return handleExecutionError({ error, res, appConfig });
     },
     execute: async (execution) => {
+      const agentPromise = db.getAgent({ id: agentId });
+      // Validation may return before this promise is awaited; preserve the original
+      // promise for the later await while avoiding an unhandled speculative rejection.
+      agentPromise.catch(() => {});
       if (request.previous_response_id != null) {
-        if (typeof request.previous_response_id !== 'string') {
-          return sendResponsesErrorResponse(
-            res,
-            400,
-            'previous_response_id must be a string',
-            'invalid_request',
-          );
-        }
-        const previousConversation = await db.getConvo(
-          principal.userId,
-          request.previous_response_id,
+        const project = await resolveApiConversationProject(
+          {
+            userId: principal.userId,
+            tenantId: principal.tenantId,
+            conversationId: request.previous_response_id,
+            rejectSubagentThread: true,
+          },
+          {
+            getConvo: db.getConvo,
+            getChatProject: db.getChatProject,
+            getProjectFiles: db.getProjectFiles,
+            logger,
+            logPrefix: '[Responses API]',
+          },
         );
-        if (!previousConversation) {
-          return sendResponsesErrorResponse(res, 404, 'Conversation not found', 'not_found');
-        }
-        req.resolvedConversation = previousConversation;
-        if (previousConversation.subagentThread != null) {
+        if (!project.ok && project.reason === 'read_only') {
           return sendResponsesErrorResponse(
             res,
             409,
@@ -715,8 +705,30 @@ const executeResponse = async (envelope, { req, res }) => {
             'conversation_read_only',
           );
         }
+        if (!project.ok) {
+          return sendResponsesErrorResponse(
+            res,
+            project.status,
+            project.message,
+            project.reason === 'server_error' ? 'server_error' : 'not_found',
+          );
+        }
+        req.resolvedConversation = project.conversation;
+        req.chatProjectContext = project.context;
       }
 
+      const agent = await agentPromise;
+      if (!agent) {
+        return sendResponsesErrorResponse(
+          res,
+          404,
+          `Agent not found: ${agentId}`,
+          'not_found',
+          'model_not_found',
+        );
+      }
+
+      req.turnStartedAt = envelope.receivedAt;
       const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
         await resolveAdmittedCodeEnvironmentDecision({
           appConfig,
@@ -727,6 +739,17 @@ const executeResponse = async (envelope, { req, res }) => {
           readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(principal.userId, id),
         });
       req.resolvedConversation = admittedConversation;
+      const agentRuntime = createAgentExecutionContext({
+        user: req.user,
+        appConfig,
+        requestBody: request,
+        turnStartedAt: envelope.receivedAt,
+        conversationCreatedAt: req.conversationCreatedAt,
+        resolvedConversation: req.resolvedConversation,
+        hasResolvedConversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation'),
+        chatProjectContext: req.chatProjectContext,
+      });
+
       const parentMessageId = null;
       const mcpRequestBody = createMCPRuntimeRequestBody({
         messageId: responseId,
@@ -765,6 +788,7 @@ const executeResponse = async (envelope, { req, res }) => {
       };
 
       const dbMethods = {
+        getProjectFiles: db.getProjectFiles,
         getConvoFiles: db.getConvoFiles,
         getFiles: db.getFiles,
         filterFilesByAgentAccess: filterFilesByRemoteAgentAccess,
@@ -874,6 +898,7 @@ const executeResponse = async (envelope, { req, res }) => {
           endpointOption,
           allowedProviders,
           isInitialAgent: true,
+          useChatProjectContext: true,
           accessibleSkillIds: primaryScopedSkillIds,
           skillAuthoringAvailable: canAuthorSkillFiles({
             agent,
@@ -941,6 +966,7 @@ const executeResponse = async (envelope, { req, res }) => {
           requestFiles: [],
           conversationId,
           parentMessageId,
+          useChatProjectContext: true,
           requestBody: mcpRequestBody,
           resourceType: ResourceType.REMOTE_AGENT,
           computeAccessibleSkillIds: (handoffAgent) =>

@@ -1,9 +1,13 @@
 import {
+  FileContext,
+  MAX_CHAT_PROJECT_FILES,
+  MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
   MAX_CHAT_PROJECT_NAME_LENGTH,
   MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, SortOrder, Types } from 'mongoose';
-import type { IChatProject, IChatProjectDocument, IConversation } from '~/types';
+import type { TChatProjectsConfig } from 'librechat-data-provider';
+import type { IChatProject, IChatProjectDocument, IConversation, IMongoFile } from '~/types';
 import { buildRetentionVisibilityFilter } from '~/utils/retention';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { escapeRegExp } from '~/utils/string';
@@ -15,9 +19,14 @@ export type ChatProjectSortDirection = 'asc' | 'desc';
 export type CreateChatProjectInput = {
   name: string;
   description?: string | null;
+  instructions?: string;
 };
 
-export type UpdateChatProjectInput = Partial<CreateChatProjectInput>;
+export type UpdateChatProjectInput = Partial<CreateChatProjectInput> & {
+  contextRevision?: number;
+};
+
+export const CHAT_PROJECT_CONFLICT = 'Project revision conflict';
 
 export type ListChatProjectsOptions = {
   cursor?: string | null;
@@ -44,7 +53,11 @@ export type AssignConversationToProjectResult = {
 };
 
 export interface ChatProjectMethods {
-  createChatProject(user: string, input: CreateChatProjectInput): Promise<IChatProject>;
+  createChatProject(
+    user: string,
+    input: CreateChatProjectInput,
+    limits?: Partial<ChatProjectLimits>,
+  ): Promise<IChatProject>;
   getChatProject(user: string, projectId: string): Promise<IChatProject | null>;
   listChatProjects(
     user: string,
@@ -54,8 +67,20 @@ export interface ChatProjectMethods {
     user: string,
     projectId: string,
     input: UpdateChatProjectInput,
+    limits?: Partial<ChatProjectLimits>,
   ): Promise<IChatProject | null>;
   deleteChatProject(user: string, projectId: string): Promise<DeleteChatProjectResult>;
+  addChatProjectFile(
+    user: string,
+    projectId: string,
+    fileId: string,
+    limits?: Partial<ChatProjectLimits>,
+  ): Promise<IChatProject | null>;
+  removeChatProjectFile(
+    user: string,
+    projectId: string,
+    fileId: string,
+  ): Promise<IChatProject | null>;
   assignConversationToProject(
     user: string,
     conversationId: string,
@@ -68,15 +93,25 @@ type ProjectCursor = {
   primary: string | null;
   id: string;
 };
+export type ChatProjectLimits = Pick<
+  TChatProjectsConfig,
+  'maxFiles' | 'maxInstructionsLength' | 'maxDescriptionLength'
+>;
 
-type ProjectLean = IChatProject & { _id: Types.ObjectId };
 type ProjectStatsSnapshot = Pick<
   IChatProject,
   'conversationCount' | 'lastConversationAt' | 'lastConversationId'
 >;
+type ProjectLean = IChatProject & { _id: Types.ObjectId };
 
 const VALID_SORT_FIELDS = new Set<ChatProjectSortBy>(['name', 'createdAt', 'lastConversationAt']);
 const PROJECT_STATS_REFRESH_MAX_ATTEMPTS = 8;
+
+const resolveChatProjectLimits = (limits?: Partial<ChatProjectLimits>): ChatProjectLimits => ({
+  maxFiles: limits?.maxFiles ?? MAX_CHAT_PROJECT_FILES,
+  maxInstructionsLength: limits?.maxInstructionsLength ?? MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
+  maxDescriptionLength: limits?.maxDescriptionLength ?? MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
+});
 
 function normalizeSortBy(sortBy?: string): ChatProjectSortBy {
   return VALID_SORT_FIELDS.has(sortBy as ChatProjectSortBy)
@@ -95,10 +130,29 @@ function normalizeLimit(limit?: number): number {
   return Math.min(Math.max(Math.floor(limit), 1), 100);
 }
 
-function sanitizeProjectInput(input: CreateChatProjectInput): CreateChatProjectInput {
+function validateProjectInstructions(
+  instructions: string | undefined,
+  limits?: Partial<ChatProjectLimits>,
+): string {
+  if (instructions === undefined) {
+    return '';
+  }
+  const { maxInstructionsLength } = resolveChatProjectLimits(limits);
+  if (typeof instructions !== 'string' || instructions.length > maxInstructionsLength) {
+    throw new Error('Invalid project instructions');
+  }
+  return instructions.trim();
+}
+
+function sanitizeProjectInput(
+  input: CreateChatProjectInput,
+  limits?: Partial<ChatProjectLimits>,
+): CreateChatProjectInput {
+  const { maxDescriptionLength } = resolveChatProjectLimits(limits);
   return {
     name: input.name.trim().slice(0, MAX_CHAT_PROJECT_NAME_LENGTH),
-    description: input.description?.trim().slice(0, MAX_CHAT_PROJECT_DESCRIPTION_LENGTH) ?? '',
+    description: input.description?.trim().slice(0, maxDescriptionLength) ?? '',
+    instructions: validateProjectInstructions(input.instructions, limits),
   };
 }
 
@@ -306,7 +360,6 @@ export async function updateChatProjectLastConversationForUser(
       return;
     }
   }
-
   /**
    * The chat can stop being visible while this pointer write is in flight: an archive-all
    * sweep, a single archive from another tab, or a retention flip, each of which has
@@ -332,9 +385,10 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
   async function createChatProject(
     user: string,
     input: CreateChatProjectInput,
+    limits?: Partial<ChatProjectLimits>,
   ): Promise<IChatProject> {
     const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
-    const sanitized = sanitizeProjectInput(input);
+    const sanitized = sanitizeProjectInput(input, limits);
     if (!sanitized.name) {
       throw new Error('Project name is required');
     }
@@ -389,10 +443,27 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
 
     const query =
       filters.length === 1 ? filters[0] : ({ $and: filters } as FilterQuery<IChatProjectDocument>);
-    const projects = await ChatProject.find(query)
-      .sort({ [sortBy]: sortOrder, _id: sortOrder })
-      .limit(limit + 1)
-      .lean<ProjectLean[]>();
+    const projects = await ChatProject.aggregate<ProjectLean>([
+      { $match: query },
+      { $sort: { [sortBy]: sortOrder, _id: sortOrder } },
+      { $limit: limit + 1 },
+      {
+        $project: {
+          name: 1,
+          description: 1,
+          user: 1,
+          tenantId: 1,
+          conversationCount: 1,
+          lastConversationAt: 1,
+          lastConversationId: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          contextRevision: 1,
+          hasInstructions: { $ne: [{ $ifNull: ['$instructions', ''] }, ''] },
+          fileCount: { $size: { $ifNull: ['$file_ids', []] } },
+        },
+      },
+    ]);
 
     let nextCursor: string | null = null;
     if (projects.length > limit) {
@@ -410,13 +481,15 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     user: string,
     projectId: string,
     input: UpdateChatProjectInput,
+    limits?: Partial<ChatProjectLimits>,
   ): Promise<IChatProject | null> {
     if (!isValidObjectIdString(projectId)) {
       return null;
     }
 
     const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
-    const update: Partial<Pick<IChatProject, 'name' | 'description'>> = {};
+    const update: Partial<Pick<IChatProject, 'name' | 'description' | 'instructions'>> = {};
+    const { maxDescriptionLength } = resolveChatProjectLimits(limits);
     if (typeof input.name === 'string') {
       const name = input.name.trim().slice(0, MAX_CHAT_PROJECT_NAME_LENGTH);
       if (!name) {
@@ -425,15 +498,174 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       update.name = name;
     }
     if (input.description !== undefined) {
-      update.description =
-        input.description?.trim().slice(0, MAX_CHAT_PROJECT_DESCRIPTION_LENGTH) ?? '';
+      update.description = input.description?.trim().slice(0, maxDescriptionLength) ?? '';
     }
-
-    return await ChatProject.findOneAndUpdate(
-      { _id: new mongoose.Types.ObjectId(projectId), user },
+    const ownerFilter = { _id: new mongoose.Types.ObjectId(projectId), user };
+    const expected = input.contextRevision;
+    const hasExpected = typeof expected === 'number' && Number.isInteger(expected);
+    const filter = hasExpected ? { ...ownerFilter, contextRevision: expected } : ownerFilter;
+    const conflictOrNull = async (): Promise<IChatProject | null> => {
+      if (!hasExpected) {
+        return null;
+      }
+      const current = await getChatProject(user, projectId);
+      if (current) {
+        throw new Error(CHAT_PROJECT_CONFLICT);
+      }
+      return null;
+    };
+    if (input.instructions !== undefined) {
+      const instructions = validateProjectInstructions(input.instructions, limits);
+      const changed = await ChatProject.findOneAndUpdate(
+        {
+          ...filter,
+          instructions: instructions === '' ? { $nin: ['', null] } : { $ne: instructions },
+        },
+        { $set: { ...update, instructions }, $inc: { contextRevision: 1 } },
+        { new: true, runValidators: true },
+      ).lean<IChatProject>();
+      if (changed) {
+        return changed;
+      }
+    }
+    if (Object.keys(update).length === 0) {
+      const current = await getChatProject(user, projectId);
+      if (current && hasExpected && current.contextRevision !== expected) {
+        throw new Error(CHAT_PROJECT_CONFLICT);
+      }
+      return current;
+    }
+    const saved = await ChatProject.findOneAndUpdate(
+      filter,
       { $set: update },
       { new: true, runValidators: true },
     ).lean<IChatProject>();
+    return saved ?? (await conflictOrNull());
+  }
+
+  async function addChatProjectFile(
+    user: string,
+    projectId: string,
+    fileId: string,
+    limits?: Partial<ChatProjectLimits>,
+  ): Promise<IChatProject | null> {
+    const { maxFiles } = resolveChatProjectLimits(limits);
+    const project = await getChatProject(user, projectId);
+    if (!project) {
+      return null;
+    }
+    if (!fileId || typeof fileId !== 'string' || fileId.length > 128) {
+      throw new Error('Project file unavailable');
+    }
+    const alreadyAttached = project.file_ids?.includes(fileId) === true;
+    if (!alreadyAttached && (project.file_ids?.length ?? 0) >= maxFiles) {
+      throw new Error('Project file limit reached');
+    }
+
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const file = await File.findOne({
+      file_id: fileId,
+      user,
+      tenantId: project.tenantId ?? null,
+      embedded: true,
+      context: FileContext.message_attachment,
+      $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+    })
+      .select('_id file_id expiresAt temp_file_id')
+      .lean();
+    if (!file) {
+      throw new Error('Project file unavailable');
+    }
+
+    const releaseTemporaryHold = async (): Promise<boolean> => {
+      try {
+        await File.findOneAndUpdate(
+          {
+            _id: file._id,
+            file_id: fileId,
+            user,
+            tenantId: project.tenantId ?? null,
+          },
+          { $unset: { expiresAt: '', temp_file_id: '' } },
+          { timestamps: false },
+        );
+        return true;
+      } catch (error) {
+        logger.warn('[chatProject] Failed to release temporary file hold', error);
+        return false;
+      }
+    };
+
+    const released = await releaseTemporaryHold();
+    const restoreTemporaryHold = async (): Promise<void> => {
+      if (!released) {
+        return;
+      }
+      const hold = {
+        ...(file.expiresAt != null ? { expiresAt: file.expiresAt } : {}),
+        ...(file.temp_file_id != null ? { temp_file_id: file.temp_file_id } : {}),
+      };
+      if (Object.keys(hold).length === 0) {
+        return;
+      }
+      try {
+        await File.updateOne({ _id: file._id, user }, { $set: hold }, { timestamps: false });
+      } catch (error) {
+        logger.warn('[chatProject] Failed to restore temporary file hold', error);
+      }
+    };
+    const attached = async (result: IChatProject): Promise<IChatProject> => {
+      if (!released) {
+        await releaseTemporaryHold();
+      }
+      return result;
+    };
+
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    try {
+      const updated = await ChatProject.findOneAndUpdate(
+        {
+          _id: project._id,
+          user,
+          file_ids: { $ne: fileId },
+          [`file_ids.${maxFiles - 1}`]: { $exists: false },
+        },
+        { $addToSet: { file_ids: fileId }, $inc: { contextRevision: 1 } },
+        { new: true, runValidators: true },
+      ).lean<IChatProject>();
+      if (updated) {
+        return await attached(updated);
+      }
+      const current = await getChatProject(user, projectId);
+      if (current?.file_ids?.includes(fileId)) {
+        return await attached(current);
+      }
+      await restoreTemporaryHold();
+      if (!current) {
+        return null;
+      }
+    } catch (error) {
+      await restoreTemporaryHold();
+      throw error;
+    }
+    throw new Error('Project file limit reached');
+  }
+
+  async function removeChatProjectFile(
+    user: string,
+    projectId: string,
+    fileId: string,
+  ): Promise<IChatProject | null> {
+    if (!isValidObjectIdString(projectId)) {
+      return null;
+    }
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    const project = await ChatProject.findOneAndUpdate(
+      { _id: new mongoose.Types.ObjectId(projectId), user, file_ids: fileId },
+      { $pull: { file_ids: fileId }, $inc: { contextRevision: 1 } },
+      { new: true },
+    ).lean<IChatProject>();
+    return project ?? getChatProject(user, projectId);
   }
 
   async function deleteChatProject(
@@ -452,13 +684,11 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       return { deletedCount: 0, modifiedCount: 0 };
     }
 
-    const [conversationResult, deleteResult] = await Promise.all([
-      Conversation.updateMany(
-        { user, chatProjectId: projectId },
-        { $unset: { chatProjectId: '' } },
-      ),
-      ChatProject.deleteOne(projectFilter),
-    ]);
+    const conversationResult = await Conversation.updateMany(
+      { user, chatProjectId: projectId },
+      { $unset: { chatProjectId: '' } },
+    );
+    const deleteResult = await ChatProject.deleteOne(projectFilter);
 
     return {
       deletedCount: deleteResult.deletedCount ?? 0,
@@ -536,6 +766,8 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     listChatProjects,
     updateChatProject,
     deleteChatProject,
+    addChatProjectFile,
+    removeChatProjectFile,
     assignConversationToProject,
     refreshChatProjectStats,
   };

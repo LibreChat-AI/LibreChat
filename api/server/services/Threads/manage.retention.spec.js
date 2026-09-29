@@ -9,7 +9,8 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/server/services/Files/process', () => ({ retrieveAndProcessFile: jest.fn() }));
 
-const { Message, Conversation } = require('~/db/models');
+const { Message, Conversation, ChatProject } = require('~/db/models');
+const { createChatProject, assignConversationToProject } = require('~/models');
 const { saveUserMessage, saveAssistantMessage, checkMessageGaps } = require('./manage');
 
 describe('Assistants message retention', () => {
@@ -23,6 +24,43 @@ describe('Assistants message retention', () => {
   afterAll(async () => {
     await mongoose.disconnect();
     await mongoServer.stop();
+  });
+
+  it('seeds Project membership once and preserves a concurrent move without revalidation', async () => {
+    const user = new mongoose.Types.ObjectId().toString();
+    const conversationId = v4();
+    const firstProject = await createChatProject(user, { name: 'Original project' });
+    const nextProject = await createChatProject(user, { name: 'Moved project' });
+    const firstProjectId = firstProject._id.toString();
+    const nextProjectId = nextProject._id.toString();
+    const req = {
+      user: { id: user },
+      body: { conversationId },
+      resolvedConversation: null,
+      chatProjectContext: { projectId: firstProjectId },
+      config: {},
+    };
+    const params = {
+      user,
+      conversationId,
+      endpoint: 'assistants',
+      assistant_id: 'asst_project',
+      thread_id: 'thread_project',
+      text: 'Continue with the authorized context.',
+    };
+    await saveUserMessage(req, { ...params, messageId: v4() });
+    expect(req.resolvedConversation.chatProjectId).toBe(firstProjectId);
+
+    await assignConversationToProject(user, conversationId, nextProjectId);
+    const projectLookup = jest.spyOn(ChatProject, 'exists');
+    try {
+      await saveUserMessage(req, { ...params, messageId: v4() });
+      const saved = await Conversation.findOne({ user, conversationId }).lean();
+      expect(saved.chatProjectId).toBe(nextProjectId);
+      expect(projectLookup).not.toHaveBeenCalled();
+    } finally {
+      projectLookup.mockRestore();
+    }
   });
 
   it.each([false, true])(

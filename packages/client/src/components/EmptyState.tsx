@@ -37,7 +37,7 @@ export default function EmptyState({
         className,
       )}
     >
-      <Icon className="text-text-tertiary mb-3 size-5" aria-hidden={true} />
+      <Icon className="text-text-tertiary mb-3 size-5 shrink-0" aria-hidden={true} />
       {title != null && <p className="text-text-primary text-sm font-medium">{title}</p>}
       {description != null && (
         // Without a title the description IS the message, so it carries the title's

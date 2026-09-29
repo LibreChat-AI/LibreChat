@@ -21,6 +21,8 @@ type ButtonVariantOptions =
         | 'section-header'
         | 'section-action'
         | 'header-action'
+        | 'inline-edit'
+        | 'card'
         | null
         | undefined;
       size?:
@@ -33,6 +35,8 @@ type ButtonVariantOptions =
         | 'sm'
         | 'lg'
         | 'theme'
+        | 'row'
+        | 'tile'
         | null
         | undefined;
       shape?: 'default' | 'theme' | 'round' | null | undefined;
@@ -111,6 +115,21 @@ const buttonVariantRecipe = cva(
          */
         'header-action':
           'rounded-xl border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+        /**
+         * Text that turns into its own editor when activated, such as a workspace
+         * title or description. It reads as the text it stands for, so the caller
+         * sets the typography on the text it renders and this adds only the hover
+         * fill and the focus ring that mark it as a control.
+         */
+        'inline-edit':
+          'justify-start whitespace-normal text-left hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
+        /**
+         * A whole card or list row that is one click target, such as a project
+         * tile or a chat row. It carries no fill of its own because the card
+         * around it owns the surface; it adds the hover fill and an inset ring,
+         * and left-aligns its content, which the caller lays out.
+         */
+        card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
         default: 'h-10 px-4 py-2',
@@ -132,6 +151,10 @@ const buttonVariantRecipe = cva(
          */
         'icon-theme': 'size-theme-control p-0',
         theme: 'h-theme-control gap-theme-compact px-theme-normal',
+        /** The padding of a list row that is itself the click target. */
+        row: 'h-auto gap-3 px-3.5 py-3',
+        /** The padding of a tile that reserves a corner for an overflow menu. */
+        tile: 'h-auto gap-0 p-4 pr-12',
       },
       shape: {
         default: 'rounded-lg',
@@ -154,6 +177,13 @@ const buttonVariantRecipe = cva(
         variant: 'section-header',
         size: 'default',
         class: 'h-auto px-1 py-2',
+      },
+      /* Sized by the text it stands for, like `section-header`, so the default
+       * size recipe must not pad it away from the content it lines up with. */
+      {
+        variant: 'inline-edit',
+        size: 'default',
+        class: 'h-auto px-0 py-1',
       },
       /* `size: 'sm'` brings its own `rounded-lg`, emitted after the variant
        * and so winning the merge. A text-bearing header control keeps the

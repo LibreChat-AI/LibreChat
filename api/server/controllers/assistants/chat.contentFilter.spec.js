@@ -6,12 +6,18 @@ const mockStreamRunManager = jest.fn();
 const mockSendEvent = jest.fn();
 const mockSaveUserMessage = jest.fn();
 const mockSaveAssistantMessage = jest.fn();
-const mockCreateRunBody = jest.fn();
+const mockCountTokens = jest.fn();
+const mockCheckBalance = jest.fn();
+const mockGetBalanceConfig = jest.fn();
+const mockGetModelMaxTokens = jest.fn();
+const mockGetTransactions = jest.fn();
 const mockSendResponse = jest.fn();
+const mockCreateRunBody = jest.fn();
 const mockHandleError = jest.fn();
 const mockRetrieveAssistant = jest.fn();
 const mockListThreadMessages = jest.fn();
 const mockGetConvo = jest.fn();
+const mockGetChatProject = jest.fn();
 const mockGetFiles = jest.fn();
 const mockEncodeAndFormat = jest.fn();
 const mockGetOpenAIClient = jest.fn().mockResolvedValue({
@@ -43,20 +49,20 @@ jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     debug: jest.fn(),
+    info: jest.fn(),
     error: jest.fn(),
     warn: jest.fn(),
   },
 }));
-
 jest.mock('@librechat/api', () => {
   const actual = jest.requireActual('../../../../packages/api/dist/index.cjs');
   return {
     ...actual,
     sendEvent: (...args) => mockSendEvent(...args),
-    countTokens: jest.fn(),
-    checkBalance: jest.fn(),
-    getBalanceConfig: jest.fn(),
-    getModelMaxTokens: jest.fn(),
+    countTokens: (...args) => mockCountTokens(...args),
+    checkBalance: (...args) => mockCheckBalance(...args),
+    getBalanceConfig: (...args) => mockGetBalanceConfig(...args),
+    getModelMaxTokens: (...args) => mockGetModelMaxTokens(...args),
   };
 });
 
@@ -117,9 +123,11 @@ jest.mock('~/models', () => ({
   releaseBalanceReservation: jest.fn(),
   renewBalanceReservation: jest.fn(),
   reserveBalance: jest.fn(),
-  getTransactions: jest.fn(),
+  getTransactions: (...args) => mockGetTransactions(...args),
   getMultiplier: jest.fn(),
   getConvo: (...args) => mockGetConvo(...args),
+  getChatProject: (...args) => mockGetChatProject(...args),
+  getProjectFiles: (...args) => mockGetFiles(...args),
   getFiles: (...args) => mockGetFiles(...args),
 }));
 
@@ -139,7 +147,6 @@ jest.mock('./helpers', () => ({
 const chatV1 = require('./chatV1');
 const chatV2 = require('./chatV2');
 const { logger } = require('@librechat/data-schemas');
-const { checkBalance, getBalanceConfig } = require('@librechat/api');
 const { ImageVisionTool } = require('librechat-data-provider');
 
 describe.each([
@@ -152,6 +159,12 @@ describe.each([
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCountTokens.mockReset().mockResolvedValue(0);
+    mockCheckBalance.mockReset().mockResolvedValue(undefined);
+    mockGetBalanceConfig.mockReset().mockReturnValue({ enabled: false });
+    mockGetModelMaxTokens.mockReset().mockReturnValue(100000);
+    mockGetTransactions.mockReset().mockResolvedValue([]);
+    mockCreateRunBody.mockReset().mockReturnValue({});
     mockRetrieveAssistant.mockReset().mockResolvedValue({
       id: 'asst-1',
       instructions: 'Safe assistant',
@@ -164,10 +177,10 @@ describe.each([
     mockGetFiles.mockReset().mockResolvedValue([]);
     mockGetConvo.mockReset().mockResolvedValue(null);
     mockEncodeAndFormat.mockReset().mockResolvedValue({ files: [], image_urls: [] });
+    mockGetChatProject.mockReset().mockResolvedValue(null);
     mockInitThread.mockReset();
     mockCreateRun.mockReset();
     mockRunAssistant.mockReset();
-    mockCreateRunBody.mockReset();
     /* Every run that reaches FINAL has persisted its assistant row: the controller publishes
        the conversation snapshot the client acknowledges, so a test that does not care about
        the write still needs one. Tests asserting on the stamp override this. */
@@ -229,6 +242,16 @@ describe.each([
       end: jest.fn(),
     };
   });
+
+  const useProject = (projectId, instructions) => {
+    req.body.endpointOption = { ...req.body.endpointOption, chatProjectId: projectId };
+    mockGetChatProject.mockResolvedValue({
+      _id: projectId,
+      instructions,
+      contextRevision: 1,
+      file_ids: [],
+    });
+  };
 
   async function expectRawFreeRejection(rawContent, expectedSource, expectedField) {
     await chatController(req, res);
@@ -322,8 +345,8 @@ describe.each([
   it('releases a balance reservation that settles after thread initialization fails', async () => {
     req.config.filters = {};
     const release = jest.fn().mockResolvedValue(undefined);
-    getBalanceConfig.mockReturnValue({ enabled: true });
-    checkBalance.mockImplementation(
+    mockGetBalanceConfig.mockReturnValue({ enabled: true });
+    mockCheckBalance.mockImplementation(
       () => new Promise((resolve) => setTimeout(() => resolve({ release }), 50)),
     );
     mockInitThread.mockRejectedValueOnce(new Error('stop after initThread'));
@@ -331,7 +354,7 @@ describe.each([
     await chatController(req, res);
 
     expect(mockInitThread).toHaveBeenCalledTimes(1);
-    expect(checkBalance).toHaveBeenCalledTimes(1);
+    expect(mockCheckBalance).toHaveBeenCalledTimes(1);
     expect(release).toHaveBeenCalledTimes(1);
   });
 
@@ -361,6 +384,81 @@ describe.each([
 
     expect(mockRetrieveAssistant).toHaveBeenCalledWith('asst-1');
     expect(mockListThreadMessages).not.toHaveBeenCalled();
+  });
+  it('blocks project guidance before provider, thread, message, run, or stream side effects', async () => {
+    req.config.filters = {
+      agentInstructions: {
+        pii: {
+          fields: ['instructions'],
+          starterPatterns: [],
+          customPatterns: [
+            {
+              id: 'private',
+              label: 'private value',
+              regex: 'PRIVATE-[A-Z]+',
+            },
+          ],
+        },
+      },
+    };
+    useProject('507f1f77bcf86cd799439012', 'Project guidance PRIVATE-INSTRUCTION');
+
+    await expectRawFreeRejection('PRIVATE-INSTRUCTION', 'agent_instruction', 'instructions');
+
+    expect(mockGetChatProject).toHaveBeenCalledTimes(1);
+    expect(mockGetOpenAIClient).not.toHaveBeenCalled();
+    expect(mockValidateAuthor).not.toHaveBeenCalled();
+  });
+  it('returns not found for an unavailable Project without provider or close-handler effects', async () => {
+    req.body.endpointOption = { chatProjectId: 'missing-project' };
+    await chatController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(mockGetOpenAIClient).not.toHaveBeenCalled();
+    expect(mockInitThread).not.toHaveBeenCalled();
+    expect(mockSaveUserMessage).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockRunAssistant).not.toHaveBeenCalled();
+    expect(mockStreamRunManager).not.toHaveBeenCalled();
+    await closeHandler();
+    expect(mockHandleError).not.toHaveBeenCalled();
+    expect(mockSendResponse).not.toHaveBeenCalled();
+  });
+
+  it('passes authorized project guidance to the provider without loading project resources', async () => {
+    const project = {
+      _id: 'project-a',
+      instructions: 'Project instructions for the provider',
+      contextRevision: 4,
+      file_ids: ['unused-project-file'],
+    };
+    req.body.endpoint = 'azureAssistants';
+    req.body.endpointOption = { chatProjectId: 'project-a' };
+    mockGetChatProject.mockResolvedValueOnce(project);
+    mockGetFiles.mockRejectedValueOnce(new Error('unused project file lookup must not run'));
+    mockInitThread.mockResolvedValueOnce({ thread_id: 'thread-existing' });
+    mockGetOpenAIClient.mockResolvedValueOnce({
+      openai: {
+        _options: { model: 'gpt-4' },
+        responseMessage: { messageId: 'response-message' },
+        beta: {
+          assistants: { retrieve: mockRetrieveAssistant },
+          threads: { messages: { list: mockListThreadMessages }, runs: {} },
+        },
+      },
+    });
+    mockCreateRun.mockRejectedValueOnce(new Error('stop after provider request'));
+
+    await chatController(req, res);
+
+    expect(mockGetFiles).not.toHaveBeenCalled();
+    expect(mockCreateRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          additional_instructions: expect.stringContaining(project.instructions),
+        }),
+      }),
+    );
   });
 
   it('blocks paged historical user text before thread, message, run, or stream side effects', async () => {
@@ -672,8 +770,8 @@ describe.each([
     it('keeps the balance reservation until a run that continued in the background settles', async () => {
       req.config.filters = {};
       const release = jest.fn().mockResolvedValue(undefined);
-      getBalanceConfig.mockReturnValue({ enabled: true });
-      checkBalance.mockResolvedValue({ release });
+      mockGetBalanceConfig.mockReturnValue({ enabled: true });
+      mockCheckBalance.mockResolvedValue({ release });
       mockInitThread.mockResolvedValueOnce({ thread_id: 'thread-existing' });
       let finishBackgroundRun = () => undefined;
       const usage = { prompt_tokens: 1, completion_tokens: 1 };
@@ -795,4 +893,128 @@ describe.each([
       });
     });
   }
+  it('rejects a new hosted run before provider execution when project guidance exceeds balance', async () => {
+    const projectContext = {
+      projectId: '507f1f77bcf86cd799439012',
+      contextRevision: 1,
+      instructions: 'Large project guidance '.repeat(100),
+      file_ids: [],
+    };
+    const projectInstructions = `Project guidance (user-provided context; subordinate to system, platform, agent, and tool policies):
+${projectContext.instructions}`;
+    req.body.thread_id = undefined;
+    req.body.conversationId = undefined;
+    useProject(projectContext.projectId, projectContext.instructions);
+    mockGetBalanceConfig.mockReturnValueOnce({ enabled: true });
+    mockGetTransactions.mockResolvedValueOnce([]);
+    mockGetModelMaxTokens.mockReturnValueOnce(100000);
+    mockCountTokens.mockImplementationOnce(async (value) => value.length);
+    mockCheckBalance.mockRejectedValueOnce(new Error('Insufficient balance'));
+    mockInitThread.mockResolvedValueOnce({ thread_id: 'thread-new' });
+
+    await chatController(req, res);
+
+    const promptText = `${req.body.text}\n\n${projectInstructions}`;
+    expect(mockCountTokens).toHaveBeenCalledWith(promptText);
+    expect(mockCheckBalance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        txData: expect.objectContaining({
+          amount: promptText.length + 5 + 200,
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockRunAssistant).not.toHaveBeenCalled();
+    expect(mockStreamRunManager).not.toHaveBeenCalled();
+  });
+  it('includes new authorized project membership in the final conversation payload', async () => {
+    const projectContext = {
+      projectId: '507f1f77bcf86cd799439012',
+      contextRevision: 1,
+      instructions: '',
+      file_ids: [],
+    };
+    req.body.endpoint = 'azureAssistants';
+    req.body.thread_id = undefined;
+    useProject(projectContext.projectId, projectContext.instructions);
+    mockInitThread.mockResolvedValueOnce({ thread_id: 'thread-new' });
+    mockCreateRun.mockResolvedValueOnce({ id: 'run-new', status: 'completed' });
+    mockRunAssistant.mockResolvedValueOnce({
+      run: {
+        id: 'run-new',
+        status: 'completed',
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      },
+      responseMessage: { messageId: 'assistant-message' },
+      text: 'Done',
+      steps: [],
+      messages: [],
+    });
+    mockGetOpenAIClient.mockResolvedValueOnce({
+      openai: {
+        _options: { model: 'gpt-4' },
+        responseMessage: { messageId: 'response-message' },
+        beta: {
+          assistants: { retrieve: mockRetrieveAssistant },
+          threads: { messages: { list: mockListThreadMessages }, runs: {} },
+        },
+      },
+    });
+
+    await chatController(req, res);
+
+    const finalEvent = mockSendEvent.mock.calls.find(([, event]) => event.final)?.[1];
+    expect(finalEvent?.conversation).toEqual(
+      expect.objectContaining({ chatProjectId: projectContext.projectId }),
+    );
+  });
+
+  it('uses persisted membership for an existing conversation in the final payload', async () => {
+    const existingConversation = {
+      conversationId: 'conversation-existing',
+      chatProjectId: '507f1f77bcf86cd799439013',
+    };
+    req.body.endpoint = 'azureAssistants';
+    req.body.conversationId = existingConversation.conversationId;
+    req.body.thread_id = 'thread-existing';
+    mockGetConvo.mockResolvedValueOnce(existingConversation);
+    mockGetChatProject.mockResolvedValueOnce({
+      _id: '507f1f77bcf86cd799439014',
+      contextRevision: 2,
+      instructions: '',
+      file_ids: [],
+    });
+    mockInitThread.mockResolvedValueOnce({ thread_id: 'thread-existing' });
+    mockCreateRun.mockResolvedValueOnce({ id: 'run-existing', status: 'completed' });
+    mockRunAssistant.mockResolvedValueOnce({
+      run: {
+        id: 'run-existing',
+        status: 'completed',
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      },
+      responseMessage: { messageId: 'assistant-message' },
+      text: 'Done',
+      steps: [],
+      messages: [],
+    });
+    mockGetOpenAIClient.mockResolvedValueOnce({
+      openai: {
+        _options: { model: 'gpt-4' },
+        responseMessage: { messageId: 'response-message' },
+        beta: {
+          assistants: { retrieve: mockRetrieveAssistant },
+          threads: { messages: { list: mockListThreadMessages }, runs: {} },
+        },
+      },
+    });
+
+    await chatController(req, res);
+
+    const finalEvent = mockSendEvent.mock.calls.find(([, event]) => event.final)?.[1];
+    expect(finalEvent?.conversation).toEqual(
+      expect.objectContaining({ chatProjectId: existingConversation.chatProjectId }),
+    );
+    expect(finalEvent?.conversation?.chatProjectId).not.toBe('507f1f77bcf86cd799439014');
+  });
 });

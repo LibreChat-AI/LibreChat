@@ -38,6 +38,7 @@ jest.mock('@librechat/api', () => ({
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
     debug: jest.fn(),
+    info: jest.fn(),
     error: jest.fn(),
   },
 }));
