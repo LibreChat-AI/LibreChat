@@ -2385,11 +2385,6 @@
       "count": 7
     }
   },
-  "packages/client/src/svgs/SamlIcon.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    }
-  },
   "packages/client/src/svgs/SendMessageIcon.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
