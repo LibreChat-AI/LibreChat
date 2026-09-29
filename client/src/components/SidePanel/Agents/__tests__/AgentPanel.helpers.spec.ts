@@ -283,31 +283,36 @@ describe('composeAgentUpdatePayload', () => {
     expect(payload.model_parameters).toEqual(form.model_parameters);
   });
 
-  it('trims starters, drops blanks and caps them at the rendered maximum', () => {
+  it('sends edited starters trimmed and without blanks', () => {
     const form = createForm();
-    form.conversation_starters = [
-      '  Plan my week ',
-      '',
-      '   ',
-      'Summarize',
-      'Draft',
-      'Review',
-      'Extra',
-    ];
+    form.agent = { conversation_starters: ['Plan my week'] } as AgentForm['agent'];
+    form.conversation_starters = ['  Plan my week ', '', '   ', 'Summarize'];
 
     const { payload } = composeAgentUpdatePayload(form, 'agent_123');
 
-    expect(payload.conversation_starters).toEqual(['Plan my week', 'Summarize', 'Draft', 'Review']);
-    expect(payload.conversation_starters).toHaveLength(Constants.MAX_CONVO_STARTERS);
+    expect(payload.conversation_starters).toEqual(['Plan my week', 'Summarize']);
   });
 
   it('sends an empty list so removing every starter clears them', () => {
     const form = createForm();
+    form.agent = { conversation_starters: ['Plan my week'] } as AgentForm['agent'];
     form.conversation_starters = [];
 
     const { payload } = composeAgentUpdatePayload(form, 'agent_123');
 
     expect(payload.conversation_starters).toEqual([]);
+  });
+
+  it('leaves untouched stored starters alone, even past the builder cap', () => {
+    const stored = [' Padded ', 'Two', 'Three', 'Four', 'Five', 'Six'];
+    const form = createForm();
+    form.agent = { conversation_starters: stored } as AgentForm['agent'];
+    form.conversation_starters = [...stored];
+    form.name = 'Renamed';
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.conversation_starters).toBeUndefined();
   });
 
   it('omits starters when the form never loaded them', () => {

@@ -5,7 +5,6 @@ import { Button, useToastContext } from '@librechat/client';
 import { useWatch, useForm, FormProvider } from 'react-hook-form';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
-  Constants,
   MemoryScope,
   SystemRoles,
   ResourceType,
@@ -64,15 +63,21 @@ function getUpdateToastMessage(
   return localize('com_assistants_update_success_name', { name: name ?? localize('com_ui_agent') });
 }
 
-/** Trims starters, drops blanks and caps the list at the count the chat view renders. */
-export function normalizeConversationStarters(starters?: string[]): string[] | undefined {
-  if (!Array.isArray(starters)) {
+/**
+ * Starters to send with a save, or `undefined` to leave the stored list alone.
+ * An untouched list is omitted rather than rewritten: the API accepts more than
+ * the builder renders and keeps surrounding whitespace, so an unrelated save
+ * must not trim or truncate what another client stored. An edited list is sent
+ * trimmed and without blanks; the builder already stops additions at the cap.
+ */
+export function resolveConversationStarters(
+  starters: string[] | undefined,
+  stored: string[] | undefined,
+): string[] | undefined {
+  if (!Array.isArray(starters) || isEqual(starters, stored ?? [])) {
     return undefined;
   }
-  return starters
-    .map((starter) => starter.trim())
-    .filter((starter) => starter !== '')
-    .slice(0, Constants.MAX_CONVO_STARTERS);
+  return starters.map((starter) => starter.trim()).filter((starter) => starter !== '');
 }
 
 /**
@@ -182,7 +187,10 @@ export function composeAgentUpdatePayload(
       recursion_limit,
       category,
       support_contact,
-      conversation_starters: normalizeConversationStarters(conversation_starters),
+      conversation_starters: resolveConversationStarters(
+        conversation_starters,
+        data.agent?.conversation_starters,
+      ),
       tool_options: normalizedToolOptions,
       skills,
       skills_enabled,

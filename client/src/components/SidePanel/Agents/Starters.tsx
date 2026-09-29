@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import { Constants } from 'librechat-data-provider';
-import { Controller, useFormContext } from 'react-hook-form';
+import { Controller, useWatch, useFormContext } from 'react-hook-form';
 import { Input, Label, Button, TooltipAnchor } from '@librechat/client';
 import type { AgentForm } from '~/common';
 import { useLocalize } from '~/hooks';
@@ -76,7 +76,7 @@ function StartersField({
       {value.map((starter, index) => {
         const deleteLabel = `${localize('com_ui_delete')}: ${starter}`;
         return (
-          <div key={index} className="relative">
+          <div key={index} className="flex items-center gap-1">
             <Input
               value={starter}
               maxLength={MAX_STARTER_LENGTH}
@@ -114,6 +114,8 @@ function StartersField({
 export default function Starters() {
   const localize = useLocalize();
   const { control } = useFormContext<AgentForm>();
+  /** Keyed by agent so an unsent draft never follows the user to another agent. */
+  const agentId = useWatch({ control, name: 'id' });
 
   return (
     <div className="mb-3 flex flex-col">
@@ -124,7 +126,11 @@ export default function Starters() {
         name="conversation_starters"
         control={control}
         render={({ field }) => (
-          <StartersField value={field.value ?? []} onChange={field.onChange} />
+          <StartersField
+            key={agentId || 'new'}
+            value={field.value ?? []}
+            onChange={field.onChange}
+          />
         )}
       />
     </div>

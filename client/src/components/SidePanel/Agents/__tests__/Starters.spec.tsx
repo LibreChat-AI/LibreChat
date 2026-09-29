@@ -1,7 +1,7 @@
 import userEvent from '@testing-library/user-event';
 import { Constants } from 'librechat-data-provider';
-import { render, screen } from '@testing-library/react';
 import { FormProvider, useForm } from 'react-hook-form';
+import { act, render, screen } from '@testing-library/react';
 import type { AgentForm } from '~/common';
 import Starters from '../Starters';
 
@@ -12,8 +12,13 @@ jest.mock('~/hooks', () => ({
 let latest: string[] | undefined;
 const onSubmit = jest.fn();
 
+let formMethods: ReturnType<typeof useForm<AgentForm>> | undefined;
+
 function StartersHarness({ initial = [] }: { initial?: string[] }) {
-  const methods = useForm<AgentForm>({ defaultValues: { conversation_starters: initial } });
+  const methods = useForm<AgentForm>({
+    defaultValues: { id: 'agent_a', conversation_starters: initial },
+  });
+  formMethods = methods;
   latest = methods.watch('conversation_starters');
   return (
     <FormProvider {...methods}>
@@ -64,6 +69,28 @@ describe('Agent conversation starters', () => {
 
     await user.click(screen.getByRole('button', { name: 'com_ui_delete: First' }));
     expect(latest).toEqual(['Second!']);
+  });
+
+  it('drops an unsent draft when the form switches to another agent', async () => {
+    const user = userEvent.setup();
+    render(<StartersHarness initial={['Kept']} />);
+
+    await user.type(draftInput(), 'Half-typed for agent A');
+    act(() => {
+      formMethods?.reset({ id: '', conversation_starters: [] });
+    });
+
+    expect(draftInput()).toHaveValue('');
+    expect(latest).toEqual([]);
+  });
+
+  it('keeps each delete control on the same row as its starter', () => {
+    render(<StartersHarness initial={['First']} />);
+
+    const input = screen.getByRole('textbox', { name: 'com_assistants_conversation_starters 1' });
+    const remove = screen.getByRole('button', { name: 'com_ui_delete: First' });
+    expect(remove.parentElement).toBe(input.parentElement);
+    expect(input.parentElement).toHaveClass('flex', 'items-center');
   });
 
   it('locks the draft input at the maximum', () => {
