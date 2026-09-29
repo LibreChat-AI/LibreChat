@@ -6,9 +6,6 @@ const {
   logger,
   createDynamoCoreMethods,
   createDynamoFileMethods,
-  createDynamoAgentMethods,
-  createDynamoAclMethods,
-  createDynamoKeyMethods,
   DEFAULT_DYNAMO_TABLE,
 } = require('@librechat/data-schemas');
 const getLogStores = require('~/cache/getLogStores');
@@ -95,9 +92,6 @@ const connectDb = createDynamoConnector(client, tableName, logger);
 const methods = {
   ...createDynamoCoreMethods(client, { tableName, getCache: getLogStores }),
   ...createDynamoFileMethods(client, { tableName, getCache: getLogStores }),
-  ...createDynamoAgentMethods(client, { tableName, getCache: getLogStores }),
-  ...createDynamoAclMethods(client, { tableName, getCache: getLogStores }),
-  ...createDynamoKeyMethods(client, { tableName, getCache: getLogStores }),
 };
 
 // module.exports = {

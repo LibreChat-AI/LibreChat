@@ -146,7 +146,8 @@ interface:
   # Enable/disable file search as a chatarea selection (default: true)
   # Note: This setting does not disable the Agents File Search Capability.
   # To disable the Agents Capability, see the Agents Endpoint configuration instead.
-  fileSearch: true
+  # Legacy Mongo-backed setting: fileSearch: true
+  fileSearch: false
   # Privacy policy settings
   privacyPolicy:
     externalUrl: 'https://librechat.ai/privacy-policy'
@@ -209,8 +210,9 @@ interface:
   bookmarks: false
   multiConvo: true
   agents:
-    use: true
-    create: true
+    # Legacy Mongo-backed settings: use/create: true
+    use: false
+    create: false
     share: false
     public: false
   # Scheduled chats are experimental and disabled unless explicitly enabled.

@@ -6,9 +6,6 @@ export * from './schema';
 export * from './utils';
 export * from './dynamo/core';
 export * from './dynamo/files';
-export * from './dynamo/agents';
-export * from './dynamo/acl';
-export * from './dynamo/key';
 export { createModels } from './models';
 export {
   createMethods,
