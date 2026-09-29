@@ -8,9 +8,6 @@ import {
   sendMessage,
 } from './helpers';
 
-/** `MOBILE_DRAWER_ID` in `client/src/components/UnifiedSidebar/constants.ts`. */
-const MOBILE_DRAWER_ID = 'mobile-drawer';
-
 /**
  * Creates a project from the all-projects page and returns its id.
  * Project creation navigates to the project workspace (`/projects/:id`).
@@ -166,6 +163,9 @@ test.describe('chat projects', () => {
     expect(desktopTitle.height).toBeLessThanOrEqual(desktopTitle.lineHeight + 1);
 
     await page.setViewportSize({ width: 390, height: 844 });
+    /** A phone arrives at phone width: the mobile drawer registers its slide on load, and
+     *  crossing back from desktop without a reload leaves it on the desktop toggle path. */
+    await page.reload();
     await page.getByRole('main').getByRole('button', { name: 'All projects', exact: true }).click();
     await expect(page.locator('article').filter({ hasText: longName })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
@@ -173,9 +173,10 @@ test.describe('chat projects', () => {
     );
 
     await page.getByRole('main').getByRole('button', { name: 'Open sidebar', exact: true }).click();
-    /** The drawer commits its open state in a transition after the slide starts; a row
-     *  menu opened before that commit is closed by it, so wait for the drawer to open. */
-    await expect(page.locator(`#${MOBILE_DRAWER_ID}`)).not.toHaveAttribute('inert', /.*/);
+    /** The drawer commits its open state in a transition after the slide starts, and that
+     *  commit moves focus to its close button (`mobile/Header.tsx`), which would close a
+     *  row menu opened ahead of it; wait for the handoff before opening one. */
+    await expect(page.getByTestId('close-sidebar-button')).toBeFocused();
     await page
       .locator('li')
       .filter({ has: page.getByRole('button', { name: longName, exact: true }) })
