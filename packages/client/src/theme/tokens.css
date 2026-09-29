@@ -122,6 +122,14 @@
   --color-switch-unchecked: rgb(var(--switch-unchecked));
 }
 
+/* The display family the shared dialog titles compose as `font-display`. A
+ * theme definition paints `--theme-display-font-family`; without one a title
+ * keeps the family it inherits, so a consumer that never sets the role sees no
+ * change. */
+@theme inline {
+  --font-display: var(--theme-display-font-family, inherit);
+}
+
 /* A theme whose `disabledStyle` is `fill` paints a disabled control in the
  * disabled roles instead of fading it; `ThemeProvider` mirrors that choice as
  * `data-theme-disabled` on the root. The default `dim` style keeps the

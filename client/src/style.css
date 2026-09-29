@@ -28,7 +28,6 @@
   --radius-3xl: var(--theme-radius-3xl);
   --font-sans: var(--theme-font-family);
   --font-mono: var(--theme-mono-font-family);
-  --font-display: var(--theme-display-font-family);
   --text-xs: var(--theme-text-xs);
   --text-xs--line-height: var(--theme-text-xs-leading);
   --text-sm: var(--theme-text-sm);

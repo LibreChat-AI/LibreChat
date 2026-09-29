@@ -13,10 +13,3 @@
   --color-gray-*: initial;
   --color-green-*: initial;
 }
-
-/* The display family the dialog titles compose. A theme definition paints
- * `--theme-display-font-family`; without one the title keeps the family it
- * inherits, so a consumer that never sets the role sees no change. */
-@theme inline {
-  --font-display: var(--theme-display-font-family, inherit);
-}
