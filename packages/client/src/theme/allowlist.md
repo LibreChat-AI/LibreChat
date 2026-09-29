@@ -1,9 +1,8 @@
 # Colours outside the theme
 
-Every colour in `client/src` and `packages/client/src` comes from a semantic theme role, except
-the ones below. Each is a colour that must not follow the theme: a brand mark, artwork, a third
-party's surface, a document that leaves the app, or the theme definitions themselves. An entry
-names the file, what the literal paints and why the theme does not own it.
+Every colour in `client/src` and `packages/client/src` that the theme-leakage sweep reached comes from a semantic theme role, except the ones below. Each is a colour that must not follow the theme: a brand mark, artwork, media overlays, a third party's surface, a document that leaves the app, or the theme definitions themselves. An entry names the file, what the literal paints and why the theme does not own it.
+
+The sweep skipped files an open pull request was editing; those, with their counts, are listed in berry-13/LibreChat#195, and the avatar colours that still need roles in berry-13/LibreChat#194. Until those land, a file absent from this list is not evidence that it holds no literal colour.
 
 A literal the design lint can see stays recorded in `eslint-suppressions.json` (inline disables
 of the design rules are rejected by the static checks), so its count there is the exception, not

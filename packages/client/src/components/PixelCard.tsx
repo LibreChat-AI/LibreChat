@@ -342,8 +342,23 @@ export default function PixelCard({
       obs.observe(containerRef.current);
     }
     /** A mode switch or an applied theme rewrites the root's class or inline variables, which
-     *  the resolved palette has already been read from, so lay the pixels out again. */
-    const themeObs = new MutationObserver(initPixels);
+     *  the resolved palette has already been read from. The root's inline style also carries
+     *  unrelated variables (scrollbar gutter, font size), so the pixels are laid out again only
+     *  when the palette itself resolves differently. */
+    let resolved = containerRef.current
+      ? resolvePalette(palette, containerRef.current).join(',')
+      : '';
+    const themeObs = new MutationObserver(() => {
+      if (!containerRef.current) {
+        return;
+      }
+      const next = resolvePalette(palette, containerRef.current).join(',');
+      if (next === resolved) {
+        return;
+      }
+      resolved = next;
+      initPixels();
+    });
     themeObs.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ['class', 'style'],
@@ -353,7 +368,7 @@ export default function PixelCard({
       themeObs.disconnect();
       cancelAnimationFrame(animationRef.current!);
     };
-  }, [initPixels]);
+  }, [initPixels, palette]);
 
   const hoverIn = () => progressRef.current === undefined && startAnim('appear');
   const hoverOut = () => progressRef.current === undefined && startAnim('disappear');

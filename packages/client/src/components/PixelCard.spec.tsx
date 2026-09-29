@@ -63,4 +63,17 @@ describe('PixelCard palette', () => {
 
     await waitFor(() => expect(fillStyles).toContain('rgb(9 9 9)'));
   });
+
+  it('keeps its pixels when an unrelated root variable changes', async () => {
+    render(<PixelCard progress={1} />);
+    await waitFor(() => expect(fillStyles).toContain('rgb(1 2 3)'));
+    const measure = HTMLElement.prototype.getBoundingClientRect as jest.Mock;
+    const layouts = measure.mock.calls.length;
+
+    document.documentElement.style.setProperty('--message-scrollbar-gutter', '8px');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(measure.mock.calls.length).toBe(layouts);
+    document.documentElement.style.removeProperty('--message-scrollbar-gutter');
+  });
 });
