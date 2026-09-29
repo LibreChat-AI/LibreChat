@@ -36,6 +36,7 @@ export {
   MAX_AUDIT_VERIFY_ROWS,
   MAX_TOOL_FAVORITES,
   AgentTriggerDeliveryConflictError,
+  PromptNotFoundError,
   AgentQueuedTurnCapacityError,
   AgentQueuedTurnConflictError,
   AgentQueuedTurnLaneRetiredError,

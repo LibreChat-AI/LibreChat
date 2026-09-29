@@ -27,6 +27,7 @@ const {
   persistMCPAuthorizationFenceRetry,
 } = require('~/server/services/MCPAuthorizationFenceRetry');
 const { processDeleteRequest } = require('~/server/services/Files/process');
+const { getPromptService } = require('~/server/services/Prompts');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const {
   drainAgentTriggerDeliveriesForUser,
@@ -517,7 +518,7 @@ const deleteUserController = async (req, res) => {
     await db.deleteAssistants({ user: user.id });
     await db.deleteConversationTags({ user: user.id });
     await db.deleteAllUserMemories(user.id);
-    await db.deleteUserPrompts(user.id);
+    await getPromptService().deleteUserPrompts(user.id);
     await db.deleteUserSkills(user.id);
     await deleteUserMcpServers(user.id);
     await db.deleteActions({ user: user.id });

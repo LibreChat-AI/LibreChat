@@ -147,6 +147,12 @@ jest.mock('~/server/services/Files/process', () => ({
   processDeleteRequest: (...args) => mockProcessDeleteRequest(...args),
 }));
 
+jest.mock('~/server/services/Prompts', () => ({
+  getPromptService: () => ({
+    deleteUserPrompts: (...args) => mockDeleteUserPrompts(...args),
+  }),
+}));
+
 jest.mock('~/server/services/Agents/triggers', () => ({
   drainAgentTriggerDeliveriesForUser: (...args) => mockDrainAgentTriggerDeliveriesForUser(...args),
   prepareAgentTriggerUserPurge: (...args) => mockPrepareAgentTriggerUserPurge(...args),

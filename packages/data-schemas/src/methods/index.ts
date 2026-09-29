@@ -110,7 +110,13 @@ import {
 } from './tx';
 import { createTransactionMethods, type TransactionMethods } from './transaction';
 import { createSpendTokensMethods, type SpendTokensMethods } from './spendTokens';
-import { createPromptMethods, type PromptMethods, type PromptDeps } from './prompt';
+import {
+  createPromptMethods,
+  PromptNotFoundError,
+  type PromptMethods,
+  type PromptDeps,
+  type PromptGroupListParams,
+} from './prompt';
 import {
   createSkillMethods,
   partitionIssues,
@@ -219,6 +225,8 @@ export {
 export { AUDIT_SCHEMA_VERSION, MAX_AUDIT_EXPORT_ROWS, MAX_AUDIT_LOG_LIMIT, MAX_AUDIT_VERIFY_ROWS };
 export { MAX_TOOL_FAVORITES };
 export { AgentTriggerDeliveryConflictError };
+export { PromptNotFoundError };
+export type { PromptGroupListParams };
 export {
   AgentQueuedTurnCapacityError,
   AgentQueuedTurnConflictError,
