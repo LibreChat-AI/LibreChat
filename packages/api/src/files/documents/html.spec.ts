@@ -1136,3 +1136,35 @@ describe('office file shells', () => {
     );
   });
 });
+
+describe('office shell base64 encoding', () => {
+  const padded = async (fixture: string, entry: string): Promise<Buffer> => {
+    const zip = await JSZip.loadAsync(readFixture(fixture));
+    zip.file(entry, randomBytes(400 * 1024), { compression: 'STORE' });
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+  const base64Calls = (spy: jest.SpyInstance): number =>
+    spy.mock.calls.filter(([encoding]) => encoding === 'base64').length;
+  let spy: jest.SpyInstance;
+
+  beforeEach(() => {
+    spy = jest.spyOn(Buffer.prototype, 'toString');
+  });
+  afterEach(() => spy.mockRestore());
+
+  test('does not base64-encode a pptx or docx when building a shell', async () => {
+    const pptx = await padded('sample.pptx', 'ppt/media/padding.bin');
+    const docx = await padded('sample.docx', 'word/media/padding.bin');
+    spy.mockClear();
+    await pptxToHtml(pptx, { fileShell: true });
+    await wordDocToHtml(docx, { fileShell: true });
+    expect(base64Calls(spy)).toBe(0);
+  });
+
+  test('still base64-encodes a small pptx and docx on the inline path', async () => {
+    spy.mockClear();
+    await pptxToHtml(readFixture('sample.pptx'));
+    await wordDocToHtml(readFixture('sample.docx'));
+    expect(base64Calls(spy)).toBe(2);
+  });
+});

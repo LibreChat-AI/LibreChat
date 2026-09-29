@@ -570,7 +570,11 @@ async function wordDocToHtmlViaCdn(
   mammothFallbackBody: string,
   fileShell = false,
 ): Promise<string> {
-  return buildDocxCdnDocument(buffer.toString('base64'), mammothFallbackBody, fileShell);
+  return buildDocxCdnDocument(
+    fileShell ? '' : buffer.toString('base64'),
+    mammothFallbackBody,
+    fileShell,
+  );
 }
 
 async function wordDocToHtmlViaMammoth(buffer: Buffer): Promise<string> {
@@ -1496,7 +1500,11 @@ async function pptxToHtmlViaCdn(
   slideListFallbackBody: string,
   fileShell = false,
 ): Promise<string> {
-  return buildPptxCdnDocument(buffer.toString('base64'), slideListFallbackBody, fileShell);
+  return buildPptxCdnDocument(
+    fileShell ? '' : buffer.toString('base64'),
+    slideListFallbackBody,
+    fileShell,
+  );
 }
 
 /**
