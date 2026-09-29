@@ -52,7 +52,7 @@ export default function McpOAuthDialog({
         <div className="flex items-center gap-2">
           {iconUrl && !iconError && (
             <span
-              className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-md bg-white"
+              className="bg-surface-fixed flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-md"
               aria-hidden="true"
             >
               <img
@@ -88,7 +88,7 @@ export default function McpOAuthDialog({
                   showQR ? 'opacity-100' : 'opacity-0',
                 )}
               >
-                <div className="rounded-2xl bg-white p-4 shadow-lg">
+                <div className="bg-surface-qr rounded-2xl p-4 shadow-lg">
                   <QRCodeSVG
                     value={oauthUrl}
                     size={180}
