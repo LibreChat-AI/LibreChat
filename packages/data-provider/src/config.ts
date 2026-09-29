@@ -1301,8 +1301,9 @@ export const codeEnvironmentUserConfigSchema = z
       .optional(),
     edits: z
       .object({
-        /** Let a worker that negotiated `tolerant_match` fall back from exact matching to
-         * whitespace-tolerant strategies. Omission keeps every edit an exact match. */
+        /** Whether a worker that negotiated `tolerant_match` may fall back from exact matching
+         * to whitespace-tolerant strategies, as skill and sandbox edits already do. Omission
+         * allows it; `false` requires every attached-workspace edit to match exactly. */
         tolerantMatching: z.boolean().optional(),
       })
       .strict()

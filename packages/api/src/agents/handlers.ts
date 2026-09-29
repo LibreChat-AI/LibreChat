@@ -1713,11 +1713,24 @@ function normalizeEditArgs(args: {
 }
 
 /**
- * Matches any strategy collects before it stops looking. Ambiguity only needs a
- * second match and `replace_all` refuses anything larger, so a short needle in a
- * large repetitive file never materializes millions of ranges.
+ * Ranges a whitespace-tolerant strategy collects before it stops looking. An
+ * internal memory bound, not a policy: ambiguity only needs a second match, and
+ * exact `replace_all` never collects ranges at all.
  */
 const MAX_EDIT_MATCHES = 10_000;
+
+/** Non-overlapping exact occurrences, counted without retaining their positions. */
+function countExactMatches(content: string, needle: string): number {
+  let count = 0;
+  for (
+    let index = content.indexOf(needle);
+    index !== -1;
+    index = content.indexOf(needle, index + needle.length)
+  ) {
+    count++;
+  }
+  return count;
+}
 
 function countExactOccurrences(content: string, needle: string): number[] {
   const indexes: number[] = [];
@@ -1926,6 +1939,21 @@ function applyTextEdits(
   const strategies: string[] = [];
 
   for (const edit of edits) {
+    const exactCount = edit.replace_all === true ? countExactMatches(working, edit.old_text) : 0;
+    if (exactCount > 0) {
+      const projectedBytes =
+        Buffer.byteLength(working, 'utf8') +
+        exactCount *
+          (Buffer.byteLength(edit.new_text, 'utf8') - Buffer.byteLength(edit.old_text, 'utf8'));
+      if (projectedBytes > MAX_AUTHORING_BYTES) {
+        throw new Error(
+          `replace_all would make the file larger than ${MAX_AUTHORING_BYTES} bytes; nothing was written.`,
+        );
+      }
+      working = working.split(edit.old_text).join(edit.new_text);
+      strategies.push(exactCount > 1 ? `exact x${exactCount}` : 'exact');
+      continue;
+    }
     const match = findReplacementMatch(working, edit.old_text);
     if (match.status === 'none') {
       throw new Error('old_text did not match the file content.');
@@ -1938,7 +1966,7 @@ function applyTextEdits(
     if (match.status === 'ambiguous') {
       if (match.count > MAX_EDIT_MATCHES) {
         throw new Error(
-          `replace_all is limited to ${MAX_EDIT_MATCHES} locations, and old_text matched more; narrow old_text before retrying.`,
+          `replace_all with whitespace-tolerant matching is limited to ${MAX_EDIT_MATCHES} locations, and old_text matched more; copy the exact text or narrow old_text before retrying.`,
         );
       }
       const matches = nonOverlapping(match.matches);
@@ -4231,8 +4259,9 @@ async function handleAttachedWorkspaceEditFileCall({
       'replace_all needs a newer LibreChat Code worker on this machine. Make each old_text unique instead.',
     );
   }
+  /** Tolerant by default, like every other edit_file variant; operators can require exact. */
   const matching: WorkspaceEditMatching | undefined =
-    codeExecutionContext.codeEnvironmentConfigSchema?.edits?.tolerantMatching === true &&
+    codeExecutionContext.codeEnvironmentConfigSchema?.edits?.tolerantMatching !== false &&
     editFeatures.includes('tolerant_match')
       ? 'tolerant'
       : undefined;
