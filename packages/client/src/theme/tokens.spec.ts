@@ -11,11 +11,15 @@ globalThis.structuredClone ??= <T>(value: T): T => deserialize(serialize(value))
 
 const tokensPath = path.resolve(__dirname, 'tokens.css');
 const tokens = fs.readFileSync(tokensPath, 'utf8');
-const declared = new Set(
-  Array.from(tokens.matchAll(/--color-([\w-]+):/g), (match) => match[1]).filter(
-    (name) => !name.endsWith('*'),
-  ),
+/** Each declared color token, mapped to the custom properties its value reads. */
+const declarations = new Map(
+  Array.from(
+    tokens.matchAll(/--color-([\w-]+):([^;]+);/g),
+    ([, name, value]) =>
+      [name, Array.from(value.matchAll(/var\(--([\w-]+)/g), (match) => match[1])] as const,
+  ).filter(([name]) => !name.endsWith('*')),
 );
+const declared = new Set(declarations.keys());
 
 /**
  * Theme properties consumed by stylesheets rather than by utilities: the shimmer animation and
@@ -70,7 +74,9 @@ describe('theme color tokens', () => {
 
   it('lets a theme set every color token the stylesheet declares', () => {
     const registered = new Set(Object.keys(defaultTheme).map((key) => key.replace(/^rgb-/, '')));
-    const unowned = [...declared].filter((token) => !registered.has(token));
+    const unowned = [...declarations]
+      .filter(([, reads]) => !reads.some((property) => registered.has(property)))
+      .map(([token]) => token);
 
     expect(unowned).toEqual([]);
   });
