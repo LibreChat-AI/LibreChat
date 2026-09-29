@@ -222,6 +222,23 @@ export default defineConfig(({ command }) => ({
       output: {
         codeSplitting: {
           groups: [
+            /**
+             * The boot chunks import Vite's dynamic-import preload helper, the Buffer and
+             * process shims, DOMPurify, uuid and dayjs. The catch-all group below captures each
+             * module's dependencies with it, so these used to land in the mermaid chunk, which
+             * depends on them too, and every page then downloaded and evaluated that whole chunk
+             * before its first request. Claiming them first keeps mermaid lazy.
+             */
+            {
+              name: 'runtime-shims',
+              test: /vite[\\/]preload-helper|node_modules[\\/]vite-plugin-node-polyfills[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'shared-libs',
+              test: /node_modules[\\/](dompurify|uuid|dayjs)[\\/]/,
+              priority: 1,
+            },
             {
               name(id: string) {
                 const normalizedId = id.replace(/\\/g, '/');
