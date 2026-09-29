@@ -116,3 +116,38 @@ test.describe('appearance tokens this build does not know', () => {
     await expect(page.locator('body')).toBeVisible();
   });
 });
+
+/**
+ * The same holds for a color role added after this build: a well-formed `rgb-` name with a valid
+ * triplet is dropped with a warning, so a newer definition keeps every color this build paints.
+ */
+test.describe('color tokens this build does not know', () => {
+  const NEWER_COLORS = {
+    version: 1,
+    name: 'e2e-newer-colors',
+    modes: {
+      light: { colors: { 'rgb-surface-primary': '240 244 255', 'rgb-future-role': '1 2 3' } },
+      dark: { colors: { 'rgb-surface-primary': '12 16 32', 'rgb-future-role': '1 2 3' } },
+    },
+  };
+
+  test('a stored theme with an unknown color role keeps the colors this build paints @scenario:stored-theme-unknown-color-token-applies-rest', async ({
+    page,
+  }) => {
+    const warnings: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'warning') {
+        warnings.push(message.text());
+      }
+    });
+    await storeTheme(page, NEWER_COLORS);
+
+    await openChat(page);
+
+    await expect(page.locator('html')).toHaveAttribute('data-theme', NEWER_COLORS.name);
+    const dark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+    expect(await themeValue(page, '--surface-primary')).toBe(dark ? '12 16 32' : '240 244 255');
+    expect(await themeValue(page, '--future-role')).toBe('');
+    expect(warnings.join('\n')).toContain('color token ignored: rgb-future-role');
+  });
+});

@@ -186,6 +186,9 @@ export const isThemeRGB = (value: unknown): value is string => {
 const isLength = (value: unknown): value is string =>
   typeof value === 'string' &&
   (cssLengthPattern.test(value) || cssLengthDifferencePattern.test(value));
+/** A switch dimension has to draw something: zero would leave no track to press. */
+const isPositiveLength = (value: unknown): value is string =>
+  isLength(value) && cssLengthPattern.test(value) && parseFloat(value) > 0;
 const isFontFamily = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0 && !/[;{}]/.test(value);
 
@@ -294,8 +297,8 @@ const appearanceValidators = {
   radius2xl: isLength,
   radius3xl: isLength,
   controlHeight: isLength,
-  switchWidth: isLength,
-  switchHeight: isLength,
+  switchWidth: isPositiveLength,
+  switchHeight: isPositiveLength,
   spaceCompact: isLength,
   spaceNormal: isLength,
   /** `dim` fades a disabled control to half opacity; `fill` paints it in the disabled roles. */
@@ -372,6 +375,52 @@ export interface ThemeReadOptions {
    * with its own token list, so there an unknown role is a typo and stays an error.
    */
   ignoreFutureColors?: boolean;
+}
+
+/** LibreChat's own switch, which a theme naming only one of the two dimensions keeps for the other. */
+export const defaultSwitchSize = Object.freeze({ switchWidth: '2.75rem', switchHeight: '1.5rem' });
+
+/** A plain length in px, reading rem and em at the 16px root the preset's fallbacks assume. */
+const lengthInPx = (value: unknown): number | undefined => {
+  const match = typeof value === 'string' ? /^(\d*\.?\d+)(px|rem|em)$/.exec(value) : null;
+  if (!match) {
+    return undefined;
+  }
+  return Number(match[1]) * (match[2] === 'px' ? 1 : 16);
+};
+
+/**
+ * The switch knob is the height less the track's 4px of border, and it travels the width less the
+ * height, so the pair the switch will actually draw, a missing side taken from the default, has to
+ * leave a knob and a forward travel. Compared at a 16px root; the preset also clamps both derived
+ * sizes at zero, for any other root.
+ */
+function collectSwitchIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
+  if (appearance.switchWidth === undefined && appearance.switchHeight === undefined) {
+    return [];
+  }
+  const widthValue = appearance.switchWidth ?? defaultSwitchSize.switchWidth;
+  const heightValue = appearance.switchHeight ?? defaultSwitchSize.switchHeight;
+  const width = lengthInPx(widthValue);
+  const height = lengthInPx(heightValue);
+  const issues: ThemeIssue[] = [];
+  if (height !== undefined && height <= 4) {
+    issues.push(
+      issue(
+        [...base, 'switchHeight'],
+        `switchHeight must exceed the 4px track border: ${heightValue}`,
+      ),
+    );
+  }
+  if (width !== undefined && height !== undefined && width < height) {
+    issues.push(
+      issue(
+        [...base, 'switchWidth'],
+        `switchWidth must be at least switchHeight: ${widthValue} < ${heightValue}`,
+      ),
+    );
+  }
+  return issues;
 }
 
 /** The color and appearance tokens this reader does not know, which a resolved theme leaves out. */
@@ -482,6 +531,9 @@ function collectModeIssues(
         );
       }
     });
+    if (isPlainThemeRecord(appearance)) {
+      issues.push(...collectSwitchIssues(appearance, [...base, 'appearance']));
+    }
   }
 
   if (brands !== undefined && !isPlainThemeRecord(brands)) {

@@ -4,6 +4,7 @@ import {
   collectThemeIssues,
   isThemeAppearanceToken,
   collectThemeWarningIssues,
+  defaultSwitchSize,
   themeColorTokens as sharedColorTokens,
   themeBrandTokens as sharedBrandTokens,
 } from 'librechat-data-provider';
@@ -181,8 +182,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   radius2xl: '1rem',
   radius3xl: '1.5rem',
   controlHeight: '2.25rem',
-  switchWidth: '2.75rem',
-  switchHeight: '1.5rem',
+  ...defaultSwitchSize,
   spaceCompact: '0.375rem',
   spaceNormal: '0.75rem',
   disabledStyle: 'dim',
@@ -329,6 +329,16 @@ function knownAppearance(appearance?: Partial<IThemeAppearance>): Partial<ITheme
   return Object.fromEntries(
     Object.entries(definedEntries(appearance)).filter(([key]) => isThemeAppearanceToken(key)),
   );
+}
+
+const colorTokenSet: ReadonlySet<string> = new Set<string>(themeColorTokens);
+
+/** A newer definition's colors minus the roles this reader cannot paint, which it ignores. */
+function knownColors(colors?: IThemeRGB): IThemeRGB | undefined {
+  if (!colors) {
+    return colors;
+  }
+  return Object.fromEntries(Object.entries(colors).filter(([key]) => colorTokenSet.has(key)));
 }
 
 const shadowAppearanceKeys: ReadonlyArray<keyof IThemeAppearance> = [

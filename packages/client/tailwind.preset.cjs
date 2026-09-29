@@ -10,7 +10,8 @@ module.exports = {
         'theme-switch': 'var(--theme-switch-height, 1.5rem)',
       },
       width: {
-        'theme-switch': 'var(--theme-switch-width, 2.75rem)',
+        /** Never narrower than the track is tall, so the knob always has somewhere to travel. */
+        'theme-switch': 'max(var(--theme-switch-width, 2.75rem), var(--theme-switch-height, 1.5rem))',
       },
       spacing: {
         'theme-compact': 'var(--theme-space-compact, 0.375rem)',
@@ -24,9 +25,9 @@ module.exports = {
         'theme-control-touch': 'max(var(--theme-control-height, 2.25rem), 2.75rem)',
         /** The switch knob inside the track's 2px border, in px so it holds at any root size,
          *  and how far it travels when checked (the borders cancel out of the travel). */
-        'theme-switch-thumb': 'calc(var(--theme-switch-height, 1.5rem) - 4px)',
+        'theme-switch-thumb': 'max(0px, calc(var(--theme-switch-height, 1.5rem) - 4px))',
         'theme-switch-travel':
-          'calc(var(--theme-switch-width, 2.75rem) - var(--theme-switch-height, 1.5rem))',
+          'max(0px, calc(var(--theme-switch-width, 2.75rem) - var(--theme-switch-height, 1.5rem)))',
       },
       keyframes: {
         /** Discord-style "connecting" dots: each dot lifts and brightens in

@@ -300,6 +300,47 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-chart-widget-stroke']).toBe('50 51 52');
   });
 
+  describe('switch size pair', () => {
+    const withSwitch = (switchWidth: string, switchHeight: string) =>
+      ({
+        version: 1,
+        name: 'switch',
+        modes: { light: { appearance: { switchWidth, switchHeight } } },
+      }) as ThemeDefinition;
+
+    it('checks one named dimension against the default it is drawn with', () => {
+      const widthOnly = {
+        version: 1,
+        name: 'switch-width',
+        modes: { light: { appearance: { switchWidth: '1rem' } } },
+      } as ThemeDefinition;
+
+      expect(validateThemeDefinition(widthOnly)).toEqual([
+        'switchWidth must be at least switchHeight: 1rem < 1.5rem',
+      ]);
+    });
+
+    it('accepts a pair that leaves a knob and a forward travel', () => {
+      expect(validateThemeDefinition(withSwitch('2rem', '1rem'))).toEqual([]);
+      expect(validateThemeDefinition(withSwitch('40px', '1rem'))).toEqual([]);
+    });
+
+    it('rejects a zero dimension, a track too short for its border and a width under the height', () => {
+      expect(validateThemeDefinition(withSwitch('0', '1rem'))).toEqual([
+        'Invalid appearance value for switchWidth: 0',
+      ]);
+      expect(validateThemeDefinition(withSwitch('32px', '4px'))).toEqual([
+        'switchHeight must exceed the 4px track border: 4px',
+      ]);
+      expect(validateThemeDefinition(withSwitch('2rem', '0.1rem'))).toEqual([
+        'switchHeight must exceed the 4px track border: 0.1rem',
+      ]);
+      expect(validateThemeDefinition(withSwitch('1rem', '2rem'))).toEqual([
+        'switchWidth must be at least switchHeight: 1rem < 2rem',
+      ]);
+    });
+  });
+
   it('keeps the switch thumb on the surface a theme repainted before the role existed', () => {
     const resolved = resolveTheme(
       {
