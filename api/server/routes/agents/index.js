@@ -38,6 +38,7 @@ const {
 const SteerController = require('~/server/controllers/agents/steer');
 const {
   AgentQueuedTurnEnqueueController,
+  AgentQueuedTurnEnqueueV2Controller,
   AgentQueuedTurnListController,
   AgentQueuedTurnCancelController,
 } = require('~/server/controllers/agents/queuedTurns');
@@ -1123,6 +1124,19 @@ router.post(
   }),
   moderateText,
   AgentQueuedTurnEnqueueController,
+);
+router.post(
+  '/chat/queued-turns/v2',
+  configMiddleware,
+  ...steerLimiters,
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+    getFilters: (req) => req.config?.filters,
+    getFiles,
+  }),
+  moderateText,
+  AgentQueuedTurnEnqueueV2Controller,
 );
 /** Synchronizing durable queue state is read-only and polled while work is
  * pending. It must not consume the model-submission admission budget. */

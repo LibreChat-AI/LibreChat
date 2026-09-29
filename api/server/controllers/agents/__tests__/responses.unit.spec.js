@@ -197,6 +197,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getAgentErrorMetadata: (...args) =>
+    jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
   createAgentExecutionContext: (context) => context,
@@ -250,17 +252,8 @@ jest.mock('@librechat/api', () => ({
   })),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
-  resolveConversationCodeEnvironmentDecision: ({
-    requestedMode,
-    requestedSelections,
-    conversation,
-  }) => {
-    const codeWorkspaces = requestedSelections ?? conversation?.codeWorkspaces;
-    return {
-      mode: requestedMode ?? (codeWorkspaces?.length ? 'attached' : 'without_attached'),
-      ...(codeWorkspaces !== undefined && { codeWorkspaces }),
-    };
-  },
+  resolveAdmittedCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   resolvePersistableCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
   getCodeWorkspaceSelections: jest.fn(),
@@ -566,6 +559,7 @@ jest.mock('~/models', () => ({
   getFormattedMemories: jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' }),
   saveConvo: jest.fn().mockResolvedValue({}),
   getConvo: jest.fn().mockResolvedValue(null),
+  readAdmittedConvoCodeEnvironmentDecision: jest.fn().mockResolvedValue(null),
   isSubagentOwnerAdmissible: jest.fn().mockResolvedValue(true),
 }));
 
@@ -612,11 +606,19 @@ describe('createResponse controller', () => {
     };
   });
 
-  it.each([false, true])(
-    'passes explicit or owner-loaded workspace selections to runtime: continuation=%s',
-    async (continuation) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    'passes explicit or owner-loaded workspace selections to runtime: continuation=%s moves=%s',
+    async (continuation, movesEnabled) => {
       const api = require('@librechat/api');
       const selections = [{ environmentId: 'machine', workspaceId: 'project' }];
+      req.config.endpoints.agents.statefulCodeSessions = {
+        conversationMoves: { enabled: movesEnabled },
+      };
       const request = {
         model: 'agent-123',
         input: 'Hello',
@@ -629,7 +631,15 @@ describe('createResponse controller', () => {
           conversationId: 'previous',
           codeWorkspaces: selections,
         });
+      if (continuation && movesEnabled)
+        require('~/models').readAdmittedConvoCodeEnvironmentDecision.mockResolvedValueOnce({
+          conversationId: 'previous',
+          codeWorkspaces: selections,
+        });
       await createResponse(req, res);
+      const fencedRead = require('~/models').readAdmittedConvoCodeEnvironmentDecision;
+      if (movesEnabled) expect(fencedRead).toHaveBeenCalledTimes(1);
+      else expect(fencedRead).not.toHaveBeenCalled();
       expect(api.initializeAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           requestBody: expect.objectContaining({ codeWorkspaces: selections }),
@@ -811,6 +821,34 @@ describe('createResponse controller', () => {
 
     expect(mockExecution.abort).not.toHaveBeenCalled();
     expect(mockExecution.beginProviderExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes persistent-memory guidance in an inline agent with no saved memories', async () => {
+    const api = require('@librechat/api');
+    const { memoryInstructions, buildInlineMemoryContext } = jest.requireActual('@librechat/api');
+    const agent = {
+      id: 'agent-123',
+      model: 'claude-3',
+      model_parameters: {},
+      toolRegistry: {},
+      edges: [],
+      memoryToolsRegistered: true,
+    };
+    api.initializeAgent.mockResolvedValueOnce(agent);
+    mockBuildInlineMemoryContext.mockImplementationOnce(buildInlineMemoryContext);
+
+    await createResponse(req, res);
+
+    expect(mockApplyContextToAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        sharedRunContext: expect.stringContaining(memoryInstructions),
+      }),
+    );
+    expect(require('~/models').getFormattedMemories).toHaveBeenCalledWith({
+      userId: 'user-123',
+      agentId: undefined,
+    });
   });
 
   it('resolves saved graph subagents for remote Responses API runs', async () => {
@@ -1792,6 +1830,53 @@ describe('createResponse controller', () => {
   });
 
   describe('safe error logging', () => {
+    const credentialCases = () => {
+      const {
+        OpenIDReauthRequiredError,
+        MCPAuthenticationRejectedError,
+        MCPAuthenticationRefreshError,
+        OboTokenResolutionError,
+      } = jest.requireActual('@librechat/api');
+      return [
+        [new OpenIDReauthRequiredError('Please sign in again'), 401, undefined],
+        [
+          new MCPAuthenticationRejectedError('private-mcp', false),
+          403,
+          'MCP_AUTHENTICATION_REJECTED',
+        ],
+        [
+          new MCPAuthenticationRefreshError(new Error('temporary failure')),
+          503,
+          'MCP_AUTHENTICATION_REFRESH_FAILED',
+        ],
+        [
+          new OboTokenResolutionError('session_refresh_failed', 'Please sign in again', false),
+          403,
+          'MCP_AUTHENTICATION_REJECTED',
+        ],
+        [
+          new OboTokenResolutionError('exchange_failed', 'Temporary exchange failure', true),
+          503,
+          'MCP_AUTHENTICATION_REFRESH_FAILED',
+        ],
+      ];
+    };
+    it.each(credentialCases())(
+      'preserves remote Responses credential metadata: %s',
+      async (error, status, code) => {
+        const api = require('@librechat/api');
+        api.initializeAgent.mockRejectedValueOnce(error);
+        await createResponse(req, res);
+        expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+          res,
+          status,
+          error.message,
+          status < 500 ? 'invalid_request' : 'server_error',
+          ...(code ? [code] : []),
+        );
+      },
+    );
+
     it('does not classify a client disconnect as an upstream model error', async () => {
       const api = require('@librechat/api');
       const { logger } = require('@librechat/data-schemas');

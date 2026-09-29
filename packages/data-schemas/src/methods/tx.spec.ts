@@ -3220,6 +3220,30 @@ describe('Opus 5.5 pricing', () => {
   });
 });
 
+describe('Sonnet 5.5 pricing', () => {
+  it.each([
+    'claude-sonnet-5-5',
+    'claude-sonnet-5.5',
+    'anthropic/claude-sonnet-5-5',
+    'global.anthropic.claude-sonnet-5-5',
+  ])('prices %s at the Sonnet 5 rate, without a long-context surcharge', (model) => {
+    for (const inputTokenCount of [1000, 200000, 1000000]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+        tokenValues['claude-sonnet-5'].prompt,
+      );
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+        tokenValues['claude-sonnet-5'].completion,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+        cacheTokenValues['claude-sonnet-5'].write,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+        cacheTokenValues['claude-sonnet-5'].read,
+      );
+    }
+  });
+});
+
 describe.each([
   ['gpt-6-sol', 2, 0.2, 2.5, 10],
   ['gpt-6-luna', 0.1, 0.01, 0.125, 0.5],

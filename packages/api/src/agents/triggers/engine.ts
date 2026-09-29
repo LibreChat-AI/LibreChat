@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { context, ROOT_CONTEXT } from '@opentelemetry/api';
 import { logger, runAsSystem } from '@librechat/data-schemas';
 import type { AgentTriggerExecutionResult } from './host';
 import { createAgentTriggerBatchEnvelope } from './batch';
@@ -157,7 +158,7 @@ export interface AgentTriggerDeliveryStore {
     claimToken: string;
     attempt: number;
     availableAt: Date;
-  }) => Promise<boolean>;
+  }) => Promise<boolean | 'expedited'>;
   complete: (input: {
     id: string;
     workerId: string;
@@ -283,6 +284,29 @@ function normalizeFailure(failure: AgentTriggerDeliveryFailure): AgentTriggerDel
   };
 }
 
+/** The delay an execution error asked for, as seconds or an HTTP date, clamped. */
+function requestedRetryAfterMs(error: unknown, now: Date): number | undefined {
+  if (!(error instanceof AgentTriggerExecutionError) || error.retryAfter == null) {
+    return;
+  }
+  const seconds = Number(error.retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS);
+  }
+  const absolute = Date.parse(error.retryAfter);
+  if (Number.isFinite(absolute) && absolute > now.getTime()) {
+    return Math.min(absolute - now.getTime(), MAX_RETRY_AFTER_MS);
+  }
+  return;
+}
+
+/** A readiness deferral may ask to wait longer than the default re-check, never
+ * shorter: waiting producers back off by age, while every existing `retryAfter`
+ * below the default keeps the cadence it has always had. */
+function readinessDeferMs(error: unknown, now: Date): number {
+  return Math.max(DEFAULT_DEFER_MS, requestedRetryAfterMs(error, now) ?? 0);
+}
+
 function retryAt(
   error: unknown,
   attempt: number,
@@ -291,15 +315,9 @@ function retryAt(
   capMs: number,
   random: () => number,
 ): Date {
-  if (error instanceof AgentTriggerExecutionError && error.retryAfter != null) {
-    const seconds = Number(error.retryAfter);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return new Date(now.getTime() + Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS));
-    }
-    const absolute = Date.parse(error.retryAfter);
-    if (Number.isFinite(absolute) && absolute > now.getTime()) {
-      return new Date(Math.min(absolute, now.getTime() + MAX_RETRY_AFTER_MS));
-    }
+  const requestedMs = requestedRetryAfterMs(error, now);
+  if (requestedMs != null) {
+    return new Date(now.getTime() + requestedMs);
   }
   const exponent = Math.min(attempt - 1, 30);
   const delay = Math.min(baseMs * 2 ** exponent, capMs);
@@ -483,8 +501,12 @@ export function createAgentTriggerDeliveryEngine(
           deletionRejected ||
           runtimeNotReady
         ) {
-          const delayMs =
-            error instanceof AgentTriggerDeliveryDeferredError ? error.delayMs : DEFAULT_DEFER_MS;
+          let delayMs = DEFAULT_DEFER_MS;
+          if (error instanceof AgentTriggerDeliveryDeferredError) {
+            delayMs = error.delayMs;
+          } else if (runtimeNotReady) {
+            delayMs = readinessDeferMs(error, attemptedAt);
+          }
           const availableAt = new Date(attemptedAt.getTime() + delayMs);
           noteEligibleAt(availableAt);
           const deferred = await deps.store.defer({
@@ -693,7 +715,12 @@ export function createAgentTriggerDeliveryEngine(
     if (activeClaim != null) {
       return activeClaim;
     }
-    activeClaim = runAsSystem(runClaimPass)
+    /** Claim passes are started from timers and from `wake()` calls made inside
+     * request handlers. Run them under the root context so a pass never joins
+     * whichever request happened to wake the engine — otherwise every later tick
+     * inherits that request's trace for the life of the timer chain. */
+    activeClaim = context
+      .with(ROOT_CONTEXT, () => runAsSystem(runClaimPass))
       .then((result) => {
         /** Only a pass that confirmed an empty queue may advance the idle backoff: work
          *  resets it, and a failed claim proves nothing, so it polls on at the base
@@ -773,19 +800,23 @@ export function createAgentTriggerDeliveryEngine(
     if (eligibleDeadlinesMs.length > 0) {
       delay = Math.max(0, Math.min(delay, eligibleDeadlinesMs[0] - now().getTime()));
     }
-    timer = setTimeout(async () => {
-      if (stopped) {
-        return;
-      }
-      const nowMs = now().getTime();
-      while (eligibleDeadlinesMs.length > 0 && eligibleDeadlinesMs[0] <= nowMs) {
-        eligibleDeadlinesMs.shift();
-      }
-      await claimAvailable().catch((error) =>
-        logger.error('[agent-triggers] delivery claim pass failed:', error),
-      );
-      schedule();
-    }, delay);
+    /** Created under the root context too: `schedule()` runs from `wake()` inside
+     * request handlers, and each tick reschedules from its own callback. */
+    timer = context.with(ROOT_CONTEXT, () =>
+      setTimeout(async () => {
+        if (stopped) {
+          return;
+        }
+        const nowMs = now().getTime();
+        while (eligibleDeadlinesMs.length > 0 && eligibleDeadlinesMs[0] <= nowMs) {
+          eligibleDeadlinesMs.shift();
+        }
+        await claimAvailable().catch((error) =>
+          logger.error('[agent-triggers] delivery claim pass failed:', error),
+        );
+        schedule();
+      }, delay),
+    );
     timer.unref();
   };
 

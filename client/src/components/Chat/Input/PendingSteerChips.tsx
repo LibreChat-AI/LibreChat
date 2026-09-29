@@ -29,6 +29,10 @@ import {
   useDefaultToggleEntry,
   useInterruptToggleEntry,
 } from './SteerMenu';
+import {
+  recoveryDispositionsFamily,
+  recoveryDisposition,
+} from '~/components/Chat/Steering/recovery';
 import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import { QUEUE_ICON, STEER_ICON } from '~/components/Chat/Steering/identity';
@@ -141,6 +145,12 @@ function QueuedRow({
   const interruptToggle = useInterruptToggleEntry();
   const fileCount = message.files?.length ?? 0;
   const quoteCount = message.quotes?.length ?? 0;
+  const dispositions = useAtomValue(recoveryDispositionsFamily(steering.queueKey));
+  const disposition = recoveryDisposition(dispositions, message);
+  const recoveryHeld = disposition != null;
+  const recoveryBlocked = disposition === 'blocked' || disposition === 'cancelled';
+  const recoveryPending = disposition === 'cancelling';
+  actionPending = actionPending || recoveryPending;
   const isRecovered = message.recoverySteerId != null;
   const isRejected = message.server?.status === 'rejected';
   const isIndeterminate = message.server?.status === 'indeterminate';
@@ -149,8 +159,11 @@ function QueuedRow({
   let statusLabel:
     | 'com_ui_queued_turn_reconciliation_required'
     | 'com_ui_steer_delivery_unconfirmed'
-    | 'com_ui_queued_turn_failed' = 'com_ui_queued_turn_failed';
-  if (isIndeterminate) {
+    | 'com_ui_queued_turn_failed'
+    | 'com_ui_steer_recovery_held' = 'com_ui_queued_turn_failed';
+  if (recoveryHeld) {
+    statusLabel = 'com_ui_steer_recovery_held';
+  } else if (isIndeterminate) {
     statusLabel = 'com_ui_queued_turn_reconciliation_required';
   } else if (isUnconfirmed) {
     statusLabel = 'com_ui_steer_delivery_unconfirmed';
@@ -166,6 +179,7 @@ function QueuedRow({
   const canSteerNow = steering.duringRunActive && steering.canSteer && !isRecovered;
   const showPrimary =
     !starting &&
+    !recoveryHeld &&
     serverActionable &&
     (canSteerNow || (!steering.duringRunActive && steering.canSendQueuedNow));
   /** `canSteer` is defined as false while paused on approval, but the
@@ -258,12 +272,45 @@ function QueuedRow({
       onClick: edit,
     },
   ];
+  if (recoveryBlocked) {
+    entries.push(
+      {
+        key: 'copy-recovery',
+        label: localize('com_ui_steer_copy_to_composer'),
+        icon: <Pencil className="h-4 w-4" aria-hidden="true" />,
+        disabled: actionPending,
+        onClick: () => {
+          const copied = onRestoreToComposer(
+            message.text,
+            message.files,
+            {
+              quotes: message.quotes,
+              manualSkills: message.manualSkills,
+            },
+            conversationId,
+          );
+          showToast(
+            copied
+              ? { message: localize('com_ui_steer_recovery_review'), status: 'info' }
+              : { message: localize('com_ui_steer_recovery_copy_refused'), status: 'error' },
+          );
+        },
+      },
+      {
+        key: 'dismiss-recovery',
+        label: localize('com_ui_steer_dismiss_recovery'),
+        icon: <X className="h-4 w-4" aria-hidden="true" />,
+        disabled: actionPending,
+        onClick: () => steering.dismissRecovery(message),
+      },
+    );
+  }
   const preferences: MenuEntry[] = [toggleEntry, interruptToggle];
 
   return (
     <div role="listitem" className={ROW_CLASS} data-testid="queued-message-row">
       <QueuedIcon
-        warning={isRejected || isUnconfirmed || isIndeterminate}
+        warning={recoveryHeld || isRejected || isUnconfirmed || isIndeterminate}
         hint={steering.duringRunActive ? localize('com_ui_steer_queued_info') : undefined}
       />
       <span className="min-w-0 flex-1 truncate" title={message.text}>
@@ -279,8 +326,13 @@ function QueuedRow({
           0: String(fileCount),
         })}
       />
-      {(isRejected || isUnconfirmed || isIndeterminate) && (
-        <span className="shrink-0 text-xs text-text-warning">{localize(statusLabel)}</span>
+      {(recoveryHeld || isRejected || isUnconfirmed || isIndeterminate) && (
+        <span
+          className="shrink-0 text-xs text-text-warning"
+          title={recoveryHeld ? localize('com_ui_steer_recovery_review') : undefined}
+        >
+          {localize(statusLabel)}
+        </span>
       )}
       {showPrimary && (
         <button

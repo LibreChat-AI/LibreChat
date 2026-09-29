@@ -72,7 +72,6 @@ const backgroundWakeupTask = (payload: unknown): WakeupTask | null => {
   const status = wakeupStatus(payload.status);
   if (
     status == null ||
-    status === 'cancelled' ||
     typeof payload.background_task_id !== 'string' ||
     typeof payload.tool_call_id !== 'string' ||
     typeof payload.tool !== 'string' ||

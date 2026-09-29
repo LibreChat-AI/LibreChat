@@ -138,6 +138,63 @@ describe('agent queued turn methods', () => {
     expect(await Turn.countDocuments()).toBe(1);
   });
 
+  it('refuses an unfenced approval snapshot before inserting a row', async () => {
+    await expect(
+      methods.enqueueAgentQueuedTurn(enqueueInput({ codeApprovalMode: 'ask' })),
+    ).rejects.toThrow('versioned delivery reservation');
+    expect(await Turn.countDocuments()).toBe(0);
+  });
+
+  it('keeps the selected approval mode on queued, claimed, and retried turns', async () => {
+    const input = enqueueInput({
+      codeApprovalMode: 'fullAccess',
+      deliveryReservation: { queuedTurnId: '507f191e810c19729de860ea', deliveryKey: 'v2-key' },
+    });
+    const first = await methods.enqueueAgentQueuedTurn(input);
+    expect(first.turn.codeApprovalMode).toBe('fullAccess');
+    expect(first.turn).toMatchObject({ deliveryKey: 'v2-key', deliveryState: 'publishing' });
+    const scope = {
+      user,
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+      queuedTurnId: first.turn.queuedTurnId,
+    };
+    await expect(
+      methods.reserveAgentQueuedTurnDelivery({ ...scope, deliveryKey: 'legacy-v1-key' }),
+    ).resolves.toMatchObject({ outcome: 'conflict' });
+    await expect(
+      methods.reserveAgentQueuedTurnDelivery({ ...scope, deliveryKey: 'v2-key' }),
+    ).resolves.toMatchObject({ outcome: 'already_reserved' });
+
+    expect((await methods.enqueueAgentQueuedTurn(input)).replayed).toBe(true);
+    await expect(
+      methods.enqueueAgentQueuedTurn({ ...input, codeApprovalMode: 'ask' }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+    const claimed = await methods.claimNextAgentQueuedTurn(claimInput(first.turn.queuedTurnId));
+    expect(claimed.outcome).toBe('acquired');
+    if (claimed.outcome === 'acquired') expect(claimed.claim.codeApprovalMode).toBe('fullAccess');
+    const listed = await methods.listActiveAgentQueuedTurns({
+      user,
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+    });
+    expect(listed[0]?.codeApprovalMode).toBe('fullAccess');
+  });
+
+  it('keeps old queued turns without a mode and rejects an upgraded same-id replay', async () => {
+    const input = enqueueInput();
+    const created = await methods.enqueueAgentQueuedTurn(input);
+    expect(created.turn.codeApprovalMode).toBeUndefined();
+    expect((await methods.enqueueAgentQueuedTurn(input)).replayed).toBe(true);
+    await expect(
+      methods.enqueueAgentQueuedTurn({
+        ...input,
+        codeApprovalMode: 'fullAccess',
+        deliveryReservation: { queuedTurnId: '507f191e810c19729de860ea', deliveryKey: 'v2-key' },
+      }),
+    ).rejects.toBeInstanceOf(AgentQueuedTurnConflictError);
+  });
+
   it('looks up terminal receipts by owner-scoped request identity', async () => {
     const created = await methods.enqueueAgentQueuedTurn(enqueueInput());
 
@@ -218,6 +275,31 @@ describe('agent queued turn methods', () => {
     await expect(
       Turn.findOne({ clientRequestId: 'interrupted-reservation' }).lean(),
     ).resolves.toMatchObject({ status: 'queued', sequence: expect.any(Number) });
+  });
+
+  it('reports reservation-only recovery activity when deleted lanes yield no deliveries', async () => {
+    const first = await methods.enqueueAgentQueuedTurn(
+      enqueueInput({ clientRequestId: 'lost-lane-first' }),
+    );
+    const second = await methods.enqueueAgentQueuedTurn(
+      enqueueInput({ clientRequestId: 'lost-lane-second' }),
+    );
+    await Turn.updateMany(
+      { _id: { $in: [first.turn.queuedTurnId, second.turn.queuedTurnId] } },
+      {
+        $set: { status: 'reserving' },
+        $unset: { sequence: 1 },
+      },
+    );
+    await Sequence.deleteMany({});
+    for (let i = 0; i < 2; i++) {
+      const activity = { found: false };
+      expect(await methods.findQueuedTurnsNeedingDelivery(1, activity)).toEqual([]);
+      expect(activity.found).toBe(true);
+    }
+    const empty = { found: false };
+    expect(await methods.findQueuedTurnsNeedingDelivery(1, empty)).toEqual([]);
+    expect(empty.found).toBe(false);
   });
 
   it('caps each conversation at 100 active turns while preserving exact replay', async () => {

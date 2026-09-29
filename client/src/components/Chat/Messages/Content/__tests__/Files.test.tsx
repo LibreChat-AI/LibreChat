@@ -13,7 +13,11 @@ jest.mock(
   () =>
     ({ onClick }: { onClick: () => void }) => <button onClick={onClick}>file action</button>,
 );
-jest.mock('../Image', () => () => <div>image preview</div>);
+jest.mock('../Image', () => ({ alignRight }: { alignRight?: boolean }) => (
+  <div data-testid="image-preview" data-aligned-right={String(alignRight)}>
+    image preview
+  </div>
+));
 jest.mock(
   '../FilePreviewDialog',
   () =>
@@ -35,6 +39,7 @@ it('exposes extracted image text without changing ordinary image previews', () =
     />,
   );
   expect(screen.getAllByText('image preview')).toHaveLength(1);
+  expect(screen.getByTestId('image-preview')).toHaveAttribute('data-aligned-right', 'true');
   fireEvent.click(screen.getByText('file action'));
   expect(screen.getByText('preview: text')).toBeInTheDocument();
 });

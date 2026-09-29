@@ -674,6 +674,12 @@ endpoints:
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
+  #     # Keep move-only behavior unless attach/detach is explicitly enabled.
+  #     # Enable only after ALL API replicas run this build and advertise decision protocol 1
+  #     # (CODE_ENVIRONMENT_DECISION_VERSION=1), then refresh clients.
+  #     conversationMoves:
+  #       enabled: true
+  #       allowAttachDetach: false
   #     allowedEnvironments: ["user", "agent-user", "conversation"]
   #     # Personal BYOM enrollment. Requires allowPrincipalWorkers on a control plane.
   #     # Omitted values default to enabled and five registered environments per user.
@@ -714,6 +720,24 @@ endpoints:
   #             # Maximum Bash execution budget the model may request per call.
   #             # Omit to preserve the historical 30-second limit. Hard cap: 300000.
   #             maxCommandTimeoutMs: 120000
+  #             # Optional total HTTP budget per workspace tool call, including
+  #             # admission, retries, worst-case execution, settlement, and delivery.
+  #             # Do NOT enable until every LibreChat API replica recognizes this
+  #             # strict config field, Code API honors X-LibreChat-Workspace-Queue-Wait-Ms,
+  #             # and a non-mutating timed canary verifies the live CDN, load balancer,
+  #             # ingress, and caller can all outlast this value. The Nginx example
+  #             # (120s) cannot establish the live limit. Omission keeps 30s admission.
+  #             # With 125s total, a read can queue <=90s, a default command <=85s,
+  #             # a 90s command <=25s. With the default 10s admission reserve,
+  #             # commands >105s cannot fit; the 120s command ceiling above requires
+  #             # a VERIFIED total budget of at least 140s to be usable.
+  #             # maxRequestTimeoutMs: 125000
+  #             # Optional command admission allowance before local dispatch overhead.
+  #             # Omission reserves 10s; valid range: 1000–300000 ms. The HTTP budget
+  #             # must exceed this allowance plus 10s settlement/delivery grace;
+  #             # with the 10s default, a budget of 20s or less is rejected.
+  #             # Smaller allowances give a busy worker less time to accept the call.
+  #             # minCommandAdmissionMs: 10000
   #           permissions:
   #             fileWrite:
   #               allowed: [allow, ask, deny]
@@ -1390,7 +1414,11 @@ endpoints:
 #   messages:
 #     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
 #     pii:
-#       action: audit # `block` (default) or `audit`
+#       action: audit # `block` (default), `audit`, or `redact` (reserved for transformation-aware ingress; current routes still block)
+#       # `redact` requires the later encrypted owner-view and canonical-message integration.
+#       # maxCharacters: 65536 # bounded total inspected text per transformation session
+#       # maxMatches: 256 # bounded matches per transformation session
+#       # Custom patterns may set category: email, phone, name, credential, or custom.
 #       fields: [name, text, summary, quote, answer, decision_response, decision_reason, content_part, attachment_reference, assembled_context]
 #       starterPatterns: [sk_prefix, bearer_header, api_key_header]
 #       customPatterns:

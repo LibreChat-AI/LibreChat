@@ -28,6 +28,7 @@ const {
   acceptAgentStartupTelemetry,
   isSteerPreemptSupported,
   buildRecoveredSteerPayload,
+  getSteerRecoveryFailure,
   deleteAgentCheckpoint,
   getAttachmentTitleText,
   createMCPRuntimeRequestBody,
@@ -46,6 +47,7 @@ const {
   resolveAgentTurnExecutionPlan,
   logAgentMemorySnapshot,
   getCodeWorkspaceSelectionErrorDetails,
+  getAgentErrorMetadata,
   shouldPersistCodeWorkspaceInitializationError,
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
@@ -113,13 +115,12 @@ function getInitializationFailure(error) {
     };
   }
 
-  const candidateStatus = error?.status ?? error?.statusCode;
-  if (!Number.isInteger(candidateStatus) || candidateStatus < 400 || candidateStatus >= 600) {
+  const metadata = getAgentErrorMetadata(error);
+  if (!metadata?.status) {
     return null;
   }
   return {
-    status: candidateStatus,
-    ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+    ...metadata,
     ...getCodeWorkspaceSelectionErrorDetails(error),
     error: error?.message || 'Failed to start generation',
   };
@@ -3439,10 +3440,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sendGenerationJson(
             res,
             409,
-            {
-              code: 'RECOVERY_PAYLOAD_MISMATCH',
-              error: 'The queued message changed before it could be recovered. Please retry.',
-            },
+            getSteerRecoveryFailure(error, { conversationId, streamId, recoveredSteerId }),
             generationProtocolVersion,
           );
         } else if (initializationFailure) {

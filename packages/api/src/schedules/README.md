@@ -23,13 +23,18 @@ Supported authentication is determined by a successful unattended connection:
 
 Browser-only credentials, interactive OpenID bearer/OBO sources, missing user
 variables, and OAuth grants needing renewed consent cannot be assumed available.
-Reconnect or configure the server in an interactive agent chat, or remove it from the
-agent, then enable the schedule. A browser connection alone does not prove readiness;
-enabling always reruns the unattended check.
+An OBO server without a host-owned renewable upstream-token provider reports
+`mcp_configuration_missing` with `detail: 'unattended_auth_required'` (a
+backward-compatible subtype); reconnecting in a browser cannot make it ready.
+The operator must configure a properly authorized unattended provider, or the
+owner must remove the server from the agent. Other servers with missing user
+credentials can be reconnected or configured in an interactive agent chat.
+A browser connection alone does not prove readiness; enabling always reruns
+the unattended check.
 
-`mcp_reauth_required`, `mcp_configuration_missing`, and `mcp_permission_denied` stop a
-scheduled occurrence and disable the schedule immediately. The permission status tells
-the owner that an administrator must restore MCP use access. `mcp_unavailable` counts
+`mcp_reauth_required`, `mcp_configuration_missing`, and `mcp_permission_denied`
+stop a scheduled occurrence and disable the schedule immediately. The permission status tells the owner that an administrator must
+restore MCP use access. `mcp_unavailable` counts
 toward the existing configured consecutive-failure threshold. Credential-store and
 configuration-store outages are transient; they must never be treated as proof of missing credentials.
 Failure records contain only server names and resolution statuses, never exception

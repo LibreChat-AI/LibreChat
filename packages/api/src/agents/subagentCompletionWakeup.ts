@@ -9,6 +9,7 @@ import type { SubagentTaskWakeupRegistration } from './subagentThreads';
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
 import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
+import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { boundedSubagentTaskResult } from './subagentTaskRouting';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
 import { AgentTriggerExecutionError } from './triggers/host';
@@ -81,6 +82,8 @@ export interface SubagentCompletionWakeupResolverDeps {
   methods: WakeupMethods;
   getGenerationJob: (conversationId: string) => Promise<GenerationState | null>;
   now?: () => number;
+  /** Longest a waiting delivery re-checks readiness; the backoff default otherwise. */
+  getWaitMaxIntervalMs?: () => number | undefined;
 }
 
 function payloadRegistration(
@@ -137,6 +140,12 @@ function isParentActive(job: GenerationState | null): boolean {
     job?.status === 'requires_action' ||
     job?.metadata?.terminalPersistencePending === true
   );
+}
+
+/** A running or approval-paused parent can stay busy for hours; one that has
+ * settled and is only finishing terminal persistence clears within moments. */
+function isParentWorking(job: GenerationState | null): boolean {
+  return job?.status === 'running' || job?.status === 'requires_action';
 }
 
 function sameTenant(actual: string | undefined, expected: string | undefined): boolean {
@@ -579,9 +588,12 @@ export function createSubagentCompletionWakeupResolver({
   methods,
   getGenerationJob,
   now = Date.now,
+  getWaitMaxIntervalMs,
 }: SubagentCompletionWakeupResolverDeps): NonNullable<
   AgentTriggerExecutionHostDeps['prepareContinue']
 > {
+  const waitingRetry = (receivedAt: number): string =>
+    waitingRetryAfter(receivedAt, now(), getWaitMaxIntervalMs?.() ?? WAITING_RETRY_CAP_MS);
   return async (
     envelope: AgentContinueTriggerEnvelope,
     context: AgentTriggerDispatchContext,
@@ -616,7 +628,7 @@ export function createSubagentCompletionWakeupResolver({
         code: 'PARENT_NOT_READY',
         retryable: true,
         status: 409,
-        retryAfter: '1',
+        retryAfter: isParentWorking(parentJob) ? waitingRetry(envelope.receivedAt) : '1',
         deferWithoutAttempt: true,
       });
     }
@@ -700,7 +712,7 @@ export function createSubagentCompletionWakeupResolver({
           code: 'CHILD_NOT_READY',
           retryable: true,
           status: 409,
-          retryAfter: '1',
+          retryAfter: waitingRetry(envelope.receivedAt),
           deferWithoutAttempt: true,
         });
       }
@@ -778,6 +790,7 @@ export function createSubagentCompletionWakeupResolver({
     return {
       status: 'ready',
       parentMessageId,
+      ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
       input: renderWakeupInput(registration, resultTaskId, claim.message, orchestrationSnapshot),
       releaseOnDefiniteFailure: async () => {
         await methods.releaseSubagentTaskResultClaim({
@@ -797,11 +810,11 @@ export function createSubagentCompletionWakeupResolver({
  * simply defers until the terminal child message exists. */
 export function createSubagentCompletionWakeupHandler(
   enqueue: EnqueueAgentTrigger,
-): (registration: SubagentTaskWakeupRegistration) => Promise<void> {
+): (registration: SubagentTaskWakeupRegistration) => Promise<boolean> {
   return async (registration) => {
     const parentAgentId = registration.parentAgentId?.trim();
     if (parentAgentId == null || parentAgentId === '' || isEphemeralAgentId(parentAgentId)) {
-      return;
+      return false;
     }
     const eventId = registration.taskId;
     const envelope = createAgentTriggerEnvelope({
@@ -837,5 +850,6 @@ export function createSubagentCompletionWakeupHandler(
         Math.max(Date.now(), registration.createdAt) + WAKEUP_ADMISSION_DELAY_MS,
       ),
     });
+    return true;
   };
 }

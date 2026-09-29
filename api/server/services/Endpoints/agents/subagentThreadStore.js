@@ -12,7 +12,7 @@ const {
   SubagentActivityStream,
 } = require('@librechat/api');
 const db = require('~/models');
-const { enqueueAgentTrigger } = require('../../Agents/triggers');
+const { enqueueAgentTrigger, expediteCompletionWakeups } = require('../../Agents/triggers');
 
 const GENERATION_DRAIN_TIMEOUT_MS = 45_000;
 const GENERATION_DRAIN_POLL_MS = 100;
@@ -78,6 +78,8 @@ const subagentThreadTaskStore = createSubagentThreadTaskStore(
     releaseOwnerAdmission: db.releaseSubagentAdmission,
     cancelUnroutedTask: cancelUnroutedGeneration,
     onTaskPrepared: completionWakeupHandler,
+    onTaskSettled: (userId, conversationId, taskIds) =>
+      expediteCompletionWakeups({ user: userId, conversationId, taskIds }),
   },
 );
 

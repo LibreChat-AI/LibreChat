@@ -9,6 +9,7 @@ const {
   ErrorTypes,
   UsageEvents,
   getRunStepDurationMs,
+  getRunStepCloseMetadata,
 } = require('librechat-data-provider');
 const {
   GraphEvents,
@@ -20,6 +21,7 @@ const {
   sendEvent,
   computeUsageCostUSD,
   GenerationJobManager,
+  waitForGenerationSettled,
   writeAttachmentEvent,
   createToolExecuteHandler,
   createOwnedToolEndHandler,
@@ -594,6 +596,7 @@ function getDefaultHandlers({
           const part = typeof index === 'number' ? contentParts[index] : undefined;
           if (part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
             part.tool_call.runStepStatus = data.status;
+            Object.assign(part.tool_call, getRunStepCloseMetadata(data));
             /**
              * The raw derivable duration, left unset rather than zeroed when
              * the event cannot support a trustworthy one — no `created_at`,
@@ -1286,14 +1289,20 @@ function createPtcProgressEmitter({ res, streamId = null, jobCreatedAt }) {
  *   output?: string;
  *   attachments?: Object[];
  * }) => Promise<boolean>} params.updateToolCallResult
+ * @param {number} [params.jobCreatedAt] - Immutable dispatch generation epoch.
+ * @param {string} [params.streamId] - The stream owning that epoch.
  */
-function createBackgroundCodeResultHandler({ req, updateToolCallResult }) {
+function createBackgroundCodeResultHandler({ req, updateToolCallResult, jobCreatedAt, streamId }) {
   return createCodeHarvestHandler({
     req,
     updateToolCallResult,
     preflightCodeOutputBatch,
     processCodeOutput,
     runPreviewFinalize,
+    generationCreatedAt: jobCreatedAt,
+    generationStreamId: streamId,
+    waitForGenerationSettled: (conversationId, options) =>
+      waitForGenerationSettled(GenerationJobManager, conversationId, options),
   });
 }
 

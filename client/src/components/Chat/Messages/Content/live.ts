@@ -1,4 +1,4 @@
-import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type {
   Agents,
   TAttachment,
@@ -11,10 +11,10 @@ import type { TranslationKeys } from '~/hooks';
 import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
 import { hasPendingApprovalInPart, hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
+import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
+import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
 import { boundIntentLabel, getToolCallIntent } from './Parts/intent';
-import { getToolDisplayLabel } from '~/utils/toolLabels';
-import { isBashProgrammaticToolCall } from './routing';
-import { getToolMeta, summarizeSpan } from './outcome';
+import { isError } from './ToolOutput';
 
 /** How often a live fold's header may repaint. A streamed intent moves the
  *  newest line on nearly every delta; the header is a glanceable status, not a
@@ -38,15 +38,19 @@ export type LiveActivity = {
    *  only while the line is the tool's own generic label, which is the only
    *  thing a count of that tool can modify. */
   comboCount: number;
+  /** The generic line counts checks of a task rather than independent tool actions. */
+  isBackgroundTaskCheck?: boolean;
   /** Failed and stopped calls anywhere in the span, not just the newest line. */
   outcome: SpanOutcome;
+  /** All calls in the span, including ones still running. */
+  total: number;
 };
 
 type Localize = (phraseKey: TranslationKeys, options?: TOptions) => string;
 
 type LiveToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] } & Pick<
     PartMetadata,
-    'runStepStatus'
+    'runStepStatus' | 'runStepClosedAt' | 'backgrounded'
   > & { progress?: number };
 
 /**
@@ -132,6 +136,16 @@ function toolCallLine(
   if (intent != null) {
     return { text: intent, generic: false };
   }
+  if (toolCall.name === Constants.CHECK_BACKGROUND_TASK) {
+    return {
+      text: localize(
+        meta?.hasOutput === true
+          ? 'com_ui_background_tasks_checked'
+          : 'com_ui_background_tasks_checking',
+      ),
+      generic: true,
+    };
+  }
   if (!label) {
     return { text: localize('com_assistants_running_action'), generic: true };
   }
@@ -147,8 +161,20 @@ function toolCallLine(
 /** Bounds the sentence scan on long reasoning, like the streaming peek. */
 const REASONING_TAIL_CHARS = 1200;
 
+/** How long a completed reasoning sentence holds the line before the next
+ *  one may replace it. Sentences can close a few hundred milliseconds apart;
+ *  a line that swaps that often cannot be read, and the header is there to be
+ *  read, not to keep pace with the stream. */
+export const LIVE_REASONING_HOLD_MS = 1000;
+
 /**
- * A bounded preview of the sentence the thought is currently writing.
+ * The last COMPLETE sentence of a thought: the one that ends at the newest
+ * sentence mark, never the one still being written. A line that grew word by
+ * word read as disjointed fragments ("This is a simple greeting, not") and
+ * was gone before it made sense; a finished sentence says one thing and stays
+ * until the next is finished. Undefined until the first mark lands, so the
+ * header keeps its generic line rather than showing a fragment.
+ *
  * Preview offsets are not activity identities: a sliding window, whitespace
  * or a resumed snapshot can move them without starting a new thought.
  */
@@ -161,18 +187,17 @@ function lastReasoningSentence(reasoning: string): string | undefined {
   if (!tail) {
     return undefined;
   }
+  /** A Latin mark closes a sentence only when followed by space or the end
+   *  of the text, so "3.5" and "v2.1" stay whole; CJK marks need no space. */
+  const boundary = /[.!?](?:\s+|$)|[。！？]\s*/g;
   let start = 0;
-  /** CJK sentences end in full-width marks with no space after them. */
-  const boundary = /[.!?]\s+|[。！？]\s*/g;
+  let complete: string | undefined;
   for (let match = boundary.exec(tail); match != null; match = boundary.exec(tail)) {
-    const end = match.index + match[0].length;
-    /** A mark that closes the tail ends the CURRENT sentence; it does not
-     *  start an empty one. The finished sentence stays until the next begins. */
-    if (end < tail.length) {
-      start = end;
-    }
+    /** The mark itself is one code unit in both scripts. */
+    complete = tail.slice(start, match.index + 1);
+    start = match.index + match[0].length;
   }
-  return boundIntentLabel(tail.slice(start));
+  return complete == null ? undefined : boundIntentLabel(complete);
 }
 
 /**
@@ -222,7 +247,7 @@ export function getSpanIconNames(parts: ReadonlyArray<TMessageContentParts | und
     const toolCall = part == null ? undefined : getStandardToolCall(part);
     if (toolCall != null) {
       const name = toolCall.name ?? '';
-      icons.add(isBashProgrammaticToolCall(name, toolCall.args) ? Tools.bash_tool : name);
+      icons.add(getToolIconName(name, toolCall.args, toolCall.output));
       continue;
     }
     const legacy = part == null ? null : getToolMeta(part);
@@ -257,7 +282,11 @@ function newestLine(
   localize: Localize,
   serverNames: readonly string[],
   span: SpanSummary,
-): Pick<LiveActivity, 'text' | 'source' | 'pendingToolCallId' | 'comboCount'> {
+  preferLabels: boolean,
+): Pick<
+  LiveActivity,
+  'text' | 'source' | 'pendingToolCallId' | 'comboCount' | 'isBackgroundTaskCheck'
+> {
   for (let position = parts.length - 1; position >= 0; position -= 1) {
     const part = parts[position];
     if (part == null) {
@@ -266,13 +295,24 @@ function newestLine(
     if (part.type === ContentTypes.THINK) {
       /** Reached before any call or label, this thought IS the tail — the
        *  model is reasoning about its next step. Its multi-line peek stays
-       *  inside the fold, so the header previews it one sentence at a time. */
+       *  inside the fold, so the header previews it one sentence at a time.
+       *  Unless the fold is open: the text is on screen then, and a header
+       *  repeating a line of it under the reader's eyes is noise, so the
+       *  header keeps to the thought's label. */
       const reasoning = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
+      const label = part.reasoning_label?.trim();
+      if (preferLabels) {
+        /** Only a generated label will do: the generic thinking line is what
+         *  the grouped thought row itself says. */
+        if (label) {
+          return { text: label, source: `think:${position}`, comboCount: 1 };
+        }
+        continue;
+      }
       const sentence = lastReasoningSentence(reasoning);
       if (sentence != null) {
         return { text: sentence, source: `think:${position}`, comboCount: 1 };
       }
-      const label = part.reasoning_label?.trim();
       if (label || reasoning.trim()) {
         return {
           text: label || localize('com_ui_thinking'),
@@ -288,7 +328,7 @@ function newestLine(
        *  leaving it unnamed would hold a stale call on screen while new prose
        *  piles up behind the disclosure. */
       const value = typeof part.text === 'string' ? part.text : (part.text?.value ?? '');
-      const commentary = boundIntentLabel(value);
+      const commentary = preferLabels ? undefined : boundIntentLabel(value);
       if (commentary != null) {
         return { text: commentary, source: `text:${position}`, comboCount: 1 };
       }
@@ -299,6 +339,11 @@ function newestLine(
       return { text: labelText, source: `label:${position}`, comboCount: 1 };
     }
     const toolCall = getStandardToolCall(part);
+    /** A call's line, intent or generic, is the text of its own row, so an
+     *  open card walks past it to the newest label instead. */
+    if (toolCall != null && preferLabels) {
+      continue;
+    }
     if (toolCall != null) {
       const line = toolCallLine(part, toolCall, localize, serverNames, span);
       return {
@@ -311,9 +356,14 @@ function newestLine(
          *  own work, or reports how it ended, the count has nothing left to
          *  multiply and reads as a claim about that sentence. */
         comboCount: line.generic ? Math.max(1, span.trailingToolCount) : 1,
+        ...(toolCall.name === Constants.CHECK_BACKGROUND_TASK && { isBackgroundTaskCheck: true }),
         ...(isAwaitingStartup(part, toolCall, span) && { pendingToolCallId: toolCall.id }),
       };
     }
+  }
+  /** An open card with no label yet is titled by a line no row uses. */
+  if (preferLabels && parts.some((part) => part != null)) {
+    return { text: localize('com_ui_running'), source: 'running', comboCount: 1 };
   }
   return { text: '', source: '', comboCount: 1 };
 }
@@ -334,11 +384,92 @@ export function getLiveActivity(
   localize: Localize,
   serverNames: readonly string[],
   attachmentsById?: Record<string, TAttachment[] | undefined>,
+  /** Name the span by its newest generated LABEL alone: a batch label or a
+   *  thought's label, else a generic running line. Never a call's intent, a
+   *  reasoning sentence, commentary or the generic thinking line, since each
+   *  of those is the text of a row. For a header whose rows are on screen,
+   *  where quoting any of them back is repetition. */
+  preferLabels = false,
 ): LiveActivity {
   const span = summarizeSpan(parts, attachmentsById);
   return {
-    ...newestLine(parts, localize, serverNames, span),
+    ...newestLine(parts, localize, serverNames, span, preferLabels),
     outcome: { failed: span.failed, cancelled: span.cancelled },
+    total: span.total,
     iconNames: getSpanIconNames(parts),
   };
+}
+
+export type FailedLine = {
+  /** The row's own failed label: `Failed: <intent or tool>`. */
+  text: string;
+  /** The first line of what the tool returned, with the error prefix removed. */
+  detail: string;
+  iconName: string;
+  /** The failure time, if the host recorded it. Detached tasks use settlement, not dispatch. */
+  failedAt?: number | Date;
+};
+
+const PROCESSING_PREFIX = /^Error processing tool:?\s*/i;
+/** Whatever prefix survives the two above, so a peek row does not spend its
+ *  one line on the word the red glyph beside it already says. */
+const GENERIC_ERROR_PREFIX = /^Error:\s*/i;
+
+/** The opening line of an error, for a peek row that has one line to spend. */
+export function firstErrorLine(output: string | null | undefined): string {
+  /** Only output that IS an error. A step the run closed as failed, or a
+   *  task failed by its status attachment, can carry ordinary output, and
+   *  showing that in red as the reason would misreport the failure. */
+  if (!output || !isError(output)) {
+    return '';
+  }
+  const cleaned = stripToolCallErrorPrefix(output)
+    .replace(PROCESSING_PREFIX, '')
+    .replace(GENERIC_ERROR_PREFIX, '')
+    .trim();
+  const newline = cleaned.indexOf('\n');
+  return newline === -1 ? cleaned : cleaned.slice(0, newline).trim();
+}
+
+/**
+ * Every failed call in a span, in order, as the line its card shows plus the
+ * first line of its error. A collapsed header peeks the first of these so the
+ * failure is readable without unfolding; the count of the rest rides beside it.
+ */
+export function getFailedLines(
+  parts: ReadonlyArray<TMessageContentParts | undefined>,
+  localize: Localize,
+  serverNames: readonly string[],
+  attachmentsById?: Record<string, TAttachment[] | undefined>,
+): FailedLine[] {
+  const span = summarizeSpan(parts, attachmentsById);
+  const lines: FailedLine[] = [];
+  for (const part of parts) {
+    if (part == null) {
+      continue;
+    }
+    const meta = span.metaOf(part);
+    const toolCall = getStandardToolCall(part);
+    if (meta?.failed !== true || toolCall == null) {
+      continue;
+    }
+    /** Named as the ROW names itself, since the peek stands in for the row:
+     *  the model's intent, else the bare tool for an MCP call (`ToolCall`
+     *  shows the server as a subtitle), else the tool's display label. The
+     *  live ticker names the server instead, as its group header does. */
+    const parsed = parseToolName(toolCall.name ?? '', serverNames);
+    const subject =
+      getToolCallIntent(toolCall.args) ??
+      (parsed.mcpServer ? parsed.toolName : getToolDisplayLabel(parsed.raw, localize, serverNames));
+    const failedAt =
+      toolCall.backgroundTask?.settledAt ??
+      (meta.background != null || toolCall.backgrounded ? undefined : toolCall.runStepClosedAt);
+    lines.push({
+      text: subject ? localize('com_ui_failed_subject', { 0: subject }) : localize('com_ui_failed'),
+      detail: firstErrorLine(toolCall.output),
+      iconName: meta.iconName,
+      ...(failedAt != null && { failedAt }),
+    });
+  }
+  return lines;
 }

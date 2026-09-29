@@ -9,6 +9,7 @@ export interface RepositoryInstructionSource {
   context: CodeExecutionContext;
   principalId: string;
   authHeaders: () => Promise<Record<string, string>>;
+  codeApiMaxRetryWaitMs?: number;
   load: ReturnType<typeof createRepositoryInstructionLoader>;
 }
 
@@ -54,6 +55,7 @@ export function createRepositoryInstructionLoader() {
     signal,
     fetchImpl,
     assertContent,
+    codeApiMaxRetryWaitMs,
     timeoutMs = 2000,
   }: {
     enabled: boolean;
@@ -64,6 +66,7 @@ export function createRepositoryInstructionLoader() {
     signal?: AbortSignal;
     fetchImpl?: CodeBridgeFetch;
     assertContent: (content: string) => void;
+    codeApiMaxRetryWaitMs?: number;
     timeoutMs?: number;
   }): Promise<string | undefined> => {
     const workspace = context.codeWorkspace;
@@ -93,13 +96,13 @@ export function createRepositoryInstructionLoader() {
     const timer = setTimeout(() => deadline.abort(), budget);
     const readSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
     try {
-      const headers = await abortable(authHeaders(), readSignal);
       if (content === undefined) {
         const result = await executeWorkspaceTool({
           baseURL: context.baseUrl,
-          authHeaders: headers,
+          authHeaders: () => abortable(authHeaders(), readSignal),
           signal: readSignal,
           fetchImpl,
+          codeApiMaxRetryWaitMs,
           request: {
             protocolVersion: 1,
             operation: 'read_file',
@@ -121,6 +124,8 @@ export function createRepositoryInstructionLoader() {
         content = result.content;
         if (cache.size >= 64) cache.delete(cache.keys().next().value!);
         cache.set(key, content);
+      } else {
+        await abortable(authHeaders(), readSignal);
       }
     } catch {
       if (signal?.aborted) throw signal.reason;

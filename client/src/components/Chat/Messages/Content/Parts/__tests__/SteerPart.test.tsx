@@ -179,13 +179,21 @@ describe('SteerPart presentation', () => {
     expect(part).not.toHaveClass('md:-ml-9', '-ml-9');
   });
 
-  it('renders steer attachments', () => {
+  it('keeps multiple steer images together at the right while file chips stay at the start', () => {
     renderPart([
       { file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' },
       { file_id: 'f2', filename: 'shot.png', type: 'image/png', filepath: '/images/shot.png' },
+      { file_id: 'f3', filename: 'second.png', type: 'image/png', filepath: '/images/second.png' },
     ]);
+    const images = screen.getAllByTestId('steer-image');
+    const imageGroup = images[0].parentElement;
+
+    expect(images).toHaveLength(2);
+    expect(imageGroup).toContainElement(images[1]);
+    expect(imageGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
+    expect(imageGroup?.parentElement).toHaveClass('w-full');
+    expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
-    expect(screen.getByTestId('steer-image')).toBeInTheDocument();
   });
 
   it.each(['application/pdf', 'image/png'])(

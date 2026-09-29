@@ -860,6 +860,48 @@ function agentOwnershipFilter(prefix: string, agentId: string): Record<string, u
   };
 }
 
+type UpdateToolCallResultInput = {
+  userId: string;
+  messageId: string;
+  conversationId: string;
+  toolCallId: string;
+  stepId?: string;
+  /** Scopes the part match when provider tool-call ids repeat across
+   *  agents in one response message (e.g. `call_0` per response); a part
+   *  without agent identity matches any caller (single-agent runs). */
+  agentId?: string;
+  output?: string;
+  attachments?: unknown[];
+  /**
+   * Stamps `backgrounded: true` onto the patched tool call. Replacing the
+   * dispatch-handle output with the settled task's stdout destroys the only
+   * signal renderers had that this call ran detached (the handle JSON and
+   * the live status-marker attachment are both transient), so the patch
+   * that erases it must persist a durable one alongside.
+   */
+  markBackgrounded?: boolean;
+  backgroundTask?: {
+    taskId: string;
+    toolName: string;
+    status: 'completed' | 'error';
+    cancelled?: true;
+    settledAt: Date;
+    completionWakeup?: true;
+    completionReceipt?: true;
+    resultClaim?: {
+      kind: 'manual' | 'wakeup';
+      claimId: string;
+      claimedAt: Date;
+      generationId?: string;
+    };
+  };
+};
+
+type SteplessToolCallFallback = {
+  content: NonNullable<IMessage['content']>;
+  hasResultClaim: boolean;
+};
+
 export function createMessageMethods(mongoose: typeof import('mongoose')): MessageMethods {
   /**
    * Saves a message in the database.
@@ -1212,53 +1254,98 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
    * finalize will overwrite the patch with in-memory content, so callers
    * should keep re-applying until a finalized row is patched.
    */
-  async function updateToolCallResult({
+  async function updateToolCallResult(
+    input: UpdateToolCallResultInput,
+  ): Promise<{ matched: boolean; unfinished: boolean }> {
+    const exact = await settleToolCallResult(input, input.stepId);
+    if (exact.matched || input.stepId == null) {
+      return exact;
+    }
+    /** A turn resumed after an approval pause persists the tool calls it made
+     * before the pause without their step ids, so an exact step match can never
+     * land and the settled result would be given up. On a finished row, fall back
+     * to the one part with this call id (and agent scope) that has no stored step.
+     * An unfinished row may not hold the real part yet, and more than one
+     * candidate means a repeated provider id: both stay unmatched rather than
+     * patching the wrong part. */
+    const fallback = await getSteplessToolCallFallback(input);
+    if (fallback == null) {
+      return exact;
+    }
+    return settleToolCallResult(input, null, fallback);
+  }
+
+  async function getSteplessToolCallFallback({
     userId,
     messageId,
     conversationId,
     toolCallId,
     stepId,
     agentId,
-    output,
-    attachments,
-    markBackgrounded,
-    backgroundTask,
-  }: {
-    userId: string;
-    messageId: string;
-    conversationId: string;
-    toolCallId: string;
-    stepId?: string;
-    /** Scopes the part match when provider tool-call ids repeat across
-     *  agents in one response message (e.g. `call_0` per response); a part
-     *  without agent identity matches any caller (single-agent runs). */
-    agentId?: string;
-    output?: string;
-    attachments?: unknown[];
-    /**
-     * Stamps `backgrounded: true` onto the patched tool call. Replacing the
-     * dispatch-handle output with the settled task's stdout destroys the only
-     * signal renderers had that this call ran detached (the handle JSON and
-     * the live status-marker attachment are both transient), so the patch
-     * that erases it must persist a durable one alongside.
-     */
-    markBackgrounded?: boolean;
-    backgroundTask?: {
-      taskId: string;
-      toolName: string;
-      status: 'completed' | 'error';
-      cancelled?: true;
-      settledAt: Date;
-      completionWakeup?: true;
-      completionReceipt?: true;
-      resultClaim?: {
-        kind: 'manual' | 'wakeup';
-        claimId: string;
-        claimedAt: Date;
-        generationId?: string;
-      };
-    };
-  }): Promise<{ matched: boolean; unfinished: boolean }> {
+  }: UpdateToolCallResultInput): Promise<SteplessToolCallFallback | undefined> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const row = await Message.findOne({ messageId, user: userId, conversationId })
+      .select({ content: 1, unfinished: 1 })
+      .lean<Pick<IMessage, 'content' | 'unfinished'> | null>();
+    if (row == null || row.unfinished === true) {
+      return;
+    }
+    let candidates = 0;
+    let hasResultClaim = false;
+    const content = row.content ?? [];
+    for (const part of content) {
+      const entry = part as {
+        type?: unknown;
+        agentId?: unknown;
+        tool_call?: {
+          id?: unknown;
+          stepId?: unknown;
+          agentId?: unknown;
+          backgroundTask?: { resultClaim?: unknown };
+        };
+      } | null;
+      if (entry?.type !== 'tool_call' || entry.tool_call?.id !== toolCallId) {
+        continue;
+      }
+      const owner = entry.agentId ?? entry.tool_call.agentId;
+      if (agentId != null && owner != null && owner !== agentId) {
+        continue;
+      }
+      /** An unmatched write can mean attachment contention, not a missing
+       * identity. Never substitute a sibling for an existing exact part. */
+      if (entry.tool_call.stepId === stepId) {
+        return;
+      }
+      if (entry.tool_call.stepId != null) {
+        continue;
+      }
+      candidates += 1;
+      if (candidates > 1) {
+        return;
+      }
+      hasResultClaim = entry.tool_call.backgroundTask?.resultClaim != null;
+    }
+    return candidates === 1 ? { content, hasResultClaim } : undefined;
+  }
+
+  async function settleToolCallResult(
+    {
+      userId,
+      messageId,
+      conversationId,
+      toolCallId,
+      stepId,
+      agentId,
+      output,
+      attachments,
+      markBackgrounded,
+      backgroundTask,
+    }: UpdateToolCallResultInput,
+    /** A step id to match exactly, `null` to match a part with no stored step,
+     * or `undefined` to ignore steps. */
+    stepMatch: string | null | undefined,
+    fallback?: SteplessToolCallFallback,
+  ): Promise<{ matched: boolean; unfinished: boolean }> {
     /** One source of truth for which content part this settle may touch:
      * `prefix: ''` yields the `$elemMatch` document filter, `prefix: 'part.'`
      * the arrayFilters element filter — the same predicate in one dialect,
@@ -1268,14 +1355,16 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     const partScope = (prefix: string): Record<string, unknown> => ({
       [`${prefix}type`]: 'tool_call',
       [`${prefix}tool_call.id`]: toolCallId,
-      ...(stepId != null ? { [`${prefix}tool_call.stepId`]: stepId } : {}),
+      ...(stepMatch !== undefined ? { [`${prefix}tool_call.stepId`]: stepMatch } : {}),
       ...(agentId != null ? agentOwnershipFilter(prefix, agentId) : {}),
     });
     const messageFilter = {
       messageId,
       user: userId,
       conversationId,
-      content: { $elemMatch: partScope('') },
+      ...(fallback == null
+        ? { content: { $elemMatch: partScope('') } }
+        : { content: fallback.content, unfinished: { $ne: true } }),
     };
     const partIdentityFilter = partScope('part.');
     /** Amazon DocumentDB rejects aggregation-pipeline updates, so the part
@@ -1315,8 +1404,18 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     if (Object.keys(partPatch).length === 0 && !mergingAttachments) {
       return { matched: false, unfinished: false };
     }
+    /** Fence the fallback on the content used to establish its unique identity.
+     * A concurrent save or claim must invalidate the whole write, including any
+     * supplied claim. The snapshot lets us preserve an existing claim and stamp
+     * a missing one atomically with settlement, rather than before this fence. */
+    const settlePatch = {
+      ...partPatch,
+      ...(fallback != null && !fallback.hasResultClaim && backgroundTask?.resultClaim != null
+        ? { 'content.$[part].tool_call.backgroundTask.resultClaim': backgroundTask.resultClaim }
+        : {}),
+    };
     const settleUpdate = {
-      ...(Object.keys(partPatch).length > 0 ? { $set: partPatch } : {}),
+      ...(Object.keys(settlePatch).length > 0 ? { $set: settlePatch } : {}),
       ...(disarmWakeup
         ? { $unset: { 'content.$[part].tool_call.backgroundTask.completionWakeup': 1 } }
         : {}),
@@ -1339,7 +1438,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
        * instead expose a claimable terminal part that lets a second consumer
        * deliver the same result. A crash between the writes is healed by the
        * settle retry, whose claim write no-ops against its own stamp. */
-      if (backgroundTask?.resultClaim != null) {
+      if (fallback == null && backgroundTask?.resultClaim != null) {
         await Message.updateOne(
           messageFilter,
           {
@@ -1423,7 +1522,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           },
           {
             ...settleUpdate,
-            $set: { ...partPatch, attachments: merged },
+            $set: { ...settlePatch, attachments: merged },
           },
           settleOptions,
         ).lean<{ unfinished?: boolean } | null>();

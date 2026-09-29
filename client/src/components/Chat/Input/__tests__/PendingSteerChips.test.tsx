@@ -5,11 +5,13 @@ import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 import type { PendingSteer, QueuedMessage } from '~/store/families';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
+import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
 import { escalatingSteerFamily, revealedQueuedTurnFamily } from '~/store/steer';
 import PendingSteerChips from '../PendingSteerChips';
 import store from '~/store';
 
 const mockRemoveQueued = jest.fn();
+const mockDismissRecovery = jest.fn();
 const mockDiscardQueued = jest.fn(async (_message: QueuedMessage) => true);
 const mockSendQueuedNow = jest.fn();
 const mockRetrySteer = jest.fn();
@@ -65,6 +67,7 @@ const steeringStub = (overrides: Partial<SteeringControls> = {}) =>
     pausedOnApproval: false,
     removeQueued: mockRemoveQueued,
     discardQueued: mockDiscardQueued,
+    dismissRecovery: mockDismissRecovery,
     sendQueuedNow: mockSendQueuedNow,
     retrySteer: mockRetrySteer,
     setDefaultAction: jest.fn(),
@@ -776,4 +779,92 @@ describe('PendingSteerChips — revealed queued turn', () => {
       expect(mockSendQueuedNow).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('held steer recovery controls', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), { source: 'blocked' });
+  });
+  afterEach(() => {
+    act(() => {
+      getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), {});
+    });
+  });
+
+  const item: QueuedMessage = {
+    id: 'held',
+    text: 'original words',
+    createdAt: 1,
+    recoverySteerId: 'source',
+    quotes: ['original excerpt'],
+    files: [{ file_id: 'file' }],
+  };
+
+  it('shows a held state and no automatic or manual send shortcut', () => {
+    renderChips([item]);
+    expect(screen.getByText('com_ui_steer_recovery_held')).toBeTruthy();
+    expect(screen.queryByText('com_ui_send_now')).toBeNull();
+    expect(screen.queryByText('com_ui_steer')).toBeNull();
+  });
+
+  it('copies the original context for review without cancelling or sending it', async () => {
+    mockRestoreToComposer.mockReturnValueOnce(true);
+    const user = userEvent.setup();
+    renderChips([item]);
+    await user.click(screen.getByRole('button', { name: 'com_ui_more_options' }));
+    await user.click(screen.getByText('com_ui_steer_copy_to_composer'));
+    expect(mockRestoreToComposer).toHaveBeenCalledWith(
+      item.text,
+      item.files,
+      {
+        quotes: item.quotes,
+        manualSkills: undefined,
+      },
+      CONVO_ID,
+    );
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_steer_recovery_review',
+      status: 'info',
+    });
+    expect(mockSendQueuedNow).not.toHaveBeenCalled();
+    expect(mockDiscardQueued).not.toHaveBeenCalled();
+    expect(mockRemoveQueued).not.toHaveBeenCalled();
+  });
+
+  it('leaves the recovery untouched and explains a refused copy to the occupied composer', async () => {
+    mockRestoreToComposer.mockReturnValueOnce(false);
+    const user = userEvent.setup();
+    renderChips([item]);
+    await user.click(screen.getByRole('button', { name: 'com_ui_more_options' }));
+    await user.click(screen.getByText('com_ui_steer_copy_to_composer'));
+    expect(mockRestoreToComposer).toHaveBeenCalledWith(
+      item.text,
+      item.files,
+      { quotes: item.quotes, manualSkills: undefined },
+      CONVO_ID,
+    );
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_steer_recovery_copy_refused',
+      status: 'error',
+    });
+    expect(mockShowToast).not.toHaveBeenCalledWith({
+      message: 'com_ui_steer_recovery_review',
+      status: 'info',
+    });
+    expect(screen.getByText('com_ui_steer_recovery_held')).toBeTruthy();
+    expect(mockDismissRecovery).not.toHaveBeenCalled();
+    expect(mockSendQueuedNow).not.toHaveBeenCalled();
+    expect(mockRemoveQueued).not.toHaveBeenCalled();
+  });
+
+  it('labels dismissal as tab-local and does not claim to cancel server work', async () => {
+    const user = userEvent.setup();
+    renderChips([item]);
+    await user.click(screen.getByRole('button', { name: 'com_ui_more_options' }));
+    await user.click(screen.getByText('com_ui_steer_dismiss_recovery'));
+    expect(mockDismissRecovery).toHaveBeenCalledWith(item);
+    expect(mockDiscardQueued).not.toHaveBeenCalled();
+    expect(mockSendQueuedNow).not.toHaveBeenCalled();
+  });
 });

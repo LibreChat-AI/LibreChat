@@ -13,6 +13,9 @@ jest.mock('~/hooks', () => ({
     if (key === 'com_ui_running_n_actions') {
       return `Running ${values?.[0]} actions`;
     }
+    if (key === 'com_ui_n_of_n_actions_failed') {
+      return `${values?.[0]}/${values?.[1]} failed`;
+    }
     return key;
   },
   useExpandCollapse: (isExpanded: boolean) => ({
@@ -76,6 +79,9 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('../Parts', () => ({
+  StreamingThoughtPeek: ({ text }: { text: string }) => (
+    <div data-testid="streaming-thought-peek">{text}</div>
+  ),
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div
       data-testid="attachment-group"
@@ -647,6 +653,42 @@ describe('ContentParts — synthesized activity folds', () => {
       'aria-expanded',
       'false',
     );
+  });
+
+  it('shows one failure pill when an expanded live phase contains a running tool group', () => {
+    const failed = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: 't1',
+        name: `getTinyImage${MCP_DELIMITER}Everything`,
+        args: '{}',
+        output: 'image_returned',
+        runStepStatus: 'failed',
+      },
+    } as TMessageContentParts;
+    const live = [failed, makeMcpToolCall('t2', false)];
+    const props = { ...baseProps, isSubmitting: true, content: live };
+    const { rerender } = renderContentParts(props);
+
+    const phase = screen.getByTestId('activity-phase-card');
+    expect(within(phase).getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    fireEvent.click(within(phase).getAllByRole('button')[0]);
+
+    const group = screen.getByRole('button', { name: /Running 2 actions.*1\/2 failed/ });
+    expect(group).toHaveAttribute('aria-expanded', 'true');
+    expect(group).toHaveTextContent('1/2 failed');
+    expect(screen.getAllByTestId('failed-reveal-pill')).toHaveLength(1);
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts
+          {...props}
+          isSubmitting={false}
+          content={[failed, makeMcpToolCall('t2'), makePhasePart(0, 2, 'Reviewed calls')]}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getAllByTestId('failed-reveal-pill')).toHaveLength(1);
   });
 
   it('keeps the in-flight tool call inside the card while the run streams', () => {
@@ -1261,14 +1303,19 @@ describe('ContentParts — live activity fold', () => {
     expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
     expect(screen.queryByTestId('reasoning')).toBeNull();
 
+    /** The next sentence is not shown while it is still being written. */
     rerender(frame('Both refs share a commit. That leaves the ordering'));
     act(() => {
-      jest.advanceTimersByTime(500);
+      jest.advanceTimersByTime(1000);
     });
-    expect(liveHeader()).toHaveTextContent('That leaves the ordering');
-    /** The previous sentence is the `aria-hidden` line sliding out, which is
-     *  the tick itself; the row's current line is the new sentence alone. */
-    expect(within(liveHeader()).getByTitle('That leaves the ordering')).toBeInTheDocument();
+    expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
+    expect(liveHeader()).not.toHaveTextContent('That leaves the ordering');
+    rerender(frame('Both refs share a commit. That leaves the ordering.'));
+    act(() => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(liveHeader()).toHaveTextContent('That leaves the ordering.');
+    expect(within(liveHeader()).getByTitle('That leaves the ordering.')).toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 

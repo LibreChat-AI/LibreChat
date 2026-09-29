@@ -97,7 +97,6 @@ export const ThinkingButton = memo(
     shimmerLabel?: boolean;
   }) => {
     const localize = useLocalize();
-    const fontSize = useAtomValue(fontSizeAtom);
 
     const [isCopied, setIsCopied] = useState(false);
 
@@ -116,10 +115,11 @@ export const ThinkingButton = memo(
           onClick={onClick}
           aria-expanded={isExpanded}
           aria-controls={contentId}
-          className={cn(
-            'group/button flex flex-1 items-center justify-start rounded-lg pr-10 leading-[18px]',
-            fontSize,
-          )}
+          /** `tool-status-text`, not the reader's body size: this header is a
+           *  row in the same list as tool calls, grouped thoughts and phase
+           *  summaries, all set at that scale. Sized to the body it read as a
+           *  second, larger kind of row beside them. */
+          className="group/button tool-status-text flex flex-1 items-center justify-start rounded-lg pr-10"
         >
           <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
             <Lightbulb
@@ -156,7 +156,7 @@ export const ThinkingButton = memo(
           <span
             key={animateLabel ? label : undefined}
             className={cn(
-              'min-w-0 truncate text-left',
+              'min-w-0 truncate text-left font-medium',
               shimmerLabel && !animateLabel && 'shimmer',
               animateLabel &&
                 'duration-300 ease-out animate-in fade-in-0 slide-in-from-bottom-1 motion-reduce:animate-none',
@@ -195,17 +195,13 @@ export const ThinkingButton = memo(
  * presentation identical across surfaces without offering an empty disclosure.
  */
 export const ThinkingLabel = memo(({ label, title }: { label: string; title?: string }) => {
-  const fontSize = useAtomValue(fontSizeAtom);
   return (
     <div className="mb-2 pb-2 pt-2">
-      <div
-        className={cn('flex w-full items-center justify-start leading-[18px]', fontSize)}
-        title={title}
-      >
+      <div className="tool-status-text flex w-full items-center justify-start" title={title}>
         <span className={cn(ROW_GLYPH_SLOT, 'relative mr-2')}>
           <Lightbulb className="icon-sm text-text-secondary" aria-hidden="true" />
         </span>
-        <span className="min-w-0 truncate text-left text-text-secondary">{label}</span>
+        <span className="min-w-0 truncate text-left font-medium text-text-secondary">{label}</span>
       </div>
     </div>
   );

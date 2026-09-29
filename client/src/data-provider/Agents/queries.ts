@@ -6,6 +6,7 @@ import type {
   UseInfiniteQueryOptions,
 } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
+import { retryTransientQuery } from '../retry';
 import { isEphemeralAgent } from '~/common';
 
 /**
@@ -74,8 +75,13 @@ export const useListAgentsQuery = <TData = t.AgentListResponse>(
   params: t.AgentListParams = defaultAgentParams,
   config?: UseQueryOptions<t.AgentListResponse, unknown, TData>,
 ): QueryObserverResult<TData> => {
-  const queryClient = useQueryClient();
-  const endpointsConfig = queryClient.getQueryData<t.TEndpointsConfig>([QueryKeys.endpoints]);
+  /** The shell owns fetching endpoints. Observe its query, but do not start a second
+   * request or couple this shared agent hook to the shell's Recoil gate. */
+  const { data: endpointsConfig } = useQuery<t.TEndpointsConfig>(
+    [QueryKeys.endpoints],
+    () => dataService.getAIEndpoints(),
+    { enabled: false },
+  );
 
   const enabled = !!endpointsConfig?.[EModelEndpoint.agents];
   return useQuery<t.AgentListResponse, unknown, TData>(
@@ -83,10 +89,10 @@ export const useListAgentsQuery = <TData = t.AgentListResponse>(
     () => fetchAllAgentPages(params),
     {
       staleTime: 1000 * 5,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
-      retry: false,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      retry: retryTransientQuery,
       ...config,
       enabled: config?.enabled !== undefined ? config.enabled && enabled : enabled,
     },
@@ -109,10 +115,11 @@ export const useGetAgentByIdQuery = (
         agent_id: agent_id as string,
       }),
     {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
-      retry: false,
+      staleTime: 1000 * 5,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      retry: retryTransientQuery,
       ...config,
       enabled: isValidAgentId && (config?.enabled ?? true),
     },

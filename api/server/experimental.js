@@ -43,8 +43,8 @@ const {
   configureServerTimeouts,
   setupGracefulShutdown,
   registerShutdownTask,
-  getRemainingShutdownMs,
-  getShutdownElapsedMs,
+  getClusterShutdownBudgetMs,
+  registerBackgroundTaskShutdown,
   configureMessageFilterRegexValidator,
   configureFileConfigRegexEngine,
   configureAgentEventRuntime,
@@ -85,7 +85,6 @@ const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const noIndex = require('./middleware/noIndex');
-const routes = require('./routes');
 const agentEventMethods = require('~/models');
 
 /** Route admin file-config MIME patterns through a linear-time engine (ReDoS-safe) on upload. */
@@ -386,24 +385,18 @@ if (cluster.isMaster) {
    *  after signalling. Measure against that, and hold back a reserve for the tasks after this
    *  one. Abandoning an unrecorded drain fences the next generation permanently. */
   const CLUSTER_TEARDOWN_RESERVE_MS = 3_000;
+  const clusterShutdownBudgetMs = () =>
+    getClusterShutdownBudgetMs({
+      deadlineAt: clusterShutdownDeadlineAt,
+      forceExitMs: CLUSTER_FORCE_EXIT_MS,
+    });
   const destroyGenerationJobManager = () => {
-    const remaining = getRemainingShutdownMs();
-    const elapsed = getShutdownElapsedMs();
-    if (remaining == null || elapsed == null) {
+    const budgetMs = clusterShutdownBudgetMs();
+    if (budgetMs == null) {
       return GenerationJobManager.destroy();
     }
-    /** Prefer the deadline the primary actually set. The elapsed-based estimate starts
-     *  counting only when this worker's signal handler ran, which lags the primary's timer
-     *  by however long the event loop was blocked. */
-    const primaryRemaining =
-      clusterShutdownDeadlineAt != null
-        ? clusterShutdownDeadlineAt - Date.now()
-        : CLUSTER_FORCE_EXIT_MS - elapsed;
     return GenerationJobManager.destroy({
-      settlementBudgetMs: Math.max(
-        0,
-        Math.min(remaining, primaryRemaining) - CLUSTER_TEARDOWN_RESERVE_MS,
-      ),
+      settlementBudgetMs: Math.max(0, budgetMs - CLUSTER_TEARDOWN_RESERVE_MS),
     });
   };
   // Tear down stream resources before shared caches and telemetry exporters shut down.
@@ -508,6 +501,10 @@ if (cluster.isMaster) {
     // principal) still merges DB `__base__` overrides, which must not drive which hook
     // modules load in every worker (matches api/server/index.js's baseOnly usage).
     const baseAppConfig = await getAppConfig({ baseOnly: true });
+    registerBackgroundTaskShutdown({
+      interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+      getBudgetMs: clusterShutdownBudgetMs,
+    });
     configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
     const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;
     await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
@@ -518,6 +515,10 @@ if (cluster.isMaster) {
       await performStartupChecks(appConfig);
       await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
     });
+
+    /* Route modules build their rate limiters as they load, so they load only after the
+     * startup checks have applied `rateLimits` from librechat.yaml. */
+    const routes = require('./routes');
 
     /** Load index.html for SPA serving */
     const indexPath = path.join(appConfig.paths.dist, 'index.html');
@@ -709,6 +710,7 @@ if (cluster.isMaster) {
           address: server.address(),
           completionResultBatchSize:
             baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+          idlePolling: baseAppConfig?.endpoints?.agents?.eventDriven?.idlePolling,
         });
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);

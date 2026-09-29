@@ -4,7 +4,9 @@ import type {
   CodeWorkspaceSelection,
   TConversation,
 } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import { CodeWorkspaceSelectionError } from './capabilities';
+import { resolveCodeEnvironmentMoveVersion } from './config';
 
 export interface ConversationCodeEnvironmentDecision {
   mode: CodeEnvironmentMode;
@@ -14,7 +16,7 @@ export interface ConversationCodeEnvironmentDecision {
 export type StoredConversationDecision = Pick<
   TConversation,
   'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces'
->;
+> & { codeEnvironmentRevision?: number };
 
 function canonicalSelections(selections: CodeWorkspaceSelection[]): CodeWorkspaceSelection[] {
   return [...selections].sort((left, right) => {
@@ -120,15 +122,16 @@ export function resolveConversationCodeEnvironmentDecision({
 }
 
 export interface ConversationCodeEnvironmentMove {
-  codeWorkspaces: CodeWorkspaceSelection[];
+  mode: CodeEnvironmentMode;
+  codeWorkspaces?: CodeWorkspaceSelection[];
 }
 
 /**
- * Validates an owner's explicit move of a sealed attached decision onto the environments its
- * agents now use. A move may drop environments the agents stopped using and add ones they now use,
- * but never changes the workspace of an environment the decision already covers and never upgrades
- * a conversation that continues without an attached environment. `from` must repeat the persisted selections, so a client acting
- * on a stale view of the conversation cannot replace a decision it has not seen.
+ * Validates an owner's explicit replacement of a sealed decision. Attach, detach, moves and
+ * missing-workspace recovery replace the whole decision without changing history or copying files.
+ * The caller must verify live registration of every target and, for same-environment replacements,
+ * absence of the previous workspace. `from` repeats the stored selections so stale clients cannot
+ * replace a decision they have not seen. Undecided chats record their first decision on submission.
  */
 export function resolveConversationCodeEnvironmentMove({
   conversation,
@@ -139,32 +142,30 @@ export function resolveConversationCodeEnvironmentMove({
   from: unknown;
   to: unknown;
 }): ConversationCodeEnvironmentMove {
+  if (!holdsDecision(conversation)) {
+    throw new CodeWorkspaceSelectionError('locked');
+  }
   const persisted = readPersistedDecision(conversation);
-  if (persisted.mode !== 'attached' || persisted.codeWorkspaces == null) {
+  const sealed = persisted.codeWorkspaces ?? [];
+  if (!isCodeWorkspaceSelections(from) || !sameSelections(from, sealed)) {
     throw new CodeWorkspaceSelectionError('locked');
   }
-  if (!isCodeWorkspaceSelections(from) || !sameSelections(from, persisted.codeWorkspaces)) {
-    throw new CodeWorkspaceSelectionError('locked');
-  }
-  if (!isCodeWorkspaceSelections(to) || to.length === 0) {
+  if (!isCodeWorkspaceSelections(to)) {
     throw new CodeWorkspaceSelectionError('invalid');
   }
-  const sealed = new Map(
-    persisted.codeWorkspaces.map(({ environmentId, workspaceId }) => [environmentId, workspaceId]),
-  );
-  let adds = false;
-  for (const selection of to) {
-    const sealedWorkspaceId = sealed.get(selection.environmentId);
-    if (sealedWorkspaceId == null) {
-      adds = true;
-    } else if (sealedWorkspaceId !== selection.workspaceId) {
+  if (to.length === 0) {
+    if (persisted.mode !== 'attached') {
       throw new CodeWorkspaceSelectionError('locked');
     }
+    return { mode: 'without_attached' };
   }
-  if (!adds && to.length === sealed.size) {
+  if (persisted.mode === 'without_attached') {
+    return { mode: 'attached', codeWorkspaces: canonicalSelections(to) };
+  }
+  if (sameSelections(to, sealed)) {
     throw new CodeWorkspaceSelectionError('locked');
   }
-  return { codeWorkspaces: canonicalSelections(to) };
+  return { mode: 'attached', codeWorkspaces: canonicalSelections(to) };
 }
 
 type PersistableDecisionFields = Pick<
@@ -214,4 +215,38 @@ export function resolvePersistableCodeEnvironmentDecision({
     return {};
   }
   return { codeEnvironmentMode: candidate.codeEnvironmentMode };
+}
+
+/** When moves are enabled, every ingress must publish its active job before calling this and
+ * keep it active through the fenced read. Otherwise no transition can race the decision, so reuse
+ * the owner-scoped conversation the ingress already loaded instead of writing an unused revision. */
+export async function resolveAdmittedCodeEnvironmentDecision({
+  appConfig,
+  readDecision,
+  ...request
+}: Parameters<typeof resolveConversationCodeEnvironmentDecision>[0] & {
+  appConfig: Pick<AppConfig, 'endpoints'> | undefined;
+  readDecision: (conversationId: string) => Promise<StoredConversationDecision | null | undefined>;
+}): Promise<{
+  decision: ConversationCodeEnvironmentDecision;
+  conversation: StoredConversationDecision | null | undefined;
+}> {
+  const conversation =
+    resolveCodeEnvironmentMoveVersion(appConfig) != null
+      ? await readDecision(request.conversationId)
+      : request.conversation;
+  return {
+    decision: resolveConversationCodeEnvironmentDecision({ ...request, conversation }),
+    // Keep owner-loaded metadata, but never the pre-admission environment fields. An absent
+    // stored decision must remain absent; the submitted first choice is not persisted yet.
+    conversation:
+      conversation == null
+        ? conversation
+        : {
+            ...request.conversation,
+            ...conversation,
+            codeEnvironmentMode: conversation.codeEnvironmentMode,
+            codeWorkspaces: conversation.codeWorkspaces,
+          },
+  };
 }

@@ -762,3 +762,22 @@ describe('ToolCall', () => {
     });
   });
 });
+
+describe('ToolCall failure fast path', () => {
+  const failedProps = {
+    args: '{"url":"https://x"}',
+    name: 'fetch_page',
+    output: 'Error: tool call failed: HTTP 429 from github.com\nretry after 60',
+    initialProgress: 1,
+    isSubmitting: false,
+  };
+
+  it('spends the subtitle on the first line of the error', () => {
+    render(
+      <RecoilRoot>
+        <ToolCall {...failedProps} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('subtitle')).toHaveTextContent('HTTP 429 from github.com');
+  });
+});

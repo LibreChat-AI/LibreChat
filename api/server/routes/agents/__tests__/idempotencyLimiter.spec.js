@@ -75,6 +75,7 @@ jest.mock('~/server/controllers/agents/steer', () => {
 });
 jest.mock('~/server/controllers/agents/queuedTurns', () => ({
   AgentQueuedTurnEnqueueController: (_req, res) => res.status(202).json({ queued: true }),
+  AgentQueuedTurnEnqueueV2Controller: (_req, res) => res.status(202).json({ queued: true }),
   AgentQueuedTurnListController: (_req, res) => res.status(200).json({ queuedTurns: [] }),
   AgentQueuedTurnCancelController: (_req, res) => res.status(200).json({ cancelled: true }),
 }));
@@ -198,6 +199,13 @@ describe('start-generation idempotency before message limiters', () => {
 
   it.each([
     ['enqueue', () => request(app).post('/agents/chat/queued-turns').send({ text: 'next' })],
+    [
+      'v2 enqueue',
+      () =>
+        request(app)
+          .post('/agents/chat/queued-turns/v2')
+          .send({ text: 'next', codeApprovalMode: 'ask' }),
+    ],
     ['cancel', () => request(app).delete('/agents/chat/queued-turns/queued-turn-1')],
   ])('keeps queued-turn %s mutations behind message admission limiters', async (_label, send) => {
     const response = await send();

@@ -271,6 +271,9 @@ export enum AnthropicEffort {
  *   omit by default (Opus 4.7+), leave the field off for older models.
  * - `'summarized'` - always request a post-hoc summary of the reasoning.
  * - `'omitted'` - always suppress reasoning content. Slightly lower latency.
+ * - `'updates'` - return only the progress notes Claude writes between tool
+ *   calls (mid-thinking display updates); reasoning blocks stay empty. Needs
+ *   the `thinking-display-updates-2026-08-18` beta header.
  *
  * See https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default
  */
@@ -278,6 +281,7 @@ export enum ThinkingDisplay {
   auto = 'auto',
   summarized = 'summarized',
   omitted = 'omitted',
+  updates = 'updates',
 }
 
 /**
@@ -769,7 +773,12 @@ export const anthropicSettings = {
   },
   thinkingDisplay: {
     default: ThinkingDisplay.auto,
-    options: [ThinkingDisplay.auto, ThinkingDisplay.summarized, ThinkingDisplay.omitted],
+    options: [
+      ThinkingDisplay.auto,
+      ThinkingDisplay.summarized,
+      ThinkingDisplay.omitted,
+      ThinkingDisplay.updates,
+    ],
   },
   web_search: {
     default: false as const,
@@ -877,7 +886,7 @@ export type TExample = z.infer<typeof tExampleSchema>;
 
 /** Compact context-fading tier persisted beside a message's calibration ratio. */
 const agentFadingTierSchema = z.object({
-  v: z.literal(1),
+  v: z.union([z.literal(1), z.literal(2)]),
   budgetTokens: z.number().positive(),
   masked: z.boolean(),
 });

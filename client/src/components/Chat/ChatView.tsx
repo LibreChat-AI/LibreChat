@@ -192,10 +192,12 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                         popover ⇄ chat-card morph) paints the whole composer band
                         over the travelling card instead of letting it show
                         through below the composer. The background matches the
-                        page, so normal rendering is unchanged. */}
+                        page, so normal rendering is unchanged. The named surface
+                        is a stacking context; keep it above positioned tool glyphs
+                        so they cannot paint through the approval preview. */}
                         <div
                           className={cn(
-                            'w-full bg-presentation [view-transition-name:chat-form]',
+                            'relative z-10 w-full bg-presentation [view-transition-name:chat-form]',
                             !isLandingPage && 'scrollbar-gutter-spacer',
                             isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
                           )}

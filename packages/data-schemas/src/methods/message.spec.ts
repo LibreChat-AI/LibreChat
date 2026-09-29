@@ -862,6 +862,410 @@ describe('Message Operations', () => {
       expect(saved?.attachments).toEqual([{ file_id: 'f1', toolCallId: 'call_bg' }]);
     });
 
+    describe('a step id the persisted part lost', () => {
+      const conversationId = () => mockMessageData.conversationId as string;
+      const partOutputs = async () => {
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        return (
+          saved?.content as Array<{ tool_call?: { id: string; stepId?: string; output?: string } }>
+        )
+          .filter((part) => part.tool_call != null)
+          .map((part) => [
+            part.tool_call?.id,
+            part.tool_call?.stepId ?? null,
+            part.tool_call?.output,
+          ]);
+      };
+
+      it('patches the one part a resumed turn saved without its step id', async () => {
+        await saveMessage(mockCtx, { ...mockMessageData, content: toolCallContent() });
+
+        const result = await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          stepId: 'step_before_pause',
+          output: 'stdout:\nfinished during the pause',
+          attachments: [{ file_id: 'report', toolCallId: 'call_bg' }],
+        });
+
+        expect(result).toEqual({ matched: true, unfinished: false });
+        expect(await partOutputs()).toEqual([
+          ['call_bg', null, 'stdout:\nfinished during the pause'],
+          ['call_other', null, 'untouched'],
+        ]);
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        expect(saved?.attachments).toEqual([{ file_id: 'report', toolCallId: 'call_bg' }]);
+      });
+
+      it('still prefers the part whose step id matches exactly', async () => {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', output: 'stepless' },
+            },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', stepId: 'step_b', output: 'handle' },
+            },
+          ],
+        });
+
+        await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_0',
+          stepId: 'step_b',
+          output: 'settled',
+        });
+
+        expect(await partOutputs()).toEqual([
+          ['call_0', null, 'stepless'],
+          ['call_0', 'step_b', 'settled'],
+        ]);
+      });
+
+      it.each([
+        { file_id: 'shared-file' },
+        { filepath: '/api/files/code/download/session/shared-file' },
+      ])('preserves sibling step attachments when merging %j', async (fileKey) => {
+        const siblingAttachment = {
+          ...fileKey,
+          toolCallId: 'call_bg',
+          agentId: 'agent-a',
+          stepId: 'step_b',
+        };
+        const attachment = { ...siblingAttachment, stepId: 'step_a' };
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            ...toolCallContent(),
+            {
+              type: 'tool_call',
+              agentId: 'agent-a',
+              tool_call: { id: 'call_bg', stepId: 'step_b', output: 'sibling' },
+            },
+          ],
+          attachments: [siblingAttachment],
+        });
+        const patch = {
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          agentId: 'agent-a',
+          stepId: 'step_a',
+          output: 'settled',
+          attachments: [attachment],
+        };
+
+        expect(await updateToolCallResult(patch)).toEqual({ matched: true, unfinished: false });
+        expect(await updateToolCallResult(patch)).toEqual({ matched: true, unfinished: false });
+
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        expect(saved?.attachments).toEqual([siblingAttachment, attachment]);
+        expect((await partOutputs())[2]).toEqual(['call_bg', 'step_b', 'sibling']);
+      });
+
+      it('retries the exact part after attachment contention without patching its stepless sibling', async () => {
+        const stepless = {
+          type: 'tool_call',
+          agentId: 'agent-a',
+          tool_call: { id: 'call_bg', output: 'stepless' },
+        };
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            stepless,
+            {
+              type: 'tool_call',
+              agentId: 'agent-a',
+              tool_call: { id: 'call_bg', stepId: 'step_b', output: 'handle' },
+            },
+          ],
+          attachments: [],
+        });
+        const patch = {
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          stepId: 'step_b',
+          agentId: 'agent-a',
+          output: 'settled',
+          attachments: [{ file_id: 'result', toolCallId: 'call_bg', stepId: 'step_b' }],
+          backgroundTask: {
+            taskId: 'task-b',
+            toolName: 'execute_code',
+            status: 'completed' as const,
+            settledAt: new Date(),
+            resultClaim: {
+              kind: 'manual' as const,
+              claimId: 'poll-b',
+              claimedAt: new Date(),
+            },
+          },
+        };
+        const original = Message.collection.findOneAndUpdate.bind(Message.collection);
+        let collisions = 0;
+        const spy = jest
+          .spyOn(Message.collection, 'findOneAndUpdate')
+          .mockImplementation(async (...args) => {
+            if (Object.prototype.hasOwnProperty.call(args[0], 'attachments') && collisions < 8) {
+              collisions += 1;
+              await Message.updateOne(
+                { messageId: 'msg123', user: 'user123' },
+                { $push: { attachments: { file_id: `concurrent-${collisions}` } } },
+              );
+            }
+            return original(...args);
+          });
+        try {
+          expect(await updateToolCallResult(patch)).toEqual({ matched: false, unfinished: false });
+          expect(collisions).toBe(8);
+          const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+          expect(saved?.content?.[0]).toEqual(stepless);
+          expect(saved?.attachments).toHaveLength(8);
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(await updateToolCallResult(patch)).toEqual({ matched: true, unfinished: false });
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        expect(saved?.content?.[0]).toEqual(stepless);
+        expect(saved?.content?.[1]).toMatchObject({
+          tool_call: { output: 'settled', backgroundTask: patch.backgroundTask },
+        });
+        expect(saved?.attachments).toHaveLength(9);
+      });
+
+      describe.each([false, true])('fallback with attachments: %s', (withAttachments) => {
+        it.each(['exact', 'ambiguous', 'unfinished', 'claimed'])(
+          'leaves a concurrent %s change intact and retryable',
+          async (change) => {
+            await saveMessage(mockCtx, { ...mockMessageData, content: toolCallContent() });
+            const claim = { kind: 'manual', claimId: 'concurrent-poll', claimedAt: new Date() };
+            const original = Message.collection.findOneAndUpdate.bind(Message.collection);
+            let raced = false;
+            let concurrentContent: IMessage['content'];
+            const spy = jest
+              .spyOn(Message.collection, 'findOneAndUpdate')
+              .mockImplementation(async (...args) => {
+                if (
+                  !raced &&
+                  (Array.isArray(args[0].content) ||
+                    args[0].content?.$elemMatch?.['tool_call.stepId'] === null)
+                ) {
+                  raced = true;
+                  const filter = { messageId: 'msg123', user: 'user123' };
+                  if (change === 'unfinished') {
+                    await Message.updateOne(filter, { $set: { unfinished: true } });
+                  } else if (change === 'claimed') {
+                    await Message.updateOne(filter, {
+                      $set: { 'content.1.tool_call.backgroundTask.resultClaim': claim },
+                    });
+                  } else {
+                    await Message.updateOne(filter, {
+                      $push: {
+                        content: {
+                          type: 'tool_call',
+                          tool_call: {
+                            id: 'call_bg',
+                            output: 'concurrent',
+                            ...(change === 'exact' ? { stepId: 'step_a' } : {}),
+                          },
+                        },
+                      },
+                    });
+                  }
+                  concurrentContent = (
+                    await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean()
+                  )?.content;
+                }
+                return original(...args);
+              });
+            try {
+              const result = await updateToolCallResult({
+                userId: 'user123',
+                messageId: 'msg123',
+                conversationId: conversationId(),
+                toolCallId: 'call_bg',
+                stepId: 'step_a',
+                output: 'settled',
+                ...(withAttachments
+                  ? { attachments: [{ file_id: 'result', toolCallId: 'call_bg' }] }
+                  : {}),
+                backgroundTask: {
+                  taskId: 'task-a',
+                  toolName: 'execute_code',
+                  status: 'completed',
+                  settledAt: new Date(),
+                  resultClaim: { kind: 'wakeup', claimId: 'wakeup-a', claimedAt: new Date() },
+                },
+              });
+              expect(raced).toBe(true);
+              expect(result).toEqual({ matched: false, unfinished: false });
+              const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+              expect(saved?.content).toEqual(concurrentContent);
+              expect(saved?.attachments ?? []).toEqual([]);
+            } finally {
+              spy.mockRestore();
+            }
+          },
+        );
+      });
+
+      it.each([undefined, null, { kind: 'manual', claimId: 'existing', claimedAt: new Date() }])(
+        'atomically settles a fallback while preserving claim ownership: %j',
+        async (resultClaim) => {
+          await saveMessage(mockCtx, {
+            ...mockMessageData,
+            content: [
+              {
+                type: 'tool_call',
+                tool_call: {
+                  id: 'call_bg',
+                  stepId: null,
+                  output: 'handle',
+                  backgroundTask: { resultClaim },
+                },
+              },
+            ],
+          });
+          const backgroundTask = {
+            taskId: 'task-a',
+            toolName: 'execute_code',
+            status: 'completed' as const,
+            settledAt: new Date(),
+            resultClaim: { kind: 'wakeup' as const, claimId: 'new', claimedAt: new Date() },
+          };
+          expect(
+            await updateToolCallResult({
+              userId: 'user123',
+              messageId: 'msg123',
+              conversationId: conversationId(),
+              toolCallId: 'call_bg',
+              stepId: 'step_a',
+              output: 'settled',
+              backgroundTask,
+            }),
+          ).toEqual({ matched: true, unfinished: false });
+          const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+          expect(saved?.content?.[0]).toMatchObject({
+            tool_call: {
+              stepId: null,
+              output: 'settled',
+              backgroundTask: {
+                ...backgroundTask,
+                resultClaim: resultClaim ?? backgroundTask.resultClaim,
+              },
+            },
+          });
+        },
+      );
+
+      it.each([
+        { partAgent: 'agent-a', callAgent: 'agent-b', matched: true },
+        { partAgent: 'agent-b', callAgent: 'agent-a', matched: false },
+        { partAgent: null, callAgent: 'agent-a', matched: true },
+        { partAgent: null, callAgent: 'agent-b', matched: false },
+        { partAgent: null, callAgent: null, matched: true },
+      ])(
+        'keeps agent ownership when falling back: %j',
+        async ({ partAgent, callAgent, matched }) => {
+          await saveMessage(mockCtx, {
+            ...mockMessageData,
+            content: [
+              {
+                type: 'tool_call',
+                agentId: partAgent,
+                tool_call: { id: 'call_bg', agentId: callAgent, stepId: null, output: 'handle' },
+              },
+              {
+                type: 'tool_call',
+                agentId: 'agent-b',
+                tool_call: { id: 'call_bg', stepId: 'step_a', output: 'sibling' },
+              },
+            ],
+          });
+          expect(
+            await updateToolCallResult({
+              userId: 'user123',
+              messageId: 'msg123',
+              conversationId: conversationId(),
+              toolCallId: 'call_bg',
+              agentId: 'agent-a',
+              stepId: 'step_a',
+              output: 'settled',
+            }),
+          ).toEqual({ matched, unfinished: false });
+          expect(await partOutputs()).toEqual([
+            ['call_bg', null, matched ? 'settled' : 'handle'],
+            ['call_bg', 'step_a', 'sibling'],
+          ]);
+        },
+      );
+
+      it('does not guess on a row the turn is still writing', async () => {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          unfinished: true,
+          content: toolCallContent(),
+        });
+
+        const result = await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          stepId: 'step_not_saved_yet',
+          output: 'settled',
+        });
+
+        expect(result).toEqual({ matched: false, unfinished: false });
+        expect((await partOutputs())[0]).toEqual([
+          'call_bg',
+          null,
+          '{"background_task_id":"task-1"}',
+        ]);
+      });
+
+      it('leaves an ambiguous repeated call id unmatched rather than guessing', async () => {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', output: 'first' },
+            },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', output: 'second' },
+            },
+          ],
+        });
+
+        const result = await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_0',
+          stepId: 'step_lost',
+          output: 'settled',
+        });
+
+        expect(result).toEqual({ matched: false, unfinished: false });
+        expect(await partOutputs()).toEqual([
+          ['call_0', null, 'first'],
+          ['call_0', null, 'second'],
+        ]);
+      });
+    });
+
     it('appends to existing attachments instead of replacing them', async () => {
       await saveMessage(mockCtx, {
         ...mockMessageData,
@@ -1025,7 +1429,16 @@ describe('Message Operations', () => {
     });
 
     it('reports no match when the targeted tool-call part is absent', async () => {
-      await saveMessage(mockCtx, { ...mockMessageData, content: toolCallContent() });
+      /** The call was saved under a different, stamped step: a real mismatch, not
+       * a part that lost its step id. */
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        content: toolCallContent().map((part) =>
+          part.tool_call?.id === 'call_bg'
+            ? { ...part, tool_call: { ...part.tool_call, stepId: 'other-step' } }
+            : part,
+        ),
+      });
 
       await expect(
         updateToolCallResult({

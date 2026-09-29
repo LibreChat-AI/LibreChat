@@ -47,6 +47,7 @@ await enqueueAgentTrigger(
 ## Guarantees
 
 - Mongo owns queue state, leases, retry history, and dead letters across restarts and replicas.
+- Each replica retains bounded Mongo polling even when idle. See **Idle recovery** below for wake-ups, deadlines, and configuration.
 - A fresh token fences every claim, including reclaims by the same process.
 - A delivery is at-least-once. Fire, continue, and steer admission reuse the envelope's stable idempotency
   identity, so ambiguous retries do not duplicate accepted work.
@@ -70,6 +71,48 @@ await enqueueAgentTrigger(
 
 `getAgentTriggerDeadLetters` and `requeueAgentTrigger` are intentionally trusted in-process
 operations. Exposing them through an admin API requires a separate authorization and audit layer.
+
+## Idle recovery
+
+Queued-turn and maintenance scans start at a 30-second cadence and double the next idle wait
+up to two minutes after confirmed-empty discovery. Inspected reservations, reconciliation
+candidates, outstanding cleanup markers, full legacy-receipt pages, and failed scans do not
+count as empty. A failed discovery waits for its sibling Mongo operation to settle before a
+new pass or shutdown can complete; successfully acquired work still gets processed.
+
+Local failed publication and requeue, unfinished terminal finalization, and purge markers wake
+maintenance without waiting for an idle timer. A committed root success or dead letter remains
+authoritative when its inline cleanup fails. Healthy terminal writes do not wake a full sweep.
+Known reconciliation deadlines cap the next wait, including deadlines that expire while a scan
+is in flight. Notifications coalesce behind one active scan; shutdown prevents a follow-up.
+
+Every replica still scans without notifications, so a crashed producer or a missed cross-replica
+wake cannot strand durable work. The cap limits **idle sleep**, not end-to-end recovery time:
+scan duration, pagination, active leases, and persistence failures can add time. Delivery claims
+retain their separate 15-second idle cap and immediate local enqueue/requeue wake-ups.
+
+Configure `endpoints.agents.eventDriven.idlePolling` in `librechat.yaml`, for either standard or
+experimental clustered startup:
+
+| Setting | Default (ms) | Allowed range (ms) |
+| --- | ---: | ---: |
+| `queuedTurnMaxIntervalMs` | 120000 | 30000–300000 |
+| `maintenanceMaxIntervalMs` | 120000 | 30000–300000 |
+| `deliveryMaxIntervalMs` | 15000 | 1000–300000 |
+| `completionWaitMaxIntervalMs` | 60000 | 5000–300000 |
+
+`completionWaitMaxIntervalMs` caps how long a background or subagent completion waits between
+readiness checks while its result or parent turn is not ready. It backs off from 5 seconds by a tenth
+of its age; a durable result and a settled generation expedite it, so the cap bounds missed signals.
+Parent settlement expedites completion deliveries only in that conversation. A child's durable
+terminal result expedites only its task, plus the original task when recovering an abandoned
+attempt. Terminal replays signal readiness after registering their delivery, without executing the
+child again. A held delivery consumes its wake marker in the same fenced write that releases it
+for ordering or defers readiness. These writes use classic operators for DocumentDB compatibility;
+older workers can ignore the optional marker and fall back to the configured polling interval.
+
+Setting a recovery cap to `30000` restores its original fixed recovery frequency. No stored-data
+migration is needed; optional activity reporting preserves the existing numeric/boolean results.
 
 ## Remote event ingress
 

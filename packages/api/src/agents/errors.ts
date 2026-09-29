@@ -4,7 +4,8 @@ import {
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
-import { isOwnedAbortError } from '~/utils/errors';
+import { MCPErrorCodes, isMCPInitializationError } from '~/mcp/errors';
+import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
@@ -58,7 +59,7 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
-    isOwnedAbortError(error, options.signal) ||
+    isMCPInitializationError(error, options.signal) ||
     FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)
   );
@@ -99,6 +100,67 @@ export function resolveLangChainError(error: unknown): string | undefined {
   const code = getLangChainErrorCode(error);
   const type = code == null ? undefined : LANGCHAIN_ERROR_TYPES[code];
   return type == null ? undefined : JSON.stringify({ type });
+}
+
+export type ModelStreamFailure = 'closed' | 'stalled';
+
+/** A timeout while reading a response body, not while waiting for its headers. */
+const STALLED_TRANSPORT_CODES = new Set(['UND_ERR_BODY_TIMEOUT']);
+const STALLED_TRANSPORT_NAMES = new Set(['BodyTimeoutError']);
+/** Socket errors only describe a mid-response close when Fetch also reports body termination. */
+const CLOSED_TRANSPORT_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE']);
+
+/**
+ * How a model response died in transit, or `undefined` for any other failure.
+ *
+ * Fetch reports both a provider hanging up mid-stream and our own body timeout as a bare
+ * `TypeError: terminated`; only the undici error in its `cause` tells them apart. A stall wins
+ * over a close found deeper in the chain, since the timeout is what ended the request.
+ */
+export function getModelStreamFailure(error: unknown): ModelStreamFailure | undefined {
+  let current = error;
+  let terminated = false;
+  let closed = false;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current != null; depth++) {
+    if (typeof current !== 'object') {
+      break;
+    }
+    const code = readErrorProperty(current, 'code');
+    const name = readErrorProperty(current, 'name');
+    if (
+      (typeof code === 'string' && STALLED_TRANSPORT_CODES.has(code)) ||
+      (typeof name === 'string' && STALLED_TRANSPORT_NAMES.has(name))
+    ) {
+      return 'stalled';
+    }
+    if (typeof code === 'string' && CLOSED_TRANSPORT_CODES.has(code)) {
+      closed = true;
+    }
+    if (name === 'TypeError' && readErrorProperty(current, 'message') === 'terminated') {
+      terminated = true;
+    }
+    current = readErrorProperty(current, 'cause');
+  }
+  return closed && terminated ? 'closed' : undefined;
+}
+
+const MODEL_STREAM_ERROR_TYPES: Record<ModelStreamFailure, ErrorTypes> = {
+  closed: ErrorTypes.MODEL_STREAM_CLOSED,
+  stalled: ErrorTypes.MODEL_STREAM_STALLED,
+};
+
+/** Safe fallback for an older client that cannot localize these new error types yet. */
+const MODEL_STREAM_FALLBACK: Record<ModelStreamFailure, string> = {
+  closed: 'The model provider closed the connection before the response finished. Try again.',
+  stalled: 'The model provider stopped sending the response, and the request timed out. Try again.',
+};
+
+/** Typed payload for new clients, with useful prose when the client bundle predates these types. */
+export function resolveModelStreamError(error: unknown): string | undefined {
+  const failure = getModelStreamFailure(error);
+  return failure == null
+    ? undefined
+    : `${MODEL_STREAM_FALLBACK[failure]}\n${JSON.stringify({ type: MODEL_STREAM_ERROR_TYPES[failure] })}`;
 }
 
 /**
@@ -189,4 +251,30 @@ export function isStepLimitError(error: unknown): boolean {
     current = readErrorProperty(current, 'cause');
   }
   return false;
+}
+
+/** Outward metadata shared by UI generation failures and both remote agent APIs. */
+export function getAgentErrorMetadata(
+  error: unknown,
+): { status?: number; code?: string; retryable?: boolean } | undefined {
+  if (error instanceof OboTokenResolutionError) {
+    return {
+      status: error.retryable ? 503 : 403,
+      code: error.retryable
+        ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
+        : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      retryable: error.retryable,
+    };
+  }
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+  const status = candidate.status ?? candidate.statusCode;
+  return {
+    ...(typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600
+      ? { status }
+      : {}),
+    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+  };
 }

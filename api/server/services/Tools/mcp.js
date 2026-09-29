@@ -9,6 +9,7 @@ const {
   getMissingRuntimeBodyPlaceholderFields,
   isMCPInitializationError,
   prepareMCPAuthorizationMutation,
+  recordScheduledMCPToolAuthFailure,
 } = require('@librechat/api');
 const { CacheKeys, Constants } = require('librechat-data-provider');
 const { getMCPManager, getMCPServersRegistry, getFlowStateManager } = require('~/config');
@@ -127,6 +128,8 @@ async function loadMCPServerCatalogs({
  * @param {import('@librechat/api').RequestScopedMCPConnectionStore} [params.requestScopedConnections]
  * @param {Record<string, Record<string, string>>} [params.userMCPAuthMap]
  * @param {import('@librechat/api').MCPServerCatalogRecoveryPolicy} [params.recoveryPolicy]
+ * @param {string | null} [params.streamId] - Owning generation's stream ID, if resumable.
+ * @param {number} [params.jobCreatedAt] - Owning generation epoch.
  */
 async function reinitMCPServer({
   user,
@@ -147,6 +150,8 @@ async function reinitMCPServer({
   oboIdentityContext,
   oauthEnd,
   recoveryPolicy,
+  streamId,
+  jobCreatedAt,
 }) {
   /** @type {MCPConnection | null} */
   let connection = null;
@@ -452,6 +457,10 @@ async function reinitMCPServer({
     return result;
   } catch (error) {
     if (isMCPInitializationError(error, signal)) {
+      await recordScheduledMCPToolAuthFailure(
+        { error, streamId, jobCreatedAt, userId: user?.id, serverName },
+        () => require('~/server/services/Schedules').recordMCPToolAuthFailure,
+      );
       throw error;
     }
     logger.error('[MCP Reinitialize] Error loading MCP tools; servers may still be initializing');

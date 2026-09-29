@@ -142,8 +142,8 @@ export default function ChatRoute() {
   const assistantListMap = useAssistantListMap();
   /** The map comes from Root's shared context (one mapping pass app-wide); the
    * select-less observer only tracks settle state. Only a loaded list may
-   * invalidate a stored agent pick: on a transient catalog failure (retries are
-   * disabled) the map stays unknown, the pick stays trusted, and the gate below
+   * invalidate a stored agent pick: on a transient catalog failure after retries,
+   * the map stays unknown, the pick stays trusted, and the gate below
    * releases so the landing never hangs on the error. */
   const agentsMap: TAgentsMap | undefined = useAgentsMapContext();
   const agentsQuery = useListAgentsQuery(

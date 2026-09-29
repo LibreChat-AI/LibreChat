@@ -33,6 +33,7 @@ import type { Agent } from './types/agents';
 
 export * from './schemas';
 export * from './types/subagents';
+export * from './types/background';
 
 export type TMessages = TMessage[];
 
@@ -614,18 +615,24 @@ export type TCodeEnvironmentStatusResponse = {
   workspaces?: CodeWorkspaceDescriptor[];
 };
 
-/** Moves a sealed attached decision onto the environments a conversation's agents now use. */
+/**
+ * Replaces a conversation's sealed code-environment decision: a move onto the environments its
+ * agents now use, an attach for a chat running without one, or a detach off an attached machine.
+ */
 export type TCodeEnvironmentMoveRequest = {
   conversationId: string;
-  /** The persisted selections being replaced; a mismatch rejects the move as stale. */
+  /** The persisted selections being replaced, empty for a chat without an attached environment;
+   *  a mismatch rejects the change as stale. */
   from: CodeWorkspaceSelection[];
+  /** Empty to continue without an attached environment. */
   to: CodeWorkspaceSelection[];
 };
 
 export type TCodeEnvironmentMoveResponse = {
   conversationId: string;
-  codeEnvironmentMode: 'attached';
-  codeWorkspaces: CodeWorkspaceSelection[];
+  codeEnvironmentMode: CodeEnvironmentMode;
+  /** Absent once the conversation continues without an attached environment. */
+  codeWorkspaces?: CodeWorkspaceSelection[];
 };
 
 /** Sanitized results of server request shaping for each saved toggle state. */

@@ -4264,6 +4264,7 @@ describe('createToolExecuteHandler', () => {
           mimeType: 'text/markdown',
           bytes: 10,
           filepath: '/tmp/a.md',
+          file_id: 'revision-1',
           source: 'local',
           relativePath: 'references/a.md',
         })),
@@ -4297,6 +4298,286 @@ describe('createToolExecuteHandler', () => {
           content: 'hello new\n',
           mimeType: 'text/markdown',
         }),
+      );
+    });
+
+    it.each([
+      ['edit_file', { old_text: 'hello old', new_text: 'hello new' }, 'hello new\n'],
+      ['create_file', { content: 'replacement', overwrite: true }, 'replacement'],
+    ] as const)(
+      'passes the revision read with the bytes to %s for an existing subfile',
+      async (toolName, args, expectedContent) => {
+        const saveSkillFileContent = jest.fn(async () => ({
+          bytes: 11,
+          relativePath: 'references/a.md',
+        }));
+        const handler = makeAuthoringHandler({
+          getSkillByName: jest.fn(async () => ({
+            _id: SKILL_ID,
+            name: 'edit-skill',
+            body: '# Existing',
+            fileCount: 1,
+            version: 1,
+          })),
+          getSkillFileByPath: jest.fn(async () => ({
+            file_id: 'revision-1',
+            content: 'hello old\n',
+            isBinary: false,
+            mimeType: 'text/markdown',
+            bytes: 10,
+            filepath: '/tmp/a.md',
+            source: 'local',
+            relativePath: 'references/a.md',
+          })),
+          saveSkillFileContent,
+        });
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'call_revision',
+            name: toolName,
+            args: { path: 'skills/edit-skill/references/a.md', ...args },
+          },
+        ]);
+        expect(result.status).toBe('success');
+        expect(saveSkillFileContent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            relativePath: 'references/a.md',
+            content: expectedContent,
+            expectedFileId: 'revision-1',
+            createOnly: false,
+          }),
+        );
+      },
+    );
+
+    it('requires a revision before replacing an existing skill subfile', async () => {
+      const saveSkillFileContent = jest.fn();
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'edit-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          content: 'hello old\n',
+          isBinary: false,
+          mimeType: 'text/markdown',
+          bytes: 10,
+          filepath: '/tmp/a.md',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_missing_revision',
+          name: 'edit_file',
+          args: {
+            path: 'skills/edit-skill/references/a.md',
+            old_text: 'hello old',
+            new_text: 'hello new',
+          },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('revision');
+      expect(saveSkillFileContent).not.toHaveBeenCalled();
+    });
+
+    it('requires an absent file when create_file sees no subfile', async () => {
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: 11,
+        relativePath: 'references/new.md',
+      }));
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'edit-skill',
+          body: '# Existing',
+          fileCount: 0,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => null),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_create_only',
+          name: 'create_file',
+          args: { path: 'skills/edit-skill/references/new.md', content: 'new subfile' },
+        },
+      ]);
+      expect(result.status).toBe('success');
+      expect(saveSkillFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({ relativePath: 'references/new.md', createOnly: true }),
+      );
+    });
+
+    it('keeps the streamed file revision paired with the text before saving an edit', async () => {
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: 10,
+        relativePath: 'references/a.md',
+      }));
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'stream-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          file_id: 'streamed-revision',
+          isBinary: false,
+          mimeType: 'text/markdown',
+          bytes: 10,
+          filepath: '/tmp/a.md',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        getStrategyFunctions: jest.fn(() => ({
+          getDownloadStream: jest.fn(async () => Readable.from([Buffer.from('hello old\n')])),
+        })),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_streamed_edit',
+          name: 'edit_file',
+          args: {
+            path: 'skills/stream-skill/references/a.md',
+            old_text: 'hello old',
+            new_text: 'hello new',
+          },
+        },
+      ]);
+      expect(result.status).toBe('success');
+      expect(saveSkillFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: 'hello new\n',
+          expectedFileId: 'streamed-revision',
+          createOnly: false,
+        }),
+      );
+    });
+
+    it('reports a safe conflict when Mongo rejects a revision after the agent read', async () => {
+      const saveSkillFileContent = jest.fn(async () => {
+        throw Object.assign(new Error('stale revision'), { code: 'SKILL_FILE_CONFLICT' });
+      });
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'edit-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          file_id: 'revision-1',
+          content: 'hello old\n',
+          isBinary: false,
+          mimeType: 'text/markdown',
+          bytes: 10,
+          filepath: '/tmp/a.md',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_conflict',
+          name: 'edit_file',
+          args: {
+            path: 'skills/edit-skill/references/a.md',
+            old_text: 'hello old',
+            new_text: 'hello new',
+          },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('Re-read skills/edit-skill/references/a.md and retry');
+      expect(result.content).not.toContain('Updated');
+      expect(saveSkillFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedFileId: 'revision-1', createOnly: false }),
+      );
+    });
+
+    it.each(['github', 'notion'] as const)(
+      'does not allow an agent to modify a %s-managed skill file',
+      async (source) => {
+        const saveSkillFileContent = jest.fn();
+        const handler = makeAuthoringHandler({
+          getSkillByName: jest.fn(async () => ({
+            _id: SKILL_ID,
+            name: 'managed-skill',
+            source,
+            body: '# Managed',
+            fileCount: 1,
+            version: 1,
+          })),
+          getSkillFileByPath: jest.fn(async () => ({
+            file_id: 'revision-1',
+            content: 'upstream text\n',
+            isBinary: false,
+            mimeType: 'text/markdown',
+            bytes: 14,
+            filepath: '/tmp/managed.md',
+            source: 'local',
+            relativePath: 'references/a.md',
+          })),
+          saveSkillFileContent,
+        });
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'call_managed_edit',
+            name: 'edit_file',
+            args: {
+              path: 'skills/managed-skill/references/a.md',
+              old_text: 'upstream text',
+              new_text: 'agent text',
+            },
+          },
+        ]);
+        expect(result.status).toBe('error');
+        expect(result.errorMessage).toContain('Externally managed skill files are read-only');
+        expect(saveSkillFileContent).not.toHaveBeenCalled();
+      },
+    );
+
+    it('reports a newly created competing file without claiming the agent created it', async () => {
+      const saveSkillFileContent = jest.fn(async () => {
+        throw Object.assign(new Error('another writer created the path'), {
+          code: 'SKILL_FILE_CONFLICT',
+        });
+      });
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'edit-skill',
+          body: '# Existing',
+          fileCount: 0,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => null),
+        saveSkillFileContent,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_competing_create',
+          name: 'create_file',
+          args: { path: 'skills/edit-skill/references/new.md', content: 'new file' },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('File already exists');
+      expect(result.errorMessage).toContain('overwrite: true');
+      expect(saveSkillFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({ createOnly: true, expectedFileId: undefined }),
       );
     });
 
@@ -4346,6 +4627,7 @@ describe('createToolExecuteHandler', () => {
             mimeType: 'text/markdown',
             bytes: protectedValue.length + 11,
             filepath: '/tmp/private.md',
+            file_id: 'revision-1',
             source: 'local',
             relativePath: 'references/private.md',
           })),
@@ -4390,6 +4672,7 @@ describe('createToolExecuteHandler', () => {
           mimeType: 'text/markdown',
           bytes: 10,
           filepath: '/tmp/a.md',
+          file_id: 'revision-1',
           source: 'local',
           relativePath: 'references/a.md',
         })),
@@ -4434,6 +4717,7 @@ describe('createToolExecuteHandler', () => {
           mimeType: 'text/markdown',
           bytes: 10,
           filepath: '/tmp/a.md',
+          file_id: 'revision-1',
           source: 'local',
           relativePath: 'references/a.md',
         })),
@@ -4521,6 +4805,7 @@ describe('createToolExecuteHandler', () => {
           mimeType: 'text/markdown',
           bytes: 10,
           filepath: '/tmp/a.md',
+          file_id: 'revision-1',
           source: 'local',
           relativePath: 'references/a.md',
         })),
@@ -4951,6 +5236,7 @@ describe('createToolExecuteHandler', () => {
           mimeType: 'text/markdown',
           bytes: 600 * 1024,
           filepath: '/tmp/large.md',
+          file_id: 'revision-1',
           source: 'local',
           relativePath: 'references/large.md',
         })),
@@ -5004,6 +5290,7 @@ describe('createToolExecuteHandler', () => {
           mimeType: 'text/markdown',
           bytes: Buffer.byteLength(storedContent, 'utf8'),
           filepath: '/tmp/a.md',
+          file_id: 'revision-1',
           source: 'local',
           relativePath: 'references/a.md',
         })),
@@ -5323,7 +5610,9 @@ describe('createToolExecuteHandler', () => {
               workspaceInstanceId: 'a'.repeat(64),
               operations: TEST_ATTACHED_WORKSPACE_OPERATIONS,
             },
-            codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0 } },
+            codeEnvironmentConfigSchema: {
+              limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 },
+            },
             bridgeWorkerId: 'user-worker',
           },
         },
@@ -5355,6 +5644,8 @@ describe('createToolExecuteHandler', () => {
         workspace_id: 'project-a',
         workspace_instance_id: 'a'.repeat(64),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: 125_000,
+        deadlineAtMs: expect.any(Number),
         codeApiBaseUrl: 'https://code.example.com',
         executionProfile: 'stateful',
         bridgeWorkerId: 'user-worker',
@@ -5552,13 +5843,14 @@ describe('createToolExecuteHandler', () => {
     it.each([
       { budget: 1200, elapsed: 0, remaining: 1200 },
       { budget: 1200, elapsed: 400, remaining: 800 },
-      { budget: 1200, elapsed: 1200, remaining: null },
-      { budget: 1200, elapsed: 1500, remaining: null },
+      { budget: 1200, elapsed: 1200, remaining: 0 },
+      { budget: 1200, elapsed: 1500, remaining: 0 },
       { budget: 0, elapsed: 400, remaining: 0 },
     ])(
-      'shares a protected edit retry horizon ($budget ms, preview $elapsed ms)',
+      'shares a protected edit capacity retry horizon ($budget ms, preview $elapsed ms)',
       async ({ budget, elapsed, remaining }) => {
-        let nowMs = Date.now();
+        const startedAt = Date.now();
+        let nowMs = startedAt;
         jest.spyOn(Date, 'now').mockImplementation(() => nowMs);
         const previewWorkspaceEdit = jest.fn(async () => {
           nowMs += elapsed;
@@ -5612,7 +5904,9 @@ describe('createToolExecuteHandler', () => {
               executionProfile: 'stateful',
               statefulSessions: true,
               environmentType: 'attached',
-              codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: budget } },
+              codeEnvironmentConfigSchema: {
+                limits: { maxQueueWaitMs: budget, maxRequestTimeoutMs: 125_000 },
+              },
               bridgeWorkerId: 'user-worker',
             },
           },
@@ -5631,19 +5925,19 @@ describe('createToolExecuteHandler', () => {
         ]);
 
         expect(previewWorkspaceEdit).toHaveBeenCalledWith(
-          expect.objectContaining({ maxQueueWaitMs: budget }),
+          expect.objectContaining({
+            maxQueueWaitMs: budget,
+            maxRequestTimeoutMs: 125_000,
+            deadlineAtMs: startedAt + 125_000,
+          }),
         );
-        if (remaining == null) {
-          expect(result.status).toBe('error');
-          expect(result.errorMessage).toContain('The file was not modified');
-          expect(editWorkspaceFile).not.toHaveBeenCalled();
-          return;
-        }
         expect(result.status).toBe('success');
         expect(editWorkspaceFile).toHaveBeenCalledWith(
           expect.objectContaining({
             expected_base_sha256: 'b'.repeat(64),
             maxQueueWaitMs: remaining,
+            maxRequestTimeoutMs: 125_000,
+            deadlineAtMs: startedAt + 125_000,
           }),
         );
       },
@@ -6339,7 +6633,9 @@ describe('createToolExecuteHandler', () => {
             workspaceInstanceId: 'b'.repeat(64),
             operations: TEST_ATTACHED_WORKSPACE_OPERATIONS,
           },
-          codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0 } },
+          codeEnvironmentConfigSchema: {
+            limits: { maxQueueWaitMs: 0, maxRequestTimeoutMs: 125_000 },
+          },
           bridgeWorkerId: 'personal-worker-1',
           statefulSessions: true,
         },
@@ -6360,6 +6656,7 @@ describe('createToolExecuteHandler', () => {
         workspace_id: 'project-a',
         workspace_instance_id: 'b'.repeat(64),
         maxQueueWaitMs: 0,
+        maxRequestTimeoutMs: 125_000,
         start_line: 1,
         max_lines: 200,
         codeApiBaseUrl: 'https://code.example.com/v1',
@@ -6643,6 +6940,7 @@ describe('createToolExecuteHandler', () => {
           executionProfile: 'stateful',
           environmentType: 'attached',
           bridgeWorkerId: 'personal-worker-1',
+          codeEnvironmentConfigSchema: { limits: { maxRequestTimeoutMs: 125_000 } },
           statefulSessions: true,
         },
         searchWorkspace,
@@ -6667,6 +6965,7 @@ describe('createToolExecuteHandler', () => {
         query: 'needle',
         workspace_id: 'project-a',
         maxQueueWaitMs: 300000,
+        maxRequestTimeoutMs: 125_000,
         path: 'src',
         max_results: 20,
         codeApiBaseUrl: 'https://code.example.com/v1',
@@ -6797,6 +7096,7 @@ describe('createToolExecuteHandler', () => {
           executionProfile: 'stateful',
           environmentType: 'attached',
           bridgeWorkerId: 'personal-worker-1',
+          codeEnvironmentConfigSchema: { limits: { maxRequestTimeoutMs: 125_000 } },
           statefulSessions: true,
         },
         listWorkspaceFiles,
@@ -6820,6 +7120,7 @@ describe('createToolExecuteHandler', () => {
       expect(listWorkspaceFiles).toHaveBeenCalledWith({
         workspace_id: 'project-a',
         maxQueueWaitMs: 300000,
+        maxRequestTimeoutMs: 125_000,
         path: 'src',
         after_path: 'src/app.ts',
         max_results: 20,

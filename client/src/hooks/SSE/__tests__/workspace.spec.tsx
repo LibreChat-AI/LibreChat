@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Provider } from 'jotai';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
 import { act, renderHook } from '@testing-library/react';
@@ -48,6 +49,9 @@ jest.mock('~/hooks/Agents/useGetAgentsConfig', () => () => ({
 }));
 jest.mock('~/data-provider', () => ({
   ...jest.requireActual('~/data-provider'),
+  /** The barrel can be partially initialized through the hook imports above. Keep these
+   * real hooks rather than snapshotting missing exports or replacing recovery with a stub. */
+  ...jest.requireActual('~/data-provider/CodeEnvironments'),
   useCodeEnvironmentStatusQueries: () => mockStatus(),
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
 }));
@@ -65,9 +69,11 @@ function setup(current = initialConversation, isAddedRequest = false) {
   queryClient.setQueryData([QueryKeys.allConversations], { pages: [], pageParams: [] });
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot>
-        <MemoryRouter initialEntries={['/c/new']}>{children}</MemoryRouter>
-      </RecoilRoot>
+      <Provider>
+        <RecoilRoot>
+          <MemoryRouter initialEntries={['/c/new']}>{children}</MemoryRouter>
+        </RecoilRoot>
+      </Provider>
     </QueryClientProvider>
   );
   const hook = renderHook(
@@ -224,15 +230,50 @@ describe('workspace decision at stream acknowledgement', () => {
     expect(result.current.conversation?.codeWorkspaces).toBeUndefined();
   });
 
-  it('records a first decision on a saved conversation that has not used a workspace', () => {
+  it.each(['created', 'sync'] as const)(
+    'records No workspace on %s for a saved chat that has not granted workspace access',
+    (event) => {
+      const { result, submission, createdData } = setup({
+        ...initialConversation,
+        conversationId: 'saved-chat',
+      });
+      expect(result.current.workspace.locked).toBe(false);
+      expect(submission.codeEnvironmentMode).toBe('without_attached');
+      expect(submission.codeWorkspaces).toBeUndefined();
+      act(() => {
+        if (event === 'created') result.current.createdHandler(createdData, submission);
+        else
+          result.current.syncHandler(
+            {
+              sync: true,
+              thread_id: 'thread',
+              conversationId: 'saved-chat',
+              requestMessage: submission.userMessage,
+              responseMessage: submission.initialResponse,
+            },
+            submission,
+          );
+      });
+      expect(result.current.conversation?.codeEnvironmentMode).toBe('without_attached');
+      expect(result.current.conversation?.codeWorkspaces).toBeUndefined();
+      expect(result.current.workspace).toMatchObject({ locked: true, canSubmit: true });
+    },
+  );
+
+  it('records an explicitly selected first workspace on a previously undecided saved chat', () => {
     const { result, submission, createdData } = setup({
       ...initialConversation,
       conversationId: 'saved-chat',
     });
-    expect(result.current.workspace.locked).toBe(false);
-    act(() => result.current.createdHandler(createdData, submission));
+    act(() =>
+      result.current.createdHandler(createdData, {
+        ...submission,
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [selection],
+      }),
+    );
     expect(result.current.conversation?.codeWorkspaces).toEqual([selection]);
-    expect(result.current.workspace.locked).toBe(true);
+    expect(result.current.workspace).toMatchObject({ locked: true, canSubmit: true });
   });
 
   it('uses the submitted without-attached choice rather than a stale draft selection', () => {

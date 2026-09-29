@@ -3042,6 +3042,223 @@ describe('erasure sweep rotation and idempotency-key lookup', () => {
   });
 });
 
+describe('scheduled MCP tool failure receipt', () => {
+  it('records only the matching active run and preserves the backwards-compatible failure', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T14:00:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor, conversationId: 'c1' }));
+    const input = { scheduleId: schedule.id, scheduledFor, conversationId: 'c1', server: 'Graph' };
+    expect(await methods.recordMCPToolAuthFailure({ ...input, conversationId: 'another' })).toBe(
+      false,
+    );
+    expect(await methods.recordMCPToolAuthFailure({ ...input, tenantId: 'other-tenant' })).toBe(
+      false,
+    );
+    expect(await methods.recordMCPToolAuthFailure(input)).toBe(true);
+    expect(await methods.recordMCPToolAuthFailure(input)).toBe(true);
+    const run = await methods.getScheduleRunAbortState(schedule.id, scheduledFor);
+    expect(run?.mcp).toEqual([
+      { server: 'Graph', status: 'mcp_configuration_missing', detail: 'unattended_auth_required' },
+    ]);
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'error',
+      mcp: run!.mcp,
+      error: `mcp_configuration_missing: ${JSON.stringify(run!.mcp)}`,
+      autoDisableAfterFailures: 5,
+    });
+    const after = await getSchedule(schedule.id);
+    expect(after.enabled).toBe(false);
+    expect(after.disabledReason).toBe('mcp_configuration_missing');
+    expect(after.lastRun?.mcp).toEqual(run!.mcp);
+    expect(await methods.recordMCPToolAuthFailure(input)).toBe(false);
+  });
+});
+
+describe('scheduled MCP receipt settlement', () => {
+  const failure = {
+    server: 'Graph',
+    status: 'mcp_configuration_missing' as const,
+    detail: 'unattended_auth_required' as const,
+  };
+  const ready = { server: 'Graph', status: 'ready' as const };
+
+  it.each(['success', 'skipped_balance', 'error'] as const)(
+    'keeps a persisted receipt through post-enqueue writes and settles %s as a permanent failure',
+    async (status) => {
+      const schedule = await methods.createSchedule(scheduleData());
+      const scheduledFor = new Date('2026-09-09T15:00:00Z');
+      const input = {
+        scheduleId: schedule.id,
+        scheduledFor,
+        conversationId: 'c1',
+        server: 'Graph',
+      };
+      await methods.insertScheduleRun(
+        runData(schedule, {
+          scheduledFor,
+          conversationId: 'c1',
+          configRevision: schedule.configRevision,
+          mcp: [ready],
+        }),
+      );
+
+      expect(await methods.recordMCPToolAuthFailure(input)).toBe(true);
+      await methods.setRunFireDetails(schedule.id, scheduledFor, {
+        conversationId: 'c1',
+        mcp: [ready],
+        droppedFileIds: ['missing-file'],
+      });
+      expect((await getRun(schedule.id, scheduledFor)).mcp).toEqual([ready, failure]);
+
+      await methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status,
+        conversationId: 'c1',
+        ...(status === 'success' ? { mcp: [ready] } : {}),
+        ...(status === 'error' ? { error: 'Run ended in error' } : {}),
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+        balanceSkipDisableThreshold: 3,
+      });
+      const result = await getRun(schedule.id, scheduledFor);
+      const card = await getSchedule(schedule.id);
+      expect(result).toMatchObject({ status: 'error', bookkept: true, mcp: [ready, failure] });
+      expect(card.lastRun).toMatchObject({ status: 'error', mcp: [ready, failure] });
+      expect(card.enabled).toBe(false);
+      expect(card.disabledReason).toBe('mcp_configuration_missing');
+      expect(card.failureCount).toBe(1);
+      expect(card.balanceSkipCount).toBe(0);
+      expect(card.lastRun?.error).toBe(
+        status === 'error' ? 'Run ended in error' : 'MCP unattended authorization unavailable',
+      );
+      await methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status: 'success',
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+      });
+      expect((await getSchedule(schedule.id)).failureCount).toBe(1);
+      expect(await methods.recordMCPToolAuthFailure(input)).toBe(false);
+    },
+  );
+
+  it('lets the receipt and terminal settlement linearize in either order', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T16:00:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor, conversationId: 'c1' }));
+    const [recorded] = await Promise.all([
+      methods.recordMCPToolAuthFailure({
+        scheduleId: schedule.id,
+        scheduledFor,
+        conversationId: 'c1',
+        server: 'Graph',
+      }),
+      methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status: 'success',
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+      }),
+    ]);
+    const run = await getRun(schedule.id, scheduledFor);
+    const card = await getSchedule(schedule.id);
+    expect(run.status).toBe(recorded ? 'error' : 'success');
+    expect(card.disabledReason).toBe(recorded ? 'mcp_configuration_missing' : undefined);
+    expect(card.lastRun?.status).toBe(run.status);
+  });
+
+  it('does not restore a cleared conversation ID from late fire bookkeeping', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T17:00:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor, conversationId: 'c1' }));
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'interrupted',
+      clearConversationId: true,
+      autoDisableAfterFailures: 5,
+    });
+    await methods.setRunFireDetails(schedule.id, scheduledFor, {
+      conversationId: 'c1',
+      mcp: [ready],
+    });
+    const result = await getRun(schedule.id, scheduledFor);
+    expect(result.conversationId).toBeUndefined();
+    expect(result.mcp).toBeUndefined();
+  });
+
+  it('fences an old receipt from disabling a schedule the owner has edited', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T18:00:00Z');
+    await methods.insertScheduleRun(
+      runData(schedule, { scheduledFor, conversationId: 'c1', configRevision: 0 }),
+    );
+    await methods.recordMCPToolAuthFailure({
+      scheduleId: schedule.id,
+      scheduledFor,
+      conversationId: 'c1',
+      server: 'Graph',
+    });
+    await Schedule.updateOne({ id: schedule.id }, { $inc: { configRevision: 1 } });
+
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'success',
+      autoDisableAfterFailures: 5,
+    });
+    expect((await getRun(schedule.id, scheduledFor)).status).toBe('error');
+    expect(await getSchedule(schedule.id)).toMatchObject({ enabled: true, failureCount: 0 });
+    expect((await getSchedule(schedule.id)).lastRun).toBeUndefined();
+  });
+
+  it('replays a receipt when schedule bookkeeping fails after the run terminalizes', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-09-09T19:00:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor, conversationId: 'c1' }));
+    await methods.recordMCPToolAuthFailure({
+      scheduleId: schedule.id,
+      scheduledFor,
+      conversationId: 'c1',
+      server: 'Graph',
+    });
+    const firstWrite = jest
+      .spyOn(Schedule, 'updateOne')
+      .mockRejectedValueOnce(new Error('DB unavailable'));
+    await expect(
+      methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status: 'success',
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+      }),
+    ).rejects.toThrow('DB unavailable');
+    firstWrite.mockRestore();
+    const pending = await getRun(schedule.id, scheduledFor);
+    expect(pending).toMatchObject({ status: 'error', bookkept: false, mcp: [failure] });
+
+    const replay = {
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'error' as const,
+      conversationId: 'c1',
+      error: pending.error,
+      mcp: pending.mcp,
+      autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+    };
+    await methods.finalizeBookkeeping(replay);
+    await methods.finalizeBookkeeping(replay);
+    expect((await getRun(schedule.id, scheduledFor)).bookkept).toBe(true);
+    expect(await getSchedule(schedule.id)).toMatchObject({
+      enabled: false,
+      disabledReason: 'mcp_configuration_missing',
+      failureCount: 1,
+    });
+  });
+});
+
 describe('scheduled MCP failure policy', () => {
   it.each([
     'mcp_reauth_required',

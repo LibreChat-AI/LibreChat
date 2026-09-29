@@ -1,5 +1,5 @@
 import z from 'zod';
-import { EModelEndpoint, isOpus55Model, supportsContext1m } from 'librechat-data-provider';
+import { EModelEndpoint, supportsContext1m, supportsOutput128k } from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
 /**
@@ -181,6 +181,8 @@ const anthropicModels = {
   'claude-sonnet-4-9': 1000000,
   'claude-sonnet-4.9': 1000000,
   'claude-sonnet-5': 1000000,
+  'claude-sonnet-5-5': 1000000,
+  'claude-sonnet-5.5': 1000000,
   'claude-opus-4-6': 1000000,
   'claude-opus-4-7': 1000000,
   'claude-opus-4-8': 1000000,
@@ -194,7 +196,7 @@ const anthropicModels = {
 };
 
 const ANTHROPIC_CONTEXT_1M = 1000000;
-const ANTHROPIC_OPUS_55_OUTPUT = 128000;
+const ANTHROPIC_OUTPUT_128K = 128000;
 const ANTHROPIC_SONNET_4_6_PLUS_OUTPUT = 128000;
 const ANTHROPIC_SONNET_4_6_PLUS_PATTERN =
   /(?:claude-sonnet[-.]?4[-.]?(?:[6-9]|\d{2})|claude[-.]?4[-.]?(?:[6-9]|\d{2})[-.]?sonnet)(?=$|[^0-9])/;
@@ -226,11 +228,11 @@ function getAnthropicSonnet46PlusOutput(
   return ANTHROPIC_SONNET_4_6_PLUS_OUTPUT;
 }
 
-function getAnthropicOpus55Output(modelName: string, endpoint: EModelEndpoint): number | undefined {
-  if (!usesAnthropicContextMap(endpoint) || !isOpus55Model(modelName)) {
+function getAnthropicOutput128k(modelName: string, endpoint: EModelEndpoint): number | undefined {
+  if (!usesAnthropicContextMap(endpoint) || !supportsOutput128k(modelName)) {
     return undefined;
   }
-  return ANTHROPIC_OPUS_55_OUTPUT;
+  return ANTHROPIC_OUTPUT_128K;
 }
 
 const deepseekModels = {
@@ -419,9 +421,16 @@ const amazonModels = {
   'nova-2-pro': 995000, // -5000 from max
 };
 
+/** Bedrock can reject near-limit GPT prompts before its published window is reached. */
+const bedrockOpenAIContext = 950000;
+
 const openAIBedrockModels = {
   'openai.gpt-oss-20b': 128000,
   'openai.gpt-oss-120b': 128000,
+  'openai.gpt-5.6': bedrockOpenAIContext,
+  'openai.gpt-6-astra': bedrockOpenAIContext,
+  'openai.gpt-6-sol': bedrockOpenAIContext,
+  'openai.gpt-6-luna': bedrockOpenAIContext,
 };
 
 const bedrockModels = {
@@ -735,9 +744,9 @@ export function getModelMaxOutputTokens(
       return overrideValue;
     }
   }
-  const opus55Value = getAnthropicOpus55Output(modelName, endpoint);
-  if (opus55Value != null) {
-    return opus55Value;
+  const output128kValue = getAnthropicOutput128k(modelName, endpoint);
+  if (output128kValue != null) {
+    return output128kValue;
   }
   const sonnet46PlusValue = getAnthropicSonnet46PlusOutput(modelName, endpoint);
   if (sonnet46PlusValue != null) {
