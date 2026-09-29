@@ -51,7 +51,7 @@ test('an active skills category shows on the filter icon in the accent role @sce
     token,
     method: 'POST',
     body: {
-      name: `category-filter-${suffix}`,
+      name: `filter-state-${suffix}`,
       description: 'Carries a category so the Skills dialog offers a category filter.',
       body: '# Category filter\n\nUsed by the category filter end-to-end test.',
       category,
@@ -60,7 +60,7 @@ test('an active skills category shows on the filter icon in the accent role @sce
 
   try {
     const dialog = await openSkillsPicker(page);
-    const trigger = dialog.getByRole('button', { name: 'Category' });
+    const trigger = dialog.getByRole('button', { name: 'Category', exact: true });
     await expect(trigger).toBeVisible();
     expect(await filterIconColor(trigger)).toBe(await resolveRole(page, 'text-tertiary'));
 
