@@ -21,8 +21,8 @@ interface ToolArtifactClaim {
 
 /**
  * Scopes a tool artifact's chat-row dedup to the message that mounts it, so
- * the same file shows one card per message (FR-06) but collapses repeat
- * mounts within a single message to one (FR-07). Falls back to the bare
+ * the same file shows one card per message but collapses repeat
+ * mounts within a single message to one. Falls back to the bare
  * file id when no message is known — only the search-results route
  * (`routes/Search.tsx` → `SearchMessage`) renders without an ambient
  * `MessageContext`; `Share/Message.tsx` already provides one with

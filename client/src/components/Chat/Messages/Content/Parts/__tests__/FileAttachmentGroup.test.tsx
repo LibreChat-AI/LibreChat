@@ -62,7 +62,7 @@ const baseAttachment = (overrides: Partial<TAttachment> = {}): TAttachment =>
 
 const renderWith = (ui: React.ReactElement) => render(<RecoilRoot>{ui}</RecoilRoot>);
 
-describe('FileAttachmentGroup identity dedup (B12)', () => {
+describe('FileAttachmentGroup identity dedup', () => {
   it('collapses two attachments sharing a file identity into a single, non-folded chip', () => {
     const first = baseAttachment({ file_id: 'dup', filename: 'report.pptx', bytes: 100 });
     const second = baseAttachment({ file_id: 'dup', filename: 'report.pptx', bytes: 100 });
@@ -93,7 +93,7 @@ describe('FileAttachmentGroup identity dedup (B12)', () => {
   });
 });
 
-describe('FileAttachmentGroup identity dedup (B18)', () => {
+describe('FileAttachmentGroup identity dedup for id-less files', () => {
   it('keeps two id-less attachments with the same filename but different filepaths as two chips', () => {
     const first = baseAttachment({
       file_id: undefined,

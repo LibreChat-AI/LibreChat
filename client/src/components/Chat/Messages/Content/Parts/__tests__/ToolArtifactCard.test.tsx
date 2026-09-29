@@ -68,7 +68,7 @@ jest.mock('~/utils', () => ({
   getFileType: () => ({ paths: [], color: '', title: 'Artifact' }),
   logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
   isArtifactRoute: () => false,
-  // `SearchContent` (rendered by the B11 tests below) maps attachments to
+  // `SearchContent` (rendered by the search-result tests below) maps attachments to
   // their owning tool call with the real implementation.
   mapAttachments: jest.requireActual('~/utils/map').mapAttachments,
 }));
@@ -120,7 +120,7 @@ const ArtifactContentProbe = ({
 };
 
 describe('ToolArtifactCard message-scoped dedup and newest-version selection', () => {
-  it('shows a card on every message that holds the same file identity (FR-06)', () => {
+  it('shows a card on every message that holds the same file identity', () => {
     const html = () =>
       baseAttachment({ file_id: 'shared-file', filename: 'index.html', text: '<h1>hi</h1>' });
     const { container } = render(
@@ -137,7 +137,7 @@ describe('ToolArtifactCard message-scoped dedup and newest-version selection', (
     expect(screen.getAllByText('index.html')).toHaveLength(2);
   });
 
-  it('collapses two cards for the same file within one message to one card (FR-07)', () => {
+  it('collapses two cards for the same file within one message to one card', () => {
     const dup = baseAttachment({
       file_id: 'dup-in-message',
       filename: 'index.html',
@@ -154,7 +154,7 @@ describe('ToolArtifactCard message-scoped dedup and newest-version selection', (
     expect(container.querySelectorAll('[data-artifact-trigger]')).toHaveLength(1);
   });
 
-  it('keeps the panel on the newest version even when the older card mounts after the newer one (FR-08)', () => {
+  it('keeps the panel on the newest version even when the older card mounts after the newer one', () => {
     const newer = baseAttachment({
       file_id: 'versioned',
       filename: 'report.html',
@@ -187,7 +187,7 @@ describe('ToolArtifactCard message-scoped dedup and newest-version selection', (
     expect(content).toBe('<h1>v2 (newer)</h1>');
   });
 
-  it('keeps the newer content after the newer card unmounts and the older card mounts fresh (FR-08)', () => {
+  it('keeps the newer content after the newer card unmounts and the older card mounts fresh', () => {
     const newer = baseAttachment({
       file_id: 'remount',
       filename: 'notes.html',
@@ -226,7 +226,7 @@ describe('ToolArtifactCard message-scoped dedup and newest-version selection', (
   });
 });
 
-describe('ToolArtifactCard file identity for id-less attachments (T011)', () => {
+describe('ToolArtifactCard file identity for id-less attachments', () => {
   it('renders two card triggers for two id-less files sharing a filename but differing by filepath, each opening its own content', () => {
     const first = baseAttachment({
       file_id: undefined,
@@ -294,7 +294,7 @@ describe('ToolArtifactCard file identity for id-less attachments (T011)', () => 
   });
 });
 
-describe('ToolMermaidArtifact message-scoped dedup (FR-09)', () => {
+describe('ToolMermaidArtifact message-scoped dedup', () => {
   it('shows a diagram card on every message that holds the same file identity', () => {
     const mmd = () =>
       baseAttachment({ file_id: 'diagram', filename: 'flow.mmd', text: 'graph TD\nA-->B' });
@@ -329,7 +329,7 @@ describe('ToolMermaidArtifact message-scoped dedup (FR-09)', () => {
   });
 });
 
-describe('ToolMermaidArtifact newest-version selection (B14)', () => {
+describe('ToolMermaidArtifact newest-version selection', () => {
   const mermaidCards = () => screen.getAllByTestId('mermaid-render');
 
   const ArtifactKeysProbe = ({ onSnapshot }: { onSnapshot: (keys: string[]) => void }) => {
@@ -484,7 +484,7 @@ describe('ToolMermaidArtifact newest-version selection (B14)', () => {
   });
 });
 
-describe('ToolArtifactCard tied writes settle once and do not ping-pong (B9)', () => {
+describe('ToolArtifactCard tied writes settle once and do not ping-pong', () => {
   const tieId = 'tool-artifact-tie-file';
   const versionA = () =>
     baseAttachment({ file_id: 'tie-file', filename: 'tie.html', text: '<h1>version A</h1>' });
@@ -592,7 +592,7 @@ describe('ToolArtifactCard tied writes settle once and do not ping-pong (B9)', (
   });
 });
 
-describe('SearchContent places cards per message (B11)', () => {
+describe('SearchContent places cards per message', () => {
   const searchMessage = (overrides: Partial<TMessage> = {}): TMessage =>
     ({ messageId: 'm', text: '', ...overrides }) as TMessage;
 
