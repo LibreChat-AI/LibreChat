@@ -401,6 +401,15 @@ export type CodeProvisionRecord = {
 };
 
 export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
+export type RagQueryRecord = { file_id: string; query: string };
+
+/** Every `/query` the fake RAG service received from file_search. */
+export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
+  const response = await page.request.get(`${RAG_API_BASE}/__debug/embedded`);
+  expect(response.ok(), 'fake RAG server /__debug/embedded should respond').toBeTruthy();
+  const body = (await response.json()) as { queries: RagQueryRecord[] };
+  return body.queries;
+}
 
 /** Files the fake code server received via /upload (proof they reached the code env). */
 export async function getCodeProvisionedUploads(page: Page): Promise<CodeProvisionRecord[]> {
