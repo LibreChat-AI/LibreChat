@@ -64,6 +64,9 @@ async function createAndSelectApprovalAgent(page: Page): Promise<string> {
   return agent.id;
 }
 
+/** Set up through the agent builder that selects the approval agent, which the mobile layout keeps in its drawer; the mobile project runs it at desktop size. */
+test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
+
 test('an invalid edit is announced and drawn destructive @scenario:tool-approval-invalid-json-is-announced', async ({
   page,
 }) => {

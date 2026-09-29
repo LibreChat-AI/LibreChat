@@ -43,21 +43,17 @@ test('the tool output pane paints the code body role @scenario:tool-output-pane-
     const pane = messagesView(page).locator('pre:has(code.hljs)').first();
     await expect(pane).toBeVisible({ timeout: 15_000 });
 
-    const paint = await pane.evaluate((node) => {
+    const role = await page.evaluate(() => {
       const probe = document.createElement('div');
       probe.style.backgroundColor = 'rgb(var(--surface-code-body))';
       document.body.appendChild(probe);
-      const role = getComputedStyle(probe).backgroundColor;
+      const color = getComputedStyle(probe).backgroundColor;
       probe.remove();
-      return {
-        pane: getComputedStyle(node).backgroundColor,
-        role,
-        dark: document.documentElement.classList.contains('dark'),
-      };
+      return { color, dark: document.documentElement.classList.contains('dark') };
     });
 
-    expect(paint.pane).toBe(paint.role);
-    expect(paint.pane).toBe(paint.dark ? 'rgb(23, 23, 23)' : 'rgb(255, 255, 255)');
+    expect(role.color).toBe(role.dark ? 'rgb(23, 23, 23)' : 'rgb(255, 255, 255)');
+    await expect(pane).toHaveCSS('background-color', role.color);
   } finally {
     const token = await getAccessToken(page);
     const listed = await fetchJson<{ skills?: SkillSummary[] }>(

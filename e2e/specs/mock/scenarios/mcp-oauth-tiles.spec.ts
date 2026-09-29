@@ -9,6 +9,9 @@ const FLOW_ID = 'e2e-user:e2e-memory';
  * role rather than a literal. The server logo tile needs a server icon, which the mock server
  * does not configure, so only the QR backdrop is asserted here.
  */
+/** Set up through the MCP Settings panel that opens the OAuth dialog, which the mobile layout keeps in its drawer; the mobile project runs it at desktop size. */
+test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
+
 test('the OAuth QR backdrop stays white in every mode @scenario:mcp-oauth-qr-tile-stays-white', async ({
   page,
 }) => {
