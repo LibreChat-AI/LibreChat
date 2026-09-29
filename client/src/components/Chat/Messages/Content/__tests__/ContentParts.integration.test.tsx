@@ -243,9 +243,14 @@ const renderContentParts = (props: React.ComponentProps<typeof ContentParts>) =>
   );
 
 describe('ContentParts integration: adjacent prose identity', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it.each([true, false])(
     'keeps prose mounted through activity transitions with live folding %s',
     (foldLiveActivity) => {
+      jest.useFakeTimers();
       const introText = "Let me establish today's date and gather independent signals.";
       const answerText = 'Two things stand out immediately. Let me dig into both.';
       const intro = makeTextPart(introText);
@@ -284,6 +289,9 @@ describe('ContentParts integration: adjacent prose identity', () => {
       rerender(frame([intro, completed, label]));
       expect(screen.getByText(introText)).toBe(row);
       expect(jest.mocked(Text).mock.calls).toHaveLength(renders);
+      act(() => {
+        jest.advanceTimersByTime(1000);
+      });
       expect(screen.getByRole('button', { name: /Established current date/ })).toBeInTheDocument();
 
       rerender(frame([intro, completed, label, answer]));
