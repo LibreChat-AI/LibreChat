@@ -704,6 +704,24 @@ describe('registerCodeExecutionTools', () => {
     });
     expect(bash?.description).toContain('owner/app');
   });
+
+  it('tells the model to route worktree commands through cwd only when lanes are available', () => {
+    const cwdDescription = (workspaceLinkedWorktrees: boolean): string | undefined => {
+      const bash = registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['execute_command']),
+        workspaceLinkedWorktrees,
+      }).toolDefinitions.find((def) => def.name === 'bash_tool');
+      return (bash?.parameters as { properties?: { cwd?: { description?: string } } })?.properties
+        ?.cwd?.description;
+    };
+
+    expect(cwdDescription(true)).toContain('.worktrees/<name>');
+    expect(cwdDescription(false)).not.toContain('.worktrees');
+  });
   const makeRegistry = (): LCToolRegistry => new Map() as unknown as LCToolRegistry;
 
   describe('fresh run (no pre-existing defs or registry entries)', () => {

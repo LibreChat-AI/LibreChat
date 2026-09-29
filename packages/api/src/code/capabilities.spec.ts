@@ -461,6 +461,49 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     expect(legacy.codeWorkspace).not.toHaveProperty('workspaceInstanceId');
   });
 
+  it('routes linked worktrees into lanes only when configured and no conversation instance owns the checkout', async () => {
+    const workspaceInstanceId = 'c'.repeat(64);
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      workspaceStatus([
+        {
+          id: 'lanes',
+          workspaceInstances: ['git_worktree'],
+          workspaceScopes: ['git_linked_worktree'],
+        },
+        { id: 'legacy' },
+      ]),
+    );
+    const resolve = (workspaceId: string, instanceId?: string, linkedWorktrees = true) =>
+      resolveCodeExecutionWorkspaceContext({
+        context: {
+          ...context,
+          codeEnvironmentConfigSchema: { workspaces: { linkedWorktrees } },
+          ...(instanceId ? { conversationWorkspaceInstanceId: instanceId } : {}),
+        },
+        requestedSelections: [{ environmentId: 'personal', workspaceId }],
+        environments,
+        getAppConfig,
+      });
+
+    const lanes = await resolve('lanes');
+    const disabled = await resolve('lanes', undefined, false);
+    const unconfigured = await resolveCodeExecutionWorkspaceContext({
+      context,
+      requestedSelections: [{ environmentId: 'personal', workspaceId: 'lanes' }],
+      environments,
+      getAppConfig,
+    });
+    const instance = await resolve('lanes', workspaceInstanceId);
+    const legacy = await resolve('legacy');
+
+    expect(lanes.codeWorkspace?.linkedWorktrees).toBe(true);
+    expect(disabled.codeWorkspace).not.toHaveProperty('linkedWorktrees');
+    expect(unconfigured.codeWorkspace).not.toHaveProperty('linkedWorktrees');
+    expect(instance.codeWorkspace?.workspaceInstanceId).toBe(workspaceInstanceId);
+    expect(instance.codeWorkspace).not.toHaveProperty('linkedWorktrees');
+    expect(legacy.codeWorkspace).not.toHaveProperty('linkedWorktrees');
+  });
+
   it('admits native workspace tools without enabling programmatic runtime execution', async () => {
     jest
       .spyOn(globalThis, 'fetch')

@@ -736,6 +736,35 @@ describe('attached code environment user config schema', () => {
     });
   });
 
+  it.each([
+    [{ linkedWorktrees: true }, true],
+    [{ linkedWorktrees: 'yes' }, false],
+    [{ linkedWorktrees: true, subdirectories: true }, false],
+  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                default: true,
+                configSchema: { workspaces },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(valid);
+  });
+
   it('rejects an attached command timeout above the protocol hard cap', () => {
     const result = configSchema.safeParse({
       version: '1.0',

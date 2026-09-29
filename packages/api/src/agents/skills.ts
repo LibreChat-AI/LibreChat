@@ -441,6 +441,8 @@ export interface InjectSkillCatalogParams {
   /** Deployment ceiling advertised on attached Bash tool definitions. */
   workspaceCommandTimeoutMaxMs?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
+  /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
+  workspaceLinkedWorktrees?: boolean;
   /** Current user ID — used to determine skill ownership for active-state resolution. */
   userId?: string;
   /** Per-user skill overrides: `{ [skillId]: boolean }`. Missing entries use the default. */
@@ -677,6 +679,7 @@ export async function injectSkillCatalog(
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
     workspaceEnvironment,
+    workspaceLinkedWorktrees,
     userId,
     skillStates,
     defaultActiveOnShare = false,
@@ -863,6 +866,7 @@ export async function injectSkillCatalog(
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
     workspaceEnvironment,
+    workspaceLinkedWorktrees,
   });
   workingDefs = codeExecResult.toolDefinitions;
 
