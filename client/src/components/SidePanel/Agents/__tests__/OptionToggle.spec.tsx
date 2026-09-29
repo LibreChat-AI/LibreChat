@@ -17,21 +17,27 @@ jest.mock('@librechat/client', () => ({
 }));
 
 describe('OptionToggle', () => {
-  it('colors the pressed state with its series role instead of an active surface', () => {
+  it('marks the pressed state with a series border and icon color, not an active surface', () => {
     render(
       <OptionToggle
         icon={Circle}
         pressed={true}
         label="Background"
-        activeClass="text-series-1 hover:text-series-1"
+        activeClass="border-series-1 text-series-1 hover:text-series-1"
         onToggle={jest.fn()}
       />,
     );
 
     const button = screen.getByRole('button', { name: 'Background' });
     expect(button).toHaveAttribute('aria-pressed', 'true');
-    expect(button).toHaveClass('border-transparent', 'text-series-1', 'hover:text-series-1');
-    expect(button).not.toHaveClass('bg-surface-active', 'text-text-primary');
+    expect(button).toHaveClass(
+      'border',
+      'border-series-1',
+      'text-series-1',
+      'hover:text-series-1',
+      'hover:bg-surface-tertiary',
+    );
+    expect(button).not.toHaveClass('border-transparent', 'bg-surface-active', 'text-text-primary');
     expect(button.querySelector('svg')).toHaveClass('size-4');
   });
 
@@ -41,7 +47,7 @@ describe('OptionToggle', () => {
         icon={Circle}
         pressed={false}
         label="Background"
-        activeClass="text-series-1 hover:text-series-1"
+        activeClass="border-series-1 text-series-1 hover:text-series-1"
         onToggle={jest.fn()}
       />,
     );
@@ -49,7 +55,7 @@ describe('OptionToggle', () => {
     const button = screen.getByRole('button', { name: 'Background' });
     expect(button).toHaveAttribute('aria-pressed', 'false');
     expect(button).toHaveClass('border-transparent', 'text-text-secondary');
-    expect(button).not.toHaveClass('text-series-1', 'bg-surface-active');
+    expect(button).not.toHaveClass('border-series-1', 'text-series-1', 'bg-surface-active');
   });
 
   /** A tool switched to programmatic-only keeps its stored Intent state and
@@ -62,14 +68,14 @@ describe('OptionToggle', () => {
         pressed={true}
         disabled={true}
         label="Intent"
-        activeClass="text-series-1 hover:text-series-1"
+        activeClass="border-series-1 text-series-1 hover:text-series-1"
         onToggle={jest.fn()}
       />,
     );
 
     const button = screen.getByRole('button', { name: 'Intent' });
     expect(button).toHaveAttribute('aria-pressed', 'true');
-    expect(button).toHaveClass('text-series-1', 'cursor-not-allowed');
+    expect(button).toHaveClass('border-series-1', 'text-series-1', 'cursor-not-allowed');
     expect(button).not.toHaveClass('text-text-tertiary');
   });
 });

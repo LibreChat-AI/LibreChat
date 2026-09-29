@@ -131,12 +131,16 @@ describe('MCPToolItem', () => {
   });
 
   test.each(pressedOptions)(
-    '$name option uses its semantic series color when pressed',
+    '$name option uses its semantic series border and color when pressed',
     (option) => {
       setup(option.overrides);
       const button = screen.getByRole('button', { name: option.label });
 
-      expect(button).toHaveClass(option.color, `hover:${option.color}`);
+      expect(button).toHaveClass(
+        option.color,
+        `hover:${option.color}`,
+        option.color.replace('text-', 'border-'),
+      );
       expect(button).not.toHaveClass('bg-surface-active', 'text-text-primary');
       expect(button.querySelector('svg')?.className.baseVal).not.toMatch(
         /text-(?:amber|violet|sky|teal)-/,

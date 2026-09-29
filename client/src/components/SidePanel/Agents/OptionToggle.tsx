@@ -8,7 +8,11 @@ interface OptionToggleProps {
   label: string;
   /** Defaults to `label` (bulk toggles use the same text for both). */
   tooltip?: string;
-  /** Semantic series text color, including its hover state, applied when pressed. */
+  /**
+   * Semantic series border and text color, including the hover text, applied
+   * when pressed. The border is the non-color cue: pressed and unpressed differ
+   * by its presence, not only by hue.
+   */
   activeClass: string;
   onToggle: () => void;
   size?: 'sm' | 'md';
@@ -44,10 +48,11 @@ export default function OptionToggle({
    */
   let stateClass: string;
   if (pressed) {
+    /** `surface-tertiary` is one of the surfaces the series scale is held to
+     *  3:1 on; the ghost `surface-hover` drops some slots below it in light. */
     stateClass = cn(
-      'border-transparent',
       activeClass,
-      disabled ? 'cursor-not-allowed opacity-60 hover:bg-transparent' : 'hover:bg-surface-hover',
+      disabled ? 'cursor-not-allowed opacity-60 hover:bg-transparent' : 'hover:bg-surface-tertiary',
     );
   } else if (disabled) {
     stateClass =

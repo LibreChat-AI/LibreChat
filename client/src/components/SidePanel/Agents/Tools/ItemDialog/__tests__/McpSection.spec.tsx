@@ -575,6 +575,7 @@ describe('McpSection', () => {
     render(<McpSection item={item} />);
 
     expect(screen.getByRole('button', { name: 'com_ui_mcp_unbackground_all' })).toHaveClass(
+      'border-series-1',
       'text-series-1',
       'hover:text-series-1',
     );
