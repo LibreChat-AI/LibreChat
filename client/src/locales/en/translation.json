@@ -1775,6 +1775,7 @@
   "com_ui_mcp_defer": "Defer",
   "com_ui_mcp_defer_all": "Defer all tools",
   "com_ui_mcp_defer_loading": "Defer loading",
+  "com_ui_mcp_deferred_by_size": "Deferred automatically because this tool's schema is larger than the server's size limit. Click to keep it loaded instead.",
   "com_ui_mcp_dialog_title": "Configure Variables for {{serverName}}. Server Status: {{status}}",
   "com_ui_mcp_domain_not_allowed": "The MCP server domain is not in the allowed domains list. Please contact your administrator.",
   "com_ui_mcp_enter_var": "Enter value for {{0}}",

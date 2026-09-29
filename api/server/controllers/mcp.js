@@ -23,6 +23,7 @@ const {
   getMCPErrorResponse,
   prepareMCPServerOAuthDeletion,
   cleanupDeletedMCPServerOAuthUsers,
+  resolveDeferLoading,
 } = require('@librechat/api');
 const {
   Constants,
@@ -157,6 +158,7 @@ const getMCPTools = async (req, res) => {
     }
 
     const mcpServers = {};
+    const deferSchemaChars = req.config?.mcpSettings?.deferSchemaChars ?? 0;
     const oboIdentityContext = createAuthIdentityContext({
       user: req.user,
       tenantId: getTenantId(),
@@ -251,6 +253,13 @@ const getMCPTools = async (req, res) => {
                *  server-name prefix — the agent editor migrates legacy
                *  persisted ids only when this proves the same tool. */
               ...(toolData.serverToolName != null && { serverToolName: toolData.serverToolName }),
+              ...(resolveDeferLoading(
+                undefined,
+                toolData.function.parameters,
+                deferSchemaChars,
+              ) && {
+                deferredBySize: true,
+              }),
             });
           }
         }

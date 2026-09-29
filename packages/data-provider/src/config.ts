@@ -3118,6 +3118,12 @@ export const configSchema = z.object({
     .object({
       allowedDomains: z.array(z.string()).optional(),
       allowedAddresses: allowedAddressesSchema,
+      /**
+       * Argument-schema size, in characters of its JSON, above which an MCP tool
+       * starts deferred. A per-tool `defer_loading` toggle still wins. `0`
+       * disables the rule.
+       */
+      deferSchemaChars: z.number().int().nonnegative().max(10_000_000).default(0),
       catalogRecovery: z
         .object({
           discoveryBackoffMs: z

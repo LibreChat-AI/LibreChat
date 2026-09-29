@@ -569,7 +569,11 @@ export default function McpSection({ item }: Props) {
                   key={tool.tool_id}
                   tool={tool}
                   isSelected={selectedTools.includes(tool.tool_id)}
-                  isDeferred={deferredToolsEnabled && isToolDeferred(tool.tool_id)}
+                  isDeferred={
+                    deferredToolsEnabled &&
+                    isToolDeferred(tool.tool_id, tool.metadata?.deferredBySize === true)
+                  }
+                  deferredBySize={tool.metadata?.deferredBySize === true}
                   isProgrammatic={programmaticToolsEnabled && isToolProgrammatic(tool.tool_id)}
                   isBackground={backgroundToolsEnabled && isToolBackground(tool.tool_id)}
                   isIntent={
@@ -584,7 +588,9 @@ export default function McpSection({ item }: Props) {
                   backgroundToolsEnabled={backgroundToolsEnabled}
                   toolIntentsEnabled={toolIntentsEnabled}
                   onToggleSelect={() => toggleToolSelect(tool.tool_id)}
-                  onToggleDefer={() => toggleToolDefer(tool.tool_id)}
+                  onToggleDefer={() =>
+                    toggleToolDefer(tool.tool_id, tool.metadata?.deferredBySize === true)
+                  }
                   onToggleProgrammatic={() => toggleToolProgrammatic(tool.tool_id)}
                   onToggleBackground={() => toggleToolBackground(tool.tool_id)}
                   onToggleIntent={() => toggleToolIntent(tool.tool_id)}

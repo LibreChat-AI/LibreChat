@@ -515,6 +515,13 @@ actions:
 #     - 'host.docker.internal:8080'
 #     - '127.0.0.1:8080'
 
+#   # Argument-schema size, in characters of its JSON, above which an MCP tool
+#   # starts deferred: the model sees only its name and loads the schema through
+#   # tool_search when it needs it. Needs the agents `deferred_tools` capability.
+#   # A per-tool defer_loading toggle still wins. 0, the default, leaves every
+#   # tool exactly as its own options configure it.
+#   deferSchemaChars: 4096
+
 # Example MCP Servers Object Structure
 # mcpServers:
 #   everything:

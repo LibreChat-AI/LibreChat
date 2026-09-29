@@ -3591,6 +3591,38 @@ describe('MCP Routes', () => {
       });
     });
 
+    it('marks the tools the schema size rule defers', async () => {
+      const { Constants } = require('librechat-data-provider');
+      const small = `small${Constants.mcp_delimiter}user-server`;
+      const large = `large${Constants.mcp_delimiter}user-server`;
+      const tool = (name, parameters) => ({
+        type: 'function',
+        function: { name, description: name, parameters },
+      });
+      const serverTools = {
+        [small]: tool(small, { type: 'object' }),
+        [large]: tool(large, {
+          type: 'object',
+          properties: { body: { type: 'string', description: 'x'.repeat(500) } },
+        }),
+      };
+      mockRequestConfig = { mcpSettings: { deferSchemaChars: 200 } };
+      mockResolveAllMcpConfigs.mockResolvedValueOnce({
+        'user-server': { type: 'sse', url: 'https://user.example.com/sse' },
+      });
+      mockLoadMCPServerCatalogs.mockResolvedValueOnce({
+        serverTools: new Map([['user-server', serverTools]]),
+        serversWithoutTools: [],
+      });
+
+      const response = await request(app).get('/api/mcp/tools');
+
+      expect(response.status).toBe(200);
+      const tools = response.body.servers['user-server'].tools;
+      expect(tools.find((t) => t.pluginKey === large).deferredBySize).toBe(true);
+      expect(tools.find((t) => t.pluginKey === small)).not.toHaveProperty('deferredBySize');
+    });
+
     it('renders an authoritative empty catalog as a configured server', async () => {
       const serverConfig = { type: 'sse', url: 'https://empty.example.com/sse' };
       mockResolveAllMcpConfigs.mockResolvedValueOnce({ 'empty-server': serverConfig });

@@ -865,6 +865,8 @@ export const tPluginSchema = z.object({
   /** Raw upstream tool name when the model-facing key stripped a redundant
    *  server-name prefix — proves upstream identity for legacy id migration. */
   serverToolName: z.string().optional(),
+  /** Deferred by `mcpSettings.deferSchemaChars` when the agent stores no choice for it. */
+  deferredBySize: z.boolean().optional(),
 });
 
 export type TPlugin = z.infer<typeof tPluginSchema>;

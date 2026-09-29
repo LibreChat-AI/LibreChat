@@ -1,9 +1,11 @@
 import { Providers } from '@librechat/agents';
+import type { GenericTool, JsonSchemaType } from '@librechat/agents';
 import type { AgentToolOptions } from 'librechat-data-provider';
-import type { GenericTool } from '@librechat/agents';
+import type { LCToolRegistry, ToolDefinition } from './classification';
 import type { CodeEnvironmentConfig } from '~/agents/execution';
-import type { LCToolRegistry } from './classification';
 import {
+  schemaSize,
+  resolveDeferLoading,
   buildToolRegistryFromAgentOptions,
   aliasMCPToolOptions,
   agentHasProgrammaticTools,
@@ -752,5 +754,147 @@ describe('classification.ts', () => {
 
       expect(result.additionalTools.some((t) => t.name === 'tool_search')).toBe(true);
     });
+  });
+});
+
+/** An argument schema of roughly the requested serialized size. */
+function schemaOfSize(bytes: number): JsonSchemaType {
+  const filler = 'x'.repeat(Math.max(1, bytes));
+  return { type: 'object', properties: { body: { type: 'string', description: filler } } };
+}
+
+const SMALL = schemaOfSize(50);
+const HUGE = schemaOfSize(20_000);
+
+function toolDef(name: string, parameters?: JsonSchemaType): ToolDefinition {
+  return { name, description: `${name} description`, parameters, serverName: 'Server' };
+}
+
+describe('schemaSize', () => {
+  it('measures the serialized schema', () => {
+    expect(schemaSize(SMALL)).toBeGreaterThan(50);
+    expect(schemaSize(HUGE)).toBeGreaterThan(20_000);
+  });
+
+  it('treats a missing schema as weightless', () => {
+    expect(schemaSize(undefined)).toBe(0);
+  });
+
+  it('does not throw on a schema that cannot be serialized', () => {
+    const circular: JsonSchemaType = { type: 'object', properties: {} };
+    circular.properties = { self: circular };
+
+    expect(schemaSize(circular)).toBe(0);
+  });
+});
+
+describe('resolveDeferLoading', () => {
+  it('leaves every tool loaded when the rule is off', () => {
+    expect(resolveDeferLoading(undefined, HUGE, 0)).toBe(false);
+  });
+
+  it('defers a schema over the limit', () => {
+    expect(resolveDeferLoading(undefined, HUGE, 4_096)).toBe(true);
+  });
+
+  it('leaves a schema under the limit alone', () => {
+    expect(resolveDeferLoading(undefined, SMALL, 4_096)).toBe(false);
+  });
+
+  it('lets an explicit false pin a huge tool open', () => {
+    expect(resolveDeferLoading(false, HUGE, 4_096)).toBe(false);
+  });
+
+  it('lets an explicit true defer a small tool', () => {
+    expect(resolveDeferLoading(true, SMALL, 0)).toBe(true);
+  });
+
+  it('treats a tool with no schema as under any limit', () => {
+    expect(resolveDeferLoading(undefined, undefined, 1)).toBe(false);
+  });
+});
+
+describe('buildToolRegistryFromAgentOptions with a size rule', () => {
+  const tools = [toolDef('small_mcp_Server', SMALL), toolDef('huge_mcp_Server', HUGE)];
+
+  it('reproduces today behavior when the rule is not configured', () => {
+    const registry = buildToolRegistryFromAgentOptions(tools, {});
+
+    expect(registry.get('small_mcp_Server')?.defer_loading).toBe(false);
+    expect(registry.get('huge_mcp_Server')?.defer_loading).toBe(false);
+  });
+
+  it('defers only the oversized tool once the rule is set', () => {
+    const registry = buildToolRegistryFromAgentOptions(tools, {}, 4_096);
+
+    expect(registry.get('small_mcp_Server')?.defer_loading).toBe(false);
+    expect(registry.get('huge_mcp_Server')?.defer_loading).toBe(true);
+  });
+
+  it('keeps the tool description, which is what a shortlist reads', () => {
+    const registry = buildToolRegistryFromAgentOptions(tools, {}, 4_096);
+
+    expect(registry.get('huge_mcp_Server')?.description).toBe('huge_mcp_Server description');
+    expect(registry.get('huge_mcp_Server')?.parameters).toBe(HUGE);
+  });
+
+  it('lets a per-tool choice override the rule in both directions', () => {
+    const options: AgentToolOptions = {
+      huge_mcp_Server: { defer_loading: false },
+      small_mcp_Server: { defer_loading: true },
+    };
+
+    const registry = buildToolRegistryFromAgentOptions(tools, options, 4_096);
+
+    expect(registry.get('huge_mcp_Server')?.defer_loading).toBe(false);
+    expect(registry.get('small_mcp_Server')?.defer_loading).toBe(true);
+  });
+
+  it('applies the rule to a tool whose options set something unrelated', () => {
+    const options: AgentToolOptions = {
+      huge_mcp_Server: { allowed_callers: ['direct'] },
+    };
+
+    const registry = buildToolRegistryFromAgentOptions(tools, options, 4_096);
+
+    expect(registry.get('huge_mcp_Server')?.defer_loading).toBe(true);
+  });
+});
+
+describe('buildToolClassification with a size rule and no per-tool options', () => {
+  const mcpTool = (name: string, schema: JsonSchemaType) =>
+    ({
+      name,
+      description: `${name} description`,
+      mcp: true,
+      mcpJsonSchema: schema,
+    }) as unknown as GenericTool;
+
+  it('defers only the oversized tool and adds tool_search for it', async () => {
+    const result = await buildToolClassification({
+      loadedTools: [mcpTool('small_mcp_Server', SMALL), mcpTool('huge_mcp_Server', HUGE)],
+      userId: 'user1',
+      agentId: 'agent1',
+      deferredToolsEnabled: true,
+      deferSchemaChars: 4_096,
+    });
+
+    expect(result.toolRegistry?.get('huge_mcp_Server')?.defer_loading).toBe(true);
+    expect(result.toolRegistry?.get('small_mcp_Server')?.defer_loading).toBeUndefined();
+    expect(result.hasDeferredTools).toBe(true);
+    expect(result.additionalTools.some((t) => t.name === 'tool_search')).toBe(true);
+  });
+
+  it('keeps every tool callable when the deferred_tools capability is off', async () => {
+    const result = await buildToolClassification({
+      loadedTools: [mcpTool('huge_mcp_Server', HUGE)],
+      userId: 'user1',
+      agentId: 'agent1',
+      deferredToolsEnabled: false,
+      deferSchemaChars: 4_096,
+    });
+
+    expect(result.toolRegistry?.get('huge_mcp_Server')?.defer_loading).toBe(false);
+    expect(result.hasDeferredTools).toBe(false);
   });
 });

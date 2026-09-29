@@ -117,16 +117,45 @@ export function aliasMCPToolOptions(
   }
 }
 
+export function schemaSize(parameters: JsonSchemaType | undefined): number {
+  if (parameters == null) {
+    return 0;
+  }
+  try {
+    return JSON.stringify(parameters).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** An explicit per-tool choice always wins, so an operator-wide rule can never
+ *  override a tool someone deliberately pinned open or shut. */
+export function resolveDeferLoading(
+  explicit: boolean | undefined,
+  parameters: JsonSchemaType | undefined,
+  deferSchemaChars: number,
+): boolean {
+  if (explicit != null) {
+    return explicit === true;
+  }
+  if (deferSchemaChars <= 0) {
+    return false;
+  }
+  return schemaSize(parameters) > deferSchemaChars;
+}
+
 /**
  * Builds a tool registry from agent-level tool_options.
  *
  * @param tools - Array of tool definitions
  * @param agentToolOptions - Per-tool configuration from the agent
+ * @param deferSchemaChars - Size above which a schema defers absent an explicit choice
  * @returns Map of tool name to tool definition with classification
  */
 export function buildToolRegistryFromAgentOptions(
   tools: ToolDefinition[],
   agentToolOptions: AgentToolOptions,
+  deferSchemaChars = 0,
 ): LCToolRegistry {
   const registry: LCToolRegistry = new Map();
 
@@ -139,7 +168,11 @@ export function buildToolRegistryFromAgentOptions(
         ? agentOptions.allowed_callers
         : ['direct'];
 
-    const defer_loading = agentOptions?.defer_loading === true;
+    const defer_loading = resolveDeferLoading(
+      agentOptions?.defer_loading,
+      parameters,
+      deferSchemaChars,
+    );
 
     const toolDef: LCTool = {
       name,
@@ -239,21 +272,27 @@ export function cleanupMCPToolSchemas(tools: MCPToolInstance[]): void {
 function buildToolRegistry(
   mcpToolDefs: ToolDefinition[],
   agentToolOptions?: AgentToolOptions,
+  deferSchemaChars = 0,
 ): LCToolRegistry {
   if (agentToolOptions && Object.keys(agentToolOptions).length > 0) {
-    return buildToolRegistryFromAgentOptions(mcpToolDefs, agentToolOptions);
+    return buildToolRegistryFromAgentOptions(mcpToolDefs, agentToolOptions, deferSchemaChars);
   }
 
   /** No agent options - build basic definitions for event-driven mode */
   const registry: LCToolRegistry = new Map<string, LCTool>();
   for (const toolDef of mcpToolDefs) {
-    registry.set(toolDef.name, {
+    const entry: LCTool = {
       name: toolDef.name,
       description: toolDef.description,
       parameters: toolDef.parameters,
       serverName: toolDef.serverName,
       toolType: 'mcp',
-    });
+    };
+    /** The size rule is operator-wide, so it reaches agents with no per-tool options too. */
+    if (resolveDeferLoading(undefined, toolDef.parameters, deferSchemaChars)) {
+      entry.defer_loading = true;
+    }
+    registry.set(toolDef.name, entry);
   }
   return registry;
 }
@@ -285,6 +324,8 @@ export interface BuildToolClassificationParams {
   codeExecutionContext?: CodeExecutionContext;
   codeEnvironments?: readonly CodeEnvironmentConfig[];
   getAppConfig?: CodeCapabilityConfigLoader;
+  /** See `mcpSettings.deferSchemaChars`. `0` leaves every tool as configured. */
+  deferSchemaChars?: number;
 }
 
 /** Result from building tool classification */
@@ -358,6 +399,7 @@ export async function buildToolClassification(
     codeExecutionContext,
     codeEnvironments,
     getAppConfig,
+    deferSchemaChars = 0,
   } = params;
   const isGoogle = provider === Providers.GOOGLE || provider === Providers.VERTEXAI;
   const additionalTools: GenericTool[] = [];
@@ -376,7 +418,11 @@ export async function buildToolClassification(
   const mcpToolDefs = mcpTools.map(extractMCPToolDefinition);
   const mcpToolAliases = collectMCPToolAliases(mcpToolDefs);
   aliasMCPToolOptions(mcpToolAliases, agentToolOptions);
-  const toolRegistry: LCToolRegistry = buildToolRegistry(mcpToolDefs, agentToolOptions);
+  const toolRegistry: LCToolRegistry = buildToolRegistry(
+    mcpToolDefs,
+    agentToolOptions,
+    deferSchemaChars,
+  );
 
   /** Clean up temporary mcpJsonSchema property from tools now that registry is populated */
   cleanupMCPToolSchemas(mcpTools);

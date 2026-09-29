@@ -21,12 +21,12 @@ interface ToolOptionsFormContext {
 
 interface UseMCPToolOptionsReturn {
   formToolOptions: AgentToolOptions | undefined;
-  isToolDeferred: (toolId: string) => boolean;
+  isToolDeferred: (toolId: string, deferredBySize?: boolean) => boolean;
   isToolProgrammatic: (toolId: string) => boolean;
   isToolBackground: (toolId: string) => boolean;
   isToolIntent: (toolId: string) => boolean;
   isToolProgrammaticOnly: (toolId: string) => boolean;
-  toggleToolDefer: (toolId: string) => void;
+  toggleToolDefer: (toolId: string, deferredBySize?: boolean) => void;
   toggleToolProgrammatic: (toolId: string) => void;
   toggleToolBackground: (toolId: string) => void;
   toggleToolIntent: (toolId: string) => void;
@@ -67,6 +67,36 @@ export function withBooleanOption(
     updatedOptions[toolId] = restOptions;
   }
   return updatedOptions;
+}
+
+/**
+ * Defer is the one flag a server rule can turn on: a tool whose schema is over
+ * `mcpSettings.deferSchemaChars` defers with no stored option. Keeping such a
+ * tool loaded stores an explicit `false`; deferring it again clears that, so
+ * the tool follows the rule. Other tools store exactly what they did before.
+ */
+export function withDeferOption(
+  options: AgentToolOptions,
+  toolId: string,
+  defer: boolean,
+  deferredBySize: boolean,
+): AgentToolOptions {
+  if (!deferredBySize) {
+    return withBooleanOption(options, toolId, 'defer_loading', defer);
+  }
+  if (defer) {
+    return withBooleanOption(options, toolId, 'defer_loading', false);
+  }
+  return { ...options, [toolId]: { ...options[toolId], defer_loading: false } };
+}
+
+export function isDeferred(
+  options: AgentToolOptions | undefined,
+  toolId: string,
+  deferredBySize = false,
+): boolean {
+  const explicit = options?.[toolId]?.defer_loading;
+  return explicit === true || (explicit == null && deferredBySize);
 }
 
 /**
@@ -149,7 +179,51 @@ export default function useMCPToolOptions(): UseMCPToolOptionsReturn {
   const formToolOptions = useWatch({ control, name: 'tool_options' });
   const formContext: ToolOptionsFormContext = { formToolOptions, getValues, setValue };
 
-  const defer = useBooleanToolOption('defer_loading', formContext);
+  const isToolDeferred = useCallback(
+    (toolId: string, deferredBySize = false): boolean =>
+      isDeferred(formToolOptions, toolId, deferredBySize),
+    [formToolOptions],
+  );
+
+  const toggleToolDefer = useCallback(
+    (toolId: string, deferredBySize = false) => {
+      const currentOptions = getValues('tool_options') || {};
+      const defer = !isDeferred(currentOptions, toolId, deferredBySize);
+      setValue('tool_options', withDeferOption(currentOptions, toolId, defer, deferredBySize), {
+        shouldDirty: true,
+      });
+    },
+    [getValues, setValue],
+  );
+
+  const areAllToolsDeferred = useCallback(
+    (tools: AgentToolType[]): boolean =>
+      tools.length > 0 &&
+      tools.every((tool) =>
+        isDeferred(formToolOptions, tool.tool_id, tool.metadata?.deferredBySize === true),
+      ),
+    [formToolOptions],
+  );
+
+  const toggleDeferAll = useCallback(
+    (tools: AgentToolType[]) => {
+      if (tools.length === 0) {
+        return;
+      }
+      const defer = !areAllToolsDeferred(tools);
+      let updatedOptions = getValues('tool_options') || {};
+      for (const tool of tools) {
+        updatedOptions = withDeferOption(
+          updatedOptions,
+          tool.tool_id,
+          defer,
+          tool.metadata?.deferredBySize === true,
+        );
+      }
+      setValue('tool_options', updatedOptions, { shouldDirty: true });
+    },
+    [areAllToolsDeferred, getValues, setValue],
+  );
   const background = useBooleanToolOption('run_in_background', formContext);
   const intent = useBooleanToolOption('describe_intent', formContext);
 
@@ -257,20 +331,20 @@ export default function useMCPToolOptions(): UseMCPToolOptionsReturn {
 
   return {
     formToolOptions,
-    isToolDeferred: defer.isSet,
+    isToolDeferred,
     isToolProgrammatic,
     isToolBackground: background.isSet,
     isToolIntent: intent.isSet,
     isToolProgrammaticOnly,
-    toggleToolDefer: defer.toggle,
+    toggleToolDefer,
     toggleToolProgrammatic,
     toggleToolBackground: background.toggle,
     toggleToolIntent: intent.toggle,
-    areAllToolsDeferred: defer.areAllSet,
+    areAllToolsDeferred,
     areAllToolsProgrammatic,
     areAllToolsBackground: background.areAllSet,
     areAllToolsIntent: intent.areAllSet,
-    toggleDeferAll: defer.toggleAll,
+    toggleDeferAll,
     toggleProgrammaticAll,
     toggleBackgroundAll: background.toggleAll,
     toggleIntentAll: intent.toggleAll,

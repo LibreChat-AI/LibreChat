@@ -10,6 +10,8 @@ interface MCPToolItemProps {
   tool: AgentToolType;
   isSelected: boolean;
   isDeferred: boolean;
+  /** Deferred by `mcpSettings.deferSchemaChars` rather than by a stored option. */
+  deferredBySize?: boolean;
   isProgrammatic: boolean;
   isBackground: boolean;
   isIntent: boolean;
@@ -34,6 +36,7 @@ export default function MCPToolItem({
   tool,
   isSelected,
   isDeferred,
+  deferredBySize = false,
   onToggleDefer,
   onToggleSelect,
   isProgrammatic,
@@ -87,7 +90,11 @@ export default function MCPToolItem({
               icon={Clock}
               pressed={isDeferred}
               label={localize('com_ui_mcp_defer_loading')}
-              tooltip={localize('com_ui_mcp_click_to_defer')}
+              tooltip={localize(
+                deferredBySize && isDeferred
+                  ? 'com_ui_mcp_deferred_by_size'
+                  : 'com_ui_mcp_click_to_defer',
+              )}
               activeBorderClass="border-series-4"
               onToggle={onToggleDefer}
             />

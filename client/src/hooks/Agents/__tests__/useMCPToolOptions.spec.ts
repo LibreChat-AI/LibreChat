@@ -211,6 +211,85 @@ describe('useMCPToolOptions', () => {
     });
   });
 
+  describe('tools deferred by schema size', () => {
+    const sizeDeferredTool = (toolId: string): AgentToolType => ({
+      ...createMockTool(toolId),
+      metadata: { ...createMockTool(toolId).metadata, deferredBySize: true },
+    });
+
+    it('shows a tool deferred by size as deferred when nothing is stored', () => {
+      (useWatch as jest.Mock).mockReturnValue({});
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(result.current.isToolDeferred('tool1', true)).toBe(true);
+      expect(result.current.isToolDeferred('tool1')).toBe(false);
+    });
+
+    it('shows a tool pinned open by an explicit false as loaded', () => {
+      (useWatch as jest.Mock).mockReturnValue({ tool1: { defer_loading: false } });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(result.current.isToolDeferred('tool1', true)).toBe(false);
+    });
+
+    it('keeps a tool deferred by size loaded by storing an explicit false', () => {
+      mockGetValues.mockReturnValue({});
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      act(() => {
+        result.current.toggleToolDefer('tool1', true);
+      });
+
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tool_options',
+        { tool1: { defer_loading: false } },
+        { shouldDirty: true },
+      );
+    });
+
+    it('returns a pinned tool to the size rule by clearing the stored choice', () => {
+      mockGetValues.mockReturnValue({ tool1: { defer_loading: false } });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      act(() => {
+        result.current.toggleToolDefer('tool1', true);
+      });
+
+      expect(mockSetValue).toHaveBeenCalledWith('tool_options', {}, { shouldDirty: true });
+    });
+
+    it('counts size-deferred tools when deciding whether all tools are deferred', () => {
+      (useWatch as jest.Mock).mockReturnValue({ tool2: { defer_loading: true } });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(
+        result.current.areAllToolsDeferred([sizeDeferredTool('tool1'), createMockTool('tool2')]),
+      ).toBe(true);
+    });
+
+    it('undefers all by pinning size-deferred tools and clearing the rest', () => {
+      (useWatch as jest.Mock).mockReturnValue({ tool2: { defer_loading: true } });
+      mockGetValues.mockReturnValue({ tool2: { defer_loading: true } });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      act(() => {
+        result.current.toggleDeferAll([sizeDeferredTool('tool1'), createMockTool('tool2')]);
+      });
+
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tool_options',
+        { tool1: { defer_loading: false } },
+        { shouldDirty: true },
+      );
+    });
+  });
+
   describe('toggleToolProgrammatic', () => {
     it('should enable programmatic calling for a tool with no existing options', () => {
       mockGetValues.mockReturnValue({});
