@@ -189,7 +189,10 @@ export function buildAttachedWorkspaceBashSchema(
     properties: {
       ...bashSchema.properties,
       command: attachedCommandSchema,
-      cwd: linkedWorktrees ? linkedWorktreeWorkingDirectorySchema : attachedWorkingDirectorySchema,
+      cwd:
+        linkedWorktrees === true
+          ? linkedWorktreeWorkingDirectorySchema
+          : attachedWorkingDirectorySchema,
       timeoutMs: buildAttachedTimeoutSchema(effectiveMaxTimeoutMs),
       ...(environment?.actions.length
         ? {

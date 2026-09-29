@@ -1095,7 +1095,7 @@ async function readWorkspaceFile({
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    linkedWorktrees: linked_worktrees === true,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
@@ -1152,7 +1152,7 @@ async function searchWorkspace({
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    linkedWorktrees: linked_worktrees === true,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
@@ -1209,7 +1209,7 @@ async function listWorkspaceFiles({
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    linkedWorktrees: linked_worktrees === true,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
@@ -1251,7 +1251,7 @@ async function writeWorkspaceFile({
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    linkedWorktrees: linked_worktrees === true,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
@@ -1293,7 +1293,7 @@ async function editWorkspaceFile({
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    linkedWorktrees: linked_worktrees === true,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
@@ -1334,7 +1334,7 @@ async function previewWorkspaceEdit({
 }) {
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    linkedWorktrees: linked_worktrees === true,
+    linkedWorktrees: linked_worktrees,
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,

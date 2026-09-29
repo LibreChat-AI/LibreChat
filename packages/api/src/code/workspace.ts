@@ -1037,7 +1037,7 @@ export async function executeWorkspaceTool({
   ) {
     throw new WorkspaceToolHttpError('invalid');
   }
-  const lane = linkedWorktrees ? toLinkedWorktreeRequest(request) : undefined;
+  const lane = linkedWorktrees === true ? toLinkedWorktreeRequest(request) : undefined;
   const wireRequest: WorkspaceToolRequest = lane?.request ?? request;
   const executionBudgetMs = getWorkspaceExecutionBudgetMs(wireRequest);
   const completionReserveMs = executionBudgetMs + WORKSPACE_COMMAND_TRANSPORT_GRACE_MS;
