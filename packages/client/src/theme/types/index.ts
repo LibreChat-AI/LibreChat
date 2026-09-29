@@ -163,6 +163,8 @@ export interface IThemeRGB {
    * got a switch with no track at all.
    */
   'rgb-switch-unchecked'?: string;
+  /** The switch's knob in both states, painted over the unchecked track and the checked fill. */
+  'rgb-switch-thumb'?: string;
 
   // Presentation
   'rgb-presentation'?: string;
@@ -281,6 +283,7 @@ export interface IThemeVariables {
   '--series-8': string;
 
   '--switch-unchecked': string;
+  '--switch-thumb': string;
 
   '--presentation': string;
 }
@@ -381,6 +384,7 @@ export interface IThemeColors {
   'series-6'?: string;
   'series-7'?: string;
   'switch-unchecked'?: string;
+  'switch-thumb'?: string;
   'series-8'?: string;
   presentation?: string;
 
@@ -410,6 +414,8 @@ export interface IThemeAppearance {
   radius2xl: string;
   radius3xl: string;
   controlHeight: string;
+  switchWidth: string;
+  switchHeight: string;
   spaceCompact: string;
   spaceNormal: string;
   /** `dim` fades a disabled control to half opacity; `fill` paints it in the disabled roles. */

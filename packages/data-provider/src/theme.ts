@@ -116,6 +116,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-series-7',
   'rgb-series-8',
   'rgb-switch-unchecked',
+  'rgb-switch-thumb',
   'rgb-presentation',
 ] as const);
 
@@ -293,6 +294,8 @@ const appearanceValidators = {
   radius2xl: isLength,
   radius3xl: isLength,
   controlHeight: isLength,
+  switchWidth: isLength,
+  switchHeight: isLength,
   spaceCompact: isLength,
   spaceNormal: isLength,
   /** `dim` fades a disabled control to half opacity; `fill` paints it in the disabled roles. */

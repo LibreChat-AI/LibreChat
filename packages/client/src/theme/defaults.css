@@ -197,6 +197,8 @@ html {
   --theme-radius-2xl: 1rem;
   --theme-radius-3xl: 1.5rem;
   --theme-control-height: 2.25rem;
+  --theme-switch-width: 2.75rem;
+  --theme-switch-height: 1.5rem;
   --theme-space-compact: 0.375rem;
   --theme-space-normal: 0.75rem;
   --theme-disabled-style: dim;
@@ -237,6 +239,7 @@ html {
   --theme-motion-fast: 150ms;
   --theme-motion-normal: 200ms;
   --switch-unchecked: 148 148 148;
+  --switch-thumb: 255 255 255;
   --provider-openai: #19c37d;
   --provider-openai-gpt4: #ab68ff;
   --provider-openai-reasoning: #000000;
@@ -357,6 +360,7 @@ html {
   --surface-fixed-hover: var(--gray-100);
   --text-fixed: var(--gray-800);
   --switch-unchecked: 102 102 102;
+  --switch-thumb: 13 13 13;
   --provider-openai: #19c37d;
   --provider-openai-gpt4: #ab68ff;
   --provider-openai-reasoning: #000000;

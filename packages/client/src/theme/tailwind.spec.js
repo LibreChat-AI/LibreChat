@@ -103,6 +103,10 @@ describe('LibreChat Tailwind preset', () => {
     const roles = [
       ['font-theme-ui', '--theme-font-family', defaultAppearance.fontFamily],
       ['h-theme-control', '--theme-control-height', defaultAppearance.controlHeight],
+      ['h-theme-switch', '--theme-switch-height', defaultAppearance.switchHeight],
+      ['w-theme-switch', '--theme-switch-width', defaultAppearance.switchWidth],
+      ['size-theme-switch-thumb', '--theme-switch-height', defaultAppearance.switchHeight],
+      ['translate-x-theme-switch-travel', '--theme-switch-width', defaultAppearance.switchWidth],
       ['p-theme-compact', '--theme-space-compact', defaultAppearance.spaceCompact],
       ['p-theme-normal', '--theme-space-normal', defaultAppearance.spaceNormal],
       ['p-theme-control-touch', '--theme-control-height', defaultAppearance.controlHeight],

@@ -137,6 +137,7 @@ export const defaultTheme: IThemeRGB = {
    *  `surface-primary` thumb, 5.91:1 against the checked `surface-inverted`
    *  track, so the control reads in either state. */
   'rgb-switch-unchecked': '148 148 148', // #949494
+  'rgb-switch-thumb': '255 255 255', // #fff (white, matching surface-primary)
 
   // Presentation
   'rgb-presentation': '255 255 255', // #fff (white)

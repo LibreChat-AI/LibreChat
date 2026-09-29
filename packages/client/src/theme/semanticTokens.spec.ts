@@ -507,7 +507,7 @@ describe('verified fill defaults', () => {
 
 /** The shared `Switch` paints this track, so it travels with the package rather
  *  than the app stylesheet. It is a UI component boundary under WCAG 1.4.11 and
- *  has to stay distinct from the `surface-primary` thumb on it and from the
+ *  has to stay distinct from the `switch-thumb` knob on it and from the
  *  `surface-inverted` fill it swaps with when checked. */
 describe.each([
   ['default', defaultTheme],
@@ -519,14 +519,12 @@ describe.each([
 ])('%s switch track', (_name, theme: IThemeRGB) => {
   it('keeps the unchecked track at the 3:1 mark floor against thumb and checked fill', () => {
     const track = toRgb(theme, 'rgb-switch-unchecked');
-    (['rgb-surface-primary', 'rgb-surface-inverted'] as Array<keyof IThemeRGB>).forEach(
-      (surface) => {
-        expect({ surface, ok: contrast(track, toRgb(theme, surface)) >= WCAG_MARK_MIN }).toEqual({
-          surface,
-          ok: true,
-        });
-      },
-    );
+    (['rgb-switch-thumb', 'rgb-surface-inverted'] as Array<keyof IThemeRGB>).forEach((surface) => {
+      expect({ surface, ok: contrast(track, toRgb(theme, surface)) >= WCAG_MARK_MIN }).toEqual({
+        surface,
+        ok: true,
+      });
+    });
   });
 });
 
@@ -545,6 +543,19 @@ describe('switch track defaults', () => {
       defaultTheme['rgb-switch-unchecked'],
       darkTheme['rgb-switch-unchecked'],
     ]);
+  });
+
+  it('declares the stock thumb the registry paints', () => {
+    const appStyles = readFileSync(
+      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
+      'utf8',
+    );
+
+    const declared = [...appStyles.matchAll(/--switch-thumb:\s*([^;]+);/g)].map((match) =>
+      match[1].trim(),
+    );
+
+    expect(declared).toEqual([defaultTheme['rgb-switch-thumb'], darkTheme['rgb-switch-thumb']]);
   });
 });
 

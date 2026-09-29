@@ -289,7 +289,7 @@ describe.each([
         theme,
         WCAG_NON_TEXT,
         ['rgb-switch-unchecked'],
-        ['rgb-surface-primary', 'rgb-surface-inverted'],
+        ['rgb-surface-primary', 'rgb-switch-thumb', 'rgb-surface-inverted'],
       ),
     ).toEqual([]);
   });

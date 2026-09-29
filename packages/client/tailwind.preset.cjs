@@ -7,6 +7,10 @@ module.exports = {
       },
       height: {
         'theme-control': 'var(--theme-control-height, 2.25rem)',
+        'theme-switch': 'var(--theme-switch-height, 1.5rem)',
+      },
+      width: {
+        'theme-switch': 'var(--theme-switch-width, 2.75rem)',
       },
       spacing: {
         'theme-compact': 'var(--theme-space-compact, 0.375rem)',
@@ -18,6 +22,10 @@ module.exports = {
          * controls is never shrunk on a phone. Pair it with `touch:`.
          */
         'theme-control-touch': 'max(var(--theme-control-height, 2.25rem), 2.75rem)',
+        /** The switch knob inside the track's 2px border, and how far it travels when checked. */
+        'theme-switch-thumb': 'calc(var(--theme-switch-height, 1.5rem) - 0.25rem)',
+        'theme-switch-travel':
+          'calc(var(--theme-switch-width, 2.75rem) - var(--theme-switch-height, 1.5rem))',
       },
       keyframes: {
         /** Discord-style "connecting" dots: each dot lifts and brightens in

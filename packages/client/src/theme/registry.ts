@@ -134,6 +134,8 @@ export const themeAppearanceProperties: Readonly<
   radius2xl: '--theme-radius-2xl',
   radius3xl: '--theme-radius-3xl',
   controlHeight: '--theme-control-height',
+  switchWidth: '--theme-switch-width',
+  switchHeight: '--theme-switch-height',
   spaceCompact: '--theme-space-compact',
   spaceNormal: '--theme-space-normal',
   disabledStyle: '--theme-disabled-style',
@@ -179,6 +181,8 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   radius2xl: '1rem',
   radius3xl: '1.5rem',
   controlHeight: '2.25rem',
+  switchWidth: '2.75rem',
+  switchHeight: '1.5rem',
   spaceCompact: '0.375rem',
   spaceNormal: '0.75rem',
   disabledStyle: 'dim',
@@ -435,6 +439,15 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-chart-widget-surface': customColors['rgb-surface-primary'] }
       : {};
+  /**
+   * The thumb was painted `surface-primary` before it had a role, so a theme that repaints that
+   * surface keeps the knob it drew against its tracks.
+   */
+  const switchThumbFallback =
+    customColors?.['rgb-switch-thumb'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-switch-thumb': customColors['rgb-surface-primary'] }
+      : {};
   const chartWidgetStrokeFallback =
     customColors?.['rgb-chart-widget-stroke'] === undefined &&
     customColors?.['rgb-border-light'] !== undefined
@@ -506,6 +519,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...proseLinkFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
+      ...switchThumbFallback,
       ...borderControlFallback,
       ...focusFallback,
       ...pressedFallback,

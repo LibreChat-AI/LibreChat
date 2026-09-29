@@ -175,6 +175,7 @@ export const highContrastLightTheme: IThemeRGB = {
    *  the page and the `surface-primary` thumb, 3.66:1 against the checked
    *  `surface-inverted` track. */
   'rgb-switch-unchecked': '102 102 102', // #666666
+  'rgb-switch-thumb': '255 255 255', // #ffffff (matching surface-primary)
 
   // Presentation
   'rgb-presentation': '255 255 255', // #ffffff
@@ -323,6 +324,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   /** Unchecked switch track: 5.32:1 against the page and the `surface-primary`
    *  thumb, 3.95:1 against the checked `surface-inverted` track. */
   'rgb-switch-unchecked': '128 128 128', // #808080
+  'rgb-switch-thumb': '0 0 0', // #000000 (matching surface-primary)
 
   // Presentation
   'rgb-presentation': '0 0 0', // #000000

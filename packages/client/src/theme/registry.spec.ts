@@ -300,6 +300,39 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-chart-widget-stroke']).toBe('50 51 52');
   });
 
+  it('keeps the switch thumb on the surface a theme repainted before the role existed', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-switch-thumb',
+        modes: { dark: { colors: { 'rgb-surface-primary': '20 21 22' } } },
+      },
+      'dark',
+    );
+
+    expect(resolved.colors['rgb-switch-thumb']).toBe('20 21 22');
+  });
+
+  it('preserves an explicit switch thumb and falls back to the bundled one otherwise', () => {
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-switch-thumb',
+        modes: {
+          dark: { colors: { 'rgb-surface-primary': '20 21 22', 'rgb-switch-thumb': '1 2 3' } },
+        },
+      },
+      'dark',
+    );
+    const untouched = resolveTheme(
+      { version: 1, name: 'no-surface', modes: { dark: { colors: {} } } },
+      'dark',
+    );
+
+    expect(explicit.colors['rgb-switch-thumb']).toBe('1 2 3');
+    expect(untouched.colors['rgb-switch-thumb']).toBe(darkTheme['rgb-switch-thumb']);
+  });
+
   it('keeps the light border a legacy theme drew its controls with', () => {
     const resolved = resolveTheme(
       {

@@ -153,6 +153,7 @@ export const clickHouseLightTheme: IThemeRGB = {
 
   // Switch
   'rgb-switch-unchecked': '128 134 145', // #808691 (palette.slate.500)
+  'rgb-switch-thumb': '255 255 255', // #ffffff (switch.color.indicator.default)
 
   // Presentation
   'rgb-presentation': '255 255 255', // #ffffff (background.default)
@@ -285,6 +286,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
 
   // Switch
   'rgb-switch-unchecked': '128 128 128', // #808080 (palette.neutral.500)
+  'rgb-switch-thumb': '21 21 21', // #151515 (switch.color.indicator.default)
 
   // Presentation
   'rgb-presentation': '31 31 28', // #1f1f1c (background.default)
@@ -353,6 +355,8 @@ const clickHouseShape = {
   modalScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   /** Click UI paints disabled controls in fixed fills (`#dfdfdf` / `#414141`) rather than fading them. */
   disabledStyle: 'fill' as const,
+  switchWidth: '2rem', // switch.size.width
+  switchHeight: '1rem', // switch.size.height
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
   motionNormal: '150ms', // transition.duration.smooth
 };

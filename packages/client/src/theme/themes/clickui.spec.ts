@@ -145,6 +145,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-7': 'palette.babyblue.600',
     'rgb-series-8': 'global.color.chart.default.teal',
     'rgb-switch-unchecked': 'palette.slate.500',
+    'rgb-switch-thumb': 'click.switch.color.indicator.default',
     'rgb-presentation': 'global.color.background.default',
   },
   dark: {
@@ -249,6 +250,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-7': 'global.color.chart.default.babyblue',
     'rgb-series-8': 'global.color.chart.default.teal',
     'rgb-switch-unchecked': 'palette.neutral.500',
+    'rgb-switch-thumb': 'click.switch.color.indicator.default',
     'rgb-presentation': 'global.color.background.default',
   },
 };
@@ -311,6 +313,8 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   scrimOpacity: 'click.dialog.color.opaqueBackground.default',
   alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
+  switchWidth: 'click.switch.size.width',
+  switchHeight: 'click.switch.size.height',
   motionFast: 'transition.duration.medium',
   motionNormal: 'transition.duration.smooth',
 };
@@ -438,7 +442,7 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
  * every decision; the floors below only move up.
  */
 type ParityKind = 'color' | 'shape';
-type Utility = 'bg' | 'text' | 'border' | 'rounded';
+type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'w' | 'h';
 
 interface ParityProbe {
   /** The Click UI component token the primitive should reproduce. */
@@ -627,6 +631,18 @@ const parityProbes: Record<string, ParityProbe> = {
     utility: 'bg',
     element: () => switchProbe(false)().firstElementChild ?? document.body,
   },
+  'Switch width': {
+    token: 'click.switch.size.width',
+    kind: 'shape',
+    utility: 'w',
+    element: switchProbe(false),
+  },
+  'Switch height': {
+    token: 'click.switch.size.height',
+    kind: 'shape',
+    utility: 'h',
+    element: switchProbe(false),
+  },
   'Switch corner': {
     token: 'click.switch.radii.all',
     kind: 'shape',
@@ -685,8 +701,8 @@ const parityProbes: Record<string, ParityProbe> = {
 
 /** The fewest decisions per mode that must match; raise a floor when a change closes a gap. */
 const parityFloors: Record<ThemeMode, Record<ParityKind, number>> = {
-  light: { color: 6, shape: 6 },
-  dark: { color: 6, shape: 6 },
+  light: { color: 6, shape: 8 },
+  dark: { color: 7, shape: 8 },
 };
 
 const radiusRoles: Record<string, keyof IThemeAppearance> = {
@@ -704,11 +720,25 @@ const radiusRoles: Record<string, keyof IThemeAppearance> = {
 
 const fixedRadii: Record<string, string> = { full: '9999px', none: '0px' };
 
+const sizeRoles: Record<'w' | 'h', Record<string, keyof IThemeAppearance>> = {
+  w: { 'theme-switch': 'switchWidth' },
+  h: { 'theme-switch': 'switchHeight', 'theme-control': 'controlHeight' },
+};
+
 /** A `border`, `border-2` or one-sided `border-b` class, the width a border color needs to show. */
 const drawsBorder = (classes: string[]) =>
   classes.some((name) => /^border(-[0-9]+|-[xytblrse](-[0-9]+)?)?$/.test(name));
 
 type Resolved = ReturnType<typeof resolveTheme>;
+
+/** A `w-*` or `h-*` step: a theme role, or Tailwind's 0.25rem spacing scale. */
+function sizeValue(utility: 'w' | 'h', name: string, resolved: Resolved): string | undefined {
+  const role = sizeRoles[utility][name];
+  if (role !== undefined) {
+    return resolved.appearance[role];
+  }
+  return /^[0-9.]+$/.test(name) ? `${Number(name) / 4}rem` : undefined;
+}
 
 function roleColor(resolved: Resolved, name: string): Rgba | undefined {
   const [role, alpha] = name.split('/');
@@ -732,6 +762,10 @@ function paintedRole(element: Element, probe: ParityProbe, resolved: Resolved): 
     .map((name) => name.slice(prefix.length));
   if (probe.utility === 'rounded') {
     return names.find((name) => name in radiusRoles || name in fixedRadii);
+  }
+  if (probe.utility === 'w' || probe.utility === 'h') {
+    const utility = probe.utility;
+    return names.find((name) => sizeValue(utility, name, resolved) !== undefined);
   }
   if (probe.utility === 'border' && !drawsBorder(classes)) {
     return undefined;
@@ -757,6 +791,16 @@ const sameColor = (a: Rgba, b: Rgba) =>
   (a.slice(0, 3).every((value, index) => Math.abs(value - b[index]) < 1) &&
     Math.abs(a[3] - b[3]) < 0.01);
 
+function shapeValue(utility: Utility, role: string | undefined, resolved: Resolved): string {
+  if (role === undefined) {
+    return utility === 'rounded' ? '0px' : 'auto';
+  }
+  if (utility === 'w' || utility === 'h') {
+    return sizeValue(utility, role, resolved) ?? 'auto';
+  }
+  return fixedRadii[role] ?? resolved.appearance[radiusRoles[role]];
+}
+
 interface ParityResult {
   decision: string;
   kind: ParityKind;
@@ -777,8 +821,7 @@ function measure(mode: ThemeMode, decision: string, probe: ParityProbe): ParityR
   cleanup();
   const base = { decision, kind: probe.kind, clickUi: source, deviation: probe.deviation };
   if (probe.kind === 'shape') {
-    const theme =
-      role === undefined ? '0px' : (fixedRadii[role] ?? resolved.appearance[radiusRoles[role]]);
+    const theme = shapeValue(probe.utility, role, resolved);
     const painted = role === undefined ? 'unpainted' : `${probe.utility}-${role}`;
     return { ...base, theme: `${painted} = ${theme}`, match: theme === source };
   }
