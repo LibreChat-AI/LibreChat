@@ -3,12 +3,14 @@ import type { TPluginMap } from '~/common';
 import { toolArtifactKey } from './artifacts';
 
 /**
- * Identity for a file-backed attachment, or `null` for attachments (e.g. web
- * search) that aren't a file. Delegates to `toolArtifactKey` so this and the
- * artifact card's identity are the same rule — `toolArtifactKey` already
- * falls back `file_id` → `filepath` → `filename`, so an id-less attachment
- * keys by its unique per-session filepath rather than a display name that
- * two different files can share.
+ * Identity for a file-backed attachment (one with a `file_id` or a
+ * `filepath`), or `null` for anything else (e.g. web search results), which
+ * is never collapsed. For file-backed attachments this is exactly the
+ * artifact card's key, `toolArtifactKey` (`file_id` → `filepath` →
+ * `filename`), so an id-less file keys by its unique per-session filepath
+ * rather than a display name two different files can share. An attachment
+ * with only a `filename` is not treated as a file here, although
+ * `toolArtifactKey` would still key it by that name.
  */
 export const fileIdentity = (attachment: t.TAttachment): string | null => {
   const file = attachment as Partial<t.TFile>;
