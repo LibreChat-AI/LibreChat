@@ -8,6 +8,9 @@ import {
   sendMessage,
 } from './helpers';
 
+/** `MOBILE_DRAWER_ID` in `client/src/components/UnifiedSidebar/constants.ts`. */
+const MOBILE_DRAWER_ID = 'mobile-drawer';
+
 /**
  * Creates a project from the all-projects page and returns its id.
  * Project creation navigates to the project workspace (`/projects/:id`).
@@ -150,6 +153,12 @@ test.describe('chat projects', () => {
     ).toBeVisible();
 
     await page.setViewportSize({ width: 1280, height: 900 });
+    /** The workspace swaps its stacked phone layout for resizable panels at the
+     *  breakpoint, remounting the title, and the header's sidebar toggle leaves in
+     *  the same commit; measure only once the desktop title is the one rendered. */
+    await expect(
+      page.getByRole('main').getByRole('button', { name: 'Open sidebar', exact: true }),
+    ).toHaveCount(0);
     const desktopTitle = await title.evaluate((element) => ({
       height: element.getBoundingClientRect().height,
       lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
@@ -164,6 +173,9 @@ test.describe('chat projects', () => {
     );
 
     await page.getByRole('main').getByRole('button', { name: 'Open sidebar', exact: true }).click();
+    /** The drawer commits its open state in a transition after the slide starts; a row
+     *  menu opened before that commit is closed by it, so wait for the drawer to open. */
+    await expect(page.locator(`#${MOBILE_DRAWER_ID}`)).not.toHaveAttribute('inert', /.*/);
     await page
       .locator('li')
       .filter({ has: page.getByRole('button', { name: longName, exact: true }) })
