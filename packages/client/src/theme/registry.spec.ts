@@ -206,6 +206,53 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-text-muted']).toBe('90 91 92');
   });
 
+  it('keeps prose links on the link role in light and on primary text in dark', () => {
+    expect(resolveTheme(libreChatTheme, 'light').colors['rgb-link-prose']).toBe(
+      defaultTheme['rgb-link'],
+    );
+    expect(resolveTheme(libreChatTheme, 'dark').colors['rgb-link-prose']).toBe(
+      darkTheme['rgb-text-primary'],
+    );
+  });
+
+  it('derives omitted prose links from the link a theme names, in either mode', () => {
+    const colors = { 'rgb-link': '250 255 105', 'rgb-text-primary': '240 240 240' };
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'prose-link-reference',
+      modes: { light: { colors }, dark: { colors } },
+    };
+
+    expect(resolveTheme(theme, 'light').colors['rgb-link-prose']).toBe('250 255 105');
+    expect(resolveTheme(theme, 'dark').colors['rgb-link-prose']).toBe('250 255 105');
+  });
+
+  it('keeps dark prose links on the primary text of a theme that names no link', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'prose-text-reference',
+        modes: { dark: { colors: { 'rgb-text-primary': '240 240 240' } } },
+      },
+      'dark',
+    );
+
+    expect(resolved.colors['rgb-link-prose']).toBe('240 240 240');
+  });
+
+  it('preserves an explicit prose link color', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-prose-link-reference',
+        modes: { dark: { colors: { 'rgb-link': '1 2 3', 'rgb-link-prose': '4 5 6' } } },
+      },
+      'dark',
+    );
+
+    expect(resolved.colors['rgb-link-prose']).toBe('4 5 6');
+  });
+
   it('derives omitted chart widget colors from the previous panel roles', () => {
     const resolved = resolveTheme(
       {

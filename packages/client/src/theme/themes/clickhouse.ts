@@ -45,6 +45,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-link': '29 100 236', // #1d64ec (palette.info.500, one step past text.link.default #437eef (3.84:1 on white))
   'rgb-link-hover': '16 78 198', // #104ec6 (text.link.hover)
   'rgb-link-visited': '136 0 204', // #8800cc (palette.violet.600)
+  'rgb-link-prose': '29 100 236', // #1d64ec (palette.info.500, matching link)
   'rgb-accent-primary': '21 21 21', // #151515 (accent.default)
   'rgb-accent-primary-hover': '50 50 50', // #323232 (palette.neutral.712)
 
@@ -80,6 +81,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-chat': '255 255 255', // #ffffff (background.default)
   'rgb-surface-code': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-code-body': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
+  'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-text-inverted': '255 255 255', // #ffffff (palette.neutral.0)
@@ -165,6 +167,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-link': '250 255 105', // #faff69 (text.link.default)
   'rgb-link-hover': '254 255 194', // #feffc2 (text.link.hover)
   'rgb-link-visited': '204 102 255', // #cc66ff (palette.violet.300)
+  'rgb-link-prose': '250 255 105', // #faff69 (text.link.default)
   'rgb-accent-primary': '250 255 105', // #faff69 (accent.default)
   'rgb-accent-primary-hover': '253 255 163', // #fdffa3 (palette.brand.200)
 
@@ -203,6 +206,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-chat': '31 31 28', // #1f1f1c (background.default)
   'rgb-surface-code': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
+  'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
   'rgb-text-inverted': '31 31 28', // #1f1f1c (button.basic.color.primary.text.default)

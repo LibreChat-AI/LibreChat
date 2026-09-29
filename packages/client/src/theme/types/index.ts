@@ -21,6 +21,9 @@ export interface IThemeRGB {
   'rgb-link'?: string;
   'rgb-link-hover'?: string;
   'rgb-link-visited'?: string;
+  /** Links inside rendered Markdown. Falls back to the mode's `rgb-link`, or in dark to
+   *  `rgb-text-primary`, when a theme names that and not this. */
+  'rgb-link-prose'?: string;
   'rgb-accent-primary'?: string;
   'rgb-accent-primary-hover'?: string;
 
@@ -56,6 +59,8 @@ export interface IThemeRGB {
   'rgb-surface-chat'?: string;
   'rgb-surface-code'?: string;
   'rgb-surface-code-body'?: string;
+  /** The backdrop a QR code is scanned against; keep it light in every mode. */
+  'rgb-surface-qr'?: string;
   'rgb-surface-inverted'?: string;
   'rgb-surface-inverted-hover'?: string;
   'rgb-text-inverted'?: string;
@@ -169,6 +174,7 @@ export interface IThemeVariables {
   '--link': string;
   '--link-hover': string;
   '--link-visited': string;
+  '--link-prose': string;
   '--accent-primary': string;
   '--accent-primary-hover': string;
   '--ring-primary': string;
@@ -198,6 +204,7 @@ export interface IThemeVariables {
   '--surface-chat': string;
   '--surface-code': string;
   '--surface-code-body': string;
+  '--surface-qr': string;
   '--surface-inverted': string;
   '--surface-inverted-hover': string;
   '--text-inverted': string;
@@ -275,6 +282,7 @@ export interface IThemeColors {
   link?: string;
   'link-hover'?: string;
   'link-visited'?: string;
+  'link-prose'?: string;
   'accent-primary'?: string;
   'accent-primary-hover'?: string;
   'ring-primary'?: string;
@@ -304,6 +312,7 @@ export interface IThemeColors {
   'surface-chat'?: string;
   'surface-code'?: string;
   'surface-code-body'?: string;
+  'surface-qr'?: string;
   'surface-inverted'?: string;
   'surface-inverted-hover'?: string;
   'text-inverted'?: string;

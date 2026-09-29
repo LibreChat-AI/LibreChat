@@ -219,6 +219,7 @@ html {
   --link: var(--blue-600);
   --link-hover: var(--blue-700);
   --link-visited: 147 51 234;
+  --link-prose: var(--link);
   --accent-primary: 18 110 107;
   --accent-primary-hover: 10 79 83;
   --ring-primary: var(--gray-500);
@@ -366,6 +367,7 @@ html {
   --link: var(--blue-400);
   --link-hover: var(--blue-300);
   --link-visited: 192 132 252;
+  --link-prose: var(--text-primary);
   --accent-primary: 65 167 157;
   --accent-primary-hover: 109 200 185;
   --header-primary: var(--gray-700);
@@ -1064,12 +1066,12 @@ p > small {
   color: var(--tw-prose-code);
   font-size: 0.875em;
   font-weight: 600;
-  background-color: rgb(var(--gray-200));
+  background-color: rgb(var(--surface-active-alt));
   padding: 0.125rem 0.25rem;
   border-radius: 0.35rem;
 }
 .dark .prose :where(code):not(:where([class~='not-prose'] *)):not(:where(pre *)) {
-  background-color: rgb(var(--gray-600));
+  background-color: rgb(var(--surface-hover-alt));
 }
 .prose :where(a code):not(:where([class~='not-prose'] *)) {
   color: inherit;
@@ -1162,13 +1164,13 @@ p > small {
 }
 /* Prose colours read the theme roles, so a theme definition repaints message
  * content. Each variable takes the role that reproduces the default palette
- * (body is `text-secondary`, #424242 in light); dark links stay on
- * `text-primary` because the default dark set renders them white. */
+ * (body is `text-secondary`, #424242 in light). Links read `link-prose`, which is
+ * `link` in light and `text-primary` in dark, where the default set renders them white. */
 .prose {
   --tw-prose-body: rgb(var(--text-secondary));
   --tw-prose-headings: rgb(var(--text-primary));
   --tw-prose-lead: rgb(var(--text-secondary));
-  --tw-prose-links: rgb(var(--link));
+  --tw-prose-links: rgb(var(--link-prose));
   --tw-prose-bold: rgb(var(--text-primary));
   --tw-prose-counters: rgb(var(--text-tertiary));
   --tw-prose-bullets: rgb(var(--border-medium));
@@ -1184,7 +1186,7 @@ p > small {
   --tw-prose-invert-body: rgb(var(--text-secondary));
   --tw-prose-invert-headings: rgb(var(--text-primary));
   --tw-prose-invert-lead: rgb(var(--text-tertiary));
-  --tw-prose-invert-links: rgb(var(--text-primary));
+  --tw-prose-invert-links: rgb(var(--link-prose));
   --tw-prose-invert-bold: rgb(var(--text-primary));
   --tw-prose-invert-counters: rgb(var(--text-tertiary));
   --tw-prose-invert-bullets: rgb(var(--border-medium));

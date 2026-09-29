@@ -138,7 +138,7 @@ const DeploymentThemeOverrideContext = createContext<(override: ThemeOverride) =
  * absent theme included, until the route unmounts. A route whose theme source
  * failed passes `ready` with no theme, so the viewer's theme does not stand in
  * for the link's. Registered in a layout effect so the wrapper re-renders in the
- * same commit; `ThemeProvider` still applies the change in its own effects.
+ * same commit, and `ThemeProvider` applies the change before that commit paints.
  */
 export function useDeploymentThemeOverride(ready: boolean, theme: DeploymentThemeValue) {
   const setOverride = useContext(DeploymentThemeOverrideContext);

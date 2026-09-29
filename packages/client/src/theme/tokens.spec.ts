@@ -68,6 +68,13 @@ describe('theme color tokens', () => {
     expect(missing).toEqual([]);
   });
 
+  it('lets a theme set every color token the stylesheet declares', () => {
+    const registered = new Set(Object.keys(defaultTheme).map((key) => key.replace(/^rgb-/, '')));
+    const unowned = [...declared].filter((token) => !registered.has(token));
+
+    expect(unowned).toEqual([]);
+  });
+
   it('resolves a token to the custom property the theme rewrites at runtime', async () => {
     const css = await generate(['bg-surface-primary', 'text-text-secondary', 'bg-series-1']);
 

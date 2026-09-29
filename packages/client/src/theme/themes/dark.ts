@@ -20,6 +20,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-link': '96 165 250', // #60a5fa (blue-400)
   'rgb-link-hover': '147 197 253', // #93c5fd (blue-300)
   'rgb-link-visited': '192 132 252', // #c084fc (purple-400)
+  'rgb-link-prose': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-accent-primary': '65 167 157', // #41a79d
   'rgb-accent-primary-hover': '109 200 185', // #6dc8b9
 
@@ -55,6 +56,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-surface-chat': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-code': '33 33 33', // #212121 (gray-800)
   'rgb-surface-code-body': '23 23 23', // #171717 (gray-850)
+  'rgb-surface-qr': '255 255 255', // #fff (white, so the code stays scannable)
   'rgb-surface-inverted': '255 255 255', // #fff (white)
   'rgb-surface-inverted-hover': '236 236 236', // #ececec (gray-100)
   'rgb-text-inverted': '23 23 23', // #171717 (gray-850)

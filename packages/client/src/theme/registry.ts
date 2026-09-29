@@ -325,6 +325,18 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-text-tertiary'] !== undefined
       ? { 'rgb-text-muted': customColors['rgb-text-tertiary'] }
       : {};
+  /**
+   * Markdown links read `link` in light and `text-primary` in dark before they
+   * had a role, so a theme that names neither prose role keeps whichever of
+   * those it painted, its own link colour first.
+   */
+  const proseLinkSource =
+    customColors?.['rgb-link'] ??
+    (mode === 'dark' ? customColors?.['rgb-text-primary'] : undefined);
+  const proseLinkFallback =
+    customColors?.['rgb-link-prose'] === undefined && proseLinkSource !== undefined
+      ? { 'rgb-link-prose': proseLinkSource }
+      : {};
   const chartWidgetSurfaceFallback =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
@@ -396,6 +408,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...composerHoverFallback,
       ...shimmerBaseFallback,
       ...textMutedFallback,
+      ...proseLinkFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...borderControlFallback,

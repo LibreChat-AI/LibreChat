@@ -67,6 +67,7 @@
   --color-link: rgb(var(--link));
   --color-link-hover: rgb(var(--link-hover));
   --color-link-visited: rgb(var(--link-visited));
+  --color-link-prose: rgb(var(--link-prose));
 
   /* borders */
   --color-border-light: rgb(var(--border-light) / var(--border-light-alpha, 1));

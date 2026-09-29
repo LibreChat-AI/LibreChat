@@ -2252,7 +2252,7 @@ const themeModeSchema = z
 
 /**
  * Shape of an inline deployment theme. Token names and value ranges are checked
- * by the client registry (`validateThemeDefinition`), which owns the token list.
+ * by `collectThemeIssues` in `theme.ts`, which owns the token list.
  */
 export const themeDefinitionSchema = z
   .object({

@@ -20,6 +20,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-link': '37 99 235', // #2563eb (blue-600)
   'rgb-link-hover': '29 78 216', // #1d4ed8 (blue-700)
   'rgb-link-visited': '147 51 234', // #9333ea (purple-600)
+  'rgb-link-prose': '37 99 235', // #2563eb (blue-600, matching link)
   'rgb-accent-primary': '18 110 107', // #126e6b
   'rgb-accent-primary-hover': '10 79 83', // #0a4f53
 
@@ -55,6 +56,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-chat': '255 255 255', // #fff (white)
   'rgb-surface-code': '247 247 248', // #f7f7f8 (gray-50)
   'rgb-surface-code-body': '255 255 255', // #fff (white)
+  'rgb-surface-qr': '255 255 255', // #fff (white)
   'rgb-surface-inverted': '23 23 23', // #171717 (gray-850)
   'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-inverted': '255 255 255', // #fff (white)

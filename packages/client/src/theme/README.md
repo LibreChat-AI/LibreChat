@@ -264,6 +264,7 @@ function MyComponent() {
 - `text-text-warning` - Warning text color
 - `text-text-destructive` - Destructive/error text color
 - `text-text-on-status` - Text color for strong status surfaces
+- `text-link-prose` - Links in rendered Markdown (`link` in light, primary text in dark by default)
 
 ### Surface Colors
 
@@ -277,6 +278,7 @@ function MyComponent() {
 - `bg-surface-chat` - Chat interface background
 - `bg-surface-code` - Code block chrome: toolbar, output and result switcher
 - `bg-surface-code-body` - Code block pane behind the highlighted code
+- `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
 
 ### Border Colors
 

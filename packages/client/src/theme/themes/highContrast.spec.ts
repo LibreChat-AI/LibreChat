@@ -117,6 +117,7 @@ const accentTokens: Array<keyof IThemeRGB> = [
   'rgb-link',
   'rgb-link-hover',
   'rgb-link-visited',
+  'rgb-link-prose',
   'rgb-brand-purple',
 ];
 
