@@ -13,26 +13,35 @@ test.use({ viewport: { width: 1280, height: 800 } });
 
 type Mode = 'light' | 'dark';
 
-async function storeTheme(page: Page, definition: unknown, mode: Mode) {
-  await page.addInitScript(
-    ([stored, colorMode]) => {
-      localStorage.setItem('color-theme', colorMode as string);
-      localStorage.removeItem('theme-colors');
-      localStorage.removeItem('theme-name');
-      if (stored) {
-        localStorage.setItem('theme-definition', JSON.stringify(stored));
-        localStorage.setItem('theme-source', 'definition');
-      } else {
-        localStorage.removeItem('theme-definition');
-        localStorage.removeItem('theme-source');
-      }
-    },
-    [definition ?? null, mode] as const,
-  );
+type ThemeChoice = 'clickhouse' | 'default';
+
+/**
+ * One init script per page: Playwright does not order several, so the theme and mode a
+ * navigation wants ride in its URL and the script stores or clears the definition.
+ */
+async function installThemeBridge(page: Page) {
+  await page.addInitScript((definition) => {
+    const params = new URL(location.href).searchParams;
+    const theme = params.get('e2eTheme');
+    const mode = params.get('e2eThemeMode');
+    if (theme === null || mode === null) {
+      return;
+    }
+    localStorage.setItem('color-theme', mode);
+    localStorage.removeItem('theme-colors');
+    localStorage.removeItem('theme-name');
+    if (theme === 'clickhouse') {
+      localStorage.setItem('theme-definition', JSON.stringify(definition));
+      localStorage.setItem('theme-source', 'definition');
+    } else {
+      localStorage.removeItem('theme-definition');
+      localStorage.removeItem('theme-source');
+    }
+  }, clickHouseTheme);
 }
 
-async function settingsSwitch(page: Page): Promise<Locator> {
-  await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+async function settingsSwitch(page: Page, theme: ThemeChoice, mode: Mode): Promise<Locator> {
+  await page.goto(`${NEW_CHAT_PATH}?e2eTheme=${theme}&e2eThemeMode=${mode}`, { timeout: 15000 });
   await page.getByTestId('nav-user').click();
   await page.getByRole('menuitem', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
@@ -63,9 +72,9 @@ test.describe('theme switch', () => {
   test('the switch takes Click UI geometry and knob color under the ClickHouse theme @scenario:clickhouse-switch-follows-click-ui', async ({
     page,
   }) => {
+    await installThemeBridge(page);
     for (const mode of ['light', 'dark'] as Mode[]) {
-      await storeTheme(page, clickHouseTheme, mode);
-      const control = await settingsSwitch(page);
+      const control = await settingsSwitch(page, 'clickhouse', mode);
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
       await expect(page.locator('html')).toHaveClass(new RegExp(`\\b${mode}\\b`));
 
@@ -81,12 +90,12 @@ test.describe('theme switch', () => {
   test('the default theme keeps its switch @scenario:default-theme-switch-unchanged', async ({
     page,
   }) => {
+    await installThemeBridge(page);
     for (const [mode, surface] of [
       ['light', 'rgb(255, 255, 255)'],
       ['dark', 'rgb(13, 13, 13)'],
     ] as Array<[Mode, string]>) {
-      await storeTheme(page, null, mode);
-      const control = await settingsSwitch(page);
+      const control = await settingsSwitch(page, 'default', mode);
 
       expect(await measure(control)).toEqual({ track: [44, 24], thumb: 20, thumbColor: surface });
     }
