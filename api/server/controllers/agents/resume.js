@@ -1915,6 +1915,13 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         { streamId, createdAt: job.createdAt },
         GenerationJobManager,
       );
+      await applyForcedRetention(
+        { stampForcedRetention },
+        {
+          ctx: { userId: req.user.id, interfaceConfig: req.config?.interfaceConfig },
+          conversationId,
+        },
+      );
       if (userSubmittedPaths.length > 0) {
         job.metadata.userSubmittedPaths = userSubmittedPaths;
       }

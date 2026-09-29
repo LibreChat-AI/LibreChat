@@ -3284,19 +3284,48 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
           { conversationId: CONVO_ID, messageIds: [mockSaveMessage.mock.calls[0][1].messageId] },
         );
         expect(mockSaveMessage.mock.calls[0][1].messageId).toEqual(expect.any(String));
-        expect(mockSaveMessage.mock.invocationCallOrder[0]).toBeLessThan(
-          mockStampForcedRetention.mock.invocationCallOrder[0],
+        expect(mockStampForcedRetention.mock.calls[0][1]).toEqual({
+          conversationId: CONVO_ID,
+          messageIds: [],
+        });
+        expect(mockStampForcedRetention.mock.invocationCallOrder[0]).toBeLessThan(
+          mockInitializeClient.mock.invocationCallOrder[0],
         );
+        const messageStampOrder = mockStampForcedRetention.mock.invocationCallOrder.at(-1);
+        expect(mockSaveMessage.mock.invocationCallOrder[0]).toBeLessThan(messageStampOrder);
         const publication = rePause
           ? mockGenerationJobManager.approvals.finishPausePersistence
           : mockGenerationJobManager.publishTerminalClaim;
-        expect(mockStampForcedRetention.mock.invocationCallOrder[0]).toBeLessThan(
-          publication.mock.invocationCallOrder[0],
-        );
+        expect(messageStampOrder).toBeLessThan(publication.mock.invocationCallOrder[0]);
         expect(mockStampConvoLastResponse).not.toHaveBeenCalled();
         expect(mockAddTitle).not.toHaveBeenCalled();
       },
     );
+
+    it('converts a pre-policy paused chat that re-pauses without new output', async () => {
+      requestConfigOverrides.interfaceConfig = {
+        retentionMode: 'ephemeral',
+        temporaryChatRetention: 1,
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { isTemporary: false } }),
+      );
+      mockInitializeClient.mockResolvedValue({
+        client: makeClient({ pendingApproval: { actionId: NEXT_ACTION_ID }, contentParts: [] }),
+        userMCPAuthMap: {},
+      });
+
+      const res = await post(approveBody({ isTemporary: false }));
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockSaveMessage).not.toHaveBeenCalled();
+      expect(mockStampForcedRetention).toHaveBeenCalledWith(
+        { userId: USER_ID, interfaceConfig: requestConfigOverrides.interfaceConfig },
+        { conversationId: CONVO_ID, messageIds: [] },
+      );
+    });
 
     it.each([false, true])('preserves the job deadline when re-pause=%s', async (rePause) => {
       const expiredAt = new Date('2030-01-01T00:00:00.000Z');
