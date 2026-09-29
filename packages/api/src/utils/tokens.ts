@@ -108,6 +108,11 @@ const googleModels = {
   /* PaLM2, -5 from max: 8192 */
   'text-': 8187,
   'chat-': 8187,
+  'google/gemma-3-27b-it': 131072,
+  'google/gemma-4-26B-A4B-it': 262144,
+  'google/gemma-4-31B-it': 262144,
+  'google/gemma-4-31B-it-turbo': 262144,
+  'google/gemma-4-31B-it-Ultra': 131072,
 };
 
 const anthropicModels = {
@@ -140,6 +145,8 @@ const deepseekModels = {
   'deepseek-ai/DeepSeek-V3.2-Exp': 64000, // actually it is 128K context, I artificially limited it to 64K context
   'deepseek-ai/DeepSeek-V3.1-Terminus': 64000, // actually it is bigger, I artificially limited it to 64K context
   'deepseek-ai/DeepSeek-V3.1': 64000, // actually it is bigger, I artificially limited it to 64K context
+  'deepseek-ai/DeepSeek-V4-Flash': 1048576,
+  'deepseek-ai/DeepSeek-V4-Flash-0731': 1048576,
   //end of new models that I added to DeepSeek models  
 };
 
@@ -275,6 +282,7 @@ const aggregateModels = {
   'glm-4.5-air': 131000,
   'glm-4.5v': 66000,
   'glm-4.6': 200000,
+  'Qwen/Qwen3-32B': 40960,
 };
 
 export const maxTokensMap = {
