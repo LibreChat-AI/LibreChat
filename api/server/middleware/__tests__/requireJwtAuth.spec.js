@@ -50,6 +50,7 @@ jest.mock('@librechat/data-schemas', () => {
     getUserId: () => tenantStorage.getStore()?.userId,
     getRequestId: () => tenantStorage.getStore()?.requestId,
     logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    runAsSystem: (fn) => tenantStorage.run({ tenantId: '__SYSTEM__' }, fn),
     tenantStorage,
   };
 });

@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { runAsSystem } from '@librechat/data-schemas';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
 import type { NextFunction, Request, Response } from 'express';
 import type { TokenIssuance, TokenRetirementSignals, TwoFactorAccount } from './twoFactor';
@@ -91,7 +92,8 @@ export function createRequiredTwoFactorGate(deps: TwoFactorGateDependencies) {
         userId,
         process.env.JWT_SECRET as string,
       );
-      const retirement = await deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS);
+      /** Tenant context is established only after this gate, as the JWT strategy's own read is. */
+      const retirement = await runAsSystem(() => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS));
       if ((deps.tokenRetired ?? isTokenRetired)(getAuthorizingCredential(req), retirement)) {
         deps.warn(
           `[requireJwtAuth] Password was reset while the request was in flight: userId=${userId}`,
