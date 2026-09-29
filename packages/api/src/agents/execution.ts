@@ -44,6 +44,8 @@ export interface CodeExecutionContext {
   codeWorkspace?: CodeWorkspaceSelection & {
     operations: CodeWorkspaceOperation[];
     workspaceInstanceId?: string;
+    /** The worker schedules each `.worktrees/<name>` of this root as its own lane. */
+    linkedWorktrees?: boolean;
     /** Live Code API execution ceiling. Omitted by older deployments. */
     maxCommandTimeoutMs?: number;
     instructions?: CodeWorkspaceDescriptor['instructions'];

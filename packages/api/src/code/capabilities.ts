@@ -182,6 +182,13 @@ export async function resolveCodeExecutionWorkspaceContext({
       workspace.workspaceInstances?.includes('git_worktree')
         ? { workspaceInstanceId: context.conversationWorkspaceInstanceId }
         : {}),
+      ...(workspace.workspaceScopes?.includes('git_linked_worktree') &&
+      !(
+        context.conversationWorkspaceInstanceId &&
+        workspace.workspaceInstances?.includes('git_worktree')
+      )
+        ? { linkedWorktrees: true }
+        : {}),
       ...(status.maxCommandTimeoutMs == null
         ? {}
         : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),

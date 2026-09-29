@@ -2103,6 +2103,7 @@ describe('Code Process', () => {
       expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
+        linkedWorktrees: false,
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: undefined,
@@ -2165,6 +2166,7 @@ describe('Code Process', () => {
       expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
+        linkedWorktrees: false,
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: undefined,
@@ -2199,6 +2201,7 @@ describe('Code Process', () => {
       await expect(
         listWorkspaceFiles({
           workspace_id: 'primary',
+          linked_worktrees: true,
           path: 'src',
           after_path: 'src/app.ts',
           max_results: 20,
@@ -2226,6 +2229,7 @@ describe('Code Process', () => {
       expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
+        linkedWorktrees: true,
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: undefined,
@@ -2289,6 +2293,7 @@ describe('Code Process', () => {
       expect(getCodeApiAuthHeaders).toHaveBeenNthCalledWith(2, mockReq, 'worker-user-1');
       expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith({
         baseURL: 'https://attached-code.example.com/v1',
+        linkedWorktrees: false,
         authHeaders: expect.any(Function),
         maxQueueWaitMs: 0,
         codeApiMaxRetryWaitMs: undefined,
