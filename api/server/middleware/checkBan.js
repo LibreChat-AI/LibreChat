@@ -2,7 +2,7 @@ const { Keyv } = require('keyv');
 const uap = require('ua-parser-js');
 const { logger } = require('@librechat/data-schemas');
 const { ErrorTypes, ViolationTypes } = require('librechat-data-provider');
-const { isEnabled, keyvMongo, removePorts } = require('@librechat/api');
+const { isEnabled, keyvMongo, removePorts, getBanIp } = require('@librechat/api');
 const { getLogStores } = require('~/cache');
 const { isOAuthNavigation, redirectOAuthFailure } = require('./oauthNavigation');
 const denyRequest = require('./denyRequest');
@@ -88,6 +88,7 @@ const checkBan = async (req, res, next = () => {}) => {
     }
 
     req.ip = removePorts(req);
+    const banIp = getBanIp(req);
     let userId = req.user?.id ?? req.user?._id?.toString() ?? null;
 
     if (!userId && req?.body?.email) {
@@ -95,12 +96,12 @@ const checkBan = async (req, res, next = () => {}) => {
       userId = user?._id ? user._id.toString() : userId;
     }
 
-    if (!userId && !req.ip) {
+    if (!userId && !banIp) {
       return next();
     }
 
     const useRedis = isEnabled(process.env.USE_REDIS);
-    const ipKey = getBanCacheKey('ip', req.ip, useRedis);
+    const ipKey = getBanCacheKey('ip', banIp, useRedis);
     const userKey = getBanCacheKey('user', userId, useRedis);
 
     const [cachedIPBan, cachedUserBan] = await Promise.all([
@@ -121,7 +122,7 @@ const checkBan = async (req, res, next = () => {}) => {
     }
 
     const [ipBan, userBan] = await Promise.all([
-      req.ip ? banLogs.get(req.ip) : undefined,
+      banIp ? banLogs.get(banIp) : undefined,
       userId ? banLogs.get(userId) : undefined,
     ]);
 
@@ -142,7 +143,7 @@ const checkBan = async (req, res, next = () => {}) => {
     if (timeLeft <= 0) {
       const cleanups = [];
       if (ipBan) {
-        cleanups.push(banLogs.delete(req.ip));
+        cleanups.push(banLogs.delete(banIp));
       }
       if (userBan) {
         cleanups.push(banLogs.delete(userId));
