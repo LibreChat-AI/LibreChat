@@ -452,6 +452,23 @@ describe('theme registry', () => {
     ]);
   });
 
+  it('accepts a scrim opacity from 0 to 1 and rejects anything else', () => {
+    const withScrim = (scrimOpacity: string): ThemeDefinition => ({
+      version: 1,
+      name: 'scrim-reference',
+      modes: { dark: { appearance: { scrimOpacity } } },
+    });
+
+    expect(validateThemeDefinition(withScrim('0.75'))).toEqual([]);
+    expect(validateThemeDefinition(withScrim('1'))).toEqual([]);
+    expect(validateThemeDefinition(withScrim('1.5'))).toEqual([
+      'Invalid appearance value for scrimOpacity: 1.5',
+    ]);
+    expect(validateThemeDefinition(withScrim('75%'))).toEqual([
+      'Invalid appearance value for scrimOpacity: 75%',
+    ]);
+  });
+
   it('draws the focus outline in the ring of a theme that predates the role', () => {
     const resolved = resolveTheme(
       {

@@ -422,6 +422,10 @@ export interface IThemeAppearance {
   leadingLg: string;
   leadingXl: string;
   leading2xl: string;
+  /** Opacity of `surface-overlay` under OGDialog, AlertDialog and Dialog, in that order. */
+  scrimOpacity: string;
+  alertScrimOpacity: string;
+  modalScrimOpacity: string;
   elevationSurface: string;
   shadow2xs: string;
   shadowXs: string;

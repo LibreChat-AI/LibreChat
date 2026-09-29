@@ -203,8 +203,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-tertiary-alt': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-dialog': '31 31 28', // #1f1f1c (background.default)
   /** Not a Click UI value. Its dark scrim, dialog.color.opaqueBackground lch(40.731 0 none), is a
-   *  #606060 gray that lifts the page instead of dimming it, and leaves the dialog surface under the
-   *  3:1 boundary the scrim gives it; black keeps the dark theme's scrim. */
+   *  #606060 gray that lifts the page instead of dimming it. A bundled scrim never lifts the page
+   *  (`semanticTokens.spec.ts`), so black keeps the dark scrim; the 0.75 alpha is Click UI's. */
   'rgb-surface-overlay': '0 0 0', // #000000
   'rgb-surface-submit': '250 255 105', // #faff69 (accent.default)
   'rgb-surface-submit-hover': '253 255 163', // #fdffa3 (palette.brand.200)
@@ -344,6 +344,9 @@ const clickHouseShape = {
   shadowXs: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   controlHeight: '2rem', // genericMenu.panel.size.height
+  scrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
+  alertScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
+  modalScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   /** Click UI paints disabled controls in fixed fills (`#dfdfdf` / `#414141`) rather than fading them. */
   disabledStyle: 'fill' as const,
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at

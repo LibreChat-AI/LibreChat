@@ -41,6 +41,12 @@
   --color-surface-tertiary-alt: rgb(var(--surface-tertiary-alt));
   --color-surface-dialog: rgb(var(--surface-dialog));
   --color-surface-overlay: rgb(var(--surface-overlay));
+  /* The dialog scrims: the overlay at the opacity each dialog family's appearance
+   * role sets (OGDialog, AlertDialog, Dialog), defaulting to the 80%, 90% and 65%
+   * the families have always drawn. */
+  --color-scrim: rgb(var(--surface-overlay) / var(--theme-scrim-opacity, 0.8));
+  --color-scrim-alert: rgb(var(--surface-overlay) / var(--theme-alert-scrim-opacity, 0.9));
+  --color-scrim-modal: rgb(var(--surface-overlay) / var(--theme-modal-scrim-opacity, 0.65));
   --color-surface-submit: rgb(var(--surface-submit));
   --color-surface-submit-hover: rgb(var(--surface-submit-hover));
   --color-surface-destructive: rgb(var(--surface-destructive));

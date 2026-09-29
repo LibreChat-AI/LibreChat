@@ -98,6 +98,7 @@
     "click.button.iconButton.color.primary.background.active": "rgb(14.118% 14.118% 14.118%)",
     "click.codeblock.darkMode.color.background.default": "#282828",
     "click.codeblock.darkMode.color.text.default": "#ffffff",
+    "click.dialog.color.opaqueBackground.default": "lch(40.731 0 none / 0.75)",
     "click.field.color.stroke.disabled": "#414141",
     "click.genericMenu.panel.size.height": "2rem",
     "click.global.color.text.danger": "#ffbaba",

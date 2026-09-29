@@ -282,6 +282,9 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   shadow2xl: 'shadow.1',
   elevationSurface: 'shadow.1',
   controlHeight: 'click.genericMenu.panel.size.height',
+  scrimOpacity: 'click.dialog.color.opaqueBackground.default',
+  alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
+  modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   motionFast: 'transition.duration.medium',
   motionNormal: 'transition.duration.smooth',
 };
@@ -344,8 +347,18 @@ const normalizeShadow = (value: string) =>
 const firstFamily = (value: string) => value.split(',')[0].trim();
 
 /** How a Click UI appearance token compares with the theme value that cites it. */
+const scrimKeys: ReadonlySet<keyof IThemeAppearance> = new Set([
+  'scrimOpacity',
+  'alertScrimOpacity',
+  'modalScrimOpacity',
+]);
+
 function comparable(key: keyof IThemeAppearance, raw: string | number): string {
   const value = String(raw);
+  /** A scrim role is the alpha of Click UI's scrim color; the color itself is `surface-overlay`. */
+  if (scrimKeys.has(key)) {
+    return /^[\d.]+$/.test(value) ? String(Number(value)) : String(parseColor(value)[3]);
+  }
   if (key.startsWith('shadow') || key === 'elevationSurface') {
     return normalizeShadow(value);
   }

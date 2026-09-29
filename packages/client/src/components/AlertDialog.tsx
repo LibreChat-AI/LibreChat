@@ -39,7 +39,7 @@ const AlertDialogOverlay = React.forwardRef<
   return (
     <AlertDialogPrimitive.Overlay
       className={cn(
-        'bg-surface-overlay/90 animate-in fade-in fixed inset-0 z-50 transition-opacity',
+        'bg-scrim-alert animate-in fade-in fixed inset-0 z-50 transition-opacity',
         className,
       )}
       style={{ ...style, zIndex }}

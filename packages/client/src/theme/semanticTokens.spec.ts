@@ -1,9 +1,10 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { IThemeRGB } from './types';
+import type { IThemeAppearance, IThemeRGB } from './types';
+import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './themes/clickhouse';
 import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
-import { clickHouseDarkTheme, clickHouseLightTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
+import { defaultAppearance } from './registry';
 import { darkTheme } from './themes/dark';
 
 const sharedComponents = [
@@ -732,5 +733,49 @@ describe('state role defaults', () => {
 
       expect(declared).toEqual([defaultTheme[role], darkTheme[role]]);
     });
+  });
+});
+
+/**
+ * The dialog scrims are `surface-overlay` at each family's opacity role. A scrim
+ * dims the page it covers and never lifts it (Click UI's dark scrim is a lighter
+ * gray, which the ClickHouse theme declines for that reason), and on a light
+ * canvas the dimmed page separates the dialog by the 3:1 a non-text boundary
+ * needs. Dark canvases draw that boundary with the dialog's own border instead.
+ */
+const scrimRoles = ['scrimOpacity', 'alertScrimOpacity', 'modalScrimOpacity'] as const;
+const clickHouseAppearance = (mode: 'light' | 'dark'): IThemeAppearance => ({
+  ...defaultAppearance,
+  ...clickHouseTheme.modes[mode]?.appearance,
+});
+
+describe.each([
+  ['default light', defaultTheme, defaultAppearance, true],
+  ['default dark', darkTheme, defaultAppearance, false],
+  ['high contrast light', highContrastLightTheme, defaultAppearance, true],
+  ['high contrast dark', highContrastDarkTheme, defaultAppearance, false],
+  ['clickhouse light', clickHouseLightTheme, clickHouseAppearance('light'), true],
+  ['clickhouse dark', clickHouseDarkTheme, clickHouseAppearance('dark'), false],
+])('%s scrims', (_name, theme: IThemeRGB, appearance: IThemeAppearance, lightCanvas: boolean) => {
+  it.each(scrimRoles)('%s dims the page without lifting it', (role) => {
+    const alpha = Number(appearance[role]);
+    const overlay = toRgb(theme, 'rgb-surface-overlay');
+    const page = toRgb(theme, 'rgb-surface-primary');
+    const dimmed = page.map(
+      (channel, index) => overlay[index] * alpha + channel * (1 - alpha),
+    ) as Rgb;
+
+    expect(luminance(dimmed)).toBeLessThanOrEqual(luminance(page));
+    if (lightCanvas) {
+      expect(contrast(toRgb(theme, 'rgb-surface-dialog'), dimmed)).toBeGreaterThanOrEqual(
+        WCAG_MARK_MIN,
+      );
+    }
+  });
+});
+
+describe('scrim defaults', () => {
+  it('reproduce the opacities each dialog family drew before the roles', () => {
+    expect(scrimRoles.map((role) => defaultAppearance[role])).toEqual(['0.8', '0.9', '0.65']);
   });
 });

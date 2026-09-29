@@ -258,6 +258,12 @@ const isLineHeight = (value: unknown): value is string => {
   const divisor = /\/\s*(\d*\.?\d+)\s*\)$/.exec(match[0]);
   return divisor === null || Number(divisor[1]) > 0;
 };
+/** An alpha from 0 to 1, written the way CSS takes it in a color's alpha slot. */
+const isOpacity = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^(0|1|0?\.\d+|1\.0+)$/.test(value.trim()) &&
+  Number(value) >= 0 &&
+  Number(value) <= 1;
 const isDuration = (value: unknown): value is string =>
   typeof value === 'string' && cssDurationPattern.test(value);
 
@@ -304,6 +310,10 @@ const appearanceValidators = {
   leadingLg: isLineHeight,
   leadingXl: isLineHeight,
   leading2xl: isLineHeight,
+  /** How much of `surface-overlay` each dialog family's scrim lays over the page. */
+  scrimOpacity: isOpacity,
+  alertScrimOpacity: isOpacity,
+  modalScrimOpacity: isOpacity,
   /** Released themes may hold `var()` here, so this role keeps its original, looser check. */
   elevationSurface: (value: unknown) =>
     typeof value === 'string' && value.trim().length > 0 && !/[;{}]|url\s*\(/i.test(value),

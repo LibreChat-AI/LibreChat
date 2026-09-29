@@ -322,6 +322,10 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
   `leadingXs`..`leading2xl` (app only, like the radius scale); the defaults are
   Tailwind's own values.
+- `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
+  and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
+  `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
+  65% by default). A bundled scrim dims the page and never lifts it.
 - `ring-focus-control` - The keyboard focus ring of the shared primitives
   (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
   the primary text ink; a theme that names only `rgb-text-primary` rings its

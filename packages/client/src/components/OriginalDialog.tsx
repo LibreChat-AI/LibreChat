@@ -139,8 +139,9 @@ DialogClose.displayName = DialogPrimitive.Close.displayName;
 
 /**
  * The scrim. `surface-overlay` is the theme's own scrim color, so a theme that
- * redefines it moves every OGDialog with it; the opacity stays at 80% because
- * that leaves the themes whose overlay is black (dark, and both high-contrast
+ * redefines it moves every OGDialog with it. The opacity is the theme's
+ * `scrimOpacity` role, which defaults to 80% because that leaves the themes
+ * whose overlay is black (dark, and both high-contrast
  * modes) rendering exactly as before, and puts the light theme's gray scrim at
  * 4.3:1 against the dialog it frames, past the 3:1 floor for a non-text
  * boundary, and between the two other dialog families' scrims. Exported so a
@@ -148,7 +149,7 @@ DialogClose.displayName = DialogPrimitive.Close.displayName;
  * outlives the dialog's mount, consumes this appearance instead of restating it
  * in feature code.
  */
-export const DIALOG_SCRIM_CLASS = 'bg-surface-overlay/80';
+export const DIALOG_SCRIM_CLASS = 'bg-scrim';
 
 export const DialogOverlay: React.ForwardRefExoticComponent<
   Omit<DialogPrimitive.DialogOverlayProps & React.RefAttributes<HTMLDivElement>, 'ref'> &
