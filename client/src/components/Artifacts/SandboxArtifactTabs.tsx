@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { Spinner } from '@librechat/client';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
 import type { editor } from 'monaco-editor';
 import type { Artifact } from '~/common';
 import { useGetSharedStartupConfig, useGetStartupConfig } from '~/data-provider';
+import useOfficeFileShell from '~/hooks/Artifacts/useOfficeFileShell';
 import useArtifactProps from '~/hooks/Artifacts/useArtifactProps';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
 import { useCodeState } from '~/Providers/EditorContext';
 import { ArtifactPreview } from './ArtifactPreview';
 import { useShareContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 
 export default function SandboxArtifactTabs({
-  artifact,
+  artifact: storedArtifact,
   previewRef,
   isSharedConvo,
 }: {
@@ -19,6 +22,9 @@ export default function SandboxArtifactTabs({
   previewRef: React.MutableRefObject<SandpackPreviewRef>;
   isSharedConvo?: boolean;
 }) {
+  const localize = useLocalize();
+  const { content, isLoading } = useOfficeFileShell(storedArtifact);
+  const artifact = useMemo(() => ({ ...storedArtifact, content }), [storedArtifact, content]);
   const { currentCode, setCurrentCode } = useCodeState();
   const { shareId } = useShareContext();
   const shouldUseSharedConfig =
@@ -52,6 +58,15 @@ export default function SandboxArtifactTabs({
     () => (deriveFiles != null && editedCode ? deriveFiles(editedCode) : files),
     [deriveFiles, editedCode, files],
   );
+
+  if (isLoading) {
+    return (
+      <div className="flex h-full w-full items-center justify-center gap-2 text-sm text-text-secondary">
+        <Spinner size={16} />
+        {localize('com_ui_preview_preparing')}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full flex-col">

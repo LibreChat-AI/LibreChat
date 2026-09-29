@@ -63,6 +63,7 @@ jest.mock('~/data-provider', () => ({
   useGetStartupConfig: (options: unknown) => mockUseGetStartupConfig(options),
   useGetSharedStartupConfig: (shareId: unknown, options: unknown) =>
     mockUseGetSharedStartupConfig(shareId, options),
+  useFilePreviewBlob: () => ({ refetch: jest.fn() }),
 }));
 
 jest.mock('~/hooks/Artifacts/useArtifactProps', () => ({

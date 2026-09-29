@@ -1,6 +1,6 @@
 import React from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
 import type { Artifact } from '~/common';
 import SandboxArtifactTabs from './SandboxArtifactTabs';
@@ -13,6 +13,7 @@ interface PreviewProps {
 
 const mockPreview = jest.fn((_props: PreviewProps) => null);
 let mockCurrentCode: string | undefined;
+let mockShell: { content: string | undefined; isLoading: boolean } | undefined;
 
 jest.mock('./ArtifactCodeEditor', () => ({
   ArtifactCodeEditor: () => null,
@@ -24,6 +25,15 @@ jest.mock('./ArtifactPreview', () => ({
 
 jest.mock('~/Providers/EditorContext', () => ({
   useCodeState: () => ({ currentCode: mockCurrentCode, setCurrentCode: jest.fn() }),
+}));
+
+jest.mock('~/hooks/Artifacts/useOfficeFileShell', () => ({
+  __esModule: true,
+  default: (artifact: Artifact) => mockShell ?? { content: artifact.content, isLoading: false },
+}));
+
+jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => key,
 }));
 
 jest.mock('~/Providers', () => ({
@@ -126,5 +136,39 @@ describe('SandboxArtifactTabs SVG preview', () => {
     const call = mockPreview.mock.calls.at(-1)?.[0];
     expect(call?.files['index.html']).toBe('<p>original</p>');
     expect(call?.currentCode).toBe('<p>edited</p>');
+  });
+});
+
+describe('SandboxArtifactTabs office file shell', () => {
+  const shellArtifact: Artifact = {
+    id: 'deck-1',
+    type: 'text/html',
+    title: 'Deck',
+    content: '<p>shell</p>',
+    lastUpdateTime: 1,
+    download: { file_id: 'file-1', user: 'user-1' },
+  };
+
+  beforeEach(() => {
+    mockCurrentCode = undefined;
+    mockPreview.mockClear();
+  });
+
+  afterEach(() => {
+    mockShell = undefined;
+  });
+
+  it('shows the preparing state instead of the preview while the shell is filled', () => {
+    mockShell = { content: '<p>shell</p>', isLoading: true };
+    renderTabs(shellArtifact);
+    expect(screen.getByText('com_ui_preview_preparing')).toBeInTheDocument();
+    expect(mockPreview).not.toHaveBeenCalled();
+  });
+
+  it('previews the filled document once loading ends', () => {
+    mockShell = { content: '<p>filled</p>', isLoading: false };
+    renderTabs(shellArtifact);
+    expect(screen.queryByText('com_ui_preview_preparing')).not.toBeInTheDocument();
+    expect(lastFiles()['index.html']).toBe('<p>filled</p>');
   });
 });
