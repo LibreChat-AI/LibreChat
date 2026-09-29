@@ -265,7 +265,7 @@ test.describe('theme roles on prose, Settings, composer and model selector', () 
       for (const definition of [null, clickHouseTheme]) {
         for (const mode of MODES) {
           await openChat(page, conversationId, mode, definition !== null);
-          const expectedScrim = await probeStyle(page, 'bg-surface-overlay/80', 'background-color');
+          const expectedScrim = await probeStyle(page, 'bg-scrim', 'background-color');
           const settings = await openSettings(page);
 
           expect(settings.scrim, 'the Settings scrim was not found').not.toBeNull();

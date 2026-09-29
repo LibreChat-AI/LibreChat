@@ -8,7 +8,7 @@ import { getAccessToken, MOCK_ENDPOINTS, NEW_CHAT_PATH, requestJson } from '../h
  * one class OGDialog's overlay and the morph's own backdrop both carry, which is
  * what lets the count below tell a shared scrim from a second one.
  */
-const SCRIM_CLASS = 'bg-surface-overlay/80';
+const SCRIM_CLASS = 'bg-scrim';
 
 type CreatedAgent = {
   id: string;
