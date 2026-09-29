@@ -187,7 +187,9 @@ test.describe('theme table', () => {
       });
     });
 
-    const heights: Record<string, number> = {};
+    /** The header height less its text line: the cell space a theme sets, apart from the line
+     *  height its own type scale draws. */
+    const spaces: Record<string, number> = {};
     try {
       for (const [theme, mode] of [
         ['default', 'light'],
@@ -203,14 +205,14 @@ test.describe('theme table', () => {
         const header = dialog.locator('thead th').first();
         const reading = await header.evaluate((cell) => ({
           fill: getComputedStyle(cell).backgroundColor,
-          height: (cell as HTMLElement).offsetHeight,
+          space: (cell as HTMLElement).offsetHeight - parseFloat(getComputedStyle(cell).lineHeight),
           expected: (() => {
             const root = getComputedStyle(document.documentElement);
             return `rgb(${root.getPropertyValue('--surface-dialog').trim().split(' ').join(', ')})`;
           })(),
         }));
 
-        heights[`${theme}-${mode}`] = reading.height;
+        spaces[`${theme}-${mode}`] = reading.space;
         if (theme === 'default') {
           /** The dialog surface it always had. */
           expect(reading.fill).toBe(reading.expected);
@@ -220,10 +222,10 @@ test.describe('theme table', () => {
         }
         await page.keyboard.press('Escape');
       }
-      /** ClickHouse keeps LibreChat's 1rem space, so its header is the default height; half the
-       *  space takes half of it off each side of the header line. */
-      expect(heights['clickhouse-light']).toBe(heights['default-light']);
-      expect(heights['dense-light']).toBe(heights['default-light'] - 8);
+      /** ClickHouse keeps LibreChat's 1rem space around its own, taller text line; half the space
+       *  takes half of it off each side of the header line. */
+      expect(spaces['clickhouse-light']).toBe(spaces['default-light']);
+      expect(spaces['dense-light']).toBe(spaces['default-light'] - 8);
     } finally {
       await deleteConversations([conversationId]);
     }
