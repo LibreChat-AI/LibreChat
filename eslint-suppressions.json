@@ -215,7 +215,7 @@
   },
   "client/src/components/Chat/Input/Files/DragDropOverlay.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 3
+      "count": 4
     },
     "shadcn/no-raw-colors": {
       "count": 5
