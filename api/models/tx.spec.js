@@ -519,6 +519,29 @@ describe('Deepseek Model Tests', () => {
       expect(completionRate).toBe(tokenValues[valueKey].completion);
     });
   });
+
+  it('should return DeepInfra rates for DeepSeek V4, Qwen3, and Google Gemma models', () => {
+    const models = {
+      'deepseek-ai/DeepSeek-V4-Flash': { prompt: 0.09, completion: 0.18 },
+      'deepseek-ai/DeepSeek-V4-Flash-0731': { prompt: 0.06, completion: 0.18 },
+      'Qwen/Qwen3-32B': { prompt: 0.08, completion: 0.28 },
+      'google/gemma-3-27b-it': { prompt: 0.08, completion: 0.16 },
+      'google/gemma-4-26B-A4B-it': { prompt: 0.07, completion: 0.34 },
+      'google/gemma-4-31B-it': { prompt: 0.13, completion: 0.38 },
+      'google/gemma-4-31B-it-turbo': { prompt: 0.09, completion: 0.34 },
+      'google/gemma-4-31B-it-Ultra': { prompt: 0.27, completion: 0.76 },
+    };
+
+    Object.entries(models).forEach(([model, rates]) => {
+      expect(getValueKey(model)).toBe(model);
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(rates.prompt);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(rates.completion);
+    });
+
+    expect(getCacheMultiplier({ model: 'google/gemma-4-31B-it-turbo', cacheType: 'read' })).toBe(
+      0.05,
+    );
+  });
   //end of tests of new models that I added  
 });
 
