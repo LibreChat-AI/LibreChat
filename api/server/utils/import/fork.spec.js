@@ -520,6 +520,18 @@ describe('duplicateConversation', () => {
     expect(result.conversation.isTemporary).toBe(true);
   });
 
+  test('keeps a duplicate of a legacy temporary chat temporary under all-data retention', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, expiredAt: new Date(Date.now() + 60_000) });
+
+    await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.ALL, generalChatRetention: 2160 },
+    });
+
+    expect(bulkSaveConvos.mock.calls[0][0][0].isTemporary).toBe(true);
+  });
+
   test('leaves a duplicate of an ordinary chat visible under all-data retention', async () => {
     getConvo.mockResolvedValue({ ...mockConversation, isTemporary: false });
 

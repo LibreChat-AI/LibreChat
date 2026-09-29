@@ -7,6 +7,7 @@ import {
   persistForcedTemporaryMetadata,
   resolveImportRetentionFields,
   resolveImportTagCounts,
+  isTemporaryRecord,
 } from './retention';
 
 describe('applyForcedRetention', () => {
@@ -310,5 +311,17 @@ describe('resolveImportTagCounts', () => {
 
   it('counts nothing for a forced-temporary import', () => {
     expect(resolveImportTagCounts({ isTemporary: true }, ['work', 'urgent'])).toEqual([]);
+  });
+});
+
+describe('isTemporaryRecord', () => {
+  it('treats an explicit flag as authoritative', () => {
+    expect(isTemporaryRecord({ isTemporary: true })).toBe(true);
+    expect(isTemporaryRecord({ isTemporary: false, expiredAt: new Date() })).toBe(false);
+  });
+
+  it('classifies a legacy row with only a deadline as temporary', () => {
+    expect(isTemporaryRecord({ expiredAt: new Date() })).toBe(true);
+    expect(isTemporaryRecord({})).toBe(false);
   });
 });

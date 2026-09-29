@@ -98,6 +98,14 @@ export function resolveResumableRetention(
   return retention;
 }
 
+/** Whether a stored conversation is temporary, counting legacy rows that carry only a deadline. */
+export function isTemporaryRecord(record: {
+  isTemporary?: boolean | null;
+  expiredAt?: Date | string | null;
+}): boolean {
+  return record.isTemporary === true || (record.isTemporary == null && record.expiredAt != null);
+}
+
 export interface ImportRetentionFields {
   isTemporary?: boolean;
   expiredAt?: Date;

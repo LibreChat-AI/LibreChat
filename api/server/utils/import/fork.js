@@ -1,5 +1,10 @@
 const { v4: uuidv4 } = require('uuid');
-const { cloneLineage, withoutTraceRefs, getAllMessagesUpToParent } = require('@librechat/api');
+const {
+  cloneLineage,
+  withoutTraceRefs,
+  isTemporaryRecord,
+  getAllMessagesUpToParent,
+} = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
 const { EModelEndpoint, Constants, ForkOptions } = require('librechat-data-provider');
 const { getConvo, getMessages, getSharedMessages } = require('~/models');
@@ -90,7 +95,7 @@ async function forkConversation({
       legacyPii == null
         ? builderFactory(requestUserId, interfaceConfig, filters)
         : builderFactory(requestUserId, interfaceConfig, filters, legacyPii);
-    importBatchBuilder.sourceIsTemporary = originalConvo.isTemporary === true;
+    importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
     importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
     let messagesToClone = [];
@@ -516,7 +521,7 @@ async function duplicateConversation({
     legacyPii == null
       ? builderFactory(userId, interfaceConfig, filters)
       : builderFactory(userId, interfaceConfig, filters, legacyPii);
-  importBatchBuilder.sourceIsTemporary = originalConvo.isTemporary === true;
+  importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
   importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
   cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder);
