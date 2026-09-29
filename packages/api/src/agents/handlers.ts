@@ -4241,6 +4241,19 @@ function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttp
   return `The edit to "workspace/${filePath}" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.`;
 }
 
+/** The only body a sanitized conflict carries, so logs never retain worker-supplied text. */
+const SANITIZED_EDIT_CONFLICT_BODY = JSON.stringify({ code: 'EDIT_CONFLICT' });
+
+/** A copy of a worker conflict that keeps its status but none of its body or message. */
+function sanitizedEditConflict(
+  error: WorkspaceToolHttpError,
+  message: string,
+): WorkspaceToolHttpError {
+  const sanitized = new WorkspaceToolHttpError(error.reason, 409, SANITIZED_EDIT_CONFLICT_BODY);
+  sanitized.message = message;
+  return sanitized;
+}
+
 async function handleAttachedWorkspaceEditFileCall({
   tc,
   options,
@@ -4366,7 +4379,7 @@ async function handleAttachedWorkspaceEditFileCall({
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
       if (error.upstreamStatus === 409) {
-        error.message = describeAttachedEditConflict(path.filePath, error);
+        throw sanitizedEditConflict(error, describeAttachedEditConflict(path.filePath, error));
       }
       throw error;
     }

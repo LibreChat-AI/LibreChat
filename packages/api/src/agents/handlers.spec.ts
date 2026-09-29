@@ -6070,6 +6070,7 @@ describe('createToolExecuteHandler', () => {
         'The edit to "workspace/src/app.ts" did not apply, so nothing was written. The requested text did not match exactly once; re-read the file and retry.',
       ],
     ])('%s', async (_label, diagnostic, expected) => {
+      const errorSpy = jest.spyOn(logger, 'error').mockReturnValue(logger);
       const handler = makeSandboxAuthoringHandler(
         {
           editWorkspaceFile: jest.fn(async () => {
@@ -6093,6 +6094,14 @@ describe('createToolExecuteHandler', () => {
 
       expect(result.status).toBe('error');
       expect(result.errorMessage).toBe(expected);
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[ON_TOOL_EXECUTE] Tool edit_file error',
+        expect.objectContaining({ upstreamStatus: 409, upstreamBody: '{"code":"EDIT_CONFLICT"}' }),
+      );
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(
+        JSON.stringify(diagnostic).slice(1, -1),
+      );
+      errorSpy.mockRestore();
     });
 
     it('keeps the retry guidance for workers that only report a bare conflict', async () => {
