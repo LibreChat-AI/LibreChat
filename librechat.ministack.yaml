@@ -57,7 +57,7 @@ cache: true
 
 # File storage configuration
 # Single strategy for all file types (legacy format, still supported)
-fileStrategy: "s3"
+# fileStrategy: "s3"
 
 # Granular file storage strategies (new format - recommended)
 # Allows different storage strategies for different file types

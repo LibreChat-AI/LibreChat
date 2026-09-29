@@ -5,7 +5,6 @@ const { createDynamoDocumentClient, createDynamoConnector } = require('@librecha
 const {
   logger,
   createDynamoCoreMethods,
-  createDynamoFileMethods,
   DEFAULT_DYNAMO_TABLE,
 } = require('@librechat/data-schemas');
 const getLogStores = require('~/cache/getLogStores');
@@ -89,10 +88,7 @@ const client = createDynamoDocumentClient({
 // }
 
 const connectDb = createDynamoConnector(client, tableName, logger);
-const methods = {
-  ...createDynamoCoreMethods(client, { tableName, getCache: getLogStores }),
-  ...createDynamoFileMethods(client, { tableName, getCache: getLogStores }),
-};
+const methods = createDynamoCoreMethods(client, { tableName, getCache: getLogStores });
 
 // module.exports = {
 //   connectDb,
