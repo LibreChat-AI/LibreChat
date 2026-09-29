@@ -53,7 +53,7 @@ function getOAuthDispatcher(
     Array.isArray(allowedDomains) && allowedDomains.length > 0 ? null : allowedAddresses;
   const literalHost = parsedUrl.hostname.replace(/^\[|\]$/g, '');
   if (isIP(literalHost) && isSSRFTarget(literalHost, effectiveAddresses, port)) {
-    throw new Error(`SSRF protection: blocked OAuth target ${literalHost}`);
+    throw new Error('OAuth endpoint targets a blocked address');
   }
   const cacheKey = getDispatcherCacheKey(port, effectiveAddresses);
   const cached = oauthDispatchers.get(cacheKey);

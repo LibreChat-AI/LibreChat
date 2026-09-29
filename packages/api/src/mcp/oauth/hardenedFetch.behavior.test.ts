@@ -76,7 +76,7 @@ describe('createHardenedOAuthFetch request policy', () => {
     try {
       await expect(
         createHardenedOAuthFetch()(`http://127.0.0.1:${target.port}/token`),
-      ).rejects.toThrow();
+      ).rejects.toThrow('OAuth endpoint targets a blocked address');
       expect(target.requestCount()).toBe(0);
     } finally {
       await target.close();

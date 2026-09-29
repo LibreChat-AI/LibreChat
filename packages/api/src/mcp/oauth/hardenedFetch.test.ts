@@ -82,6 +82,29 @@ describe('createHardenedOAuthFetch', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it('checks private IPs before reusing a dispatcher cached for the same port', async () => {
+    await createHardenedOAuthFetch()('https://auth.example.com:9443/token');
+    mockIsSSRFTarget.mockReturnValueOnce(true);
+
+    await expect(createHardenedOAuthFetch()('http://127.0.0.1:9443/token')).rejects.toThrow(
+      'OAuth endpoint targets a blocked address',
+    );
+
+    expect(mockIsSSRFTarget).toHaveBeenCalledWith('127.0.0.1', undefined, '9443');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes alternate IPv4 spellings before checking the literal', async () => {
+    mockIsSSRFTarget.mockReturnValueOnce(true);
+
+    await expect(createHardenedOAuthFetch()('http://0x7f000001:9443/token')).rejects.toThrow(
+      'OAuth endpoint targets a blocked address',
+    );
+
+    expect(mockIsSSRFTarget).toHaveBeenCalledWith('127.0.0.1', undefined, '9443');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('does not apply address exemptions to an IP when domain policy is active but unmatched', async () => {
     mockIsSSRFTarget.mockReturnValueOnce(true);
 
