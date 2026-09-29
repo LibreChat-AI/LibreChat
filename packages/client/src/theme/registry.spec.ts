@@ -316,27 +316,39 @@ describe('theme registry', () => {
       } as ThemeDefinition;
 
       expect(validateThemeDefinition(widthOnly)).toEqual([
-        'switchWidth must be at least switchHeight: 1rem < 1.5rem',
+        'switchWidth must exceed switchHeight so the knob can travel: 1rem, 1.5rem',
       ]);
     });
 
-    it('accepts a pair that leaves a knob and a forward travel', () => {
+    it('accepts a pair in one unit that leaves a knob and a forward travel', () => {
       expect(validateThemeDefinition(withSwitch('2rem', '1rem'))).toEqual([]);
-      expect(validateThemeDefinition(withSwitch('40px', '1rem'))).toEqual([]);
+      expect(validateThemeDefinition(withSwitch('40px', '20px'))).toEqual([]);
     });
 
-    it('rejects a zero dimension, a track too short for its border and a width under the height', () => {
+    it('rejects a mixed-unit pair, which only holds at one root size', () => {
+      expect(validateThemeDefinition(withSwitch('40px', '2rem'))).toEqual([
+        'switchWidth and switchHeight must share a unit (the default is rem): 40px, 2rem',
+      ]);
+    });
+
+    it('rejects em, zero, a track too short for its border and a width not above the height', () => {
+      expect(validateThemeDefinition(withSwitch('2em', '1rem'))).toEqual([
+        'Invalid appearance value for switchWidth: 2em',
+      ]);
       expect(validateThemeDefinition(withSwitch('0', '1rem'))).toEqual([
         'Invalid appearance value for switchWidth: 0',
       ]);
       expect(validateThemeDefinition(withSwitch('32px', '4px'))).toEqual([
         'switchHeight must exceed the 4px track border: 4px',
       ]);
-      expect(validateThemeDefinition(withSwitch('2rem', '0.1rem'))).toEqual([
-        'switchHeight must exceed the 4px track border: 0.1rem',
+      expect(validateThemeDefinition(withSwitch('2rem', '0.25rem'))).toEqual([
+        'switchHeight must be at least 0.5rem to clear the 4px track border: 0.25rem',
       ]);
       expect(validateThemeDefinition(withSwitch('1rem', '2rem'))).toEqual([
-        'switchWidth must be at least switchHeight: 1rem < 2rem',
+        'switchWidth must exceed switchHeight so the knob can travel: 1rem, 2rem',
+      ]);
+      expect(validateThemeDefinition(withSwitch('1.5rem', '1.5rem'))).toEqual([
+        'switchWidth must exceed switchHeight so the knob can travel: 1.5rem, 1.5rem',
       ]);
     });
   });

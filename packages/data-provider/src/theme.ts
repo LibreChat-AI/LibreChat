@@ -186,9 +186,12 @@ export const isThemeRGB = (value: unknown): value is string => {
 const isLength = (value: unknown): value is string =>
   typeof value === 'string' &&
   (cssLengthPattern.test(value) || cssLengthDifferencePattern.test(value));
-/** A switch dimension has to draw something: zero would leave no track to press. */
-const isPositiveLength = (value: unknown): value is string =>
-  isLength(value) && cssLengthPattern.test(value) && parseFloat(value) > 0;
+/**
+ * A switch dimension is a positive px or rem length: `em` would follow the component's own font
+ * size, and the pair is only comparable when both sides share one unit.
+ */
+const isSwitchLength = (value: unknown): value is string =>
+  typeof value === 'string' && /^\d*\.?\d+(px|rem)$/.test(value) && parseFloat(value) > 0;
 const isFontFamily = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0 && !/[;{}]/.test(value);
 
@@ -297,8 +300,8 @@ const appearanceValidators = {
   radius2xl: isLength,
   radius3xl: isLength,
   controlHeight: isLength,
-  switchWidth: isPositiveLength,
-  switchHeight: isPositiveLength,
+  switchWidth: isSwitchLength,
+  switchHeight: isSwitchLength,
   spaceCompact: isLength,
   spaceNormal: isLength,
   /** `dim` fades a disabled control to half opacity; `fill` paints it in the disabled roles. */
@@ -380,20 +383,17 @@ export interface ThemeReadOptions {
 /** LibreChat's own switch, which a theme naming only one of the two dimensions keeps for the other. */
 export const defaultSwitchSize = Object.freeze({ switchWidth: '2.75rem', switchHeight: '1.5rem' });
 
-/** A plain length in px, reading rem and em at the 16px root the preset's fallbacks assume. */
-const lengthInPx = (value: unknown): number | undefined => {
-  const match = typeof value === 'string' ? /^(\d*\.?\d+)(px|rem|em)$/.exec(value) : null;
-  if (!match) {
-    return undefined;
-  }
-  return Number(match[1]) * (match[2] === 'px' ? 1 : 16);
+const switchLength = (value: unknown): [number, 'px' | 'rem'] | undefined => {
+  const match = typeof value === 'string' ? /^(\d*\.?\d+)(px|rem)$/.exec(value) : null;
+  return match ? [Number(match[1]), match[2] as 'px' | 'rem'] : undefined;
 };
 
 /**
  * The switch knob is the height less the track's 4px of border, and it travels the width less the
- * height, so the pair the switch will actually draw, a missing side taken from the default, has to
- * leave a knob and a forward travel. Compared at a 16px root; the preset also clamps both derived
- * sizes at zero, for any other root.
+ * height, so the pair the switch will draw (a missing side taken from the default) has to leave a
+ * knob and a forward travel at any root size. That only holds when both sides share a unit, so a
+ * pair is compared in its own unit and a mixed pair is rejected. A rem height of at least 0.5rem
+ * clears the border at any root above 8px; below that the preset clamps the knob at zero.
  */
 function collectSwitchIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
   if (appearance.switchWidth === undefined && appearance.switchHeight === undefined) {
@@ -401,22 +401,37 @@ function collectSwitchIssues(appearance: Record<string, unknown>, base: string[]
   }
   const widthValue = appearance.switchWidth ?? defaultSwitchSize.switchWidth;
   const heightValue = appearance.switchHeight ?? defaultSwitchSize.switchHeight;
-  const width = lengthInPx(widthValue);
-  const height = lengthInPx(heightValue);
+  const width = switchLength(widthValue);
+  const height = switchLength(heightValue);
+  if (!width || !height) {
+    return [];
+  }
+  if (width[1] !== height[1]) {
+    return [
+      issue(
+        [...base, 'switchWidth'],
+        `switchWidth and switchHeight must share a unit (the default is rem): ${widthValue}, ${heightValue}`,
+      ),
+    ];
+  }
   const issues: ThemeIssue[] = [];
-  if (height !== undefined && height <= 4) {
+  const minimumHeight = height[1] === 'px' ? 4 : 0.5;
+  const tooShort = height[1] === 'px' ? height[0] <= minimumHeight : height[0] < minimumHeight;
+  if (tooShort) {
     issues.push(
       issue(
         [...base, 'switchHeight'],
-        `switchHeight must exceed the 4px track border: ${heightValue}`,
+        height[1] === 'px'
+          ? `switchHeight must exceed the 4px track border: ${heightValue}`
+          : `switchHeight must be at least 0.5rem to clear the 4px track border: ${heightValue}`,
       ),
     );
   }
-  if (width !== undefined && height !== undefined && width < height) {
+  if (width[0] <= height[0]) {
     issues.push(
       issue(
         [...base, 'switchWidth'],
-        `switchWidth must be at least switchHeight: ${widthValue} < ${heightValue}`,
+        `switchWidth must exceed switchHeight so the knob can travel: ${widthValue}, ${heightValue}`,
       ),
     );
   }
