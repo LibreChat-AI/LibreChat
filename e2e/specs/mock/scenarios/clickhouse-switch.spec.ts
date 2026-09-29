@@ -54,6 +54,10 @@ async function settingsSwitch(page: Page, theme: ThemeChoice, mode: Mode): Promi
   return control;
 }
 
+/** The switch's own hit area: the invisible layer that keeps a compact track tappable. */
+const hitHeight = (control: Locator) =>
+  control.evaluate((node) => parseFloat(getComputedStyle(node, '::before').height));
+
 async function measure(control: Locator) {
   /** Layout sizes, not client rects: the dialog is still zooming in when this reads. */
   return control.evaluate((node: HTMLElement) => {
@@ -84,6 +88,7 @@ test.describe('theme switch', () => {
         thumb: 12,
         thumbColor: rgb(knob),
       });
+      expect(await hitHeight(control)).toBeGreaterThanOrEqual(24);
     }
   });
 

@@ -23,6 +23,9 @@ const Switch: React.ForwardRefExoticComponent<
   ({ className, ...props }, ref) => (
     <SwitchPrimitives.Root
       className={cn(
+        /** A compact theme track can be shorter than a usable target, so an invisible layer
+         *  keeps the hit area at least 24px tall, and a comfortable 44px on a coarse pointer. */
+        'touch:before:h-theme-control-touch relative before:absolute before:inset-x-0 before:top-1/2 before:h-6 before:-translate-y-1/2',
         'peer focus-visible:ring-focus-control focus-visible:ring-offset-surface-primary data-[state=checked]:bg-surface-inverted data-[state=unchecked]:bg-switch-unchecked h-theme-switch w-theme-switch inline-flex shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
         disabledFillClasses,
         className,
