@@ -11,6 +11,7 @@ import {
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
+import { clickHouseTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
 
@@ -420,6 +421,16 @@ describe('theme registry', () => {
     steps.forEach(([step, size, leading]) => {
       expect(defaultAppearance[size]).toBe(declared(`text-${step}`));
       expect(defaultAppearance[leading]).toBe(declared(`text-${step}--line-height`));
+    });
+  });
+
+  it('keeps every bundled theme’s largest themed step below the unthemed text-3xl', () => {
+    const rem = (value: string) => parseFloat(value);
+    [
+      defaultAppearance,
+      { ...defaultAppearance, ...clickHouseTheme.modes.light?.appearance },
+    ].forEach((appearance) => {
+      expect(rem(appearance.text2xl)).toBeLessThan(1.875);
     });
   });
 

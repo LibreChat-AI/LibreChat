@@ -301,8 +301,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
  * Click UI's display family leads with Basier Square, a commercial face ClickHouse licenses for
  * its own sites. It is named here but not self-hosted: a browser that has it installed renders
  * headings in it, and every other one falls through to the same Inter stack as the body. The
- * `text-*` scale takes Click UI's `font.sizes` 1 to 6 at its product line height of 1.5, which
- * also moves the one step LibreChat set larger than Click UI's (`2xl`, 1.5rem, to its 2rem).
+ * `text-*` scale takes Click UI's `font.sizes` 1 to 5 at its product line height of 1.5. Click UI
+ * has no step between 1.25rem and 2rem, and 2rem would overtake Tailwind's unthemed `text-3xl`
+ * (1.875rem), so `2xl` keeps LibreChat's 1.5rem at Click UI's line height.
  *
  * Click UI raises every elevated surface (card, dialog, menu, panel, popover, toast) with
  * `shadow.1`, and its only lighter step is the hairline `shadow.5`. Steps 2 to 4 are the flyout's
@@ -332,7 +333,7 @@ const clickHouseShape = {
   textBase: '1rem', // typography.font.sizes.3
   textLg: '1.125rem', // typography.font.sizes.4
   textXl: '1.25rem', // typography.font.sizes.5
-  text2xl: '2rem', // typography.font.sizes.6
+  text2xl: '1.5rem', // LibreChat's: Click UI's next step (sizes.6, 2rem) passes the unthemed text-3xl
   leadingXs: '1.5', // typography.font.line-height.1
   leadingSm: '1.5', // typography.font.line-height.1
   leadingBase: '1.5', // typography.font.line-height.1

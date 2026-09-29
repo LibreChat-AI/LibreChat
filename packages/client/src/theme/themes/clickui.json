@@ -83,8 +83,7 @@
     "typography.font.sizes.2": "0.875rem",
     "typography.font.sizes.3": "1rem",
     "typography.font.sizes.4": "1.125rem",
-    "typography.font.sizes.5": "1.25rem",
-    "typography.font.sizes.6": "2rem"
+    "typography.font.sizes.5": "1.25rem"
   },
   "dark": {
     "border.radii.1": "0.25rem",
@@ -166,7 +165,6 @@
     "typography.font.sizes.2": "0.875rem",
     "typography.font.sizes.3": "1rem",
     "typography.font.sizes.4": "1.125rem",
-    "typography.font.sizes.5": "1.25rem",
-    "typography.font.sizes.6": "2rem"
+    "typography.font.sizes.5": "1.25rem"
   }
 }

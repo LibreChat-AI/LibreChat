@@ -244,6 +244,8 @@ const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>
  */
 const appearanceDecisions: Partial<Record<keyof IThemeAppearance, string>> = {
   disabledStyle: 'fill: Click UI paints disabled controls in fixed disabled tokens, never opacity',
+  text2xl:
+    "1.5rem: Click UI's next size, font.sizes.6 (2rem), would pass Tailwind's unthemed text-3xl (1.875rem)",
 };
 
 const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
@@ -265,7 +267,6 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   textBase: 'typography.font.sizes.3',
   textLg: 'typography.font.sizes.4',
   textXl: 'typography.font.sizes.5',
-  text2xl: 'typography.font.sizes.6',
   leadingXs: 'typography.font.line-height.1',
   leadingSm: 'typography.font.line-height.1',
   leadingBase: 'typography.font.line-height.1',
