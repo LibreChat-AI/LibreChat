@@ -291,17 +291,13 @@ export const highContrastTheme: ThemeDefinition = Object.freeze({
 /** Tailwind composes `--tw-shadow` into one list with the ring layers, where `none` is invalid. */
 const disabledShadow = '0 0 #0000';
 
-/** The client may be older than the server whose theme it paints, so it ignores color roles it
- *  predates the way it already ignores appearance keys. */
-const clientReader = { ignoreFutureColors: true } as const;
-
 /** The color and appearance tokens this reader does not know, which `resolveTheme` leaves out. */
 export function collectThemeWarnings(theme: ThemeDefinition): string[] {
-  return collectThemeWarningIssues(theme, clientReader).map(({ message }) => message);
+  return collectThemeWarningIssues(theme).map(({ message }) => message);
 }
 
 export function validateThemeDefinition(theme: ThemeDefinition): string[] {
-  return collectThemeIssues(theme, clientReader).map(({ message }) => message);
+  return collectThemeIssues(theme).map(({ message }) => message);
 }
 
 /**
@@ -319,7 +315,7 @@ function definedEntries<T extends object>(values?: Partial<T>): Partial<T> {
   ) as Partial<T>;
 }
 
-/** A color role this reader predates passed validation as a warning; it never reaches the DOM. */
+/** A color token this reader does not know passed validation as a warning; it never reaches the DOM. */
 function knownColors(colors?: IThemeRGB): IThemeRGB | undefined {
   if (!colors) {
     return colors;

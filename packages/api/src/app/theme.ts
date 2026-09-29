@@ -53,8 +53,8 @@ function collectErrors(theme: unknown): ThemeIssue[] {
 /**
  * Checks `interface.theme` with the rules the client applies before painting it. A theme the
  * client would reject is removed, so the deployment falls back to the default theme and the rest
- * of the config still loads; unknown appearance tokens, which the client drops on its own, only
- * warn. A config without a theme, or with a valid one, is returned as the same object.
+ * of the config still loads; unknown color and appearance tokens, which the client drops on its
+ * own, only warn. A config without a theme, or with a valid one, is returned as the same object.
  */
 export function checkConfigTheme(config: unknown): ConfigThemeCheck {
   const unchanged: ConfigThemeCheck = { config, errors: [], warnings: [] };

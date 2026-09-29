@@ -201,7 +201,7 @@ describe('DeploymentTheme', () => {
     renderTheme(queryClient);
 
     await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
-    expect(warn.mock.calls[0][0]).toContain('Unknown color token: rgb-not-a-token');
+    expect(warn.mock.calls[0][0]).toContain('Invalid RGB value for rgb-not-a-token: red');
     expect(root().dataset.theme).toBe('stored');
   });
 

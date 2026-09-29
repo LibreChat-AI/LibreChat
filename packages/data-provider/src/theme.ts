@@ -372,23 +372,14 @@ const isFutureAppearance = (key: string, value: unknown): boolean =>
   /^[a-z][a-zA-Z0-9]*$/.test(key) && typeof value === 'string' && !/[;{}<>]|url\s*\(/i.test(value);
 
 /**
- * The same allowance for a color role: a well-formed `rgb-` name holding an RGB triplet is one
- * this reader predates, so it is ignored rather than rejecting a theme a newer server or build
- * wrote. Anything else under an unknown name is still an error.
+ * The same allowance for a color role: a color token this reader does not know is ignored rather
+ * than rejecting the theme, so a newer definition keeps every role this version can paint and a
+ * misspelled one costs only itself. The name must still be a plain token; its value is checked
+ * like any other role.
  */
-const isFutureColor = (key: string, value: unknown): boolean =>
-  /^rgb-[a-z][a-z0-9-]*$/.test(key) && isThemeRGB(value);
+const isColorTokenName = (key: string): boolean => /^[a-z][a-z0-9-]*$/.test(key);
 
 const issue = (path: string[], message: string): ThemeIssue => ({ path, message });
-
-export interface ThemeReadOptions {
-  /**
-   * A reader that may be older than the definition it paints (a cached client reading a newer
-   * server's theme) ignores well-formed color roles it predates. The server reads its own config
-   * with its own token list, so there an unknown role is a typo and stays an error.
-   */
-  ignoreFutureColors?: boolean;
-}
 
 /** LibreChat's own switch, which a theme naming only one of the two dimensions keeps for the other. */
 export const defaultSwitchSize = Object.freeze({ switchWidth: '2.75rem', switchHeight: '1.5rem' });
@@ -449,10 +440,7 @@ function collectSwitchIssues(appearance: Record<string, unknown>, base: string[]
 }
 
 /** The color and appearance tokens this reader does not know, which a resolved theme leaves out. */
-export function collectThemeWarningIssues(
-  theme: unknown,
-  { ignoreFutureColors = false }: ThemeReadOptions = {},
-): ThemeIssue[] {
+export function collectThemeWarningIssues(theme: unknown): ThemeIssue[] {
   if (!isPlainThemeRecord(theme) || !isPlainThemeRecord(theme.modes)) {
     return [];
   }
@@ -463,14 +451,15 @@ export function collectThemeWarningIssues(
       return [];
     }
     const { colors, appearance } = definition;
-    const futureColors =
-      ignoreFutureColors && isPlainThemeRecord(colors)
-        ? Object.entries(colors)
-            .filter(([key, value]) => !colorTokenSet.has(key) && isFutureColor(key, value))
-            .map(([key]) =>
-              issue(['modes', mode, 'colors', key], `Unknown ${mode} color token ignored: ${key}`),
-            )
-        : [];
+    const futureColors = isPlainThemeRecord(colors)
+      ? Object.entries(colors)
+          .filter(
+            ([key, value]) => !colorTokenSet.has(key) && isColorTokenName(key) && isThemeRGB(value),
+          )
+          .map(([key]) =>
+            issue(['modes', mode, 'colors', key], `Unknown ${mode} color token ignored: ${key}`),
+          )
+      : [];
     const futureAppearance = isPlainThemeRecord(appearance)
       ? Object.keys(appearance)
           .filter((key) => !isThemeAppearanceToken(key))
@@ -508,11 +497,7 @@ function collectBrandIssues(brands: unknown, path: string[]): ThemeIssue[] {
   });
 }
 
-function collectModeIssues(
-  mode: 'light' | 'dark',
-  definition: unknown,
-  { ignoreFutureColors = false }: ThemeReadOptions,
-): ThemeIssue[] {
+function collectModeIssues(mode: 'light' | 'dark', definition: unknown): ThemeIssue[] {
   const base = ['modes', mode];
   if (definition === undefined) {
     return [];
@@ -531,10 +516,8 @@ function collectModeIssues(
   } else {
     Object.entries(colors ?? {}).forEach(([key, value]) => {
       const path = [...base, 'colors', key];
-      if (!colorTokenSet.has(key)) {
-        if (!ignoreFutureColors || !isFutureColor(key, value)) {
-          issues.push(issue(path, `Unknown color token: ${key}`));
-        }
+      if (!colorTokenSet.has(key) && !isColorTokenName(key)) {
+        issues.push(issue(path, `Unknown color token: ${key}`));
         return;
       }
       if (value !== undefined && !isThemeRGB(value)) {
@@ -570,7 +553,7 @@ function collectModeIssues(
 }
 
 /** Every reason a definition cannot be painted; empty when it can. */
-export function collectThemeIssues(theme: unknown, options: ThemeReadOptions = {}): ThemeIssue[] {
+export function collectThemeIssues(theme: unknown): ThemeIssue[] {
   if (!isPlainThemeRecord(theme)) {
     return [issue([], 'Theme definition must be an object')];
   }
@@ -595,7 +578,7 @@ export function collectThemeIssues(theme: unknown, options: ThemeReadOptions = {
     .filter((mode) => mode !== 'light' && mode !== 'dark')
     .forEach((mode) => issues.push(issue(['modes', mode], `Unknown theme mode: ${mode}`)));
 
-  themeModes.forEach((mode) => issues.push(...collectModeIssues(mode, modes[mode], options)));
+  themeModes.forEach((mode) => issues.push(...collectModeIssues(mode, modes[mode])));
 
   if (theme.brands !== undefined && !isPlainThemeRecord(theme.brands)) {
     issues.push(issue(['brands'], 'Theme brands must be an object'));

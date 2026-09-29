@@ -931,6 +931,87 @@ describe('ThemeProvider', () => {
     });
   });
 
+  describe('a definition carrying a color token this reader does not know', () => {
+    const newerDefinition = {
+      version: 1 as const,
+      name: 'newer',
+      modes: {
+        light: { colors: { 'rgb-accent-primary': '4 5 6', 'surface-future': '7 8 9' } },
+        dark: { colors: { 'rgb-accent-primary': '6 5 4', 'rgb-future-role': '9 8 7' } },
+      },
+    };
+    let warn: jest.SpyInstance;
+
+    beforeEach(() => {
+      warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    const expectApplied = () => {
+      const root = document.documentElement;
+      expect(root.dataset.theme).toBe('newer');
+      expect(root.style.getPropertyValue('--accent-primary')).toBe('4 5 6');
+      expect(root.getAttribute('style')).not.toContain('future');
+      expect(root.getAttribute('style')).not.toContain('7 8 9');
+      expect(warn).toHaveBeenCalledWith(
+        '[ThemeProvider] Unknown light color token ignored: surface-future; ' +
+          'Unknown dark color token ignored: rgb-future-role',
+      );
+    };
+
+    it('restores the stored definition with the rest applied and keeps the key stored', async () => {
+      localStorage.setItem('theme-definition', JSON.stringify(newerDefinition));
+      localStorage.setItem('theme-source', 'definition');
+
+      render(
+        <ThemeProvider initialTheme="light">
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(expectApplied);
+      expect(JSON.parse(localStorage.getItem('theme-definition') ?? '{}')).toEqual(newerDefinition);
+    });
+
+    it('applies the same definition from a controlled deployment prop', async () => {
+      render(
+        <ThemeProvider
+          initialTheme="light"
+          persistThemeDefinition={false}
+          themeDefinition={newerDefinition}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(expectApplied);
+      expect(localStorage.getItem('theme-definition')).toBeNull();
+    });
+
+    it('still discards a stored definition whose unknown token has an invalid value', async () => {
+      const invalid = {
+        ...newerDefinition,
+        modes: { light: { colors: { 'rgb-accent-primary': '4 5 6', 'surface-future': 'red' } } },
+      };
+      localStorage.setItem('theme-definition', JSON.stringify(invalid));
+
+      render(
+        <ThemeProvider initialTheme="light">
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.documentElement.classList.contains('light')).toBe(true);
+      });
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+      expect(document.documentElement.style.getPropertyValue('--accent-primary')).toBe('');
+    });
+  });
+
   it('uses a stable identity when a legacy consumer clears an active theme name', async () => {
     render(
       <ThemeProvider

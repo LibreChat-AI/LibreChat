@@ -990,7 +990,7 @@ describe('theme registry', () => {
 
     expect(validateThemeDefinition(invalidTheme)).toEqual([
       'Invalid RGB value for rgb-text-primary: 999 0 0',
-      'Unknown color token: rgb-unknown',
+      'Invalid RGB value for rgb-unknown: red',
       'Invalid appearance value for controlRadius: url(theme.css)',
       'Invalid appearance value for shadowLg: 0 1px red; color: red',
       'Invalid appearance value for shadowMd: not-a-shadow',
@@ -1049,39 +1049,61 @@ describe('theme registry', () => {
       expect(() => resolveTheme(theme, 'light')).toThrow(TypeError);
     });
 
-    it('ignores a well-formed colour role it predates and paints the rest', () => {
+    it('ignores a colour token it does not know and paints the rest', () => {
       const theme = {
         version: 1,
         name: 'colour',
         modes: {
           light: {
-            colors: { 'rgb-future': '1 2 3', 'rgb-accent-primary': '4 5 6' },
+            colors: {
+              'rgb-future': '1 2 3',
+              'surface-future': '7 8 9',
+              'rgb-accent-primary': '4 5 6',
+            },
             appearance: { futureSpacing: '1rem' },
           },
+          dark: { colors: { 'rgb-surfce-primary': '1 1 1' } },
         },
       } as ThemeDefinition;
 
       expect(validateThemeDefinition(theme)).toEqual([]);
       expect(collectThemeWarnings(theme)).toEqual([
         'Unknown light color token ignored: rgb-future',
+        'Unknown light color token ignored: surface-future',
         'Unknown light appearance token ignored: futureSpacing',
+        'Unknown dark color token ignored: rgb-surfce-primary',
       ]);
       const resolved = resolveTheme(theme, 'light');
       expect(resolved.colors['rgb-accent-primary']).toBe('4 5 6');
       expect(resolved.colors).not.toHaveProperty('rgb-future');
+      expect(resolved.colors).not.toHaveProperty('surface-future');
+      expect(resolveTheme(theme, 'dark').colors).not.toHaveProperty('rgb-surfce-primary');
     });
 
-    it('still rejects an unknown colour token that is not a well-formed role', () => {
+    it('still rejects an unknown colour token with an invalid value or a malformed name', () => {
       const theme = {
         version: 1,
         name: 'colour',
-        modes: { light: { colors: { 'rgb-future': 'red', future: '1 2 3' } } },
+        modes: {
+          light: {
+            colors: {
+              'rgb-future': 'red',
+              'surface-future': '300 0 0',
+              'Surface Future': '1 2 3',
+              'rgb-x;}': '1 2 3',
+            },
+          },
+        },
       } as ThemeDefinition;
 
       expect(validateThemeDefinition(theme)).toEqual([
-        'Unknown color token: rgb-future',
-        'Unknown color token: future',
+        'Invalid RGB value for rgb-future: red',
+        'Invalid RGB value for surface-future: 300 0 0',
+        'Unknown color token: Surface Future',
+        'Unknown color token: rgb-x;}',
       ]);
+      expect(collectThemeWarnings(theme)).toEqual([]);
+      expect(() => resolveTheme(theme, 'light')).toThrow(TypeError);
     });
 
     it('still rejects an injection attempt carried by an unknown key', () => {

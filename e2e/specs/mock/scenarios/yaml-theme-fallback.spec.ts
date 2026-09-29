@@ -5,7 +5,7 @@ import { inOneProject, repoRoot, run } from './lint.helpers';
 /**
  * A mistake in `interface.theme` used to fail the whole librechat.yaml and stop the server. The
  * config loader that `/api` wires up now drops only the theme, names each problem by its path, and
- * loads everything else. The mock lane serves one shared yaml, so these load their own fixtures
+ * loads everything else; a token this version does not know only warns. The mock lane serves one shared yaml, so these load their own fixtures
  * through that same loader in a child process, the way the server does at startup and on reload.
  */
 test.describe.configure({ timeout: 120_000 });
@@ -56,17 +56,18 @@ test.describe('interface.theme in librechat.yaml', () => {
     delete process.env.CONFIG_PATH;
   });
 
-  test('a typo in a theme token leaves the server running on the default theme @scenario:yaml-theme-typo-falls-back', () => {
+  test('a color token this version does not know is ignored and the theme still loads @scenario:yaml-theme-unknown-color-kept', () => {
     const { outcome, log } = loadFixture('unknown-token');
 
     expect(outcome.exited).toBeUndefined();
-    expect(outcome.interface).toEqual({ modelSelect: true });
-    expect(log).toContain('the default theme applies instead');
+    expect(outcome.interface?.modelSelect).toBe(true);
+    expect(outcome.interface?.theme).toMatchObject({ name: 'acme' });
+    expect(log).not.toContain('the default theme applies instead');
     expect(log).toContain(
-      'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown color token: rgb-surfce-secondary',
+      'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown light color token ignored: rgb-surfce-secondary',
     );
     expect(log).toContain(
-      'interface.theme.modes.light.colors.surface-tertiary: Unknown color token: surface-tertiary',
+      'interface.theme.modes.light.colors.surface-tertiary: Unknown light color token ignored: surface-tertiary',
     );
   });
 
@@ -113,11 +114,11 @@ test.describe('interface.theme in librechat.yaml', () => {
   });
 
   test('a config reload with a broken theme applies the same fallback @scenario:yaml-theme-reload-falls-back', () => {
-    const { outcome, log } = loadFixture('unknown-token', 'reload');
+    const { outcome, log } = loadFixture('bad-value', 'reload');
 
     expect(outcome.rejected).toBeUndefined();
     expect(outcome.interface).toEqual({ modelSelect: true });
-    expect(log).toContain('interface.theme.modes.light.colors.rgb-surfce-secondary');
+    expect(log).toContain('interface.theme.modes.dark.colors.rgb-surface-primary');
   });
 
   test('an invalid key outside the theme still stops startup @scenario:yaml-theme-other-errors-still-exit', () => {

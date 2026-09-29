@@ -55,21 +55,36 @@ describe('createCustomConfigLoader interface.theme', () => {
     expect(exit).not.toHaveBeenCalled();
   });
 
-  it('drops a theme naming an unknown color token and keeps the rest of the config', async () => {
+  it('keeps a theme naming a color token this version does not know, warning for each', async () => {
     const config = await load('unknown-token');
 
     expect(exit).not.toHaveBeenCalled();
-    expect(config).not.toBeNull();
-    expect(config?.interface).not.toHaveProperty('theme');
+    expect(config?.interface?.theme).toEqual(raw('unknown-token').interface?.theme);
     expect(config?.interface?.modelSelect).toBe(true);
     expect(config?.cache).toBe(true);
     expect(warnings(warn)).toContain(
-      'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown color token: rgb-surfce-secondary',
+      'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown light color token ignored: rgb-surfce-secondary',
     );
     expect(warnings(warn)).toContain(
-      'interface.theme.modes.light.colors.surface-tertiary: Unknown color token: surface-tertiary',
+      'interface.theme.modes.light.colors.surface-tertiary: Unknown light color token ignored: surface-tertiary',
     );
-    expect(warnings(warn)).toContain('the default theme applies instead');
+    expect(warnings(warn)).not.toContain('the default theme applies instead');
+  });
+
+  it('still drops a theme whose unknown color token has an invalid value or name', async () => {
+    const config = await load('unknown-token-invalid');
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(config?.interface).not.toHaveProperty('theme');
+    expect(config?.interface?.modelSelect).toBe(true);
+    const logged = warnings(warn);
+    expect(logged).toContain(
+      'interface.theme.modes.light.colors.rgb-future-role: Invalid RGB value for rgb-future-role: red',
+    );
+    expect(logged).toContain(
+      'interface.theme.modes.dark.colors.Surface Tertiary: Unknown color token: Surface Tertiary',
+    );
+    expect(logged).toContain('the default theme applies instead');
   });
 
   it('reports every bad value with its path and drops the theme', async () => {
@@ -141,12 +156,12 @@ describe('createCustomConfigLoader interface.theme', () => {
 
   describe('reload mode', () => {
     it('applies the same fallback instead of rejecting the reload', async () => {
-      const config = await load('unknown-token', 'reload');
+      const config = await load('bad-value', 'reload');
 
       expect(config?.interface).not.toHaveProperty('theme');
       expect(config?.interface?.modelSelect).toBe(true);
       expect(warnings(warn)).toContain(
-        'interface.theme.modes.light.colors.rgb-surfce-secondary: Unknown color token',
+        'interface.theme.modes.dark.colors.rgb-surface-primary: Invalid RGB value',
       );
     });
 

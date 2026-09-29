@@ -2254,7 +2254,10 @@ export enum RetentionMode {
 
 const themeModeSchema = z
   .object({
-    colors: z.record(z.string().regex(/^rgb-/), z.string().regex(/^\d{1,3} \d{1,3} \d{1,3}$/)),
+    colors: z.record(
+      z.string().regex(/^[a-z][a-z0-9-]*$/),
+      z.string().regex(/^\d{1,3} \d{1,3} \d{1,3}$/),
+    ),
     appearance: z.record(z.string()),
     brands: z.record(z.string()),
   })
