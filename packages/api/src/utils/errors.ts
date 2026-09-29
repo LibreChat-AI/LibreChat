@@ -52,8 +52,10 @@ function redactUrl(match: string): string {
 
 function redactSecrets(value: string): string {
   return value
-    .replace(/\b(?!file:)[a-z][a-z0-9+.-]*:\/\/\S+/gi, redactUrl)
-    .replace(/\b(bearer|basic)\s+\S+/gi, '$1 [redacted]');
+    .slice(0, MAX_SAFE_ERROR_TEXT)
+    .replace(/\b(?!file:)[a-z][a-z0-9+.-]{0,31}:\/\/\S+/gi, redactUrl)
+    .replace(/\b(bearer|basic)\s+\S+/gi, '$1 [redacted]')
+    .slice(0, MAX_SAFE_ERROR_TEXT);
 }
 
 /**
@@ -73,7 +75,7 @@ function redactSecrets(value: string): string {
  */
 export function getSafeErrorText(error: unknown): string {
   if (typeof error === 'string') {
-    return redactSecrets(error).slice(0, MAX_SAFE_ERROR_TEXT);
+    return redactSecrets(error);
   }
 
   if (error == null || typeof error !== 'object') {
@@ -82,19 +84,23 @@ export function getSafeErrorText(error: unknown): string {
 
   const stack = readProperty(error, 'stack');
   if (typeof stack === 'string' && stack.length > 0) {
-    return redactSecrets(stack).slice(0, MAX_SAFE_ERROR_TEXT);
+    return redactSecrets(stack);
   }
 
   const name = readProperty(error, 'name');
   const message = readProperty(error, 'message');
   const described = [
-    typeof name === 'string' && name.length > 0 ? name : 'UnknownError',
-    typeof message === 'string' && message.length > 0 ? message : undefined,
+    typeof name === 'string' && name.length > 0
+      ? name.slice(0, MAX_SAFE_ERROR_TEXT)
+      : 'UnknownError',
+    typeof message === 'string' && message.length > 0
+      ? message.slice(0, MAX_SAFE_ERROR_TEXT)
+      : undefined,
   ]
     .filter(Boolean)
     .join(': ');
 
-  return redactSecrets(described).slice(0, MAX_SAFE_ERROR_TEXT);
+  return redactSecrets(described);
 }
 
 /**
