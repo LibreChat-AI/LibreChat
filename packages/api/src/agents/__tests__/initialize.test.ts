@@ -3020,6 +3020,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
           workspaceId: 'project-a',
           operations: ['read_file', 'list_files', 'execute_command'],
           environment: { fingerprint: 'a'.repeat(64), repo: 'owner/project', actions: ['check'] },
+          linkedWorktrees: true,
         },
       };
       if (protectedEdit) codeExecutionContext.codeWorkspace!.operations.push('edit_file');
@@ -3063,6 +3064,10 @@ describe('initializeAgent — execute_code capability expansion', () => {
         (bashTool?.parameters as { properties?: { timeoutMs?: { maximum?: number } } })?.properties
           ?.timeoutMs?.maximum,
       ).toBe(120_000);
+      expect(
+        (bashTool?.parameters as { properties?: { cwd?: { description?: string } } })?.properties
+          ?.cwd?.description,
+      ).toContain('.worktrees/<name>');
     },
   );
 
