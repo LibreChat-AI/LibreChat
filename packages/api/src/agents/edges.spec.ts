@@ -251,6 +251,39 @@ describe('edges utilities', () => {
   });
 
   describe('createEdgeCollector', () => {
+    it('rejects incompatible scopes for the same effective transfer tool', () => {
+      const a: GraphEdge = {
+        from: 'router',
+        to: 'worker',
+        edgeType: 'handoff',
+        handoffScope: 'conversation',
+      };
+      for (const conflicting of [
+        { ...a, handoffScope: undefined },
+        { ...a, from: ['router', 'peer'], handoffScope: 'turn' as const },
+      ]) {
+        const collector = createEdgeCollector(() => false, new Set());
+        collector.collectEdges([a]);
+        expect(() => collector.collectEdges([conflicting])).toThrow('Conflicting handoff scopes');
+      }
+    });
+
+    it('rejects an invalid persisted scope on direct edges', () => {
+      const collector = createEdgeCollector(() => false, new Set());
+      expect(() =>
+        collector.collectEdges([
+          { from: 'router', to: 'worker', edgeType: 'direct', handoffScope: 'conversation' },
+        ]),
+      ).toThrow('Only handoff edges may set handoffScope');
+    });
+
+    it('keeps identical explicit and omitted turn scopes without changing the tool', () => {
+      const collector = createEdgeCollector(() => false, new Set());
+      const edge: GraphEdge = { from: 'router', to: 'worker', edgeType: 'handoff' };
+      collector.collectEdges([edge, { ...edge, handoffScope: 'turn' }]);
+      expect(collector.edgeMap.size).toBe(1);
+    });
+
     it('should collect edges and track new agents to process', () => {
       const initializedAgents = new Set(['primary']);
       const checkAgentInit = (id: string) => initializedAgents.has(id);

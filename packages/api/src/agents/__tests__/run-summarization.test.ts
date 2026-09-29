@@ -288,6 +288,109 @@ beforeEach(() => {
   process.env.TENANT_ISOLATION_STRICT = 'true';
 });
 
+describe('conversation handoff graph admission', () => {
+  const agents = [
+    makeAgent({
+      id: 'agent_router',
+      edges: [
+        {
+          from: 'agent_router',
+          to: 'agent_worker',
+          edgeType: 'handoff',
+          handoffScope: 'conversation',
+        },
+      ],
+    }),
+    makeAgent({ id: 'agent_worker' }),
+  ];
+  const enabledConfig = {
+    ...makeAppConfig([]),
+    endpoints: { agents: { conversationHandoffs: { enabled: true, maxHandoffs: 3 } } },
+  } as AppConfig;
+
+  async function captureGraph(options: {
+    appConfig?: AppConfig;
+    hitlCapable?: boolean;
+    handoffEntryAgentId?: string;
+    handoffMaxHandoffs?: number;
+  }) {
+    await createRun({ agents: agents as never, signal: new AbortController().signal, ...options });
+    return (Run.create as jest.Mock).mock.calls[0][0].graphConfig as Record<string, unknown>;
+  }
+
+  it('preserves legacy graph topology when disabled or called outside resumable chat', async () => {
+    expect(await captureGraph({ appConfig: makeAppConfig([]), hitlCapable: true })).toMatchObject({
+      type: 'multi-agent',
+    });
+    const first = (Run.create as jest.Mock).mock.calls[0][0].graphConfig;
+    expect(first).not.toHaveProperty('maxHandoffs');
+    expect(first).not.toHaveProperty('entryAgentId');
+    jest.clearAllMocks();
+    const direct = await captureGraph({ appConfig: enabledConfig });
+    expect(direct).not.toHaveProperty('maxHandoffs');
+    expect(direct).not.toHaveProperty('entryAgentId');
+  });
+
+  it('caps the logical turn and starts from the admitted primary agent', async () => {
+    const graph = await captureGraph({
+      appConfig: enabledConfig,
+      hitlCapable: true,
+      handoffEntryAgentId: 'agent_router',
+      handoffMaxHandoffs: 3,
+    });
+    expect(graph).toMatchObject({
+      type: 'multi-agent',
+      entryAgentId: 'agent_router',
+      maxHandoffs: 3,
+    });
+  });
+
+  it('rejects a bounded handoff graph outside resumable chat instead of running unbounded', async () => {
+    await expect(
+      createRun({
+        agents: agents as never,
+        signal: new AbortController().signal,
+        appConfig: enabledConfig,
+        handoffMaxHandoffs: 3,
+      }),
+    ).rejects.toThrow('Conversation handoff budget requires a resumable agent run');
+    expect(Run.create).not.toHaveBeenCalled();
+  });
+
+  it('restores a paused turn budget even after the operator disables new handoffs', async () => {
+    const graph = await captureGraph({
+      appConfig: makeAppConfig([]),
+      hitlCapable: true,
+      handoffEntryAgentId: 'agent_router',
+      handoffMaxHandoffs: 2,
+    });
+    expect(graph).toMatchObject({ entryAgentId: 'agent_router', maxHandoffs: 2 });
+  });
+
+  it('fails closed on a forged entry and an invalid restored budget', async () => {
+    await expect(
+      createRun({
+        agents: agents as never,
+        signal: new AbortController().signal,
+        appConfig: enabledConfig,
+        hitlCapable: true,
+        handoffEntryAgentId: 'agent_worker',
+        handoffMaxHandoffs: 3,
+      }),
+    ).rejects.toThrow('Handoff entry must be the admitted primary agent');
+    await expect(
+      createRun({
+        agents: agents as never,
+        signal: new AbortController().signal,
+        appConfig: enabledConfig,
+        hitlCapable: true,
+        handoffMaxHandoffs: 0,
+      }),
+    ).rejects.toThrow('Invalid conversation handoff budget');
+    expect(Run.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('compaction semantic index forwarding', () => {
   it('forwards one host-derived snapshot to every top-level agent input', async () => {
     const compactionSemanticIndex = [

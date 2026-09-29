@@ -998,6 +998,19 @@ export function getConversationById(id: string): Promise<s.TConversation> {
   return request.get(endpoints.conversationById(id));
 }
 
+export function getConversationAgentRouting(
+  conversationId: string,
+): Promise<ag.AgentRoutingDecisionView> {
+  return request.get(endpoints.conversationAgentRouting(conversationId));
+}
+
+export function updateConversationAgentRouting(
+  conversationId: string,
+  action: ag.AgentRoutingAction,
+): Promise<ag.AgentRoutingDecisionView> {
+  return request.post(endpoints.conversationAgentRouting(conversationId), action);
+}
+
 export function updateConversation(
   payload: t.TUpdateConversationRequest,
 ): Promise<t.TUpdateConversationResponse> {

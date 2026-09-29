@@ -49,6 +49,8 @@ export type FinalEvent = {
   generationCreatedAt?: number;
   requestMessage?: FinalMessageFields | null;
   responseMessage?: FinalMessageFields | null;
+  /** Only emitted after a fenced MongoDB route write; not inferred from transfer cards. */
+  handoffSwitch?: import('librechat-data-provider').CommittedAgentHandoff;
   conversation?: { conversationId?: string; [key: string]: unknown } | null;
   title?: string;
   aborted?: boolean;

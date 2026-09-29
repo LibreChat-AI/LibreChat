@@ -1,5 +1,6 @@
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
+import { isAgentHandoffRunSnapshot } from '~/agents/promotion';
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
@@ -32,6 +33,9 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.agent_id) {
     patch.agent_id = metadata.agent_id;
+  }
+  if (isAgentHandoffRunSnapshot(metadata.agentHandoffRun)) {
+    patch.agentHandoffRun = metadata.agentHandoffRun;
   }
   if (metadata.isTemporary !== undefined) {
     patch.isTemporary = metadata.isTemporary;

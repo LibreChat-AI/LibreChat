@@ -1,3 +1,4 @@
+import { HandoffLimitError } from '@librechat/agents';
 import {
   ErrorTypes,
   DEFAULT_MAX_PROVIDER_ERROR_CHARS,
@@ -224,8 +225,8 @@ function readErrorProperty(error: object, property: PropertyKey): unknown {
 }
 
 /**
- * Whether `error` is the agent graph exhausting its per-turn step budget
- * (`recursionLimit`), as opposed to anything actually going wrong.
+ * Whether `error` is the agent graph exhausting its per-turn step or handoff budget,
+ * as opposed to anything actually going wrong.
  *
  * This is a normal terminal condition, not a failure: the turn is persisted as
  * `unfinished` with `Constants.TOOL_CALL_LIMIT_FINISH_REASON` so the UI can offer
@@ -243,6 +244,7 @@ export function isStepLimitError(error: unknown): boolean {
       return false;
     }
     if (
+      current instanceof HandoffLimitError ||
       readErrorProperty(current, 'lc_error_code') === GRAPH_RECURSION_LIMIT_CODE ||
       readErrorProperty(current, 'name') === 'GraphRecursionError'
     ) {

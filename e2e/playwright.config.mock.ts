@@ -249,6 +249,12 @@ function writeRuntimeMockConfig() {
       ]
     : [];
   config = config.replace(
+    '# __E2E_AGENT_HANDOFF_CONFIG__',
+    process.env.E2E_CONVERSATION_HANDOFFS === 'true'
+      ? 'conversationHandoffs:\n      enabled: true\n      maxHandoffs: 10'
+      : '# __E2E_AGENT_HANDOFF_CONFIG__',
+  );
+  config = config.replace(
     '# __E2E_CODE_BRIDGE_CONFIG__',
     codeBridgeURL
       ? [

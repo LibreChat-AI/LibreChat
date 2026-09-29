@@ -282,6 +282,13 @@ export interface IConversation extends Document {
   imageDetail?: string;
   agent_id?: string;
   codeApprovalMode?: CodeApprovalMode;
+  /** Monotonic decision fence; absent on conversations created before this feature. */
+  agentRoutingRevision?: number;
+  /** Private generation admitted to nominate the next-turn agent. */
+  agentRoutingGeneration?: number;
+  agentRoutingTransitionId?: string;
+  agentRoutingPreviousAgentId?: string;
+  automaticHandoffsEnabled?: boolean;
   /** Private fence advanced when an admitted generation reads its decision. */
   codeEnvironmentRevision?: number;
   codeEnvironmentMode?: CodeEnvironmentMode;

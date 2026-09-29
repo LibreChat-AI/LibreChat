@@ -18,6 +18,7 @@ import type {
   AgentSubagentsConfig,
 } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
+import { getHandoffTransferKeys } from './edges';
 
 /**
  * Permissive Request alias used by {@link validateAgentModel}. Accepts either
@@ -113,12 +114,13 @@ export const agentSupportContactSchema: z.ZodOptional<
   .optional();
 
 /** Graph edge schema for agent handoffs */
-export const graphEdgeSchema: z.ZodObject<
+const graphEdgeObjectSchema: z.ZodObject<
   {
     from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
     to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
     description: z.ZodEffects<z.ZodOptional<z.ZodString>, string | undefined, string | undefined>;
     edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
+    handoffScope: z.ZodOptional<z.ZodEnum<['turn', 'conversation']>>;
     prompt: z.ZodEffects<
       z.ZodOptional<
         z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
@@ -138,6 +140,7 @@ export const graphEdgeSchema: z.ZodObject<
     .optional()
     .transform((v) => (v === '' ? undefined : v)),
   edgeType: z.enum(['handoff', 'direct']).optional(),
+  handoffScope: z.enum(['turn', 'conversation']).optional(),
   prompt: z
     .union([z.string(), z.function()])
     .optional()
@@ -148,6 +151,41 @@ export const graphEdgeSchema: z.ZodObject<
     .optional()
     .transform((v) => (v === '' ? undefined : v)),
 });
+
+export const graphEdgeSchema: z.ZodEffects<typeof graphEdgeObjectSchema> =
+  graphEdgeObjectSchema.superRefine((edge, context) => {
+    if (edge.edgeType === 'direct' && edge.handoffScope != null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['handoffScope'],
+        message: 'Only handoff edges may set handoffScope',
+      });
+    }
+  });
+
+const graphEdgesSchema: z.ZodEffects<z.ZodArray<typeof graphEdgeSchema>> = z
+  .array(graphEdgeSchema)
+  .superRefine((edges, context) => {
+    const scopes = new Map<string, 'turn' | 'conversation'>();
+    for (let index = 0; index < edges.length; index++) {
+      const edge = edges[index];
+      if (edge.edgeType === 'direct') {
+        continue;
+      }
+      const scope = edge.handoffScope ?? 'turn';
+      for (const key of getHandoffTransferKeys(edge)) {
+        const prior = scopes.get(key);
+        if (prior != null && prior !== scope) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index, 'handoffScope'],
+            message: 'Conflicting handoff scopes for the same transfer tool',
+          });
+        }
+        scopes.set(key, scope);
+      }
+    }
+  });
 
 /** Per-tool options schema (defer_loading, allowed_callers, run_in_background, describe_intent) */
 export const toolOptionsSchema: z.ZodObject<
@@ -452,56 +490,7 @@ export const agentBaseSchema: z.ZodObject<
     memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
     /** @deprecated Use edges instead */
     agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    edges: z.ZodOptional<
-      z.ZodArray<
-        z.ZodObject<
-          {
-            from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            description: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-            edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
-            prompt: z.ZodEffects<
-              z.ZodOptional<
-                z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
-              >,
-              string | ((...args: unknown[]) => unknown) | undefined,
-              string | ((...args: unknown[]) => unknown) | undefined
-            >;
-            excludeResults: z.ZodOptional<z.ZodBoolean>;
-            promptKey: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          },
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          }
-        >,
-        'many'
-      >
-    >;
+    edges: z.ZodOptional<typeof graphEdgesSchema>;
     end_after_tools: z.ZodOptional<z.ZodBoolean>;
     hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
@@ -579,7 +568,7 @@ export const agentBaseSchema: z.ZodObject<
   memory_scope: z.nativeEnum(MemoryScope).optional(),
   /** @deprecated Use edges instead */
   agent_ids: z.array(z.string()).optional(),
-  edges: z.array(graphEdgeSchema).optional(),
+  edges: graphEdgesSchema.optional(),
   end_after_tools: z.boolean().optional(),
   hide_sequential_outputs: z.boolean().optional(),
   stateful_code_sessions: z.boolean().optional(),
@@ -631,56 +620,7 @@ export const agentCreateSchema: z.ZodObject<
     skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
     memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
     agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    edges: z.ZodOptional<
-      z.ZodArray<
-        z.ZodObject<
-          {
-            from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            description: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-            edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
-            prompt: z.ZodEffects<
-              z.ZodOptional<
-                z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
-              >,
-              string | ((...args: unknown[]) => unknown) | undefined,
-              string | ((...args: unknown[]) => unknown) | undefined
-            >;
-            excludeResults: z.ZodOptional<z.ZodBoolean>;
-            promptKey: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          },
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          }
-        >,
-        'many'
-      >
-    >;
+    edges: z.ZodOptional<typeof graphEdgesSchema>;
     end_after_tools: z.ZodOptional<z.ZodBoolean>;
     hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
@@ -768,56 +708,7 @@ export const agentUpdateSchema: z.ZodObject<
     skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
     memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
     agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    edges: z.ZodOptional<
-      z.ZodArray<
-        z.ZodObject<
-          {
-            from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            description: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-            edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
-            prompt: z.ZodEffects<
-              z.ZodOptional<
-                z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
-              >,
-              string | ((...args: unknown[]) => unknown) | undefined,
-              string | ((...args: unknown[]) => unknown) | undefined
-            >;
-            excludeResults: z.ZodOptional<z.ZodBoolean>;
-            promptKey: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          },
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          }
-        >,
-        'many'
-      >
-    >;
+    edges: z.ZodOptional<typeof graphEdgesSchema>;
     end_after_tools: z.ZodOptional<z.ZodBoolean>;
     hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;

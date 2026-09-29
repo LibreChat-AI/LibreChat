@@ -48,6 +48,9 @@ const {
   assertCodeExecutionApprovalBinding,
   collectReachableAgents,
   restoreScheduledTokenContext,
+  isAgentHandoffRunSnapshot,
+  resolveRequestTenantId,
+  createAgentHandoffLifecycle,
   recoverTurnMessageReference,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
@@ -79,6 +82,10 @@ const {
   markAgentEventActorDetachedActionRunning,
   settleAgentEventActorDetachedAction,
   appendConvoMessageReference,
+  commitConvoAgentHandoff,
+  finishConvoAgentRoutingGeneration,
+  getConvoAgentRoutingDecision,
+  admitConvoAgentRoutingGeneration,
 } = require('~/models');
 const {
   acquireEventChildGenerationLease,
@@ -648,6 +655,34 @@ async function finalizeResumedTurn({
       });
     }
 
+    const terminalHandoff = await createAgentHandoffLifecycle(
+      {
+        identity: { user: userId, conversationId, tenantId: resolveRequestTenantId(req) ?? null },
+        agentId: meta.agent_id,
+        generation: job.createdAt,
+        role: req.user.role,
+        enabled:
+          req.config?.endpoints?.[EModelEndpoint.agents]?.conversationHandoffs?.enabled === true,
+        snapshot: req._agentHandoffRun,
+      },
+      {
+        admit: admitConvoAgentRoutingGeneration,
+        read: getConvoAgentRoutingDecision,
+        commit: commitConvoAgentHandoff,
+        finish: finishConvoAgentRoutingGeneration,
+        getAgent,
+        checkPermission,
+        updateMetadata: (id, value, epoch) => GenerationJobManager.updateMetadata(id, value, epoch),
+        getJob: (id) => GenerationJobManager.getJob(id),
+      },
+    ).complete({
+      run: client?.run,
+      status: terminalClaim.status,
+      unfinished: preemptIncomplete || stepLimitReached,
+      responseError: responseMessage.error,
+      responseContent: content,
+      conversation,
+    });
     const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
     const finalEvent = {
       final: true,
@@ -668,6 +703,7 @@ async function finalizeResumedTurn({
         : null,
       responseMessage: { ...responseMessage },
       ...(pendingSteers.length > 0 && { pendingSteers }),
+      ...(terminalHandoff == null ? {} : { handoffSwitch: terminalHandoff }),
     };
 
     terminalPublicationStarted = true;
@@ -795,6 +831,24 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       { error: 'Cannot resume on a different endpoint' },
       generationProtocolVersion,
     );
+  }
+
+  const savedHandoffRun = job.metadata?.agentHandoffRun;
+  if (savedHandoffRun != null) {
+    if (
+      !isAgentHandoffRunSnapshot(savedHandoffRun) ||
+      (savedHandoffRun.admission != null &&
+        (savedHandoffRun.admission.generation !== job.createdAt ||
+          savedHandoffRun.admission.agentId !== originalAgentId))
+    ) {
+      return sendGenerationJson(
+        res,
+        409,
+        { code: 'AGENT_HANDOFF_RESUME_CONTEXT_UNAVAILABLE' },
+        generationProtocolVersion,
+      );
+    }
+    req._agentHandoffRun = savedHandoffRun;
   }
 
   const scheduleId = job.metadata?.scheduleId;

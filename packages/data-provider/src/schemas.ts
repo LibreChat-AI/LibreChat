@@ -1208,6 +1208,9 @@ export const tConversationSchema = z.object({
   assistant_id: z.string().optional(),
   /* agents */
   agent_id: z.string().optional(),
+  /** Monotonic revision for server-owned next-turn routing. */
+  agentRoutingRevision: z.number().int().nonnegative().optional(),
+  automaticHandoffsEnabled: z.boolean().optional(),
   /** Durable parent/child navigation for a subagent thread. */
   subagentThread: subagentThreadLineageSchema.optional(),
   /* AWS Bedrock */

@@ -34,6 +34,9 @@ const {
   extractStoredMessageContent,
   GenerationJobManager,
   isStopConfirmed,
+  createAgentHandoffAuthorization,
+  createAgentRoutingReadHandler,
+  createAgentRoutingUpdateHandler,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { getAppConfig } = require('~/server/services/Config/app');
@@ -50,6 +53,7 @@ const {
 const { forkConversation, duplicateConversation } = require('~/server/utils/import/fork');
 const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
+const { checkPermission } = require('~/server/services/PermissionService');
 const { importConversations } = require('~/server/utils/import');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const {
@@ -230,6 +234,22 @@ router.post(
   backgroundTaskCancelHandler,
 );
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
+
+const routingDeps = {
+  get: db.getConvoAgentRoutingDecision,
+  select: db.selectConvoAgentRoutingDecision,
+  setAutomatic: db.setConvoAutomaticHandoffs,
+  canAccess: (agentId, userId, role) =>
+    createAgentHandoffAuthorization({ userId, role, getAgent: db.getAgent, checkPermission })(
+      agentId,
+    ),
+};
+router.get('/:conversationId/agent-routing', createAgentRoutingReadHandler(routingDeps));
+router.post(
+  '/:conversationId/agent-routing',
+  configMiddleware,
+  createAgentRoutingUpdateHandler(routingDeps),
+);
 
 router.get('/:conversationId', async (req, res) => {
   const { conversationId } = req.params;

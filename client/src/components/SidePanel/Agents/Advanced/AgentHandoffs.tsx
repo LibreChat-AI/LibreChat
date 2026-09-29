@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Waypoints, ChevronDown } from 'lucide-react';
-import { Button, Label, Input, Textarea } from '@librechat/client';
+import { Button, Label, Input, Textarea, Switch } from '@librechat/client';
 import type { ControllerRenderProps } from 'react-hook-form';
 import type { GraphEdge } from 'librechat-data-provider';
 import type { AgentForm } from '~/common';
@@ -18,6 +18,7 @@ import { CountPill } from './ui';
 interface AgentHandoffsProps {
   field: ControllerRenderProps<AgentForm, 'edges'>;
   currentAgentId: string;
+  permanentHandoffsEnabled: boolean;
 }
 
 /** TODO: make configurable */
@@ -29,7 +30,11 @@ const Connector = () => (
 
 const getTargetAgentId = (to: string | string[]): string => (Array.isArray(to) ? to[0] : to);
 
-const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) => {
+const AgentHandoffs: React.FC<AgentHandoffsProps> = ({
+  field,
+  currentAgentId,
+  permanentHandoffsEnabled,
+}) => {
   const localize = useLocalize();
   const [newAgentId, setNewAgentId] = useState('');
   const [expandedIndices, setExpandedIndices] = useState<Set<number>>(new Set());
@@ -166,6 +171,31 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
 
                 {isExpanded && (
                   <div className="ml-1.5 flex flex-col gap-2.5 border-l border-border-light pl-3">
+                    {permanentHandoffsEnabled && (
+                      <div className="flex items-center justify-between gap-2">
+                        <Label
+                          htmlFor={`handoff-scope-${idx}`}
+                          className="text-xs text-text-secondary"
+                        >
+                          {localize('com_ui_agent_handoff_permanent')}
+                        </Label>
+                        <Switch
+                          id={`handoff-scope-${idx}`}
+                          checked={edge.handoffScope === 'conversation'}
+                          onCheckedChange={(checked) =>
+                            updateHandoffDetailsAt(idx, {
+                              handoffScope: checked ? 'conversation' : 'turn',
+                            })
+                          }
+                          aria-label={localize('com_ui_agent_handoff_permanent')}
+                        />
+                      </div>
+                    )}
+                    {!permanentHandoffsEnabled && edge.handoffScope === 'conversation' && (
+                      <p className="text-xs text-text-secondary">
+                        {localize('com_ui_agent_handoff_permanent_unavailable')}
+                      </p>
+                    )}
                     <div>
                       <Label
                         htmlFor={`handoff-desc-${idx}`}

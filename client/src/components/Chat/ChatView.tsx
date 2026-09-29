@@ -26,6 +26,7 @@ import { useGetMessagesByConvoId } from '~/data-provider';
 import Footer, { useConfiguredFooter } from './Footer';
 import { AskAnswerHostProvider } from './ask/state';
 import MessagesView from './Messages/MessagesView';
+import AgentRoutingNotice from './Handoffs/Notice';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
@@ -203,6 +204,12 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                           )}
                         >
                           {isLandingPage && <ConversationStarters />}
+                          {!isLandingPage && index === 0 && !isSubagentThreadReadOnly && (
+                            <AgentRoutingNotice
+                              conversation={activeConversation}
+                              setConversation={chatHelpers.setConversation}
+                            />
+                          )}
                           {isSubagentThreadReadOnly ? (
                             <div
                               className="mx-auto w-full max-w-3xl px-4 py-3 text-center text-sm text-text-secondary xl:max-w-4xl"

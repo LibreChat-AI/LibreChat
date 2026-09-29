@@ -178,6 +178,45 @@ describe('createEndpointsConfigService', () => {
     });
 
     it.each([true, false])(
+      'advertises only the safe conversation handoff capability when enabled=%s',
+      async (enabled) => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: {
+                [EModelEndpoint.agents]: { conversationHandoffs: { enabled, maxHandoffs: 10 } },
+              },
+            }),
+          ),
+        });
+        const result = await createEndpointsConfigService(deps).getEndpointsConfig(fakeReq());
+        expect(result?.[EModelEndpoint.agents]?.conversationHandoffsEnabled).toBe(enabled);
+        expect(result?.[EModelEndpoint.agents]).not.toHaveProperty('conversationHandoffs');
+      },
+    );
+
+    it('does not offer conversation handoffs when a mandatory model spec owns routing', async () => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+        }),
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            modelSpecs: { enforce: true },
+            endpoints: {
+              [EModelEndpoint.agents]: { conversationHandoffs: { enabled: true, maxHandoffs: 10 } },
+            },
+          }),
+        ),
+      });
+      const result = await createEndpointsConfigService(deps).getEndpointsConfig(fakeReq());
+      expect(result?.[EModelEndpoint.agents]?.conversationHandoffsEnabled).toBe(false);
+    });
+
+    it.each([true, false])(
       'exposes file sharing policy to the agent builder when enabled=%s',
       async (enabled) => {
         const fileSharing = {

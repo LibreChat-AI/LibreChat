@@ -3,6 +3,7 @@ const request = require('supertest');
 
 const MOCKS = '../__test-utils__/convos-route-mocks';
 jest.mock('~/server/services/Config/app', () => ({ getAppConfig: jest.fn() }));
+jest.mock('~/server/services/PermissionService', () => ({ checkPermission: jest.fn() }));
 const {
   archiveAllHandler,
   generationJobManager,
@@ -43,6 +44,7 @@ jest.mock('@librechat/api', () =>
 jest.mock('@librechat/data-schemas', () => require(MOCKS).dataSchemas());
 jest.mock('librechat-data-provider', () => require(MOCKS).dataProvider());
 jest.mock('~/models', () => require(MOCKS).sharedModels());
+jest.mock('~/server/services/PermissionService', () => ({ checkPermission: jest.fn() }));
 jest.mock('~/server/middleware/requireJwtAuth', () => require(MOCKS).requireJwtAuth());
 jest.mock('~/server/middleware', () => require(MOCKS).middlewarePassthrough());
 jest.mock('~/server/utils/import/fork', () => require(MOCKS).forkUtils());

@@ -107,6 +107,8 @@ export enum QueryKeys {
 
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
+  agentRouting: (conversationId: string, revision: number) =>
+    [QueryKeys.conversation, conversationId, 'agent-routing', revision] as const,
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;

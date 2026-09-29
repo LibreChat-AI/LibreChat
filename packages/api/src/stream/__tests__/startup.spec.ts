@@ -378,6 +378,7 @@ describe('GenerationJobManager startup telemetry', () => {
     await manager.createJob('stream-replaced-metadata', 'user-1', 'conversation-1', {
       initialMetadata: {
         agent_id: 'agent-1',
+        agentHandoffRun: { version: 1, maxHandoffs: 10 },
         isTemporary: true,
         discoveredTools: ['deferred-tool'],
       },
@@ -390,6 +391,7 @@ describe('GenerationJobManager startup telemetry', () => {
     );
 
     expect(replacement.metadata.agent_id).toBeUndefined();
+    expect(replacement.metadata.agentHandoffRun).toBeUndefined();
     expect(replacement.metadata.isTemporary).toBeUndefined();
     expect(replacement.metadata.discoveredTools).toBeUndefined();
 
@@ -425,6 +427,26 @@ describe('GenerationJobManager startup telemetry', () => {
       discoveredTools: [],
     });
 
+    await manager.destroy();
+  });
+
+  it('persists the admitted handoff entry and budget on the exact in-memory generation', async () => {
+    const manager = createManager();
+    const job = await manager.createJob('handoff-snapshot', 'user-1', 'handoff-snapshot', {
+      initialMetadata: { agent_id: 'agent_a', agentHandoffRun: { version: 1, maxHandoffs: 10 } },
+    });
+    const snapshot = {
+      version: 1 as const,
+      maxHandoffs: 10,
+      admission: {
+        agentId: 'agent_a',
+        revision: 1,
+        generation: job.createdAt,
+        maxHandoffs: 10,
+      },
+    };
+    await manager.updateMetadata('handoff-snapshot', { agentHandoffRun: snapshot }, job.createdAt);
+    expect((await manager.getJob('handoff-snapshot'))?.metadata.agentHandoffRun).toEqual(snapshot);
     await manager.destroy();
   });
 

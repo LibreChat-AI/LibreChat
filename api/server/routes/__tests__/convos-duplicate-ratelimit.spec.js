@@ -21,6 +21,7 @@ jest.mock('librechat-data-provider', () =>
 
 jest.mock('~/cache/logViolation', () => jest.fn().mockResolvedValue(undefined));
 jest.mock('~/cache/getLogStores', () => require(MOCKS).logStores());
+jest.mock('~/server/services/PermissionService', () => ({ checkPermission: jest.fn() }));
 jest.mock('~/models', () => ({
   ...require(MOCKS).sharedModels(),
   ...require(MOCKS).conversationModel(),

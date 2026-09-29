@@ -126,6 +126,52 @@ describe('validateConvoAccess', () => {
     findOne.mockRestore();
   });
 
+  it('loads a fresh agent route on a warm access-cache hit for downstream reuse', async () => {
+    mockCache.get.mockResolvedValue('authorized');
+    const findOne = jest.spyOn(Conversation, 'findOne');
+    const req = createRequest(OWNER_ID, CONVERSATION_ID);
+    req.baseUrl = '/api/agents/chat';
+    req.path = '/';
+    req.body.endpoint = 'agents';
+
+    try {
+      await validateConvoAccess(req, res, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(req.resolvedConversation).toMatchObject({
+        conversationId: CONVERSATION_ID,
+        user: OWNER_ID,
+      });
+      expect(req.resolvedConversation).not.toHaveProperty('messages');
+      expect(findOne).toHaveBeenCalledTimes(1);
+    } finally {
+      findOne.mockRestore();
+    }
+  });
+
+  it.each([
+    ['HITL resume', { path: '/resume' }],
+    ['regeneration', { body: { isRegenerate: true } }],
+    ['enforced model spec', { config: { modelSpecs: { enforce: true } } }],
+    ['automated event', { _isAgentTrigger: true }],
+  ])('keeps the warm-cache fast path for %s', async (_label, overrides) => {
+    mockCache.get.mockResolvedValue('authorized');
+    const findOne = jest.spyOn(Conversation, 'findOne');
+    const req = createRequest(OWNER_ID, CONVERSATION_ID);
+    req.baseUrl = '/api/agents/chat';
+    req.path = '/';
+    req.body.endpoint = 'agents';
+    Object.assign(req, overrides, { body: { ...req.body, ...overrides.body } });
+
+    try {
+      await validateConvoAccess(req, res, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(findOne).not.toHaveBeenCalled();
+    } finally {
+      findOne.mockRestore();
+    }
+  });
+
   it('resolves stored retention on an authorization cache hit despite a forged flag', async () => {
     mockCache.get.mockResolvedValue('authorized');
     const findOne = jest.spyOn(Conversation, 'findOne');

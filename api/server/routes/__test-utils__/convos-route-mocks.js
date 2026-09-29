@@ -114,6 +114,9 @@ module.exports = {
     })),
     logAxiosError: jest.fn(),
     restoreTenantContextFromReq: jest.fn((req, res, next) => next()),
+    createAgentHandoffAuthorization: jest.fn(() => jest.fn().mockResolvedValue(true)),
+    createAgentRoutingReadHandler: jest.fn(() => (_req, _res, next) => next()),
+    createAgentRoutingUpdateHandler: jest.fn(() => (_req, _res, next) => next()),
     createArchiveAllHandler: jest.fn(({ archiveAllConvos }) => {
       archiveAllHandler.mockImplementation(async (req, res) => {
         const result = await archiveAllConvos(req.user.id);
@@ -224,6 +227,9 @@ module.exports = {
     archiveAllConvos: jest.fn(),
     saveConvo: jest.fn(),
     setConvoPinned: jest.fn(),
+    getConvoAgentRoutingDecision: jest.fn(),
+    selectConvoAgentRoutingDecision: jest.fn(),
+    setConvoAutomaticHandoffs: jest.fn(),
     deleteAllSharedLinks: jest.fn(),
     deleteConvoSharedLink: jest.fn(),
     deleteToolCalls: jest.fn(),

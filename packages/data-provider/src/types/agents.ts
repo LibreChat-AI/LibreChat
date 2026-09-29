@@ -820,6 +820,26 @@ export interface BaseGraphState {
   [key: string]: unknown;
 }
 
+export interface AgentRoutingDecisionView {
+  agentId: string | null;
+  revision: number;
+  automaticHandoffsEnabled: boolean;
+  previousAgentId?: string;
+  transitionId?: string;
+}
+
+export type AgentRoutingAction =
+  | { action: 'select'; agentId: string; expectedRevision: number }
+  | { action: 'switch_back'; transitionId: string; expectedRevision: number }
+  | { action: 'automatic'; enabled: boolean; expectedRevision: number };
+
+export interface CommittedAgentHandoff {
+  fromAgentId: string;
+  toAgentId: string;
+  transitionId: string;
+  revision: number;
+}
+
 export type GraphEdge = {
   /** Agent ID, use a list for multiple sources */
   from: string | string[];
@@ -830,6 +850,8 @@ export type GraphEdge = {
   condition?: (state: BaseGraphState) => boolean | string | string[];
   /** 'handoff' creates tools for dynamic routing, 'direct' creates direct edges, which also allow parallel execution */
   edgeType?: 'handoff' | 'direct';
+  /** Omitted edges stay turn-scoped; conversation scope nominates the next-turn agent. */
+  handoffScope?: 'turn' | 'conversation';
   /**
    * For direct edges: Optional prompt to add when transitioning through this edge.
    * String prompts can include variables like {results} which will be replaced with
@@ -934,12 +956,13 @@ export type AgentOwnerContact = {
  */
 export type AgentSubagentGraphEdge = Omit<
   GraphEdge,
-  'edgeType' | 'condition' | 'prompt' | 'promptKey'
+  'edgeType' | 'condition' | 'prompt' | 'promptKey' | 'handoffScope'
 > & {
   edgeType: 'direct';
   condition?: never;
   prompt?: string;
   promptKey?: never;
+  handoffScope?: never;
 };
 
 /** A bounded saved-agent team that can be spawned as one isolated child graph. */

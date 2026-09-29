@@ -45,6 +45,11 @@ const convoSchema: Schema<IConversation> = new Schema(
     agent_id: {
       type: String,
     },
+    agentRoutingRevision: { type: Number },
+    agentRoutingGeneration: { type: Number, select: false },
+    agentRoutingTransitionId: { type: String, select: false },
+    agentRoutingPreviousAgentId: { type: String, select: false },
+    automaticHandoffsEnabled: { type: Boolean },
     initial_agent_id: {
       type: String,
       default: undefined,

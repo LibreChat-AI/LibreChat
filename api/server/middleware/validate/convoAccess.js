@@ -1,4 +1,4 @@
-const { isEnabled } = require('@librechat/api');
+const { isEnabled, shouldLoadAgentRoutingConversation } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { Constants, ViolationTypes, Time } = require('librechat-data-provider');
 const denyRequest = require('~/server/middleware/denyRequest');
@@ -53,7 +53,11 @@ const validateConvoAccess = async (req, res, next) => {
       const needsRetention =
         req.config?.interfaceConfig?.retentionMode === 'all' &&
         req.config.interfaceConfig.generalChatRetention !== undefined;
-      if (cachedAccess === 'authorized' && !needsRetention) {
+      if (
+        cachedAccess === 'authorized' &&
+        !needsRetention &&
+        !shouldLoadAgentRoutingConversation(req)
+      ) {
         return next();
       }
     }

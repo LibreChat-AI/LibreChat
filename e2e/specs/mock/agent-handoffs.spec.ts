@@ -1153,3 +1153,166 @@ test.describe('agent handoffs', () => {
     }
   });
 });
+
+test('commits a permanent handoff and routes the next user message to its destination', async ({
+  page,
+}) => {
+  test.setTimeout(180000);
+  await page.goto('/c/new', { timeout: 10000 });
+  const token = await getAccessToken(page);
+  const specialistName = uniqueAgentName('E2E Permanent Specialist');
+  const routerName = uniqueAgentName('E2E Permanent Router');
+  const label = `permanent-${Date.now()}`;
+  let routerId: string | undefined;
+  let specialistId: string | undefined;
+  try {
+    const specialist = await createAgentViaApi(page, token, specialistName, undefined, {
+      instructions: `Only this specialist has context marker ${label}-specialist.`,
+    });
+    specialistId = specialist.id;
+    const router = await createAgentViaApi(page, token, routerName, [
+      {
+        from: '',
+        to: specialist.id,
+        edgeType: 'handoff',
+        handoffScope: 'conversation',
+        description: 'Transfer permanently to this specialist.',
+      },
+    ]);
+    routerId = router.id;
+    await selectAgentForChat(page, routerName);
+    const handoff = await sendMessageAndWaitForCompletion(
+      page,
+      handoffMarker(label, [
+        {
+          from: router.id,
+          to: specialist.id,
+          description: 'Transfer permanently to this specialist.',
+        },
+      ]),
+    );
+    expect(handoff.ok()).toBeTruthy();
+    await expect(page).toHaveURL(/\/c\/(?!new)/);
+    const conversationId = new URL(page.url()).pathname.split('/').at(-1)!;
+    await expect
+      .poll(async () => {
+        const convo = await fetchJson<{ agent_id?: string }>(
+          page,
+          `/api/convos/${encodeURIComponent(conversationId)}`,
+          token,
+        );
+        return convo.agent_id;
+      })
+      .toBe(specialist.id);
+    const decision = await fetchJson<{
+      agentId: string;
+      previousAgentId: string;
+      transitionId: string;
+      revision: number;
+    }>(page, `/api/convos/${encodeURIComponent(conversationId)}/agent-routing`, token);
+    expect(decision).toMatchObject({ agentId: specialist.id, previousAgentId: router.id });
+    await expect(
+      page.getByRole('status').filter({ hasText: `Future messages will go to ${specialistName}` }),
+    ).toBeVisible();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(
+      page.getByRole('status').filter({ hasText: `Future messages will go to ${specialistName}` }),
+    ).toBeVisible();
+
+    const followup = await sendMessageAndWaitForCompletion(
+      page,
+      `E2E_ASSERT_AGENT_CONTEXT:${label}-specialist`,
+    );
+    expect(followup.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E agent context assertion passed: ${label}-specialist`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    const messages = await fetchJson<Array<{ model?: string; isCreatedByUser?: boolean }>>(
+      page,
+      `/api/messages/${encodeURIComponent(conversationId)}`,
+      token,
+    );
+    expect(messages.filter((message) => message.isCreatedByUser === false).at(-1)?.model).toBe(
+      specialist.id,
+    );
+    await page.getByRole('button', { name: `Switch back to ${routerName}` }).click();
+    await expect
+      .poll(
+        async () =>
+          (
+            await fetchJson<{ agent_id?: string }>(
+              page,
+              `/api/convos/${encodeURIComponent(conversationId)}`,
+              token,
+            )
+          ).agent_id,
+      )
+      .toBe(router.id);
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Future messages will go to' }),
+    ).toHaveCount(0);
+
+    await page.getByRole('switch', { name: 'Automatically switch agents' }).click();
+    const optOut = await fetchJson<{ automaticHandoffsEnabled: boolean }>(
+      page,
+      `/api/convos/${encodeURIComponent(conversationId)}/agent-routing`,
+      token,
+    );
+    expect(optOut.automaticHandoffsEnabled).toBe(false);
+    const ordinary = await sendMessageAndWaitForCompletion(page, `E2E_REPLY:${label}-router`);
+    expect(ordinary.ok()).toBeTruthy();
+    const finalMessages = await fetchJson<Array<{ model?: string; isCreatedByUser?: boolean }>>(
+      page,
+      `/api/messages/${encodeURIComponent(conversationId)}`,
+      token,
+    );
+    expect(finalMessages.filter((message) => message.isCreatedByUser === false).at(-1)?.model).toBe(
+      router.id,
+    );
+
+    const current = await fetchJson<{ revision: number }>(
+      page,
+      `/api/convos/${encodeURIComponent(conversationId)}/agent-routing`,
+      token,
+    );
+    await requestJson(page, {
+      path: `/api/convos/${encodeURIComponent(conversationId)}/agent-routing`,
+      token,
+      method: 'POST',
+      body: { action: 'select', agentId: specialist.id, expectedRevision: current.revision },
+    });
+    await requestJson(page, {
+      path: `/api/agents/${encodeURIComponent(specialist.id)}`,
+      token,
+      method: 'DELETE',
+    });
+    specialistId = undefined;
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(
+      page.getByText(
+        'This agent is unavailable. Choose an accessible agent to continue here, or start a new chat.',
+      ),
+    ).toBeVisible();
+    await page.getByRole('combobox', { name: 'Choose another agent' }).click();
+    await page.getByRole('option', { name: routerName }).click();
+    await expect
+      .poll(async () => {
+        const conversation = await fetchJson<{ agent_id?: string }>(
+          page,
+          `/api/convos/${encodeURIComponent(conversationId)}`,
+          token,
+        );
+        return conversation.agent_id;
+      })
+      .toBe(router.id);
+    const recovered = await sendMessageAndWaitForCompletion(page, `E2E_REPLY:${label}-recovered`);
+    expect(recovered.ok()).toBeTruthy();
+    await expect(
+      messagesView(page).getByText(`E2E reply ${label}-recovered`, { exact: true }),
+    ).toBeVisible();
+  } finally {
+    await cleanupAgents(page, token, [routerId, specialistId]);
+  }
+});

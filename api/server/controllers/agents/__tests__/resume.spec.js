@@ -87,6 +87,10 @@ const mockGetConvo = jest.fn();
 const mockGetMessages = jest.fn();
 const mockGetFiles = jest.fn();
 const mockGetAgent = jest.fn();
+const mockGetConvoAgentRoutingDecision = jest.fn();
+const mockCommitConvoAgentHandoff = jest.fn();
+const mockFinishConvoAgentRoutingGeneration = jest.fn();
+const mockAdmitConvoAgentRoutingGeneration = jest.fn();
 const mockGetActions = jest.fn();
 const mockGetUserMemories = jest.fn();
 const mockGetRoleByName = jest.fn();
@@ -153,6 +157,10 @@ jest.mock('~/models', () => ({
   getMessages: (...args) => mockGetMessages(...args),
   getFiles: (...args) => mockGetFiles(...args),
   getAgent: (...args) => mockGetAgent(...args),
+  getConvoAgentRoutingDecision: (...args) => mockGetConvoAgentRoutingDecision(...args),
+  commitConvoAgentHandoff: (...args) => mockCommitConvoAgentHandoff(...args),
+  finishConvoAgentRoutingGeneration: (...args) => mockFinishConvoAgentRoutingGeneration(...args),
+  admitConvoAgentRoutingGeneration: (...args) => mockAdmitConvoAgentRoutingGeneration(...args),
   getActions: (...args) => mockGetActions(...args),
   getUserMemories: (...args) => mockGetUserMemories(...args),
   getRoleByName: (...args) => mockGetRoleByName(...args),
@@ -3212,6 +3220,108 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       );
       expect(mockDecrementPendingRequest).toHaveBeenCalledWith(USER_ID);
       expect(mockDisposeClient).toHaveBeenCalledTimes(1);
+    });
+
+    it('commits a resumed handoff only after persisting the original agent response', async () => {
+      requestConfigOverrides = {
+        endpoints: {
+          agents: {
+            checkpointer: { type: 'mongo' },
+            conversationHandoffs: { enabled: true, maxHandoffs: 10 },
+          },
+        },
+      };
+      const targetId = 'agent_resumed_target';
+      const transitionId = 'resumed-transfer-1';
+      const handoffRun = {
+        version: 1,
+        maxHandoffs: 10,
+        admission: { agentId: AGENT_ID, revision: 1, generation: 1000, maxHandoffs: 10 },
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { agentHandoffRun: handoffRun } }),
+      );
+      mockInitializeClient.mockImplementation(async () => ({
+        client: makeClient({
+          run: {
+            getHandoffOutcome: () => ({
+              executionId: 'resumed-graph',
+              entryAgentId: AGENT_ID,
+              status: 'candidate',
+              agentId: targetId,
+              transitionId,
+              transitions: [
+                {
+                  id: transitionId,
+                  sourceAgentId: AGENT_ID,
+                  targetAgentId: targetId,
+                  scope: 'conversation',
+                },
+              ],
+            }),
+          },
+        }),
+      }));
+      mockGetAgent.mockResolvedValue({ id: targetId, _id: 'mongo-resumed-target' });
+      mockCommitConvoAgentHandoff.mockResolvedValue({
+        status: 'committed',
+        decision: {
+          agentId: targetId,
+          revision: 2,
+          transitionId,
+          automaticHandoffsEnabled: true,
+        },
+      });
+
+      await post(approveBody());
+      await settled;
+      await flush();
+      expect(mockCommitConvoAgentHandoff).toHaveBeenCalledWith({
+        user: USER_ID,
+        tenantId: TENANT_ID,
+        conversationId: CONVO_ID,
+        expected: { agentId: AGENT_ID, revision: 1, generation: 1000 },
+        agentId: targetId,
+        transitionId,
+      });
+      expect(mockSaveMessage.mock.invocationCallOrder[0]).toBeLessThan(
+        mockCommitConvoAgentHandoff.mock.invocationCallOrder[0],
+      );
+      const [, finalEvent] = mockGenerationJobManager.publishTerminalClaim.mock.calls[0];
+      expect(finalEvent).toMatchObject({
+        conversation: { agent_id: targetId, agentRoutingRevision: 2 },
+        handoffSwitch: { fromAgentId: AGENT_ID, toAgentId: targetId, revision: 2 },
+        responseMessage: { agent_id: AGENT_ID },
+      });
+      expect(mockCommitConvoAgentHandoff.mock.invocationCallOrder[0]).toBeLessThan(
+        mockGenerationJobManager.publishTerminalClaim.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('does not admit an aborted resumed generation with no durable handoff ticket', async () => {
+      requestConfigOverrides = {
+        endpoints: {
+          agents: {
+            checkpointer: { type: 'mongo' },
+            conversationHandoffs: { enabled: true, maxHandoffs: 10 },
+          },
+        },
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { agentHandoffRun: { version: 1, maxHandoffs: 10 } } }),
+      );
+      mockGenerationJobManager.claimTerminalJob.mockResolvedValue({
+        streamId: CONVO_ID,
+        createdAt: 1000,
+        status: 'aborted',
+        persistencePending: true,
+        drainedSteers: [],
+      });
+      await post(approveBody());
+      await settled;
+      await flush();
+      expect(mockAdmitConvoAgentRoutingGeneration).not.toHaveBeenCalled();
+      expect(mockCommitConvoAgentHandoff).not.toHaveBeenCalled();
     });
 
     it('publishes reconciliation instead of a normal FINAL when the resumed response save returns no row', async () => {

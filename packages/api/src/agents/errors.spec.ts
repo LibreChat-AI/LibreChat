@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { Agent, errors, fetch } from 'undici';
 import { ErrorTypes } from 'librechat-data-provider';
+import { HandoffLimitError } from '@librechat/agents';
 import { ChatOpenAI } from '@librechat/agents/llm/openai';
 import { GraphRecursionError } from '@langchain/langgraph';
 import type { AddressInfo } from 'node:net';
@@ -216,6 +217,10 @@ describe('isStepLimitError', () => {
     );
 
     expect(isStepLimitError(thrown)).toBe(true);
+  });
+
+  it('keeps a real handoff budget stop on the incomplete-turn path', () => {
+    expect(isStepLimitError(new HandoffLimitError(10))).toBe(true);
   });
 
   it('matches on `lc_error_code` alone, so a minified class name cannot break detection', () => {

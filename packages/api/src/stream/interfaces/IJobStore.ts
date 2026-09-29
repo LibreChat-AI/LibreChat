@@ -13,6 +13,7 @@ import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
+import type { AgentHandoffRunSnapshot } from '~/agents/promotion';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
@@ -317,6 +318,7 @@ export interface SerializableJobData {
    * would mis-execute the paused tool calls.
    */
   agent_id?: string;
+  agentHandoffRun?: AgentHandoffRunSnapshot;
 
   /**
    * Whether the originating turn was a temporary (non-persisted) chat. Persisted so
@@ -458,6 +460,7 @@ export type JobMetadataPatch = Partial<
     | 'iconURL'
     | 'model'
     | 'agent_id'
+    | 'agentHandoffRun'
     | 'isTemporary'
     | 'retentionExpiresAt'
     | 'agentEventDeliveryKey'

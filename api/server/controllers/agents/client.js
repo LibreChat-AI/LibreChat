@@ -4841,6 +4841,8 @@ class AgentClient extends BaseClient {
         }
 
         const { calibrationRatio, fadingTier, fadingTiers } = resolveRunSeeds(this);
+        const handoffRun =
+          (await this.options.req?._agentHandoffReady) ?? this.options.req?._agentHandoffRun;
 
         const streamId = this.options.req?._resumableStreamId;
         // HITL: establish an empty checkpoint barrier for THIS immutable generation
@@ -4913,6 +4915,8 @@ class AgentClient extends BaseClient {
           // Conversation-stable identity for the e2e run hook; a resumed run
           // carries no messages, so history cannot identify the conversation.
           conversationId: this.conversationId,
+          handoffEntryAgentId: handoffRun == null ? undefined : agents[0]?.id,
+          handoffMaxHandoffs: handoffRun?.maxHandoffs,
           messages,
           discoveredToolNames:
             this.eventActorContinuation === 'warm' ? this.eventActorDiscoveredToolNames : undefined,
@@ -5694,6 +5698,8 @@ class AgentClient extends BaseClient {
       run = await createRun({
         agents,
         conversationId: this.conversationId,
+        handoffEntryAgentId: this.options.req?._agentHandoffRun == null ? undefined : agents[0]?.id,
+        handoffMaxHandoffs: this.options.req?._agentHandoffRun?.maxHandoffs,
         modelCallbacks: [
           modelBoundCallback,
           attachmentMemoryCallback,

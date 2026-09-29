@@ -2969,6 +2969,7 @@ class GenerationJobManagerClass {
         // Surface the originating agent so the resume route can refuse to rebuild a
         // paused run on a different agent.
         agent_id: jobData.agent_id,
+        agentHandoffRun: jobData.agentHandoffRun,
         // Surface whether the turn was temporary so a resume keeps it non-persisted.
         isTemporary: jobData.isTemporary,
         retentionExpiresAt: jobData.retentionExpiresAt,

@@ -44,6 +44,19 @@ export function getEdgeKey(edge: GraphEdge): string {
   return `${from}=>${to}::${type}`;
 }
 
+/** One source-to-destination transfer tool per pair, including grouped edges. */
+export function getHandoffTransferKeys(edge: Pick<GraphEdge, 'from' | 'to'>): string[] {
+  const keys: string[] = [];
+  const sources = Array.isArray(edge.from) ? edge.from : [edge.from];
+  const destinations = Array.isArray(edge.to) ? edge.to : [edge.to];
+  for (const source of sources) {
+    for (const destination of destinations) {
+      keys.push(JSON.stringify([source, destination]));
+    }
+  }
+  return keys;
+}
+
 /**
  * Extracts all agent IDs referenced in an edge (both from and to).
  */
@@ -237,6 +250,7 @@ export function createEdgeCollector(
   collectEdges: (edgeList: GraphEdge[] | undefined) => void;
 } {
   const edgeMap = new Map<string, GraphEdge>();
+  const scopeByTransfer = new Map<string, 'turn' | 'conversation'>();
   const agentsToProcess = new Set<string>();
 
   const collectEdges = (edgeList: GraphEdge[] | undefined): void => {
@@ -244,6 +258,19 @@ export function createEdgeCollector(
       return;
     }
     for (const edge of edgeList) {
+      if (edge.edgeType === 'direct' && edge.handoffScope != null) {
+        throw new Error('Only handoff edges may set handoffScope');
+      }
+      if (edge.edgeType !== 'direct') {
+        const scope = edge.handoffScope ?? 'turn';
+        for (const toolKey of getHandoffTransferKeys(edge)) {
+          const previous = scopeByTransfer.get(toolKey);
+          if (previous != null && previous !== scope) {
+            throw new Error('Conflicting handoff scopes for the same transfer tool');
+          }
+          scopeByTransfer.set(toolKey, scope);
+        }
+      }
       const key = getEdgeKey(edge);
       if (!edgeMap.has(key)) {
         edgeMap.set(key, edge);

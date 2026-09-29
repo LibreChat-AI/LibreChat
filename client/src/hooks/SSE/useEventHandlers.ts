@@ -55,6 +55,7 @@ import {
 } from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
+import { keepNewerAgentRouting } from '~/components/Chat/Handoffs/state';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
@@ -1163,8 +1164,12 @@ export default function useEventHandlers({
          *  generating before the Stop, so the local one stays in sync. */
         if (setConversation && isAddedRequest !== true) {
           setConversation((prevState) => {
-            const update = keepLocalCodeApprovalMode(
-              { ...prevState, ...(conversation as TConversation) },
+            const update = keepNewerAgentRouting(
+              keepLocalCodeApprovalMode(
+                { ...prevState, ...(conversation as TConversation) },
+                prevState,
+                conversation.conversationId,
+              ),
               prevState,
               conversation.conversationId,
             );
@@ -1179,9 +1184,17 @@ export default function useEventHandlers({
               queryClient.setQueryData<TConversation>(
                 [QueryKeys.conversation, conversation.conversationId],
                 (cachedConvo) => {
-                  const merged = keepLocalCodeApprovalMode(
-                    { ...cachedConvo, ...serverConversation } as TConversation,
-                    prevState?.conversationId === conversation.conversationId
+                  const merged = keepNewerAgentRouting(
+                    keepLocalCodeApprovalMode(
+                      { ...cachedConvo, ...serverConversation } as TConversation,
+                      prevState?.conversationId === conversation.conversationId
+                        ? prevState
+                        : cachedConvo,
+                      conversation.conversationId,
+                    ),
+                    prevState?.conversationId === conversation.conversationId &&
+                      (prevState.agentRoutingRevision ?? 0) >
+                        (cachedConvo?.agentRoutingRevision ?? 0)
                       ? prevState
                       : cachedConvo,
                     conversation.conversationId,

@@ -71,6 +71,12 @@ const mockGetMessages = jest.fn();
 const mockSaveMessage = jest.fn();
 const mockSaveConvo = jest.fn();
 const mockAppendConvoMessageReference = jest.fn();
+const mockAdmitConvoAgentRoutingGeneration = jest.fn();
+const mockGetConvoAgentRoutingDecision = jest.fn();
+const mockCommitConvoAgentHandoff = jest.fn();
+const mockFinishConvoAgentRoutingGeneration = jest.fn();
+const mockGetAgent = jest.fn();
+const mockCheckPermission = jest.fn();
 const mockIsAgentTriggerPrincipalActive = jest.fn();
 const mockIsSubagentOwnerAdmissible = jest.fn();
 const mockAcquireEventChildGenerationLease = jest.fn();
@@ -283,6 +289,9 @@ jest.mock('@librechat/api', () => ({
   recoverTurnMessageReference: jest.requireActual('@librechat/api').recoverTurnMessageReference,
   resolveConversationAnchor: jest.requireActual('@librechat/api').resolveConversationAnchor,
   resolveRunCodeWorkspaces: jest.requireActual('@librechat/api').resolveRunCodeWorkspaces,
+  resolveAgentHandoffStartup: jest.requireActual('@librechat/api').resolveAgentHandoffStartup,
+  createAgentHandoffLifecycle: jest.requireActual('@librechat/api').createAgentHandoffLifecycle,
+  resolveRequestTenantId: jest.requireActual('@librechat/api').resolveRequestTenantId,
   AttachmentStorageError: jest.requireActual('@librechat/api').AttachmentStorageError,
   encodeAndFormatImages: jest.requireActual('@librechat/api').encodeAndFormatImages,
   getCodeWorkspaceSelectionErrorDetails:
@@ -385,6 +394,11 @@ jest.mock('~/models', () => ({
   appendConvoMessageReference: (...args) => mockAppendConvoMessageReference(...args),
   getMessages: (...args) => mockGetMessages(...args),
   getConvo: (...args) => mockGetConvo(...args),
+  getAgent: (...args) => mockGetAgent(...args),
+  admitConvoAgentRoutingGeneration: (...args) => mockAdmitConvoAgentRoutingGeneration(...args),
+  getConvoAgentRoutingDecision: (...args) => mockGetConvoAgentRoutingDecision(...args),
+  commitConvoAgentHandoff: (...args) => mockCommitConvoAgentHandoff(...args),
+  finishConvoAgentRoutingGeneration: (...args) => mockFinishConvoAgentRoutingGeneration(...args),
   getAgentEventActorSnapshot: (...args) => mockGetAgentEventActorSnapshot(...args),
   commitAgentEventActorState: (...args) => mockCommitAgentEventActorState(...args),
   beginAgentEventActorLegacyTurn: (...args) => mockBeginAgentEventActorLegacyTurn(...args),
@@ -403,6 +417,10 @@ jest.mock('~/models', () => ({
   settleAgentEventActorSuspension: (...args) => mockSettleAgentEventActorSuspension(...args),
   isAgentTriggerPrincipalActive: (...args) => mockIsAgentTriggerPrincipalActive(...args),
   isSubagentOwnerAdmissible: (...args) => mockIsSubagentOwnerAdmissible(...args),
+}));
+
+jest.mock('~/server/services/PermissionService', () => ({
+  checkPermission: (...args) => mockCheckPermission(...args),
 }));
 
 jest.mock('~/server/services/Endpoints/agents/eventChildLease', () => ({

@@ -1,0 +1,69 @@
+# Local-only proof. No cloud exporter, credentials or externally reachable listener.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+  otlp/agents:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4319
+        traces_url_path: /api/public/otel/v1/traces
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 128
+    spike_limit_mib: 32
+  transform/privacy:
+    error_mode: propagate
+    trace_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.version"])
+      - context: span
+        statements:
+          - keep_keys(attributes, ["db.system", "db.operation", "db.operation.name", "http.method", "http.request.method", "http.status_code", "http.response.status_code", "langfuse.observation.type", "librechat.stream.end_reason", "librechat.stream.completed", "librechat.stream.resume", "librechat.stream.final_event_written", "librechat.stream.time_to_first_chunk_ms", "librechat.stream.duration_ms", "librechat.stream.chunk_count"])
+          - set(name, "operation")
+          - set(name, attributes["db.system"]) where attributes["db.system"] != nil
+          - set(name, attributes["langfuse.observation.type"]) where attributes["langfuse.observation.type"] != nil
+          - set(status.message, "")
+      - context: spanevent
+        statements:
+          - set(name, "event")
+          - keep_keys(attributes, [])
+    log_statements:
+      - context: resource
+        statements:
+          - keep_keys(attributes, ["service.name", "service.version"])
+      - context: log
+        statements:
+          - set(body, "[pilot log body omitted]")
+          - keep_keys(attributes, [])
+  resource/pilot:
+    attributes:
+      - { key: service.namespace, value: librechat-dev, action: upsert }
+      - { key: developer.id, value: '${env:PILOT_DEVELOPER}', action: upsert }
+      - { key: vcs.ref.head.name, value: '${env:PILOT_BRANCH}', action: upsert }
+      - { key: vcs.ref.head.revision, value: '${env:PILOT_COMMIT}', action: upsert }
+      - { key: test.run.id, value: '${env:PILOT_RUN_ID}', action: upsert }
+      - { key: test.cache.mode, value: '${env:PILOT_MODE}', action: upsert }
+  batch:
+    timeout: 1s
+    send_batch_size: 64
+exporters:
+  file/traces:
+    path: /evidence/traces.jsonl
+    flush_interval: 1s
+  file/logs:
+    path: /evidence/logs.jsonl
+    flush_interval: 1s
+service:
+  pipelines:
+    traces:
+      receivers: [otlp, otlp/agents]
+      processors: [memory_limiter, transform/privacy, resource/pilot, batch]
+      exporters: [file/traces]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/privacy, resource/pilot, batch]
+      exporters: [file/logs]

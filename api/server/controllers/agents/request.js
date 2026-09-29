@@ -52,6 +52,9 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   getFailedTurnTraceFields,
   resolveFailedTurnContent,
+  resolveRequestTenantId,
+  resolveAgentHandoffStartup,
+  createAgentHandoffLifecycle,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -59,6 +62,7 @@ const {
   cleanupMCPRequestContextForReq,
 } = require('~/server/services/MCPRequestContext');
 const { logViolation } = require('~/cache');
+const { checkPermission } = require('~/server/services/PermissionService');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
 const {
   saveMessage,
@@ -86,6 +90,11 @@ const {
   isAgentTriggerPrincipalActive,
   isSubagentOwnerAdmissible,
   appendConvoMessageReference,
+  admitConvoAgentRoutingGeneration,
+  getConvoAgentRoutingDecision,
+  commitConvoAgentHandoff,
+  finishConvoAgentRoutingGeneration,
+  getAgent,
 } = require('~/models');
 const {
   acquireEventChildGenerationLease,
@@ -1588,6 +1597,27 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
+    const initialAgentId = endpointOption?.agent_id ?? req.body?.agent_id;
+    const handoffConfig = req.config?.endpoints?.[EModelEndpoint.agents]?.conversationHandoffs;
+    const handoffRun = resolveAgentHandoffStartup({
+      agentId: initialAgentId,
+      endpoint: endpointOption?.endpoint,
+      config: handoffConfig,
+      expectedRevision: req._agentHandoffSelection?.revision,
+      scheduled: isScheduledFire,
+      trigger: req._isAgentTrigger,
+      recovered: isRecoveredSteerRequest,
+      temporary: req.resolvedConversation?.isTemporary ?? req.body?.isTemporary,
+      regenerate: isRegenerate,
+      continued: isContinued,
+      editedContent,
+      overrideParentMessageId,
+      editedResponseMessageId,
+      overrideConversationId: req.body?.overrideConvoId,
+      compaction: isCompaction,
+      addedConversation: req.body?.addedConvo,
+      modelSpecEnforced: req.config?.modelSpecs?.enforce,
+    });
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
       : getPreliminaryUserMessage(
@@ -1622,6 +1652,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         // Persist the originating agent so a HITL resume can refuse to rebuild this
         // paused run on a different agent (see resume.js).
         agent_id: endpointOption.agent_id ?? req.body?.agent_id,
+        ...(handoffRun == null ? {} : { agentHandoffRun: handoffRun }),
         // Persist temporary-chat state so a HITL resume keeps the resumed response
         // non-persisted instead of trusting the resume request to re-send the flag.
         isTemporary:
@@ -1682,6 +1713,28 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     startupTelemetry?.mark('job_created');
     generationProtocolVersion = negotiateExistingGenerationProtocol(req, job);
     jobCreatedAt = job.createdAt; // Capture creation time to detect job replacement
+    req._agentHandoffRun = handoffRun;
+    const handoffLifecycle = createAgentHandoffLifecycle(
+      {
+        identity: { user: userId, conversationId, tenantId: resolveRequestTenantId(req) ?? null },
+        agentId: initialAgentId,
+        generation: jobCreatedAt,
+        role: req.user.role,
+        enabled: handoffConfig?.enabled === true,
+        snapshot: handoffRun,
+        selectedAgentId: req._agentHandoffSelection?.agentId,
+      },
+      {
+        admit: admitConvoAgentRoutingGeneration,
+        read: getConvoAgentRoutingDecision,
+        commit: commitConvoAgentHandoff,
+        finish: finishConvoAgentRoutingGeneration,
+        getAgent,
+        checkPermission,
+        updateMetadata: (id, value, epoch) => GenerationJobManager.updateMetadata(id, value, epoch),
+        getJob: (id) => GenerationJobManager.getJob(id),
+      },
+    );
     req.turnStartedAt = jobCreatedAt;
     providerExecutionId = job.metadata?.providerExecutionId;
 
@@ -2110,6 +2163,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
        *  instead leaves the database on "New Chat" for the whole run, and every
        *  reader without the live stream reads that. */
       convoSignal.observeMessageWrite(data.userMessagePromise);
+      req._agentHandoffReady = handoffLifecycle.begin(
+        data.userMessagePromise,
+        client?.shouldDeferUserMessagePersistence?.() === true,
+        client?.options?.agent?.id,
+      );
       // conversationId is pre-generated, no need to update from callback
     };
 
@@ -3100,6 +3158,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
         let terminalPublicationStarted = false;
         try {
+          const terminalHandoff = await handoffLifecycle.complete({
+            ready: req._agentHandoffReady,
+            run: client?.run,
+            status: terminalClaim.status,
+            unfinished: responseIsUnfinished,
+            responseError: response?.error,
+            responseContent: response?.content,
+            conversation,
+          });
           const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
           const finalEvent = {
             final: true,
@@ -3114,6 +3181,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               }),
             },
             ...(pendingSteers.length > 0 && { pendingSteers }),
+            ...(terminalHandoff == null ? {} : { handoffSwitch: terminalHandoff }),
           };
 
           logger.debug(

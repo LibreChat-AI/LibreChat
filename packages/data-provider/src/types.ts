@@ -675,6 +675,8 @@ export type TConfig = {
     /** Approval modes the endpoint policy permits the client to offer. */
     approvalModes?: CodeApprovalMode[];
   };
+  /** Builder and conversation UI may offer permanent handoffs only when deployed. */
+  conversationHandoffsEnabled?: boolean;
   /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
   maxSubagents?: number;
   fileSharing?: TAgentsEndpoint['fileSharing'];

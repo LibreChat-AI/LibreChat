@@ -15,6 +15,56 @@ import {
   validateAgentModel,
 } from './validation';
 
+describe('agent handoff scope validation', () => {
+  const edge = { from: 'agent_router', to: 'agent_worker', edgeType: 'handoff' as const };
+
+  it('preserves an explicit conversation scope and the omitted turn-only default', () => {
+    expect(
+      agentCreateSchema.parse({
+        provider: 'openAI',
+        model: 'gpt-4o-mini',
+        edges: [
+          { ...edge, handoffScope: 'conversation' },
+          { ...edge, to: 'agent_other' },
+        ],
+      }).edges,
+    ).toEqual([
+      { ...edge, handoffScope: 'conversation' },
+      { ...edge, to: 'agent_other' },
+    ]);
+  });
+
+  it('rejects conflicting scopes during authoring, including a grouped source', () => {
+    for (const conflicting of [
+      { ...edge, handoffScope: 'turn' as const },
+      { ...edge, from: ['agent_router', 'agent_peer'], handoffScope: 'turn' as const },
+    ]) {
+      const edges = [{ ...edge, handoffScope: 'conversation' as const }, conflicting];
+      expect(
+        agentCreateSchema.safeParse({ provider: 'openAI', model: 'gpt-4o-mini', edges }).success,
+      ).toBe(false);
+      expect(agentUpdateSchema.safeParse({ edges }).success).toBe(false);
+    }
+  });
+
+  it('rejects invalid scopes and scopes on direct edges for create and update', () => {
+    for (const unsafeEdge of [
+      { ...edge, handoffScope: 'forever' },
+      { ...edge, edgeType: 'direct', handoffScope: 'conversation' },
+      { ...edge, edgeType: 'direct', handoffScope: 'turn' },
+    ]) {
+      expect(
+        agentCreateSchema.safeParse({
+          provider: 'openAI',
+          model: 'gpt-4o-mini',
+          edges: [unsafeEdge],
+        }).success,
+      ).toBe(false);
+      expect(agentUpdateSchema.safeParse({ edges: [unsafeEdge] }).success).toBe(false);
+    }
+  });
+});
+
 describe('agent Git identity validation', () => {
   const base = { provider: 'openAI', model: 'gpt-4o-mini', tools: [] };
 

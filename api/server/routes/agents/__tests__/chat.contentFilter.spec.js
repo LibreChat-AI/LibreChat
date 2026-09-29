@@ -17,6 +17,7 @@ jest.mock('@librechat/api', () => ({
   generateCheckAccess: jest.fn(() => (_req, _res, next) => next()),
   skipAgentCheck: jest.fn(),
   applyResumeContext: jest.fn(),
+  createAgentRoutingMiddleware: jest.fn(() => (_req, _res, next) => next()),
   GenerationJobManager: {
     getJob: jest.fn(),
   },

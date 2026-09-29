@@ -55,6 +55,26 @@ describe('agent model response timeouts', () => {
   });
 });
 
+describe('conversation handoff configuration', () => {
+  it('keeps existing turn-only routing and budgets unless explicitly enabled', () => {
+    expect(agentsEndpointSchema.parse({}).conversationHandoffs).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ conversationHandoffs: {} }).conversationHandoffs).toEqual({
+      enabled: false,
+      maxHandoffs: 10,
+    });
+    expect(
+      agentsEndpointSchema.parse({ conversationHandoffs: { enabled: true, maxHandoffs: 20 } })
+        .conversationHandoffs,
+    ).toEqual({ enabled: true, maxHandoffs: 20 });
+  });
+
+  it.each([0, -1, 1.5, 101, '10'])('rejects an invalid handoff budget: %s', (maxHandoffs) => {
+    expect(agentsEndpointSchema.safeParse({ conversationHandoffs: { maxHandoffs } }).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('repository instruction configuration', () => {
   it('defaults optional reads to two seconds and bounds operator overrides', () => {
     expect(agentsEndpointSchema.parse({}).repositoryInstructions).toBeUndefined();
