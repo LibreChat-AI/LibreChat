@@ -482,8 +482,10 @@ export function sendResponsesErrorResponse(
 /**
  * Generate a unique response ID
  */
+export const RESPONSE_ID_PREFIX = 'resp_';
+
 export function generateResponseId(): string {
-  return `resp_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
+  return `${RESPONSE_ID_PREFIX}${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
 }
 
 /**
@@ -625,6 +627,8 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
   handlers: Record<string, { handle: (event: string, data: unknown) => void }>;
   state: StreamState;
   finalizeStream: (usage?: Usage) => void;
+  prepareStream: () => void;
+  completeStream: (usage?: Usage) => void;
   emitClientToolDeferral: (callId: string, output: string) => void;
 } {
   const state: StreamState = {
@@ -955,7 +959,7 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
   /**
    * Finalize the stream - close open items and emit completed
    */
-  const finalizeStream = (usage?: Usage): void => {
+  const prepareStream = (): void => {
     closeOpenStreams();
     for (const [callId, output] of pendingClientToolDeferrals ?? []) {
       deliverClientToolDeferral(callId, output);
@@ -963,11 +967,17 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
     // A later step can announce a sibling before its arguments or deferral
     // are settled. Only terminate handoffs after the run has completed.
     closeOpenClientToolCalls();
+  };
+  const completeStream = (usage?: Usage): void => {
     emitResponseCompleted(config, usage);
     writeDone(config.res);
   };
+  const finalizeStream = (usage?: Usage): void => {
+    prepareStream();
+    completeStream(usage);
+  };
 
-  return { handlers, state, finalizeStream, emitClientToolDeferral };
+  return { handlers, state, finalizeStream, prepareStream, completeStream, emitClientToolDeferral };
 }
 
 /* =============================================================================

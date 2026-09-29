@@ -81,6 +81,32 @@ describe('response usage aggregation', () => {
     expect(response.usage).toEqual(usage);
   });
 
+  it('prepares final text without publishing completion until storage succeeds', () => {
+    const writes: string[] = [];
+    const res = {
+      write: (chunk: string) => {
+        writes.push(chunk);
+      },
+    } as unknown as ServerResponse;
+    const tracker = createResponseTracker();
+    const { handlers, prepareStream, completeStream } = createResponsesEventHandlers({
+      res,
+      context,
+      tracker,
+    });
+    handlers.on_message_delta.handle('on_message_delta', {
+      delta: { content: [{ type: 'text', text: 'saved answer' }] },
+    });
+    prepareStream();
+    expect(buildResponse(context, tracker, 'completed').output).toEqual([
+      expect.objectContaining({ content: [expect.objectContaining({ text: 'saved answer' })] }),
+    ]);
+    expect(writes.join('')).not.toContain('response.completed');
+    completeStream();
+    expect(writes.join('')).toContain('response.completed');
+    expect(writes[writes.length - 1]).toBe('data: [DONE]\n\n');
+  });
+
   it('uses the normalized override in the completed streaming event', () => {
     const writes: string[] = [];
     const res = {

@@ -63,6 +63,9 @@ const {
   writeDone,
   buildResponse,
   generateResponseId,
+  resolveStoredResponse,
+  selectStoredResponseHistory,
+  emitResponseFailed,
   isValidationFailure,
   emitResponseCreated,
   createResponseContext,
@@ -319,17 +322,16 @@ function extractResponseRequestContent(request, messageFragments) {
 /**
  * Load messages from a previous response/conversation
  * @param {string} conversationId - The conversation/response ID
- * @param {string} userId - The user ID
+ * @param {string} userId - The authenticated user ID
+ * @param {string} [responseId] - Bound the history to this stored reply
  * @returns {Promise<Array>} Messages from the conversation
  */
-async function loadPreviousMessages(conversationId, userId) {
+async function loadPreviousMessages(conversationId, userId, responseId) {
   try {
-    const messages = await db.getMessages({ conversationId, user: userId });
-    if (!messages || messages.length === 0) {
-      return [];
-    }
-
-    // Convert stored messages to internal format
+    const messages = selectStoredResponseHistory(
+      (await db.getMessages({ conversationId, user: userId })) ?? [],
+      responseId,
+    );
     return messages.map((msg) => {
       let text;
       if (typeof msg.text === 'string') {
@@ -358,23 +360,23 @@ async function loadPreviousMessages(conversationId, userId) {
     });
   } catch (error) {
     logger.error('[Responses API] Error loading previous messages:', getSafeErrorMetadata(error));
-    return [];
+    throw new Error('Failed to load previous response history');
   }
 }
 
 /**
  * Save input messages to database
- * @param {import('express').Request} req
+ * @param {{userId: string}} messageContext
  * @param {string} conversationId
  * @param {Array} inputMessages - Internal format messages
  * @param {string} agentId
  * @returns {Promise<void>}
  */
-async function saveInputMessages(req, conversationId, inputMessages, agentId) {
+async function saveInputMessages(messageContext, conversationId, inputMessages, agentId) {
   for (const msg of inputMessages) {
     if (msg.role === 'user') {
-      await db.saveMessage(
-        req,
+      const saved = await db.saveMessage(
+        messageContext,
         {
           messageId: msg.messageId || nanoid(),
           conversationId,
@@ -387,6 +389,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
         },
         { context: 'Responses API - save user input' },
       );
+      if (!saved) throw new Error('Failed to store response input');
     }
   }
 }
@@ -394,6 +397,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
 /**
  * Save response output to database
  * @param {import('express').Request} req
+ * @param {{userId: string}} messageContext
  * @param {string} conversationId
  * @param {string} responseId
  * @param {import('@librechat/api').Response} response
@@ -403,6 +407,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  */
 async function saveResponseOutput(
   req,
+  messageContext,
   conversationId,
   responseId,
   response,
@@ -424,8 +429,8 @@ async function saveResponseOutput(
   const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
 
   // Save the assistant message
-  return db.saveMessage(
-    req,
+  const saved = await db.saveMessage(
+    messageContext,
     {
       messageId: responseId,
       conversationId,
@@ -436,11 +441,13 @@ async function saveResponseOutput(
       sender: 'Agent',
       endpoint: EModelEndpoint.agents,
       model: agentId,
-      finish_reason: response.status === 'completed' ? 'stop' : response.status,
+      finish_reason: response.status === 'completed' ? 'pending_storage' : response.status,
       tokenCount: visibleOutputTokens ?? response.usage?.output_tokens,
     },
     { context: 'Responses API - save assistant response' },
   );
+  if (!saved) throw new Error('Failed to store response output');
+  return saved;
 }
 
 /**
@@ -454,7 +461,7 @@ async function saveResponseOutput(
  */
 async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
   const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
-  await db.saveConvo(
+  const saved = await db.saveConvo(
     {
       userId: req?.user?.id,
       isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
@@ -478,6 +485,7 @@ async function saveConversation(req, conversationId, agentId, agent, codeEnviron
       initialAgentId: agent?.id === agentId ? agentId : null,
     },
   );
+  if (!saved) throw new Error('Failed to store response conversation');
 }
 
 /**
@@ -645,7 +653,39 @@ const executeResponse = async (envelope, { req, res }) => {
     `[Responses API] Request ${responseId} started for agent ${agentId}, stream: ${isStreaming}`,
   );
 
-  const conversationId = request.previous_response_id ?? uuidv4();
+  let previousResponse;
+  if (request.previous_response_id != null) {
+    if (typeof request.previous_response_id !== 'string') {
+      return sendResponsesErrorResponse(
+        res,
+        400,
+        'previous_response_id must be a string',
+        'invalid_request',
+      );
+    }
+    try {
+      previousResponse = await resolveStoredResponse(
+        principal.userId,
+        request.previous_response_id,
+        db,
+      );
+    } catch (error) {
+      logger.error(
+        '[Responses API] Error resolving previous response:',
+        getSafeErrorMetadata(error),
+      );
+      return sendResponsesErrorResponse(
+        res,
+        500,
+        'Failed to load previous response',
+        'server_error',
+      );
+    }
+    if (!previousResponse) {
+      return sendResponsesErrorResponse(res, 404, 'Response not found', 'not_found');
+    }
+  }
+  const conversationId = previousResponse?.conversation.conversationId ?? uuidv4();
   /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
   const artifactPromises = [];
   let artifactWritesCovered = false;
@@ -689,24 +729,9 @@ const executeResponse = async (envelope, { req, res }) => {
       return handleExecutionError({ error, res, appConfig });
     },
     execute: async (execution) => {
-      if (request.previous_response_id != null) {
-        if (typeof request.previous_response_id !== 'string') {
-          return sendResponsesErrorResponse(
-            res,
-            400,
-            'previous_response_id must be a string',
-            'invalid_request',
-          );
-        }
-        const previousConversation = await db.getConvo(
-          principal.userId,
-          request.previous_response_id,
-        );
-        if (!previousConversation) {
-          return sendResponsesErrorResponse(res, 404, 'Conversation not found', 'not_found');
-        }
-        req.resolvedConversation = previousConversation;
-        if (previousConversation.subagentThread != null) {
+      if (previousResponse) {
+        req.resolvedConversation = previousResponse.conversation;
+        if (previousResponse.conversation.subagentThread != null) {
           return sendResponsesErrorResponse(
             res,
             409,
@@ -728,6 +753,12 @@ const executeResponse = async (envelope, { req, res }) => {
         });
       req.resolvedConversation = admittedConversation;
       const parentMessageId = null;
+      const messageContext = {
+        userId: principal.userId,
+        isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+        expiredAt: req?.resolvedConversation?.expiredAt,
+        interfaceConfig: req?.config?.interfaceConfig,
+      };
       const mcpRequestBody = createMCPRuntimeRequestBody({
         messageId: responseId,
         conversationId,
@@ -739,10 +770,17 @@ const executeResponse = async (envelope, { req, res }) => {
         agentsEConfig?.backgroundTasks?.ordinaryToolCancellation === true;
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
-      const previousMessages = request.previous_response_id
-        ? await loadPreviousMessages(request.previous_response_id, principal.userId)
+      const previousMessages = previousResponse
+        ? await loadPreviousMessages(
+            conversationId,
+            principal.userId,
+            previousResponse.message?.messageId,
+          )
         : [];
-      if (request.previous_response_id) {
+      if (previousResponse?.message && previousMessages.length === 0) {
+        return sendResponsesErrorResponse(res, 404, 'Response not found', 'not_found');
+      }
+      if (previousResponse) {
         assertModelBoundContent({
           onTraversalFailure: reportLocatorTraversalFailure,
           filters: appConfig?.filters,
@@ -1205,7 +1243,8 @@ const executeResponse = async (envelope, { req, res }) => {
         // Create event handlers
         const {
           handlers: responsesHandlers,
-          finalizeStream,
+          prepareStream,
+          completeStream,
           emitClientToolDeferral,
         } = createResponsesEventHandlers(handlerConfig);
 
@@ -1396,52 +1435,66 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const usage = buildResponsesUsage(collectedUsage);
 
-        // Finalize the stream
-        finalizeStream(usage);
-        res.end();
-
-        const duration = Date.now() - requestStartTime;
-        logger.debug(
-          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
-        );
-
-        // Save to database if store: true
+        // Seal output items before storing their final text; do not publish success until durable.
+        prepareStream();
         if (request.store === true) {
           try {
-            // Save conversation
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            // Save input messages
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            // Build response for saving (use tracker with buildResponse for streaming)
+            await saveInputMessages(messageContext, conversationId, inputMessages, agentId);
             const finalResponse = buildResponse(context, tracker, 'completed');
             const savedResponse = await saveResponseOutput(
               req,
+              messageContext,
               conversationId,
               responseId,
               finalResponse,
               agentId,
               tracker.usage.outputTokens,
             );
-            await announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: {
-                ...savedResponse,
-                isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-              },
-              context: 'Responses API - announce stored reply',
+            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+            await db.updateMessage(principal.userId, {
+              messageId: responseId,
+              finish_reason: 'stop',
             });
+            try {
+              await announceReply(db, {
+                userId: req?.user?.id,
+                conversationId,
+                reply: {
+                  ...savedResponse,
+                  finish_reason: 'stop',
+                  isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+                },
+                context: 'Responses API - announce stored reply',
+              });
+            } catch (announceError) {
+              logger.warn(
+                '[Responses API] Failed to announce stored reply:',
+                getSafeErrorMetadata(announceError),
+              );
+            }
 
             logger.debug(
               `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
             );
           } catch (saveError) {
             logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
+            emitResponseFailed(handlerConfig, {
+              type: 'server_error',
+              message: 'Failed to store response',
+              code: 'response_storage_failed',
+            });
+            writeDone(res);
+            res.end();
+            return;
           }
         }
+        completeStream(usage);
+        res.end();
+
+        const duration = Date.now() - requestStartTime;
+        logger.debug(
+          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
+        );
 
         // The HTTP response is complete, while destructive cleanup still waits for artifacts.
         if (artifactPromises.length > 0) {
@@ -1655,34 +1708,51 @@ const executeResponse = async (envelope, { req, res }) => {
 
         if (request.store === true) {
           try {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
+            await saveInputMessages(messageContext, conversationId, inputMessages, agentId);
             const savedResponse = await saveResponseOutput(
               req,
+              messageContext,
               conversationId,
               responseId,
               response,
               agentId,
               aggregator.usage.outputTokens,
             );
-            await announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: {
-                ...savedResponse,
-                isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-              },
-              context: 'Responses API - announce stored reply',
+            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+            await db.updateMessage(principal.userId, {
+              messageId: responseId,
+              finish_reason: 'stop',
             });
+            try {
+              await announceReply(db, {
+                userId: req?.user?.id,
+                conversationId,
+                reply: {
+                  ...savedResponse,
+                  finish_reason: 'stop',
+                  isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+                },
+                context: 'Responses API - announce stored reply',
+              });
+            } catch (announceError) {
+              logger.warn(
+                '[Responses API] Failed to announce stored reply:',
+                getSafeErrorMetadata(announceError),
+              );
+            }
 
             logger.debug(
               `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
             );
           } catch (saveError) {
             logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
+            return sendResponsesErrorResponse(
+              res,
+              500,
+              'Failed to store response',
+              'server_error',
+              'response_storage_failed',
+            );
           }
         }
 
@@ -1794,7 +1864,7 @@ const listModels = async (req, res) => {
  * Get Response - GET /v1/responses/:id
  *
  * Retrieves a stored response by its ID.
- * The response ID maps to a conversationId in LibreChat's storage.
+ * The response ID identifies the stored assistant message in its owning conversation.
  *
  * @param {import('express').Request} req
  * @param {import('express').Response} res
@@ -1808,11 +1878,8 @@ const getResponse = async (req, res) => {
       return sendResponsesErrorResponse(res, 400, 'Response ID is required');
     }
 
-    // The responseId could be either the response ID or the conversation ID
-    // Try to find a conversation with this ID
-    const conversation = await db.getConvo(userId, responseId);
-
-    if (!conversation) {
+    const stored = await resolveStoredResponse(userId, responseId, db);
+    if (!stored) {
       return sendResponsesErrorResponse(
         res,
         404,
@@ -1822,8 +1889,14 @@ const getResponse = async (req, res) => {
       );
     }
 
-    // Load messages for this conversation
-    const messages = await db.getMessages({ conversationId: responseId, user: userId });
+    const { conversation, message } = stored;
+    // A response ID returns that one reply; conversation-ID reads retain the legacy view.
+    const messages = message
+      ? [message]
+      : selectStoredResponseHistory(
+          (await db.getMessages({ conversationId: conversation.conversationId, user: userId })) ??
+            [],
+        );
 
     if (!messages || messages.length === 0) {
       return sendResponsesErrorResponse(
@@ -1839,7 +1912,7 @@ const getResponse = async (req, res) => {
     const output = convertMessagesToOutputItems(messages);
 
     // Find the last assistant message for usage info
-    const lastAssistantMessage = messages.filter((m) => !m.isCreatedByUser).pop();
+    const lastAssistantMessage = message ?? messages.filter((m) => !m.isCreatedByUser).pop();
 
     // Build the response object
     const response = {
@@ -1886,12 +1959,7 @@ const getResponse = async (req, res) => {
     res.json(response);
   } catch (error) {
     logger.error('[Responses API] Error getting response:', getSafeErrorMetadata(error));
-    sendResponsesErrorResponse(
-      res,
-      500,
-      error instanceof Error ? error.message : 'Failed to get response',
-      'server_error',
-    );
+    sendResponsesErrorResponse(res, 500, 'Failed to get response', 'server_error');
   }
 };
 

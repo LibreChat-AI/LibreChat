@@ -157,6 +157,8 @@ export {
   updateTrackerUsage,
 } from './handlers';
 
+export { resolveStoredResponse, selectStoredResponseHistory } from './storage';
+
 // Service
 export {
   // Validation
@@ -170,6 +172,7 @@ export {
   sendResponsesErrorResponse,
   // Context
   generateResponseId,
+  RESPONSE_ID_PREFIX,
   createResponseContext,
   // Streaming setup
   setupStreamingResponse,

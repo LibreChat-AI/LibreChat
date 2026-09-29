@@ -311,6 +311,7 @@ jest.mock('@librechat/api', () => ({
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
   CHILD_THREAD_READ_ONLY_ERROR:
     'This subagent thread is view-only. Continue it from its parent agent or create a separate chat.',
+  announceReply: jest.fn().mockResolvedValue(undefined),
   getLangfuseTraceMessageFields: jest.fn().mockResolvedValue({
     langfuseSampled: true,
     langfuseDestinationIds: ['destination-1'],
@@ -333,6 +334,10 @@ jest.mock('@librechat/api', () => ({
   writeDone: jest.fn(),
   buildResponse: jest.fn().mockReturnValue({ id: 'resp_123', output: [] }),
   generateResponseId: jest.fn().mockReturnValue('resp_mock-123'),
+  resolveStoredResponse: (...args) =>
+    jest.requireActual('@librechat/api').resolveStoredResponse(...args),
+  selectStoredResponseHistory: (...args) =>
+    jest.requireActual('@librechat/api').selectStoredResponseHistory(...args),
   isValidationFailure: jest.fn().mockReturnValue(false),
   inspectContent: mockInspectContent,
   extractConversationTitleContent: jest.fn(({ title }) => [
@@ -402,7 +407,10 @@ jest.mock('@librechat/api', () => ({
       on_chat_model_end: { handle: jest.fn() },
     },
     finalizeStream: jest.fn(),
+    prepareStream: jest.fn(),
+    completeStream: jest.fn(),
   }),
+  emitResponseFailed: jest.fn(),
   createAggregatorEventHandlers: jest.fn().mockReturnValue({
     on_message_delta: { handle: jest.fn() },
     on_reasoning_delta: { handle: jest.fn() },
@@ -543,6 +551,8 @@ jest.mock('~/models', () => ({
   getFiles: jest.fn(),
   getUserKey: jest.fn(),
   getMessages: jest.fn().mockResolvedValue([]),
+  getMessage: jest.fn().mockResolvedValue(null),
+  updateMessage: jest.fn().mockResolvedValue({}),
   saveMessage: jest.fn().mockResolvedValue({}),
   updateFilesUsage: jest.fn(),
   getUserKeyValues: jest.fn(),
@@ -1036,7 +1046,7 @@ describe('createResponse controller', () => {
 
     expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123');
     expect(saveMessage).toHaveBeenCalledWith(
-      req,
+      expect.objectContaining({ userId: 'user-123' }),
       expect.objectContaining({
         messageId: 'resp_mock-123',
         isCreatedByUser: false,
@@ -1470,10 +1480,10 @@ describe('createResponse controller', () => {
           model: 'agent-123',
           input: 'Hello',
           stream: false,
-          previous_response_id: 'resp_imported',
+          previous_response_id: 'previous-imported',
         },
       });
-      db.getConvo.mockResolvedValueOnce({ conversationId: 'resp_imported', user: 'user-123' });
+      db.getConvo.mockResolvedValueOnce({ conversationId: 'previous-imported', user: 'user-123' });
       db.getMessages.mockResolvedValueOnce([storedMessage]);
       api.assertModelBoundContent.mockImplementationOnce(({ storedMessages }) => {
         expect(storedMessages).toEqual([
@@ -1527,11 +1537,11 @@ describe('createResponse controller', () => {
           model: 'agent-123',
           input: 'Hello',
           stream: false,
-          previous_response_id: 'resp_path_marked',
+          previous_response_id: 'previous-path-marked',
         },
       });
       db.getConvo.mockResolvedValueOnce({
-        conversationId: 'resp_path_marked',
+        conversationId: 'previous-path-marked',
         user: 'user-123',
       });
       db.getMessages.mockResolvedValueOnce([
@@ -1583,11 +1593,11 @@ describe('createResponse controller', () => {
           model: 'agent-123',
           input: 'Hello',
           stream: false,
-          previous_response_id: 'resp_neighboring_model_output',
+          previous_response_id: 'previous-neighboring-model-output',
         },
       });
       db.getConvo.mockResolvedValueOnce({
-        conversationId: 'resp_neighboring_model_output',
+        conversationId: 'previous-neighboring-model-output',
         user: 'user-123',
       });
       db.getMessages.mockResolvedValueOnce([
@@ -2040,6 +2050,328 @@ describe('createResponse controller', () => {
     });
   });
 
+  describe('stored Responses round trip', () => {
+    it.each([false, true])(
+      'POST store:true → GET response ID → POST previous_response_id (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        const controller = require('../responses');
+        const messages = [];
+        const conversations = new Map();
+        const order = [];
+        const originals = [
+          db.getMessage,
+          db.getConvo,
+          db.getMessages,
+          db.saveMessage,
+          db.saveConvo,
+          db.updateMessage,
+        ].map((mock) => [mock, mock.getMockImplementation()]);
+        const originalHandlers = api.createResponsesEventHandlers.getMockImplementation();
+        db.getMessage.mockImplementation(
+          async ({ user, messageId }) =>
+            messages.find((message) => message.user === user && message.messageId === messageId) ??
+            null,
+        );
+        db.getConvo.mockImplementation(async (user, id) => {
+          const convo = conversations.get(id);
+          return convo?.user === user ? convo : null;
+        });
+        db.getMessages.mockImplementation(async ({ conversationId, user }) =>
+          messages.filter(
+            (message) => message.conversationId === conversationId && message.user === user,
+          ),
+        );
+        db.saveMessage.mockImplementation(async (context, message) => {
+          if (!context.userId) throw new Error('User not authenticated');
+          const saved = { ...message, user: context.userId };
+          messages.push(saved);
+          order.push(message.isCreatedByUser ? 'input' : 'output');
+          return saved;
+        });
+        db.updateMessage.mockImplementation(async (user, update) => {
+          const message = messages.find(
+            (row) => row.user === user && row.messageId === update.messageId,
+          );
+          if (!message) throw new Error('Message not found');
+          Object.assign(message, update);
+          order.push('commit');
+          return message;
+        });
+        db.saveConvo.mockImplementation(async (context, convo) => {
+          if (!context.userId) throw new Error('User not authenticated');
+          const saved = { ...convo, user: context.userId, messages: [...messages] };
+          conversations.set(convo.conversationId, saved);
+          order.push('conversation');
+          return saved;
+        });
+        api.createResponsesEventHandlers.mockImplementation(() => ({
+          ...originalHandlers(),
+          prepareStream: () => order.push('prepare'),
+          completeStream: () => order.push('complete'),
+        }));
+        try {
+          for (const [id, input, previous] of [
+            ['resp_first', 'first', undefined],
+            ['resp_second', 'second', 'resp_first'],
+          ]) {
+            api.generateResponseId.mockReturnValueOnce(id);
+            api.createResponseContext.mockReturnValueOnce({ responseId: id });
+            api.convertInputToMessages.mockReturnValueOnce([{ role: 'user', content: input }]);
+            api.validateResponseRequest.mockReturnValueOnce({
+              request: {
+                model: 'agent-123',
+                input,
+                stream,
+                store: true,
+                ...(previous && { previous_response_id: previous }),
+              },
+            });
+            const response = {
+              id,
+              status: 'completed',
+              output: [
+                { type: 'message', content: [{ type: 'output_text', text: `answer to ${input}` }] },
+              ],
+              usage: { output_tokens: 5 },
+            };
+            if (stream) api.buildResponse.mockReturnValueOnce(response);
+            else api.buildAggregatedResponse.mockReturnValueOnce(response);
+            await createResponse(req, res);
+            expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
+            if (id === 'resp_first') {
+              req.params = { id };
+              await controller.getResponse(req, res);
+              expect(res.json.mock.calls.at(-1)[0]).toMatchObject({
+                id,
+                status: 'completed',
+                output: [{ id, content: [{ text: 'answer to first' }] }],
+              });
+              expect(order).toEqual(
+                stream
+                  ? ['prepare', 'input', 'output', 'conversation', 'commit', 'complete']
+                  : ['input', 'output', 'conversation', 'commit'],
+              );
+            }
+          }
+          expect(db.getMessage).toHaveBeenCalledWith({ user: 'user-123', messageId: 'resp_first' });
+          expect(db.getConvo).toHaveBeenCalledWith('user-123', 'mock-uuid-456');
+          expect(db.getMessages).toHaveBeenCalledWith({
+            conversationId: 'mock-uuid-456',
+            user: 'user-123',
+          });
+          expect(messages).toHaveLength(4);
+          expect(conversations.get('mock-uuid-456').messages).toHaveLength(4);
+          req.params = { id: 'resp_first' };
+          await controller.getResponse(req, res);
+          expect(res.json.mock.calls.at(-1)[0].output).toEqual([
+            expect.objectContaining({
+              id: 'resp_first',
+              content: [expect.objectContaining({ text: 'answer to first' })],
+            }),
+          ]);
+          const callsBeforeDenial = api.createRun.mock.calls.length;
+          req.user = { id: 'another-user' };
+          req.params = { id: 'resp_first' };
+          await controller.getResponse(req, res);
+          expect(api.sendResponsesErrorResponse).toHaveBeenLastCalledWith(
+            res,
+            404,
+            'Response not found: resp_first',
+            'not_found',
+            'response_not_found',
+          );
+          api.validateResponseRequest.mockReturnValueOnce({
+            request: {
+              model: 'agent-123',
+              input: 'intruder',
+              previous_response_id: 'resp_first',
+            },
+          });
+          await createResponse(req, res);
+          expect(api.createRun).toHaveBeenCalledTimes(callsBeforeDenial);
+          expect(api.sendResponsesErrorResponse).toHaveBeenLastCalledWith(
+            res,
+            404,
+            'Response not found',
+            'not_found',
+          );
+        } finally {
+          for (const [mock, original] of originals) mock.mockImplementation(original);
+          api.createResponsesEventHandlers.mockImplementation(originalHandlers);
+        }
+      },
+    );
+
+    it('rejects an unstored response ID for retrieval and continuation', async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      const controller = require('../responses');
+      await createResponse(req, res);
+      expect(db.saveMessage).not.toHaveBeenCalled();
+      req.params = { id: 'resp_mock-123' };
+      await controller.getResponse(req, res);
+      expect(api.sendResponsesErrorResponse).toHaveBeenLastCalledWith(
+        res,
+        404,
+        'Response not found: resp_mock-123',
+        'not_found',
+        'response_not_found',
+      );
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'continue',
+          previous_response_id: 'resp_mock-123',
+        },
+      });
+      const priorRuns = api.createRun.mock.calls.length;
+      await createResponse(req, res);
+      expect(api.createRun).toHaveBeenCalledTimes(priorRuns);
+      expect(api.sendResponsesErrorResponse).toHaveBeenLastCalledWith(
+        res,
+        404,
+        'Response not found',
+        'not_found',
+      );
+    });
+
+    it.each([false, true])(
+      'never reports completed when a conversation or commit write fails (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        const controller = require('../responses');
+        for (const method of ['saveConvo', 'updateMessage']) {
+          jest.clearAllMocks();
+          api.validateResponseRequest.mockReturnValueOnce({
+            request: {
+              model: 'agent-123',
+              input: 'hello',
+              store: true,
+              stream,
+            },
+          });
+          db[method].mockRejectedValueOnce(new Error('PRIVATE STORAGE ERROR'));
+          await createResponse(req, res);
+          if (stream) {
+            expect(api.emitResponseFailed).toHaveBeenCalledWith(
+              expect.anything(),
+              expect.objectContaining({ code: 'response_storage_failed' }),
+            );
+            expect(
+              api.createResponsesEventHandlers.mock.results.at(-1).value.completeStream,
+            ).not.toHaveBeenCalled();
+          } else {
+            expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+              res,
+              500,
+              'Failed to store response',
+              'server_error',
+              'response_storage_failed',
+            );
+            expect(res.json).not.toHaveBeenCalled();
+          }
+          db.getMessage.mockResolvedValueOnce({
+            user: 'user-123',
+            messageId: 'resp_mock-123',
+            conversationId: 'mock-uuid-456',
+            isCreatedByUser: false,
+            endpoint: 'agents',
+            sender: 'Agent',
+            finish_reason: 'pending_storage',
+          });
+          req.params = { id: 'resp_mock-123' };
+          await controller.getResponse(req, res);
+          expect(api.sendResponsesErrorResponse).toHaveBeenLastCalledWith(
+            res,
+            404,
+            'Response not found: resp_mock-123',
+            'not_found',
+            'response_not_found',
+          );
+          expect(JSON.stringify(api.sendResponsesErrorResponse.mock.calls)).not.toContain(
+            'PRIVATE STORAGE ERROR',
+          );
+        }
+      },
+    );
+
+    it('does not use empty history after an indexed message read fails', async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'continue',
+          previous_response_id: 'resp_existing',
+        },
+      });
+      db.getMessage.mockResolvedValueOnce({
+        messageId: 'resp_existing',
+        conversationId: 'conversation-one',
+        endpoint: 'agents',
+        sender: 'Agent',
+        isCreatedByUser: false,
+        finish_reason: 'stop',
+      });
+      db.getConvo.mockResolvedValueOnce({ conversationId: 'conversation-one', user: 'user-123' });
+      db.getMessages.mockRejectedValueOnce(new Error('PRIVATE DB ERROR'));
+      await createResponse(req, res);
+      expect(api.createRun).not.toHaveBeenCalled();
+      expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+        res,
+        500,
+        'Failed to load previous response history',
+        'server_error',
+      );
+      expect(JSON.stringify(api.sendResponsesErrorResponse.mock.calls)).not.toContain(
+        'PRIVATE DB ERROR',
+      );
+    });
+
+    it.each([false, true])(
+      'never reports completed when a required save fails (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: {
+            model: 'agent-123',
+            input: 'hello',
+            store: true,
+            stream,
+          },
+        });
+        db.saveMessage.mockRejectedValueOnce(new Error('PRIVATE STORAGE ERROR'));
+        await createResponse(req, res);
+        if (stream) {
+          expect(api.emitResponseFailed).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ code: 'response_storage_failed' }),
+          );
+          expect(
+            api.createResponsesEventHandlers.mock.results.at(-1).value.completeStream,
+          ).not.toHaveBeenCalled();
+        } else {
+          expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+            res,
+            500,
+            'Failed to store response',
+            'server_error',
+            'response_storage_failed',
+          );
+          expect(res.json).not.toHaveBeenCalled();
+        }
+        expect(JSON.stringify(res.write.mock.calls)).not.toContain('PRIVATE STORAGE ERROR');
+        expect(JSON.stringify(api.sendResponsesErrorResponse.mock.calls)).not.toContain(
+          'PRIVATE STORAGE ERROR',
+        );
+      },
+    );
+  });
+
   describe('conversation ownership validation', () => {
     it('should skip ownership check when previous_response_id is not provided', async () => {
       const { getConvo } = require('~/models');
@@ -2075,17 +2407,17 @@ describe('createResponse controller', () => {
           model: 'agent-123',
           input: 'Hello',
           stream: false,
-          previous_response_id: 'resp_abc',
+          previous_response_id: 'previous',
         },
       });
       getConvo.mockResolvedValueOnce(null);
 
       await createResponse(req, res);
-      expect(getConvo).toHaveBeenCalledWith('user-123', 'resp_abc');
+      expect(getConvo).toHaveBeenCalledWith('user-123', 'previous');
       expect(sendResponsesErrorResponse).toHaveBeenCalledWith(
         res,
         404,
-        'Conversation not found',
+        'Response not found',
         'not_found',
       );
     });
@@ -2098,13 +2430,13 @@ describe('createResponse controller', () => {
           model: 'agent-123',
           input: 'Hello',
           stream: false,
-          previous_response_id: 'resp_abc',
+          previous_response_id: 'previous',
         },
       });
-      getConvo.mockResolvedValueOnce({ conversationId: 'resp_abc', user: 'user-123' });
+      getConvo.mockResolvedValueOnce({ conversationId: 'previous', user: 'user-123' });
 
       await createResponse(req, res);
-      expect(getConvo).toHaveBeenCalledWith('user-123', 'resp_abc');
+      expect(getConvo).toHaveBeenCalledWith('user-123', 'previous');
       expect(sendResponsesErrorResponse).not.toHaveBeenCalledWith(
         res,
         404,
@@ -2156,7 +2488,7 @@ describe('createResponse controller', () => {
           model: 'agent-123',
           input: 'Hello',
           stream: false,
-          previous_response_id: 'resp_abc',
+          previous_response_id: 'previous',
         },
       });
       getConvo.mockRejectedValueOnce(new Error('DB connection failed'));
@@ -2484,9 +2816,10 @@ describe('createResponse controller', () => {
 
       await createResponse(req, res);
 
-      const finalizeStream =
-        api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream;
-      expect(finalizeStream).toHaveBeenCalledWith(mockResponsesUsage);
+      const { prepareStream, completeStream } =
+        api.createResponsesEventHandlers.mock.results.at(-1).value;
+      expect(prepareStream).toHaveBeenCalledTimes(1);
+      expect(completeStream).toHaveBeenCalledWith(mockResponsesUsage);
     });
   });
 
