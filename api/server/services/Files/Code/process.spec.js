@@ -1723,6 +1723,7 @@ describe('Code Process', () => {
        * The `hasOfficeHtmlPath` mock is the gate. Other tests keep it
        * at `false` (legacy single-phase path); we flip it on here. */
       const { updateFile } = require('~/models');
+      const pptxMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
       beforeEach(() => {
         mockHasOfficeHtmlPath.mockReturnValue(true);
@@ -1851,6 +1852,29 @@ describe('Code Process', () => {
           expect.any(String),
           expect.objectContaining({ enabled: true, fileSizeLimit: 25 * 1024 * 1024 }),
         );
+      });
+
+      it('finalize() hands a yaml fileSizeLimit in megabytes to the extractor and the failure label in bytes', async () => {
+        mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
+        determineFileType.mockResolvedValue({ mime: pptxMime });
+        mockExtractCodeArtifactText.mockResolvedValueOnce(null);
+        const req = {
+          ...mockReq,
+          config: { ...mockReq.config, fileConfig: { officePreview: { fileSizeLimit: 5 } } },
+        };
+        const merged = { enabled: true, fileSizeLimit: 5 * 1024 * 1024 };
+
+        const { finalize } = await processCodeOutput({ ...baseParams, req, name: 'deck.pptx' });
+        await finalize();
+
+        expect(mockExtractCodeArtifactText).toHaveBeenCalledWith(
+          expect.any(Buffer),
+          'deck.pptx',
+          pptxMime,
+          expect.any(String),
+          merged,
+        );
+        expect(mockOfficePreviewFailure).toHaveBeenCalledWith(100, 'deck.pptx', pptxMime, merged);
       });
 
       it('finalize() transitions to failed with previewError:timeout when the outer timeout rejects', async () => {

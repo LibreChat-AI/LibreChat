@@ -5,6 +5,7 @@ import { randomBytes } from 'crypto';
 import {
   megabyte,
   isOfficeFileShell,
+  fillOfficeFileShell,
   OFFICE_DOC_DATA_SLOT,
   OFFICE_FILE_SHELL_MARKER,
 } from 'librechat-data-provider';
@@ -1166,5 +1167,57 @@ describe('office shell base64 encoding', () => {
     await pptxToHtml(readFixture('sample.pptx'));
     await wordDocToHtml(readFixture('sample.docx'));
     expect(base64Calls(spy)).toBe(2);
+  });
+});
+
+describe('office shell size and head', () => {
+  const padded = async (fixture: string, entry: string, bytes: number): Promise<Buffer> => {
+    const zip = await JSZip.loadAsync(readFixture(fixture));
+    zip.file(entry, randomBytes(bytes), { compression: 'STORE' });
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+  const headOf = (html: string): string => /<head>[\s\S]*?<\/head>/.exec(html)?.[0] ?? '';
+  const cdnScripts = (head: string): string[] => head.match(/<script src=[^>]*><\/script>/g) ?? [];
+  const csp = (head: string): string[] =>
+    head.match(/<meta http-equiv="Content-Security-Policy"[^>]*>/g) ?? [];
+
+  const cases = [
+    ['pptx', 'sample.pptx', 'ppt/media/padding.bin', pptxToHtml],
+    ['docx', 'sample.docx', 'word/media/padding.bin', wordDocToHtml],
+  ] as const;
+
+  it.each(cases)(
+    'keeps the %s head the same in a shell as inline',
+    async (_n, fixture, entry, render) => {
+      const inline = await render(readFixture(fixture));
+      const shell = await render(await padded(fixture, entry, 400 * 1024), { fileShell: true });
+      const filled = fillOfficeFileShell(shell, 'QUJD');
+
+      expect(isOfficeFileShell(shell)).toBe(true);
+      expect(cdnScripts(headOf(inline)).length).toBeGreaterThan(0);
+      expect(
+        cdnScripts(headOf(inline)).every((tag) =>
+          /integrity="sha\w+-[^"]+" crossorigin=/.test(tag),
+        ),
+      ).toBe(true);
+      expect(csp(headOf(inline))).toHaveLength(1);
+      expect(cdnScripts(headOf(shell))).toEqual(cdnScripts(headOf(inline)));
+      expect(csp(headOf(shell))).toEqual(csp(headOf(inline)));
+      expect(headOf(filled)).toBe(headOf(shell));
+      expect(filled).toContain('>QUJD</script>');
+    },
+  );
+
+  it('keeps a 4 MB deck shell small once its fallback is removed', async () => {
+    const pptx = await padded('sample.pptx', 'ppt/media/padding.bin', 4 * megabyte);
+    expect(pptx.length).toBeGreaterThanOrEqual(4 * megabyte);
+    const html = await pptxToHtml(pptx, { fileShell: true });
+    const bare = html.replace(
+      /(<div id="lc-fallback" hidden>)[\s\S]*?(<\/div>\s*<script id="lc-doc-data")/,
+      '$1$2',
+    );
+    expect(isOfficeFileShell(bare)).toBe(true);
+    expect(Buffer.byteLength(bare, 'utf-8')).toBeLessThanOrEqual(16 * 1024);
+    expect(Buffer.byteLength(html, 'utf-8')).toBeLessThanOrEqual(512 * 1024);
   });
 });

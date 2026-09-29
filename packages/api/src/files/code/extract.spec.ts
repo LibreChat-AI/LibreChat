@@ -1,6 +1,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import { logger } from '@librechat/data-schemas';
+import { mergeFileConfig } from 'librechat-data-provider';
 import {
   extractCodeArtifactRawText,
   extractCodeArtifactInspectionText,
@@ -1030,6 +1031,32 @@ describe('office preview shell routing', () => {
           ),
         ).toBe('too-large');
       });
+    });
+  });
+
+  describe('limits set in librechat.yaml', () => {
+    const mb = 1024 * 1024;
+    const fromYaml = (officePreview: { enabled?: boolean; fileSizeLimit?: number }) =>
+      mergeFileConfig({ officePreview }).officePreview;
+    const route = (size: number, setting: ReturnType<typeof fromYaml>) =>
+      extractCodeArtifactText(Buffer.alloc(size), pptx, pptxMime, 'presentation', setting);
+
+    it('applies a 5 MB limit given in megabytes as bytes', async () => {
+      const setting = fromYaml({ fileSizeLimit: 5 });
+      expect(setting).toEqual({ enabled: true, fileSizeLimit: 5 * mb });
+      expect(officePreviewByteLimit(pptx, pptxMime, setting)).toBe(5 * mb);
+      expect(officePreviewFailure(5 * mb + 1, pptx, pptxMime, setting)).toBe('too-large');
+      expect(officePreviewFailure(5 * mb, pptx, pptxMime, setting)).toBe('parser-error');
+      expect(await route(4 * mb, setting)).toBe('<html>shell</html>');
+      expect(await route(5 * mb + 1, setting)).toBeNull();
+    });
+
+    it('falls back to the 2 MB ceiling when the preview is turned off', async () => {
+      const setting = fromYaml({ enabled: false });
+      expect(officePreviewByteLimit(pptx, pptxMime, setting)).toBe(MAX_TEXT_EXTRACT_BYTES);
+      expect(officePreviewFailure(3 * mb, pptx, pptxMime, setting)).toBe('too-large');
+      expect(await route(3 * mb, setting)).toBeNull();
+      expect(mockShellRender).not.toHaveBeenCalled();
     });
   });
 });
