@@ -492,6 +492,7 @@ describe('useTableRowHeight', () => {
     });
 
     await waitFor(() => expect(result.current).toBe(37));
-    expect(titled.result.current).toBe(33);
+    /** The title cell's fixed height is a border box, so the rule sits inside it. */
+    expect(titled.result.current).toBe(32);
   });
 });

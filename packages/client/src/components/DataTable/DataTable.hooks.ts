@@ -177,7 +177,8 @@ type TableRowKind = 'dense' | 'compact' | 'titled';
  * A row's height in px. A dense row holds 2rem of controls between a quarter of the cell space
  * above and below; a compact row a 1.25rem text line between half the space above and below (its
  * size from `sm` up); a titled row is as tall as its title cell, a header-sized cell of twice the
- * space around a 1rem line. Each carries the row rule under it.
+ * space around a 1rem line. The dense and compact cells grow by the row rule under them; the title
+ * cell's fixed height is a border box that already holds it.
  */
 function readTableRowHeight(kind: TableRowKind): number {
   const rootSize =
@@ -187,11 +188,11 @@ function readTableRowHeight(kind: TableRowKind): number {
   const space = readRootLength('--theme-table-cell-space-y', 1);
   const stroke = readRootLength('--theme-table-row-stroke', 0);
   const heights: Record<TableRowKind, number> = {
-    dense: 2 * rootSize + space / 2,
-    compact: 1.25 * rootSize + space,
+    dense: 2 * rootSize + space / 2 + stroke,
+    compact: 1.25 * rootSize + space + stroke,
     titled: rootSize + 2 * space,
   };
-  return heights[kind] + stroke;
+  return heights[kind];
 }
 
 /** The theme paints its appearance onto the root's inline style and class, so those are the
