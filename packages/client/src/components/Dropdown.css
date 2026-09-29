@@ -46,7 +46,7 @@ html.high-contrast .popover-ui {
 
 .popover-ui:focus-visible,
 .popover-ui[data-focus-visible] {
-  outline: 2px solid rgb(var(--text-primary));
+  outline: 2px solid rgb(var(--focus-control));
   outline-offset: -1px;
 }
 
