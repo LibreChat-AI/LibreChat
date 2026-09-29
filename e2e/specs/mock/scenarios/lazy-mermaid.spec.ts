@@ -6,6 +6,7 @@ import {
   messagesView,
   selectMockEndpoint,
   sendMessage,
+  sendMessageAndWaitForCompletion,
 } from '../helpers';
 
 /**
@@ -36,10 +37,9 @@ test.describe('the mermaid chunk', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    const response = await sendMessage(page, 'Hello there');
+    const response = await sendMessageAndWaitForCompletion(page, 'Hello there');
     expect(response.ok()).toBeTruthy();
     await expect(messagesView(page).getByText('Hello there')).toBeVisible();
-    await page.waitForLoadState('networkidle');
 
     expect(requested).toEqual([]);
   });
@@ -50,7 +50,7 @@ test.describe('the mermaid chunk', () => {
     const requested = recordMermaidRequests(page);
     await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-    await page.waitForLoadState('networkidle');
+    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
     expect(requested, 'the boot must not fetch mermaid').toEqual([]);
 
     const response = await sendMessage(page, 'E2E_MERMAID_ARTIFACT_REPLY');
