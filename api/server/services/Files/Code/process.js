@@ -21,7 +21,7 @@ const {
   codeServerHttpAgent,
   codeServerHttpsAgent,
   extractCodeArtifactText,
-  officePreviewByteLimit,
+  officePreviewFailure,
   extractCodeArtifactRawText,
   extractCodeArtifactInspectionText,
   prepareCodeOutputBufferForInspection,
@@ -459,10 +459,7 @@ const finalizePreview = async ({
   const failed = text == null;
   const status = failed ? 'failed' : 'ready';
   if (failed && !previewError) {
-    previewError =
-      buffer.length > officePreviewByteLimit(leafName, mimeType, officePreview)
-        ? 'too-large'
-        : 'parser-error';
+    previewError = officePreviewFailure(buffer.length, leafName, mimeType, officePreview);
   }
   try {
     /* Conditional update: commit only if `previewRevision` still

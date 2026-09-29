@@ -79,6 +79,18 @@ export function officePreviewByteLimit(
   return Math.max(MAX_TEXT_EXTRACT_BYTES, officePreview?.fileSizeLimit ?? 0);
 }
 
+/** Why a preview came back empty: over the size limit, or the parser gave up. */
+export function officePreviewFailure(
+  byteLength: number,
+  name: string,
+  mimeType: string,
+  officePreview?: OfficePreviewSetting,
+): 'too-large' | 'parser-error' {
+  return byteLength > officePreviewByteLimit(name, mimeType, officePreview)
+    ? 'too-large'
+    : 'parser-error';
+}
+
 const DOCUMENT_PARSE_TIMEOUT_MS = 8_000;
 const OFFICE_HTML_TIMEOUT_MS = 12_000;
 const TRUNCATION_MARKER = '\n\n…[truncated]';

@@ -48,7 +48,7 @@ const mockExtractCodeArtifactInspectionText = jest.fn(async () => ({
   complete: false,
 }));
 const mockExtractCodeArtifactText = jest.fn(async () => null);
-const mockOfficePreviewByteLimit = jest.fn(() => 2 * 1024 * 1024);
+const mockOfficePreviewFailure = jest.fn(() => 'parser-error');
 const mockExecuteWorkspaceTool = jest.fn();
 const mockGetExtractedTextFormat = jest.fn((_name, _mime, text) => (text == null ? null : 'text'));
 /* `hasOfficeHtmlPath` gates the persist-then-render split: when true, processCodeOutput
@@ -160,7 +160,7 @@ jest.mock('@librechat/api', () => {
     extractCodeArtifactRawText: (...args) => mockExtractCodeArtifactRawText(...args),
     extractCodeArtifactInspectionText: (...args) => mockExtractCodeArtifactInspectionText(...args),
     extractCodeArtifactText: (...args) => mockExtractCodeArtifactText(...args),
-    officePreviewByteLimit: (...args) => mockOfficePreviewByteLimit(...args),
+    officePreviewFailure: (...args) => mockOfficePreviewFailure(...args),
     getBoundedCodeOutputByteLimit: (configured) =>
       typeof configured === 'number' && Number.isFinite(configured) && configured > 0
         ? Math.min(configured, 64 * 1024 * 1024)
@@ -1811,20 +1811,21 @@ describe('Code Process', () => {
         );
       });
 
-      it('finalize() labels a failed preview too-large when the buffer exceeds the byte limit', async () => {
+      it('finalize() stores the failure label the helper returns for the buffer size, name, type and setting', async () => {
         mockAxios.mockResolvedValue({ data: Buffer.alloc(100) });
         determineFileType.mockResolvedValue({
           mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
         });
         mockExtractCodeArtifactText.mockResolvedValueOnce(null);
-        mockOfficePreviewByteLimit.mockReturnValueOnce(50);
+        mockOfficePreviewFailure.mockReturnValueOnce('too-large');
 
         const { finalize } = await processCodeOutput({ ...baseParams, name: 'deck.pptx' });
         await finalize();
 
-        expect(mockOfficePreviewByteLimit).toHaveBeenCalledWith(
+        expect(mockOfficePreviewFailure).toHaveBeenCalledWith(
+          100,
           'deck.pptx',
-          expect.any(String),
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
           expect.objectContaining({ enabled: true }),
         );
         expect(updateFile).toHaveBeenCalledWith(

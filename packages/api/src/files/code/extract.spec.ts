@@ -7,6 +7,7 @@ import {
   extractCodeArtifactText,
   getExtractedTextFormat,
   officePreviewByteLimit,
+  officePreviewFailure,
   resolveMaxTextExtractBytes,
   MAX_TEXT_CACHE_BYTES,
   MAX_TEXT_EXTRACT_BYTES,
@@ -999,6 +1000,36 @@ describe('office preview shell routing', () => {
       expect(officePreviewByteLimit('data.xlsx', 'application/vnd.ms-excel', on)).toBe(
         MAX_TEXT_EXTRACT_BYTES,
       );
+    });
+
+    describe('officePreviewFailure', () => {
+      const off = { enabled: false, fileSizeLimit: LIMIT };
+
+      it('is too-large only past the configured limit for an enabled pptx', () => {
+        expect(officePreviewFailure(LIMIT + 1, pptx, pptxMime, on)).toBe('too-large');
+        expect(officePreviewFailure(LIMIT, pptx, pptxMime, on)).toBe('parser-error');
+        expect(officePreviewFailure(1024 * 1024, pptx, pptxMime, on)).toBe('parser-error');
+      });
+
+      it('uses the extract ceiling when the setting is disabled', () => {
+        expect(officePreviewFailure(MAX_TEXT_EXTRACT_BYTES + 1, pptx, pptxMime, off)).toBe(
+          'too-large',
+        );
+        expect(officePreviewFailure(MAX_TEXT_EXTRACT_BYTES, pptx, pptxMime, off)).toBe(
+          'parser-error',
+        );
+      });
+
+      it('uses the extract ceiling for files that are not decks or documents', () => {
+        expect(
+          officePreviewFailure(
+            MAX_TEXT_EXTRACT_BYTES + 1,
+            'data.xlsx',
+            'application/vnd.ms-excel',
+            on,
+          ),
+        ).toBe('too-large');
+      });
     });
   });
 });
