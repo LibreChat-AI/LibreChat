@@ -317,6 +317,11 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   disabled fill, ink and edge, painted through the `theme-disabled:` variant only
   when the theme's `disabledStyle` appearance role is `fill`. The default `dim`
   keeps the half-opacity treatment every primitive carries.
+- `font-display` - Headings and dialog titles (`displayFontFamily`). Follows the
+  theme's `fontFamily` when it names no display family.
+- `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
+  `leadingXs`..`leading2xl` (app only, like the radius scale); the defaults are
+  Tailwind's own values.
 - `ring-focus-control` - The keyboard focus ring of the shared primitives
   (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
   the primary text ink; a theme that names only `rgb-text-primary` rings its

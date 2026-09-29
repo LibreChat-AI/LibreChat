@@ -142,6 +142,8 @@ const cssLengthPattern = /^(0|\d*\.?\d+(px|rem|em))$/;
 const cssLengthDifferencePattern =
   /^calc\(\s*\d*\.?\d+(px|rem|em)\s+[-+]\s+\d*\.?\d+(px|rem|em)\s*\)$/;
 const cssDurationPattern = /^\d*\.?\d+(ms|s)$/;
+/** A unitless ratio, written bare or as one `calc()` quotient the way Tailwind's scale is. */
+const cssLineHeightPattern = /^(\d*\.?\d+|calc\(\s*\d*\.?\d+\s*\/\s*\d*\.?\d+\s*\))$/;
 const hexColorPattern = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 const shadowLengthPattern = /^(-?(0|\d*\.?\d+[a-z]+)|(calc|min|max|clamp)\(.*\))$/i;
 const shadowColorPattern = /^(#[0-9a-f]{3,8}|[a-z]+|[a-z-]+\(.*\))$/i;
@@ -244,6 +246,18 @@ const isShadow = (value: unknown): value is string => {
   }
   return globalThis.CSS?.supports?.('box-shadow', value) ?? true;
 };
+/** A ratio whose `calc()` divides by zero is dropped by the browser, so it is rejected here. */
+const isLineHeight = (value: unknown): value is string => {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const match = cssLineHeightPattern.exec(value.trim());
+  if (!match) {
+    return isLength(value);
+  }
+  const divisor = /\/\s*(\d*\.?\d+)\s*\)$/.exec(match[0]);
+  return divisor === null || Number(divisor[1]) > 0;
+};
 const isDuration = (value: unknown): value is string =>
   typeof value === 'string' && cssDurationPattern.test(value);
 
@@ -277,6 +291,19 @@ const appearanceValidators = {
   disabledStyle: (value: unknown) => value === 'dim' || value === 'fill',
   fontFamily: isFontFamily,
   monoFontFamily: isFontFamily,
+  displayFontFamily: isFontFamily,
+  textXs: isLength,
+  textSm: isLength,
+  textBase: isLength,
+  textLg: isLength,
+  textXl: isLength,
+  text2xl: isLength,
+  leadingXs: isLineHeight,
+  leadingSm: isLineHeight,
+  leadingBase: isLineHeight,
+  leadingLg: isLineHeight,
+  leadingXl: isLineHeight,
+  leading2xl: isLineHeight,
   /** Released themes may hold `var()` here, so this role keeps its original, looser check. */
   elevationSurface: (value: unknown) =>
     typeof value === 'string' && value.trim().length > 0 && !/[;{}]|url\s*\(/i.test(value),

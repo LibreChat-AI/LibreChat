@@ -113,7 +113,7 @@ const DialogTitle: React.ForwardRefExoticComponent<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn('text-text-primary text-lg font-semibold', className ?? '')}
+    className={cn('text-text-primary font-display text-lg font-semibold', className ?? '')}
     {...props}
   />
 ));

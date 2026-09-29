@@ -412,7 +412,7 @@ const DialogTitle: React.ForwardRefExoticComponent<
   <DialogPrimitive.Title
     ref={ref}
     className={cn(
-      'text-lg leading-none font-semibold tracking-tight',
+      'font-display text-lg leading-none font-semibold tracking-tight',
       focusOutlineVariants({ focusOutline }),
       className,
     )}

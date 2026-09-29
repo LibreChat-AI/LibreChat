@@ -13,7 +13,8 @@ import snapshot from './clickui.json';
  */
 
 type Rgba = [number, number, number, number];
-type Snapshot = Record<ThemeMode, Record<string, string>>;
+/** Click UI writes its line heights as bare numbers; every other token is a string. */
+type Snapshot = Record<ThemeMode, Record<string, string | number>>;
 
 const tokens: Snapshot = { light: snapshot.light, dark: snapshot.dark };
 const modes: ThemeMode[] = ['light', 'dark'];
@@ -258,6 +259,19 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   roundControlRadius: 'border.radii.full',
   fontFamily: 'typography.font.families.regular',
   monoFontFamily: 'typography.font.families.mono',
+  displayFontFamily: 'typography.font.families.display',
+  textXs: 'typography.font.sizes.1',
+  textSm: 'typography.font.sizes.2',
+  textBase: 'typography.font.sizes.3',
+  textLg: 'typography.font.sizes.4',
+  textXl: 'typography.font.sizes.5',
+  text2xl: 'typography.font.sizes.6',
+  leadingXs: 'typography.font.line-height.1',
+  leadingSm: 'typography.font.line-height.1',
+  leadingBase: 'typography.font.line-height.1',
+  leadingLg: 'typography.font.line-height.1',
+  leadingXl: 'typography.font.line-height.1',
+  leading2xl: 'typography.font.line-height.1',
   shadow2xs: 'shadow.5',
   shadowXs: 'shadow.5',
   shadowSm: 'shadow.5',
@@ -329,7 +343,8 @@ const normalizeShadow = (value: string) =>
 const firstFamily = (value: string) => value.split(',')[0].trim();
 
 /** How a Click UI appearance token compares with the theme value that cites it. */
-function comparable(key: keyof IThemeAppearance, value: string): string {
+function comparable(key: keyof IThemeAppearance, raw: string | number): string {
+  const value = String(raw);
   if (key.startsWith('shadow') || key === 'elevationSurface') {
     return normalizeShadow(value);
   }
@@ -371,7 +386,7 @@ describe('ClickHouse theme drift against Click UI', () => {
         return [`${key}: Click UI token ${token} is not in clickui.json`];
       }
       const theme = colors[key as keyof IThemeRGB] ?? '';
-      return sameRgb(theme, parseColor(source))
+      return sameRgb(theme, parseColor(String(source)))
         ? []
         : [`${key}: theme ${theme}, Click UI ${token} is ${source}`];
     });

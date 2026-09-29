@@ -407,6 +407,21 @@ export interface IThemeAppearance {
   disabledStyle: 'dim' | 'fill';
   fontFamily: string;
   monoFontFamily: string;
+  /** Headings and dialog titles; follows `fontFamily` when a theme omits it. */
+  displayFontFamily: string;
+  /** The `text-*` scale: size and line height per step, Tailwind's own values by default. */
+  textXs: string;
+  textSm: string;
+  textBase: string;
+  textLg: string;
+  textXl: string;
+  text2xl: string;
+  leadingXs: string;
+  leadingSm: string;
+  leadingBase: string;
+  leadingLg: string;
+  leadingXl: string;
+  leading2xl: string;
   elevationSurface: string;
   shadow2xs: string;
   shadowXs: string;

@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import type { ThemeDefinition } from './types';
 import {
   collectThemeWarnings,
@@ -364,6 +366,79 @@ describe('theme registry', () => {
         modes: { light: { appearance: { disabledStyle: 'fade' as 'dim' } } },
       }),
     ).toEqual(['Invalid appearance value for disabledStyle: fade']);
+  });
+
+  it('sets headings in the UI family of a theme that names no display family', () => {
+    const family = '"Reference Sans", sans-serif';
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'family-only-reference',
+        modes: { light: { appearance: { fontFamily: family } } },
+      },
+      'light',
+    );
+
+    expect(resolved.appearance.displayFontFamily).toBe(family);
+  });
+
+  it('keeps an explicit display family and the bundled one for a theme that names neither', () => {
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'display-reference',
+        modes: {
+          light: {
+            appearance: { fontFamily: 'Body, sans-serif', displayFontFamily: 'Head, serif' },
+          },
+        },
+      },
+      'light',
+    );
+    const bundled = resolveTheme({ version: 1, name: 'fontless-reference', modes: {} }, 'dark');
+
+    expect(explicit.appearance.displayFontFamily).toBe('Head, serif');
+    expect(bundled.appearance.displayFontFamily).toBe(defaultAppearance.fontFamily);
+  });
+
+  it('reproduces Tailwind’s own type scale by default', () => {
+    const tailwind = readFileSync(
+      join(__dirname, '..', '..', '..', '..', 'node_modules', 'tailwindcss', 'theme.css'),
+      'utf8',
+    );
+    const steps = [
+      ['xs', 'textXs', 'leadingXs'],
+      ['sm', 'textSm', 'leadingSm'],
+      ['base', 'textBase', 'leadingBase'],
+      ['lg', 'textLg', 'leadingLg'],
+      ['xl', 'textXl', 'leadingXl'],
+      ['2xl', 'text2xl', 'leading2xl'],
+    ] as const;
+    const declared = (name: string) =>
+      new RegExp(`--${name}:\\s*([^;]+);`).exec(tailwind)?.[1].trim();
+
+    steps.forEach(([step, size, leading]) => {
+      expect(defaultAppearance[size]).toBe(declared(`text-${step}`));
+      expect(defaultAppearance[leading]).toBe(declared(`text-${step}--line-height`));
+    });
+  });
+
+  it('accepts ratio and length line heights and rejects anything else', () => {
+    const withLeading = (leadingSm: string): ThemeDefinition => ({
+      version: 1,
+      name: 'leading-reference',
+      modes: { light: { appearance: { leadingSm } } },
+    });
+
+    expect(validateThemeDefinition(withLeading('1.5'))).toEqual([]);
+    expect(validateThemeDefinition(withLeading('calc(1.25 / 0.875)'))).toEqual([]);
+    expect(validateThemeDefinition(withLeading('1.25rem'))).toEqual([]);
+    expect(validateThemeDefinition(withLeading('calc(1 / 0)'))).toEqual([
+      'Invalid appearance value for leadingSm: calc(1 / 0)',
+    ]);
+    expect(validateThemeDefinition(withLeading('normal; color: red'))).toEqual([
+      'Invalid appearance value for leadingSm: normal; color: red',
+    ]);
   });
 
   it('draws the focus outline in the ring of a theme that predates the role', () => {

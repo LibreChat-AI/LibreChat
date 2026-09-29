@@ -75,8 +75,16 @@
     "shadow.5": "0 2px 2px 0 rgba(0, 0, 0, 0.03)",
     "transition.duration.medium": "100ms",
     "transition.duration.smooth": "150ms",
+    "typography.font.families.display": "'Basier Square', \"Inter\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif;",
     "typography.font.families.mono": "\"Inconsolata\", Consolas, \"SFMono Regular\", monospace",
-    "typography.font.families.regular": "\"Inter\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif;"
+    "typography.font.families.regular": "\"Inter\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif;",
+    "typography.font.line-height.1": 1.5,
+    "typography.font.sizes.1": "0.75rem",
+    "typography.font.sizes.2": "0.875rem",
+    "typography.font.sizes.3": "1rem",
+    "typography.font.sizes.4": "1.125rem",
+    "typography.font.sizes.5": "1.25rem",
+    "typography.font.sizes.6": "2rem"
   },
   "dark": {
     "border.radii.1": "0.25rem",
@@ -150,7 +158,15 @@
     "shadow.5": "0 2px 2px 0 rgba(0, 0, 0, 0.03)",
     "transition.duration.medium": "100ms",
     "transition.duration.smooth": "150ms",
+    "typography.font.families.display": "'Basier Square', \"Inter\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif;",
     "typography.font.families.mono": "\"Inconsolata\", Consolas, \"SFMono Regular\", monospace",
-    "typography.font.families.regular": "\"Inter\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif;"
+    "typography.font.families.regular": "\"Inter\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif;",
+    "typography.font.line-height.1": 1.5,
+    "typography.font.sizes.1": "0.75rem",
+    "typography.font.sizes.2": "0.875rem",
+    "typography.font.sizes.3": "1rem",
+    "typography.font.sizes.4": "1.125rem",
+    "typography.font.sizes.5": "1.25rem",
+    "typography.font.sizes.6": "2rem"
   }
 }

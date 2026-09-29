@@ -12,7 +12,7 @@
 }
 
 /* The plain radius, font and shadow utilities read theme-owned properties, so a theme definition
- * reshapes the existing `rounded-*`, `font-sans`, `font-mono` and `shadow-*` call sites without a
+ * reshapes the existing `rounded-*`, `font-sans`, `font-mono`, `text-*` and `shadow-*` call sites without a
  * migration. The defaults in the `html` block reproduce the scale these utilities resolved to
  * before. Bare `rounded` stays Tailwind's fixed 0.25rem: `sm` keeps its px offset, so the two part
  * at a non-16px root. Bare `shadow` reads `--shadow`, which has always equalled `sm`, and follows
@@ -28,6 +28,19 @@
   --radius-3xl: var(--theme-radius-3xl);
   --font-sans: var(--theme-font-family);
   --font-mono: var(--theme-mono-font-family);
+  --font-display: var(--theme-display-font-family);
+  --text-xs: var(--theme-text-xs);
+  --text-xs--line-height: var(--theme-text-xs-leading);
+  --text-sm: var(--theme-text-sm);
+  --text-sm--line-height: var(--theme-text-sm-leading);
+  --text-base: var(--theme-text-base);
+  --text-base--line-height: var(--theme-text-base-leading);
+  --text-lg: var(--theme-text-lg);
+  --text-lg--line-height: var(--theme-text-lg-leading);
+  --text-xl: var(--theme-text-xl);
+  --text-xl--line-height: var(--theme-text-xl-leading);
+  --text-2xl: var(--theme-text-2xl);
+  --text-2xl--line-height: var(--theme-text-2xl-leading);
   --shadow: var(--theme-shadow-sm);
   --shadow-2xs: var(--theme-shadow-2xs);
   --shadow-xs: var(--theme-shadow-xs);
@@ -323,6 +336,19 @@ html {
   --theme-space-normal: 0.75rem;
   --theme-disabled-style: dim;
   --theme-font-family: Inter, sans-serif;
+  --theme-display-font-family: Inter, sans-serif;
+  --theme-text-xs: 0.75rem;
+  --theme-text-xs-leading: calc(1 / 0.75);
+  --theme-text-sm: 0.875rem;
+  --theme-text-sm-leading: calc(1.25 / 0.875);
+  --theme-text-base: 1rem;
+  --theme-text-base-leading: calc(1.5 / 1);
+  --theme-text-lg: 1.125rem;
+  --theme-text-lg-leading: calc(1.75 / 1.125);
+  --theme-text-xl: 1.25rem;
+  --theme-text-xl-leading: calc(1.75 / 1.25);
+  --theme-text-2xl: 1.5rem;
+  --theme-text-2xl-leading: calc(2 / 1.5);
   /* Roboto Mono is self-hosted (the `@font-face` block below), so code renders the same on every
    * platform with real bold and italic faces. The tail is reached while the font loads, if it
    * fails, and per glyph for what the bundled latin subset omits (box drawing in terminal output

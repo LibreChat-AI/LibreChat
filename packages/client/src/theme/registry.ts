@@ -139,6 +139,19 @@ export const themeAppearanceProperties: Readonly<
   disabledStyle: '--theme-disabled-style',
   fontFamily: '--theme-font-family',
   monoFontFamily: '--theme-mono-font-family',
+  displayFontFamily: '--theme-display-font-family',
+  textXs: '--theme-text-xs',
+  textSm: '--theme-text-sm',
+  textBase: '--theme-text-base',
+  textLg: '--theme-text-lg',
+  textXl: '--theme-text-xl',
+  text2xl: '--theme-text-2xl',
+  leadingXs: '--theme-text-xs-leading',
+  leadingSm: '--theme-text-sm-leading',
+  leadingBase: '--theme-text-base-leading',
+  leadingLg: '--theme-text-lg-leading',
+  leadingXl: '--theme-text-xl-leading',
+  leading2xl: '--theme-text-2xl-leading',
   elevationSurface: '--theme-elevation-surface',
   shadow2xs: '--theme-shadow-2xs',
   shadowXs: '--theme-shadow-xs',
@@ -169,6 +182,19 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   fontFamily: 'Inter, sans-serif',
   monoFontFamily:
     "'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, 'Cascadia Mono', 'Liberation Mono', Consolas, monospace",
+  displayFontFamily: 'Inter, sans-serif',
+  textXs: '0.75rem',
+  textSm: '0.875rem',
+  textBase: '1rem',
+  textLg: '1.125rem',
+  textXl: '1.25rem',
+  text2xl: '1.5rem',
+  leadingXs: 'calc(1 / 0.75)',
+  leadingSm: 'calc(1.25 / 0.875)',
+  leadingBase: 'calc(1.5 / 1)',
+  leadingLg: 'calc(1.75 / 1.125)',
+  leadingXl: 'calc(1.75 / 1.25)',
+  leading2xl: 'calc(2 / 1.5)',
   elevationSurface: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
   shadow2xs: '0 1px rgb(0 0 0 / 0.05)',
   shadowXs: '0 1px 2px 0 rgb(0 0 0 / 0.05)',
@@ -314,6 +340,19 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
   );
 }
 
+/**
+ * Headings drew the UI family before the display role existed, so a theme that
+ * names its own `fontFamily` and no display family keeps its headings in it.
+ */
+function withDisplayFamily(appearance?: Partial<IThemeAppearance>): IThemeAppearance {
+  const known = knownAppearance(appearance);
+  const display =
+    known.displayFontFamily === undefined && known.fontFamily !== undefined
+      ? { displayFontFamily: known.fontFamily }
+      : {};
+  return { ...defaultAppearance, ...known, ...display };
+}
+
 export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedThemeDefinition {
   const errors = validateThemeDefinition(theme);
   if (errors.length > 0) {
@@ -454,10 +493,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,
-    appearance: withComposableShadows({
-      ...defaultAppearance,
-      ...knownAppearance(definition?.appearance),
-    }),
+    appearance: withComposableShadows(withDisplayFamily(definition?.appearance)),
     /** Mode last: a mode override is more specific than the theme-wide set. */
     brands: {
       ...defaultBrands,
