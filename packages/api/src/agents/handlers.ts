@@ -36,22 +36,24 @@ import type { CodeEnvRef, CodeWorkspaceOperation, PtcToolCallEvent } from 'libre
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { CodeEnvFile, CodeSessionContext } from '@librechat/agents';
 import type {
-  BackgroundToolDeadClaimRecovery,
-  BackgroundToolWakeupAdmission,
-  BackgroundToolWakeupRegistration,
-  PendingBackgroundCompletionControls,
-} from './backgroundCompletion';
-import type {
   WorkspaceEditResult,
+  WorkspaceTextEdit,
   WorkspacePreviewEditResult,
   WorkspaceListResult,
   WorkspaceReadResult,
   WorkspaceSearchResult,
   WorkspaceWriteResult,
 } from '~/code/workspace';
+import type {
+  BackgroundToolDeadClaimRecovery,
+  BackgroundToolWakeupAdmission,
+  BackgroundToolWakeupRegistration,
+  PendingBackgroundCompletionControls,
+} from './backgroundCompletion';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
+import type { WorkspaceEditMatching } from '~/code/edits';
 import type { CodeExecutionContext } from './execution';
 import type { TextContentFragment } from '~/protection';
 import type { RunFileSession } from './files/session';
@@ -629,7 +631,9 @@ export interface ToolExecuteOptions {
   /** Previews exact replacements without mutating an attached worker workspace. */
   previewWorkspaceEdit?: (params: {
     file_path: string;
-    edits: Array<{ oldText: string; newText: string }>;
+    edits: WorkspaceTextEdit[];
+    /** Sent only to workers that negotiated `tolerant_match`. */
+    matching?: WorkspaceEditMatching;
     workspace_id: string;
     workspace_instance_id?: string;
     linked_worktrees?: boolean;
@@ -645,8 +649,10 @@ export interface ToolExecuteOptions {
   /** Applies exact replacements atomically within an attached worker workspace. */
   editWorkspaceFile?: (params: {
     file_path: string;
-    edits: Array<{ oldText: string; newText: string }>;
+    edits: WorkspaceTextEdit[];
     expected_base_sha256?: string;
+    /** Sent only to workers that negotiated `tolerant_match`. */
+    matching?: WorkspaceEditMatching;
     workspace_id: string;
     workspace_instance_id?: string;
     linked_worktrees?: boolean;
@@ -1044,12 +1050,16 @@ type ParsedSkillAuthoringPath = {
 type TextEdit = {
   old_text: string;
   new_text: string;
+  /** Replaces every location instead of requiring exactly one. */
+  replace_all?: boolean;
 };
+
+type MatchedRange = { index: number; length: number };
 
 type MatchStatus =
   | { status: 'matched'; index: number; length: number; strategy: string }
   | { status: 'none' }
-  | { status: 'ambiguous'; strategy: string; count: number };
+  | { status: 'ambiguous'; strategy: string; count: number; matches: MatchedRange[] };
 
 type LoadedSkillText =
   | { status: 'loaded'; content: string; bytes: number; fileId?: string }
@@ -1649,9 +1659,30 @@ function coerceJsonValue(value: unknown): unknown {
   }
 }
 
+/** `replace_all` as a boolean, tolerating the stringified form some models send. */
+function normalizeReplaceAll(value: unknown): boolean | undefined | string {
+  if (value === true || value === 'true') return true;
+  if (value === undefined || value === null || value === false || value === 'false') {
+    return undefined;
+  }
+  return 'replace_all must be true or false.';
+}
+
+function textEdit(oldText: string, newText: string, rawReplaceAll: unknown): TextEdit | string {
+  if (oldText.length === 0) {
+    return 'old_text cannot be empty.';
+  }
+  const replaceAll = normalizeReplaceAll(rawReplaceAll);
+  if (typeof replaceAll === 'string') return replaceAll;
+  return replaceAll
+    ? { old_text: oldText, new_text: newText, replace_all: true }
+    : { old_text: oldText, new_text: newText };
+}
+
 function normalizeEditArgs(args: {
   old_text?: unknown;
   new_text?: unknown;
+  replace_all?: unknown;
   edits?: unknown;
 }): TextEdit[] | string {
   const coercedEdits = coerceJsonValue(args.edits);
@@ -1662,14 +1693,13 @@ function normalizeEditArgs(args: {
       if (!edit || typeof edit !== 'object') {
         return 'Each edit must be an object with old_text and new_text.';
       }
-      const entry = edit as { old_text?: unknown; new_text?: unknown };
+      const entry = edit as { old_text?: unknown; new_text?: unknown; replace_all?: unknown };
       if (typeof entry.old_text !== 'string' || typeof entry.new_text !== 'string') {
         return 'Each edit requires string old_text and new_text.';
       }
-      if (entry.old_text.length === 0) {
-        return 'old_text cannot be empty.';
-      }
-      edits.push({ old_text: entry.old_text, new_text: entry.new_text });
+      const normalized = textEdit(entry.old_text, entry.new_text, entry.replace_all);
+      if (typeof normalized === 'string') return normalized;
+      edits.push(normalized);
     }
     return edits;
   }
@@ -1677,10 +1707,8 @@ function normalizeEditArgs(args: {
   if (typeof args.old_text !== 'string' || typeof args.new_text !== 'string') {
     return 'Provide old_text and new_text, or a non-empty edits array.';
   }
-  if (args.old_text.length === 0) {
-    return 'old_text cannot be empty.';
-  }
-  return [{ old_text: args.old_text, new_text: args.new_text }];
+  const normalized = textEdit(args.old_text, args.new_text, args.replace_all);
+  return typeof normalized === 'string' ? normalized : [normalized];
 }
 
 function countExactOccurrences(content: string, needle: string): number[] {
@@ -1703,7 +1731,12 @@ function findExactMatch(content: string, needle: string): MatchStatus {
     return { status: 'matched', index: matches[0], length: needle.length, strategy: 'exact' };
   }
   if (matches.length > 1) {
-    return { status: 'ambiguous', strategy: 'exact', count: matches.length };
+    return {
+      status: 'ambiguous',
+      strategy: 'exact',
+      count: matches.length,
+      matches: matches.map((index) => ({ index, length: needle.length })),
+    };
   }
   return { status: 'none' };
 }
@@ -1774,7 +1807,7 @@ function findLineWindowMatch(
     return { status: 'matched', ...matches[0], strategy };
   }
   if (matches.length > 1) {
-    return { status: 'ambiguous', strategy, count: matches.length };
+    return { status: 'ambiguous', strategy, count: matches.length, matches };
   }
   return { status: 'none' };
 }
@@ -1802,7 +1835,12 @@ function findWhitespaceNormalizedMatch(content: string, needle: string): MatchSt
     return { status: 'matched', ...matches[0], strategy: 'whitespace-normalized' };
   }
   if (matches.length > 1) {
-    return { status: 'ambiguous', strategy: 'whitespace-normalized', count: matches.length };
+    return {
+      status: 'ambiguous',
+      strategy: 'whitespace-normalized',
+      count: matches.length,
+      matches,
+    };
   }
   return { status: 'none' };
 }
@@ -1823,6 +1861,28 @@ function findReplacementMatch(content: string, needle: string): MatchStatus {
   return findLineWindowMatch(content, needle, 'indentation-flexible');
 }
 
+/** Keeps the earliest of any overlapping matches so replacements never collide. */
+function nonOverlapping(matches: readonly MatchedRange[]): MatchedRange[] {
+  const kept: MatchedRange[] = [];
+  let end = -1;
+  for (const match of [...matches].sort((a, b) => a.index - b.index)) {
+    if (match.index < end) continue;
+    kept.push(match);
+    end = match.index + match.length;
+  }
+  return kept;
+}
+
+function replaceMatches(content: string, matches: readonly MatchedRange[], text: string): string {
+  let result = '';
+  let cursor = 0;
+  for (const match of matches) {
+    result += content.slice(cursor, match.index) + text;
+    cursor = match.index + match.length;
+  }
+  return result + content.slice(cursor);
+}
+
 function applyTextEdits(
   content: string,
   edits: TextEdit[],
@@ -1835,10 +1895,16 @@ function applyTextEdits(
     if (match.status === 'none') {
       throw new Error('old_text did not match the file content.');
     }
-    if (match.status === 'ambiguous') {
+    if (match.status === 'ambiguous' && edit.replace_all !== true) {
       throw new Error(
-        `old_text matched ${match.count} locations with ${match.strategy}; make it unique before retrying.`,
+        `old_text matched ${match.count} locations with ${match.strategy}; make it unique or set replace_all before retrying.`,
       );
+    }
+    if (match.status === 'ambiguous') {
+      const matches = nonOverlapping(match.matches);
+      working = replaceMatches(working, matches, edit.new_text);
+      strategies.push(`${match.strategy} x${matches.length}`);
+      continue;
     }
     working =
       working.slice(0, match.index) + edit.new_text + working.slice(match.index + match.length);
@@ -4038,6 +4104,37 @@ async function handleAttachedWorkspaceCreateFileCall({
   }
 }
 
+/** One sentence per edit that did not match exactly once, so the model can verify it. */
+function describeAttachedEdit(filePath: string, result: WorkspaceEditResult): string {
+  const count = result.replacements;
+  const notes = (result.matches ?? []).flatMap((match, index) => {
+    const edit = count === 1 ? 'the edit' : `edit ${index + 1}`;
+    const found = match.strategy === 'exact' ? [] : [`${edit} matched with ${match.strategy}`];
+    return match.occurrences > 1
+      ? [...found, `${edit} replaced ${match.occurrences} locations`]
+      : found;
+  });
+  if (notes.length === 0) {
+    return `Updated workspace/${filePath} with ${count} exact replacement${count === 1 ? '' : 's'}.`;
+  }
+  return `Updated workspace/${filePath} with ${count} replacement${count === 1 ? '' : 's'} (${notes.join('; ')}).`;
+}
+
+/**
+ * Current workers explain a rejected edit themselves: every failing edit, why, and where. Older
+ * workers only say it must match exactly once, and a file that changed mid-edit is its own case.
+ */
+function describeAttachedEditConflict(filePath: string, error: WorkspaceToolHttpError): string {
+  const conflict = error.editConflict;
+  if (conflict?.startsWith('Workspace file changed')) {
+    return `"workspace/${filePath}" changed while this edit was being applied, so nothing was written. Re-read the file and retry.`;
+  }
+  if (conflict && conflict !== 'Workspace edit must match exactly once') {
+    return `workspace/${filePath}: ${conflict}`;
+  }
+  return `${error.message}; The requested text did not match exactly once in "workspace/${filePath}". Re-read the file and retry.`;
+}
+
 async function handleAttachedWorkspaceEditFileCall({
   tc,
   options,
@@ -4080,11 +4177,22 @@ async function handleAttachedWorkspaceEditFileCall({
   if (filteredName != null) return filteredName;
   const workspaceId = selectedWorkspaceId(codeExecutionContext, 'edit_file');
   if (!workspaceId) return unavailableWorkspaceOperation(tc, 'edit_file');
+  const editFeatures = codeExecutionContext.codeWorkspace?.editFileFeatures ?? [];
+  if (edits.some((edit) => edit.replace_all === true) && !editFeatures.includes('replace_all')) {
+    return errorResult(
+      tc,
+      'replace_all needs a newer LibreChat Code worker on this machine. Make each old_text unique instead.',
+    );
+  }
+  const matching: WorkspaceEditMatching | undefined = editFeatures.includes('tolerant_match')
+    ? 'tolerant'
+    : undefined;
 
   try {
-    const workspaceEdits = edits.map((edit) => ({
+    const workspaceEdits: WorkspaceTextEdit[] = edits.map((edit) => ({
       oldText: edit.old_text,
       newText: edit.new_text,
+      ...(edit.replace_all === true ? { replaceAll: true } : {}),
     }));
     const workspaceParams = attachedWorkspaceMutationParams(
       codeExecutionContext,
@@ -4109,6 +4217,7 @@ async function handleAttachedWorkspaceEditFileCall({
         preview = await options.previewWorkspaceEdit({
           file_path: path.filePath,
           edits: workspaceEdits,
+          ...(matching ? { matching } : {}),
           ...workspaceParams,
         });
       } catch (error) {
@@ -4132,24 +4241,23 @@ async function handleAttachedWorkspaceEditFileCall({
       file_path: path.filePath,
       edits: workspaceEdits,
       ...(expectedBaseSha256 ? { expected_base_sha256: expectedBaseSha256 } : {}),
+      ...(matching ? { matching } : {}),
       ...workspaceParams,
     });
-    return successResult(
-      tc,
-      `Updated workspace/${path.filePath} with ${result.replacements} exact replacement${result.replacements === 1 ? '' : 's'}.`,
-      {
-        path: `workspace/${path.filePath}`,
-        [HOST_FILE_AUTHORING_ARTIFACT_KEY]: true,
-        bytes_written: result.bytesWritten,
-        created: false,
-        edits: result.replacements,
-        strategies: Array.from({ length: result.replacements }, () => 'exact'),
-      },
-    );
+    return successResult(tc, describeAttachedEdit(path.filePath, result), {
+      path: `workspace/${path.filePath}`,
+      [HOST_FILE_AUTHORING_ARTIFACT_KEY]: true,
+      bytes_written: result.bytesWritten,
+      created: false,
+      edits: result.replacements,
+      strategies:
+        result.matches?.map((match) => match.strategy) ??
+        Array.from({ length: result.replacements }, () => 'exact'),
+    });
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) {
       if (error.upstreamStatus === 409) {
-        error.message += `; The requested text did not match exactly once in "workspace/${path.filePath}". Re-read the file and retry.`;
+        error.message = describeAttachedEditConflict(path.filePath, error);
       }
       throw error;
     }
@@ -4436,6 +4544,7 @@ async function handleEditFileCall(
     path?: unknown;
     old_text?: unknown;
     new_text?: unknown;
+    replace_all?: unknown;
     edits?: unknown;
   };
   if (typeof args.path !== 'string' || args.path.length === 0) {

@@ -4,8 +4,10 @@ import {
   CODE_ENVIRONMENT_QUEUE_WAIT_DEFAULT_MS,
   CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS,
 } from 'librechat-data-provider';
+import type { WorkspaceEditMatch, WorkspaceEditMatching } from './edits';
 import type { CodeBridgeFetch } from './bridge';
 import { CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS } from './limits';
+import { WORKSPACE_EDIT_MATCH_STRATEGIES } from './edits';
 
 const WORKSPACE_TOOL_TIMEOUT_MS = 30_000;
 const MAX_PATH_LENGTH = 4096;
@@ -106,6 +108,7 @@ const EDIT_RESULT_KEYS = new Set([
   'path',
   'replacements',
   'bytesWritten',
+  'matches',
 ]);
 const PREVIEW_EDIT_RESULT_KEYS = new Set([
   'protocolVersion',
@@ -117,8 +120,10 @@ const PREVIEW_EDIT_RESULT_KEYS = new Set([
   'baseSha256',
   'replacements',
   'bytesWritten',
+  'matches',
 ]);
-const TEXT_EDIT_KEYS = new Set(['oldText', 'newText']);
+const TEXT_EDIT_KEYS = new Set(['oldText', 'newText', 'replaceAll']);
+const EDIT_MATCH_KEYS = new Set(['strategy', 'occurrences']);
 
 export interface WorkspaceReadRequest {
   protocolVersion: 1;
@@ -176,6 +181,8 @@ export interface WorkspaceWriteRequest {
 export interface WorkspaceTextEdit {
   oldText: string;
   newText: string;
+  /** Requires the worker's `replace_all` edit feature. */
+  replaceAll?: boolean;
 }
 
 export interface WorkspaceEditRequest {
@@ -186,6 +193,8 @@ export interface WorkspaceEditRequest {
   path: string;
   edits: WorkspaceTextEdit[];
   expectedBaseSha256?: string;
+  /** Requires the worker's `tolerant_match` edit feature. */
+  matching?: WorkspaceEditMatching;
 }
 
 export interface WorkspacePreviewEditRequest {
@@ -195,6 +204,8 @@ export interface WorkspacePreviewEditRequest {
   workspaceInstanceId?: string;
   path: string;
   edits: WorkspaceTextEdit[];
+  /** Requires the worker's `tolerant_match` edit feature. */
+  matching?: WorkspaceEditMatching;
 }
 
 export type WorkspaceToolRequest =
@@ -263,6 +274,7 @@ export interface WorkspaceEditResult {
   path: string;
   replacements: number;
   bytesWritten: number;
+  matches?: WorkspaceEditMatch[];
 }
 
 export interface WorkspacePreviewEditResult {
@@ -275,6 +287,7 @@ export interface WorkspacePreviewEditResult {
   baseSha256: string;
   replacements: number;
   bytesWritten: number;
+  matches?: WorkspaceEditMatch[];
 }
 
 export type WorkspaceToolResult =
@@ -287,6 +300,12 @@ export type WorkspaceToolResult =
   | WorkspaceExecuteCommandResult;
 
 export class WorkspaceToolHttpError extends Error {
+  /**
+   * The worker's own explanation of a rejected edit (`EDIT_CONFLICT`), which current workers
+   * phrase for the model: which edits failed, why, and where. Absent for other failures.
+   */
+  public readonly editConflict?: string;
+
   constructor(
     public readonly reason: 'rejected' | 'invalid' | 'timeout' | 'failed' | 'insufficient_time',
     public readonly upstreamStatus?: number,
@@ -317,6 +336,22 @@ export class WorkspaceToolHttpError extends Error {
         (upstreamBodyTruncated ? ' [body truncated or incomplete]' : ''),
     );
     this.name = 'WorkspaceToolHttpError';
+    this.editConflict =
+      reason === 'rejected' ? getEditConflict(upstreamStatus, upstreamBody) : undefined;
+  }
+}
+
+function getEditConflict(status?: number, body?: string): string | undefined {
+  if (status !== 409 || !body) {
+    return undefined;
+  }
+  try {
+    const parsed: { code?: unknown; error?: unknown } | null = JSON.parse(body);
+    return parsed?.code === 'EDIT_CONFLICT' && typeof parsed.error === 'string'
+      ? parsed.error
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -481,7 +516,8 @@ function areValidWorkspaceEdits(edits: unknown): edits is WorkspaceTextEdit[] {
       !hasOnlyKeys(edit, TEXT_EDIT_KEYS) ||
       !isUtf8StringWithinBytes(edit.oldText, WORKSPACE_WRITE_MAX_BYTES) ||
       edit.oldText.length === 0 ||
-      !isUtf8StringWithinBytes(edit.newText, WORKSPACE_WRITE_MAX_BYTES)
+      !isUtf8StringWithinBytes(edit.newText, WORKSPACE_WRITE_MAX_BYTES) ||
+      (edit.replaceAll !== undefined && typeof edit.replaceAll !== 'boolean')
     ) {
       return false;
     }
@@ -491,6 +527,40 @@ function areValidWorkspaceEdits(edits: unknown): edits is WorkspaceTextEdit[] {
     if (bytes > WORKSPACE_WRITE_MAX_BYTES) return false;
   }
   return true;
+}
+
+function isValidEditMatching(matching: unknown): boolean {
+  return matching === undefined || matching === 'exact' || matching === 'tolerant';
+}
+
+/** Whether an edit request opted into per-edit match reporting (and so must receive it). */
+function reportsEditMatches(request: WorkspaceEditRequest | WorkspacePreviewEditRequest): boolean {
+  return (
+    request.matching !== undefined || request.edits.some((edit) => edit.replaceAll !== undefined)
+  );
+}
+
+function areValidEditMatches(
+  request: WorkspaceEditRequest | WorkspacePreviewEditRequest,
+  matches: unknown,
+): boolean {
+  if (!reportsEditMatches(request)) {
+    return matches === undefined;
+  }
+  return (
+    Array.isArray(matches) &&
+    matches.length === request.edits.length &&
+    matches.every(
+      (match, index) =>
+        isRecord(match) &&
+        hasOnlyKeys(match, EDIT_MATCH_KEYS) &&
+        typeof match.strategy === 'string' &&
+        WORKSPACE_EDIT_MATCH_STRATEGIES.has(match.strategy) &&
+        (request.matching === 'tolerant' || match.strategy === 'exact') &&
+        isPositiveInteger(match.occurrences, Number.MAX_SAFE_INTEGER) &&
+        (request.edits[index]?.replaceAll === true || match.occurrences === 1),
+    )
+  );
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
@@ -622,12 +692,17 @@ function isValidRequest(request: WorkspaceToolRequest): boolean {
     );
   }
   if (request.operation === 'preview_edit') {
-    return isSafePath(request.path) && areValidWorkspaceEdits(request.edits);
+    return (
+      isSafePath(request.path) &&
+      areValidWorkspaceEdits(request.edits) &&
+      isValidEditMatching(request.matching)
+    );
   }
   if (request.operation === 'edit_file') {
     return (
       isSafePath(request.path) &&
       areValidWorkspaceEdits(request.edits) &&
+      isValidEditMatching(request.matching) &&
       (request.expectedBaseSha256 == null || /^[a-f0-9]{64}$/.test(request.expectedBaseSha256))
     );
   }
@@ -770,7 +845,8 @@ function isValidResult(
       value.replacements === request.edits.length &&
       Number.isSafeInteger(value.bytesWritten) &&
       Number(value.bytesWritten) >= 0 &&
-      Number(value.bytesWritten) <= WORKSPACE_WRITE_MAX_BYTES
+      Number(value.bytesWritten) <= WORKSPACE_WRITE_MAX_BYTES &&
+      areValidEditMatches(request, value.matches)
     );
   }
   if (request.operation === 'preview_edit') {
@@ -786,7 +862,8 @@ function isValidResult(
       Number.isSafeInteger(value.bytesWritten) &&
       Number(value.bytesWritten) ===
         new TextEncoder().encode(content).byteLength + (value.hasUtf8Bom ? 3 : 0) &&
-      Number(value.bytesWritten) <= WORKSPACE_WRITE_MAX_BYTES
+      Number(value.bytesWritten) <= WORKSPACE_WRITE_MAX_BYTES &&
+      areValidEditMatches(request, value.matches)
     );
   }
   const maxResults = request.maxResults ?? 50;

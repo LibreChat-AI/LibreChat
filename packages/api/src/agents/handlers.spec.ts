@@ -5133,7 +5133,55 @@ describe('createToolExecuteHandler', () => {
 
       expect(result.status).toBe('error');
       expect(result.errorMessage).toContain('matched 2 locations');
+      expect(result.errorMessage).toContain('set replace_all');
       expect(saveSkillFileContent).not.toHaveBeenCalled();
+    });
+
+    it('replaces every location of a skill file edit that sets replace_all', async () => {
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: 22,
+        relativePath: 'references/a.md',
+      }));
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'replace-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          content: 'same\nkeep\nsame\n',
+          isBinary: false,
+          mimeType: 'text/markdown',
+          bytes: 15,
+          filepath: '/tmp/a.md',
+          file_id: 'revision-1',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_edit_replace_all',
+          name: 'edit_file',
+          args: {
+            path: 'skills/replace-skill/references/a.md',
+            old_text: 'same',
+            new_text: 'different',
+            replace_all: 'true',
+          },
+        },
+      ]);
+
+      expect(result.errorMessage).toBeUndefined();
+      expect(result.status).toBe('success');
+      expect(result.artifact).toMatchObject({ strategies: ['exact x2'] });
+      expect(saveSkillFileContent).toHaveBeenCalledWith(
+        expect.objectContaining({ content: 'different\nkeep\ndifferent\n' }),
+      );
     });
 
     it('blocks authoring hidden skills unless they were primed this turn', async () => {
@@ -5773,6 +5821,164 @@ describe('createToolExecuteHandler', () => {
         bridgeWorkerId: 'user-worker',
         req,
       });
+    });
+
+    const negotiatedEditContext = (editFileFeatures?: string[]) => ({
+      codeExecutionContext: {
+        baseUrl: 'https://code.example.com',
+        codeSessionKey: 'attached-session',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        environmentId: 'personal-machine',
+        codeEnvironmentConfigSchema: { limits: { maxQueueWaitMs: 0 } },
+        bridgeWorkerId: 'user-worker',
+        codeWorkspace: {
+          environmentId: 'personal-machine',
+          workspaceId: 'project-a',
+          operations: TEST_ATTACHED_WORKSPACE_OPERATIONS,
+          ...(editFileFeatures ? { editFileFeatures } : {}),
+        },
+      },
+    });
+
+    it('opts into tolerant matching and replace_all only when the worker negotiated them', async () => {
+      const editWorkspaceFile = jest.fn(async () => ({
+        protocolVersion: 1 as const,
+        operation: 'edit_file' as const,
+        workspaceId: 'primary',
+        path: 'src/app.ts',
+        replacements: 2,
+        bytesWritten: 40,
+        matches: [
+          { strategy: 'line-trimmed' as const, occurrences: 1 },
+          { strategy: 'exact' as const, occurrences: 3 },
+        ],
+      }));
+      const handler = makeSandboxAuthoringHandler(
+        { editWorkspaceFile },
+        negotiatedEditContext(['expected_base_sha256', 'tolerant_match', 'replace_all']),
+      );
+
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_edit_tolerant',
+          name: 'edit_file',
+          args: {
+            path: 'workspace/src/app.ts',
+            edits: [
+              { old_text: 'draft  ', new_text: 'ready' },
+              { old_text: 'false', new_text: 'true', replace_all: true },
+            ],
+          },
+        },
+      ]);
+
+      expect(editWorkspaceFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          matching: 'tolerant',
+          edits: [
+            { oldText: 'draft  ', newText: 'ready' },
+            { oldText: 'false', newText: 'true', replaceAll: true },
+          ],
+        }),
+      );
+      expect(result).toMatchObject({
+        status: 'success',
+        content:
+          'Updated workspace/src/app.ts with 2 replacements (edit 1 matched with line-trimmed; edit 2 replaced 3 locations).',
+        artifact: { edits: 2, strategies: ['line-trimmed', 'exact'] },
+      });
+    });
+
+    it('refuses replace_all before dispatch when the worker has not negotiated it', async () => {
+      const editWorkspaceFile = jest.fn();
+      const handler = makeSandboxAuthoringHandler(
+        { editWorkspaceFile },
+        negotiatedEditContext(['expected_base_sha256']),
+      );
+
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_edit_replace_all_legacy',
+          name: 'edit_file',
+          args: {
+            path: 'workspace/src/app.ts',
+            old_text: 'false',
+            new_text: 'true',
+            replace_all: true,
+          },
+        },
+      ]);
+
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('replace_all needs a newer LibreChat Code worker');
+      expect(editWorkspaceFile).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'names every failing edit in the worker diagnostic',
+        '2 of 3 workspace edits did not apply, so nothing was written. Every other edit matched.\nEdit 2: old_text matched 2 locations at lines 4, 9; include more surrounding lines so it matches exactly one.',
+        'workspace/src/app.ts: 2 of 3 workspace edits did not apply, so nothing was written. Every other edit matched.\nEdit 2: old_text matched 2 locations at lines 4, 9; include more surrounding lines so it matches exactly one.',
+      ],
+      [
+        'reports a file that changed during the edit',
+        'Workspace file changed before edit could be committed',
+        '"workspace/src/app.ts" changed while this edit was being applied, so nothing was written. Re-read the file and retry.',
+      ],
+    ])('%s instead of a generic match failure', async (_label, diagnostic, expected) => {
+      const handler = makeSandboxAuthoringHandler(
+        {
+          editWorkspaceFile: jest.fn(async () => {
+            throw new WorkspaceToolHttpError(
+              'rejected',
+              409,
+              JSON.stringify({ error: diagnostic, code: 'EDIT_CONFLICT' }),
+            );
+          }),
+        },
+        negotiatedEditContext(['expected_base_sha256', 'tolerant_match', 'replace_all']),
+      );
+
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_edit_conflict',
+          name: 'edit_file',
+          args: { path: 'workspace/src/app.ts', old_text: 'a', new_text: 'b' },
+        },
+      ]);
+
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toBe(expected);
+    });
+
+    it('keeps the retry guidance for workers that only report a bare conflict', async () => {
+      const handler = makeSandboxAuthoringHandler(
+        {
+          editWorkspaceFile: jest.fn(async () => {
+            throw new WorkspaceToolHttpError(
+              'rejected',
+              409,
+              '{"error":"Workspace edit must match exactly once","code":"EDIT_CONFLICT"}',
+            );
+          }),
+        },
+        negotiatedEditContext(),
+      );
+
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'call_edit_legacy_conflict',
+          name: 'edit_file',
+          args: { path: 'workspace/src/app.ts', old_text: 'a', new_text: 'b' },
+        },
+      ]);
+
+      expect(result.errorMessage).toContain('upstreamStatus: 409');
+      expect(result.errorMessage).toContain(
+        'The requested text did not match exactly once in "workspace/src/app.ts". Re-read the file and retry.',
+      );
     });
 
     it('blocks protected attached edit content before worker dispatch', async () => {
