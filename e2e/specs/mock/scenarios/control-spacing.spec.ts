@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import type { ThemeDefinition } from '../../../../packages/client/src/theme/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { NEW_CHAT_PATH } from '../helpers';
+import { NEW_CHAT_PATH, messagesView, sendMessageAndWaitForCompletion } from '../helpers';
 import { probeStyle } from './style.helpers';
 
 /**
@@ -39,7 +39,10 @@ async function storeDefinition(page: Page, definition: ThemeDefinition | null) {
   }, definition);
 }
 
-/** Turns temporary chat on and returns its status chip; the caller turns it back off. */
+/**
+ * Starts a temporary chat and returns its header status chip, which appears once the first
+ * message is sent; the exchange also renders a message bubble padded by the shared spacing.
+ */
 async function temporaryChip(page: Page): Promise<Locator> {
   await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
   const toggle = page.locator(TOGGLE);
@@ -48,18 +51,29 @@ async function temporaryChip(page: Page): Promise<Locator> {
     await toggle.click();
   }
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await sendMessageAndWaitForCompletion(page, 'Control spacing probe');
   const chip = page.getByRole('status').filter({ has: page.locator('svg.lucide-hat-glasses') });
-  await expect(chip).toBeVisible();
+  await expect(chip).toBeVisible({ timeout: 20000 });
   return chip;
 }
 
+/** The mode is persisted locally, so the next scenario starts from a normal chat. */
 async function leaveTemporaryChat(page: Page) {
+  await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
   const toggle = page.locator(TOGGLE);
+  await expect(toggle).toBeVisible({ timeout: 20000 });
   if ((await toggle.getAttribute('aria-pressed')) === 'true') {
     await toggle.click();
   }
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
 }
+
+/** The sent message's bubble, the one element padded by `px-theme-normal`. */
+const bubblePadding = (page: Page) =>
+  messagesView(page)
+    .locator('.px-theme-normal')
+    .first()
+    .evaluate((node: HTMLElement) => getComputedStyle(node).paddingLeft);
 
 const spacing = (chip: Locator) =>
   chip.evaluate((node: HTMLElement) => {
@@ -81,7 +95,7 @@ test.describe('theme control spacing', () => {
     expect(await spacing(chip)).toEqual({ paddingLeft: '12px', paddingRight: '12px', gap: '6px' });
     expect(await probeStyle(page, 'px-theme-control-x', 'padding-left')).toBe('12px');
     expect(await probeStyle(page, 'gap-theme-control-gap', 'column-gap')).toBe('6px');
-    expect(await probeStyle(page, 'px-theme-normal', 'padding-left')).toBe('12px');
+    expect(await bubblePadding(page)).toBe('12px');
 
     await leaveTemporaryChat(page);
   });
@@ -96,7 +110,7 @@ test.describe('theme control spacing', () => {
     /** `button.basic.space.x` and `button.basic.space.gap`. */
     expect(await spacing(chip)).toEqual({ paddingLeft: '16px', paddingRight: '16px', gap: '8px' });
     /** Message bubbles and the send button keep the shared spacing roles. */
-    expect(await probeStyle(page, 'px-theme-normal', 'padding-left')).toBe('12px');
+    expect(await bubblePadding(page)).toBe('12px');
     expect(await probeStyle(page, 'p-theme-compact', 'padding-top')).toBe('6px');
 
     await leaveTemporaryChat(page);
@@ -110,7 +124,7 @@ test.describe('theme control spacing', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'legacy-spacing-reference');
 
     expect(await spacing(chip)).toEqual({ paddingLeft: '8px', paddingRight: '8px', gap: '4px' });
-    expect(await probeStyle(page, 'px-theme-normal', 'padding-left')).toBe('8px');
+    expect(await bubblePadding(page)).toBe('8px');
 
     await leaveTemporaryChat(page);
   });
