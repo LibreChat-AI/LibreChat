@@ -13,25 +13,40 @@ import { probeStyle } from './style.helpers';
 test.describe.configure({ timeout: 120_000 });
 test.use({ viewport: { width: 1280, height: 800 } });
 
-async function storeTheme(page: Page, definition: unknown) {
-  await page.addInitScript((stored) => {
-    localStorage.removeItem('theme-colors');
-    localStorage.removeItem('theme-name');
-    if (stored) {
-      localStorage.setItem('theme-definition', JSON.stringify(stored));
-      localStorage.setItem('theme-source', 'definition');
-    } else {
-      localStorage.removeItem('theme-definition');
-      localStorage.removeItem('theme-source');
-    }
-  }, definition ?? null);
+const THEME_PARAM = 'e2eTheme';
+
+/**
+ * One init script per page: Playwright does not order several, so the theme a navigation wants
+ * rides in its URL (`?e2eTheme=clickhouse`) and the script stores that definition or clears it.
+ */
+async function installThemeBridge(page: Page) {
+  await page.addInitScript(
+    ([param, definition]) => {
+      const wanted = new URL(location.href).searchParams.get(param);
+      if (wanted === null) {
+        return;
+      }
+      localStorage.removeItem('theme-colors');
+      localStorage.removeItem('theme-name');
+      if (wanted === 'clickhouse') {
+        localStorage.setItem('theme-definition', JSON.stringify(definition));
+        localStorage.setItem('theme-source', 'definition');
+      } else {
+        localStorage.removeItem('theme-definition');
+        localStorage.removeItem('theme-source');
+      }
+    },
+    [THEME_PARAM, clickHouseTheme] as const,
+  );
 }
+
+type ThemeChoice = 'clickhouse' | 'default';
 
 const radius = (locator: Locator) =>
   locator.evaluate((node) => getComputedStyle(node).borderTopLeftRadius);
 
-async function openGeneralSettings(page: Page): Promise<Locator> {
-  await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+async function openGeneralSettings(page: Page, theme: ThemeChoice): Promise<Locator> {
+  await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=${theme}`, { timeout: 15000 });
   await page.getByTestId('nav-user').click();
   await page.getByRole('menuitem', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
@@ -42,8 +57,8 @@ async function openGeneralSettings(page: Page): Promise<Locator> {
   return dialog;
 }
 
-async function settingsControlRadii(page: Page) {
-  const dialog = await openGeneralSettings(page);
+async function settingsControlRadii(page: Page, theme: ThemeChoice) {
+  const dialog = await openGeneralSettings(page, theme);
   const select = dialog.getByRole('combobox').first();
   await expect(select).toBeVisible();
   return {
@@ -52,8 +67,8 @@ async function settingsControlRadii(page: Page) {
   };
 }
 
-async function marketplaceToolbarRadii(page: Page) {
-  await page.goto('/agents/all', { timeout: 15000 });
+async function marketplaceToolbarRadii(page: Page, theme: ThemeChoice) {
+  await page.goto(`/agents/all?${THEME_PARAM}=${theme}`, { timeout: 15000 });
   const sort = page.getByTestId('agent-sort-dropdown');
   await expect(sort).toBeVisible({ timeout: 30000 });
   const controls: Locator[] = [
@@ -72,9 +87,9 @@ test.describe('control radius', () => {
   test('settings selects and tabs take the ClickHouse control radius @scenario:clickhouse-settings-controls-take-control-radius', async ({
     page,
   }) => {
-    await storeTheme(page, clickHouseTheme);
+    await installThemeBridge(page);
 
-    const radii = await settingsControlRadii(page);
+    const radii = await settingsControlRadii(page, 'clickhouse');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
     const control = await probeStyle(page, 'rounded-theme-control', 'border-top-left-radius');
     const dialogStep = await probeStyle(page, 'rounded-xl', 'border-top-left-radius');
@@ -88,9 +103,9 @@ test.describe('control radius', () => {
   test('the default theme keeps its settings control corners @scenario:default-theme-settings-controls-keep-radius', async ({
     page,
   }) => {
-    await storeTheme(page, null);
+    await installThemeBridge(page);
 
-    const radii = await settingsControlRadii(page);
+    const radii = await settingsControlRadii(page, 'default');
     await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'clickhouse');
     const previous = await probeStyle(page, 'rounded-xl', 'border-top-left-radius');
 
@@ -101,9 +116,11 @@ test.describe('control radius', () => {
   test('the marketplace toolbar controls share one corner in every theme @scenario:marketplace-toolbar-shares-one-radius', async ({
     page,
   }) => {
-    for (const definition of [null, clickHouseTheme]) {
-      await storeTheme(page, definition);
-      const radii = await marketplaceToolbarRadii(page);
+    await installThemeBridge(page);
+    for (const theme of ['default', 'clickhouse'] as ThemeChoice[]) {
+      const radii = await marketplaceToolbarRadii(page, theme);
+      const html = expect(page.locator('html'));
+      await (theme === 'clickhouse' ? html : html.not).toHaveAttribute('data-theme', 'clickhouse');
       const button = await probeStyle(page, 'rounded-lg', 'border-top-left-radius');
 
       expect(radii.length).toBeGreaterThanOrEqual(3);
