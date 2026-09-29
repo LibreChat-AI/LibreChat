@@ -44,6 +44,12 @@ The defaults reproduce the scale those utilities had before, so a theme that nam
 changes nothing. The mapping lives in `tokens.css`, which the app stylesheet imports and
 `@librechat/client/theme.css` publishes, so a consumer's utilities are the app's.
 
+The stock families name Inter (`font-sans`, `font-theme-ui`) and Roboto Mono (`font-mono`), which
+the LibreChat app self-hosts with its own `@font-face` rules; the package does not ship the font
+files. A consumer that does not load them renders the next family in each stack (`sans-serif`, then
+`ui-monospace` and the platform monospace fonts), or sets `fontFamily` and `monoFontFamily`, or the
+`--theme-font-family` and `--theme-mono-font-family` properties, to families it does load.
+
 > **Breaking change:** the preset used to pin `rounded-sm`, `rounded-md` and `rounded-lg` to
 > `--radius` (0.125rem, 0.375rem and 0.5rem by default). They now read `--theme-radius-sm`,
 > `--theme-radius-md` and `--theme-radius-lg` like the app's, so `rounded-sm` renders at
