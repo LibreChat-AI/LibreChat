@@ -47,7 +47,7 @@ interface ToolArtifactCardProps {
  *     Without that guard, both cards would observe each other's write
  *     and trade overwrites in a loop.
  *
- *  3. **Focus + open on mount** (deps: artifact.id, artifact.type) —
+ *  3. **Focus + open on ownership change** (deps: artifact.id, artifact.type, ownerMessageId) —
  *     gated on this message's `isSubmitting` captured on mount AND
  *     on `artifact.type !== CODE`. A card mounted *during* streaming
  *     for a rich-preview bucket (HTML, React, Markdown, plain text)
@@ -67,7 +67,8 @@ interface ToolArtifactCardProps {
  */
 const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) => {
   const claimKey = useId();
-  const { isSubmitting } = useMessageContext();
+  const { isSubmitting, messageId } = useMessageContext();
+  const ownerMessageId = messageId || attachment.messageId || '';
   const file = attachment as TFile & TAttachmentMetadata;
   const fileId = file.file_id;
   const setVisible = useSetRecoilState(store.artifactsVisibility);
@@ -79,25 +80,28 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
   const [claim, setClaim] = useRecoilState(store.toolArtifactClaim(artifact.id));
   const isSelected = artifact.id === currentArtifactId;
   const isMyClaim = claim === claimKey;
-  /* Read+reset on mount only — `useRecoilCallback` avoids subscribing
-   * to the per-file_id flag (no re-renders when other files resolve).
+  /* Read+reset only for this response — `useRecoilCallback` avoids subscribing
+   * to other file or message flags (no re-renders when other previews resolve).
    * The deferred-preview hook flips this to `true` on the pending→ready
    * edge; we consume it once and reset, so repeat mounts (panel close
    * then reopen, history scroll) don't auto-open a second time. */
   const consumeJustResolved = useRecoilCallback(
     ({ snapshot, reset }) =>
-      (id: string) => {
-        const flagged = snapshot.getLoadable(store.previewJustResolved(id)).valueMaybe() ?? false;
+      (ownerId: string, id: string) => {
+        const signal = store.previewJustResolved([ownerId, id]);
+        const flagged = snapshot.getLoadable(signal).valueMaybe() ?? false;
         if (flagged) {
-          reset(store.previewJustResolved(id));
+          reset(signal);
         }
         return flagged;
       },
     [],
   );
-  /** Preserve the message's submission state at mount: a previous sibling's
-   * artifact can remount while regeneration is submitting a different response. */
-  const mountedDuringStreamRef = useRef(isSubmitting === true);
+  /** Positional reconciliation can reuse this card for another response with the same file ID. */
+  const mountedDuringStreamRef = useRef({ ownerMessageId, isSubmitting: isSubmitting === true });
+  if (mountedDuringStreamRef.current.ownerMessageId !== ownerMessageId) {
+    mountedDuringStreamRef.current = { ownerMessageId, isSubmitting: isSubmitting === true };
+  }
 
   useLayoutEffect(() => {
     // Always (re)claim on mount — a later card for the same id displaces
@@ -142,8 +146,8 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
       return;
     }
     /* Two paths qualify the card for auto-open:
-     *   1. Streaming-time mount — ref captured `isSubmitting === true`
-     *      at first render. The card is part of the live response, so
+     *   1. Streaming-time ownership — ref captured `isSubmitting === true`
+     *      when this message became the owner. The card is part of the live response, so
      *      the legacy "panel pops open as artifacts arrive" UX applies.
      *   2. Just-resolved deferred preview — `useAttachmentPreviewSync`
      *      sets a one-shot flag on the pending→ready edge. The
@@ -155,8 +159,9 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
      * History mounts (file already resolved on page load) hit neither
      * path, so the panel stays closed on navigation — no jarring
      * auto-open just from scrolling past an old artifact. */
-    const justResolved = fileId ? consumeJustResolved(fileId) : false;
-    if (!mountedDuringStreamRef.current && !justResolved) {
+    const justResolved =
+      fileId && ownerMessageId ? consumeJustResolved(ownerMessageId, fileId) : false;
+    if (!mountedDuringStreamRef.current.isSubmitting && !justResolved) {
       return;
     }
     // Streaming arrival or just-resolved preview: focus the new artifact
@@ -166,7 +171,15 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
     // never actually open — `Presentation` gates rendering on visibility.
     setCurrentArtifactId(artifact.id);
     setVisible(true);
-  }, [artifact.id, artifact.type, fileId, consumeJustResolved, setCurrentArtifactId, setVisible]);
+  }, [
+    artifact.id,
+    artifact.type,
+    fileId,
+    ownerMessageId,
+    consumeJustResolved,
+    setCurrentArtifactId,
+    setVisible,
+  ]);
 
   const { handleDownload } = useAttachmentLink({
     href: attachment.filepath ?? '',
