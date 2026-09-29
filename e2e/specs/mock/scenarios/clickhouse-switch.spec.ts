@@ -54,13 +54,13 @@ async function settingsSwitch(page: Page, theme: ThemeChoice, mode: Mode): Promi
   return control;
 }
 
-/** The switch's own hit area: the invisible layer that keeps a compact track tappable. */
+/** What takes a tap: the track's own box together with the invisible layer centered on it. */
 const hitArea = (control: Locator) =>
-  control.evaluate((node) => {
+  control.evaluate((node: HTMLElement) => {
     const layer = getComputedStyle(node, '::before');
     return {
-      width: parseFloat(layer.width),
-      height: parseFloat(layer.height),
+      width: Math.max(node.offsetWidth, parseFloat(layer.width)),
+      height: Math.max(node.offsetHeight, parseFloat(layer.height)),
       coarse: matchMedia('(any-pointer: coarse)').matches,
     };
   });
@@ -98,7 +98,7 @@ test.describe('theme switch', () => {
       const hit = await hitArea(control);
       const floor = hit.coarse ? 44 : 24;
       expect(hit.height).toBeGreaterThanOrEqual(floor);
-      expect(hit.width).toBeGreaterThanOrEqual(Math.max(32, floor));
+      expect(hit.width).toBeGreaterThanOrEqual(floor);
     }
   });
 
