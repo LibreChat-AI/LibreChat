@@ -9,6 +9,7 @@ import type { UserDocumentId } from '~/auth/verification';
 import {
   TOKEN_RETIREMENT_FIELDS,
   recheckMintedCredential,
+  withdrawMintedSession,
   generateTwoFactorSetupToken,
   hasPasswordResetSince,
   isCredentialLoginBlockedByTwoFactorPolicy,
@@ -45,17 +46,8 @@ export function createLoginController(deps: LoginDependencies) {
     return res.status(401).json({ message: 'Invalid credentials' });
   };
 
-  const withdrawLoginSession = async (res: Response, user: LoginUser): Promise<void> => {
-    const userId = user._id.toString();
-    await deps.deleteAllUserSessions({ userId });
-    res.clearCookie('refreshToken');
-    res.clearCookie('token_provider');
-    deps.clearCloudFrontCookies(res, {
-      userId,
-      tenantId: user.tenantId ?? user.orgId,
-      storageRegion: user.storageRegion,
-    });
-  };
+  const withdrawLoginSession = (res: Response, user: LoginUser): Promise<void> =>
+    withdrawMintedSession(res, user, user._id.toString(), deps);
 
   return async (req: LoginRequest, res: Response): Promise<Response> => {
     try {

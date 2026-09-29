@@ -7,6 +7,7 @@ import {
   generateTwoFactorSetupToken,
   isTokenRetired,
   recheckMintedCredential,
+  withdrawMintedSession,
   isTwoFactorEnrollmentRequired,
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
@@ -96,16 +97,8 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
     return isTokenRetired(credential, current);
   };
 
-  const revokeSession = async (res: Response, user: RefreshUser, userId: string) => {
-    await deps.deleteAllUserSessions({ userId });
-    res.clearCookie('refreshToken');
-    res.clearCookie('token_provider');
-    deps.clearCloudFrontCookies(res, {
-      userId,
-      tenantId: user.tenantId ?? user.orgId,
-      storageRegion: user.storageRegion,
-    });
-  };
+  const revokeSession = (res: Response, user: RefreshUser, userId: string) =>
+    withdrawMintedSession(res, user, userId, deps);
 
   const withdrawSession = async (res: Response, user: RefreshUser, userId: string) => {
     deps.warn(

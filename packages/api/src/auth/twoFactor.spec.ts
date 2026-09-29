@@ -35,6 +35,7 @@ import {
   verifyTwoFactorSetupAcknowledgementToken,
   verifyTwoFactorLoginChallengeToken,
   blockTwoFactorDisableWhenRequired,
+  withdrawMintedSession,
 } from './twoFactor';
 
 const jwtSecret = 'two-factor-setup-test-secret';
@@ -1526,5 +1527,30 @@ describe('blockTwoFactorDisableWhenRequired', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.status).not.toHaveBeenCalled();
+  });
+});
+
+describe('withdrawMintedSession', () => {
+  /** A 500 that still carried the minted cookies could refresh once the database recovers. */
+  it('clears the minted cookies even when the session deletion fails', async () => {
+    const clearCookie = jest.fn();
+    const res = { clearCookie } as unknown as Response;
+    const clearCloudFrontCookies = jest.fn();
+    const deletion = new Error('database unavailable');
+
+    await expect(
+      withdrawMintedSession(res, { tenantId: 'tenant-a' }, 'user-1', {
+        deleteAllUserSessions: jest.fn().mockRejectedValue(deletion),
+        clearCloudFrontCookies,
+      }),
+    ).rejects.toBe(deletion);
+
+    expect(clearCookie).toHaveBeenCalledWith('refreshToken');
+    expect(clearCookie).toHaveBeenCalledWith('token_provider');
+    expect(clearCloudFrontCookies).toHaveBeenCalledWith(res, {
+      userId: 'user-1',
+      tenantId: 'tenant-a',
+      storageRegion: undefined,
+    });
   });
 });

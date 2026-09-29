@@ -15,6 +15,7 @@ import {
   isEnrollmentSupersededByRecovery,
   isTokenRetired,
   recheckMintedCredential,
+  withdrawMintedSession,
   verifyTwoFactorLoginChallengeToken,
 } from './twoFactor';
 import { sanitizeUserForResponse } from './user';
@@ -72,20 +73,11 @@ export function createEnrollmentControllers(
     id: user._id.toString(),
   });
 
-  const revokeMintedSession = async (
+  const revokeMintedSession = (
     res: Response,
     user: StoredTwoFactorAccount,
     userId: string,
-  ): Promise<void> => {
-    await deps.deleteAllUserSessions({ userId });
-    res.clearCookie('refreshToken');
-    res.clearCookie('token_provider');
-    deps.clearCloudFrontCookies(res, {
-      userId,
-      tenantId: user.tenantId ?? user.orgId,
-      storageRegion: user.storageRegion,
-    });
-  };
+  ): Promise<void> => withdrawMintedSession(res, user, userId, deps);
 
   const verify2FAWithTempToken = async (
     req: ChallengeRequest,

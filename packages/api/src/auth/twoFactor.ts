@@ -244,6 +244,34 @@ export function isTokenRetired(
   );
 }
 
+export interface MintedSessionWithdrawal {
+  deleteAllUserSessions: (query: { userId: string }) => Promise<unknown>;
+  clearCloudFrontCookies: (
+    res: Response,
+    scope: { userId: string; tenantId?: string; storageRegion?: string },
+  ) => void;
+}
+
+/**
+ * Withdraws a session minted on this response. The cookies are cleared before the fallible session
+ * deletion, so a deletion that throws cannot leave the outgoing response carrying the credential.
+ */
+export async function withdrawMintedSession(
+  res: Response,
+  user: Pick<TwoFactorAccount, 'tenantId' | 'orgId' | 'storageRegion'>,
+  userId: string,
+  deps: MintedSessionWithdrawal,
+): Promise<void> {
+  res.clearCookie('refreshToken');
+  res.clearCookie('token_provider');
+  deps.clearCloudFrontCookies(res, {
+    userId,
+    tenantId: user.tenantId ?? user.orgId,
+    storageRegion: user.storageRegion,
+  });
+  await deps.deleteAllUserSessions({ userId });
+}
+
 /**
  * Runs the retirement recheck that follows a mint. The minted credential postdates every cutoff,
  * so a recheck that cannot complete withdraws it before failing rather than leaving it live.
