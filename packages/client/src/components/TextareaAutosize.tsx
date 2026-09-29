@@ -17,6 +17,9 @@ type BaseTextareaAutosizeProps = Omit<TextareaAutosizeProps, 'aria-label' | 'ari
   focusOutline?: FocusOutline;
 };
 
+/** A field marked `aria-invalid` draws its border in the destructive role, over the caller's border colour. */
+const invalidBorder = 'aria-invalid:border-border-destructive';
+
 export type TextareaAutosizePropsWithAria =
   | (BaseTextareaAutosizeProps & {
       'aria-label': string;
@@ -38,7 +41,9 @@ export const TextareaAutosize: ForwardRefExoticComponent<
       <ReactTextareaAutosize
         dir={chatDirection}
         {...props}
-        className={cx(focusOutlineVariants({ focusOutline }), className) || undefined}
+        className={
+          cx(focusOutlineVariants({ focusOutline }), invalidBorder, className) || undefined
+        }
         ref={ref}
       />
     );

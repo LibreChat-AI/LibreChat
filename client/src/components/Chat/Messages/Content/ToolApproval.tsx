@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useId, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
 import { Check, X, Pencil, MessageSquare, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
@@ -84,6 +84,7 @@ export default function ToolApproval({
   showSubmit?: boolean;
 }) {
   const localize = useLocalize();
+  const invalidJsonId = useId();
   const { actionId, allowed_decisions: allowedDecisions, description } = approval;
   const {
     registerToolCall,
@@ -211,12 +212,12 @@ export default function ToolApproval({
 
   return (
     <div
-      className="my-2 flex w-full flex-col gap-2 rounded-lg border border-border-light bg-surface-secondary p-3"
+      className="border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2 rounded-lg border p-3"
       data-testid="tool-approval"
       data-tool-call-id={toolCallId}
     >
       {safeDescription != null && safeDescription.length > 0 && (
-        <p className="text-sm text-text-secondary">{safeDescription}</p>
+        <p className="text-text-secondary text-sm">{safeDescription}</p>
       )}
       <div className="flex flex-wrap gap-2">
         {allowedDecisions.map((decision) => {
@@ -246,11 +247,15 @@ export default function ToolApproval({
             onChange={(e) => updateDecisionDraft({ editText: e.target.value })}
             minRows={3}
             maxRows={16}
-            className={cn(fieldClasses, 'font-mono text-xs', !editIsValid && 'border-red-500')}
+            className={cn(fieldClasses, 'font-mono text-xs')}
             aria-label={localize('com_ui_edit')}
+            aria-invalid={!editIsValid}
+            aria-describedby={editIsValid ? undefined : invalidJsonId}
           />
           {!editIsValid && (
-            <span className="text-xs text-text-warning">{localize('com_ui_invalid_json')}</span>
+            <span id={invalidJsonId} className="text-text-warning text-xs">
+              {localize('com_ui_invalid_json')}
+            </span>
           )}
         </div>
       )}
@@ -292,13 +297,13 @@ export default function ToolApproval({
             {submitLabel}
           </Button>
           {status === 'expired' && (
-            <span className="flex items-center text-xs text-text-warning">
+            <span className="text-text-warning flex items-center text-xs">
               <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_expired')}
             </span>
           )}
           {status === 'error' && (
-            <span className="flex items-center text-xs text-text-warning">
+            <span className="text-text-warning flex items-center text-xs">
               <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_error')}
             </span>

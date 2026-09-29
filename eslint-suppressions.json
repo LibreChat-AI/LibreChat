@@ -674,11 +674,8 @@
     }
   },
   "client/src/components/Chat/Messages/Content/ToolApproval.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 27
+      "count": 26
     }
   },
   "client/src/components/Chat/Messages/Content/ToolCall.tsx": {
