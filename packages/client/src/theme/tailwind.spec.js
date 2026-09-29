@@ -109,6 +109,21 @@ describe('LibreChat Tailwind preset', () => {
       ['translate-x-theme-switch-travel', '--theme-switch-width', defaultAppearance.switchWidth],
       ['py-theme-table-cell', '--theme-table-cell-space-y', defaultAppearance.tableCellSpaceY],
       ['h-theme-table-head', '--theme-table-cell-space-y', defaultAppearance.tableCellSpaceY],
+      [
+        'h-theme-table-head-compact',
+        '--theme-table-cell-space-y',
+        defaultAppearance.tableCellSpaceY,
+      ],
+      [
+        'py-theme-table-cell-compact',
+        '--theme-table-cell-space-y',
+        defaultAppearance.tableCellSpaceY,
+      ],
+      [
+        'py-theme-table-cell-dense',
+        '--theme-table-cell-space-y',
+        defaultAppearance.tableCellSpaceY,
+      ],
       ['p-theme-compact', '--theme-space-compact', defaultAppearance.spaceCompact],
       ['p-theme-normal', '--theme-space-normal', defaultAppearance.spaceNormal],
       ['p-theme-control-touch', '--theme-control-height', defaultAppearance.controlHeight],

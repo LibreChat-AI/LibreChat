@@ -135,6 +135,7 @@
   /* Each falls back to what it was painted with before its role, for a stylesheet that predates it. */
   --color-switch-thumb: rgb(var(--switch-thumb, var(--surface-primary)));
   --color-table-header-text: rgb(var(--table-header-text, var(--text-secondary)));
+  --color-table-header-fill: rgb(var(--table-header-fill, var(--surface-dialog)));
 }
 
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme

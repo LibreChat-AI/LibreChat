@@ -272,7 +272,7 @@
   },
   "client/src/components/Chat/Input/Files/Table/DataTable.tsx": {
     "shadcn/no-restyle": {
-      "count": 17
+      "count": 14
     },
     "shadcn/no-unknown-classes": {
       "count": 1

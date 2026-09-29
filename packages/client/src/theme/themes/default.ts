@@ -139,6 +139,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-switch-unchecked': '148 148 148', // #949494
   'rgb-switch-thumb': '255 255 255', // #fff (white, matching surface-primary)
   'rgb-table-header-text': '66 66 66', // #424242 (gray-600, matching text-secondary)
+  'rgb-table-header-fill': '255 255 255', // #fff (white, matching surface-dialog)
 
   // Presentation
   'rgb-presentation': '255 255 255', // #fff (white)

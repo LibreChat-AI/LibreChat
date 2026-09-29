@@ -177,6 +177,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-switch-unchecked': '102 102 102', // #666666
   'rgb-switch-thumb': '255 255 255', // #ffffff (matching surface-primary)
   'rgb-table-header-text': '0 0 0', // #000000 (matching text-secondary)
+  'rgb-table-header-fill': '255 255 255', // #ffffff (matching surface-dialog)
 
   // Presentation
   'rgb-presentation': '255 255 255', // #ffffff
@@ -327,6 +328,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-switch-unchecked': '128 128 128', // #808080
   'rgb-switch-thumb': '0 0 0', // #000000 (matching surface-primary)
   'rgb-table-header-text': '255 255 255', // #ffffff (matching text-secondary)
+  'rgb-table-header-fill': '0 0 0', // #000000 (matching surface-dialog)
 
   // Presentation
   'rgb-presentation': '0 0 0', // #000000

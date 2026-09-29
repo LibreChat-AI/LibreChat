@@ -300,6 +300,22 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-chart-widget-stroke']).toBe('50 51 52');
   });
 
+  it('accepts table lengths in px or rem, zero included, and rejects other units', () => {
+    const withTable = (tableCellSpaceY: string, tableRowStroke: string) =>
+      ({
+        version: 1,
+        name: 'table',
+        modes: { light: { appearance: { tableCellSpaceY, tableRowStroke } } },
+      }) as ThemeDefinition;
+
+    expect(validateThemeDefinition(withTable('0.5rem', '0'))).toEqual([]);
+    expect(validateThemeDefinition(withTable('8px', '1px'))).toEqual([]);
+    expect(validateThemeDefinition(withTable('1em', 'calc(1px - 0px)'))).toEqual([
+      'Invalid appearance value for tableCellSpaceY: 1em',
+      'Invalid appearance value for tableRowStroke: calc(1px - 0px)',
+    ]);
+  });
+
   describe('switch size pair', () => {
     const withSwitch = (switchWidth: string, switchHeight: string) =>
       ({
@@ -384,6 +400,22 @@ describe('theme registry', () => {
 
     expect(explicit.colors['rgb-switch-thumb']).toBe('1 2 3');
     expect(untouched.colors['rgb-switch-thumb']).toBe(darkTheme['rgb-switch-thumb']);
+  });
+
+  it('keeps a self-sticking table header on the dialog surface a theme repainted', () => {
+    const legacy = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-table-fill',
+        modes: { dark: { colors: { 'rgb-surface-dialog': '20 21 22' } } },
+      },
+      'dark',
+    );
+
+    expect(legacy.colors['rgb-table-header-fill']).toBe('20 21 22');
+    expect(resolveTheme(libreChatTheme, 'dark').colors['rgb-table-header-fill']).toBe(
+      darkTheme['rgb-surface-dialog'],
+    );
   });
 
   it('keeps table column names on the secondary text a theme repainted', () => {

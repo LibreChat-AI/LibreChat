@@ -118,6 +118,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-switch-unchecked',
   'rgb-switch-thumb',
   'rgb-table-header-text',
+  'rgb-table-header-fill',
   'rgb-presentation',
 ] as const);
 
@@ -191,6 +192,12 @@ const isLength = (value: unknown): value is string =>
  * A switch dimension is a positive px or rem length: `em` would follow the component's own font
  * size, and the pair is only comparable when both sides share one unit.
  */
+/**
+ * A table's cell space and row rule are px or rem, zero allowed: the virtualized table sizes its
+ * rows from them in JavaScript, which has to read them exactly at the root.
+ */
+const isTableLength = (value: unknown): value is string =>
+  typeof value === 'string' && /^(0|\d*\.?\d+(px|rem))$/.test(value);
 const isSwitchLength = (value: unknown): value is string =>
   typeof value === 'string' && /^\d*\.?\d+(px|rem)$/.test(value) && parseFloat(value) > 0;
 const isFontFamily = (value: unknown): value is string =>
@@ -303,8 +310,8 @@ const appearanceValidators = {
   controlHeight: isLength,
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
-  tableCellSpaceY: isLength,
-  tableRowStroke: isLength,
+  tableCellSpaceY: isTableLength,
+  tableRowStroke: isTableLength,
   spaceCompact: isLength,
   spaceNormal: isLength,
   /** `dim` fades a disabled control to half opacity; `fill` paints it in the disabled roles. */

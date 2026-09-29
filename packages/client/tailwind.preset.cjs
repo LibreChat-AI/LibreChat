@@ -10,10 +10,13 @@ module.exports = {
         'theme-switch': 'var(--theme-switch-height, 1.5rem)',
         /** A header cell: the table's vertical cell space on both sides of one text line. */
         'theme-table-head': 'calc(var(--theme-table-cell-space-y, 1rem) * 2 + 1rem)',
+        /** A compact header: half the cell space on both sides of a text-sm line. */
+        'theme-table-head-compact': 'calc(var(--theme-table-cell-space-y, 1rem) + 1.25rem)',
       },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */
-        'theme-switch': 'max(var(--theme-switch-width, 2.75rem), var(--theme-switch-height, 1.5rem))',
+        'theme-switch':
+          'max(var(--theme-switch-width, 2.75rem), var(--theme-switch-height, 1.5rem))',
       },
       spacing: {
         'theme-compact': 'var(--theme-space-compact, 0.375rem)',
@@ -31,6 +34,9 @@ module.exports = {
         'theme-switch-travel':
           'max(0px, calc(var(--theme-switch-width, 2.75rem) - var(--theme-switch-height, 1.5rem)))',
         'theme-table-cell': 'var(--theme-table-cell-space-y, 1rem)',
+        /** The compact and dense table sizes: half and a quarter of the cell space. */
+        'theme-table-cell-compact': 'calc(var(--theme-table-cell-space-y, 1rem) / 2)',
+        'theme-table-cell-dense': 'calc(var(--theme-table-cell-space-y, 1rem) / 4)',
       },
       keyframes: {
         /** Discord-style "connecting" dots: each dot lifts and brightens in

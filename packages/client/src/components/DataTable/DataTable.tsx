@@ -14,9 +14,9 @@ import {
   type Table as TTable,
 } from '@tanstack/react-table';
 import type { DataTableProps, ProcessedDataRow } from './DataTable.types';
+import { useDebounced, useDenseRowHeight, useOptimizedRowSelection } from './DataTable.hooks';
 import { SelectionCheckbox, MemoizedTableRow, SkeletonRows } from './DataTableComponents';
 import { Table, TableBody, TableHead, TableHeader, TableCell, TableRow } from '../Table';
-import { useDebounced, useOptimizedRowSelection } from './DataTable.hooks';
 import { useMediaQuery, useLocalize } from '~/hooks';
 import { DataTableSearch } from './DataTableSearch';
 import { MorphIcon } from '../MorphIcon';
@@ -64,10 +64,15 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     virtualization: {
       overscan = 10,
       minRows = 50,
-      rowHeight = 40,
+      rowHeight: configuredRowHeight,
       fastOverscanMultiplier = 4,
     } = {},
   } = config || {};
+
+  /** A dense row follows the theme's cell space and row rule, 40px by default; a caller that
+   *  sizes its own rows still wins. */
+  const denseRowHeight = useDenseRowHeight();
+  const rowHeight = configuredRowHeight ?? denseRowHeight;
 
   const virtualizationActive = data.length >= minRows;
 
@@ -310,6 +315,12 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     estimateSize,
     overscan: dynamicOverscan,
   });
+
+  /** The virtualizer caches every row's size, so a theme that changes the row height after mount
+   *  has to drop those sizes, or offsets and the total height keep the old one. */
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [rowHeight, rowVirtualizer]);
 
   // Only read the virtualizer when active; the non-virtualized branch renders rows directly,
   // so engaging it for small tables is wasted render-phase work.
@@ -688,11 +699,13 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                     <TableHead
                       key={header.id}
                       scope="col"
+                      size="compact"
                       className={cn(
                         /* Stuck per cell rather than on <thead>, which does not stay
                            put once the table uses separated borders. The fill has to
-                           be opaque or virtualized rows show through it. */
-                        'border-border-light bg-surface-dialog sticky top-0 z-10 h-9 border-b px-3 py-2 md:px-4',
+                           be opaque or virtualized rows show through it, so it is its
+                           own role, the dialog surface by default. */
+                        'border-border-light bg-table-header-fill sticky top-0 z-10 border-b px-3 md:px-4',
                         isSelectHeader && 'px-0 text-center',
                         canSort && 'cursor-pointer',
                         meta?.className,

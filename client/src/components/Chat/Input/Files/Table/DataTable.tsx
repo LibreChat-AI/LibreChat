@@ -145,7 +145,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                     <TableHead
                       key={header.id}
                       size="sm"
-                      className="px-2 py-2 whitespace-nowrap sm:px-4"
+                      className="px-2 whitespace-nowrap sm:px-4"
                       style={{ ...style }}
                     >
                       {header.isPlaceholder
@@ -170,8 +170,9 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                     return (
                       <TableCell
                         key={cell.id}
+                        size="compact"
                         className={cn(
-                          'align-start px-2 py-1 text-xs sm:px-4 sm:py-2 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
+                          'align-start px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
                           cell.column.id === 'select' ? 'overflow-visible' : 'overflow-x-auto',
                         )}
                         style={style}

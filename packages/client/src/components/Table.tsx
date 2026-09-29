@@ -101,25 +101,33 @@ TableRow.displayName = 'TableRow';
  */
 const tableCellRule = 'border-b-(length:--theme-table-row-stroke) border-border-light';
 
-/** A compact table's header: a side panel lists records rather than presenting
- *  a grid, and a full-height, full-size heading over two text lines reads as
- *  scaffolding rather than as the column names those rows sit under. */
+/**
+ * A header cell's size. `sm` is a compact table's header: a side panel lists records rather than
+ * presenting a grid, and a full-height, full-size heading over two text lines reads as scaffolding
+ * rather than as the column names those rows sit under. `compact` keeps the header's own type on a
+ * compact row height, and `row` is a row's title rendered as a header cell, padded like the compact
+ * body cells beside it. Every padding and height reads the theme's table cell space.
+ */
 const tableHeadVariants = cva('', {
   variants: {
     size: {
       default: '',
-      sm: 'h-auto text-xs',
+      sm: 'h-auto py-theme-table-cell-compact text-xs',
+      compact: 'h-theme-table-head-compact py-theme-table-cell-compact',
+      row: 'py-theme-table-cell-dense sm:py-theme-table-cell-compact',
     },
   },
   defaultVariants: { size: 'default' },
 });
 
+type TableHeadSize = 'default' | 'sm' | 'compact' | 'row';
+
 const TableHead: React.ForwardRefExoticComponent<
   React.ThHTMLAttributes<HTMLTableCellElement> &
-    React.RefAttributes<HTMLTableCellElement> & { size?: 'default' | 'sm' }
+    React.RefAttributes<HTMLTableCellElement> & { size?: TableHeadSize }
 > = React.forwardRef<
   HTMLTableCellElement,
-  React.ThHTMLAttributes<HTMLTableCellElement> & { size?: 'default' | 'sm' }
+  React.ThHTMLAttributes<HTMLTableCellElement> & { size?: TableHeadSize }
 >(({ className, size, ...props }, ref) => (
   <th
     ref={ref}
@@ -134,39 +142,63 @@ const TableHead: React.ForwardRefExoticComponent<
 ));
 TableHead.displayName = 'TableHead';
 
+/**
+ * A body cell's vertical space, from the theme's table cell space: `default` is the full space,
+ * `compact` a quarter of it on a narrow screen and half from `sm` up, and `dense` a quarter at
+ * every width. Click UI's own table sizes halve the same way (`md` 1rem, `sm` 0.5rem).
+ */
+const tableCellVariants = cva('', {
+  variants: {
+    size: {
+      default: 'py-theme-table-cell',
+      compact: 'py-theme-table-cell-dense sm:py-theme-table-cell-compact',
+      dense: 'py-theme-table-cell-dense',
+    },
+  },
+  defaultVariants: { size: 'default' },
+});
+
+type TableCellSize = 'default' | 'compact' | 'dense';
+
 const TableCell: React.ForwardRefExoticComponent<
-  React.TdHTMLAttributes<HTMLTableCellElement> & React.RefAttributes<HTMLTableCellElement>
-> = React.forwardRef<HTMLTableCellElement, React.TdHTMLAttributes<HTMLTableCellElement>>(
-  ({ className, ...props }, ref) => (
-    <td
-      ref={ref}
-      className={cn(
-        tableCellRule,
-        'py-theme-table-cell px-4 align-middle [&:has([role=checkbox])]:pr-0',
-        className,
-      )}
-      {...props}
-    />
-  ),
-);
+  React.TdHTMLAttributes<HTMLTableCellElement> &
+    React.RefAttributes<HTMLTableCellElement> & { size?: TableCellSize }
+> = React.forwardRef<
+  HTMLTableCellElement,
+  React.TdHTMLAttributes<HTMLTableCellElement> & { size?: TableCellSize }
+>(({ className, size, ...props }, ref) => (
+  <td
+    ref={ref}
+    className={cn(
+      tableCellRule,
+      'px-4 align-middle [&:has([role=checkbox])]:pr-0',
+      tableCellVariants({ size }),
+      className,
+    )}
+    {...props}
+  />
+));
 TableCell.displayName = 'TableCell';
 
 const TableRowHeader: React.ForwardRefExoticComponent<
-  React.ThHTMLAttributes<HTMLTableCellElement> & React.RefAttributes<HTMLTableCellElement>
-> = React.forwardRef<HTMLTableCellElement, React.ThHTMLAttributes<HTMLTableCellElement>>(
-  ({ className, ...props }, ref) => (
-    <th
-      ref={ref}
-      scope="row"
-      className={cn(
-        tableCellRule,
-        'py-theme-table-cell px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
-        className,
-      )}
-      {...props}
-    />
-  ),
-);
+  React.ThHTMLAttributes<HTMLTableCellElement> &
+    React.RefAttributes<HTMLTableCellElement> & { size?: TableCellSize }
+> = React.forwardRef<
+  HTMLTableCellElement,
+  React.ThHTMLAttributes<HTMLTableCellElement> & { size?: TableCellSize }
+>(({ className, size, ...props }, ref) => (
+  <th
+    ref={ref}
+    scope="row"
+    className={cn(
+      tableCellRule,
+      'px-4 text-left align-middle font-medium [&:has([role=checkbox])]:pr-0',
+      tableCellVariants({ size }),
+      className,
+    )}
+    {...props}
+  />
+));
 TableRowHeader.displayName = 'TableRowHeader';
 
 const TableCaption: React.ForwardRefExoticComponent<

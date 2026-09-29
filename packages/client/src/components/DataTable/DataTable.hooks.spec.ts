@@ -1,11 +1,12 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
+import type { TableColumn } from './DataTable.types';
 import {
   useDebounced,
   useOptimizedRowSelection,
   useColumnStyles,
   useKeyboardNavigation,
+  useDenseRowHeight,
 } from './DataTable.hooks';
-import type { TableColumn } from './DataTable.types';
 
 describe('DataTable Hooks', () => {
   describe('useDebounced', () => {
@@ -466,5 +467,29 @@ describe('DataTable Hooks', () => {
 
       expect(result.current.focusedRowIndex).toBe(7);
     });
+  });
+});
+
+describe('useDenseRowHeight', () => {
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--theme-table-cell-space-y');
+    document.documentElement.style.removeProperty('--theme-table-row-stroke');
+  });
+
+  it('is 40px without a theme: 32px of content and a quarter of 1rem above and below', () => {
+    const { result } = renderHook(() => useDenseRowHeight());
+
+    expect(result.current).toBe(40);
+  });
+
+  it('follows a theme that repaints the cell space and rules its rows', async () => {
+    const { result } = renderHook(() => useDenseRowHeight());
+
+    act(() => {
+      document.documentElement.style.setProperty('--theme-table-cell-space-y', '8px');
+      document.documentElement.style.setProperty('--theme-table-row-stroke', '1px');
+    });
+
+    await waitFor(() => expect(result.current).toBe(37));
   });
 });

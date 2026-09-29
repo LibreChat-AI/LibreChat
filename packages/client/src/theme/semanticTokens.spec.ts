@@ -541,6 +541,12 @@ describe.each([
       contrast(toRgb(theme, 'rgb-table-header-text'), toRgb(theme, 'rgb-surface-secondary')),
     ).toBeGreaterThanOrEqual(4.5);
   });
+
+  it('keeps column names readable on a self-sticking header', () => {
+    expect(
+      contrast(toRgb(theme, 'rgb-table-header-text'), toRgb(theme, 'rgb-table-header-fill')),
+    ).toBeGreaterThanOrEqual(4.5);
+  });
 });
 
 describe('switch track defaults', () => {
@@ -571,6 +577,20 @@ describe('switch track defaults', () => {
     ]);
     expect(defaultTheme['rgb-table-header-text']).toBe(defaultTheme['rgb-text-secondary']);
     expect(darkTheme['rgb-table-header-text']).toBe(darkTheme['rgb-text-secondary']);
+  });
+
+  it('declares the self-sticking header fill on the dialog surface it was before the role', () => {
+    const appStyles = readFileSync(
+      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
+      'utf8',
+    );
+
+    expect([...appStyles.matchAll(/--table-header-fill:\s*([^;]+);/g)].map((m) => m[1])).toEqual([
+      'var(--surface-dialog)',
+    ]);
+    [defaultTheme, darkTheme, highContrastLightTheme, highContrastDarkTheme].forEach((theme) =>
+      expect(theme['rgb-table-header-fill']).toBe(theme['rgb-surface-dialog']),
+    );
   });
 
   it('ships the no-rule table default with the package', () => {

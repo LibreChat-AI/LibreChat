@@ -78,6 +78,10 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--table-header-text', colors['rgb-text-secondary']]);
   }
 
+  if (colors['rgb-table-header-fill'] === undefined && colors['rgb-surface-dialog'] !== undefined) {
+    variables.push(['--table-header-fill', colors['rgb-surface-dialog']]);
+  }
+
   if (colors['rgb-chart-widget-stroke'] === undefined && colors['rgb-border-light'] !== undefined) {
     variables.push(['--chart-widget-stroke', colors['rgb-border-light']]);
   }

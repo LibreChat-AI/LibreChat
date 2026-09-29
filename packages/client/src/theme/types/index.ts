@@ -167,6 +167,8 @@ export interface IThemeRGB {
   'rgb-switch-thumb'?: string;
   /** Column names in a table header, over its `surface-secondary` fill. */
   'rgb-table-header-text'?: string;
+  /** The opaque fill of a header whose cells stick on their own, the dialog surface by default. */
+  'rgb-table-header-fill'?: string;
 
   // Presentation
   'rgb-presentation'?: string;
@@ -287,6 +289,7 @@ export interface IThemeVariables {
   '--switch-unchecked': string;
   '--switch-thumb': string;
   '--table-header-text': string;
+  '--table-header-fill': string;
 
   '--presentation': string;
 }
@@ -389,6 +392,7 @@ export interface IThemeColors {
   'switch-unchecked'?: string;
   'switch-thumb'?: string;
   'table-header-text'?: string;
+  'table-header-fill'?: string;
   'series-8'?: string;
   presentation?: string;
 

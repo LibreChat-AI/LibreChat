@@ -147,6 +147,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-switch-unchecked': 'palette.slate.500',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
+    'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
   },
   dark: {
@@ -253,6 +254,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-switch-unchecked': 'palette.neutral.500',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
+    'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
   },
 };
@@ -317,7 +319,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   switchWidth: 'click.switch.size.width',
   switchHeight: 'click.switch.size.height',
-  tableCellSpaceY: 'click.table.body.cell.space.sm.y',
+  tableCellSpaceY: 'click.table.body.cell.space.md.y',
   tableRowStroke: 'click.table.cell.stroke',
   motionFast: 'transition.duration.medium',
   motionNormal: 'transition.duration.smooth',
@@ -672,10 +674,29 @@ const parityProbes: Record<string, ParityProbe> = {
     element: tableProbe('td'),
   },
   'Table cell space': {
-    token: 'click.table.body.cell.space.sm.y',
+    token: 'click.table.body.cell.space.md.y',
     kind: 'shape',
     utility: 'py',
     element: tableProbe('td'),
+  },
+  'Table compact cell space': {
+    token: 'click.table.body.cell.space.sm.y',
+    kind: 'shape',
+    utility: 'py',
+    variant: 'sm:',
+    element: () =>
+      mount(
+        createElement(
+          Table,
+          null,
+          createElement(
+            TableBody,
+            null,
+            createElement(TableRow, null, createElement(TableCell, { size: 'compact' }, 'Row')),
+          ),
+        ),
+        'td',
+      ),
   },
   'Table corner': {
     token: 'click.table.radii.all',
@@ -712,8 +733,8 @@ const parityProbes: Record<string, ParityProbe> = {
 
 /** The fewest decisions per mode that must match; raise a floor when a change closes a gap. */
 const parityFloors: Record<ThemeMode, Record<ParityKind, number>> = {
-  light: { color: 9, shape: 9 },
-  dark: { color: 10, shape: 9 },
+  light: { color: 9, shape: 10 },
+  dark: { color: 10, shape: 10 },
 };
 
 const radiusRoles: Record<string, keyof IThemeAppearance> = {
@@ -739,6 +760,12 @@ const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
   py: { 'theme-table-cell': 'tableCellSpaceY' },
 };
 
+/** The compact and dense table sizes divide the cell space, as the preset does. */
+const derivedSizes: Record<string, [keyof IThemeAppearance, number]> = {
+  'theme-table-cell-compact': ['tableCellSpaceY', 2],
+  'theme-table-cell-dense': ['tableCellSpaceY', 4],
+};
+
 const isSizeUtility = (utility: Utility): utility is SizeUtility =>
   utility === 'w' || utility === 'h' || utility === 'py';
 
@@ -759,6 +786,12 @@ function sizeValue(utility: SizeUtility, name: string, resolved: Resolved): stri
   const role = sizeRoles[utility][name];
   if (role !== undefined) {
     return resolved.appearance[role];
+  }
+  const derived = utility === 'py' ? derivedSizes[name] : undefined;
+  if (derived !== undefined) {
+    const [source, divisor] = derived;
+    const value = resolved.appearance[source];
+    return `${parseFloat(value) / divisor}${value.replace(/^[\d.]+/, '')}`;
   }
   return /^[0-9.]+$/.test(name) ? `${Number(name) / 4}rem` : undefined;
 }

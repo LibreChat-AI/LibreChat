@@ -109,7 +109,7 @@ const TableRowComponent = <TData, TValue>({
       {row.getVisibleCells().map((cell) => {
         if (cell.column.id === 'select') {
           return (
-            <TableCell key={cell.id} className="px-2 py-1 transition-all duration-300">
+            <TableCell key={cell.id} size="dense" className="px-2 transition-all duration-300">
               <SelectionCheckbox
                 checked={row.getIsSelected()}
                 onChange={handleSelection}
@@ -125,7 +125,8 @@ const TableRowComponent = <TData, TValue>({
                column-header role the cell would otherwise take. */
             <TableHead
               key={cell.id}
-              className="text-text-secondary w-0 max-w-0 px-2 py-1 align-middle text-xs transition-all duration-300 sm:px-4 sm:py-2 sm:text-sm"
+              size="row"
+              className="text-text-secondary w-0 max-w-0 px-2 align-middle text-xs transition-all duration-300 sm:px-4 sm:text-sm"
               style={getColumnStyle(
                 cell.column.columnDef as TableColumn<TData, TValue>,
                 isSmallScreen,
@@ -142,7 +143,8 @@ const TableRowComponent = <TData, TValue>({
         return (
           <TableCell
             key={cell.id}
-            className="w-0 max-w-0 overflow-visible px-2 py-1 align-middle text-xs transition-all duration-300 sm:px-4 sm:py-2 sm:text-sm"
+            size="compact"
+            className="w-0 max-w-0 overflow-visible px-2 align-middle text-xs transition-all duration-300 sm:px-4 sm:text-sm"
             style={getColumnStyle(
               cell.column.columnDef as TableColumn<TData, TValue>,
               isSmallScreen,
@@ -386,7 +388,7 @@ export default function DataTable<TData, TValue>({
           const isFirstDataColumn = columnIndex === firstDataColumnIndex;
 
           return (
-            <TableCell key={column.id} className="px-2 py-1 sm:px-4 sm:py-2" style={style}>
+            <TableCell key={column.id} size="compact" className="px-2 sm:px-4" style={style}>
               <Skeleton
                 className="h-6"
                 style={isFirstDataColumn ? { width: `${randomWidth}px` } : { width: '100%' }}
@@ -447,7 +449,7 @@ export default function DataTable<TData, TValue>({
                 {headerGroup.headers.map((header) => (
                   <TableHead
                     key={header.id}
-                    className="bg-surface-secondary text-table-header-text px-2 py-2 text-left text-sm font-medium whitespace-nowrap sm:px-4"
+                    className="bg-surface-secondary text-table-header-text px-2 text-left text-sm font-medium whitespace-nowrap sm:px-4"
                     style={getColumnStyle(
                       header.column.columnDef as TableColumn<TData, TValue>,
                       isSmallScreen,

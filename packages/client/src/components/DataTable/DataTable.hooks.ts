@@ -1,4 +1,12 @@
-import { useState, useEffect, useMemo, SetStateAction, Dispatch, CSSProperties } from 'react';
+import {
+  useMemo,
+  useState,
+  useEffect,
+  useSyncExternalStore,
+  SetStateAction,
+  Dispatch,
+  CSSProperties,
+} from 'react';
 import type { TableColumn } from './DataTable.types';
 
 export function useDebounced<T>(value: T, delay: number): T {
@@ -142,3 +150,59 @@ export const useKeyboardNavigation = (
 
   return { focusedRowIndex, setFocusedRowIndex };
 };
+
+const DEFAULT_CELL_SPACE_PX = 16;
+const DENSE_ROW_CONTENT_PX = 32;
+
+/**
+ * A root custom property in px. The table roles only accept px or rem (zero allowed), so the value
+ * is read exactly against the root size; an unset property reads its `fallbackRem`, as the preset
+ * does.
+ */
+function readRootLength(property: string, fallbackRem: number): number {
+  if (typeof document === 'undefined') {
+    return fallbackRem * DEFAULT_CELL_SPACE_PX;
+  }
+  const style = getComputedStyle(document.documentElement);
+  const rootSize = parseFloat(style.fontSize) || DEFAULT_CELL_SPACE_PX;
+  const match = /^(\d*\.?\d+)(px|rem)?$/.exec(style.getPropertyValue(property).trim());
+  if (!match) {
+    return fallbackRem * rootSize;
+  }
+  return Number(match[1]) * (match[2] === 'rem' ? rootSize : 1);
+}
+
+/** A dense row: its content, a quarter of the cell space above and below, and the row rule. */
+function readDenseRowHeight(): number {
+  return (
+    DENSE_ROW_CONTENT_PX +
+    readRootLength('--theme-table-cell-space-y', 1) / 2 +
+    readRootLength('--theme-table-row-stroke', 0)
+  );
+}
+
+/** The theme paints its appearance onto the root's inline style and class, so those are the
+ *  changes worth re-reading on. */
+function subscribeToGeometry(onChange: () => void): () => void {
+  if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') {
+    return () => undefined;
+  }
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['style', 'class'],
+  });
+  return () => observer.disconnect();
+}
+
+/**
+ * The height of a dense table row in px, 40px by default, for geometry JavaScript has to know,
+ * such as a virtualized row. Follows a theme switch.
+ */
+export function useDenseRowHeight(): number {
+  return useSyncExternalStore(
+    subscribeToGeometry,
+    readDenseRowHeight,
+    () => DENSE_ROW_CONTENT_PX + DEFAULT_CELL_SPACE_PX / 2,
+  );
+}

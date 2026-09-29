@@ -244,6 +244,7 @@ html {
   --switch-thumb: 255 255 255;
   /* Follows the secondary text it was before it had a role, in every mode. */
   --table-header-text: var(--text-secondary);
+  --table-header-fill: var(--surface-dialog);
   --provider-openai: #19c37d;
   --provider-openai-gpt4: #ab68ff;
   --provider-openai-reasoning: #000000;

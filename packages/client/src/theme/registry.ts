@@ -458,6 +458,12 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-text-secondary'] !== undefined
       ? { 'rgb-table-header-text': customColors['rgb-text-secondary'] }
       : {};
+  /** Self-sticking table headers were the dialog surface before they had a role. */
+  const tableHeaderFillFallback =
+    customColors?.['rgb-table-header-fill'] === undefined &&
+    customColors?.['rgb-surface-dialog'] !== undefined
+      ? { 'rgb-table-header-fill': customColors['rgb-surface-dialog'] }
+      : {};
   const chartWidgetStrokeFallback =
     customColors?.['rgb-chart-widget-stroke'] === undefined &&
     customColors?.['rgb-border-light'] !== undefined
@@ -531,6 +537,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,
       ...tableHeaderTextFallback,
+      ...tableHeaderFillFallback,
       ...borderControlFallback,
       ...focusFallback,
       ...pressedFallback,

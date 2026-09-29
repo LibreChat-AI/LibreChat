@@ -157,6 +157,7 @@ export const clickHouseLightTheme: IThemeRGB = {
 
   // Table
   'rgb-table-header-text': '22 21 23', // #161517 (table.header.color.title.default)
+  'rgb-table-header-fill': '246 247 250', // #f6f7fa (table.header.color.background.default)
 
   // Presentation
   'rgb-presentation': '255 255 255', // #ffffff (background.default)
@@ -293,6 +294,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
 
   // Table
   'rgb-table-header-text': '249 249 249', // #f9f9f9 (table.header.color.title.default, rgb(97.5% 97.5% 97.5%))
+  'rgb-table-header-fill': '40 40 40', // #282828 (table.header.color.background.default)
 
   // Presentation
   'rgb-presentation': '31 31 28', // #1f1f1c (background.default)
@@ -363,7 +365,9 @@ const clickHouseShape = {
   disabledStyle: 'fill' as const,
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
-  tableCellSpaceY: '0.5rem', // table.body.cell.space.sm.y, the size Click UI tables default to
+  /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
+   *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
+  tableCellSpaceY: '1rem', // table.body.cell.space.md.y
   tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
   motionNormal: '150ms', // transition.duration.smooth

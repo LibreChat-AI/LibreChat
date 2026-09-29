@@ -10,8 +10,8 @@ import { extendTailwindMerge } from 'tailwind-merge';
 const twMerge = extendTailwindMerge({
   extend: {
     classGroups: {
-      py: [{ py: ['theme-table-cell'] }],
-      h: [{ h: ['theme-table-head'] }],
+      py: [{ py: ['theme-table-cell', 'theme-table-cell-compact', 'theme-table-cell-dense'] }],
+      h: [{ h: ['theme-table-head', 'theme-table-head-compact'] }],
     },
   },
 });
