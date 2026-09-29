@@ -63,6 +63,8 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-inverted': '23 23 23', // #171717 (gray-850)
   'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-inverted-pressed': '47 47 47', // #2f2f2f (gray-700), the hover fill
+  'rgb-button-primary': '23 23 23', // #171717 (gray-850, matching surface-inverted)
+  'rgb-button-primary-hover': '47 47 47', // #2f2f2f (gray-700, matching surface-inverted-hover)
   'rgb-text-inverted': '255 255 255', // #fff (white)
   'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
   'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark

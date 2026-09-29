@@ -99,6 +99,8 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-surface-inverted': '0 0 0', // #000000
   'rgb-surface-inverted-hover': '51 51 51', // #333333
   'rgb-surface-inverted-pressed': '51 51 51', // #333333, the hover fill
+  'rgb-button-primary': '0 0 0', // #000000 (matching surface-inverted)
+  'rgb-button-primary-hover': '51 51 51', // #333333 (matching surface-inverted-hover)
   'rgb-text-inverted': '255 255 255', // #ffffff
   'rgb-surface-fixed': '255 255 255', // #ffffff
   'rgb-surface-fixed-hover': '212 212 212', // #d4d4d4
@@ -253,6 +255,8 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-surface-inverted': '255 255 255', // #ffffff
   'rgb-surface-inverted-hover': '212 212 212', // #d4d4d4
   'rgb-surface-inverted-pressed': '212 212 212', // #d4d4d4, the hover fill
+  'rgb-button-primary': '255 255 255', // #ffffff (matching surface-inverted)
+  'rgb-button-primary-hover': '212 212 212', // #d4d4d4 (matching surface-inverted-hover)
   'rgb-text-inverted': '0 0 0', // #000000
   'rgb-surface-fixed': '255 255 255', // #ffffff
   'rgb-surface-fixed-hover': '212 212 212', // #d4d4d4

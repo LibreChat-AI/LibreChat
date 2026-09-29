@@ -193,6 +193,17 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
     expect(below(theme, WCAG_AA_NORMAL, onStatusFills, fills)).toEqual([]);
   });
 
+  it('keeps the primary button label at WCAG AA on its fill, hovered and pressed', () => {
+    expect(
+      below(
+        theme,
+        WCAG_AA_NORMAL,
+        ['rgb-text-inverted'],
+        ['rgb-button-primary', 'rgb-button-primary-hover', 'rgb-surface-inverted-pressed'],
+      ),
+    ).toEqual([]);
+  });
+
   it('keeps warning and destructive text at WCAG AA on canvas surfaces', () => {
     expect(
       below(theme, WCAG_AA_NORMAL, ['rgb-text-warning', 'rgb-text-destructive'], canvasSurfaces),
@@ -377,6 +388,9 @@ describe('clickhouse theme definition', () => {
       controlHeight: '2rem',
       controlPaddingX: '1rem',
       controlGap: '0.5rem',
+      controlFontWeight: '400',
+      buttonHeight: '2rem',
+      buttonHeightSm: '2rem',
       motionFast: '100ms',
     });
     expect(appearance.spaceCompact).toBe(defaultAppearance.spaceCompact);

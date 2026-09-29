@@ -3,6 +3,7 @@ import {
   controlBorderFallback,
   focusFallbacks,
   pressedFallbacks,
+  primaryButtonFallbacks,
   MARK_NEIGHBOURHOOD,
   themeAppearanceProperties,
   themeBrandTokens,
@@ -108,6 +109,17 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     pressed['rgb-surface-inverted-pressed'] !== undefined
   ) {
     variables.push(['--surface-inverted-pressed', pressed['rgb-surface-inverted-pressed']]);
+  }
+
+  const primary = primaryButtonFallbacks(colors);
+  if (colors['rgb-button-primary'] === undefined && primary['rgb-button-primary'] !== undefined) {
+    variables.push(['--button-primary', primary['rgb-button-primary']]);
+  }
+  if (
+    colors['rgb-button-primary-hover'] === undefined &&
+    primary['rgb-button-primary-hover'] !== undefined
+  ) {
+    variables.push(['--button-primary-hover', primary['rgb-button-primary-hover']]);
   }
 
   /**

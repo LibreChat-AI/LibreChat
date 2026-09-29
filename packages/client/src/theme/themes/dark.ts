@@ -63,6 +63,8 @@ export const darkTheme: IThemeRGB = {
   'rgb-surface-inverted': '255 255 255', // #fff (white)
   'rgb-surface-inverted-hover': '236 236 236', // #ececec (gray-100)
   'rgb-surface-inverted-pressed': '236 236 236', // #ececec (gray-100), the hover fill
+  'rgb-button-primary': '255 255 255', // #fff (white, matching surface-inverted)
+  'rgb-button-primary-hover': '236 236 236', // #ececec (gray-100, matching surface-inverted-hover)
   'rgb-text-inverted': '23 23 23', // #171717 (gray-850)
   'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
   'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark

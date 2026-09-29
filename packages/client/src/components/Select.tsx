@@ -27,7 +27,7 @@ const SelectTrigger: React.ForwardRefExoticComponent<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'border-border-control ring-offset-surface-primary placeholder:text-text-secondary flex h-9 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
+      'border-border-control ring-offset-surface-primary placeholder:text-text-secondary focus-visible:ring-focus-control flex h-9 w-full items-center justify-between rounded-md border bg-transparent px-3 py-2 text-sm whitespace-nowrap shadow-xs focus-visible:ring-2 focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1',
       disabledFillClasses,
       'hover:bg-surface-hover rounded-lg',
       className,

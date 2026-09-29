@@ -5,9 +5,16 @@ module.exports = {
       fontFamily: {
         'theme-ui': ['var(--theme-font-family, Inter, sans-serif)'],
       },
+      fontWeight: {
+        /** A theme-sized control's label weight. */
+        'theme-control': 'var(--theme-control-font-weight, 500)',
+      },
       height: {
         'theme-control': 'var(--theme-control-height, 2.25rem)',
         'theme-switch': 'var(--theme-switch-height, 1.5rem)',
+        /** The Button's default and `sm` heights. */
+        'theme-button': 'var(--theme-button-height, 2.5rem)',
+        'theme-button-sm': 'var(--theme-button-height-sm, 2.25rem)',
         /** A header cell: the table's vertical cell space on both sides of one text line. */
         'theme-table-head': 'calc(var(--theme-table-cell-space-y, 1rem) * 2 + 1rem)',
         /** A compact header: half the cell space on both sides of a text-sm line. */

@@ -69,6 +69,10 @@ export interface IThemeRGB {
   'rgb-surface-inverted-hover'?: string;
   /** Fill of an inverted control while pressed; follows `rgb-surface-inverted-hover` when omitted. */
   'rgb-surface-inverted-pressed'?: string;
+  /** The Button's primary fill and its hover; they follow `rgb-surface-inverted` and its hover
+   *  when omitted, which the checkbox and switch keep painting. */
+  'rgb-button-primary'?: string;
+  'rgb-button-primary-hover'?: string;
   'rgb-text-inverted'?: string;
   'rgb-surface-fixed'?: string;
   'rgb-surface-fixed-hover'?: string;
@@ -227,6 +231,8 @@ export interface IThemeVariables {
   '--surface-inverted': string;
   '--surface-inverted-hover': string;
   '--surface-inverted-pressed': string;
+  '--button-primary': string;
+  '--button-primary-hover': string;
   '--text-inverted': string;
   '--surface-fixed': string;
   '--surface-fixed-hover': string;
@@ -345,6 +351,8 @@ export interface IThemeColors {
   'surface-inverted'?: string;
   'surface-inverted-hover'?: string;
   'surface-inverted-pressed'?: string;
+  'button-primary'?: string;
+  'button-primary-hover'?: string;
   'text-inverted'?: string;
   'surface-fixed'?: string;
   'surface-fixed-hover'?: string;
@@ -426,6 +434,10 @@ export interface IThemeAppearance {
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
   controlGap: string;
+  /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
+  controlFontWeight: string;
+  buttonHeight: string;
+  buttonHeightSm: string;
   switchWidth: string;
   switchHeight: string;
   tableCellSpaceY: string;

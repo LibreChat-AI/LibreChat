@@ -63,6 +63,8 @@ export const themeColorTokens = Object.freeze([
   'rgb-surface-inverted',
   'rgb-surface-inverted-hover',
   'rgb-surface-inverted-pressed',
+  'rgb-button-primary',
+  'rgb-button-primary-hover',
   'rgb-text-inverted',
   'rgb-surface-fixed',
   'rgb-surface-fixed-hover',
@@ -200,6 +202,12 @@ const isTableLength = (value: unknown): value is string =>
   typeof value === 'string' && /^(0|\d*\.?\d+(px|rem))$/.test(value);
 const isSwitchLength = (value: unknown): value is string =>
   typeof value === 'string' && /^\d*\.?\d+(px|rem)$/.test(value) && parseFloat(value) > 0;
+/** A numeric CSS font weight, 1 to 1000, which is all a label weight needs. */
+const isFontWeight = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^\d{1,4}$/.test(value) &&
+  Number(value) >= 1 &&
+  Number(value) <= 1000;
 const isFontFamily = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0 && !/[;{}]/.test(value);
 
@@ -312,6 +320,10 @@ const appearanceValidators = {
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
   controlGap: isLength,
+  /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
+  controlFontWeight: isFontWeight,
+  buttonHeight: isLength,
+  buttonHeightSm: isLength,
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
   tableCellSpaceY: isTableLength,

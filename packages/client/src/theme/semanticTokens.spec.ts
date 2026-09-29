@@ -721,6 +721,16 @@ describe('state role defaults', () => {
     expect(theme['rgb-surface-pressed']).toBe(theme['rgb-surface-hover']);
     expect(theme['rgb-surface-inverted-pressed']).toBe(theme['rgb-surface-inverted-hover']);
   });
+
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('fills %s primary buttons with the inverted surface', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-button-primary']).toBe(theme['rgb-surface-inverted']);
+    expect(theme['rgb-button-primary-hover']).toBe(theme['rgb-surface-inverted-hover']);
+  });
 });
 
 /**

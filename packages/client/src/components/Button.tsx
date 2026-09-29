@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import { ClassProp } from 'class-variance-authority/types';
 import { cva, type VariantProps } from 'class-variance-authority';
+import { disabledFillClasses } from '~/utils/theme';
 import { cn } from '~/utils';
 
 type ButtonVariantOptions =
@@ -44,15 +45,19 @@ type ButtonVariantOptions =
   | undefined;
 
 const buttonVariantRecipe = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium ring-offset-surface-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+  [
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-theme-control ring-offset-surface-primary transition-colors duration-theme-fast focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+    disabledFillClasses,
+  ],
   {
     variants: {
       variant: {
-        default: 'bg-surface-inverted text-text-inverted hover:bg-surface-inverted-hover',
+        default:
+          'bg-button-primary text-text-inverted hover:bg-button-primary-hover hover:active:bg-surface-inverted-pressed',
         destructive:
           'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
         outline:
-          'text-text-primary border border-border-light bg-transparent hover:bg-surface-hover hover:text-text-primary',
+          'text-text-primary border border-border-light bg-transparent hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
         /**
          * A selectable answer inside a question card. `outline` is wrong here:
          * its `border-light` edge measures ~1.2:1 against the panel these sit
@@ -62,11 +67,12 @@ const buttonVariantRecipe = cva(
          * and drops to `font-normal` so the question above stays the heading.
          */
         choice:
-          'border border-border-xheavy bg-surface-tertiary font-normal text-text-primary hover:bg-surface-hover hover:text-text-primary',
+          'border border-border-xheavy bg-surface-tertiary font-normal text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
         subtle:
-          'border border-border-light bg-transparent text-text-primary hover:bg-surface-secondary focus-visible:ring-text-primary focus-visible:ring-offset-0',
-        secondary: 'bg-surface-secondary text-text-primary hover:bg-surface-hover',
-        ghost: 'hover:bg-surface-hover hover:text-text-primary',
+          'border border-border-light bg-transparent text-text-primary hover:bg-surface-secondary focus-visible:ring-focus-control focus-visible:ring-offset-0',
+        secondary:
+          'bg-surface-secondary text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed',
+        ghost: 'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
         /**
          * A compact action living inside a list row — a pinned row's unpin
          * badge, a conversation's overflow trigger, a table row's controls. The
@@ -132,14 +138,14 @@ const buttonVariantRecipe = cva(
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
-        default: 'h-10 px-4 py-2',
+        default: 'h-theme-button px-4 py-2',
         /**
          * A chip, the text counterpart of `icon-xs`: the reset beside a list that
          * matched nothing, and anything else that offers a way out without asking
          * to be the thing the eye lands on.
          */
         xs: 'h-7 rounded-md px-2.5 text-xs',
-        sm: 'h-9 rounded-lg px-3',
+        sm: 'h-theme-button-sm rounded-lg px-3',
         lg: 'h-11 rounded-lg px-8',
         icon: 'size-10',
         'icon-sm': 'size-8 p-0',

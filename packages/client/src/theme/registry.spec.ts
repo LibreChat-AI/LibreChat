@@ -637,6 +637,73 @@ describe('theme registry', () => {
     expect(issues({ controlGap: '1rem; color: red' })).toHaveLength(1);
   });
 
+  it('keeps the primary buttons of a theme that predates the role on its inverted surface', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'inverted-reference',
+        modes: { light: { colors: { 'rgb-surface-inverted': '10 20 30' } } },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-button-primary']).toBe('10 20 30');
+    expect(resolved.colors['rgb-button-primary-hover']).toBe(
+      defaultTheme['rgb-button-primary-hover'],
+    );
+  });
+
+  it('draws buttons from their own roles apart from the checkbox fill', () => {
+    const { colors, appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'bold-buttons-reference',
+        modes: {
+          dark: {
+            colors: { 'rgb-button-primary': '200 30 90', 'rgb-button-primary-hover': '220 60 110' },
+            appearance: {
+              controlFontWeight: '700',
+              buttonHeight: '3rem',
+              buttonHeightSm: '2.75rem',
+            },
+          },
+        },
+      },
+      'dark',
+    );
+
+    expect(colors['rgb-surface-inverted']).toBe(darkTheme['rgb-surface-inverted']);
+    expect(colors['rgb-button-primary']).toBe('200 30 90');
+    expect(appearance).toMatchObject({
+      controlFontWeight: '700',
+      buttonHeight: '3rem',
+      buttonHeightSm: '2.75rem',
+    });
+  });
+
+  it('keeps LibreChat’s button weight and heights by default', () => {
+    expect(defaultAppearance).toMatchObject({
+      controlFontWeight: '500',
+      buttonHeight: '2.5rem',
+      buttonHeightSm: '2.25rem',
+    });
+  });
+
+  it('accepts a numeric label weight from 1 to 1000 and rejects anything else', () => {
+    const issues = (controlFontWeight: string) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'weights',
+        modes: { light: { appearance: { controlFontWeight } } },
+      });
+
+    expect(issues('400')).toEqual([]);
+    expect(issues('1000')).toEqual([]);
+    ['0', '1001', 'bold', '400;', '4.5e2'].forEach((value) =>
+      expect(issues(value)).toHaveLength(1),
+    );
+  });
+
   it('reproduces Tailwind’s own type scale by default', () => {
     const tailwind = readFileSync(
       join(__dirname, '..', '..', '..', '..', 'node_modules', 'tailwindcss', 'theme.css'),

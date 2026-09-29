@@ -63,6 +63,9 @@
   --color-surface-inverted: rgb(var(--surface-inverted));
   --color-surface-inverted-hover: rgb(var(--surface-inverted-hover));
   --color-surface-inverted-pressed: rgb(var(--surface-inverted-pressed));
+  /* Fall back to the inverted fill they were painted with, for a stylesheet that predates them. */
+  --color-button-primary: rgb(var(--button-primary, var(--surface-inverted)));
+  --color-button-primary-hover: rgb(var(--button-primary-hover, var(--surface-inverted-hover)));
   --color-surface-fixed: rgb(var(--surface-fixed));
   --color-surface-fixed-hover: rgb(var(--surface-fixed-hover));
   --color-surface-disabled: rgb(var(--surface-disabled));

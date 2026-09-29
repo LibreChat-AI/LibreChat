@@ -106,6 +106,19 @@ export function pressedFallbacks(colors: IThemeRGB): IThemeRGB {
 }
 
 /**
+ * The Button's primary fills for a theme that predates them. The Button was painted in the
+ * inverted surface, so a theme that repaints that surface or its hover keeps its buttons on it.
+ */
+export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
+  const fill = colors['rgb-button-primary'] ?? colors['rgb-surface-inverted'];
+  const hover = colors['rgb-button-primary-hover'] ?? colors['rgb-surface-inverted-hover'];
+  return {
+    ...(fill !== undefined ? { 'rgb-button-primary': fill } : {}),
+    ...(hover !== undefined ? { 'rgb-button-primary-hover': hover } : {}),
+  };
+}
+
+/**
  * The focus roles for a stored or environment theme that predates them. The
  * global outline followed a theme's `rgb-ring-primary` whenever it named one,
  * and the shared primitives drew their ring in `rgb-text-primary`, so a theme
@@ -137,6 +150,9 @@ export const themeAppearanceProperties: Readonly<
   controlHeight: '--theme-control-height',
   controlPaddingX: '--theme-control-padding-x',
   controlGap: '--theme-control-gap',
+  controlFontWeight: '--theme-control-font-weight',
+  buttonHeight: '--theme-button-height',
+  buttonHeightSm: '--theme-button-height-sm',
   switchWidth: '--theme-switch-width',
   switchHeight: '--theme-switch-height',
   tableCellSpaceY: '--theme-table-cell-space-y',
@@ -188,6 +204,9 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   controlHeight: '2.25rem',
   controlPaddingX: '0.75rem',
   controlGap: '0.375rem',
+  controlFontWeight: '500',
+  buttonHeight: '2.5rem',
+  buttonHeightSm: '2.25rem',
   ...defaultSwitchSize,
   tableCellSpaceY: '1rem',
   tableRowStroke: '0px',
@@ -487,6 +506,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
   const focusFallback = customColors != null ? focusFallbacks(customColors) : {};
   const pressedFallback = customColors != null ? pressedFallbacks(customColors) : {};
+  const primaryButtonFallback = customColors != null ? primaryButtonFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -553,6 +573,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...borderControlFallback,
       ...focusFallback,
       ...pressedFallback,
+      ...primaryButtonFallback,
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,

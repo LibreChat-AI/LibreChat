@@ -92,6 +92,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-inverted': 'palette.neutral.900',
     'rgb-surface-inverted-hover': 'palette.neutral.712',
     'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
+    'rgb-button-primary': 'click.button.basic.color.primary.background.default',
+    'rgb-button-primary-hover': 'click.button.basic.color.primary.background.hover',
     'rgb-text-inverted': 'palette.neutral.0',
     'rgb-surface-fixed': 'palette.neutral.0',
     'rgb-surface-fixed-hover': 'palette.slate.100',
@@ -199,6 +201,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-inverted': 'click.button.basic.color.primary.background.default',
     'rgb-surface-inverted-hover': 'click.button.basic.color.primary.background.hover',
     'rgb-surface-inverted-pressed': 'click.button.basic.color.primary.background.active',
+    'rgb-button-primary': 'click.button.basic.color.primary.background.default',
+    'rgb-button-primary-hover': 'click.button.basic.color.primary.background.hover',
     'rgb-text-inverted': 'click.button.basic.color.primary.text.default',
     'rgb-surface-fixed': 'palette.neutral.0',
     'rgb-surface-fixed-hover': 'palette.slate.100',
@@ -278,6 +282,9 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, string>> = {
   disabledStyle: 'fill: Click UI paints disabled controls in fixed disabled tokens, never opacity',
   text2xl:
     "1.5rem: Click UI's next size, font.sizes.6 (2rem), would pass Tailwind's unthemed text-3xl (1.875rem)",
+  buttonHeight:
+    '2rem: Click UI sizes its button by content, button.basic.space.y (0.2813rem) twice, a 0.875rem/1.5 label and a 1px stroke each side',
+  buttonHeightSm: '2rem: Click UI draws one button size, so the small step matches the default',
 };
 
 const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
@@ -316,6 +323,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   controlHeight: 'click.genericMenu.panel.size.height',
   controlPaddingX: 'click.button.basic.space.x',
   controlGap: 'click.button.basic.space.gap',
+  controlFontWeight: 'click.button.basic.typography.label.default',
   scrimOpacity: 'click.dialog.color.opaqueBackground.default',
   alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
@@ -435,6 +443,10 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
   if (key === 'monoFontFamily') {
     return firstFamily(value);
   }
+  /** Click UI writes the label as a `font` shorthand; the role is its leading weight. */
+  if (key === 'controlFontWeight') {
+    return value.trim().split(/\s+/)[0];
+  }
   return value.replace(/;$/, '').trim();
 }
 
@@ -553,6 +565,13 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'shape',
     utility: 'rounded',
     element: buttonProbe('default'),
+  },
+  'Button height': {
+    token: 'click.genericMenu.panel.size.height',
+    kind: 'shape',
+    utility: 'h',
+    element: buttonProbe('default'),
+    deviation: 'Click UI sizes its button by content; the 32px it draws is the menu row height',
   },
   'Button inline padding': {
     token: 'click.button.basic.space.x',
@@ -751,8 +770,8 @@ const parityProbes: Record<string, ParityProbe> = {
 
 /** The fewest decisions per mode that must match; raise a floor when a change closes a gap. */
 const parityFloors: Record<ThemeMode, Record<ParityKind, number>> = {
-  light: { color: 9, shape: 12 },
-  dark: { color: 10, shape: 12 },
+  light: { color: 10, shape: 13 },
+  dark: { color: 10, shape: 13 },
 };
 
 const radiusRoles: Record<string, keyof IThemeAppearance> = {
@@ -774,7 +793,12 @@ type SizeUtility = 'w' | 'h' | 'py' | 'px' | 'gap';
 
 const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
   w: { 'theme-switch': 'switchWidth' },
-  h: { 'theme-switch': 'switchHeight', 'theme-control': 'controlHeight' },
+  h: {
+    'theme-switch': 'switchHeight',
+    'theme-control': 'controlHeight',
+    'theme-button': 'buttonHeight',
+    'theme-button-sm': 'buttonHeightSm',
+  },
   py: { 'theme-table-cell': 'tableCellSpaceY' },
   px: { 'theme-control-x': 'controlPaddingX' },
   gap: { 'theme-control-gap': 'controlGap' },

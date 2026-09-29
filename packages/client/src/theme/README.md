@@ -325,6 +325,9 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   inverted control takes while held (`hover:active:`). Defaults to the hover fill,
   which a pointer press has always shown; a theme that names only its hover fills
   presses in them.
+- `bg-button-primary` / `bg-button-primary-hover` - The `Button`'s primary fill
+  and its hover, apart from the inverted surface the checkbox and switch keep.
+  They follow `surface-inverted` and its hover when a theme names only those.
 - `bg-surface-disabled` / `text-text-disabled` / `border-border-disabled` - The
   disabled fill, ink and edge, painted through the `theme-disabled:` variant only
   when the theme's `disabledStyle` appearance role is `fill`. The default `dim`

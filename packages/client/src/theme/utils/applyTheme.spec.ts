@@ -349,6 +349,19 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--surface-inverted-pressed')).toBe('20 21 22');
   });
 
+  it('fills the primary button with the inverted surface of a theme that predates the role', () => {
+    const root = document.documentElement;
+
+    applyTheme(
+      { 'rgb-surface-inverted': '30 31 32', 'rgb-surface-inverted-hover': '40 41 42' },
+      root,
+      defaultTheme,
+    );
+
+    expect(root.style.getPropertyValue('--button-primary')).toBe('30 31 32');
+    expect(root.style.getPropertyValue('--button-primary-hover')).toBe('40 41 42');
+  });
+
   it('marks the root only for a theme that fills its disabled controls, and clears it', () => {
     const root = document.documentElement;
     const fill: ThemeDefinition = {

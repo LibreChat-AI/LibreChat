@@ -88,6 +88,9 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-inverted-pressed': '22 21 23', // #161517 (button.basic.color.primary.background.active)
+  /** The button's own primary fill, apart from the `#151515` its checkbox and switch share. */
+  'rgb-button-primary': '48 46 50', // #302e32 (button.basic.color.primary.background.default)
+  'rgb-button-primary-hover': '67 70 76', // #43464c (button.basic.color.primary.background.hover)
   'rgb-text-inverted': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-fixed': '255 255 255', // #ffffff (palette.neutral.0, same in light and dark)
   'rgb-surface-fixed-hover': '230 231 233', // #e6e7e9 (palette.slate.100, same in light and dark)
@@ -225,6 +228,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
   'rgb-surface-inverted-pressed': '231 236 97', // #e7ec61 (button.basic.color.primary.background.active)
+  'rgb-button-primary': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
+  'rgb-button-primary-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
   'rgb-text-inverted': '31 31 28', // #1f1f1c (button.basic.color.primary.text.default)
   'rgb-surface-fixed': '255 255 255', // #ffffff (palette.neutral.0, same in light and dark)
   'rgb-surface-fixed-hover': '230 231 233', // #e6e7e9 (palette.slate.100, same in light and dark)
@@ -360,6 +365,11 @@ const clickHouseShape = {
   controlHeight: '2rem', // genericMenu.panel.size.height
   controlPaddingX: '1rem', // button.basic.space.x
   controlGap: '0.5rem', // button.basic.space.gap
+  controlFontWeight: '400', // button.basic.typography.label.default
+  /** Click UI's button is sized by its content: 0.2813rem of space.y on both sides of a
+   *  0.875rem/1.5 label and a 1px stroke, 32px in all. */
+  buttonHeight: '2rem',
+  buttonHeightSm: '2rem',
   scrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   alertScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   modalScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
