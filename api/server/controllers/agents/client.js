@@ -425,7 +425,7 @@ class AgentClient extends BaseClient {
     );
   }
 
-  async addDocuments(message, attachments, onMissingFile) {
+  async addDocuments(message, attachments, onMissingFile, omissions) {
     const memoryContext = {
       req: this.options.req,
       conversationId: this.conversationId,
@@ -434,13 +434,13 @@ class AgentClient extends BaseClient {
     };
     logAgentMemorySnapshot('before_encode_documents', memoryContext);
     try {
-      return await super.addDocuments(message, attachments, onMissingFile);
+      return await super.addDocuments(message, attachments, onMissingFile, omissions);
     } finally {
       logAgentMemorySnapshot('after_encode_documents', memoryContext);
     }
   }
 
-  async processAttachments(message, attachments, fileConsumers, onMissingFile) {
+  async processAttachments(message, attachments, fileConsumers, onMissingFile, options) {
     const modelBoundAttachments = this.getModelBoundAttachmentsForEndpoint(attachments);
     const processableAttachments = this.getProcessableAttachmentsForEndpoint(
       attachments,
@@ -466,6 +466,7 @@ class AgentClient extends BaseClient {
         processableAttachments,
         fileConsumers,
         onMissingFile,
+        options,
       );
     } finally {
       logAgentMemorySnapshot('after_process_attachments', memoryContext);
