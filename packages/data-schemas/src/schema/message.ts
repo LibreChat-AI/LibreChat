@@ -302,6 +302,7 @@ const messageSchema: Schema<IMessage> = new Schema(
     tenantId: {
       type: String,
       index: true,
+      meiliIndex: true,
     },
   },
   { timestamps: true },

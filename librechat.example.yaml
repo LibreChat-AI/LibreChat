@@ -7,6 +7,15 @@ version: 1.3.17
 # Cache settings: Set to true to enable caching
 cache: true
 
+# MeiliSearch operational settings (optional).
+# After enabling multi-tenant search (schema version 2), active-tenant queries match only
+# documents with that exact tenantId. Legacy tenantless Meili documents stay invisible in
+# scoped search until they are migrated into a tenant context and reindexed (indexSync /
+# syncWithMeili). Do not rely on user-only Meili filters under TENANT_ISOLATION_STRICT.
+# search:
+#   # How long startup and search wait for filterable-attribute settings tasks (ms).
+#   meiliSettingsTimeoutMs: 600000
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central

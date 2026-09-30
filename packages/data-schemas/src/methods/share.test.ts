@@ -16,6 +16,8 @@ import {
   type ShareMethods,
   type SharedLinkContentSnapshot,
 } from './share';
+import { resetTenantStrictCache, TenantIsolationError } from '~/tenant/policy';
+import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { MEILI_SEARCH_LIMIT } from '~/common/search';
 import logger from '~/config/winston';
 
@@ -1402,6 +1404,57 @@ describe('Share Methods', () => {
         limit: MEILI_SEARCH_LIMIT,
         attributesToRetrieve: ['conversationId'],
       });
+    });
+
+    test('scopes search to the active tenant and escapes filter values', async () => {
+      const userId = 'user"\\id';
+      const meiliSearchMock = jest.fn().mockResolvedValue({ hits: [] });
+      Conversation.meiliSearch = meiliSearchMock;
+
+      await tenantStorage.run({ tenantId: 'tenant"\\id' }, () =>
+        shareMethods.getSharedLinks(userId, undefined, 10, 'createdAt', 'desc', 'search term'),
+      );
+
+      expect(meiliSearchMock).toHaveBeenCalledWith('search term', {
+        filter: 'user = "user\\"\\\\id" AND tenantId = "tenant\\"\\\\id"',
+        limit: MEILI_SEARCH_LIMIT,
+        attributesToRetrieve: ['conversationId'],
+      });
+    });
+
+    test('keeps search unscoped in system context', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const meiliSearchMock = jest.fn().mockResolvedValue({ hits: [] });
+      Conversation.meiliSearch = meiliSearchMock;
+
+      await runAsSystem(() =>
+        shareMethods.getSharedLinks(userId, undefined, 10, 'createdAt', 'desc', 'search term'),
+      );
+
+      expect(meiliSearchMock).toHaveBeenCalledWith('search term', {
+        filter: `user = "${userId}"`,
+        limit: MEILI_SEARCH_LIMIT,
+        attributesToRetrieve: ['conversationId'],
+      });
+    });
+
+    test('fails closed under TENANT_ISOLATION_STRICT without tenant context', async () => {
+      const originalStrict = process.env.TENANT_ISOLATION_STRICT;
+      process.env.TENANT_ISOLATION_STRICT = 'true';
+      resetTenantStrictCache();
+      const userId = new mongoose.Types.ObjectId().toString();
+      try {
+        await expect(
+          shareMethods.getSharedLinks(userId, undefined, 10, 'createdAt', 'desc', 'search term'),
+        ).rejects.toThrow(TenantIsolationError);
+      } finally {
+        if (originalStrict === undefined) {
+          delete process.env.TENANT_ISOLATION_STRICT;
+        } else {
+          process.env.TENANT_ISOLATION_STRICT = originalStrict;
+        }
+        resetTenantStrictCache();
+      }
     });
 
     test('should handle empty results', async () => {

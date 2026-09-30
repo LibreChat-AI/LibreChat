@@ -102,6 +102,14 @@ export {
 } from './config/tenantContext';
 export type { TenantContext } from './config/tenantContext';
 export {
+  resolveTenantScope,
+  currentTenantScope,
+  TenantIsolationError,
+  isTenantIsolationStrict,
+  resetTenantStrictCache,
+} from './tenant/policy';
+export type { TenantScope } from './tenant/policy';
+export {
   MCPServerNameMigrationError,
   createMCPAuthorityLookupIndexes,
   dropSupersededTenantIndexes,

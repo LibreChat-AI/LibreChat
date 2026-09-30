@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { resetTenantStrictCache } from '~/tenant/policy';
 import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
@@ -7792,6 +7793,152 @@ describe('Conversation Operations', () => {
       expect(result?.conversations.map((c) => c.conversationId)).toEqual([
         titleMatch.conversationId,
       ]);
+    });
+
+    it('scopes both search indexes to the active tenant', async () => {
+      const tenantId = 'tenant-a';
+      const conversationId = uuidv4();
+      await tenantStorage.run({ tenantId }, async () => {
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          title: 'Tenant conversation',
+          endpoint: EModelEndpoint.openAI,
+        });
+      });
+
+      const meiliSearch = jest.fn().mockResolvedValue({ hits: [] });
+      Object.assign(Conversation, { meiliSearch });
+      searchMessages.mockResolvedValue({ hits: [{ conversationId }] });
+
+      const result = await tenantStorage.run({ tenantId }, () =>
+        getConvosByCursor('user123', { search: 'keyword' }),
+      );
+
+      const searchParams = {
+        filter: 'user = "user123" AND tenantId = "tenant-a"',
+        limit: MEILI_SEARCH_LIMIT,
+        attributesToRetrieve: ['conversationId', 'originalConversationId'],
+      };
+      expect(meiliSearch).toHaveBeenCalledWith('keyword', searchParams);
+      expect(searchMessages).toHaveBeenCalledWith('keyword', searchParams);
+      expect(result?.conversations.map((c) => c.conversationId)).toEqual([conversationId]);
+    });
+
+    it('keeps search unscoped in system and tenantless contexts', async () => {
+      const conversationId = uuidv4();
+      await Conversation.create({
+        conversationId,
+        user: 'user123',
+        title: 'System conversation',
+        endpoint: EModelEndpoint.openAI,
+      });
+
+      const meiliSearch = jest.fn().mockResolvedValue({ hits: [{ conversationId }] });
+      Object.assign(Conversation, { meiliSearch });
+      searchMessages.mockResolvedValue({ hits: [] });
+
+      await runAsSystem(async () => {
+        const result = await getConvosByCursor('user123', { search: 'keyword' });
+        const searchParams = {
+          filter: 'user = "user123"',
+          limit: MEILI_SEARCH_LIMIT,
+          attributesToRetrieve: ['conversationId', 'originalConversationId'],
+        };
+        expect(meiliSearch).toHaveBeenCalledWith('keyword', searchParams);
+        expect(searchMessages).toHaveBeenCalledWith('keyword', searchParams);
+        expect(result?.conversations.map((c) => c.conversationId)).toEqual([conversationId]);
+      });
+
+      jest.clearAllMocks();
+      searchMessages.mockResolvedValue({ hits: [] });
+      const result = await getConvosByCursor('user123', { search: 'keyword' });
+      const searchParams = {
+        filter: 'user = "user123"',
+        limit: MEILI_SEARCH_LIMIT,
+        attributesToRetrieve: ['conversationId', 'originalConversationId'],
+      };
+      expect(meiliSearch).toHaveBeenCalledWith('keyword', searchParams);
+      expect(searchMessages).toHaveBeenCalledWith('keyword', searchParams);
+      expect(result?.conversations.map((c) => c.conversationId)).toEqual([conversationId]);
+    });
+
+    it('escapes user and tenant values in scoped search filters', async () => {
+      const meiliSearch = jest.fn().mockResolvedValue({ hits: [] });
+      Object.assign(Conversation, { meiliSearch });
+      searchMessages.mockResolvedValue({ hits: [] });
+
+      await tenantStorage.run({ tenantId: 'tenant"\\id' }, () =>
+        getConvosByCursor('user"\\id', { search: 'keyword' }),
+      );
+
+      const searchParams = {
+        filter: 'user = "user\\"\\\\id" AND tenantId = "tenant\\"\\\\id"',
+        limit: MEILI_SEARCH_LIMIT,
+        attributesToRetrieve: ['conversationId', 'originalConversationId'],
+      };
+      expect(meiliSearch).toHaveBeenCalledWith('keyword', searchParams);
+      expect(searchMessages).toHaveBeenCalledWith('keyword', searchParams);
+    });
+
+    it('fails closed under TENANT_ISOLATION_STRICT without tenant context', async () => {
+      const originalStrict = process.env.TENANT_ISOLATION_STRICT;
+      process.env.TENANT_ISOLATION_STRICT = 'true';
+      resetTenantStrictCache();
+      try {
+        await expect(getConvosByCursor('user123', { search: 'keyword' })).rejects.toThrow(
+          /without tenant context in strict mode/,
+        );
+      } finally {
+        if (originalStrict === undefined) {
+          delete process.env.TENANT_ISOLATION_STRICT;
+        } else {
+          process.env.TENANT_ISOLATION_STRICT = originalStrict;
+        }
+        resetTenantStrictCache();
+      }
+    });
+
+    /* The tenant filter matches on an exact `tenantId`, so documents indexed before
+       tenancy existed — and documents still awaiting the v2 reindex — are excluded
+       while a tenant is active. That mirrors the Mongo side, which scopes the same
+       conversations out of the unsearched sidebar listing. */
+    it('excludes conversations without a tenantId, as the unsearched listing does', async () => {
+      const tenantId = 'tenant-a';
+      const untenantedId = uuidv4();
+      const tenantedId = uuidv4();
+      await Conversation.create({
+        conversationId: untenantedId,
+        user: 'user123',
+        title: 'Pre-tenancy keyword',
+        endpoint: EModelEndpoint.openAI,
+      });
+      await tenantStorage.run({ tenantId }, () =>
+        Conversation.create({
+          conversationId: tenantedId,
+          user: 'user123',
+          title: 'Tenant keyword',
+          endpoint: EModelEndpoint.openAI,
+        }),
+      );
+
+      const indexed = [{ conversationId: untenantedId }, { conversationId: tenantedId, tenantId }];
+      const searchIndex = (_query: string, { filter }: { filter: string }) => {
+        const scopedTenantId = /tenantId = "([^"]*)"/.exec(filter)?.[1];
+        return Promise.resolve({
+          hits: indexed.filter((doc) => !scopedTenantId || doc.tenantId === scopedTenantId),
+        });
+      };
+      Object.assign(Conversation, { meiliSearch: jest.fn(searchIndex) });
+      searchMessages.mockImplementation(searchIndex);
+
+      const searched = await tenantStorage.run({ tenantId }, () =>
+        getConvosByCursor('user123', { search: 'keyword' }),
+      );
+      const listed = await tenantStorage.run({ tenantId }, () => getConvosByCursor('user123'));
+
+      expect(searched?.conversations.map((c) => c.conversationId)).toEqual([tenantedId]);
+      expect(listed?.conversations.map((c) => c.conversationId)).toEqual([tenantedId]);
     });
   });
 });

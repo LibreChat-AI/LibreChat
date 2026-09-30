@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 const { MeiliSearch } = require('meilisearch');
-const { logger } = require('@librechat/data-schemas');
+const {
+  logger,
+  mergeFilterableAttributes,
+  updateFilterableAttributes,
+  resolveMeiliSettingsTimeoutMs,
+} = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const { isEnabled, FlowStateManager, evalKeyvRedisScript } = require('@librechat/api');
 const { getLogStores } = require('~/cache');
@@ -96,12 +101,17 @@ async function ensureFilterableAttributes(client) {
       const messagesIndex = client.index('messages');
       const settings = await messagesIndex.getSettings();
 
-      if (!settings.filterableAttributes || !settings.filterableAttributes.includes('user')) {
-        logger.info('[indexSync] Configuring messages index to filter by user...');
-        await messagesIndex.updateSettings({
-          filterableAttributes: ['user'],
+      const filterableAttributes = mergeFilterableAttributes(settings.filterableAttributes);
+      if (filterableAttributes) {
+        logger.info('[indexSync] Configuring messages index to filter by user and tenant...');
+        await updateFilterableAttributes({
+          client,
+          index: messagesIndex,
+          filterableAttributes,
+          timeoutMs: resolveMeiliSettingsTimeoutMs(),
+          context: '[indexSync] messages',
         });
-        logger.info('[indexSync] Messages index configured for user filtering');
+        logger.info('[indexSync] Messages index configured for user and tenant filtering');
         settingsUpdated = true;
       }
 
@@ -128,12 +138,17 @@ async function ensureFilterableAttributes(client) {
       const convosIndex = client.index('convos');
       const settings = await convosIndex.getSettings();
 
-      if (!settings.filterableAttributes || !settings.filterableAttributes.includes('user')) {
-        logger.info('[indexSync] Configuring convos index to filter by user...');
-        await convosIndex.updateSettings({
-          filterableAttributes: ['user'],
+      const filterableAttributes = mergeFilterableAttributes(settings.filterableAttributes);
+      if (filterableAttributes) {
+        logger.info('[indexSync] Configuring convos index to filter by user and tenant...');
+        await updateFilterableAttributes({
+          client,
+          index: convosIndex,
+          filterableAttributes,
+          timeoutMs: resolveMeiliSettingsTimeoutMs(),
+          context: '[indexSync] convos',
         });
-        logger.info('[indexSync] Convos index configured for user filtering');
+        logger.info('[indexSync] Convos index configured for user and tenant filtering');
         settingsUpdated = true;
       }
 

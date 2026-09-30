@@ -1,6 +1,12 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { logger, CLIENT_MESSAGE_SELECT, MEILI_SEARCH_LIMIT } = require('@librechat/data-schemas');
+const {
+  logger,
+  CLIENT_MESSAGE_SELECT,
+  MEILI_SEARCH_LIMIT,
+  TenantIsolationError,
+  buildMeiliUserTenantFilter,
+} = require('@librechat/data-schemas');
 const {
   ContentTypes,
   feedbackSchema,
@@ -154,7 +160,7 @@ router.get('/', async (req, res) => {
       const searchResults = await db.searchMessages(
         search,
         {
-          filter: `user = "${user}"`,
+          filter: buildMeiliUserTenantFilter(user, 'message search'),
           limit: Math.min(pageSize, MEILI_SEARCH_LIMIT),
         },
         true,
@@ -213,6 +219,9 @@ router.get('/', async (req, res) => {
 
     res.status(200).json(response);
   } catch (error) {
+    if (error instanceof TenantIsolationError) {
+      return res.status(403).json({ error: 'Tenant context required in strict isolation mode' });
+    }
     logger.error('Error fetching messages:', error);
     res.status(500).json({ error: 'Internal server error' });
   }

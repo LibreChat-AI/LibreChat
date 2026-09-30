@@ -3259,6 +3259,20 @@ export const configSchema = z.object({
       enabled: z.boolean().optional(),
     })
     .optional(),
+  /**
+   * MeiliSearch operational levers. `meiliSettingsTimeoutMs` bounds how long
+   * startup and search wait for filterable-attribute settings tasks.
+   */
+  search: z
+    .object({
+      meiliSettingsTimeoutMs: z
+        .number()
+        .int()
+        .positive()
+        .max(3_600_000)
+        .default(10 * 60_000),
+    })
+    .default({}),
 });
 
 /**

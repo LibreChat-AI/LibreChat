@@ -12,6 +12,11 @@ import type {
 } from 'mongoose';
 import type { SearchResponse, SearchParams, Index, MeiliSearchErrorInfo } from 'meilisearch';
 import type { IConversation, IMessage } from '~/types';
+import {
+  mergeFilterableAttributes,
+  resolveMeiliSettingsTimeoutMs,
+  updateFilterableAttributes,
+} from '~/utils/meiliSettings';
 import { buildRetentionVisibilityFilter, legacyPermanentExpirationFilter } from '~/utils/retention';
 import logger from '~/config/meiliLogger';
 
@@ -117,8 +122,15 @@ const getSyncConfig = () => ({
 const hasSchemaPath = (schema: Schema, path: string): boolean =>
   Object.prototype.hasOwnProperty.call(schema.obj, path);
 
-/** Bump when the indexed document shape or projection changes. */
-export const MEILI_INDEX_SCHEMA_VERSION = 1;
+/**
+ * Bump when the indexed document shape or projection changes.
+ *
+ * Version 2 indexes `tenantId` so Meili filters can fail closed under multi-tenant
+ * search. Active-tenant queries match only documents with that exact `tenantId`;
+ * legacy tenantless Meili documents remain excluded until they are migrated into a
+ * tenant context and reindexed.
+ */
+export const MEILI_INDEX_SCHEMA_VERSION = 2;
 
 const explicitTemporaryFlagKey = 'meiliExplicitTemporaryFlag';
 const previouslyIndexedFlagKey = 'meiliPreviouslyIndexed';
@@ -127,7 +139,19 @@ const meiliRequestTimeoutMs = 10_000;
 const meiliWriteMaxAttempts = 3;
 const meiliRetryBaseDelayMs = 250;
 const meiliVersionReconcileMaxAttempts = 3;
+const meiliSettingsConfigureMaxAttempts = 2;
 const completeDetachedOperation: CallbackWithoutResultAndOptionalError = () => undefined;
+
+/** Documents stamped by a newer projection must never be selected for local reindex. */
+const schemaVersionWithinLocalCeiling = {
+  _meiliIndexSchemaVersion: { $not: { $gt: MEILI_INDEX_SCHEMA_VERSION } },
+};
+
+/** Indexed docs whose projection is strictly older than this binary. */
+const schemaVersionNeedsLocalProjection = {
+  _meiliIndex: true,
+  _meiliIndexSchemaVersion: { $not: { $gte: MEILI_INDEX_SCHEMA_VERSION } },
+};
 
 const retryDetachedMeiliWrite = async (
   operation: () => Promise<unknown>,
@@ -303,6 +327,7 @@ const createMeiliMongooseModel = ({
   getExcludedIndexedQuery,
   excludeFromIndexPath,
   attributesToIndex,
+  ensureSettingsReady,
   primaryKey,
   syncOptions,
 }: {
@@ -312,6 +337,7 @@ const createMeiliMongooseModel = ({
   getExcludedIndexedQuery: () => FilterQuery<unknown> | null;
   excludeFromIndexPath?: string;
   attributesToIndex: string[];
+  ensureSettingsReady: () => Promise<void>;
   primaryKey: string;
   syncOptions: { batchSize: number; delayMs: number };
 }) => {
@@ -383,6 +409,15 @@ const createMeiliMongooseModel = ({
           return;
         }
       } else {
+        const storedSchemaVersion = doc._meiliIndexSchemaVersion ?? 0;
+        /**
+         * An older binary must not overwrite a newer projection. Leave `_meiliIndex`
+         * unset/false so a newer replica can repair after this save.
+         */
+        if (storedSchemaVersion > MEILI_INDEX_SCHEMA_VERSION) {
+          return;
+        }
+
         const object = doc.preprocessObjectForIndex!();
         await retryDetachedMeiliWrite(async () => {
           const enqueued =
@@ -405,8 +440,9 @@ const createMeiliMongooseModel = ({
             $set: {
               _meiliIndex: true,
               _meiliCleanupVersion: meiliCleanupVersion,
-              _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION,
             },
+            /** Monotonic: never stamp a document back to an older projection version. */
+            $max: { _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION },
           },
         );
         if (acknowledgement.matchedCount > 0) {
@@ -444,13 +480,11 @@ const createMeiliMongooseModel = ({
       const needsIndexingQuery: FilterQuery<unknown> = {
         $and: [
           indexableQuery,
+          schemaVersionWithinLocalCeiling,
           {
             $or: [
               { _meiliIndex: { $ne: true }, _meiliIndexAttempted: true },
-              {
-                _meiliIndex: true,
-                _meiliIndexSchemaVersion: { $ne: MEILI_INDEX_SCHEMA_VERSION },
-              },
+              schemaVersionNeedsLocalProjection,
             ],
           },
         ],
@@ -462,7 +496,7 @@ const createMeiliMongooseModel = ({
             indexableQuery,
             {
               _meiliIndex: true,
-              _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION,
+              _meiliIndexSchemaVersion: { $gte: MEILI_INDEX_SCHEMA_VERSION },
             },
           ],
         }),
@@ -519,14 +553,10 @@ const createMeiliMongooseModel = ({
         const query: FilterQuery<unknown> = {
           $and: [
             indexableQuery,
+            /** Ceiling applies to the whole condition, including reset-flag docs. */
+            schemaVersionWithinLocalCeiling,
             {
-              $or: [
-                { _meiliIndex: { $ne: true } },
-                {
-                  _meiliIndex: true,
-                  _meiliIndexSchemaVersion: { $ne: MEILI_INDEX_SCHEMA_VERSION },
-                },
-              ],
+              $or: [{ _meiliIndex: { $ne: true } }, schemaVersionNeedsLocalProjection],
             },
           ],
         };
@@ -605,8 +635,9 @@ const createMeiliMongooseModel = ({
             $set: {
               _meiliIndex: true,
               _meiliCleanupVersion: meiliCleanupVersion,
-              _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION,
             },
+            /** Monotonic: never stamp a document back to an older projection version. */
+            $max: { _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION },
           },
           { timestamps: false },
         );
@@ -759,6 +790,7 @@ const createMeiliMongooseModel = ({
       params: SearchParams,
       populate: boolean,
     ): Promise<SearchResponse<MeiliIndexable, Record<string, unknown>>> {
+      await ensureSettingsReady();
       const data = await index.search(q, params);
 
       if (populate) {
@@ -1046,7 +1078,7 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
   /** Create index only if it doesn't exist */
   const index = client.index<MeiliIndexable>(indexName);
 
-  (async () => {
+  const configureIndex = async (): Promise<void> => {
     try {
       await index.getRawInfo();
       logger.debug(`[mongoMeili] Index ${indexName} already exists`);
@@ -1083,15 +1115,71 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
       }
     }
 
+    const requiredFilterableAttributes = ['user'];
+    if (hasSchemaPath(schema, 'tenantId')) {
+      requiredFilterableAttributes.push('tenantId');
+    }
+
     try {
-      await index.updateSettings({
-        filterableAttributes: ['user'],
+      const settings = await index.getSettings();
+      const filterableAttributes = mergeFilterableAttributes(
+        settings.filterableAttributes,
+        requiredFilterableAttributes,
+      );
+      if (filterableAttributes == null) {
+        return;
+      }
+
+      await updateFilterableAttributes({
+        client,
+        index,
+        filterableAttributes,
+        timeoutMs: resolveMeiliSettingsTimeoutMs(),
+        context: `[mongoMeili] ${indexName}`,
       });
-      logger.debug(`[mongoMeili] Updated index ${indexName} settings to make 'user' filterable`);
+      logger.debug(
+        `[mongoMeili] Updated index ${indexName} settings to make ${filterableAttributes.join(
+          ' and ',
+        )} filterable`,
+      );
     } catch (settingsError) {
       logger.error(`[mongoMeili] Error updating index settings for ${indexName}:`, settingsError);
+      throw settingsError;
     }
-  })();
+  };
+
+  let settingsReady: Promise<void> | undefined;
+  const ensureSettingsReady = (): Promise<void> => {
+    if (settingsReady) {
+      return settingsReady;
+    }
+    const pending = (async () => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < meiliSettingsConfigureMaxAttempts; attempt++) {
+        try {
+          await configureIndex();
+          return;
+        } catch (error) {
+          lastError = error;
+          if (attempt + 1 < meiliSettingsConfigureMaxAttempts) {
+            logger.warn(
+              `[mongoMeili] Retrying filterable-attribute setup for ${indexName} after transient failure`,
+              error,
+            );
+          }
+        }
+      }
+      throw lastError;
+    })();
+    settingsReady = pending;
+    void pending.catch(() => {
+      if (settingsReady === pending) {
+        settingsReady = undefined;
+      }
+    });
+    return pending;
+  };
+  void ensureSettingsReady().catch(() => undefined);
 
   // Collect attributes from the schema that should be indexed
   const attributesToIndex: string[] = [
@@ -1116,6 +1204,7 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
       getExcludedIndexedQuery: () => buildExcludedIndexedQuery(options.excludeFromIndexPath),
       excludeFromIndexPath: options.excludeFromIndexPath,
       attributesToIndex,
+      ensureSettingsReady,
       primaryKey,
       syncOptions,
     }),

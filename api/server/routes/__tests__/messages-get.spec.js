@@ -1,3 +1,4 @@
+const mockResolveMeiliTenantScope = jest.fn(() => ({ kind: 'unscoped' }));
 const { CLIENT_MESSAGE_SELECT, MEILI_SEARCH_LIMIT } = require('@librechat/data-schemas');
 const express = require('express');
 const request = require('supertest');
@@ -123,15 +124,20 @@ jest.mock('@librechat/api', () => {
 
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));
 
-jest.mock('@librechat/data-schemas', () => ({
-  ...jest.requireActual('@librechat/data-schemas'),
-  logger: {
-    debug: jest.fn(),
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-  },
-}));
+jest.mock('@librechat/data-schemas', () => {
+  const actual = jest.requireActual('@librechat/data-schemas');
+  return {
+    ...actual,
+    buildMeiliUserTenantFilter: (user, operation) =>
+      actual.buildMeiliUserTenantFilter(user, operation, mockResolveMeiliTenantScope()),
+    logger: {
+      debug: jest.fn(),
+      info: jest.fn(),
+      warn: jest.fn(),
+      error: jest.fn(),
+    },
+  };
+});
 
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
@@ -261,6 +267,7 @@ describe('message route conversation ownership filters', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockResolveMeiliTenantScope.mockReturnValue({ kind: 'unscoped' });
     canReadActiveJobConversation.mockResolvedValue(false);
     prepareMessageRequestValidation.mockImplementation((req, res, next) => {
       req.messageRequestValidation = {
@@ -661,6 +668,46 @@ describe('message route conversation ownership filters', () => {
     expect(response.body.messages).toHaveLength(1);
     expect(response.body.messages[0]).toMatchObject({ messageId: 'hit-1', title: 'Found' });
     expect(response.body.messages[0]).not.toHaveProperty('contextMeta');
+  });
+
+  it.each([
+    {
+      name: 'active tenant with escaped characters',
+      scope: { kind: 'scoped', tenantId: 'tenant"\\id' },
+      filter: `user = "${authenticatedUserId}" AND tenantId = "tenant\\"\\\\id"`,
+    },
+    {
+      name: 'system context',
+      scope: { kind: 'system' },
+      filter: `user = "${authenticatedUserId}"`,
+    },
+  ])('uses the tenant-aware message search filter in $name', async ({ scope, filter }) => {
+    mockResolveMeiliTenantScope.mockReturnValue(scope);
+    searchMessages.mockResolvedValue({ hits: [] });
+    getConvosQueried.mockResolvedValue({ convoMap: {} });
+    getMessages.mockResolvedValue([]);
+
+    const response = await request(app).get('/api/messages?search=needle');
+
+    expect(response.status).toBe(200);
+    expect(searchMessages).toHaveBeenCalledWith('needle', { filter, limit: 25 }, true);
+  });
+
+  it('fails closed when the shared Meili filter builder rejects the request', async () => {
+    const { TenantIsolationError } = jest.requireActual('@librechat/data-schemas');
+    mockResolveMeiliTenantScope.mockImplementation(() => {
+      throw new TenantIsolationError(
+        '[TenantIsolation] message search attempted without tenant context in strict mode',
+      );
+    });
+
+    const response = await request(app).get('/api/messages?search=needle');
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({
+      error: 'Tenant context required in strict isolation mode',
+    });
+    expect(searchMessages).not.toHaveBeenCalled();
   });
 
   it('returns indistinguishable not-found responses for child and missing query reads', async () => {

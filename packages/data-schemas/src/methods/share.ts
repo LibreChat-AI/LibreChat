@@ -14,8 +14,10 @@ import {
   sanitizeUIResourceContent,
   stripMessageUIResourceMarkers,
 } from '~/utils/stripUIResourceMarkers';
+import { buildMeiliUserTenantFilter } from '~/utils/search';
 import { activeExpirationFilter } from '~/utils/retention';
 import { isValidObjectIdString } from '~/utils/objectId';
+import { TenantIsolationError } from '~/tenant/policy';
 import { MEILI_SEARCH_LIMIT } from '~/common/search';
 import { CLIENT_MESSAGE_SELECT } from './message';
 import logger from '~/config/winston';
@@ -1123,7 +1125,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       if (search && search.trim()) {
         try {
           const searchResults = await Conversation.meiliSearch(search, {
-            filter: `user = "${user}"`,
+            filter: buildMeiliUserTenantFilter(user, 'shared-link search'),
             limit: MEILI_SEARCH_LIMIT,
             attributesToRetrieve: ['conversationId'],
           });
@@ -1139,6 +1141,9 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
           const conversationIds = searchResults.hits.map((hit) => hit.conversationId);
           query['conversationId'] = { $in: conversationIds };
         } catch (searchError) {
+          if (searchError instanceof TenantIsolationError) {
+            throw searchError;
+          }
           logger.error('[getSharedLinks] Meilisearch error', {
             error: searchError instanceof Error ? searchError.message : 'Unknown error',
             user,
@@ -1179,6 +1184,9 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         hasNextPage,
       };
     } catch (error) {
+      if (error instanceof TenantIsolationError) {
+        throw error;
+      }
       logger.error('[getSharedLinks] Error getting shares', {
         error: error instanceof Error ? error.message : 'Unknown error',
         user,
