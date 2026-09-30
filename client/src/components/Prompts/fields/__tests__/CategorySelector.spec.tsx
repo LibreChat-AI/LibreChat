@@ -32,8 +32,8 @@ const categories: TCategory[] = [
 
 let formValues: { category?: string } = {};
 
-const FormProbe = () => {
-  const methods = useForm({ defaultValues: { category: '' } });
+const FormProbe = ({ initial = '' }: { initial?: string }) => {
+  const methods = useForm({ defaultValues: { category: initial } });
   formValues = methods.watch();
   return (
     <FormProvider {...methods}>
@@ -42,7 +42,7 @@ const FormProbe = () => {
   );
 };
 
-const renderSelector = (allowCustom?: boolean) => {
+const renderSelector = (allowCustom?: boolean, initial?: string) => {
   mockGetStartupConfig.mockResolvedValue(
     allowCustom === undefined ? {} : { promptCategories: { allowCustom } },
   );
@@ -50,7 +50,7 @@ const renderSelector = (allowCustom?: boolean) => {
   const utils = render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
-        <FormProbe />
+        <FormProbe initial={initial} />
       </RecoilRoot>
     </QueryClientProvider>,
   );
@@ -137,6 +137,34 @@ describe('CategorySelector custom categories', () => {
 
     await screen.findByRole('menuitem', { name: /Human Resources/ });
     expect(screen.queryByRole('menuitem', { name: /New category/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('CategorySelector selected value missing from the list', () => {
+  beforeEach(() => {
+    mockGetCategories.mockResolvedValue(categories);
+  });
+
+  afterEach(() => {
+    mockGetCategories.mockReset();
+    mockGetStartupConfig.mockReset();
+  });
+
+  it('shows the placeholder when custom categories are not allowed', async () => {
+    renderSelector(false, 'travel');
+    await waitFor(() => expect(mockGetStartupConfig).toHaveBeenCalled());
+
+    const trigger = screen.getByRole('button', { name: /category/i });
+    expect(trigger).toHaveTextContent('Category');
+    expect(trigger).not.toHaveTextContent('travel');
+  });
+
+  it('shows the value itself when custom categories are allowed', async () => {
+    renderSelector(true, 'Onboarding');
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /category/i })).toHaveTextContent('Onboarding'),
+    );
   });
 });
 
