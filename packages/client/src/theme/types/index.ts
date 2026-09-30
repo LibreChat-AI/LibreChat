@@ -91,6 +91,9 @@ export interface IThemeRGB {
    *  3:1 non-text floor on every canvas, so it is kept apart from the separator
    *  roles above, which stay quiet. */
   'rgb-border-control'?: string;
+  /** A field's edge while it holds focus, under `fieldFocusStyle: 'border'`; follows
+   *  `rgb-focus-control` when a theme omits it. */
+  'rgb-border-field-focus'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -258,6 +261,7 @@ export interface IThemeVariables {
   '--border-xheavy-alpha': string;
   '--border-destructive': string;
   '--border-control': string;
+  '--border-field-focus': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -378,6 +382,7 @@ export interface IThemeColors {
   'border-xheavy'?: string;
   'border-destructive'?: string;
   'border-control'?: string;
+  'border-field-focus'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;
@@ -455,6 +460,17 @@ export interface IThemeAppearance {
   controlFontWeight: string;
   buttonHeight: string;
   buttonHeightSm: string;
+  /**
+   * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,
+   * `border` swaps the field's edge to `border-field-focus` on any focus and draws no ring.
+   */
+  fieldHeight: string;
+  fieldFocusStyle: 'ring' | 'border';
+  /** A field label's size, leading and weight. The size follows `textSm` when a theme omits it,
+   *  and the default weight is `inherit`. */
+  labelSize: string;
+  labelLeading: string;
+  labelFontWeight: string;
   switchWidth: string;
   switchHeight: string;
   tableCellSpaceY: string;

@@ -793,6 +793,35 @@ describe('state role defaults', () => {
   });
 
   it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('edges %s focused fields in the focus ring color', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-border-field-focus']).toBe(theme['rgb-focus-control']);
+  });
+
+  it.each([
+    ['clickhouse light', clickHouseLightTheme],
+    ['clickhouse dark', clickHouseDarkTheme],
+  ])('keeps the %s focused field edge at 3:1 on every field canvas', (_name, theme: IThemeRGB) => {
+    const edge = toRgb(theme, 'rgb-border-field-focus');
+    const canvases: Array<keyof IThemeRGB> = [
+      'rgb-surface-primary',
+      'rgb-presentation',
+      'rgb-surface-secondary',
+      'rgb-surface-dialog',
+    ];
+
+    const failures = canvases.flatMap((canvas) => {
+      const ratio = contrast(edge, toRgb(theme, canvas));
+      return ratio < WCAG_MARK_MIN ? [`${canvas}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
+  });
+
+  it.each([
     ['clickhouse light', clickHouseLightTheme],
     ['clickhouse dark', clickHouseDarkTheme],
   ])('keeps %s dialog titles at AA on the dialog surface', (_name, theme: IThemeRGB) => {

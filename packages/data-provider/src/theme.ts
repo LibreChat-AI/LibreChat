@@ -77,6 +77,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-border-xheavy',
   'rgb-border-destructive',
   'rgb-border-control',
+  'rgb-border-field-focus',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',
@@ -328,6 +329,13 @@ const appearanceValidators = {
   controlFontWeight: isFontWeight,
   buttonHeight: isLength,
   buttonHeightSm: isLength,
+  /** A form field's height, and whether focus draws a ring or swaps the field's edge color. */
+  fieldHeight: isLength,
+  fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
+  /** A field label's size, leading and weight; `inherit` keeps the weight of the text around it. */
+  labelSize: isLength,
+  labelLeading: isLineHeight,
+  labelFontWeight: (value: unknown) => value === 'inherit' || isFontWeight(value),
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
   tableCellSpaceY: isTableLength,

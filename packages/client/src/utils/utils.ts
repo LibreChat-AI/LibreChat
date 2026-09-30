@@ -12,12 +12,20 @@ const twMerge = extendTailwindMerge({
     classGroups: {
       py: [{ py: ['theme-table-cell', 'theme-table-cell-compact', 'theme-table-cell-dense'] }],
       h: [
-        { h: ['theme-table-head', 'theme-table-head-compact', 'theme-button', 'theme-button-sm'] },
+        {
+          h: [
+            'theme-table-head',
+            'theme-table-head-compact',
+            'theme-button',
+            'theme-button-sm',
+            'theme-field',
+          ],
+        },
       ],
       px: [{ px: ['theme-control-x', 'theme-dialog-x'] }],
       gap: [{ gap: ['theme-control-gap'] }],
       'space-y': [{ 'space-y': ['theme-dialog-header'] }],
-      'font-weight': [{ font: ['theme-control', 'theme-dialog-title-weight'] }],
+      'font-weight': [{ font: ['theme-control', 'theme-dialog-title-weight', 'theme-label'] }],
       'font-family': [{ font: ['theme-dialog-title'] }],
     },
   },

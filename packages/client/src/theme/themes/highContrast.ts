@@ -115,6 +115,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-border-xheavy': '0 0 0', // #000000
   'rgb-border-destructive': '161 0 0', // #a10000
   'rgb-border-control': '0 0 0', // #000000
+  'rgb-border-field-focus': '0 0 0', // #000000 (matching focus-control)
   'rgb-surface-disabled': '255 255 255', // #ffffff
   'rgb-text-disabled': '87 87 87', // #575757
   'rgb-border-disabled': '87 87 87', // #575757
@@ -275,6 +276,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-border-xheavy': '255 255 255', // #ffffff
   'rgb-border-destructive': '255 143 143', // #ff8f8f
   'rgb-border-control': '255 255 255', // #ffffff
+  'rgb-border-field-focus': '255 255 255', // #ffffff (matching focus-control)
   'rgb-surface-disabled': '0 0 0', // #000000
   'rgb-text-disabled': '184 184 184', // #b8b8b8
   'rgb-border-disabled': '184 184 184', // #b8b8b8

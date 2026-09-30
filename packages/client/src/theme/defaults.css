@@ -137,6 +137,7 @@ html {
   --border-xheavy-alpha: 1;
   --border-destructive: var(--red-600);
   --border-control: var(--gray-200);
+  --border-field-focus: var(--focus-control);
   --focus-control: var(--gray-800);
   --border-disabled: var(--gray-200);
   --status-success: var(--green-700);
@@ -208,6 +209,11 @@ html {
   --theme-control-font-weight: 500;
   --theme-button-height: 2.5rem;
   --theme-button-height-sm: 2.25rem;
+  --theme-field-height: 2.5rem;
+  --theme-field-focus-style: ring;
+  --theme-label-size: var(--theme-text-sm, 0.875rem);
+  --theme-label-leading: 1;
+  --theme-label-font-weight: inherit;
   --theme-switch-width: 2.75rem;
   --theme-switch-height: 1.5rem;
   --theme-table-cell-space-y: 1rem;
@@ -333,6 +339,7 @@ html {
   --border-xheavy: var(--gray-400);
   --border-destructive: var(--red-500);
   --border-control: var(--gray-800);
+  --border-field-focus: var(--focus-control);
   --focus-control: var(--gray-100);
   --border-disabled: var(--gray-650);
   --status-success: var(--green-300);

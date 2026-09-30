@@ -836,6 +836,91 @@ describe('theme registry', () => {
     });
   });
 
+  it('keeps LibreChat’s field and label by default', () => {
+    expect(defaultAppearance).toMatchObject({
+      fieldHeight: '2.5rem',
+      fieldFocusStyle: 'ring',
+      labelSize: defaultAppearance.textSm,
+      labelLeading: '1',
+      labelFontWeight: 'inherit',
+    });
+    expect(defaultTheme['rgb-border-field-focus']).toBe(defaultTheme['rgb-focus-control']);
+    expect(darkTheme['rgb-border-field-focus']).toBe(darkTheme['rgb-focus-control']);
+  });
+
+  it('keeps the fields and labels of a theme that predates the roles on its focus and type', () => {
+    const { colors, appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'focus-reference',
+        modes: {
+          light: {
+            colors: { 'rgb-text-primary': '10 20 30' },
+            appearance: { textSm: '0.95rem' },
+          },
+        },
+      },
+      'light',
+    );
+
+    /** The field edge chains through `focus-control`, which itself follows the primary ink. */
+    expect(colors['rgb-focus-control']).toBe('10 20 30');
+    expect(colors['rgb-border-field-focus']).toBe('10 20 30');
+    expect(appearance.labelSize).toBe('0.95rem');
+    expect(appearance.fieldFocusStyle).toBe('ring');
+  });
+
+  it('draws fields and labels from their own roles apart from the focus ring and type scale', () => {
+    const { colors, appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'edge-focus-reference',
+        modes: {
+          dark: {
+            colors: { 'rgb-border-field-focus': '200 30 90' },
+            appearance: {
+              fieldHeight: '3rem',
+              fieldFocusStyle: 'border',
+              labelSize: '1rem',
+              labelLeading: '1.25',
+              labelFontWeight: '700',
+            },
+          },
+        },
+      },
+      'dark',
+    );
+
+    expect(colors['rgb-focus-control']).toBe(darkTheme['rgb-focus-control']);
+    expect(colors['rgb-border-field-focus']).toBe('200 30 90');
+    expect(appearance.textSm).toBe(defaultAppearance.textSm);
+    expect(appearance).toMatchObject({
+      fieldHeight: '3rem',
+      fieldFocusStyle: 'border',
+      labelSize: '1rem',
+      labelLeading: '1.25',
+      labelFontWeight: '700',
+    });
+  });
+
+  it('rejects field and label values the shared validators refuse', () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'field-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(issues({ fieldFocusStyle: 'border', labelFontWeight: 'inherit' })).toEqual([]);
+    [
+      { fieldFocusStyle: 'glow' },
+      { fieldHeight: 'tall' },
+      { labelSize: '12' },
+      { labelLeading: 'calc(1 / 0)' },
+      { labelFontWeight: 'bold' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
+  });
+
   it('does not count the dialog title ink among the surfaces the verified mark sits on', () => {
     const { colors } = resolveTheme(
       {

@@ -10,6 +10,12 @@ import React, {
 } from 'react';
 import { JSX } from 'react/jsx-runtime';
 import type { IThemeRGB, ThemeDefinition, ThemeMode } from '../types';
+import applyTheme, {
+  applyResolvedTheme,
+  themeOwnedProperties,
+  THEME_DISABLED_ATTRIBUTE,
+  THEME_FIELD_FOCUS_ATTRIBUTE,
+} from '../utils/applyTheme';
 import {
   fromLegacyTheme,
   highContrastTheme,
@@ -17,11 +23,6 @@ import {
   resolveTheme,
   validateThemeDefinition,
 } from '../registry';
-import applyTheme, {
-  applyResolvedTheme,
-  themeOwnedProperties,
-  THEME_DISABLED_ATTRIBUTE,
-} from '../utils/applyTheme';
 import { defaultTheme } from '../themes/default';
 import { darkTheme } from '../themes/dark';
 import '../highContrast.css';
@@ -53,6 +54,7 @@ type ThemeDOMSnapshot = {
   colorScheme: { value: string; priority: string };
   dataTheme: string | null;
   disabledStyle: string | null;
+  fieldFocusStyle: string | null;
 };
 
 type ThemeClassSnapshot = {
@@ -422,6 +424,7 @@ const captureThemeDOM = (root: HTMLElement): ThemeDOMSnapshot => ({
   },
   dataTheme: root.getAttribute('data-theme'),
   disabledStyle: root.getAttribute(THEME_DISABLED_ATTRIBUTE),
+  fieldFocusStyle: root.getAttribute(THEME_FIELD_FOCUS_ATTRIBUTE),
 });
 
 const restoreThemeDOM = (snapshot: ThemeDOMSnapshot, root: HTMLElement): void => {
@@ -452,6 +455,11 @@ const restoreThemeDOM = (snapshot: ThemeDOMSnapshot, root: HTMLElement): void =>
     root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
   } else {
     root.setAttribute(THEME_DISABLED_ATTRIBUTE, snapshot.disabledStyle);
+  }
+  if (snapshot.fieldFocusStyle === null) {
+    root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  } else {
+    root.setAttribute(THEME_FIELD_FOCUS_ATTRIBUTE, snapshot.fieldFocusStyle);
   }
 };
 

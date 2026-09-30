@@ -5,6 +5,7 @@ import applyTheme, {
   themeOwnedProperties,
   THEME_DISABLED_ATTRIBUTE,
   THEME_SCOPE_ATTRIBUTE,
+  THEME_FIELD_FOCUS_ATTRIBUTE,
 } from './applyTheme';
 import { defaultAppearance, highContrastTheme, resolveTheme } from '../registry';
 import { defaultTheme } from '../themes/default';
@@ -437,6 +438,33 @@ describe('applyTheme', () => {
     applyTheme({ 'rgb-surface-tertiary': '30 31 32', 'rgb-avatar-placeholder': '1 2 3' }, root);
 
     expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('1 2 3');
+  });
+
+  it('marks the root only for a theme that focuses fields by their edge, and clears it', () => {
+    const root = document.documentElement;
+    const border: ThemeDefinition = {
+      version: 1,
+      name: 'field-border-reference',
+      modes: { light: { appearance: { fieldFocusStyle: 'border' } } },
+    };
+
+    applyResolvedTheme(resolveTheme(border, 'light'), root);
+    expect(root.getAttribute(THEME_FIELD_FOCUS_ATTRIBUTE)).toBe('border');
+
+    applyResolvedTheme(resolveTheme({ ...border, modes: {} }, 'light'), root);
+    expect(root.hasAttribute(THEME_FIELD_FOCUS_ATTRIBUTE)).toBe(false);
+
+    applyResolvedTheme(resolveTheme(border, 'light'), root);
+    clearAppliedTheme(root);
+    expect(root.hasAttribute(THEME_FIELD_FOCUS_ATTRIBUTE)).toBe(false);
+  });
+
+  it('focuses the fields of a legacy theme in the focus color it names', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-focus-control': '30 31 32' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--border-field-focus')).toBe('30 31 32');
   });
 
   it('keeps the switch knob of a legacy theme on the surface it repainted', () => {

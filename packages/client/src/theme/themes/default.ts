@@ -79,6 +79,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-xheavy': '89 89 89', // #595959 (gray-500)
   'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
   'rgb-border-control': '227 227 227', // #e3e3e3 (gray-200), the stock field edge
+  'rgb-border-field-focus': '33 33 33', // #212121 (gray-800, matching focus-control)
   'rgb-surface-disabled': '236 236 236', // #ececec (gray-100)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '227 227 227', // #e3e3e3 (gray-200)

@@ -63,7 +63,7 @@ describe.each([
   const tokens = Object.keys(theme) as Array<keyof IThemeRGB>;
 
   it('covers every registry color', () => {
-    expect(tokens).toHaveLength(112);
+    expect(tokens).toHaveLength(113);
   });
 
   it('resolves every registry color to the runtime theme value', () => {
@@ -84,6 +84,7 @@ const stockAliases: Partial<
 > = {
   controlPaddingX: 'spaceNormal',
   controlGap: 'spaceCompact',
+  labelSize: 'textSm',
   dialogTitleSize: 'textLg',
   dialogTitleFontFamily: 'displayFontFamily',
 };
@@ -94,6 +95,7 @@ const colorAliases: Array<[string, string]> = [
   ['--button-primary', '--surface-inverted'],
   ['--button-primary-hover', '--surface-inverted-hover'],
   ['--dialog-title', '--text-primary'],
+  ['--border-field-focus', '--focus-control'],
 ];
 
 describe('the stock color aliases', () => {

@@ -14,6 +14,8 @@ module.exports = {
         'theme-control': 'var(--theme-control-font-weight, 500)',
         /** A dialog title's weight; `-weight` keeps it apart from the family of the same name. */
         'theme-dialog-title-weight': 'var(--theme-dialog-title-font-weight, 600)',
+        /** A field label's weight, the weight of the text around it by default. */
+        'theme-label': 'var(--theme-label-font-weight, inherit)',
       },
       height: {
         'theme-control': 'var(--theme-control-height, 2.25rem)',
@@ -21,6 +23,8 @@ module.exports = {
         /** The Button's default and `sm` heights. */
         'theme-button': 'var(--theme-button-height, 2.5rem)',
         'theme-button-sm': 'var(--theme-button-height-sm, 2.25rem)',
+        /** A form field's height. */
+        'theme-field': 'var(--theme-field-height, 2.5rem)',
         /** A header cell: the table's vertical cell space on both sides of one text line. */
         'theme-table-head': 'calc(var(--theme-table-cell-space-y, 1rem) * 2 + 1rem)',
         /** A compact header: half the cell space on both sides of a text-sm line. */

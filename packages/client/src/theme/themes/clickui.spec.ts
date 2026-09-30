@@ -117,6 +117,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-xheavy': 'palette.slate.500',
     'rgb-border-destructive': 'palette.danger.600',
     'rgb-border-control': 'palette.slate.500',
+    'rgb-border-field-focus': 'click.field.color.stroke.active',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
@@ -230,6 +231,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-xheavy': 'palette.neutral.500',
     'rgb-border-destructive': 'palette.danger.300',
     'rgb-border-control': 'palette.neutral.500',
+    'rgb-border-field-focus': 'click.field.color.stroke.active',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
@@ -445,6 +447,18 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason: '2rem: Click UI draws one button size, so the small step matches the default',
   },
+  fieldHeight: {
+    value: '2rem',
+    status: 'match',
+    reason:
+      '2rem: Click UI sizes its field by content, field.space.y (0.2813rem) twice, a 0.875rem/1.5 value and a 1px stroke each side',
+  },
+  fieldFocusStyle: {
+    value: 'border',
+    status: 'match',
+    reason:
+      'border: Click UI InputWrapper swaps the stroke to field.color.stroke.active on focus and draws no ring',
+  },
 };
 
 const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
@@ -491,6 +505,9 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   dialogTitleLeading: 'click.dialog.typography.title.default',
   dialogTitleFontWeight: 'click.dialog.typography.title.default',
   dialogTitleFontFamily: 'click.dialog.typography.title.default',
+  labelSize: 'click.field.typography.label.default',
+  labelLeading: 'click.field.typography.label.default',
+  labelFontWeight: 'click.field.typography.label.default',
   scrimOpacity: 'click.dialog.color.opaqueBackground.default',
   alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
@@ -662,6 +679,9 @@ const fontShorthandParts: Partial<
   dialogTitleSize: 'size',
   dialogTitleLeading: 'leading',
   dialogTitleFontFamily: 'family',
+  labelFontWeight: 'weight',
+  labelSize: 'size',
+  labelLeading: 'leading',
 };
 
 function comparable(key: keyof IThemeAppearance, raw: string | number): string {

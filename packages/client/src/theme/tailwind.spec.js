@@ -240,6 +240,7 @@ describe('LibreChat Tailwind preset', () => {
     const aliases = {
       controlPaddingX: 'spaceNormal',
       controlGap: 'spaceCompact',
+      labelSize: 'textSm',
       dialogTitleSize: 'textLg',
       dialogTitleFontFamily: 'displayFontFamily',
     };

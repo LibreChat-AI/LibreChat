@@ -102,6 +102,8 @@
   --color-border-xheavy: rgb(var(--border-xheavy) / var(--border-xheavy-alpha, 1));
   --color-border-destructive: rgb(var(--border-destructive));
   --color-border-control: rgb(var(--border-control));
+  /* Falls back to the focus ring color, for a stylesheet that predates it. */
+  --color-border-field-focus: rgb(var(--border-field-focus, var(--focus-control)));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */
@@ -205,3 +207,7 @@
  * `rc-input-number` renders its input inside the element that takes the
  * component's classes. */
 @custom-variant theme-disabled-within (&:is([data-theme-disabled='fill'] *):has(:disabled));
+
+/* A theme whose `fieldFocusStyle` is `border` swaps a focused field's edge color instead of
+ * drawing a ring; `applyTheme` mirrors that choice as `data-theme-field-focus` on the root. */
+@custom-variant theme-field-border (&:is([data-theme-field-focus='border'] *));

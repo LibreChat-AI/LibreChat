@@ -105,6 +105,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-xheavy': '128 134 145', // #808691 (palette.slate.500, two steps past stroke.intense #b3b6bd (2.03:1 on white))
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
+  'rgb-border-field-focus': '22 21 23', // #161517 (field.color.stroke.active)
   'rgb-surface-disabled': '223 223 223', // #dfdfdf (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '160 160 160', // #a0a0a0 (text.disabled)
   'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
@@ -248,6 +249,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-xheavy': '128 128 128', // #808080 (palette.neutral.500, three steps past stroke.intense #414141 (1.62:1 on the canvas))
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
+  'rgb-border-field-focus': '250 255 105', // #faff69 (field.color.stroke.active)
   'rgb-surface-disabled': '65 65 65', // #414141 (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '128 128 128', // #808080 (text.disabled)
   'rgb-border-disabled': '65 65 65', // #414141 (field.color.stroke.disabled)
@@ -378,6 +380,15 @@ const clickHouseShape = {
    *  0.875rem/1.5 label and a 1px stroke, 32px in all. */
   buttonHeight: '2rem',
   buttonHeightSm: '2rem',
+  /** Click UI's field is sized by its content, like its button: 0.2813rem of space.y on both
+   *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to
+   *  `field.color.stroke.active` and draws no ring (InputWrapper). */
+  fieldHeight: '2rem',
+  fieldFocusStyle: 'border' as const,
+  /** `field.typography.label.default`: 500 0.75rem/1.5. */
+  labelSize: '0.75rem',
+  labelLeading: '1.5',
+  labelFontWeight: '500',
   dialogStroke: '1px', // dialog.stroke.default, in stroke.default (border-light)
   dialogPaddingX: '2rem', // dialog.space.x; its space.y is LibreChat's 1.5rem
   dialogHeaderGap: '0.25rem', // dialog.title.space.gap

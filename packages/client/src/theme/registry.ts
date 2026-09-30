@@ -134,9 +134,11 @@ export function dialogTitleFallback(colors: IThemeRGB): IThemeRGB {
 export function focusFallbacks(colors: IThemeRGB): IThemeRGB {
   const outline = colors['rgb-focus-outline'] ?? colors['rgb-ring-primary'];
   const control = colors['rgb-focus-control'] ?? colors['rgb-text-primary'];
+  const field = colors['rgb-border-field-focus'] ?? control;
   return {
     ...(outline !== undefined ? { 'rgb-focus-outline': outline } : {}),
     ...(control !== undefined ? { 'rgb-focus-control': control } : {}),
+    ...(field !== undefined ? { 'rgb-border-field-focus': field } : {}),
   };
 }
 
@@ -159,6 +161,11 @@ export const themeAppearanceProperties: Readonly<
   controlFontWeight: '--theme-control-font-weight',
   buttonHeight: '--theme-button-height',
   buttonHeightSm: '--theme-button-height-sm',
+  fieldHeight: '--theme-field-height',
+  fieldFocusStyle: '--theme-field-focus-style',
+  labelSize: '--theme-label-size',
+  labelLeading: '--theme-label-leading',
+  labelFontWeight: '--theme-label-font-weight',
   switchWidth: '--theme-switch-width',
   switchHeight: '--theme-switch-height',
   tableCellSpaceY: '--theme-table-cell-space-y',
@@ -220,6 +227,11 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   controlFontWeight: '500',
   buttonHeight: '2.5rem',
   buttonHeightSm: '2.25rem',
+  fieldHeight: '2.5rem',
+  fieldFocusStyle: 'ring',
+  labelSize: '0.875rem',
+  labelLeading: '1',
+  labelFontWeight: 'inherit',
   ...defaultSwitchSize,
   tableCellSpaceY: '1rem',
   tableRowStroke: '0px',
@@ -404,6 +416,7 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['displayFontFamily', 'fontFamily'],
   ['controlPaddingX', 'spaceNormal'],
   ['controlGap', 'spaceCompact'],
+  ['labelSize', 'textSm'],
   ['dialogTitleSize', 'textLg'],
   ['dialogTitleFontFamily', 'displayFontFamily'],
 ];
