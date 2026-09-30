@@ -10,6 +10,7 @@ import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-pro
 import type { Artifact } from '~/common';
 import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import useToolArtifactClaim, { isStrictlyNewer } from './claim';
+import { useMessageContext } from '~/Providers/MessageContext';
 import { displayFilename } from './attachmentTypes';
 import { useAttachmentLink } from './LogLink';
 import ArtifactRow from './ArtifactRow';
@@ -50,8 +51,8 @@ interface ToolArtifactCardProps {
  *     what stops two cards for the same file from observing each
  *     other's write and trading overwrites in a loop.
  *
- *  3. **Focus + open on mount** (deps: artifact.id, artifact.type) —
- *     gated on `isSubmitting` captured at first render via a ref AND
+ *  3. **Focus + open on ownership change** (deps: artifact.id, artifact.type, ownerMessageId) —
+ *     gated on this message's `isSubmitting` captured on mount AND
  *     on `artifact.type !== CODE`. A card mounted *during* streaming
  *     for a rich-preview bucket (HTML, React, Markdown, plain text)
  *     steals panel focus and forces `artifactsVisibility = true` so
@@ -69,6 +70,8 @@ interface ToolArtifactCardProps {
  *     of context.
  */
 const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) => {
+  const { isSubmitting, messageId } = useMessageContext();
+  const ownerMessageId = messageId || attachment.messageId || '';
   const file = attachment as TFile & TAttachmentMetadata;
   const fileId = file.file_id;
   const setVisible = useSetRecoilState(store.artifactsVisibility);
@@ -86,45 +89,27 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
   const [globalClaim, setGlobalClaim] = useRecoilState(store.toolArtifactClaim(artifact.id));
   const isMyGlobalClaim = globalClaim === claimKey;
   const isSelected = artifact.id === currentArtifactId;
-  /* Read+reset on mount only — `useRecoilCallback` avoids subscribing
-   * to the per-file_id flag (no re-renders when other files resolve).
+  /* Read+reset only for this response — `useRecoilCallback` avoids subscribing
+   * to other file or message flags (no re-renders when other previews resolve).
    * The deferred-preview hook flips this to `true` on the pending→ready
    * edge; we consume it once and reset, so repeat mounts (panel close
    * then reopen, history scroll) don't auto-open a second time. */
   const consumeJustResolved = useRecoilCallback(
     ({ snapshot, reset }) =>
-      (id: string) => {
-        const flagged = snapshot.getLoadable(store.previewJustResolved(id)).valueMaybe() ?? false;
+      (ownerId: string, id: string) => {
+        const signal = store.previewJustResolved([ownerId, id]);
+        const flagged = snapshot.getLoadable(signal).valueMaybe() ?? false;
         if (flagged) {
-          reset(store.previewJustResolved(id));
+          reset(signal);
         }
         return flagged;
       },
     [],
   );
-  /**
-   * Captured at first render via a non-subscribing snapshot read so the
-   * downstream effect doesn't re-fire (and the component doesn't
-   * re-render) every time `isSubmittingFamily(0)` flips. Cards that mount
-   * mid-stream stay "fresh" for the rest of their lifetime; cards that
-   * mount post-stream stay "history" even if the user sends a new
-   * message while this card stays mounted.
-   */
-  const readInitialIsSubmitting = useRecoilCallback(
-    ({ snapshot }) =>
-      () =>
-        // `valueMaybe()` returns `undefined` if the atom is in an error
-        // or loading state instead of throwing — defensive against an
-        // upstream selector failure surfacing during card mount. The
-        // `?? false` default is correct because a card we can't classify
-        // as streaming is one we should treat as history (don't steal
-        // focus / open the panel).
-        snapshot.getLoadable(store.isSubmittingFamily(0)).valueMaybe() ?? false,
-    [],
-  );
-  const mountedDuringStreamRef = useRef<boolean | null>(null);
-  if (mountedDuringStreamRef.current === null) {
-    mountedDuringStreamRef.current = readInitialIsSubmitting();
+  /** Positional reconciliation can reuse this card for another response with the same file ID. */
+  const mountedDuringStreamRef = useRef({ ownerMessageId, isSubmitting: isSubmitting === true });
+  if (mountedDuringStreamRef.current.ownerMessageId !== ownerMessageId) {
+    mountedDuringStreamRef.current = { ownerMessageId, isSubmitting: isSubmitting === true };
   }
 
   useLayoutEffect(() => {
@@ -176,8 +161,8 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
       return;
     }
     /* Two paths qualify the card for auto-open:
-     *   1. Streaming-time mount — ref captured `isSubmitting === true`
-     *      at first render. The card is part of the live response, so
+     *   1. Streaming-time ownership — ref captured `isSubmitting === true`
+     *      when this message became the owner. The card is part of the live response, so
      *      the legacy "panel pops open as artifacts arrive" UX applies.
      *   2. Just-resolved deferred preview — `useAttachmentPreviewSync`
      *      sets a one-shot flag on the pending→ready edge. The
@@ -189,8 +174,9 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
      * History mounts (file already resolved on page load) hit neither
      * path, so the panel stays closed on navigation — no jarring
      * auto-open just from scrolling past an old artifact. */
-    const justResolved = fileId ? consumeJustResolved(fileId) : false;
-    if (!mountedDuringStreamRef.current && !justResolved) {
+    const justResolved =
+      fileId && ownerMessageId ? consumeJustResolved(ownerMessageId, fileId) : false;
+    if (!mountedDuringStreamRef.current.isSubmitting && !justResolved) {
       return;
     }
     // Streaming arrival or just-resolved preview: focus the new artifact
@@ -200,7 +186,15 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
     // never actually open — `Presentation` gates rendering on visibility.
     setCurrentArtifactId(artifact.id);
     setVisible(true);
-  }, [artifact.id, artifact.type, fileId, consumeJustResolved, setCurrentArtifactId, setVisible]);
+  }, [
+    artifact.id,
+    artifact.type,
+    fileId,
+    ownerMessageId,
+    consumeJustResolved,
+    setCurrentArtifactId,
+    setVisible,
+  ]);
 
   const { handleDownload } = useAttachmentLink({
     href: attachment.filepath ?? '',

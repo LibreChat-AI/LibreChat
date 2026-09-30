@@ -411,6 +411,25 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     });
   });
 
+  it('carries the worker edit features into the selected workspace', async () => {
+    const response = workspaceStatus([{ id: 'docs' }]);
+    const body = await response.json();
+    body.capabilities.workspaceTools.editFileFeatures = ['expected_base_sha256', 'tolerant_match'];
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(body)));
+
+    const resolved = await resolveCodeExecutionWorkspaceContext({
+      context,
+      requestedSelections: [{ environmentId: 'personal', workspaceId: 'docs' }],
+      environments,
+      getAppConfig,
+    });
+
+    expect(resolved.codeWorkspace?.editFileFeatures).toEqual([
+      'expected_base_sha256',
+      'tolerant_match',
+    ]);
+  });
+
   it('carries validated project metadata from the selected workspace', async () => {
     const environment = {
       fingerprint: 'a'.repeat(64),

@@ -1279,6 +1279,7 @@ async function editWorkspaceFile({
   file_path,
   edits,
   expected_base_sha256,
+  matching,
   workspace_id,
   workspace_instance_id,
   linked_worktrees,
@@ -1311,6 +1312,7 @@ async function editWorkspaceFile({
       path: file_path,
       edits,
       ...(expected_base_sha256 ? { expectedBaseSha256: expected_base_sha256 } : {}),
+      matching,
     },
     ...(signal ? { signal } : {}),
   });
@@ -1320,6 +1322,7 @@ async function editWorkspaceFile({
 async function previewWorkspaceEdit({
   file_path,
   edits,
+  matching,
   workspace_id,
   workspace_instance_id,
   linked_worktrees,
@@ -1351,6 +1354,7 @@ async function previewWorkspaceEdit({
       ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       path: file_path,
       edits,
+      matching,
     },
     ...(signal ? { signal } : {}),
   });

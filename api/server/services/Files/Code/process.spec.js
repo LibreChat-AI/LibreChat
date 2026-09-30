@@ -2358,6 +2358,32 @@ describe('Code Process', () => {
       );
     });
 
+    it('forwards negotiated matching and replaceAll on edits and previews', async () => {
+      const edits = [{ oldText: 'false', newText: 'true', replaceAll: true }];
+      mockExecuteWorkspaceTool.mockResolvedValue({});
+      const shared = {
+        file_path: 'src/app.ts',
+        edits,
+        matching: 'tolerant',
+        workspace_id: 'primary',
+        codeApiBaseUrl: 'https://attached-code.example.com/v1',
+        executionProfile: 'stateful',
+        bridgeWorkerId: 'worker-user-1',
+        req: mockReq,
+      };
+
+      await editWorkspaceFile(shared);
+      await previewWorkspaceEdit(shared);
+
+      for (const operation of ['edit_file', 'preview_edit']) {
+        expect(mockExecuteWorkspaceTool).toHaveBeenCalledWith(
+          expect.objectContaining({
+            request: expect.objectContaining({ operation, edits, matching: 'tolerant' }),
+          }),
+        );
+      }
+    });
+
     it('forwards a non-mutating attached-workspace edit preview', async () => {
       const result = {
         protocolVersion: 1,

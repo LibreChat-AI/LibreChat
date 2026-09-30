@@ -137,6 +137,28 @@ export function markNativeCodeToolApprovalRequests(
   };
 }
 
+/** Scope native edit normalization to the executing agent, never a same-name external tool. */
+export function collectNativeEditFileAgentIds(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Set<string> {
+  const agentIds = new Set<string>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    if (!agent.id) continue;
+    let native = false;
+    let conflicting = false;
+    for (const definition of [
+      ...(agent.toolDefinitions ?? []),
+      ...(agent.toolRegistry?.values() ?? []),
+    ]) {
+      if (definition.name !== EDIT_FILE_TOOL_NAME) continue;
+      if (definition.toolType === 'builtin') native = true;
+      else conflicting = true;
+    }
+    if (native && !conflicting) agentIds.add(agent.id);
+  }
+  return agentIds;
+}
+
 export class AttachedCodeEnvironmentApprovalError extends Error {
   readonly code = 'BYOM_TOOL_APPROVAL_UNSUPPORTED';
 
