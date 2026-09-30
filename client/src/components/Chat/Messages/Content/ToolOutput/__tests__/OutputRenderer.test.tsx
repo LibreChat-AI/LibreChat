@@ -85,6 +85,14 @@ describe('OutputRenderer', () => {
     expect(screen.getByText('[exit code: 1]')).toHaveClass('text-text-tertiary');
   });
 
+  it('shows as many styled lines as plain lines when output ends in a newline', () => {
+    const out = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join('\n') + '\n';
+    render(<OutputRenderer text={out} variant="terminal" segments={[{ text: out }]} />);
+    const shown = (screen.getByText(/row 30/).closest('pre')?.textContent ?? '').split('\n');
+    expect(shown.filter(Boolean)).toHaveLength(15);
+    expect(shown[0]).toBe('row 16');
+  });
+
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
   });

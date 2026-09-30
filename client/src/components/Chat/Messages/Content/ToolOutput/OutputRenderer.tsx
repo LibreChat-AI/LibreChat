@@ -111,7 +111,9 @@ export interface OutputSegment {
 /** The last `count` lines of `segments`, keeping each line's own styling. */
 function tailSegments(segments: OutputSegment[], count: number): OutputSegment[] {
   const tail: OutputSegment[] = [];
-  let newlines = 0;
+  /** Matches the line count: a final newline ends the last line rather than starting one. */
+  const last = segments.findLast((segment) => segment.text !== '');
+  let newlines = last?.text.endsWith('\n') === true ? -1 : 0;
   for (let i = segments.length - 1; i >= 0; i--) {
     const { text, className } = segments[i];
     let cut = text.length;
