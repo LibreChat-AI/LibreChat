@@ -260,7 +260,7 @@ describe('Presentation Artifact loading', () => {
       close: jest.fn(),
     } as unknown as Window;
 
-    render(
+    renderPresentation(
       <ChatSurfaceHarness
         seed={(store) => store.set(undockedArtifacts, { window: detachedWindow, root })}
       >
