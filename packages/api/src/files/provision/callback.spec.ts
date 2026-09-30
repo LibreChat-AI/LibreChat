@@ -5,6 +5,7 @@ import type { ProvisionState } from '~/agents/resources';
 import type { ProvisionToolContext } from './callback';
 import type { CodeFileAgent } from '../code/queued';
 import type { ServerRequest } from '~/types';
+import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { prepareQueuedCodeFileContext } from '../code/queued';
 import { createProvisionFilesCallback } from './callback';
 
@@ -137,6 +138,84 @@ describe('createProvisionFilesCallback', () => {
         const agent = agents.find((candidate) => candidate.id === args.file.file_id);
         expect(args.sandboxFilename).toBe(agent?.provisionState.codeEnvDestinations?.get(agent.id));
       }
+    },
+  );
+
+  it.each([
+    ['parent', 'data.csv', 'data.csv'],
+    ['child', 'data.csv', 'data.csv'],
+    ['parent', 'data', 'data/input.csv'],
+    ['child', 'data', 'data/input.csv'],
+    ['parent', 'data/input.csv', 'data'],
+    ['child', 'data/input.csv', 'data'],
+  ])(
+    'keeps both late live %s mounts (%s) and frozen uploads (%s) through session injection',
+    async (firstAgentId, liveName, uploadName) => {
+      const shared = makeFile({ file_id: 'shared', filename: uploadName });
+      const parent: CodeFileAgent = {
+        id: 'parent',
+        fileConsumers: { executeCode: true, fileSearch: false },
+        provisionState: state([{ ...shared }], []),
+      };
+      prepareQueuedCodeFileContext(parent, [parent], req.user?.id);
+      const parentPath = parent.provisionState?.codeEnvDestinations?.get(shared.file_id);
+      const live = makeFile({
+        file_id: 'setup',
+        filename: liveName,
+        context: FileContext.agents,
+        metadata: {
+          codeEnvRefs: {
+            default: {
+              kind: 'agent',
+              id: 'child',
+              storage_session_id: 'setup-store',
+              file_id: 'setup-remote',
+              sandboxFilename: liveName,
+            },
+          },
+        },
+      });
+      const child: CodeFileAgent = {
+        id: 'child',
+        fileConsumers: { executeCode: true, fileSearch: false },
+        provisionState: state([{ ...shared }], [], [live.file_id]),
+        tool_resources: { execute_code: { files: [live] } },
+      };
+      prepareQueuedCodeFileContext(child, [parent, child], req.user?.id, true);
+      const childPath = child.provisionState?.codeEnvDestinations?.get(shared.file_id);
+      expect(childPath).toBeDefined();
+      expect(childPath).not.toBe(parentPath);
+      expect(child.dynamicToolContextMap?.queued_code_files).toContain(`/mnt/data/${childPath}`);
+
+      const { provisionFiles, provisionToCodeEnv } = buildHarness({
+        contexts: [
+          [parent.id, parent],
+          [child.id, child],
+        ],
+      });
+      const provisioned = new Map<string, Awaited<ReturnType<typeof provisionFiles>>>();
+      for (const id of [firstAgentId, firstAgentId === 'parent' ? 'child' : 'parent']) {
+        provisioned.set(id, await provisionFiles([Constants.EXECUTE_CODE], id));
+      }
+      expect(provisioned.get(parent.id)?.[0].name).toBe(parentPath);
+      expect(provisioned.get(child.id)?.[0].name).toBe(childPath);
+      expect(provisionToCodeEnv).toHaveBeenCalledTimes(2);
+      const merged = mergeCodeFilesIntoContext(
+        {
+          session_id: 'setup-store',
+          files: [
+            {
+              id: 'setup-remote',
+              name: liveName,
+              storage_session_id: 'setup-store',
+              kind: 'agent',
+              resource_id: child.id,
+            },
+          ],
+        },
+        provisioned.get(child.id),
+      );
+      expect(merged?.files.map((entry) => entry.name)).toEqual([liveName, childPath]);
     },
   );
 

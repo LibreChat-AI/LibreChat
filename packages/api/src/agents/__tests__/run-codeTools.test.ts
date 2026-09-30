@@ -207,6 +207,71 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(childInput.additional_instructions?.match(/\/mnt\/data\/data\.csv/g)).toHaveLength(1);
   });
 
+  it('reconciles a parent path with a lazy child’s already-live setup file', async () => {
+    const shared: TFile = {
+      file_id: 'shared',
+      filename: 'data.csv',
+      filepath: '/uploads/data.csv',
+      type: 'text/csv',
+      user: 'user-1',
+      object: 'file',
+      bytes: 10,
+      embedded: false,
+      usage: 0,
+      context: FileContext.message_attachment,
+    };
+    const live = {
+      id: 'setup-remote',
+      name: 'data.csv',
+      storage_session_id: 'setup-store',
+      resource_id: 'child',
+      kind: 'agent' as const,
+    };
+    const child = {
+      ...makeAgent({
+        id: 'child',
+        primedCodeFiles: [live],
+        fileConsumers: { executeCode: true, fileSearch: false },
+        tool_resources: { execute_code: { files: [{ ...shared, file_id: 'setup' }] } },
+      }),
+      provisionState: {
+        codeEnvFiles: [{ ...shared }],
+        vectorDBFiles: [],
+        aliveFileIds: new Set(['setup']),
+        agentScopedFileIds: new Set(['setup']),
+        codeEnvDestinations: new Map([['shared', 'safe-child-alias.csv']]),
+      },
+    };
+    const resolve = jest.fn().mockResolvedValue(child);
+    const config = await captureRunConfig(
+      makeAgent({
+        fileConsumers: { executeCode: true, fileSearch: false },
+        provisionState: {
+          codeEnvFiles: [{ ...shared }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set(),
+          agentScopedFileIds: new Set(),
+        },
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve }],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    expect(parentInput.additional_instructions).toContain('/mnt/data/data.csv');
+    expect(resolve).not.toHaveBeenCalled();
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    const childInput = await resolveInputs({
+      signal: new AbortController().signal,
+    } as SubagentResolveContext);
+    const childPath = child.provisionState?.codeEnvDestinations?.get(shared.file_id);
+    expect(childPath).toBeDefined();
+    expect(childPath).not.toBe('data.csv');
+    expect(childInput.additional_instructions).toContain(`/mnt/data/${childPath}`);
+    expect(parentInput.additional_instructions).toContain('/mnt/data/data.csv');
+    expect(childInput.initialSessions?.get('execute_code')?.files).toEqual([live]);
+  });
+
   it('excludes side-effecting/large-arg tools from eager execution', async () => {
     const runConfig = await captureRunConfig();
     const eager = runConfig.eagerEventToolExecution as {

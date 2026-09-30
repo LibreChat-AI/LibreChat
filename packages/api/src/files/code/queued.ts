@@ -120,11 +120,21 @@ export function planCodeFileUploads({
 
   const queuedFiles = files.filter((file) => queuedIds.has(file.file_id));
   const selected = new Map(queuedFiles.map((file) => [file.file_id, file]));
-  // Preserve paths already exposed to the model across retries and later tool calls.
+  const advertisedNames = new Map<string, string>();
   if (useAdvertisedNames) {
+    // An agent's frozen plan survives later discovery in other execution contexts.
+    for (const [id, name] of state.codeEnvDestinations ?? []) {
+      if (!queued.has(id)) continue;
+      reserveCodeDestination(destinations, name);
+      advertisedNames.set(id, name);
+    }
+    // Inherited paths are hints until checked against this agent's live mounts.
     for (const [id, candidate] of queued) {
-      const name = state.codeEnvDestinations?.get(id) ?? candidate.advertisedName;
-      if (name != null) reserveCodeDestination(destinations, name);
+      if (advertisedNames.has(id) || liveNames.has(id)) continue;
+      const name = candidate.advertisedName;
+      if (name != null && reserveCodeDestination(destinations, name)) {
+        advertisedNames.set(id, name);
+      }
     }
   }
   const uploads: CodeFileUpload[] = [];
@@ -136,10 +146,8 @@ export function planCodeFileUploads({
     if (!file) continue;
     const candidate = queued.get(file.file_id);
     const destination =
+      advertisedNames.get(file.file_id) ??
       liveNames.get(file.file_id) ??
-      (useAdvertisedNames
-        ? (state.codeEnvDestinations?.get(file.file_id) ?? candidate?.advertisedName)
-        : undefined) ??
       claimCodeDestination(
         destinations,
         getCodeEnvUploadFilename(
