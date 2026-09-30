@@ -514,7 +514,7 @@ describe('createAppConfigService', () => {
         expect(config.endpoints?.custom).toEqual([global]);
         expect(config.modelSpecs?.list).toHaveLength(1);
         expect(
-          getProviderConfig({ provider: 'private gateway', appConfig: config }).customEndpointConfig
+          getProviderConfig({ provider: 'Private Gateway', appConfig: config }).customEndpointConfig
             ?.apiKey,
         ).toBe('global-key');
       });
