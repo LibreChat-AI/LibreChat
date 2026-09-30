@@ -18,6 +18,7 @@ const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();
 const mockUseAgentQueuedTurns = jest.fn();
 const mockExtendActiveJobsGrace = jest.fn();
+let mockStartupConfig: { interface?: { retentionMode?: string } } | undefined;
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
 jest.mock('~/Providers', () => ({
@@ -39,6 +40,7 @@ jest.mock('~/data-provider', () => ({
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS: jest.requireActual('~/data-provider/SSE/queries')
     .ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
   extendActiveJobsGrace: () => mockExtendActiveJobsGrace(),
+  useGetStartupConfig: () => ({ data: mockStartupConfig }),
   streamStatusQueryKey: (conversationId: string) => ['streamStatus', conversationId],
 }));
 
@@ -423,6 +425,32 @@ describe('useResumeOnLoad', () => {
         expect(observedSubmissions.at(-1)?.isTemporary).toBe(isTemporary);
       },
     );
+
+    /** A run admitted before the administrator forced ephemeral retention recorded
+     *  `isTemporary: false`, but the resume converts it; the rebuilt submission must
+     *  already treat it as hidden so it never bumps the chat in the history caches. */
+    it('treats a pre-policy run as temporary once retention is forced', async () => {
+      mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+      }
+    });
 
     /** The elapsed indicator's baseline must be the generation's real start:
      *  an attach with no surviving anchor (a reload, or a run another client

@@ -7,6 +7,7 @@ import {
   QueryKeys,
   tMessageSchema,
   isAssistantsEndpoint,
+  isForcedTemporaryRetention,
 } from 'librechat-data-provider';
 import type { TMessage, TConversation, TSubmission, Agents } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
@@ -27,6 +28,7 @@ import {
   useStreamStatus,
   useActiveJobs,
   useAgentQueuedTurns,
+  useGetStartupConfig,
   streamStatusQueryKey,
   isQueuedTurnSuccessorOwed,
   extendActiveJobsGrace,
@@ -305,6 +307,8 @@ export default function useResumeOnLoad(
   const endpointType = currentConversation?.endpointType;
   const actualEndpoint = endpointType ?? endpoint;
   const resumableEnabled = !isAssistantsEndpoint(actualEndpoint);
+  const { data: startupConfig } = useGetStartupConfig();
+  const isRetentionForced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
   // Track conversations we've already processed (either resumed or skipped)
   const processedConvoRef = useRef<string | null>(null);
   /**
@@ -1057,7 +1061,7 @@ export default function useResumeOnLoad(
         conversationId,
         streamStatus.createdAt,
         generationProtocolVersion,
-        streamStatus.isTemporary === true,
+        streamStatus.isTemporary === true || isRetentionForced,
       );
       setSubmission(submission);
     } else {
@@ -1075,7 +1079,7 @@ export default function useResumeOnLoad(
         } as TMessage,
         conversation: { conversationId, title: 'Resumed Chat' } as TConversation,
         isRegenerate: false,
-        isTemporary: streamStatus.isTemporary === true,
+        isTemporary: streamStatus.isTemporary === true || isRetentionForced,
         endpointOption: {},
         // Signal to useResumableSSE to subscribe to existing stream instead of starting new
         resumeStreamId: streamStatus.streamId,
@@ -1114,6 +1118,7 @@ export default function useResumeOnLoad(
     setActiveGenerationCreatedAt,
     jotaiStore,
     externalRunArm,
+    isRetentionForced,
   ]);
 
   // Reset processedConvoRef when conversation changes to allow re-checking
