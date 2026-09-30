@@ -8,6 +8,8 @@ import {
 } from '@librechat/data-schemas';
 import {
   AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT,
+  CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
   hasActivePiiFields,
   hasActivePiiPatterns,
   hasToolCallErrorPrefix,
@@ -1058,6 +1060,97 @@ function addLineNumbers(content: string, startLine = 1): string {
   return lines
     .map((line, index) => `${String(startLine + index).padStart(w, ' ')} | ${line}`)
     .join('\n');
+}
+
+type ReadFileRangeArguments = { start_line?: number; max_lines?: number };
+type ReadFileRange = { startLine: number; maxLines: number };
+const READ_FILE_RANGE_ERROR =
+  'start_line must be positive and max_lines must be between 1 and 500.';
+
+function resolveReadFileRange(
+  args: ReadFileRangeArguments,
+  defaultMaxLines = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+): ReadFileRange | null {
+  const startLine = args.start_line ?? 1;
+  const maxLines = args.max_lines ?? defaultMaxLines;
+  return Number.isSafeInteger(startLine) &&
+    startLine >= 1 &&
+    Number.isSafeInteger(maxLines) &&
+    maxLines >= 1 &&
+    maxLines <= CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES
+    ? { startLine, maxLines }
+    : null;
+}
+
+/** Full local files are sliced once; a worker page is already offset and bounded. */
+function formatReadFileText(
+  content: string,
+  path: string,
+  range?: ReadFileRange,
+  page?: { startLine: number; nextStartLine?: number },
+): string {
+  let payload = content;
+  const startLine = page?.startLine ?? range?.startLine ?? 1;
+  let nextStartLine = page?.nextStartLine;
+  if (range != null && page == null) {
+    let start = 0;
+    for (let line = 1; line < range.startLine; line++) {
+      const newline = content.indexOf('\n', start);
+      if (newline < 0) return '';
+      start = newline + 1;
+    }
+    if (start >= content.length) return '';
+    let end = content.length;
+    let cursor = start;
+    for (let count = 1; count <= range.maxLines; count++) {
+      const newline = content.indexOf('\n', cursor);
+      if (newline < 0) break;
+      if (count === range.maxLines || newline === content.length - 1) {
+        end = newline;
+        if (newline < content.length - 1) nextStartLine = startLine + count;
+        break;
+      }
+      cursor = newline + 1;
+    }
+    payload = content.slice(start, end);
+  }
+
+  let locallyTruncated = false;
+  let localNextStartLine: number | undefined;
+  if ((range != null || page != null) && Buffer.byteLength(payload, 'utf8') > MAX_READABLE_BYTES) {
+    payload = truncateUtf8(payload, MAX_READABLE_BYTES);
+    locallyTruncated = true;
+    const lastCompleteLine = payload.lastIndexOf('\n');
+    if (lastCompleteLine >= 0) {
+      payload = payload.slice(0, lastCompleteLine);
+      localNextStartLine = startLine + payload.split('\n').length;
+    }
+  }
+  let numbered = addLineNumbers(payload, startLine);
+  if (locallyTruncated) {
+    numbered +=
+      localNextStartLine != null
+        ? `\n\n[truncated at ${MAX_READABLE_BYTES} bytes; more content is available; call read_file again with path "${path}" and start_line ${localNextStartLine}]`
+        : `\n\n[the line was truncated at ${MAX_READABLE_BYTES} bytes and cannot be paged by line]`;
+  } else if (nextStartLine != null) {
+    numbered += `\n\n[more content is available; call read_file again with path "${path}" and start_line ${nextStartLine}]`;
+  }
+  return numbered;
+}
+
+function localTextReadResult(
+  tc: ToolCallRequest,
+  path: string,
+  content: string,
+  header = '',
+): ToolExecuteResult {
+  const args = tc.args as ReadFileRangeArguments;
+  const range =
+    args.start_line === undefined && args.max_lines === undefined
+      ? undefined
+      : resolveReadFileRange(args);
+  if (range === null) return errorResult(tc, READ_FILE_RANGE_ERROR);
+  return successResult(tc, header + formatReadFileText(content, path, range));
 }
 
 type AuthoringSkill = NonNullable<
@@ -2572,13 +2665,19 @@ async function handleSandboxFileFallback(
      * and surface the truncation to the model so it can use
      * `bash_tool head` / `tail` for the rest.
      */
+    const rangeArgs = tc.args as ReadFileRangeArguments;
+    if (rangeArgs.start_line !== undefined || rangeArgs.max_lines !== undefined) {
+      const rangedResult = localTextReadResult(tc, filePath, result.content);
+      if (rangedResult.status === 'success') onSuccess?.();
+      return rangedResult;
+    }
     let payload = result.content;
     let truncated = false;
     if (payload.length > MAX_READABLE_BYTES) {
       payload = payload.slice(0, MAX_READABLE_BYTES);
       truncated = true;
     }
-    let numbered = addLineNumbers(payload);
+    let numbered = formatReadFileText(payload, filePath);
     if (truncated) {
       numbered += `\n\n[truncated at ${MAX_READABLE_BYTES} bytes — use \`bash_tool\` (e.g. \`head -c\` / \`tail\`) to read the rest of "${filePath}"]`;
     }
@@ -2620,10 +2719,10 @@ async function handleWorkspaceFileRead(
   const workspaceId = selectedWorkspaceId(codeExecutionContext, 'read_file');
   if (!workspaceId) return unavailableWorkspaceOperation(tc, 'read_file');
   const args = tc.args as { start_line?: number; max_lines?: number };
-  const startLine = args.start_line ?? 1;
-  const maxLines =
-    args.max_lines ??
-    resolveAttachedWorkspaceReadFileLines(codeExecutionContext.codeEnvironmentConfigSchema);
+  const range = resolveReadFileRange(
+    args,
+    resolveAttachedWorkspaceReadFileLines(codeExecutionContext.codeEnvironmentConfigSchema),
+  );
   if (filePath.length === 0) {
     return {
       toolCallId: tc.id,
@@ -2632,20 +2731,7 @@ async function handleWorkspaceFileRead(
       errorMessage: 'A relative path after workspace/ is required.',
     };
   }
-  if (
-    !Number.isSafeInteger(startLine) ||
-    startLine < 1 ||
-    !Number.isSafeInteger(maxLines) ||
-    maxLines < 1 ||
-    maxLines > 500
-  ) {
-    return {
-      toolCallId: tc.id,
-      status: 'error',
-      content: '',
-      errorMessage: 'start_line must be positive and max_lines must be between 1 and 500.',
-    };
-  }
+  if (range == null) return errorResult(tc, READ_FILE_RANGE_ERROR);
   const filteredName = filteredFileNameResult(tc, req, filePath);
   if (filteredName != null) {
     return filteredName;
@@ -2659,8 +2745,8 @@ async function handleWorkspaceFileRead(
         ? { workspace_instance_id: codeExecutionContext.codeWorkspace.workspaceInstanceId }
         : {}),
       ...(codeExecutionContext.codeWorkspace?.linkedWorktrees ? { linked_worktrees: true } : {}),
-      start_line: startLine,
-      max_lines: maxLines,
+      start_line: range.startLine,
+      max_lines: range.maxLines,
       codeApiBaseUrl: codeExecutionContext.baseUrl,
       ...attachedWorkspaceRequestLimits(codeExecutionContext),
       executionProfile: codeExecutionContext.executionProfile,
@@ -2682,32 +2768,15 @@ async function handleWorkspaceFileRead(
         errorMessage: `"${filePath}" appears to be a binary file and cannot be read as text.`,
       };
     }
-    let payload = result.content;
-    let locallyTruncated = false;
-    let localNextStartLine: number | undefined;
-    if (Buffer.byteLength(payload, 'utf8') > MAX_READABLE_BYTES) {
-      payload = truncateUtf8(payload, MAX_READABLE_BYTES);
-      locallyTruncated = true;
-      const lastCompleteLine = payload.lastIndexOf('\n');
-      if (lastCompleteLine >= 0) {
-        payload = payload.slice(0, lastCompleteLine);
-        localNextStartLine = result.startLine + payload.split('\n').length;
-      }
-    }
-    let numbered = addLineNumbers(payload, result.startLine);
-    if (locallyTruncated) {
-      numbered +=
-        localNextStartLine != null
-          ? `\n\n[truncated at ${MAX_READABLE_BYTES} bytes; more content is available; call read_file again with path "workspace/${filePath}" and start_line ${localNextStartLine}]`
-          : `\n\n[the line was truncated at ${MAX_READABLE_BYTES} bytes and cannot be paged by line]`;
-    } else if (result.truncated && result.nextStartLine != null) {
-      numbered += `\n\n[more content is available; call read_file again with path "workspace/${filePath}" and start_line ${result.nextStartLine}]`;
-    }
-    return {
-      toolCallId: tc.id,
-      status: 'success',
-      content: numbered,
-    };
+    return successResult(
+      tc,
+      formatReadFileText(result.content, `workspace/${filePath}`, undefined, {
+        startLine: result.startLine,
+        ...(result.truncated && result.nextStartLine != null
+          ? { nextStartLine: result.nextStartLine }
+          : {}),
+      }),
+    );
   } catch (error) {
     if (error instanceof WorkspaceToolHttpError) throw error;
     if (signal?.aborted === true && isAbortError(error)) throw error;
@@ -5128,11 +5197,7 @@ async function handleReadFileCall(
     if (filtered != null) {
       return filtered;
     }
-    return {
-      toolCallId: tc.id,
-      status: 'success',
-      content: `File: ${args.path}\n\n${addLineNumbers(skill.body)}`,
-    };
+    return localTextReadResult(tc, args.path, skill.body, `File: ${args.path}\n\n`);
   }
 
   /* Bundled skill files are primed into the sandbox under the `skills/`
@@ -5194,11 +5259,12 @@ async function handleReadFileCall(
     if (fileFiltered != null) {
       return fileFiltered;
     }
-    return {
-      toolCallId: tc.id,
-      status: 'success',
-      content: `File: ${args.path} (${file.bytes} bytes)\n\n${addLineNumbers(file.content)}`,
-    };
+    return localTextReadResult(
+      tc,
+      args.path,
+      file.content,
+      `File: ${args.path} (${file.bytes} bytes)\n\n`,
+    );
   }
 
   // Early size check from DB metadata before streaming
@@ -5347,11 +5413,12 @@ async function handleReadFileCall(
       };
     }
 
-    return {
-      toolCallId: tc.id,
-      status: 'success',
-      content: `File: ${args.path} (${buffer.length} bytes)\n\n${addLineNumbers(text)}`,
-    };
+    return localTextReadResult(
+      tc,
+      args.path,
+      text,
+      `File: ${args.path} (${buffer.length} bytes)\n\n`,
+    );
   } catch (error) {
     return {
       toolCallId: tc.id,

@@ -13,11 +13,13 @@ jest.mock('@librechat/agents', () => ({
     parameters: {
       type: 'object',
       properties: {
+        intent: { type: 'string', description: 'SDK read intent' },
         path: {
           type: 'string',
           description: 'For skill files: "{skillName}/{path}".',
         },
       },
+      required: ['path'],
     },
     responseFormat: 'content',
   },
@@ -69,7 +71,7 @@ CONSTRAINTS:
 
 import fs from 'fs';
 import path from 'path';
-import { CODE_EXECUTION_TOOLS } from '@librechat/agents';
+import { CODE_EXECUTION_TOOLS, ReadFileToolDefinition } from '@librechat/agents';
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import { CODE_WORKSPACE_OPERATIONS, Constants } from 'librechat-data-provider';
 import {
@@ -779,6 +781,45 @@ describe('registerCodeExecutionTools', () => {
       expect(readFile?.description).not.toContain('SKILL.md');
       expect(JSON.stringify(readFile?.parameters)).not.toContain('{skillName}');
     });
+
+    it.each([false, true])(
+      'extends the skill read schema locally, workspaceTools=%s',
+      (workspaceTools) => {
+        const result = registerCodeExecutionTools({
+          toolRegistry: makeRegistry(),
+          toolDefinitions: [],
+          includeBash: false,
+          includeSkillFileInstructions: true,
+          workspaceTools,
+          workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+        });
+        const def = result.toolDefinitions.find(({ name }) => name === 'read_file');
+        expect(def?.parameters).toMatchObject({
+          properties: {
+            start_line: {
+              type: 'integer',
+              minimum: 1,
+              description: expect.stringContaining('skill'),
+            },
+            max_lines: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 500,
+              description: expect.stringContaining('skill'),
+            },
+          },
+        });
+        expect(def?.description).toContain('Omit both range parameters');
+        expect(def?.parameters?.properties?.path).toBeDefined();
+        expect(def?.parameters?.properties?.intent).toEqual({
+          type: 'string',
+          description: 'SDK read intent',
+        });
+        expect(def?.parameters?.required).toEqual(['path']);
+        expect(ReadFileToolDefinition.parameters).not.toHaveProperty('properties.start_line');
+        expect(ReadFileToolDefinition.parameters).not.toHaveProperty('properties.max_lines');
+      },
+    );
 
     it('advertises explicit workspace paths and pagination for attached environments', () => {
       const result = registerCodeExecutionTools({
