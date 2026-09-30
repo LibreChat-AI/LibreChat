@@ -32,6 +32,7 @@ export async function loadDefaultInterface({
     modelSelect:
       interfaceConfig?.modelSelect ??
       (hasModelSpecs ? includesAddedEndpoints : defaults.modelSelect),
+    modelSelectMenuMode: interfaceConfig?.modelSelectMenuMode,
     codeHighlightThrottleMs:
       interfaceConfig?.codeHighlightThrottleMs ?? defaults.codeHighlightThrottleMs,
     agentSelectorLimit: interfaceConfig?.agentSelectorLimit ?? defaults.agentSelectorLimit,

@@ -275,6 +275,21 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.defaultPinnedTools).toEqual(['artifacts', 'execute_code', 'mcp']);
   });
 
+  it('passes through configured model select menu mode', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        modelSelectMenuMode: 'flat',
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.modelSelectMenuMode).toBe('flat');
+  });
+
   it('omits default pinned tools when not explicitly configured', async () => {
     const interfaceConfig = await loadDefaultInterface({
       config: {},

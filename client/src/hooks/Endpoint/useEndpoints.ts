@@ -136,6 +136,7 @@ export const useEndpoints = ({
         label: alternateName[ep] || ep,
         hasModels,
         icon: createEndpointIcon(ep, resolveProviderIcon({ endpoint: ep, endpointsConfig })),
+        customParams: getEndpointField(endpointsConfig, ep, 'customParams'),
       };
 
       if (ep === EModelEndpoint.agents && showAgentMarketplace) {

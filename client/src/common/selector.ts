@@ -1,5 +1,5 @@
 import React from 'react';
-import { TStartupConfig } from 'librechat-data-provider';
+import { TConfig, TStartupConfig } from 'librechat-data-provider';
 
 export interface Endpoint {
   value: string;
@@ -12,6 +12,7 @@ export interface Endpoint {
   modelIcons?: Record<string, string | undefined>;
   showMarketplace?: boolean;
   searchAliases?: string[];
+  customParams?: TConfig['customParams'];
 }
 
 export interface SelectedValues {

@@ -4,11 +4,15 @@ import { EndpointModelItem } from '../EndpointModelItem';
 
 const mockHandleSelectModel = jest.fn();
 let mockSelectedValues: SelectedValues;
+let mockModelSelectMenuMode: 'flat' | 'auto' | 'nested' | undefined;
+let mockMappedEndpoints: Endpoint[];
 
 jest.mock('~/components/Chat/Menus/Endpoints/ModelSelectorContext', () => ({
   useModelSelectorContext: () => ({
     handleSelectModel: mockHandleSelectModel,
     selectedValues: mockSelectedValues,
+    modelSelectMenuMode: mockModelSelectMenuMode,
+    mappedEndpoints: mockMappedEndpoints,
   }),
 }));
 
@@ -55,6 +59,8 @@ const baseEndpoint: Endpoint = {
 describe('EndpointModelItem', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockModelSelectMenuMode = undefined;
+    mockMappedEndpoints = [];
   });
 
   it('renders checkmark when model and endpoint match with no active spec', () => {
@@ -91,5 +97,30 @@ describe('EndpointModelItem', () => {
 
     const menuItem = screen.getByRole('menuitem');
     expect(menuItem).not.toHaveAttribute('aria-selected');
+  });
+
+  it('only prefixes the endpoint label when explicitly enabled', () => {
+    mockSelectedValues = { endpoint: '', model: '', modelSpec: '' };
+    mockModelSelectMenuMode = 'flat';
+    mockMappedEndpoints = [baseEndpoint];
+
+    const { rerender } = render(
+      <EndpointModelItem modelId="claude-opus-4-6" endpoint={baseEndpoint} />,
+    );
+
+    expect(screen.getByText('claude-opus-4-6')).toBeInTheDocument();
+    expect(screen.queryByText('Anthropic/claude-opus-4-6')).not.toBeInTheDocument();
+
+    rerender(
+      <EndpointModelItem
+        modelId="claude-opus-4-6"
+        endpoint={{
+          ...baseEndpoint,
+          customParams: { showEndpointInModelName: true },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Anthropic/claude-opus-4-6')).toBeInTheDocument();
   });
 });
