@@ -21,7 +21,7 @@ const ImagePreview = ({
   progress = 1,
   className = '',
   source,
-  alt = 'Preview image',
+  alt,
 }: {
   imageBase64?: string;
   url?: string;
@@ -31,6 +31,15 @@ const ImagePreview = ({
   alt?: string;
 }) => {
   const localize = useLocalize();
+  const imageDescription = alt ?? localize('com_ui_image_preview');
+  const progressPercentage = Math.round(progress * 100);
+  const triggerLabel =
+    progress < 1
+      ? localize('com_ui_view_image_full_size_uploading', {
+          0: imageDescription,
+          1: progressPercentage,
+        })
+      : localize('com_ui_view_image_full_size', { 0: imageDescription });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -125,8 +134,9 @@ const ImagePreview = ({
           className,
         )}
         style={style}
-        aria-label={`View ${alt} in full size`}
+        aria-label={triggerLabel}
         aria-haspopup="dialog"
+        aria-busy={progress < 1 || undefined}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -142,7 +152,6 @@ const ImagePreview = ({
             circumference={circumference}
             offset={offset}
             circleCSSProperties={circleCSSProperties}
-            aria-label={`Loading progress: ${Math.round(progress * 100)}%`}
           />
         ) : (
           <div
@@ -160,7 +169,7 @@ const ImagePreview = ({
             />
           </div>
         )}
-        <SourceIcon source={source} aria-label={source ? `Source: ${source}` : undefined} />
+        <SourceIcon source={source} />
       </button>
 
       <DialogPrimitive.Root open={isModalOpen} onOpenChange={handleOpenChange}>
@@ -182,6 +191,9 @@ const ImagePreview = ({
             onPointerDownOutside={(e) => e.preventDefault()}
             onClick={handleBackgroundClick}
           >
+            <DialogPrimitive.Title className="sr-only">
+              {localize('com_ui_image_preview_var', { 0: imageDescription })}
+            </DialogPrimitive.Title>
             {/* Close button */}
             <Button
               ref={closeButtonRef}
@@ -199,7 +211,7 @@ const ImagePreview = ({
               <img
                 ref={imageRef}
                 src={imageUrl}
-                alt={alt}
+                alt={imageDescription}
                 className="max-h-[85vh] max-w-[90vw] object-contain"
                 draggable={false}
               />
