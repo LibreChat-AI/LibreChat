@@ -93,6 +93,7 @@ const stockAliases: Partial<
 const colorAliases: Array<[string, string]> = [
   ['--button-primary', '--surface-inverted'],
   ['--button-primary-hover', '--surface-inverted-hover'],
+  ['--dialog-title', '--text-primary'],
 ];
 
 describe('the stock color aliases', () => {

@@ -378,7 +378,7 @@ function KeyboardShortcutsDialog() {
         className="flex max-h-[85vh] w-11/12 max-w-3xl flex-col overflow-hidden p-0 lg:max-w-5xl"
       >
         <header className="flex shrink-0 items-center justify-between gap-4 px-7 pt-6">
-          <OGDialogTitle className="text-text-primary text-[16px] font-semibold">
+          <OGDialogTitle className="text-[16px] font-semibold">
             {localize('com_shortcut_keyboard_shortcuts')}
           </OGDialogTitle>
           <OGDialogClose

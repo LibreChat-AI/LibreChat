@@ -199,7 +199,7 @@ function Avatar() {
 
       <OGDialogContent className="w-11/12 max-w-md">
         <OGDialogHeader>
-          <OGDialogTitle className="text-lg font-medium leading-6 text-text-primary">
+          <OGDialogTitle className="text-lg leading-6 font-medium">
             {image != null ? localize('com_ui_preview') : localize('com_ui_upload_image')}
           </OGDialogTitle>
         </OGDialogHeader>
@@ -208,8 +208,8 @@ function Avatar() {
             <>
               <div
                 className={cn(
-                  'relative overflow-hidden rounded-full ring-4 ring-border-light transition-all',
-                  isDragging && 'cursor-move ring-ring-primary',
+                  'ring-border-light relative overflow-hidden rounded-full ring-4 transition-all',
+                  isDragging && 'ring-ring-primary cursor-move',
                 )}
                 onMouseDown={() => setIsDragging(true)}
                 onMouseUp={() => setIsDragging(false)}
@@ -245,7 +245,7 @@ function Avatar() {
                     <Label htmlFor="zoom-slider" className="text-sm font-medium">
                       {localize('com_ui_zoom')}
                     </Label>
-                    <span className="text-sm text-text-secondary">{Math.round(scale * 100)}%</span>
+                    <span className="text-text-secondary text-sm">{Math.round(scale * 100)}%</span>
                   </div>
                   <div className="flex items-center space-x-3">
                     <Button
@@ -307,7 +307,7 @@ function Avatar() {
                 </div>
 
                 {/* Helper Text */}
-                <p className="text-center text-xs text-text-tertiary">
+                <p className="text-text-tertiary text-center text-xs">
                   {localize('com_ui_editor_instructions')}
                 </p>
               </div>
@@ -341,15 +341,15 @@ function Avatar() {
             </>
           ) : (
             <div
-              className="flex h-72 w-full flex-col items-center justify-center rounded-lg border-2 border-dashed border-border-medium bg-transparent transition-colors hover:border-border-heavy"
+              className="border-border-medium hover:border-border-heavy flex h-72 w-full flex-col items-center justify-center rounded-lg border-2 border-dashed bg-transparent transition-colors"
               onDrop={handleDrop}
               onDragOver={handleDragOver}
             >
-              <FileImage className="mb-4 size-16 text-text-tertiary" aria-hidden="true" />
-              <p className="mb-2 text-center text-sm font-medium text-text-primary">
+              <FileImage className="text-text-tertiary mb-4 size-16" aria-hidden="true" />
+              <p className="text-text-primary mb-2 text-center text-sm font-medium">
                 {localize('com_ui_avatar_drop_image')}
               </p>
-              <p className="mb-4 text-center text-xs text-text-secondary">
+              <p className="text-text-secondary mb-4 text-center text-xs">
                 {localize('com_ui_avatar_file_requirements', {
                   0: avatarSizeLimitMB,
                 })}

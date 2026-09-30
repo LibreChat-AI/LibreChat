@@ -244,7 +244,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
         <div className="flex h-[80dvh] max-h-[760px] flex-col">
           <div className="border-border-light flex flex-col gap-3 border-b px-4 pt-4 pb-3 md:px-6 md:pt-5 md:pb-4">
             <div className="flex items-center gap-2 pr-10">
-              <OGDialogTitle className="text-text-primary text-base font-semibold">
+              <OGDialogTitle className="text-base font-semibold">
                 {localize('com_ui_skills')}
               </OGDialogTitle>
             </div>

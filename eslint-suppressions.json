@@ -1114,7 +1114,7 @@
       "count": 3
     },
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 8
     }
   },
   "client/src/components/MCP/StackedMCPIcons.tsx": {
@@ -1190,7 +1190,7 @@
       "count": 11
     },
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 12
     }
   },
   "client/src/components/Nav/NavToggle.tsx": {
@@ -1205,7 +1205,7 @@
   },
   "client/src/components/Nav/SettingsTabs/Account/Avatar.tsx": {
     "shadcn/no-restyle": {
-      "count": 7
+      "count": 6
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/BackupCodesItem.tsx": {
@@ -1538,7 +1538,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 25
+      "count": 24
     }
   },
   "client/src/components/SidePanel/Agents/ActionsTable/Columns.tsx": {
@@ -1722,7 +1722,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 12
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/McpSection.tsx": {
@@ -1751,7 +1751,7 @@
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 10
     }
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {
@@ -2070,7 +2070,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 16
+      "count": 15
     }
   },
   "client/src/components/Tools/ToolItem.tsx": {
