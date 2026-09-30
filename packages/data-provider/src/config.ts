@@ -1299,6 +1299,15 @@ export const codeEnvironmentUserConfigSchema = z
       })
       .strict()
       .optional(),
+    edits: z
+      .object({
+        /** Whether a worker that negotiated `tolerant_match` may fall back from exact matching
+         * to whitespace-tolerant strategies, as skill and sandbox edits already do. Omission
+         * allows it; `false` requires every attached-workspace edit to match exactly. */
+        tolerantMatching: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -1722,6 +1731,14 @@ export const endpointSchema = baseEndpointSchema.merge(
         EModelEndpoint,
       ).join(', ')}`,
     }),
+    /** Limit this YAML custom endpoint to one tenant. Omit for deployment-wide endpoints. */
+    tenantId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
+      .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed')
+      .optional(),
     apiKey: z.string(),
     /** Masked preview of the API key, stored at write time so admin
      * reads can show which key is configured without returning the secret. */
@@ -3355,7 +3372,12 @@ export const alternateName = {
 const responsesOnlyOpenAIModels = ['gpt-6-astra'];
 /** Tool calls with Sol/Luna's default reasoning require Responses. Do not offer
  * these on Assistants, which cannot use the native request-routing path. */
-const responsesReasoningOpenAIModels = ['gpt-6-sol', 'gpt-6-luna'];
+const responsesReasoningOpenAIModels = ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna'];
+/** Catalog models whose native execution defaults to the Responses API. */
+export const responsesPreferredOpenAIModels: readonly string[] = [
+  ...responsesOnlyOpenAIModels,
+  ...responsesReasoningOpenAIModels,
+];
 
 const sharedOpenAIModels = [
   'gpt-5.6',

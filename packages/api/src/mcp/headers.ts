@@ -2,6 +2,11 @@ import type { MCPOptions } from 'librechat-data-provider';
 
 type ApiKeyConfig = Partial<NonNullable<MCPOptions['apiKey']>> | null | undefined;
 
+/** Recognizes only server-generated API key fields, not similarly named explicit variables. */
+export function isGeneratedUserApiKeyVariable(name: string): boolean {
+  return /^MCP_API_KEY(?:_[a-f0-9]{64})?$/.test(name);
+}
+
 function getApiKeyHeaderName(apiKey: ApiKeyConfig): string {
   return apiKey?.authorization_type === 'custom'
     ? apiKey.custom_header || 'X-Api-Key'
