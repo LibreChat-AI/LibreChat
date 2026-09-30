@@ -57,13 +57,15 @@ export function useToolDisclosure() {
 
 /** Set by a tool group or activity phase holding exactly one tool call: its
  *  header is already the summary, so a second collapsed row inside it adds a
- *  click without adding information. */
-export const SoleToolContext = createContext(false);
+ *  click without adding information. `undefined` means no enclosing phase has
+ *  decided, so a group falls back to its own call count; a phase's decision
+ *  wins over the groups inside it. */
+export const SoleToolContext = createContext<boolean | undefined>(undefined);
 
 /** Whether a tool card opens by default: the user's "auto-expand tools"
  *  preference, or being the only call inside its group. */
 export function useToolAutoExpand() {
   const autoExpand = useRecoilValue(store.autoExpandTools);
   const soleTool = useContext(SoleToolContext);
-  return autoExpand || soleTool;
+  return autoExpand || soleTool === true;
 }

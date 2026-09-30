@@ -1387,7 +1387,7 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
           <ToolDisclosureContext.Provider value={toolDisclosures}>
             <MCPAppSuppressionContext.Provider value={suppressedAppAttachments}>
               {/* A nested message (a subagent's) is not the sole call of the group around it. */}
-              <SoleToolContext.Provider value={false}>
+              <SoleToolContext.Provider value={undefined}>
                 <ContentPartsBody {...props} />
               </SoleToolContext.Provider>
             </MCPAppSuppressionContext.Provider>

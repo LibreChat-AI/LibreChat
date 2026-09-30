@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
+import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, Users } from 'lucide-react';
@@ -112,6 +112,7 @@ export default function ToolCallGroup({
     return parts.map(({ part }) => summary.metaOf(part)).filter((m): m is ToolMeta => m != null);
   }, [parts, attachmentsByToolCallId]);
   const count = toolMetadata.length;
+  const phaseSole = useContext(SoleToolContext);
   /** Approval state is read from the RAW parts, not `toolMetadata`: a pending
    *  call can be nested inside a subagent's content, which never surfaces as
    *  a tool entry here. */
@@ -622,7 +623,7 @@ export default function ToolCallGroup({
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
             <ToolAuthWarningContext.Provider value>
               <FailedRevealContext.Provider value={revealValue}>
-                <SoleToolContext.Provider value={count === 1}>
+                <SoleToolContext.Provider value={phaseSole ?? count === 1}>
                   <div className="flex flex-col py-0.5">
                     {parts.map(({ part, idx }, partIndex) => {
                       if (part.type === ContentTypes.THINK) {

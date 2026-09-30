@@ -3,9 +3,9 @@ import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import { SoleToolContext, useToolAutoExpand } from '../disclosure';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
-import { useToolAutoExpand } from '../disclosure';
 import ToolCallGroup from '../ToolCallGroup';
 import { ToolAuthWarning } from '../auth';
 
@@ -1537,6 +1537,18 @@ describe('ToolCallGroup sole tool', () => {
     renderGroup(props(['only']));
     fireEvent.click(screen.getByRole('button', { expanded: false }));
     expect(screen.getByTestId('probe-0')).toHaveTextContent('true');
+  });
+
+  it('keeps a one-call group collapsed when its phase holds several calls', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <ToolCallGroup {...props(['only'])} />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('probe-0')).toHaveTextContent('false');
   });
 
   it('leaves calls collapsed when the group holds more than one', () => {
