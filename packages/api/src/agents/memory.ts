@@ -36,6 +36,7 @@ import type { BaseMessage, ToolMessage } from '@librechat/agents/langchain/messa
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { Response as ServerResponse } from 'express';
 import type { ServerRequest, RunLLMConfig } from '~/types';
+import type { MemoryGate } from '~/memory/gate';
 import { resolveConfigHeaders, createSafeUser, getSafeErrorMetadata } from '~/utils';
 import { contentFilterModelBoundBlockResponse } from '~/middleware/contentFilter';
 import { extractMemoryContent } from '~/protection/adapters/submissions';
@@ -1043,6 +1044,7 @@ export async function createMemoryProcessor({
   jobCreatedAt,
   user,
   tenantId,
+  gate,
 }: {
   res: ServerResponse;
   messageId: string;
@@ -1059,6 +1061,8 @@ export async function createMemoryProcessor({
   jobCreatedAt?: number;
   user?: IUser;
   tenantId?: string;
+  /** Injected, so this module needs no knowledge of what does the judging. */
+  gate?: MemoryGate;
 }): Promise<
   | [undefined, undefined]
   | [
@@ -1102,6 +1106,22 @@ export async function createMemoryProcessor({
       messages: BaseMessage[],
       inspectionMessages?: BaseMessage[],
     ): Promise<(TAttachment | null)[] | undefined> {
+      let turnInstructions = finalInstructions;
+      if (gate != null) {
+        /** `messages` is one flattened buffer, oldest text first, so the gate reads the window. */
+        const judgment = await gate({ messages: inspectionMessages ?? messages, validKeys });
+        if (!judgment.process) {
+          logger.debug('[MemoryAgent] Turn asks for no memory change; skipping', {
+            userId,
+            conversationId,
+            messageId,
+          });
+          return undefined;
+        }
+        if (judgment.hint != null) {
+          turnInstructions = `${finalInstructions}\n\n${judgment.hint}`;
+        }
+      }
       try {
         return await processMemory({
           res,
@@ -1121,7 +1141,7 @@ export async function createMemoryProcessor({
           totalTokens: totalTokens || 0,
           tokenCountsByKey,
           filters,
-          instructions: finalInstructions,
+          instructions: turnInstructions,
           setMemory: memoryMethods.setMemory,
           deleteMemory: memoryMethods.deleteMemory,
           user,

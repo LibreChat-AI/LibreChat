@@ -1,6 +1,7 @@
 import {
   AgentCapabilities,
   EModelEndpoint,
+  classificationSchema,
   filtersConfigSchema,
   hasActiveFiltersConfig,
   getConfigDefaults,
@@ -71,6 +72,24 @@ export function loadSkillSyncConfig(config: DeepPartial<TCustomConfig>): AppConf
   if (!parsed.success) {
     logger.warn('[AppService] Invalid skill sync config', parsed.error.flatten());
     return undefined;
+  }
+
+  return parsed.data;
+}
+
+/** The loaded yaml is unparsed, so schema defaults only exist after this parse. */
+export function loadClassificationConfig(
+  config: DeepPartial<TCustomConfig>,
+): AppConfig['classification'] {
+  const raw = config.classification;
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const parsed = classificationSchema.safeParse(raw);
+  if (!parsed.success) {
+    logger.warn('[AppService] Invalid classification config', parsed.error.flatten());
+    return null;
   }
 
   return parsed.data;
@@ -161,6 +180,7 @@ export const AppService = async (params?: {
 
   const mcpServersConfig = config.mcpServers || null;
   const mcpSettings = config.mcpSettings || null;
+  const classification = loadClassificationConfig(config);
   const actions = config.actions;
   const registration = config.registration ?? configDefaults.registration;
   const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
@@ -181,6 +201,7 @@ export const AppService = async (params?: {
     skillSync,
     webSearch,
     mcpSettings,
+    classification,
     fileStrategy,
     registration,
     transactions,

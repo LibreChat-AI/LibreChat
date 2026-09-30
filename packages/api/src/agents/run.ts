@@ -191,7 +191,7 @@ function parseToolSearchLegacy(content: string, discoveredTools: Set<string>): v
  * @param messages - The conversation message history
  * @returns Set of tool names that were discovered via tool_search
  */
-export function extractDiscoveredToolsFromHistory(messages: BaseMessage[]): Set<string> {
+export function extractDiscoveredToolsFromHistory(messages: readonly BaseMessage[]): Set<string> {
   const discoveredTools = new Set<string>();
 
   for (const message of messages) {
@@ -2090,6 +2090,7 @@ export async function createRun({
   agents,
   messages,
   discoveredToolNames,
+  predictedToolNames,
   requestBody,
   codeApprovalMode: requestedCodeApprovalMode,
   user,
@@ -2159,6 +2160,11 @@ export async function createRun({
    * replayed here. Merged with (not replacing) names extracted from `messages`.
    */
   discoveredToolNames?: string[];
+  /**
+   * Separate from `discoveredToolNames` on purpose: that one is persisted and
+   * replayed on resume, and a guess must not be recorded as a real discovery.
+   */
+  predictedToolNames?: string[];
   summarizationConfig?: SummarizationConfig;
   /**
    * Manual compaction: the primary agent summarizes the history outright and
@@ -2311,6 +2317,11 @@ export async function createRun({
     // paused run's tool_search results live only in the checkpoint, not here).
     if (discoveredToolNames?.length) {
       for (const name of discoveredToolNames) {
+        discoveredTools.add(name);
+      }
+    }
+    if (predictedToolNames?.length) {
+      for (const name of predictedToolNames) {
         discoveredTools.add(name);
       }
     }

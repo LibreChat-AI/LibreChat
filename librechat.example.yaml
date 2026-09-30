@@ -515,6 +515,77 @@ actions:
 #     - 'host.docker.internal:8080'
 #     - '127.0.0.1:8080'
 
+# Classification: small typed judgments (yes/no, pick one) that code can branch
+# on. Off unless enabled. The key is read from the environment variable named by
+# apiKeyEnv, never written here. `timeoutMs` bounds each judgment, retries
+# included. Every enabled capability sends conversation text to the configured
+# host: tool selection sends the latest request and the deferred tools'
+# descriptions, the memory gate the last few messages.
+# classification:
+#   enabled: true
+#   provider: http
+#   providers:
+#     http:
+#       baseURL: https://classifier.example.com/v1/classify
+#       apiKeyEnv: CLASSIFIER_API_KEY
+#       timeoutMs: 4000
+#
+#   # Known hosts ship as presets, so naming one is usually enough. Cloudflare
+#   # is the exception: its URL carries your account id.
+#   provider: cloudflare
+#   providers:
+#     cloudflare:
+#       baseURL: https://api.cloudflare.com/client/v4/accounts/<account-id>/ai/run
+#       apiKeyEnv: CLOUDFLARE_API_TOKEN
+#
+#   # A host with no preset needs no code either, only its shape. `dialect`
+#   # picks the wire vocabulary, `requestKey` nests the body, `responseKey`
+#   # unwraps the reply.
+#   provider: inhouse
+#   providers:
+#     inhouse:
+#       baseURL: https://classify.internal/v1/run
+#       model: your-model
+#       dialect: systemone
+#       requestKey: input
+#       responseKey: result
+#       apiKeyEnv: INHOUSE_CLASSIFIER_KEY
+#
+#   # Surfaces the deferred tools a turn is likely to need, so their schemas ship
+#   # with the first model call instead of costing a tool_search round trip.
+#   # Only ever adds: a tool it passes over stays listed by name and one search away.
+#   toolSelection:
+#     enabled: true
+#     shortlist: 5
+#     # Overrides the provider timeout. It runs before the first model call, so
+#     # it adds up to this much latency to a turn; a large catalog may need more.
+#     timeoutMs: 6000
+#     # Below this probability that any tool is needed, only tools the request
+#     # names outright are surfaced.
+#     needsToolThreshold: 0.15
+#     # An unsure ranking surfaces this many extra rather than fewer.
+#     lowConfidenceExtra: 3
+#     # Replace the wording of either question without touching code.
+#     instructions: Which tool should the assistant call first?
+#     guidance: Prefer the tool whose purpose matches the request.
+#
+#   # Skips the memory model on turns that do not ask to remember, update or
+#   # forget anything, which is all the default memory instructions act on.
+#   memoryGate:
+#     enabled: true
+#     threshold: 0.5
+#     # If your memory.instructions also keep facts the user did not ask to
+#     # keep, ask about those instead. whenTrue/whenFalse rather than
+#     # true/false: YAML reads those bare keys as booleans.
+#     instructions: Does `latest` say something about the user worth keeping?
+#     whenTrue: A lasting preference or a fact about the user.
+#     whenFalse: Small talk, or a detail that only matters in this task.
+#     # Also ask which of memory.validKeys the turn belongs under and suggest it
+#     # to the memory model. Rides in the request the gate already makes.
+#     categorize: true
+#     categoryThreshold: 0.4
+#     detectUpdates: true
+
 # Example MCP Servers Object Structure
 # mcpServers:
 #   everything:

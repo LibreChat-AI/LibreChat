@@ -7,6 +7,9 @@ const mockDetachedUsageRecorder = jest.fn();
 const mockCreateDetachedSubagentUsageRecorder = jest.fn(() => mockDetachedUsageRecorder);
 const mockGetAgentCheckpointer = jest.fn();
 const mockHasDurableAgentInterruptCheckpoint = jest.fn().mockResolvedValue(true);
+const mockPredictToolsForTurn = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').predictToolsForTurn(...args),
+);
 const mockBuildAgentScopedContext = jest.fn((...args) =>
   jest.requireActual('@librechat/api').buildAgentScopedContext(...args),
 );
@@ -190,6 +193,7 @@ jest.mock('@librechat/api', () => ({
   buildAgentScopedContext: (...args) => mockBuildAgentScopedContext(...args),
   checkAccess: jest.fn(),
   createRun: (...args) => mockCreateRun(...args),
+  predictToolsForTurn: (...args) => mockPredictToolsForTurn(...args),
   countFormattedMessageTokens: jest.fn(() => 42),
   countTokens: jest.fn((text) => Math.ceil(String(text ?? '').length / 4)),
   createCachedTokenCounter: jest.fn(async () => jest.fn(() => 0)),
@@ -2376,6 +2380,95 @@ describe('AgentClient - startup telemetry', () => {
       }
     },
   );
+
+  it('bills classifier usage as its own secondary transaction', async () => {
+    mockRecordCollectedUsage.mockClear();
+    const client = new AgentClient({
+      req: { user: { id: 'user-123' }, body: {}, config: {} },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.responseMessageId = 'classifier-usage-response';
+    mockRecordCollectedUsage.mockResolvedValueOnce({ input_tokens: 512, output_tokens: 0 });
+
+    await client.recordClassifierUsage({ inputTokens: 512, outputTokens: 0 }, 'jev-latest');
+
+    expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
+    const [, params] = mockRecordCollectedUsage.mock.calls[0];
+    expect(params).toEqual(
+      expect.objectContaining({
+        context: 'classification',
+        model: 'jev-latest',
+        messageId: 'classifier-usage-response',
+        collectedUsage: [{ input_tokens: 512, output_tokens: 0 }],
+      }),
+    );
+    expect(client.getStreamUsage()).toBeFalsy();
+  });
+
+  it('starts the memory run while tool prediction is still running', async () => {
+    let resolvePrediction;
+    mockPredictToolsForTurn.mockImplementationOnce(
+      () => new Promise((resolve) => (resolvePrediction = resolve)),
+    );
+    mockCreateRun.mockResolvedValueOnce({
+      Graph: null,
+      processStream: jest.fn().mockResolvedValue(),
+      getCalibrationRatio: jest.fn(() => 0),
+      getInterrupt: jest.fn(() => undefined),
+    });
+    const createRunBefore = mockCreateRun.mock.calls.length;
+    const client = new AgentClient({
+      req: { user: { id: 'user-123' }, body: {}, config: {} },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        model_parameters: { model: 'gpt-4' },
+        hide_sequential_outputs: false,
+        tools: [{ name: 'read_file' }],
+      },
+      endpointTokenConfig: {},
+      eventHandlers: {},
+      contentParts: [],
+      collectedUsage: [],
+      artifactPromises: [],
+    });
+    client.conversationId = 'prediction-overlap';
+    client.responseMessageId = 'prediction-overlap-response';
+    client.parentMessageId = 'prediction-overlap-parent';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+    client.processMemory = jest.fn();
+    client.runMemory = jest.fn().mockResolvedValue(undefined);
+
+    const completion = client.chatCompletion({ payload: [] });
+    for (let i = 0; i < 50 && client.runMemory.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(resolvePrediction).toBeDefined();
+    expect(client.runMemory).toHaveBeenCalledTimes(1);
+    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+
+    resolvePrediction(['search_mcp_docs']);
+    await completion;
+
+    expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore + 1);
+    expect(mockCreateRun.mock.calls[createRunBefore][0].predictedToolNames).toEqual([
+      'search_mcp_docs',
+    ]);
+  });
 
   it('uses request-scoped hook resolution when deciding whether a scheduled run can pause', async () => {
     mockIsHITLEnabled.mockReturnValue(true);

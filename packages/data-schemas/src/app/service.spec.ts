@@ -4,7 +4,12 @@ import {
   defaultAssistantsVersion,
 } from 'librechat-data-provider';
 import type { DeepPartial, TCustomConfig } from 'librechat-data-provider';
-import { AppService, loadFiltersConfig, loadSummarizationConfig } from './service';
+import {
+  AppService,
+  loadFiltersConfig,
+  loadSummarizationConfig,
+  loadClassificationConfig,
+} from './service';
 import logger from '~/config/winston';
 
 jest.mock('~/config/winston', () => ({
@@ -81,6 +86,31 @@ describe('loadSummarizationConfig', () => {
     expect(result).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(String(warnSpy.mock.calls[0][0])).toContain('Invalid summarization config');
+  });
+});
+
+describe('loadClassificationConfig', () => {
+  it('is null when the block is absent', () => {
+    expect(loadClassificationConfig({})).toBeNull();
+  });
+
+  it('fills every schema default the yaml leaves out', () => {
+    const config = loadClassificationConfig({
+      classification: {
+        enabled: true,
+        toolSelection: { enabled: true },
+        memoryGate: { enabled: true },
+      },
+    });
+
+    expect(config?.toolSelection.maxCatalogTools).toBe(200);
+    expect(config?.toolSelection.minProbability).toBe(0.05);
+    expect(config?.memoryGate.categoryThreshold).toBe(0.4);
+    expect(config?.memoryGate.threshold).toBe(0.5);
+  });
+
+  it('turns classification off rather than running on an invalid block', () => {
+    expect(loadClassificationConfig({ classification: { enabled: 'yes' } } as never)).toBeNull();
   });
 });
 

@@ -125,6 +125,8 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     deepseek: { prompt: 0.28, completion: 0.42 },
     command: { prompt: 0.38, completion: 0.38 },
     gemma: { prompt: 0.02, completion: 0.04 },
+    /** TypeSafe's classifier; output tokens are free. */
+    jev: { prompt: 0.042, completion: 0 },
     gemini: { prompt: 0.5, completion: 1.5 },
     'gpt-oss': { prompt: 0.05, completion: 0.2 },
     'gpt-3.5-turbo-1106': { prompt: 1, completion: 2 },

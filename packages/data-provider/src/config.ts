@@ -3116,12 +3116,95 @@ export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);
 
+export const classificationProviderSchema = z
+  .object({
+    baseURL: z.string().url().optional(),
+    model: z.string().optional(),
+    /** Which wire vocabulary the endpoint speaks. */
+    dialect: z.enum(['port', 'systemone']).optional(),
+    /** Nests `state` and `questions` under this key, for hosts that wrap them. */
+    requestKey: z.string().optional(),
+    /** Reads the answer envelope from this key, for hosts that wrap the response. */
+    responseKey: z.string().optional(),
+    /** Ceiling for one judgment, retries and backoff included. A judgment that
+     *  misses it is abandoned, never awaited. */
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+    /** Retries inside `timeoutMs`, for a rate limit, server or network error only. */
+    maxRetries: z.number().int().nonnegative().max(5).optional(),
+    /** Environment variable holding this provider's key. Never the key itself. */
+    apiKeyEnv: z.string().optional(),
+  })
+  /** Strict so a misspelled key fails loudly here rather than as a missing
+   *  setting much later. */
+  .strict();
+
+export type TClassificationProviderConfig = z.infer<typeof classificationProviderSchema>;
+
+/** Every capability defaults to off, so an unset block changes nothing. */
+export const classificationSchema = z.object({
+  enabled: z.boolean().default(false),
+  /** Which registered provider answers. An unknown name disables classification. */
+  provider: z.string().default('http'),
+  providers: z.record(z.string(), classificationProviderSchema).default({}),
+  /**
+   * Surfaces deferred tools the turn is likely to need. Only ever adds: a tool
+   * it passes over stays listed by name and one `tool_search` away.
+   */
+  toolSelection: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Overrides the provider's timeout. Ranking a large catalog is a much
+       *  bigger request than a yes/no question and can need longer. */
+      timeoutMs: z.number().int().positive().max(60_000).optional(),
+      shortlist: z.number().int().positive().max(50).default(5),
+      minProbability: z.number().min(0).max(1).default(0.05),
+      /** Below this, only tools the request names outright are surfaced. */
+      needsToolThreshold: z.number().min(0).max(1).default(0.15),
+      /** An omission costs a round trip, so an unsure ranking widens instead. */
+      lowConfidenceExtra: z.number().int().nonnegative().max(20).default(3),
+      lowConfidenceBelow: z.number().min(0).max(1).default(0.5),
+      /** Covers "no, use the other tool" without waiting for the next ranking. */
+      surfaceNamedTools: z.boolean().default(true),
+      /** Above this the catalog is ranked in batches. */
+      maxCatalogTools: z.number().int().positive().max(250).default(200),
+      descriptionChars: z.number().int().positive().max(2_000).default(300),
+      /** Replaces the ranking question. Unset uses the built-in wording. */
+      instructions: z.string().min(1).max(4_000).optional(),
+      /** Replaces the rubric shown beside the ranking question. */
+      guidance: z.string().min(1).max(4_000).optional(),
+      /** Replaces the question asking whether the turn needs a tool at all. */
+      needsToolInstructions: z.string().min(1).max(4_000).optional(),
+    })
+    .default({}),
+  /** Skips the memory model on turns that do not ask to remember, update or forget anything. */
+  memoryGate: z
+    .object({
+      enabled: z.boolean().default(false),
+      timeoutMs: z.number().int().positive().max(60_000).optional(),
+      threshold: z.number().min(0).max(1).default(0.5),
+      instructions: z.string().min(1).max(4_000).optional(),
+      /**
+       * What a yes and a no mean. Named `whenTrue`/`whenFalse` because YAML
+       * reads bare `true:` and `false:` keys as booleans, not strings.
+       */
+      whenTrue: z.string().min(1).max(4_000).optional(),
+      whenFalse: z.string().min(1).max(4_000).optional(),
+      categorize: z.boolean().default(false),
+      categoryThreshold: z.number().min(0).max(1).default(0.4),
+      detectUpdates: z.boolean().default(false),
+    })
+    .default({}),
+});
+
+export type TClassificationConfig = z.infer<typeof classificationSchema>;
+
 export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
+  classification: classificationSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),

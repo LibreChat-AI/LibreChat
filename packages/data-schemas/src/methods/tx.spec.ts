@@ -254,6 +254,14 @@ describe('getValueKey', () => {
     expect(getValueKey('gpt-oss-20b')).toBe('gpt-oss-20b');
     expect(getValueKey('oai/gpt-oss:20b')).toBe('gpt-oss:20b');
   });
+
+  it('prices every name the Jev classifier is served under', () => {
+    for (const model of ['jev-latest', '~typesafe/jev-latest', 'typesafe/jev', 'jev-1.13.0']) {
+      expect(getValueKey(model)).toBe('jev');
+    }
+    expect(getMultiplier({ valueKey: 'jev', tokenType: 'prompt' })).toBe(0.042);
+    expect(getMultiplier({ valueKey: 'jev', tokenType: 'completion' })).toBe(0);
+  });
 });
 
 describe('getMultiplier', () => {

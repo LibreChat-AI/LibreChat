@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { classificationSchema } from 'librechat-data-provider';
 import { Run, Providers, GraphEvents } from '@librechat/agents';
 import { AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
 import { Tools, MemoryScope, EModelEndpoint, AgentCapabilities } from 'librechat-data-provider';
@@ -6,6 +7,7 @@ import type { FiltersConfig } from 'librechat-data-provider';
 import type { RuntimeProviderName } from '@librechat/agents';
 import type { IUser } from '@librechat/data-schemas';
 import type { Response } from 'express';
+import type { ClassificationRequest, Classifier } from '~/classification';
 import type { ServerRequest } from '~/types';
 import {
   processMemory,
@@ -22,6 +24,7 @@ import {
   buildInlineMemoryContext,
 } from './memory';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { createMemoryGate } from '~/memory/gate';
 
 jest.mock('~/middleware/access', () => ({
   checkAccess: jest.fn().mockResolvedValue(true),
@@ -775,6 +778,76 @@ describe('createMemoryTool tokenLimit enforcement', () => {
     await tool.invoke({ key: 'k1' });
 
     expect(onWrite).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('memory gate inside the memory processor', () => {
+  function recordingGate(probability: number) {
+    const requests: ClassificationRequest[] = [];
+    const classifier: Classifier = {
+      id: 'recording',
+      model: 'test',
+      async classify(request) {
+        requests.push(request);
+        return {
+          model: 'test',
+          answers: { request: { type: 'boolean', probability } },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    };
+    const settings = classificationSchema.parse({ memoryGate: { enabled: true } }).memoryGate;
+    return { requests, gate: createMemoryGate({ classifier, settings }) ?? undefined };
+  }
+
+  async function processorWith(gate: ReturnType<typeof recordingGate>['gate']) {
+    const [, process] = await createMemoryProcessor({
+      res: { headersSent: false, write: jest.fn() } as unknown as Response,
+      userId: 'user-1',
+      messageId: 'message-1',
+      conversationId: 'conversation-1',
+      gate,
+      memoryMethods: {
+        setMemory: jest.fn().mockResolvedValue({ ok: true }),
+        deleteMemory: jest.fn().mockResolvedValue({ ok: true }),
+        getUserMemories: jest.fn().mockResolvedValue([]),
+        getFormattedMemories: jest.fn().mockResolvedValue({
+          withKeys: '',
+          withoutKeys: '',
+          totalTokens: 0,
+          tokenCountsByKey: new Map(),
+        }),
+      },
+    });
+    return process;
+  }
+
+  const window = [
+    new HumanMessage('find me images of wildlife in nagoya'),
+    new AIMessage(`page snapshot ${'x'.repeat(40_000)}`),
+    new HumanMessage('I prefer answers in Japanese from now on'),
+  ];
+  const buffer = [new HumanMessage(window.map((m) => m.content).join('\n'))];
+
+  it('judges the newest turn even when older tool output fills the buffer', async () => {
+    const { requests, gate } = recordingGate(0.9);
+
+    await (
+      await processorWith(gate)
+    )(buffer, window);
+
+    const conversation = JSON.stringify(requests[0].state);
+    expect(conversation).toContain('I prefer answers in Japanese from now on');
+  });
+
+  it('skips the memory model when the gate says the turn asks for nothing', async () => {
+    const { gate } = recordingGate(0.01);
+    const runCalls = (Run.create as jest.Mock).mock.calls.length;
+
+    const result = await (await processorWith(gate))(buffer, window);
+
+    expect(result).toBeUndefined();
+    expect((Run.create as jest.Mock).mock.calls.length).toBe(runCalls);
   });
 });
 

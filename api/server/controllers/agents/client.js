@@ -45,6 +45,9 @@ const {
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
   getRunDiscoveredTools,
+  predictToolsForTurn,
+  createMemoryGate,
+  classificationCapability,
   captureResumeModelParameters,
   pickResumeContext,
   getApprovalTtlMs,
@@ -1853,6 +1856,40 @@ class AgentClient extends BaseClient {
     return wiring;
   }
 
+  /**
+   * Builds the classifier gate that skips the memory model on turns with nothing durable.
+   * @returns {import('@librechat/api').MemoryGate | null}
+   */
+  buildMemoryGate() {
+    const config = this.options.req?.config?.classification;
+    const capability = classificationCapability(config, 'memoryGate');
+    if (capability == null) {
+      return null;
+    }
+    return createMemoryGate({
+      classifier: capability.classifier,
+      settings: capability.settings,
+      onUsage: (usage, model) => this.recordClassifierUsage(usage, model),
+    });
+  }
+
+  /** Bills a classifier judgment like any other secondary call: priced from the shared table. */
+  recordClassifierUsage(usage, model) {
+    const appConfig = this.options.req?.config;
+    return this.recordCollectedUsage({
+      collectedUsage: [{ input_tokens: usage.inputTokens, output_tokens: usage.outputTokens }],
+      context: 'classification',
+      model,
+      crossEndpoint: true,
+      balance: getBalanceConfig(appConfig),
+      transactions: getTransactionsConfig(appConfig),
+      messageId: this.responseMessageId,
+      updateStreamUsage: false,
+    }).catch((err) => {
+      logger.error('[AgentClient] Error recording classifier usage', getSafeErrorMetadata(err));
+    });
+  }
+
   /** Builds the independently opt-in live reasoning-label controller. */
   buildReasoningLabelWiring(streamId, abortSignal, seedFromContent = false) {
     if (!streamId || typeof Run?.prototype?.generateReasoningLabel !== 'function') {
@@ -3383,6 +3420,8 @@ class AgentClient extends BaseClient {
       res: this.options.res,
       user: createSafeUser(this.options.req.user),
       tenantId: resolveRequestTenantId(this.options.req),
+      /** Null unless `classification.memoryGate` is on. */
+      gate: this.buildMemoryGate(),
     });
 
     this.processMemory = processMemory;
@@ -4378,6 +4417,16 @@ class AgentClient extends BaseClient {
       );
     }
 
+    /** By the pause these describe what the turn had loaded, so the resumed
+     *  segment must rebuild with them. Run state records real discoveries only. */
+    if (this.predictedToolNames?.length) {
+      const merged = new Set(discoveredTools);
+      for (const name of this.predictedToolNames) {
+        merged.add(name);
+      }
+      discoveredTools = Array.from(merged);
+    }
+
     this.stagedApproval = {
       streamId,
       pendingAction,
@@ -4798,6 +4847,21 @@ class AgentClient extends BaseClient {
         if (this.agentConfigs && this.agentConfigs.size > 0) {
           agents.push(...this.agentConfigs.values());
         }
+
+        /** Awaited after the memory run starts, so the two overlap. */
+        const predictionPromise = predictToolsForTurn({
+          config: appConfig?.classification,
+          agents,
+          messages,
+          signal: abortController.signal,
+          onUsage: (usage, model) => this.recordClassifierUsage(usage, model),
+        }).catch((error) => {
+          logger.warn(
+            '[AgentClient] Tool prediction failed; continuing without it',
+            getSafeErrorMetadata(error),
+          );
+          return [];
+        });
         const modelBoundCallback =
           AgentClient.prototype.createModelBoundChatModelCallback.call(this);
         const initialModelBoundAdmission =
@@ -4838,6 +4902,11 @@ class AgentClient extends BaseClient {
 
         if (this.processMemory && !isCompactionTurn) {
           memoryPromise = this.runMemory(memoryMessages);
+        }
+
+        const predictedToolNames = await predictionPromise;
+        if (predictedToolNames.length > 0) {
+          this.predictedToolNames = predictedToolNames;
         }
 
         const { calibrationRatio, fadingTier, fadingTiers } = resolveRunSeeds(this);
@@ -4916,6 +4985,7 @@ class AgentClient extends BaseClient {
           messages,
           discoveredToolNames:
             this.eventActorContinuation === 'warm' ? this.eventActorDiscoveredToolNames : undefined,
+          predictedToolNames,
           modelCallbacks: [
             modelBoundCallback,
             createAgentMemoryCallback(this.attachmentMemoryContext ?? {}),

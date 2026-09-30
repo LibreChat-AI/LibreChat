@@ -15,6 +15,7 @@ import type {
   SummarizationConfig,
   SkillSyncConfig,
   FiltersConfig,
+  TClassificationConfig,
 } from 'librechat-data-provider';
 
 export type JsonSchemaType = {
@@ -102,6 +103,8 @@ export interface AppConfig {
   mcpConfig?: TCustomConfig['mcpServers'] | null;
   /** MCP settings (domain allowlist, etc.) */
   mcpSettings?: TCustomConfig['mcpSettings'] | null;
+  /** Classification provider and the capabilities that consult it */
+  classification?: TClassificationConfig | null;
   /** File configuration */
   fileConfig?: TFileConfig;
   /** Secure image links configuration, enabled unless explicitly disabled */
