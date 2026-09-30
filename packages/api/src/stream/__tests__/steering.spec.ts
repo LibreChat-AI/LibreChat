@@ -981,6 +981,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
           responseMessageId: 'response-1',
           userMessage: { messageId: 'user-1' },
           userSubmittedPaths: ['/content/0/steer'],
+          providerExecutionStartedId: 'exec-before-pause',
         });
         manager.setContentParts(streamId, [
           { type: 'text', text: 'Before the pause' },
