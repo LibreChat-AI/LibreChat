@@ -118,10 +118,12 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
   };
 }
 
-/** Inks split out of the primary one: dialog titles and badge labels were set in it. */
+/** Inks split out of the primary one: dialog titles, badge labels and the default avatar's glyph
+ *  were all set in it. */
 export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
   'rgb-dialog-title',
   'rgb-badge-label',
+  'rgb-avatar-text',
 ];
 
 /** A theme that repaints the primary ink keeps the inks split out of it on it, unless it names them. */
@@ -529,12 +531,6 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
       ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
       : {};
-  /** The default avatar's glyph inked in `text-primary` before it had a role. */
-  const avatarTextFallback =
-    customColors?.['rgb-avatar-text'] === undefined &&
-    customColors?.['rgb-text-primary'] !== undefined
-      ? { 'rgb-avatar-text': customColors['rgb-text-primary'] }
-      : {};
   const chartWidgetSurfaceFallback =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
@@ -633,7 +629,6 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...textMutedFallback,
       ...proseLinkFallback,
       ...avatarPlaceholderFallback,
-      ...avatarTextFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,

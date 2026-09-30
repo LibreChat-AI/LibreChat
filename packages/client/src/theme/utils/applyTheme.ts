@@ -65,10 +65,6 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--text-muted', colors['rgb-text-tertiary']]);
   }
 
-  if (colors['rgb-avatar-text'] === undefined && colors['rgb-text-primary'] !== undefined) {
-    variables.push(['--avatar-text', colors['rgb-text-primary']]);
-  }
-
   if (
     colors['rgb-chart-widget-surface'] === undefined &&
     colors['rgb-surface-primary'] !== undefined
