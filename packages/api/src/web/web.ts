@@ -13,12 +13,12 @@ import type { TCustomConfig, TWebSearchConfig } from 'librechat-data-provider';
 import { isSSRFTarget, resolveHostnameSSRF, getEffectivePort } from '../auth';
 
 /**
- * User-provided URL keys that may pass through after SSRF preflight.
+ * User-provided URL keys and their paired API keys, checked after SSRF preflight.
  */
-const USER_PROVIDED_URL_KEYS = new Set<TWebSearchKeys>([
-  'searxngInstanceUrl',
-  'firecrawlApiUrl',
-  'jinaApiUrl',
+const USER_PROVIDED_URL_KEYS = new Map<TWebSearchKeys, TWebSearchKeys>([
+  ['searxngInstanceUrl', 'searxngApiKey'],
+  ['firecrawlApiUrl', 'firecrawlApiKey'],
+  ['jinaApiUrl', 'jinaApiKey'],
 ]);
 
 /**
@@ -484,8 +484,6 @@ export async function loadWebSearchAuth({
         const jinaApiKeyIndex = allKeys.indexOf('jinaApiKey');
         const jinaApiKeyField = allAuthFields[jinaApiKeyIndex];
         const jinaApiKeyValue = jinaApiKeyField ? authValues[jinaApiKeyField] : undefined;
-        const isJinaApiKeyUserProvided =
-          jinaApiKeyValue != null && process.env[jinaApiKeyField] !== jinaApiKeyValue;
 
         let allFieldsAuthenticated = true;
         for (let j = 0; j < allAuthFields.length; j++) {
@@ -527,8 +525,17 @@ export async function loadWebSearchAuth({
             continue;
           }
 
-          if (originalKey === 'jinaApiUrl' && isFieldUserProvided && !isJinaApiKeyUserProvided) {
-            continue;
+          if (isUserProvidedUrlKey && isFieldUserProvided) {
+            const apiKey = USER_PROVIDED_URL_KEYS.get(originalKey);
+            const apiKeyField = apiKey ? allAuthFields[allKeys.indexOf(apiKey)] : undefined;
+            const apiKeyValue = apiKeyField ? authValues[apiKeyField] : undefined;
+            if (apiKeyField && apiKeyValue && process.env[apiKeyField] === apiKeyValue) {
+              if (!optionalSet.has(field)) {
+                allFieldsAuthenticated = false;
+                break;
+              }
+              continue;
+            }
           }
           if (originalKey) {
             authResult[originalKey] = value;

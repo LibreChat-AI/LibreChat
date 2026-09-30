@@ -66,6 +66,7 @@ import type { RunFadingTiers } from './fading';
 import type * as t from '~/types';
 import {
   assertAttachedCodeEnvironmentApprovalSupported,
+  collectNativeEditFileAgentIds,
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeEnvironmentPolicySettings,
   createAttachedCodeEnvironmentPolicyHook,
@@ -2712,6 +2713,7 @@ export async function createRun({
       healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
       ASK_USER_QUESTION_TOOL_NAME,
     );
+  const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
   const approvalWiring = buildHITLRunWiring(
     // The ask tool is exempt from the approval prompt (unless explicitly
     // listed by the admin) — approving the right to ask a question is a
@@ -2748,9 +2750,13 @@ export async function createRun({
           ]
         : []),
     ],
+    nativeEditFileAgentIds,
   );
   const hitl = hitlCapable ? approvalWiring : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
+    for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
+      nativeEditFileAgentIds.add(agentId);
+    }
     if (resolvedAgent.codeExecutionContext?.environmentType === 'attached') {
       // The admission hook closes over these collections. A lazily resolved agent
       // therefore receives its own current machine policy before its first tool call;

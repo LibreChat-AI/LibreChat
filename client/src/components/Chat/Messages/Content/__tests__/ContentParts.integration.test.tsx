@@ -4,6 +4,7 @@ import { ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import ContentParts from '../ContentParts';
+import { Text } from '../Parts';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, values?: Record<string | number, string>) => {
@@ -102,7 +103,7 @@ jest.mock('../Parts', () => ({
   Reasoning: () => <div data-testid="reasoning" />,
   ReasoningCompact: () => <div data-testid="compact-reasoning" />,
   Summary: () => <div data-testid="summary" />,
-  Text: ({ text }: { text?: string }) => <div data-testid="text">{text}</div>,
+  Text: jest.fn(({ text }: { text?: string }) => <div data-testid="text">{text}</div>),
   MemoryCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="memory-call" data-count={attachments?.length ?? 0} />
   ),
@@ -240,6 +241,75 @@ const renderContentParts = (props: React.ComponentProps<typeof ContentParts>) =>
       <ContentParts {...props} />
     </RecoilRoot>,
   );
+
+describe('ContentParts integration: adjacent prose identity', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it.each([true, false])(
+    'keeps prose mounted through activity transitions with live folding %s',
+    (foldLiveActivity) => {
+      jest.useFakeTimers();
+      const introText = "Let me establish today's date and gather independent signals.";
+      const answerText = 'Two things stand out immediately. Let me dig into both.';
+      const intro = makeTextPart(introText);
+      const answer = makeTextPart(answerText);
+      const call = makeMcpToolCall('date', false);
+      const completed = makeMcpToolCall('date');
+      const reservation: TMessageContentParts = {
+        type: ContentTypes.ACTIVITY_LABEL,
+        [ContentTypes.ACTIVITY_LABEL]: '',
+        tool_call_ids: ['date'],
+        pending: true,
+      };
+      const label = { ...reservation, activity_label: 'Established current date', pending: false };
+      const frame = (content: TMessageContentParts[]) => (
+        <RecoilRoot>
+          <ContentParts
+            messageId="msg1"
+            content={content}
+            isCreatedByUser={false}
+            isLast
+            isSubmitting
+            isLatestMessage
+            showThinking={false}
+            foldLiveActivity={foldLiveActivity}
+          />
+        </RecoilRoot>
+      );
+      const { rerender } = render(frame([intro]));
+      const row = screen.getByText(introText);
+
+      rerender(frame([intro, call]));
+      expect(screen.getByText(introText)).toBe(row);
+
+      rerender(frame([intro, completed, reservation]));
+      const renders = jest.mocked(Text).mock.calls.length;
+      rerender(frame([intro, completed, label]));
+      expect(screen.getByText(introText)).toBe(row);
+      expect(jest.mocked(Text).mock.calls).toHaveLength(renders);
+      act(() => {
+        jest.advanceTimersByTime(1000);
+      });
+      expect(screen.getByRole('button', { name: /Established current date/ })).toBeInTheDocument();
+
+      rerender(frame([intro, completed, label, answer]));
+      expect(screen.getByText(introText)).toBe(row);
+      const answerRow = screen.getByText(answerText);
+
+      const nextCall = makeMcpToolCall('incidents', false);
+      rerender(frame([intro, completed, label, answer, nextCall]));
+      expect(screen.getByText(introText)).toBe(row);
+      expect(screen.getByText(answerText)).toBe(answerRow);
+
+      const phase = makePhasePart(1, 3, 'Confirmed date');
+      rerender(frame([intro, completed, label, answer, nextCall, phase]));
+      expect(screen.getByText(introText)).toBe(row);
+      expect(screen.getByText(answerText)).toBe(answerRow);
+    },
+  );
+});
 
 describe('ContentParts integration: MCP image hoist and grouping', () => {
   const baseProps = {

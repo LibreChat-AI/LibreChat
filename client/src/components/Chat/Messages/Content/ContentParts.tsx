@@ -710,38 +710,39 @@ const ContentPartsBody = memo(function ContentPartsBody({
     return occurrences;
   }, [toolGroupOccurrenceByIndex, sequentialParts, fallbackScope]);
 
-  const groupedParts = useMemo(() => {
-    return groupSequentialToolCalls(sequentialParts).map((group) => {
-      if (group.type === 'single') {
-        return group;
-      }
-      const baseGroupId = getToolGroupId(group.parts, fallbackScope);
-      const occurrence =
-        resolvedToolGroupOccurrences.get(getToolGroupAnchorIndex(group.parts)) ?? 1;
-      const groupId = occurrence === 1 ? baseGroupId : `${baseGroupId}:occurrence:${occurrence}`;
-      /** Collected even when a parent phase hoists the files: the header still
-       *  reads them for the sites a web search visited. */
-      const seenAttachments = new Set<TAttachment>();
-      for (const { part } of group.parts) {
-        for (const attachment of attachmentsForPart(part) ?? []) {
-          seenAttachments.add(attachment);
+  const groupParts = useCallback(
+    (parts: PartWithIndex[]) => {
+      return groupSequentialToolCalls(parts).map((group) => {
+        if (group.type === 'single') {
+          return group;
         }
-      }
-      const groupAttachments = hideAttachments ? undefined : Array.from(seenAttachments);
-      return {
-        ...group,
-        groupId,
-        groupAttachments,
-        sourceAttachments: Array.from(seenAttachments),
-      };
-    });
-  }, [
-    sequentialParts,
-    attachmentsForPart,
-    fallbackScope,
-    hideAttachments,
-    resolvedToolGroupOccurrences,
-  ]);
+        const baseGroupId = getToolGroupId(group.parts, fallbackScope);
+        const occurrence =
+          resolvedToolGroupOccurrences.get(getToolGroupAnchorIndex(group.parts)) ?? 1;
+        const groupId = occurrence === 1 ? baseGroupId : `${baseGroupId}:occurrence:${occurrence}`;
+        /** Collected even when a parent phase hoists the files: the header still
+         *  reads them for the sites a web search visited. */
+        const seenAttachments = new Set<TAttachment>();
+        for (const { part } of group.parts) {
+          for (const attachment of attachmentsForPart(part) ?? []) {
+            seenAttachments.add(attachment);
+          }
+        }
+        const groupAttachments = hideAttachments ? undefined : Array.from(seenAttachments);
+        return {
+          ...group,
+          groupId,
+          groupAttachments,
+          sourceAttachments: Array.from(seenAttachments),
+        };
+      });
+    },
+    [attachmentsForPart, fallbackScope, hideAttachments, resolvedToolGroupOccurrences],
+  );
+  const groupedParts = useMemo(
+    () => (phaseSegments == null ? groupParts(sequentialParts) : []),
+    [phaseSegments, groupParts, sequentialParts],
+  );
 
   /** The re-attribution node for a part resuming after a steer block, shared
    *  by the sequential path and the parallel renderer's sequential stretches. */
@@ -786,10 +787,72 @@ const ContentPartsBody = memo(function ContentPartsBody({
     );
   }
 
+  const safeContent = content ?? [];
+  /** A solitary seeded empty TEXT part (useChatFunctions' assistant-side
+   *  placeholder) is the same waiting state as no content at all — route it
+   *  through EmptyText instead of Markdown's flush initializing dot so both
+   *  flows share the gated header-axis nudge. Never solitary mid-stream, so
+   *  empty TEXT after real parts keeps its flush in-flow cursor. */
+  const solitaryEmptyText = safeContent.length === 1 && isEmptyTextPart(safeContent[0]);
+  const showEmptyCursor =
+    (safeContent.length === 0 || solitaryEmptyText) &&
+    effectiveIsSubmitting &&
+    !cursorOwnedElsewhere;
+  /** Skips trailing blank label reservations and empty provider placeholders,
+   * keeping the cursor attached to the last visible output. */
+  const relativeLastContentIdx = lastCursorContentIdx(safeContent);
+  const lastContentIdx = relativeLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeLastContentIdx);
+
+  const renderGroups = (groups: ReturnType<typeof groupParts>, lastContentIdx: number) =>
+    groups.flatMap((group) => {
+      const first = group.type === 'single' ? group.part : group.parts[0];
+      const firstIdx = first?.idx ?? -1;
+      const nodes: ReactElement[] = [];
+      const attribution = renderResumeAttribution(
+        firstIdx,
+        first ? getPartKeyIndex(first.part, first.idx) : firstIdx,
+      );
+      if (attribution != null) {
+        nodes.push(attribution);
+      }
+      if (group.type === 'single') {
+        const { part, idx } = group.part;
+        nodes.push(renderPart(part, idx, idx === lastContentIdx));
+        return nodes;
+      }
+      const { groupId } = group;
+      nodes.push(
+        <ToolCallGroup
+          key={`tool-group-${groupId}`}
+          parts={group.parts}
+          isSubmitting={effectiveIsSubmitting}
+          /** The label part is CONSUMED into the header, not listed in
+           *  `parts` — a filled label at the content tail must still
+           *  mark its group as last or nothing holds the streaming
+           *  cursor until the next delta. */
+          isLast={
+            isLast &&
+            (group.parts.some((p) => p.idx === lastContentIdx) ||
+              group.labelPart?.idx === lastContentIdx)
+          }
+          renderPart={renderGroupedPart}
+          lastContentIdx={lastContentIdx}
+          groupAttachments={group.groupAttachments}
+          sourceAttachments={group.sourceAttachments}
+          initialExpansionState={expansionState.get(groupId)}
+          showThinking={showThinking}
+          onExpansionChange={(state) => handleGroupExpansionChange(groupId, state)}
+          labelPart={group.labelPart}
+          withinActivityPhase={withinActivityPhase}
+          parentPhaseOwnsFailurePill={parentPhaseOwnsFailurePill}
+        />,
+      );
+      return nodes;
+    });
+
+  const hasParallelContent = hasParallelLanes(content, messageLaneGroups);
+  let phaseContent: ReactElement[] | undefined;
   if (phaseSegments != null) {
-    const relativeGlobalLastContentIdx = lastCursorContentIdx(content ?? []);
-    const globalLastContentIdx =
-      relativeGlobalLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeGlobalLastContentIdx);
     /** Segment keys anchor to their first defined part's stable index, never
      *  to the segment's ordinal: hole-only slots form phantom segments while
      *  a run streams and vanish from the compacted final content, so ordinal
@@ -863,8 +926,8 @@ const ContentPartsBody = memo(function ContentPartsBody({
           return false;
         }
         return segment.synthesized === true
-          ? segment.contentIndices.map(absoluteIndexAt).includes(globalLastContentIdx)
-          : absoluteIndexAt(segment.labelIndex) === globalLastContentIdx;
+          ? segment.contentIndices.map(absoluteIndexAt).includes(lastContentIdx)
+          : absoluteIndexAt(segment.labelIndex) === lastContentIdx;
       });
     const renderSegment = (
       segmentContent: Array<TMessageContentParts | undefined>,
@@ -887,7 +950,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           attachments={inlineAttachments}
           searchResults={searchResults}
           isCreatedByUser={isCreatedByUser}
-          isLast={!ownsCursor && isLast && segmentIndices.includes(globalLastContentIdx)}
+          isLast={!ownsCursor && isLast && segmentIndices.includes(lastContentIdx)}
           isSubmitting={isSubmitting}
           isLatestMessage={isLatestMessage}
           nestedActivityPhase
@@ -907,197 +970,171 @@ const ContentPartsBody = memo(function ContentPartsBody({
         />
       );
     };
-    const hasParallelContent = hasParallelLanes(content, messageLaneGroups);
-    return (
-      <ApprovalProvider>
-        <SearchContext.Provider value={{ searchResults }}>
-          <MemoryArtifacts attachments={attachments} />
-          {hasParallelContent && (
-            <Sources messageId={messageId} conversationId={conversationId || undefined} />
+    phaseContent = phaseSegments.flatMap((segment) => {
+      if (segment.type !== 'phase') {
+        if (hasParallelContent) {
+          return renderSegment(
+            segment.content,
+            absoluteIndexAt(segment.startIndex),
+            segment.contentIndices.map(absoluteIndexAt),
+            `phase-adjacent-${segmentKeyIndex(segment)}`,
+          );
+        }
+        /** Unclaimed prose keeps its original parent and part key. A
+         * nested body here would remount it whenever a fold appears or
+         * disappears, replaying the markdown word fade. */
+        const parts: PartWithIndex[] = [];
+        segment.content.forEach((part, position) => {
+          if (part != null) {
+            parts.push({ part, idx: absoluteIndexAt(segment.contentIndices[position]) });
+          }
+        });
+        return renderGroups(groupParts(parts), lastContentIdx);
+      }
+      const synthesized = segment.synthesized === true;
+      const live = segment.live === true;
+      /** Entrance bookkeeping still keys on the marker. */
+      const phaseKeyIndex = getPartKeyIndex(segment.labelPart, segment.labelIndex);
+      /** The RENDER key is the span, not the header. A synthesized card's
+       *  header ticks with the newest child label, so keying on it would
+       *  remount the card on every tick — and when the summary finally
+       *  lands, a card keyed the same way as the fold it replaces is
+       *  RECONCILED rather than remounted, so a reader who opened the
+       *  ticker keeps it open with no state to hand over. A phase with no
+       *  children has no span to anchor to and keeps its marker key.
+       *
+       *  The first tool call carries it — its provider id paired with
+       *  its own position. No message identity goes into it, and none
+       *  can: `MultiMessage` reuses this instance across siblings, but
+       *  `messageId` moves at settle (batched with
+       *  `setIsSubmitting(false)`, so that commit is indistinguishable
+       *  from a sibling switch) and the positional `siblingIdx` moves
+       *  under background churn that deliberately PRESERVES the viewed
+       *  response. Both halves survive those: the position is
+       *  content-derived, and the provider id is what separates two
+       *  siblings whose cards start at the same index. Pairing them also
+       *  keeps repeated provider ids in one message apart, the way
+       *  `getToolGroupId` uses an occurrence counter. */
+      const cardKey = stableCardKey(segment);
+      const labelText = getActivityLabelText(segment.labelPart);
+      const segmentIndices = segment.contentIndices.map(absoluteIndexAt);
+      /** While a run streams, the cursor sits INSIDE a synthesized span.
+       *  A collapsed card would swallow it, so the card carries it below
+       *  the header and the nested body stands down. */
+      const ownsCursor =
+        synthesized && isLast && effectiveIsSubmitting && segmentIndices.includes(lastContentIdx);
+      const hasPendingApproval = segment.content.some(
+        (part) => part != null && hasPendingApprovalInPart(part),
+      );
+      /** The span's files, lifted out of the fold into their own row
+       *  under the header.
+       *
+       *  This is why a span carrying attachments no longer has to skip
+       *  folding. `ToolCallGroup` hoists `groupAttachments` outside its
+       *  own panel so generated output survives collapsing the group,
+       *  and folding that group into a card used to put the hoist back
+       *  inside a disclosure — so a synthesized span with any output
+       *  rendered unfolded rather than swallow it. Hoisting one level
+       *  further makes the card safe for exactly that content, and
+       *  agent runs that produce files are the ones with the longest
+       *  lists to fold. */
+      const phaseAttachments = collectPhaseAttachments(segment.content);
+      /** A fold summarizes work that is DONE. An unresolved approval is
+       *  the run asking the reader for something and blocking until it
+       *  gets it — never put that behind a disclosure they have to find.
+       *  A server marker cannot hit this (it is emitted after the batch
+       *  resolves), but a subagent nested in an already-labeled group
+       *  can raise one long after its parent's label filled. The span
+       *  renders exactly as it would without the feature until it
+       *  clears, then folds. */
+      /** "Open thinking dropdowns by default" is the reader asking to
+       *  see reasoning as it streams. A collapsed live row would unmount
+       *  it, so a reasoning-bearing span stays unfolded for them — the
+       *  same exception `ToolCallGroup` makes to its auto-collapse. */
+      const keepsThinkingOpen =
+        live && showThinking && segment.content.some((part) => part?.type === ContentTypes.THINK);
+      const awaitsReader = live
+        ? keepsThinkingOpen || segment.content.some(blocksLiveFold)
+        : hasPendingApproval;
+      if (synthesized && awaitsReader) {
+        return renderSegment(
+          segment.content,
+          absoluteIndexAt(segment.startIndex),
+          segmentIndices,
+          `phase-awaiting-${cardKey}`,
+        );
+      }
+      return (
+        <ActivityPhaseGroup
+          key={`activity-phase-${cardKey}`}
+          labelPart={segment.labelPart}
+          hasContent={segment.hasContent}
+          attachments={phaseAttachments}
+          hasPendingApproval={hasPendingApproval}
+          onExpansionChange={
+            live &&
+            reasoningDisclosures != null &&
+            !segment.content.some((part) => part?.type === ContentTypes.TOOL_CALL)
+              ? (expanded) => {
+                  segment.content.forEach((part, position) => {
+                    if (part?.type !== ContentTypes.THINK) {
+                      return;
+                    }
+                    const index = getPartKeyIndex(part, segmentIndices[position]);
+                    disclosureStore.set(reasoningDisclosure(reasoningDisclosures, index), expanded);
+                  });
+                }
+              : undefined
+          }
+          liveParts={live ? segment.content : undefined}
+          spanParts={segment.hasContent ? segment.content : undefined}
+          animateEntrance={
+            /** Never for a synthesized card. The entrance mounts a card
+             *  OPEN and folds it shut, and this component remounts
+             *  mid-run — the key carries `messageId`, which changes when
+             *  the placeholder hydrates to the server id, and a reconnect
+             *  mounts straight onto existing labeled content. Either
+             *  would flash the whole fold back open. Fold GROWTH is
+             *  already unanimated, so formation matching it is the
+             *  consistent behavior, not a downgrade. */
+            !synthesized &&
+            previousPhases != null &&
+            !previousPhases.indices.has(phaseKeyIndex) &&
+            (!hasPhaseRekey ||
+              (completedPhaseKeys.ordinals.get(phaseKeyIndex) ?? 1) >
+                (previousPhases.labels.get(labelText) ?? 0))
+          }
+          showCursor={
+            /** A live header shimmers; a cursor row beneath it would be
+             *  a second liveness signal and a second row. */
+            synthesized
+              ? ownsCursor && !live
+              : isLast &&
+                effectiveIsSubmitting &&
+                absoluteIndexAt(segment.labelIndex) === lastContentIdx
+          }
+        >
+          {renderSegment(
+            segment.content,
+            absoluteIndexAt(segment.startIndex),
+            segmentIndices,
+            `phase-content-${cardKey}`,
+            /** Opening a live row should show the calls running, so its
+             *  groups keep their own live expansion rather than the
+             *  settled-phase default of staying shut. */
+            !live,
+            ownsCursor,
+            true,
+            true,
           )}
-          {renderPendingSkills()}
-          {phaseSegments.map((segment) => {
-            if (segment.type !== 'phase') {
-              return renderSegment(
-                segment.content,
-                absoluteIndexAt(segment.startIndex),
-                segment.contentIndices.map(absoluteIndexAt),
-                `phase-adjacent-${segmentKeyIndex(segment)}`,
-              );
-            }
-            const synthesized = segment.synthesized === true;
-            const live = segment.live === true;
-            /** Entrance bookkeeping still keys on the marker. */
-            const phaseKeyIndex = getPartKeyIndex(segment.labelPart, segment.labelIndex);
-            /** The RENDER key is the span, not the header. A synthesized card's
-             *  header ticks with the newest child label, so keying on it would
-             *  remount the card on every tick — and when the summary finally
-             *  lands, a card keyed the same way as the fold it replaces is
-             *  RECONCILED rather than remounted, so a reader who opened the
-             *  ticker keeps it open with no state to hand over. A phase with no
-             *  children has no span to anchor to and keeps its marker key.
-             *
-             *  The first tool call carries it — its provider id paired with
-             *  its own position. No message identity goes into it, and none
-             *  can: `MultiMessage` reuses this instance across siblings, but
-             *  `messageId` moves at settle (batched with
-             *  `setIsSubmitting(false)`, so that commit is indistinguishable
-             *  from a sibling switch) and the positional `siblingIdx` moves
-             *  under background churn that deliberately PRESERVES the viewed
-             *  response. Both halves survive those: the position is
-             *  content-derived, and the provider id is what separates two
-             *  siblings whose cards start at the same index. Pairing them also
-             *  keeps repeated provider ids in one message apart, the way
-             *  `getToolGroupId` uses an occurrence counter. */
-            const cardKey = stableCardKey(segment);
-            const labelText = getActivityLabelText(segment.labelPart);
-            const segmentIndices = segment.contentIndices.map(absoluteIndexAt);
-            /** While a run streams, the cursor sits INSIDE a synthesized span.
-             *  A collapsed card would swallow it, so the card carries it below
-             *  the header and the nested body stands down. */
-            const ownsCursor =
-              synthesized &&
-              isLast &&
-              effectiveIsSubmitting &&
-              segmentIndices.includes(globalLastContentIdx);
-            const hasPendingApproval = segment.content.some(
-              (part) => part != null && hasPendingApprovalInPart(part),
-            );
-            /** The span's files, lifted out of the fold into their own row
-             *  under the header.
-             *
-             *  This is why a span carrying attachments no longer has to skip
-             *  folding. `ToolCallGroup` hoists `groupAttachments` outside its
-             *  own panel so generated output survives collapsing the group,
-             *  and folding that group into a card used to put the hoist back
-             *  inside a disclosure — so a synthesized span with any output
-             *  rendered unfolded rather than swallow it. Hoisting one level
-             *  further makes the card safe for exactly that content, and
-             *  agent runs that produce files are the ones with the longest
-             *  lists to fold. */
-            const phaseAttachments = collectPhaseAttachments(segment.content);
-            /** A fold summarizes work that is DONE. An unresolved approval is
-             *  the run asking the reader for something and blocking until it
-             *  gets it — never put that behind a disclosure they have to find.
-             *  A server marker cannot hit this (it is emitted after the batch
-             *  resolves), but a subagent nested in an already-labeled group
-             *  can raise one long after its parent's label filled. The span
-             *  renders exactly as it would without the feature until it
-             *  clears, then folds. */
-            /** "Open thinking dropdowns by default" is the reader asking to
-             *  see reasoning as it streams. A collapsed live row would unmount
-             *  it, so a reasoning-bearing span stays unfolded for them — the
-             *  same exception `ToolCallGroup` makes to its auto-collapse. */
-            const keepsThinkingOpen =
-              live &&
-              showThinking &&
-              segment.content.some((part) => part?.type === ContentTypes.THINK);
-            const awaitsReader = live
-              ? keepsThinkingOpen || segment.content.some(blocksLiveFold)
-              : hasPendingApproval;
-            if (synthesized && awaitsReader) {
-              return renderSegment(
-                segment.content,
-                absoluteIndexAt(segment.startIndex),
-                segmentIndices,
-                `phase-awaiting-${cardKey}`,
-              );
-            }
-            return (
-              <ActivityPhaseGroup
-                key={`activity-phase-${cardKey}`}
-                labelPart={segment.labelPart}
-                hasContent={segment.hasContent}
-                attachments={phaseAttachments}
-                hasPendingApproval={hasPendingApproval}
-                onExpansionChange={
-                  live &&
-                  reasoningDisclosures != null &&
-                  !segment.content.some((part) => part?.type === ContentTypes.TOOL_CALL)
-                    ? (expanded) => {
-                        segment.content.forEach((part, position) => {
-                          if (part?.type !== ContentTypes.THINK) {
-                            return;
-                          }
-                          const index = getPartKeyIndex(part, segmentIndices[position]);
-                          disclosureStore.set(
-                            reasoningDisclosure(reasoningDisclosures, index),
-                            expanded,
-                          );
-                        });
-                      }
-                    : undefined
-                }
-                liveParts={live ? segment.content : undefined}
-                spanParts={segment.hasContent ? segment.content : undefined}
-                animateEntrance={
-                  /** Never for a synthesized card. The entrance mounts a card
-                   *  OPEN and folds it shut, and this component remounts
-                   *  mid-run — the key carries `messageId`, which changes when
-                   *  the placeholder hydrates to the server id, and a reconnect
-                   *  mounts straight onto existing labeled content. Either
-                   *  would flash the whole fold back open. Fold GROWTH is
-                   *  already unanimated, so formation matching it is the
-                   *  consistent behavior, not a downgrade. */
-                  !synthesized &&
-                  previousPhases != null &&
-                  !previousPhases.indices.has(phaseKeyIndex) &&
-                  (!hasPhaseRekey ||
-                    (completedPhaseKeys.ordinals.get(phaseKeyIndex) ?? 1) >
-                      (previousPhases.labels.get(labelText) ?? 0))
-                }
-                showCursor={
-                  /** A live header shimmers; a cursor row beneath it would be
-                   *  a second liveness signal and a second row. */
-                  synthesized
-                    ? ownsCursor && !live
-                    : isLast &&
-                      effectiveIsSubmitting &&
-                      absoluteIndexAt(segment.labelIndex) === globalLastContentIdx
-                }
-              >
-                {renderSegment(
-                  segment.content,
-                  absoluteIndexAt(segment.startIndex),
-                  segmentIndices,
-                  `phase-content-${cardKey}`,
-                  /** Opening a live row should show the calls running, so its
-                   *  groups keep their own live expansion rather than the
-                   *  settled-phase default of staying shut. */
-                  !live,
-                  ownsCursor,
-                  true,
-                  true,
-                )}
-              </ActivityPhaseGroup>
-            );
-          })}
-          <WorkspaceChanges attachments={workspaceChanges} />
-        </SearchContext.Provider>
-      </ApprovalProvider>
-    );
+        </ActivityPhaseGroup>
+      );
+    });
   }
-
-  const safeContent = content ?? [];
-  /** A solitary seeded empty TEXT part (useChatFunctions' assistant-side
-   *  placeholder) is the same waiting state as no content at all — route it
-   *  through EmptyText instead of Markdown's flush initializing dot so both
-   *  flows share the gated header-axis nudge. Never solitary mid-stream, so
-   *  empty TEXT after real parts keeps its flush in-flow cursor. */
-  const solitaryEmptyText = safeContent.length === 1 && isEmptyTextPart(safeContent[0]);
-  const showEmptyCursor =
-    (safeContent.length === 0 || solitaryEmptyText) &&
-    effectiveIsSubmitting &&
-    !cursorOwnedElsewhere;
-  /** Skips trailing blank label reservations and empty provider placeholders,
-   * keeping the cursor attached to the last visible output. */
-  const relativeLastContentIdx = lastCursorContentIdx(safeContent);
-  const lastContentIdx = relativeLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeLastContentIdx);
 
   /** Columns only when at least two agents share a group — a lone group
    *  renders here, where tool grouping and activity labels apply. */
-  const hasParallelContent = hasParallelLanes(safeContent, messageLaneGroups);
-  if (hasParallelContent) {
+  if (hasParallelContent && phaseContent == null) {
     const parallelContent = (
       <>
         {renderPendingSkills()}
@@ -1130,6 +1167,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
   const sequentialContent = (
     <SearchContext.Provider value={{ searchResults }}>
       {!nestedActivityPhase && <MemoryArtifacts attachments={attachments} />}
+      {phaseContent != null && hasParallelContent && (
+        <Sources messageId={messageId} conversationId={conversationId || undefined} />
+      )}
       {!nestedActivityPhase && renderPendingSkills()}
       {showEmptyCursor && (
         <Container>
@@ -1142,52 +1182,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           />
         </Container>
       )}
-      {!showEmptyCursor &&
-        groupedParts.flatMap((group) => {
-          const first = group.type === 'single' ? group.part : group.parts[0];
-          const firstIdx = first?.idx ?? -1;
-          const nodes: ReactElement[] = [];
-          const attribution = renderResumeAttribution(
-            firstIdx,
-            first ? getPartKeyIndex(first.part, first.idx) : firstIdx,
-          );
-          if (attribution != null) {
-            nodes.push(attribution);
-          }
-          if (group.type === 'single') {
-            const { part, idx } = group.part;
-            nodes.push(renderPart(part, idx, idx === lastContentIdx));
-            return nodes;
-          }
-          const { groupId } = group;
-          nodes.push(
-            <ToolCallGroup
-              key={`tool-group-${groupId}`}
-              parts={group.parts}
-              isSubmitting={effectiveIsSubmitting}
-              /** The label part is CONSUMED into the header, not listed in
-               *  `parts` — a filled label at the content tail must still
-               *  mark its group as last or nothing holds the streaming
-               *  cursor until the next delta. */
-              isLast={
-                isLast &&
-                (group.parts.some((p) => p.idx === lastContentIdx) ||
-                  group.labelPart?.idx === lastContentIdx)
-              }
-              renderPart={renderGroupedPart}
-              lastContentIdx={lastContentIdx}
-              groupAttachments={group.groupAttachments}
-              sourceAttachments={group.sourceAttachments}
-              initialExpansionState={expansionState.get(groupId)}
-              showThinking={showThinking}
-              onExpansionChange={(state) => handleGroupExpansionChange(groupId, state)}
-              labelPart={group.labelPart}
-              withinActivityPhase={withinActivityPhase}
-              parentPhaseOwnsFailurePill={parentPhaseOwnsFailurePill}
-            />,
-          );
-          return nodes;
-        })}
+      {!showEmptyCursor && (phaseContent ?? renderGroups(groupedParts, lastContentIdx))}
       {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
     </SearchContext.Provider>
   );

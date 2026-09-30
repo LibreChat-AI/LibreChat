@@ -88,7 +88,7 @@ export default function MCPToolItem({
               pressed={isDeferred}
               label={localize('com_ui_mcp_defer_loading')}
               tooltip={localize('com_ui_mcp_click_to_defer')}
-              activeBorderClass="border-series-4"
+              activeClass="border-series-4 text-series-4 hover:text-series-4"
               onToggle={onToggleDefer}
             />
           )}
@@ -102,7 +102,7 @@ export default function MCPToolItem({
                   ? 'com_ui_mcp_click_to_programmatic'
                   : 'com_ui_mcp_programmatic_requires_code',
               )}
-              activeBorderClass="border-series-6"
+              activeClass="border-series-6 text-series-6 hover:text-series-6"
               disabled={!programmaticToolsAvailable && !isProgrammatic}
               onToggle={onToggleProgrammatic}
             />
@@ -113,7 +113,7 @@ export default function MCPToolItem({
               pressed={isBackground}
               label={localize('com_ui_mcp_background')}
               tooltip={localize('com_ui_mcp_click_to_background')}
-              activeBorderClass="border-series-1"
+              activeClass="border-series-1 text-series-1 hover:text-series-1"
               onToggle={onToggleBackground}
             />
           )}
@@ -126,7 +126,7 @@ export default function MCPToolItem({
               tooltip={localize(
                 intentDisabled ? 'com_ui_mcp_intent_programmatic' : 'com_ui_mcp_click_to_intent',
               )}
-              activeBorderClass="border-series-3"
+              activeClass="border-series-3 text-series-3 hover:text-series-3"
               onToggle={onToggleIntent}
             />
           )}

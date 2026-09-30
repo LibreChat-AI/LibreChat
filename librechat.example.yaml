@@ -906,6 +906,8 @@ endpoints:
     # https://docs.x.ai/developers/grok-4-7
     # Set XAI_API_KEY in your environment. No separate SpaceXAI provider is needed.
     - name: 'xai'
+      # Optional: expose this endpoint only to users in the named tenant.
+      # tenantId: 'your-tenant-id'
       apiKey: '${XAI_API_KEY}'
       baseURL: 'https://api.x.ai/v1'
       models:

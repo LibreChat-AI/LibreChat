@@ -1,10 +1,12 @@
 import { getMaxSubagents, setMaxSubagents } from 'librechat-data-provider';
+import { AppService, getTenantId, tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   createAppConfigService,
   _resetOverrideStrictCache,
   getAppConfigOptionsFromUser,
 } from './service';
+import { getProviderConfig } from '~/endpoints/config/providers';
 
 /** Extends AppConfig with mock fields used by merge behavior tests. */
 interface TestConfig extends AppConfig {
@@ -95,6 +97,459 @@ describe('createAppConfigService', () => {
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
       expect(deps.getApplicableConfigs).not.toHaveBeenCalled();
       expect(config).toEqual(deps._baseConfig);
+    });
+
+    it('serves tenant-scoped YAML custom endpoints only to their tenant', async () => {
+      const custom = [
+        { name: 'Global', apiKey: 'global-key', baseURL: 'https://global.example' },
+        {
+          name: 'ClickHouse',
+          tenantId: 'dwh-org',
+          apiKey: 'dwh-key',
+          baseURL: 'https://dwh.example',
+        },
+      ];
+      const modelSpecs = {
+        list: [
+          { name: 'global-spec', preset: { endpoint: 'Global' } },
+          { name: 'dwh-spec', softDefault: true, preset: { endpoint: 'ClickHouse' } },
+        ],
+        addedEndpoints: ['agents', 'ClickHouse'],
+      };
+      const deps = createDeps({
+        loadBaseConfig: jest.fn().mockResolvedValue({
+          endpoints: { custom },
+          modelSpecs,
+          config: { endpoints: { custom }, modelSpecs },
+        }),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const base = await getAppConfig({ baseOnly: true });
+      const tenantBase = await getAppConfig({ baseOnly: true, tenantId: 'dwh-org' });
+      const dwh = await getAppConfig({ role: 'USER', tenantId: 'dwh-org' });
+      const other = await getAppConfig({ role: 'USER', tenantId: 'other-org' });
+      const staleUserTenant = await tenantStorage.run({ tenantId: 'other-org' }, () =>
+        getAppConfig({ role: 'USER', tenantId: 'dwh-org' }),
+      );
+
+      expect(base.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(tenantBase.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
+        'Global',
+        'ClickHouse',
+      ]);
+      expect(dwh.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
+        'Global',
+        'ClickHouse',
+      ]);
+      expect(other.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(other.config.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(base.modelSpecs?.list?.map((spec) => spec.name)).toEqual(['global-spec']);
+      expect(tenantBase.modelSpecs?.list?.map((spec) => spec.name)).toEqual([
+        'global-spec',
+        'dwh-spec',
+      ]);
+      expect(other.modelSpecs?.addedEndpoints).toEqual(['agents']);
+      expect(other.config.modelSpecs?.list?.map((spec) => spec.name)).toEqual(['global-spec']);
+      expect(staleUserTenant.modelSpecs?.list?.map((spec) => spec.name)).toEqual(['global-spec']);
+      expect(staleUserTenant.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
+        'Global',
+      ]);
+      expect(
+        getProviderConfig({ provider: 'ClickHouse', appConfig: dwh }).customEndpointConfig?.baseURL,
+      ).toBe('https://dwh.example');
+      expect(() => getProviderConfig({ provider: 'ClickHouse', appConfig: other })).toThrow(
+        'Provider ClickHouse not supported',
+      );
+      expect(custom).toHaveLength(2);
+    });
+
+    it('removes a prioritized spec when its only endpoint belongs to another tenant', async () => {
+      const deps = createDeps({
+        loadBaseConfig: jest.fn().mockResolvedValue({
+          endpoints: { custom: [{ name: 'ClickHouse', tenantId: 'dwh-org' }] },
+          modelSpecs: {
+            prioritize: true,
+            list: [{ name: 'dwh-spec', preset: { endpoint: 'ClickHouse' } }],
+          },
+        }),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ role: 'USER', tenantId: 'other-org' });
+
+      expect(config.endpoints?.custom).toEqual([]);
+      expect(config.modelSpecs).toBeUndefined();
+    });
+
+    describe('tenant isolation invariants', () => {
+      async function tenantBase(interfaceConfig?: AppConfig['interfaceConfig']) {
+        return AppService({
+          config: {
+            interface: interfaceConfig,
+            endpoints: {
+              custom: [
+                {
+                  name: 'Private Gateway',
+                  tenantId: 'tenant-a',
+                  apiKey: 'private-gateway-key',
+                  baseURL: 'https://private.example',
+                  models: { default: ['private-model'] },
+                },
+              ],
+            },
+            modelSpecs: {
+              enforce: true,
+              prioritize: true,
+              list: [
+                { name: 'private-spec', label: 'Private', preset: { endpoint: 'Private Gateway' } },
+              ],
+            },
+          },
+        });
+      }
+
+      it('restores no-spec interface defaults without mutating the shared YAML base', async () => {
+        const base = await tenantBase();
+        const deps = createDeps({ loadBaseConfig: jest.fn().mockResolvedValue(base) });
+        const { getAppConfig } = createAppConfigService(deps);
+        const [owner, other, anonymous] = await Promise.all([
+          getAppConfig({ baseOnly: true, tenantId: 'tenant-a' }),
+          getAppConfig({ baseOnly: true, tenantId: 'tenant-b' }),
+          getAppConfig({ baseOnly: true }),
+        ]);
+        expect(owner.modelSpecs?.list).toHaveLength(1);
+        expect(owner.interfaceConfig).toMatchObject({
+          modelSelect: false,
+          parameters: false,
+          presets: false,
+        });
+        for (const config of [other, anonymous]) {
+          expect(config.modelSpecs).toBeUndefined();
+          expect(config.config.modelSpecs).toBeUndefined();
+          expect(config.interfaceConfig).toMatchObject({
+            modelSelect: true,
+            parameters: true,
+            presets: true,
+          });
+          expect(config.endpoints?.custom).toEqual([]);
+        }
+        expect(base.modelSpecs?.list).toHaveLength(1);
+        expect(base.config.endpoints?.custom).toHaveLength(1);
+        expect(base.interfaceConfig?.modelSelect).toBe(false);
+      });
+
+      it.each(['yaml', 'override'])(
+        'preserves explicit %s interface restrictions after dropping the last spec',
+        async (source) => {
+          const explicit = {
+            modelSelect: false,
+            parameters: false,
+            presets: false,
+            customWelcome: 'Welcome',
+          };
+          const base = await tenantBase(source === 'yaml' ? explicit : undefined);
+          const deps = createDeps({
+            loadBaseConfig: jest.fn().mockResolvedValue(base),
+            getApplicableConfigs: jest
+              .fn()
+              .mockResolvedValue(
+                source === 'override'
+                  ? [{ priority: 10, overrides: { interface: explicit }, isActive: true }]
+                  : [],
+              ),
+          });
+          const { getAppConfig } = createAppConfigService(deps);
+          for (let i = 0; i < 2; i++) {
+            const config = await getAppConfig({ role: 'USER', tenantId: 'tenant-b' });
+            expect(config.modelSpecs).toBeUndefined();
+            expect(config.interfaceConfig).toMatchObject(explicit);
+          }
+          expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+        },
+      );
+
+      it('recomputes model selection when only the added custom endpoint is hidden', async () => {
+        const base = await tenantBase();
+        base.modelSpecs = {
+          list: [{ name: 'public-spec', label: 'Public', preset: { endpoint: 'openAI' } }],
+          addedEndpoints: ['Private Gateway'],
+        };
+        base.config.modelSpecs = base.modelSpecs;
+        base.interfaceConfig = { modelSelect: true, parameters: false, presets: false };
+        const deps = createDeps({ loadBaseConfig: jest.fn().mockResolvedValue(base) });
+        const { getAppConfig } = createAppConfigService(deps);
+        const other = await getAppConfig({ tenantId: 'tenant-b' });
+        expect(other.modelSpecs?.list).toHaveLength(1);
+        expect(other.modelSpecs?.addedEndpoints).toEqual([]);
+        expect(other.interfaceConfig).toMatchObject({
+          modelSelect: false,
+          parameters: false,
+          presets: false,
+        });
+      });
+
+      it('uses the ambient tenant for override reads, cache writes, hits, and invalidation despite stale user IDs', async () => {
+        const deps = createDeps({
+          getApplicableConfigs: jest
+            .fn()
+            .mockImplementation(async () => [
+              { priority: 10, overrides: { x: getTenantId() }, isActive: true },
+            ]),
+        });
+        const { getAppConfig, clearOverrideCache } = createAppConfigService(deps);
+        const read = (tenant: string, stale: string) =>
+          tenantStorage.run({ tenantId: tenant }, () =>
+            getAppConfig({ role: 'USER', tenantId: stale }),
+          );
+        expect(((await read('tenant-a', 'tenant-b')) as TestConfig).x).toBe('tenant-a');
+        expect(((await read('tenant-b', 'tenant-a')) as TestConfig).x).toBe('tenant-b');
+        expect(((await read('tenant-a', 'tenant-b')) as TestConfig).x).toBe('tenant-a');
+        expect(((await read('tenant-b', 'tenant-a')) as TestConfig).x).toBe('tenant-b');
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+        await clearOverrideCache('tenant-a');
+        await read('tenant-b', 'tenant-a');
+        await read('tenant-a', 'tenant-b');
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(3);
+      });
+
+      it('separates a real __default__ tenant from requests without a tenant, including invalidation', async () => {
+        const deps = createDeps({
+          getApplicableConfigs: jest
+            .fn()
+            .mockImplementation(async () => [
+              { priority: 10, overrides: { x: getTenantId() ?? 'global' }, isActive: true },
+            ]),
+        });
+        const { getAppConfig, clearOverrideCache } = createAppConfigService(deps);
+        const global = () => getAppConfig({ role: 'USER' });
+        const tenant = () => getAppConfig({ role: 'USER', tenantId: '__default__' });
+        expect(((await global()) as TestConfig).x).toBe('global');
+        expect(((await tenant()) as TestConfig).x).toBe('__default__');
+        expect(((await global()) as TestConfig).x).toBe('global');
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+        await clearOverrideCache('__default__');
+        await global();
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+        expect(((await tenant()) as TestConfig).x).toBe('__default__');
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(3);
+      });
+
+      it('ignores override cache entries written by heads with stale tenant-key selection', async () => {
+        const deps = createDeps();
+        await deps._cache.set('_OVERRIDE_:tenant-a:USER', { x: 'tenant-b' });
+        const { getAppConfig } = createAppConfigService(deps);
+        const config = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+          getAppConfig({ role: 'USER' }),
+        );
+        expect((config as TestConfig).x).toBeUndefined();
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([undefined, SYSTEM_TENANT_ID])(
+        'applies an explicit tenant to database and runtime lookups from %s context',
+        async (ambient) => {
+          const observed: Array<string | undefined> = [];
+          const deps = createDeps({
+            getApplicableConfigs: jest.fn().mockImplementation(async () => {
+              observed.push(getTenantId());
+              return [];
+            }),
+            augmentConfig: jest.fn(async ({ appConfig, options }) => {
+              expect(options.tenantId).toBe(getTenantId());
+              observed.push(getTenantId());
+              return appConfig;
+            }),
+          });
+          const { getAppConfig } = createAppConfigService(deps);
+          await tenantStorage.run({ tenantId: ambient, requestId: 'request-1' }, async () => {
+            await getAppConfig({ role: 'USER', tenantId: 'tenant-a' });
+            await getAppConfig({ role: 'USER', tenantId: 'tenant-b' });
+            expect(getTenantId()).toBe(ambient);
+            expect(tenantStorage.getStore()?.requestId).toBe('request-1');
+          });
+          expect(observed).toEqual(['tenant-a', 'tenant-a', 'tenant-b', 'tenant-b']);
+        },
+      );
+
+      it('never treats the system sentinel as a tenant-owned endpoint selector', async () => {
+        const base = await tenantBase();
+        const deps = createDeps({ loadBaseConfig: jest.fn().mockResolvedValue(base) });
+        const { getAppConfig } = createAppConfigService(deps);
+        const config = await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, () =>
+          getAppConfig({ baseOnly: true, tenantId: SYSTEM_TENANT_ID }),
+        );
+        expect(config.endpoints?.custom).toEqual([]);
+        expect(config.modelSpecs).toBeUndefined();
+      });
+
+      it.each(['principals', 'overrides', 'augmentation'])(
+        'keeps fallback configuration scoped on %s failure',
+        async (stage) => {
+          const base = await tenantBase();
+          const deps = createDeps({ loadBaseConfig: jest.fn().mockResolvedValue(base) });
+          if (stage === 'principals')
+            deps.getUserPrincipals.mockRejectedValue(new Error('unavailable'));
+          if (stage === 'overrides')
+            deps.getApplicableConfigs.mockRejectedValue(new Error('unavailable'));
+          const { getAppConfig } = createAppConfigService({
+            ...deps,
+            ...(stage === 'augmentation' && {
+              augmentConfig: jest.fn().mockRejectedValue(new Error('unavailable')),
+            }),
+          });
+          const config = await getAppConfig({ userId: 'uid1', role: 'USER', tenantId: 'tenant-b' });
+          expect(config.endpoints?.custom).toEqual([]);
+          expect(config.config.endpoints?.custom).toEqual([]);
+          expect(config.modelSpecs).toBeUndefined();
+          expect(config.interfaceConfig).toMatchObject({
+            modelSelect: true,
+            parameters: true,
+            presets: true,
+          });
+        },
+      );
+
+      it('does not let an override reassign a hidden YAML endpoint or inherit its credentials', async () => {
+        const base = await tenantBase();
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValue(base),
+          getApplicableConfigs: jest.fn().mockResolvedValue([
+            {
+              priority: 10,
+              isActive: true,
+              overrides: {
+                endpoints: { custom: [{ name: 'Private Gateway', tenantId: 'tenant-b' }] },
+                modelSpecs: {
+                  list: [
+                    {
+                      name: 'injected',
+                      label: 'Injected',
+                      preset: { endpoint: 'Private Gateway' },
+                    },
+                  ],
+                },
+              },
+            },
+          ]),
+        });
+        const { getAppConfig } = createAppConfigService(deps);
+        for (let i = 0; i < 2; i++) {
+          const config = await getAppConfig({ role: 'USER', tenantId: 'tenant-b' });
+          expect(config.endpoints?.custom).toEqual([]);
+          expect(config.modelSpecs).toBeUndefined();
+          expect(JSON.stringify(config)).not.toContain('private-gateway-key');
+        }
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps tenant-owned YAML fields available to partial admin overrides', async () => {
+        const base = await tenantBase();
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValue(base),
+          getApplicableConfigs: jest.fn().mockResolvedValue([
+            {
+              priority: 10,
+              isActive: true,
+              overrides: {
+                endpoints: {
+                  custom: [{ name: 'Private Gateway', baseURL: 'https://override.example' }],
+                },
+              },
+            },
+          ]),
+        });
+        const { getAppConfig } = createAppConfigService(deps);
+        const owner = await getAppConfig({ role: 'USER', tenantId: 'tenant-a' });
+        expect(owner.endpoints?.custom?.[0]).toMatchObject({
+          tenantId: 'tenant-a',
+          apiKey: 'private-gateway-key',
+          baseURL: 'https://override.example',
+        });
+        expect(owner.modelSpecs?.list).toHaveLength(1);
+        const yaml = await getAppConfig({ tenantId: 'tenant-a', baseOnly: true });
+        expect(yaml.config.endpoints?.custom?.[0].baseURL).toBe('https://private.example');
+      });
+
+      it('revokes a cached endpoint when a successful YAML reload changes its tenant', async () => {
+        const original = await tenantBase();
+        const updated = await tenantBase();
+        for (const endpoint of updated.endpoints?.custom ?? []) endpoint.tenantId = 'tenant-b';
+        for (const endpoint of updated.config.endpoints?.custom ?? [])
+          endpoint.tenantId = 'tenant-b';
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValueOnce(original).mockResolvedValue(updated),
+        });
+        const { getAppConfig } = createAppConfigService(deps);
+        const owner = await getAppConfig({ role: 'USER', tenantId: 'tenant-a' });
+        expect(owner.endpoints?.custom).toHaveLength(1);
+        await getAppConfig({ tenantId: 'tenant-b', baseOnly: true, refresh: true });
+        const revoked = await getAppConfig({ role: 'USER', tenantId: 'tenant-a' });
+        expect(revoked.endpoints?.custom).toEqual([]);
+        expect(revoked.modelSpecs).toBeUndefined();
+        expect(JSON.stringify(revoked)).not.toContain('private-gateway-key');
+        expect(revoked.interfaceConfig).toMatchObject({
+          modelSelect: true,
+          parameters: true,
+          presets: true,
+        });
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+      });
+
+      it('passes only scoped inputs to augmentation and blocks hidden endpoint resurrection', async () => {
+        const base = await tenantBase();
+        const augmentConfig = jest.fn(async ({ appConfig, baseConfig, options }) => {
+          expect(baseConfig.endpoints?.custom).toEqual([]);
+          expect(appConfig.config.endpoints?.custom).toEqual([]);
+          expect(options.tenantId).toBe('tenant-b');
+          return {
+            ...appConfig,
+            endpoints: { custom: [{ ...base.endpoints?.custom?.[0], tenantId: 'tenant-b' }] },
+          };
+        });
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValue(base),
+          augmentConfig,
+        });
+        const { getAppConfig } = createAppConfigService(deps);
+        const config = await tenantStorage.run({ tenantId: 'tenant-b' }, () =>
+          getAppConfig({ role: 'USER', tenantId: 'tenant-a' }),
+        );
+        expect(config.endpoints?.custom).toEqual([]);
+        expect(augmentConfig).toHaveBeenCalledTimes(1);
+      });
+
+      it('preserves an unscoped endpoint and its specs when a hidden endpoint shares its normalized name', async () => {
+        const base = await tenantBase();
+        const global = {
+          ...base.endpoints?.custom?.[0],
+          tenantId: undefined,
+          apiKey: 'global-key',
+        };
+        base.endpoints?.custom?.push(global);
+        if (base.config.endpoints?.custom !== base.endpoints?.custom) {
+          base.config.endpoints?.custom?.push(global);
+        }
+        const deps = createDeps({ loadBaseConfig: jest.fn().mockResolvedValue(base) });
+        const { getAppConfig } = createAppConfigService(deps);
+        const config = await getAppConfig({ tenantId: 'tenant-b' });
+        expect(config.endpoints?.custom).toEqual([global]);
+        expect(config.modelSpecs?.list).toHaveLength(1);
+        expect(
+          getProviderConfig({ provider: 'Private Gateway', appConfig: config }).customEndpointConfig
+            ?.apiKey,
+        ).toBe('global-key');
+      });
+
+      it('keeps source-only hidden specs out when the effective custom endpoint array is empty', async () => {
+        const base = await tenantBase();
+        base.endpoints = { custom: [] };
+        const deps = createDeps({ loadBaseConfig: jest.fn().mockResolvedValue(base) });
+        const { getAppConfig } = createAppConfigService(deps);
+        const config = await getAppConfig({ baseOnly: true, tenantId: 'tenant-b' });
+        expect(config.config.endpoints?.custom).toEqual([]);
+        expect(config.modelSpecs).toBeUndefined();
+      });
     });
 
     it('reloads base config when refresh is true', async () => {
@@ -316,7 +771,9 @@ describe('createAppConfigService', () => {
 
       const cachedKeys = [...deps._cache._store.keys()];
       const overrideKey = cachedKeys.find((k) => k.includes('_OVERRIDE_:'));
-      expect(overrideKey).toBe('app_config:_OVERRIDE_:__default__:uid1');
+      expect(overrideKey).toMatch(
+        /^app_config:_OVERRIDE_:__default__:global:uid1:tenant-v1:[a-f0-9]{64}$/,
+      );
     });
 
     it('tenantId is included in cache key to prevent cross-tenant contamination', async () => {
@@ -481,7 +938,9 @@ describe('createAppConfigService', () => {
         const overrideKey = [...deps._cache._store.keys()].find((k: string) =>
           k.includes('_OVERRIDE_:'),
         );
-        expect(overrideKey).toBe('app_config:_OVERRIDE_:tenant-a:USER');
+        expect(overrideKey).toMatch(
+          /^app_config:_OVERRIDE_:tenant-a:tenant:USER:tenant-v1:[a-f0-9]{64}$/,
+        );
         expect(overrideKey).not.toContain('__default__');
       });
 
@@ -683,7 +1142,11 @@ describe('createAppConfigService', () => {
       expect(deps.getUserPrincipals).toHaveBeenCalledTimes(2);
       expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
       expect([...deps._cache._store.keys()]).toEqual(
-        expect.arrayContaining(['app_config:_OVERRIDE_:__default__:USER:uid1']),
+        expect.arrayContaining([
+          expect.stringMatching(
+            /^app_config:_OVERRIDE_:__default__:global:USER:uid1:tenant-v1:[a-f0-9]{64}$/,
+          ),
+        ]),
       );
     });
 

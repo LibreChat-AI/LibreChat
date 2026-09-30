@@ -503,6 +503,16 @@ describe('getMultiplier', () => {
     expect(premiumCache.read).toBeCloseTo(standardCache.read * 2);
   });
 
+  it('should price a GPT point release at its family rate until it has its own entry', () => {
+    for (const model of ['gpt-6.1-sol', 'gpt-6.1-sol-2026-10-01', 'openai/gpt-6.1-sol']) {
+      expect(getValueKey(model)).toBe('gpt-6-sol');
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(tokenValues['gpt-6-sol'].prompt);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(
+        tokenValues['gpt-6-sol'].completion,
+      );
+    }
+  });
+
   it('should resolve gpt-6-astra to its own key rather than a gpt-6 prefix', () => {
     for (const model of [
       'gpt-6-astra',

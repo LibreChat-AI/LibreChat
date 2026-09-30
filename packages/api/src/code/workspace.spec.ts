@@ -2098,6 +2098,94 @@ describe('executeWorkspaceTool', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test('requires per-edit match reports exactly when a request opts into them', async () => {
+    const legacyResult = {
+      protocolVersion: 1,
+      operation: 'edit_file',
+      workspaceId: 'primary',
+      path: 'src/app.ts',
+      replacements: 2,
+      bytesWritten: 18,
+    };
+    const matches = [
+      { strategy: 'line-trimmed', occurrences: 1 },
+      { strategy: 'exact', occurrences: 3 },
+    ];
+    const optedIn = {
+      protocolVersion: 1 as const,
+      operation: 'edit_file' as const,
+      workspaceId: 'primary',
+      path: 'src/app.ts',
+      matching: 'tolerant' as const,
+      edits: [
+        { oldText: 'draft ', newText: 'ready' },
+        { oldText: 'false', newText: 'true', replaceAll: true },
+      ],
+    };
+    const run = (request: WorkspaceToolRequest, result: object) =>
+      executeWorkspaceTool({
+        baseURL: 'https://code.example.com/v1',
+        authHeaders: {},
+        request,
+        fetchImpl: jest.fn(async () => Response.json(result)),
+      });
+
+    await expect(run(optedIn, { ...legacyResult, matches })).resolves.toMatchObject({ matches });
+    await expect(run(optedIn, legacyResult)).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(
+      run(optedIn, {
+        ...legacyResult,
+        matches: [matches[0], { strategy: 'exact', occurrences: 0 }],
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(
+      run(optedIn, {
+        ...legacyResult,
+        matches: [{ strategy: 'exact', occurrences: 2 }, matches[1]],
+      }),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+
+    const legacyRequest = {
+      ...optedIn,
+      edits: optedIn.edits.map(({ oldText, newText }) => ({ oldText, newText })),
+    };
+    delete (legacyRequest as { matching?: string }).matching;
+    await expect(run(legacyRequest, legacyResult)).resolves.toMatchObject({ replacements: 2 });
+    await expect(run(legacyRequest, { ...legacyResult, matches })).rejects.toMatchObject({
+      reason: 'invalid',
+    });
+
+    await expect(
+      run({ ...optedIn, matching: 'fuzzy' } as unknown as WorkspaceToolRequest, legacyResult),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+    await expect(
+      run(
+        {
+          ...optedIn,
+          edits: [{ oldText: 'a', newText: 'b', replaceAll: 'yes' }],
+        } as unknown as WorkspaceToolRequest,
+        legacyResult,
+      ),
+    ).rejects.toMatchObject({ reason: 'invalid' });
+  });
+
+  test('exposes the worker explanation of a rejected edit', () => {
+    const diagnostic =
+      '1 of 2 workspace edits did not apply, so nothing was written.\nEdit 2: old_text was not found.';
+    const conflict = new WorkspaceToolHttpError(
+      'rejected',
+      409,
+      JSON.stringify({ error: diagnostic, code: 'EDIT_CONFLICT' }),
+    );
+    expect(conflict.editConflict).toBe(diagnostic);
+    expect(
+      new WorkspaceToolHttpError('rejected', 409, '{"error":"exists","code":"FILE_EXISTS"}')
+        .editConflict,
+    ).toBeUndefined();
+    expect(new WorkspaceToolHttpError('rejected', 409, 'not json').editConflict).toBeUndefined();
+    expect(new WorkspaceToolHttpError('rejected', 503, '{}').editConflict).toBeUndefined();
+  });
+
   test('validates exact edit previews and revision-fenced commits', async () => {
     const edits = [{ oldText: ' suffix', newText: 'RET suffix' }];
     const baseSha256 = 'a'.repeat(64);

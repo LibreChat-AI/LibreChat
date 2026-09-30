@@ -193,6 +193,9 @@ export async function resolveCodeExecutionWorkspaceContext({
       ...(status.maxCommandTimeoutMs == null
         ? {}
         : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),
+      ...(status.editFileFeatures?.length
+        ? { editFileFeatures: [...status.editFileFeatures] }
+        : {}),
       ...(workspace.instructions ? { instructions: workspace.instructions } : {}),
       ...(workspace.environment ? { environment: workspace.environment } : {}),
     },
