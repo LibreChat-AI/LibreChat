@@ -1,3 +1,4 @@
+export * from './categories';
 export * from './artifacts';
 export * from './format';
 export * from './migration';
