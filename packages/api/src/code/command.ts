@@ -33,6 +33,7 @@ Session behavior:
 - This starts a new command, not an existing background task. Inspect a background_task_id with check_background_task when available; never send it to bash_tool.
 - Only registered-workspace files persist between calls. Install project dependencies there.
 - Every call is a fresh process. Shell and exported variables, cwd, /tmp, $TMPDIR, and background processes do not survive.
+- Results report the starting directory relative to the workspace, not the final directory after shell commands. Use cwd for commands scoped to a workspace subdirectory; keep cd when the script depends on shell state or needs root access. Scripts are not automatically rewritten.
 - $HOME, global/system packages, and machine services are operator-managed. Do not change or rely on them as session storage.
 - Network access follows the sandbox policy configured on the worker and may be unavailable. File access follows the same worker policy.
 - Input code is already displayed to the user; do not repeat it unless asked.
@@ -307,7 +308,7 @@ export function createGitIdentityProgrammaticBashTool(
   return bashTool;
 }
 
-function formatCommandResult(result: WorkspaceExecuteCommandResult): string {
+function formatCommandResult(result: WorkspaceExecuteCommandResult, cwd?: string): string {
   let output = '';
   if (result.stdout.length > 0) output += `stdout:\n${result.stdout}\n`;
   if (result.stderr.length > 0) output += `stderr:\n${result.stderr}\n`;
@@ -316,7 +317,7 @@ function formatCommandResult(result: WorkspaceExecuteCommandResult): string {
   if (result.signal != null) output += `[terminated by ${result.signal}]`;
   if (result.timedOut) output += '[timed out]';
   if (result.truncated) output += '[output truncated]';
-  return output;
+  return `[starting directory: ${JSON.stringify(`workspace/${cwd ?? ''}`)}]\n${output}`;
 }
 
 export function createAttachedWorkspaceBashTool({
@@ -441,7 +442,16 @@ export function createAttachedWorkspaceBashTool({
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
-        return [formatCommandResult(result), {}];
+        let content = formatCommandResult(result, rawInput.cwd);
+        if (action === undefined && /^\s*cd(?:\s|$)/.test(rawInput.command!)) {
+          content +=
+            '\n[directory hint: For future commands scoped to a workspace subdirectory, pass cwd instead of a leading cd.' +
+            (linkedWorktrees
+              ? ' A cd inside the script does not select a linked-worktree lane.'
+              : '') +
+            ' Keep cd for scripts that depend on shell state or need root access. This command was not rewritten; do not rerun it just to change cwd.]';
+        }
+        return [content, {}];
       } finally {
         signal?.removeEventListener('abort', onAbort);
         logger.debug('[BYOMCommand] transport settled', {
