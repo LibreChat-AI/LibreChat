@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ZodError } from 'zod';
-import type { TEndpointsConfig, TModelsConfig, TConfig } from './types';
+import type { TEndpointsConfig, TModelsConfig, TCategory, TConfig } from './types';
 import {
   filtersConfigSchema,
   MAX_PII_CUSTOM_REGEX_CHARACTERS,
@@ -2512,6 +2512,7 @@ export type EndpointsDropParamsMap = Record<string, string[] | Record<string, st
 
 export type TStartupConfig = {
   appTitle: string;
+  promptCategories?: { allowCustom: boolean };
   socialLogins?: string[];
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
@@ -3122,8 +3123,102 @@ export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);
 
+export const SYSTEM_CATEGORY_PREFIX = 'sys__';
+
+export const promptCategoryIcons = [
+  'dices',
+  'box',
+  'file-text',
+  'pen-line',
+  'lightbulb',
+  'line-chart',
+  'shopping-bag',
+  'plane-takeoff',
+  'graduation-cap',
+  'terminal-square',
+  'users',
+  'beaker',
+  'settings',
+] as const;
+export type PromptCategoryIcon = (typeof promptCategoryIcons)[number];
+
+export const promptCategoryColors = [
+  'series-1',
+  'series-2',
+  'series-3',
+  'series-4',
+  'series-5',
+  'series-6',
+  'series-7',
+  'series-8',
+] as const;
+export type PromptCategoryColor = (typeof promptCategoryColors)[number];
+
+export const promptCategoryValueSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine((value) => !value.startsWith(SYSTEM_CATEGORY_PREFIX), {
+    message: `Category values cannot start with ${SYSTEM_CATEGORY_PREFIX}`,
+  })
+  .refine(
+    (value) =>
+      !value.split('').some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127),
+    {
+      message: 'Category values cannot contain control characters',
+    },
+  );
+
+export const promptCategoryEntrySchema = z.object({
+  value: promptCategoryValueSchema,
+  label: z.string().trim().min(1).max(100).optional(),
+  icon: z.enum(promptCategoryIcons).optional(),
+  color: z.enum(promptCategoryColors).optional(),
+});
+
+export const promptsConfigSchema = z
+  .object({
+    categories: z
+      .object({
+        enableDefaultCategories: z.boolean().optional(),
+        allowCustom: z.boolean().optional(),
+        list: z.array(promptCategoryEntrySchema).max(50).optional(),
+      })
+      .optional(),
+  })
+  .superRefine((config, ctx) => {
+    const seen = new Set<string>();
+    config.categories?.list?.forEach((entry, i) => {
+      const key = entry.value.toLowerCase();
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate category value: ${entry.value}`,
+          path: ['categories', 'list', i, 'value'],
+        });
+      }
+      seen.add(key);
+    });
+  })
+  .optional();
+export type TPromptsConfig = z.infer<typeof promptsConfigSchema>;
+
+export const defaultPromptCategories: TCategory[] = [
+  { label: 'com_ui_idea', value: 'idea' },
+  { label: 'com_ui_travel', value: 'travel' },
+  { label: 'com_ui_teach_or_explain', value: 'teach_or_explain' },
+  { label: 'com_ui_write', value: 'write' },
+  { label: 'com_ui_shop', value: 'shop' },
+  { label: 'com_ui_code', value: 'code' },
+  { label: 'com_ui_misc', value: 'misc' },
+  { label: 'com_ui_roleplay', value: 'roleplay' },
+  { label: 'com_ui_finance', value: 'finance' },
+];
+
 export const configSchema = z.object({
   version: z.string(),
+  prompts: promptsConfigSchema,
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
