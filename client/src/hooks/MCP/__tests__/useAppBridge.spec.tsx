@@ -249,6 +249,11 @@ const flush = async () => {
   });
 };
 
+const loadSandbox = async (iframe: HTMLIFrameElement) => {
+  fireEvent.load(iframe);
+  await flush();
+};
+
 const latest = () => FakeAppBridge.instances[FakeAppBridge.instances.length - 1];
 
 describe('useAppBridge', () => {
@@ -272,6 +277,57 @@ describe('useAppBridge', () => {
   });
 
   describe('ordering', () => {
+    it('survives the initial StrictMode effect replay without requiring Retry', async () => {
+      let resolveValidation: () => void = () => {};
+      let validationSignal: AbortSignal | undefined;
+      mockValidateBinding.mockImplementation(
+        (_server, _binding, signal) =>
+          new Promise<void>((resolve, reject) => {
+            resolveValidation = resolve;
+            validationSignal = signal;
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          }),
+      );
+      const resource = makeResource({ text: '<p>persisted</p>' });
+
+      render(
+        <React.StrictMode>
+          <RecoilRoot>
+            <QueryClientProvider client={client}>
+              <MCPAppsPolicyProvider startupConfig={enabledConfig} ready userId="user-1">
+                <BridgeFrameHarness resource={resource} userId="user-1" />
+              </MCPAppsPolicyProvider>
+            </QueryClientProvider>
+          </RecoilRoot>
+        </React.StrictMode>,
+      );
+      await flush();
+
+      expect(FakeAppBridge.instances).toHaveLength(2);
+      expect(FakeAppBridge.instances[0].closed).toBe(true);
+      expect(mockValidateBinding).toHaveBeenCalledTimes(1);
+      expect(validationSignal?.aborted).toBe(false);
+
+      await act(async () => {
+        resolveValidation();
+        await Promise.resolve();
+      });
+      await flush();
+
+      const iframe = screen.getByTitle('MCP App: render') as HTMLIFrameElement;
+      const liveBridge = latest();
+      expect(iframe.src).toContain('/api/mcp/sandbox');
+      expect(liveBridge.connected).not.toBeNull();
+      await act(async () => liveBridge.emit('sandboxready'));
+      await act(async () => liveBridge.oninitialized?.());
+      await flush();
+
+      expect(liveBridge.resourceReady).toEqual([
+        expect.objectContaining({ html: '<p>persisted</p>' }),
+      ]);
+      expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+    });
+
     it('retries one failed View through a fresh bridge without replacing its iframe or sibling', async () => {
       const target = makeResource({
         resourceId: 'target',
@@ -334,6 +390,7 @@ describe('useAppBridge', () => {
       const siblingBridge = FakeAppBridge.instances[1];
       const targetFrame = screen.getByTitle('MCP App: target');
       const siblingFrame = screen.getByTitle('MCP App: sibling');
+      await loadSandbox(siblingFrame as HTMLIFrameElement);
       expect(targetFrame).toHaveAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
       targetFrame.dataset.retryAnchor = 'target';
       siblingFrame.dataset.retryAnchor = 'sibling';
@@ -341,6 +398,7 @@ describe('useAppBridge', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
       await flush();
+      await loadSandbox(targetFrame as HTMLIFrameElement);
 
       const replacement = FakeAppBridge.instances[2];
       expect(lifecycle).toEqual(['old-close', 'new-connect']);
@@ -401,6 +459,7 @@ describe('useAppBridge', () => {
         { wrapper, initialProps: { userId: 'user-alpha' } },
       );
       await flush();
+      await loadSandbox(iframe);
       const first = latest();
       await act(async () => first.oninitialized?.());
       const lifecycle: string[] = [];
@@ -423,6 +482,7 @@ describe('useAppBridge', () => {
 
       view.rerender({ userId: 'user-beta' });
       await flush();
+      await loadSandbox(iframe);
 
       expect(first.teardowns).toBe(1);
       expect(first.closed).toBe(true);
@@ -439,7 +499,7 @@ describe('useAppBridge', () => {
       ).toEqual(['user-alpha', 'user-beta']);
     });
 
-    it('connects the transport before the sandbox document is requested', async () => {
+    it('connects the live-window transport before navigating the sandbox document', async () => {
       let resolveHtml: (value: { html: string }) => void = () => {};
       mockFetchHtml.mockReturnValue(
         new Promise((resolve) => {
@@ -449,7 +509,7 @@ describe('useAppBridge', () => {
       const { iframe } = mountBridge(makeResource(), client);
       await flush();
 
-      expect(latest().connected).not.toBeNull();
+      expect(latest().connected).toBeNull();
       expect(iframe.getAttribute('src')).toBeNull();
 
       await act(async () => {
@@ -458,6 +518,55 @@ describe('useAppBridge', () => {
       });
       await flush();
       expect(iframe.src).toContain('/api/mcp/sandbox');
+      expect(latest().connected).not.toBeNull();
+
+      await loadSandbox(iframe);
+      expect(latest().connected).not.toBeNull();
+    });
+
+    it('accepts bridge messages only from the live iframe and exact sandbox origin', async () => {
+      const { iframe } = mountBridge(makeResource(), client);
+      await flush();
+      const transport = latest().connected as {
+        start: () => Promise<void>;
+        close: () => Promise<void>;
+        onmessage?: (message: unknown) => void;
+        onerror?: (error: Error) => void;
+      };
+      const onmessage = jest.fn();
+      const onerror = jest.fn();
+      transport.onmessage = onmessage;
+      transport.onerror = onerror;
+      await transport.start();
+
+      const notification = { jsonrpc: '2.0', method: 'notifications/test' };
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: notification,
+          origin: 'https://attacker.example',
+          source: iframe.contentWindow,
+        }),
+      );
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: notification,
+          origin: new URL(iframe.src).origin,
+          source: window,
+        }),
+      );
+      expect(onmessage).not.toHaveBeenCalled();
+
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: notification,
+          origin: new URL(iframe.src).origin,
+          source: iframe.contentWindow,
+        }),
+      );
+      expect(onmessage).toHaveBeenCalledWith(notification);
+      expect(onerror).not.toHaveBeenCalled();
+
+      await transport.close();
     });
 
     it('validates persisted inline html before assigning or sending it', async () => {
@@ -470,7 +579,7 @@ describe('useAppBridge', () => {
       const { iframe } = mountBridge(makeResource({ text: '<p>persisted</p>' }), client);
       await flush();
 
-      expect(latest().connected).not.toBeNull();
+      expect(latest().connected).toBeNull();
       expect(iframe.getAttribute('src')).toBeNull();
       expect(latest().resourceReady).toHaveLength(0);
       expect(mockValidateBinding).toHaveBeenCalledWith(
@@ -485,6 +594,10 @@ describe('useAppBridge', () => {
       });
       await flush();
       expect(iframe.src).toContain('/api/mcp/sandbox');
+      expect(latest().connected).not.toBeNull();
+
+      await loadSandbox(iframe);
+      expect(latest().connected).not.toBeNull();
 
       await act(async () => latest().emit('sandboxready'));
       await flush();

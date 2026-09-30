@@ -40,6 +40,7 @@ type MockResponse = EventEmitter & {
   json: jest.Mock;
   send: jest.Mock;
   setHeader: jest.Mock;
+  removeHeader: jest.Mock;
   end: jest.Mock;
 };
 
@@ -63,6 +64,7 @@ const makeResponse = (): MockResponse => {
     json: jest.fn(),
     send: jest.fn(),
     setHeader: jest.fn(),
+    removeHeader: jest.fn(),
     end: jest.fn(),
   });
   response.status.mockReturnValue(response);
@@ -720,6 +722,42 @@ describe('createMCPAppsController', () => {
     expect(dependencies.readSandboxFile).toHaveBeenCalledTimes(1);
     expect(dependencies.readSandboxFile).toHaveBeenCalledWith('/tmp/mcp-sandbox.html', 'utf8');
     expect(dependencies.getSandboxCspLimits).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes an inherited frame guard when cross-origin ancestors are configured', async () => {
+    const manager = makeManager();
+    const { dependencies } = makeDependencies(manager);
+    const controller = createMCPAppsController(dependencies);
+    const response = makeResponse();
+
+    await controller.serveMCPSandbox(
+      asHandlerRequest(makeRequest()),
+      asHandlerResponse(response),
+      jest.fn(),
+    );
+
+    expect(response.removeHeader).toHaveBeenCalledWith('X-Frame-Options');
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Content-Security-Policy',
+      expect.arrayContaining(['frame-ancestors https://host.example.com']),
+    );
+  });
+
+  it('replaces an inherited frame guard with DENY when no ancestors are configured', async () => {
+    const manager = makeManager();
+    const { dependencies } = makeDependencies(manager);
+    dependencies.sandboxFrameAncestors = undefined;
+    const controller = createMCPAppsController(dependencies);
+    const response = makeResponse();
+
+    await controller.serveMCPSandbox(
+      asHandlerRequest(makeRequest()),
+      asHandlerResponse(response),
+      jest.fn(),
+    );
+
+    expect(response.removeHeader).not.toHaveBeenCalledWith('X-Frame-Options');
+    expect(response.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
   });
 
   it('fails closed when trusted sandbox limits cannot be resolved', async () => {

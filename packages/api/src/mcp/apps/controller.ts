@@ -354,6 +354,9 @@ export function createMCPAppsController(dependencies: MCPAppsControllerDependenc
         csp: typeof request.query.csp === 'string' ? request.query.csp : undefined,
         limits,
       });
+      if (!('X-Frame-Options' in headers)) {
+        response.removeHeader('X-Frame-Options');
+      }
       for (const [name, value] of Object.entries(headers)) {
         response.setHeader(name, value);
       }

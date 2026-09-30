@@ -1,6 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
+import { ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { EventSubmission, TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
@@ -436,7 +436,7 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     ]);
   });
 
-  it('routes repeated App call ids by agent and exact-or-fallback host step', () => {
+  it('renders repeated App call ids beneath their exact-or-fallback host tool', () => {
     const content = [
       makeMcpToolCall('call_0', true, 'step-1', 'agent-a'),
       makeTextPart('between calls'),
@@ -478,228 +478,14 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     renderContentParts({ ...baseProps, content, attachments });
 
     expect(screen.getAllByTestId('mcp-app-attachments').map((view) => view.dataset.owners)).toEqual(
-      ['agent-a/step-1/alpha,agent-a/step-2/beta,agent-b/step-1/gamma'],
+      ['agent-a/step-1/alpha', 'agent-a/step-2/beta', 'agent-b/step-1/gamma'],
     );
-  });
-
-  it('retains one App view through created and durable response identity hydration', () => {
-    const content = [makeMcpToolCall('call_app', true, 'step-1', 'agent-a')];
-    const attachments = [
-      {
-        type: Tools.ui_resources,
-        toolCallId: 'call_app',
-        agentId: 'agent-a',
-        stepId: 'step-1',
-        [Tools.ui_resources]: [
-          {
-            resourceId: 'app',
-            uri: 'ui://demo/view',
-            mimeType: 'text/html;profile=mcp-app',
-            toolName: 'show_app',
-            serverName: 'demo',
-          },
-        ],
-      },
-    ] as unknown as TAttachment[];
-    const frame = (props: Partial<React.ComponentProps<typeof ContentParts>>) => (
-      <RecoilRoot>
-        <ContentParts
-          {...baseProps}
-          content={content}
-          attachments={attachments}
-          isSubmitting
-          isLatestMessage
-          messageId="local-user_"
-          renderOwnerId="local-user"
-          conversationId={String(Constants.NEW_CONVO)}
-          {...props}
-        />
-      </RecoilRoot>
-    );
-    const { rerender } = render(frame({}));
-    const appView = screen.getByTestId('mcp-app-attachments');
-
-    /** `createdHandler` replaces both the user-derived response id and new-chat conversation id,
-     * while `clientQueueParentMessageId` keeps this response linked to its submission. */
-    rerender(frame({ messageId: 'server-user_', conversationId: 'conversation-1' }));
-    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
-
-    /** `finalHandler` installs the durable response and drops the client-only owner anchor. */
-    rerender(
-      frame({
-        messageId: 'server-response',
-        conversationId: 'conversation-1',
-        renderOwnerId: undefined,
-        isSubmitting: false,
-      }),
-    );
-    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
-  });
-
-  it('keeps the message-owned App while activity, grouping, and parallel presentation change', () => {
-    const appCall = makeMcpToolCall('call_app', true, 'step-1', 'agent-a');
-    const otherCall = makeMcpToolCall('call_other', true, 'step-1', 'agent-b');
-    const attachment = {
-      type: Tools.ui_resources,
-      toolCallId: 'call_app',
-      agentId: 'agent-a',
-      stepId: 'step-1',
-      [Tools.ui_resources]: [
-        {
-          resourceId: 'app',
-          uri: 'ui://demo/view',
-          mimeType: 'text/html;profile=mcp-app',
-          toolName: 'show_app',
-          serverName: 'demo',
-        },
-      ],
-    } as unknown as TAttachment;
-    const frame = (content: TMessageContentParts[]) => (
-      <RecoilRoot>
-        <ContentParts
-          {...baseProps}
-          content={content}
-          attachments={[attachment]}
-          messageId="response_"
-          renderOwnerId="user-parent"
-          conversationId="conversation-1"
-          isSubmitting
-          isLatestMessage
-        />
-      </RecoilRoot>
-    );
-    const { rerender } = render(frame([appCall]));
-    const appView = screen.getByTestId('mcp-app-attachments');
-
-    /** A second adjacent call changes the sequential card presentation. */
-    rerender(frame([appCall, otherCall]));
-    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
-
-    /** A server phase marker claims the calls after the App has mounted. */
-    rerender(frame([appCall, otherCall, makePhasePart(0, 2, 'Rendered the scene')]));
-    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
-
-    /** Discovering a second lane moves the tool rows into parallel columns. */
-    const parallel = [
-      { ...(appCall as object), agentId: 'agent-a', groupId: 7 },
-      { ...(otherCall as object), agentId: 'agent-b', groupId: 7 },
-    ] as unknown as TMessageContentParts[];
-    rerender(frame(parallel));
-    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
-  });
-
-  it('remounts an App for a same-parent regeneration and a real sibling switch', () => {
-    const content = [makeMcpToolCall('call_app', true, 'step-1', 'agent-a')];
-    const attachments = [
-      {
-        type: Tools.ui_resources,
-        toolCallId: 'call_app',
-        agentId: 'agent-a',
-        stepId: 'step-1',
-        [Tools.ui_resources]: [
-          {
-            resourceId: 'app',
-            uri: 'ui://demo/view',
-            mimeType: 'text/html;profile=mcp-app',
-            toolName: 'show_app',
-            serverName: 'demo',
-          },
-        ],
-      },
-    ] as unknown as TAttachment[];
-    const frame = (props: Partial<React.ComponentProps<typeof ContentParts>>) => (
-      <RecoilRoot>
-        <ContentParts
-          {...baseProps}
-          content={content}
-          attachments={attachments}
-          conversationId="conversation-1"
-          {...props}
-        />
-      </RecoilRoot>
-    );
-    const { rerender } = render(
-      frame({ messageId: 'first-response', renderOwnerId: undefined, isSubmitting: false }),
-    );
-    const settledView = screen.getByTestId('mcp-app-attachments');
-
-    /** Regeneration deliberately reuses the user-parent anchor, so the settled → submitting
-     * transition must rotate scope rather than treating the shared parent as response identity. */
-    rerender(
-      frame({
-        messageId: 'first-response_',
-        renderOwnerId: 'same-user-parent',
-        isSubmitting: true,
-        isLatestMessage: true,
-      }),
-    );
-    const regeneratedView = screen.getByTestId('mcp-app-attachments');
-    expect(regeneratedView).not.toBe(settledView);
-
-    rerender(
-      frame({
-        messageId: 'other-sibling',
-        renderOwnerId: undefined,
-        isSubmitting: false,
-        isLatestMessage: false,
-        siblingIdx: 1,
-      }),
-    );
-    expect(screen.getByTestId('mcp-app-attachments')).not.toBe(regeneratedView);
-  });
-
-  it('does not carry an active App into another conversation or an unsupported durable transition', () => {
-    const content = [makeMcpToolCall('call_app', true, 'step-1', 'agent-a')];
-    const attachments = [
-      {
-        type: Tools.ui_resources,
-        toolCallId: 'call_app',
-        agentId: 'agent-a',
-        stepId: 'step-1',
-        [Tools.ui_resources]: [
-          {
-            resourceId: 'app',
-            uri: 'ui://demo/view',
-            mimeType: 'text/html;profile=mcp-app',
-            toolName: 'show_app',
-            serverName: 'demo',
-          },
-        ],
-      },
-    ] as unknown as TAttachment[];
-    const frame = (props: Partial<React.ComponentProps<typeof ContentParts>>) => (
-      <RecoilRoot>
-        <ContentParts
-          {...baseProps}
-          content={content}
-          attachments={attachments}
-          isSubmitting
-          isLatestMessage
-          messageId="response_"
-          renderOwnerId="user-parent"
-          conversationId="conversation-1"
-          {...props}
-        />
-      </RecoilRoot>
-    );
-    const { rerender } = render(frame({}));
-    const originalView = screen.getByTestId('mcp-app-attachments');
-
-    rerender(frame({ messageId: 'other-response_', conversationId: 'conversation-2' }));
-    const otherConversationView = screen.getByTestId('mcp-app-attachments');
-    expect(otherConversationView).not.toBe(originalView);
-
-    /** A durable id while still submitting is supported only when the response owner remains
-     * explicit (the Assistants sync path spreads the initial response). Owner loss belongs to
-     * `finalHandler`, which also ends submission. */
-    rerender(
-      frame({
-        messageId: 'unexpected-durable-response',
-        conversationId: 'conversation-2',
-        renderOwnerId: undefined,
-      }),
-    );
-    expect(screen.getByTestId('mcp-app-attachments')).not.toBe(otherConversationView);
+    const [alpha, beta, gamma] = screen.getAllByTestId('mcp-app-attachments');
+    const [firstSeparator, secondSeparator] = screen.getAllByTestId('text');
+    expect(alpha.compareDocumentPosition(firstSeparator)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(firstSeparator.compareDocumentPosition(beta)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(beta.compareDocumentPosition(secondSeparator)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(secondSeparator.compareDocumentPosition(gamma)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it('retains resumed App steps through the SSE atom, merge hook, and content router', () => {
@@ -761,7 +547,7 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     fireEvent.click(screen.getByRole('button', { name: 'stream beta' }));
 
     expect(screen.getAllByTestId('mcp-app-attachments').map((view) => view.dataset.owners)).toEqual(
-      ['agent-a/step-1/alpha,agent-a/step-2/beta'],
+      ['agent-a/step-1/alpha', 'agent-a/step-2/beta'],
     );
   });
 

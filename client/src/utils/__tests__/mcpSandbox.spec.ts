@@ -5,8 +5,8 @@ import path from 'path';
  * `client/public/mcp-sandbox.html` is a static asset outside the module graph, so it is exercised by
  * evaluating its inline script against a fake `window` (listener isolation per test, a stubbed
  * parent, and the query string the route is called with). The navigation cases it exists for cannot
- * run here: jsdom has no policy containers and no frame navigation, so blob CSP inheritance and the
- * pre-load invalidation window are browser-only.
+ * run here: jsdom has no policy containers and no real frame navigation, so the heartbeat's
+ * navigation invalidation window remains browser-only.
  */
 const SANDBOX_PATH = path.join(__dirname, '../../../public/mcp-sandbox.html');
 const SANDBOX_HTML = fs.readFileSync(SANDBOX_PATH, 'utf8');
@@ -52,29 +52,10 @@ const revoked: string[] = [];
 const errors: unknown[][] = [];
 
 function installStubs(): () => void {
-  const originalBlob = global.Blob;
-  const originalCreate = URL.createObjectURL;
-  const originalRevoke = URL.revokeObjectURL;
-  let counter = 0;
-  class CapturingBlob {
-    type: string;
-    constructor(parts: string[], opts?: { type?: string }) {
-      blobs.push(parts.join(''));
-      this.type = opts?.type ?? '';
-    }
-  }
-  global.Blob = CapturingBlob as unknown as typeof Blob;
-  URL.createObjectURL = () => `blob:mock/${(counter += 1)}`;
-  URL.revokeObjectURL = (url: string) => {
-    revoked.push(url);
-  };
   const errorSpy = jest.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
     errors.push(args);
   });
   return () => {
-    global.Blob = originalBlob;
-    URL.createObjectURL = originalCreate;
-    URL.revokeObjectURL = originalRevoke;
     errorSpy.mockRestore();
   };
 }
@@ -178,6 +159,10 @@ function loadSandbox(
         origin: PARENT_ORIGIN,
         source: parentWindow,
       });
+      const document = frame()?.srcdoc;
+      if (document && blobs[blobs.length - 1] !== document) {
+        blobs.push(document);
+      }
       patchInnerPost();
     },
     loadFrame: (target) => {
@@ -495,7 +480,7 @@ describe('mcp-sandbox proxy', () => {
         params: { nonce: sandbox.bootstrapNonce() },
       });
       expect(sandbox.frame()).toBeNull();
-      expect(sandbox.revoked).toEqual(['blob:mock/1']);
+      expect(sandbox.revoked).toHaveLength(0);
 
       sandbox.fromInner(APP_NOTIFICATION, inner);
       sandbox.fromParent(HOST_REQUEST);
@@ -505,7 +490,7 @@ describe('mcp-sandbox proxy', () => {
       ).toHaveLength(0);
     });
 
-    it('invalidates on a second load of the live frame', () => {
+    it('does not mistake duplicate load events for an app navigation', () => {
       const sandbox = loadSandbox();
       sandbox.deliverResource();
       sandbox.attest();
@@ -514,12 +499,12 @@ describe('mcp-sandbox proxy', () => {
       expect(sandbox.innerPosts()).toHaveLength(1);
 
       sandbox.loadFrame();
-      expect(sandbox.frame()).toBeNull();
+      expect(sandbox.frame()).not.toBeNull();
       sandbox.fromParent(HOST_REQUEST);
-      expect(sandbox.innerPosts()).toHaveLength(1);
+      expect(sandbox.innerPosts()).toHaveLength(2);
     });
 
-    it('does not let a stale generation revoke a live blob url', () => {
+    it('does not let stale load events restore a detached frame', () => {
       const sandbox = loadSandbox();
       sandbox.deliverResource();
       sandbox.attest();
@@ -529,11 +514,11 @@ describe('mcp-sandbox proxy', () => {
         method: DETACH,
         params: { nonce: sandbox.bootstrapNonce() },
       });
-      expect(sandbox.revoked).toHaveLength(1);
+      expect(sandbox.frame()).toBeNull();
 
       sandbox.loadFrame(stale);
       sandbox.loadFrame(stale);
-      expect(sandbox.revoked).toHaveLength(1);
+      expect(sandbox.frame()).toBeNull();
     });
   });
 

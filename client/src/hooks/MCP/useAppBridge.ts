@@ -1,12 +1,14 @@
 import { useEffect, useId, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 import { QueryKeys, DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS } from 'librechat-data-provider';
-import {
-  AppBridge,
-  PostMessageTransport,
-  buildAllowAttribute,
-} from '@modelcontextprotocol/ext-apps/app-bridge';
+import { AppBridge, buildAllowAttribute } from '@modelcontextprotocol/ext-apps/app-bridge';
+import type {
+  Transport,
+  TransportSendOptions,
+} from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { McpUiStyles, McpUiStyleVariableKey } from '@modelcontextprotocol/ext-apps/app-bridge';
+import type { JSONRPCMessage, MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
 import type { UIResource } from 'librechat-data-provider';
 import type { AppToolResult } from '~/utils/mcpApps';
 import type { MCPAppAction } from './approval';
@@ -38,6 +40,61 @@ type ResolvedResource = {
   csp: UIResource['csp'];
   permissions: UIResource['permissions'];
 };
+
+/** A source- and origin-validated transport that resolves the live iframe WindowProxy per event. */
+class IframePostMessageTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage, extra?: MessageExtraInfo) => void;
+  sessionId?: string;
+  setProtocolVersion?: (version: string) => void;
+
+  constructor(private readonly getIframe: () => HTMLIFrameElement | null) {}
+
+  private getTarget(): { window: Window; origin: string } | null {
+    const iframe = this.getIframe();
+    const target = iframe?.contentWindow;
+    const src = iframe?.getAttribute('src');
+    if (!target || !src) {
+      return null;
+    }
+    try {
+      return { window: target, origin: new URL(src, window.location.href).origin };
+    } catch {
+      return null;
+    }
+  }
+
+  private readonly messageListener = (event: MessageEvent) => {
+    const target = this.getTarget();
+    if (!target || event.source !== target.window || event.origin !== target.origin) {
+      return;
+    }
+    const parsed = JSONRPCMessageSchema.safeParse(event.data);
+    if (parsed.success) {
+      this.onmessage?.(parsed.data);
+    } else if (event.data?.jsonrpc === '2.0') {
+      this.onerror?.(new Error(`Invalid JSON-RPC message received: ${parsed.error.message}`));
+    }
+  };
+
+  async start(): Promise<void> {
+    window.addEventListener('message', this.messageListener);
+  }
+
+  async send(message: JSONRPCMessage, _options?: TransportSendOptions): Promise<void> {
+    const target = this.getTarget();
+    if (!target) {
+      throw new Error('MCP App iframe is unavailable');
+    }
+    target.window.postMessage(message, target.origin);
+  }
+
+  async close(): Promise<void> {
+    window.removeEventListener('message', this.messageListener);
+    this.onclose?.();
+  }
+}
 
 export type UseAppBridgeParams = {
   iframeRef: React.RefObject<HTMLIFrameElement | null>;
@@ -115,6 +172,8 @@ export function useAppBridge({
   const { cspLimits, maxActionPreviewChars } = useMCPAppsPolicy();
   const queryClient = useQueryClient();
   const viewId = useId();
+  const effectGenerationRef = useRef(0);
+  const activeEffectRef = useRef<{ generation: number; queryKey: string } | null>(null);
   // The csp actually delivered to the sandbox document, which is what bounds the app's own egress.
   // Host-opened links are authorized against this rather than the tool-result copy, so the host can
   // never open a link the sandbox policy did not grant.
@@ -149,12 +208,13 @@ export function useAppBridge({
       onFailedRef.current?.();
       return;
     }
-    const frameWindow = iframe.contentWindow;
-    if (!frameWindow) return;
-
     // A retry or binding change must unload the prior document before validating its replacement.
-    // The WindowProxy remains stable across the about:blank navigation used by removing src.
-    iframe.removeAttribute('src');
+    // Do not remove a missing src from a freshly mounted iframe: Chromium may emit a synthetic
+    // about:blank load for that mutation. On fast inline resources, that load can consume the
+    // one-shot sandbox listener before the cross-origin sandbox document finishes navigating.
+    if (iframe.hasAttribute('src')) {
+      iframe.removeAttribute('src');
+    }
     iframe.removeAttribute('allow');
     effectiveCspRef.current = undefined;
     // Unmount, a resource switch, or a teardown can run cleanup while a read or bridge.connect() is
@@ -176,6 +236,12 @@ export function useAppBridge({
       viewId,
       attempt,
     ] as const;
+    const effectGeneration = ++effectGenerationRef.current;
+    const resourceQueryKeyIdentity = JSON.stringify(resourceQueryKey);
+    activeEffectRef.current = {
+      generation: effectGeneration,
+      queryKey: resourceQueryKeyIdentity,
+    };
 
     const assignSandboxSrc = (csp: UIResource['csp']) => {
       const { url, applied } = withSandboxCsp(
@@ -204,10 +270,6 @@ export function useAppBridge({
       }
     };
 
-    // The WindowProxy identity survives the frame's navigation, so the transport is bound and
-    // listening before the sandbox document is even requested: the proxy announces itself as soon as
-    // it parses, and an announcement that arrives before the listener exists is a permanent hang.
-    const transport = new PostMessageTransport(frameWindow, frameWindow);
     const { locale, timeZone } = Intl.DateTimeFormat().resolvedOptions();
     const bridge = new AppBridge(
       null,
@@ -217,7 +279,13 @@ export function useAppBridge({
         logging: {},
         // Display-only views advertise no host-bound action capabilities so a well-behaved app
         // disables those affordances rather than issuing calls the host ignores.
-        ...(!readOnly ? { serverTools: {}, serverResources: {}, message: { text: {} } } : {}),
+        ...(!readOnly
+          ? {
+              serverTools: {},
+              serverResources: {},
+              message: { text: {} },
+            }
+          : {}),
       },
       {
         hostContext: {
@@ -259,7 +327,19 @@ export function useAppBridge({
       cancelActionRef.current?.();
       themeObserver.disconnect();
       bridge.close();
-      void queryClient.cancelQueries({ queryKey: resourceQueryKey, exact: true });
+      // React Strict Mode immediately replays effects in development. Let an equivalent successor
+      // share the in-flight resource read instead of cancelling the query it has just joined. A real
+      // unmount, retry, or resource change has no same-key successor and still cancels promptly.
+      queueMicrotask(() => {
+        const successor = activeEffectRef.current;
+        const isEquivalentReplay =
+          successor != null &&
+          successor.generation !== effectGeneration &&
+          successor.queryKey === resourceQueryKeyIdentity;
+        if (!isEquivalentReplay) {
+          void queryClient.cancelQueries({ queryKey: resourceQueryKey, exact: true });
+        }
+      });
     };
 
     const interactive = !readOnly;
@@ -529,20 +609,6 @@ export function useAppBridge({
     });
 
     const start = async () => {
-      try {
-        await bridge.connect(transport);
-      } catch (err) {
-        logger.error('[MCP App] bridge.connect failed', err);
-        if (!cancelled) {
-          onFailedRef.current?.();
-        }
-        dispose();
-        return;
-      }
-      if (cancelled) {
-        bridge.close();
-        return;
-      }
       // Both sandbox policies are built from this URL before the document loads. The content-level
       // _meta.ui.csp is authoritative, which requires resolving the resource before navigation.
       const next = await resolveResource().catch((err: unknown) => {
@@ -560,6 +626,22 @@ export function useAppBridge({
       // A failed read still loads the sandbox document: its re-announcements are the only retry
       // signal, and a later resolve reloads it with the declared domains.
       if (next || !readOnly) {
+        // Start listening before navigation so a fresh iframe's synthetic about:blank load cannot
+        // consume or race a one-shot load handler. The transport resolves and validates the live
+        // iframe WindowProxy and exact sandbox origin for every message, so cross-origin navigation
+        // cannot leave it bound to a stale window.
+        await bridge
+          .connect(new IframePostMessageTransport(() => iframeRef.current))
+          .catch((err) => {
+            logger.error('[MCP App] bridge.connect failed', err);
+            if (!cancelled) {
+              onFailedRef.current?.();
+            }
+            dispose();
+          });
+        if (cancelled) {
+          return;
+        }
         assignSandboxSrc(next?.csp);
       }
     };

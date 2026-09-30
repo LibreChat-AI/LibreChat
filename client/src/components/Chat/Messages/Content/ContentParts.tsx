@@ -1,6 +1,6 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
-import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
+import { ContentTypes } from 'librechat-data-provider';
 import type {
   TMessageContentParts,
   SearchResultData,
@@ -31,7 +31,6 @@ import {
   getActivityLabelText,
 } from '~/utils/activityLabels';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
-import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
@@ -119,32 +118,6 @@ const buildToolCallStepOwners = (
     owners.set(toolCallId, entries);
   }
   return owners;
-};
-
-const collectMessageAppAttachments = (
-  content: Array<TMessageContentParts | undefined> | undefined,
-  attachments: TAttachment[] | undefined,
-): TAttachment[] => {
-  const attachmentMap = mapAttachments(attachments ?? []);
-  const ownersByToolCallId = buildToolCallStepOwners(content);
-  const collected = new Set<TAttachment>();
-  for (const part of content ?? []) {
-    if (part == null) {
-      continue;
-    }
-    const routed = filterAttachmentsForPart(
-      attachmentMap[getToolCallId(part)],
-      getPartAgentId(part),
-      getPartStepId(part),
-      getSiblingStepIds(part, ownersByToolCallId),
-    );
-    for (const attachment of routed ?? []) {
-      if (attachment.type === Tools.ui_resources) {
-        collected.add(attachment);
-      }
-    }
-  }
-  return Array.from(collected);
 };
 
 const getToolGroupId = (parts: PartWithIndex[], fallbackScope: number): string => {
@@ -1226,96 +1199,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
 });
 
 const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
-  const {
-    attachments,
-    messageId,
-    conversationId,
-    isCreatedByUser,
-    isLatestMessage,
-    isSubmitting,
-    renderOwnerId,
-  } = props;
-  const appRenderIdentity = useRef<{
-    messageId: string;
-    conversationId: string | null | undefined;
-    ownerId: string | undefined;
-    isLatestMessage: boolean;
-    isSubmitting: boolean;
-    scope: number;
-  } | null>(null);
-  const previousIdentity = appRenderIdentity.current;
-  const nextIsLatest = isLatestMessage === true;
-  /** `clientQueueParentMessageId` follows one response through the local-user → created-user
-   *  re-key and disappears when `finalHandler` installs the durable response. It is not unique
-   *  across regenerations, so only an already-active latest response may use it to retain scope. */
-  const startsAnotherRun = previousIdentity?.isSubmitting === false && isSubmitting;
-  const continuesConversation =
-    previousIdentity?.conversationId === conversationId ||
-    (previousIdentity?.conversationId === Constants.NEW_CONVO &&
-      conversationId != null &&
-      conversationId !== Constants.NEW_CONVO);
-  const exactIdentity =
-    previousIdentity?.messageId === messageId &&
-    previousIdentity.conversationId === conversationId &&
-    (previousIdentity.ownerId === renderOwnerId ||
-      previousIdentity.ownerId == null ||
-      renderOwnerId == null);
-  const createdIdentityHydration =
-    !isCreatedByUser &&
-    previousIdentity?.isSubmitting === true &&
-    isSubmitting &&
-    previousIdentity.isLatestMessage &&
-    nextIsLatest &&
-    continuesConversation &&
-    previousIdentity.ownerId != null &&
-    previousIdentity.ownerId === renderOwnerId &&
-    previousIdentity.messageId.endsWith('_');
-  const durableIdentityHydration =
-    !isCreatedByUser &&
-    previousIdentity?.isSubmitting === true &&
-    !isSubmitting &&
-    previousIdentity.isLatestMessage &&
-    nextIsLatest &&
-    continuesConversation &&
-    previousIdentity.ownerId != null &&
-    (renderOwnerId == null || renderOwnerId === previousIdentity.ownerId) &&
-    !messageId.endsWith('_');
-  const continuesResponse =
-    !startsAnotherRun && (exactIdentity || createdIdentityHydration || durableIdentityHydration);
-  if (previousIdentity == null) {
-    appRenderIdentity.current = {
-      messageId,
-      conversationId,
-      ownerId: renderOwnerId,
-      isLatestMessage: nextIsLatest,
-      isSubmitting,
-      scope: 0,
-    };
-  } else if (!continuesResponse) {
-    appRenderIdentity.current = {
-      messageId,
-      conversationId,
-      ownerId: renderOwnerId,
-      isLatestMessage: nextIsLatest,
-      isSubmitting,
-      scope: previousIdentity.scope + 1,
-    };
-  } else {
-    previousIdentity.messageId = messageId;
-    previousIdentity.conversationId = conversationId;
-    previousIdentity.ownerId = renderOwnerId ?? previousIdentity.ownerId;
-    previousIdentity.isLatestMessage = nextIsLatest;
-    previousIdentity.isSubmitting = isSubmitting;
-  }
-  const appRenderScope = appRenderIdentity.current!.scope;
-  const messageAppAttachments = useMemo(
-    () => collectMessageAppAttachments(props.content, attachments),
-    [props.content, attachments],
-  );
-  const suppressedAppAttachments = useMemo<ReadonlySet<TAttachment>>(
-    () => new Set(messageAppAttachments),
-    [messageAppAttachments],
-  );
+  const { attachments, messageId, conversationId, isLatestMessage } = props;
   const toolState = useRef<{
     messageId: string;
     conversationId: string | null | undefined;
@@ -1365,10 +1249,7 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
     <MediaContext.Provider value={media}>
       <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
         <ToolDisclosureContext.Provider value={toolDisclosures}>
-          <MCPAppSuppressionContext.Provider value={suppressedAppAttachments}>
-            <ContentPartsBody {...props} />
-          </MCPAppSuppressionContext.Provider>
-          <MCPAppViews key={`message-apps-${appRenderScope}`} attachments={messageAppAttachments} />
+          <ContentPartsBody {...props} />
         </ToolDisclosureContext.Provider>
       </ReasoningDisclosureContext.Provider>
     </MediaContext.Provider>

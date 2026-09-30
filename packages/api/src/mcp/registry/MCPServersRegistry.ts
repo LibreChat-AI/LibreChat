@@ -429,8 +429,11 @@ export class MCPServersRegistry {
     allowedDomains?: string[] | null;
     allowedAddresses?: string[] | null;
   }): Promise<t.MCPConnectionTarget | undefined> {
-    const baseConfigs = await this.getBaseServerConfigs(userId, role);
-    const base = baseConfigs[serverName];
+    // Validation concerns exactly one persisted binding. Avoid the all-server path here: besides
+    // doing unrelated ACL/decryption work, one slow or malformed server can otherwise prevent an
+    // independent inline App from ever reaching its sandbox. getServerConfig applies the same
+    // YAML-over-user precedence with an ACL-aware, per-server DB fallback.
+    const base = await this.getServerConfig(serverName, userId, undefined, role);
     const rawConfig = mcpConfig[serverName];
     let selectedConfig = base;
 
@@ -478,10 +481,11 @@ export class MCPServersRegistry {
     serverName: string,
     userId?: string,
     configServers?: Record<string, t.ParsedServerConfig>,
+    role?: string,
   ): Promise<t.ParsedServerConfig | undefined> {
     const candidate = configServers?.[serverName];
 
-    const cacheKey = this.getReadThroughCacheKey(serverName, userId);
+    const cacheKey = this.getReadThroughCacheKey(serverName, userId, role);
     let base: t.ParsedServerConfig | undefined;
     const cached = await this.readThroughCache.getEntry(cacheKey);
     if (cached.hit) {
@@ -491,7 +495,7 @@ export class MCPServersRegistry {
       if (configFromYaml) {
         base = configFromYaml;
       } else {
-        base = await this.dbConfigsRepo.get(serverName, userId);
+        base = await this.dbConfigsRepo.get(serverName, userId, role);
       }
       await this.readThroughCache.set(cacheKey, base, cached.fill);
     }
@@ -1347,8 +1351,10 @@ export class MCPServersRegistry {
 
   /** Tenant-scoped because DB-backed lookups are filtered by the active tenant:
    *  an entry populated in one tenant's context must never satisfy another's. */
-  private getReadThroughCacheKey(serverName: string, userId?: string): string {
-    return scopedCacheKey(userId ? `${serverName}::${userId}` : serverName);
+  private getReadThroughCacheKey(serverName: string, userId?: string, role?: string): string {
+    return scopedCacheKey(
+      userId ? `${serverName}::${userId}${role != null ? `::role:${role}` : ''}` : serverName,
+    );
   }
 
   /**

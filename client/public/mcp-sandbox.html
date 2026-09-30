@@ -50,10 +50,7 @@
       const ALLOWED_SANDBOX_TOKENS = ['allow-scripts', 'allow-forms', 'allow-pointer-lock'];
 
       let innerFrame = null;
-      let innerFrameBlobUrl = null;
-      let innerFrameNavigated = false;
       let resourceApplied = false;
-      let frameLoads = 0;
       let readyInterval = null;
       let readyRetries = 0;
       let attestNonce = null;
@@ -93,9 +90,7 @@
       // bridge; the nonce only excludes a document that never ran our bootstrap. An app that leaks
       // its own nonce to a document it navigates to gains nothing it could not already proxy itself.
       function frameUsable() {
-        return (
-          !!innerFrame && !!innerFrame.contentWindow && !innerFrameNavigated && frameLoads <= 1
-        );
+        return !!innerFrame && !!innerFrame.contentWindow;
       }
 
       function attestFresh() {
@@ -140,10 +135,6 @@
 
       function releaseInnerFrame() {
         discardPending();
-        if (innerFrameBlobUrl) {
-          URL.revokeObjectURL(innerFrameBlobUrl);
-          innerFrameBlobUrl = null;
-        }
         if (innerFrame) {
           innerFrame.remove();
           innerFrame = null;
@@ -274,19 +265,6 @@
         innerFrame = document.createElement('iframe');
         const frame = innerFrame;
 
-        innerFrame.addEventListener('load', () => {
-          frameLoads += 1;
-          // The first load is our blob document. A stale load from an already-released frame must
-          // not revoke the live blob URL, and only a second load of the live frame means the app
-          // navigated away from our document.
-          if (frameLoads <= 1 || frame !== innerFrame) {
-            return;
-          }
-          innerFrameNavigated = true;
-          attestedAt = 0;
-          releaseInnerFrame();
-        });
-
         // The inner View remains opaque even though its outer proxy has a dedicated origin. This
         // preserves per-View storage isolation and the heartbeat's navigation freshness guarantee.
         // Grant only from an allowlist so a new spec token cannot arrive as a silent capability.
@@ -312,21 +290,14 @@
 
         // The bootstrap sits ahead of the app's own <meta charset>, so declare the encoding here
         // rather than let the parser guess from bytes our prefix now precedes.
-        const blob = new Blob([injectIntoHead(html, buildViewInjection(attestNonce))], {
-          type: 'text/html;charset=utf-8',
-        });
-        innerFrameBlobUrl = URL.createObjectURL(blob);
-        innerFrame.src = innerFrameBlobUrl;
+        // srcdoc gives the opaque View a stable document URL. A blob URL makes some otherwise
+        // conforming bundled apps fail during startup when their dependencies resolve the current
+        // location (Blob URL pathnames are not hierarchical URLs).
+        innerFrame.srcdoc = injectIntoHead(html, buildViewInjection(attestNonce));
         innerFrame.style.cssText = 'width:100%;height:100%;border:none;display:block';
 
         document.body.appendChild(innerFrame);
       }
-
-      window.addEventListener('pagehide', () => {
-        if (innerFrameBlobUrl) {
-          URL.revokeObjectURL(innerFrameBlobUrl);
-        }
-      });
 
       function findTagEnd(html, at) {
         let quote = '';
