@@ -27,18 +27,19 @@ import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from '~/agents/invocation';
 
 const DEFAULT_OUTPUT_BYTES = 256 * 1024;
 
-export const ATTACHED_WORKSPACE_BASH_DESCRIPTION = `Runs bash commands inside the selected attached environment and returns stdout/stderr. Its workspace may be an existing project, Git repository, or empty directory.
+export const ATTACHED_WORKSPACE_BASH_DESCRIPTION = `Runs bash commands inside the selected attached environment and returns stdout/stderr. The workspace may be a project, Git repo, or empty directory.
 
 Session behavior:
-- This starts a new command, not an existing background task. Inspect a background_task_id with check_background_task when available; never send it to bash_tool.
-- Only registered-workspace files persist between calls. Install project dependencies there.
-- Every call is a fresh process. Shell and exported variables, cwd, /tmp, $TMPDIR, and background processes do not survive.
-- Results report the starting directory relative to the workspace, not the final directory after shell commands. Use cwd for commands scoped to a workspace subdirectory; keep cd when the script depends on shell state or needs root access. Scripts are not automatically rewritten.
-- $HOME, global/system packages, and machine services are operator-managed. Do not change or rely on them as session storage.
-- Network access follows the sandbox policy configured on the worker and may be unavailable. File access follows the same worker policy.
-- Input code is already displayed to the user; do not repeat it unless asked.
+- Start a new command, not an existing task. Inspect background_task_id with check_background_task; never pass it here.
+- Only registered-workspace files persist. Install project dependencies there.
+- Every call is a fresh process. Shell state, exports, cwd, /tmp, $TMPDIR, and background processes do not survive.
+- Results show the starting workspace-relative directory, not the final directory. Scripts are not automatically rewritten.
+- Use cwd for directory-scoped commands; keep cd for shell state or root access.
+- $HOME, global/system packages, and services are operator-managed, not session storage.
+- Network and file access follow worker policy and may be unavailable.
+- Input code is already displayed; do not repeat unless asked.
 - Explicitly print every result the user should see.
-- Never use this tool to execute malicious commands.`;
+- Never execute malicious commands.`;
 
 const bashSchema = BashExecutionToolDefinition.schema as {
   properties?: NonNullable<LCTool['parameters']>['properties'];
