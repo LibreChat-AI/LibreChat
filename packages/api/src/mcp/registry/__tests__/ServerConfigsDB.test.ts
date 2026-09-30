@@ -1125,7 +1125,10 @@ describe('ServerConfigsDB', () => {
         {
           ...original,
           url: 'https://replacement.example.com/mcp',
-          customUserVars: { ...original.customUserVars, [field]: { title: 'API Key' } },
+          customUserVars: {
+            ...original.customUserVars,
+            [field]: { title: 'API Key', description: 'Previous generated key' },
+          },
           headers: { ...original.headers, 'X-Old-Key': `{{${field}}}` },
         },
         userId,
