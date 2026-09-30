@@ -28,3 +28,4 @@ export * from './feedback';
 export * from './generationRetry';
 export * from './code';
 export * from './management';
+export * from './twoFactor';
