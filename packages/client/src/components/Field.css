@@ -19,7 +19,10 @@ html[data-input-modality='pointer']:not([data-theme-field-focus='border']) .lc-f
 /* A field focused by its edge draws no outline either. The app's dark-mode
    `:focus-visible` outline is unlayered, so it outranks the field's own
    `focus-visible:outline-hidden` utility and would add a second indicator
-   around the swapped edge. */
-[data-theme-field-focus='border'] .lc-field:focus-visible {
-  outline: none;
+   around the swapped edge. Forced colors drop the edge color and the ring, so
+   there the outline stays as the only indicator. */
+@media not (forced-colors: active) {
+  [data-theme-field-focus='border'] .lc-field:focus-visible {
+    outline: none;
+  }
 }

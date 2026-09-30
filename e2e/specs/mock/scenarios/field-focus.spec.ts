@@ -121,6 +121,14 @@ test.describe('theme field focus', () => {
     page,
   }) => {
     await storeDefinition(page, clickHouseTheme);
+    /** An explicit mode, as a user who picked light or dark has, so forced colors below leave
+     *  the deployment theme in place instead of switching to high contrast. */
+    await page.addInitScript(() =>
+      localStorage.setItem(
+        'color-theme',
+        matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+      ),
+    );
     const { label, field } = await openAccount(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme-field-focus', 'border');
     const mode = await resolvedMode(page);
@@ -137,6 +145,12 @@ test.describe('theme field focus', () => {
     /** The app's unlayered dark-mode outline must not add a second indicator either. */
     await keyboardFocus(page, field);
     expect(await focusOf(field)).toEqual(edgeOnly);
+
+    /** Forced colors drop the edge color and the ring, so the outline is kept as the indicator. */
+    await page.emulateMedia({ forcedColors: 'active' });
+    await expect(page.locator('html')).toHaveAttribute('data-theme-field-focus', 'border');
+    await keyboardFocus(page, field);
+    expect((await focusOf(field)).outline).not.toBe('none');
   });
 
   test('a theme that opts into edge focus and names only its ring color edges fields in it @scenario:legacy-focus-theme-keeps-field-focus', async ({
