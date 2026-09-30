@@ -1,3 +1,4 @@
+import { tenantStorage } from '@librechat/data-schemas';
 import { getMaxSubagents, setMaxSubagents } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
@@ -5,6 +6,7 @@ import {
   _resetOverrideStrictCache,
   getAppConfigOptionsFromUser,
 } from './service';
+import { getProviderConfig } from '~/endpoints/config/providers';
 
 /** Extends AppConfig with mock fields used by merge behavior tests. */
 interface TestConfig extends AppConfig {
@@ -95,6 +97,50 @@ describe('createAppConfigService', () => {
       expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
       expect(deps.getApplicableConfigs).not.toHaveBeenCalled();
       expect(config).toEqual(deps._baseConfig);
+    });
+
+    it('serves tenant-scoped YAML custom endpoints only to their tenant', async () => {
+      const custom = [
+        { name: 'Global', apiKey: 'global-key', baseURL: 'https://global.example' },
+        {
+          name: 'ClickHouse',
+          tenantId: 'dwh-org',
+          apiKey: 'dwh-key',
+          baseURL: 'https://dwh.example',
+        },
+      ];
+      const deps = createDeps({
+        loadBaseConfig: jest.fn().mockResolvedValue({
+          endpoints: { custom },
+          config: { endpoints: { custom } },
+        }),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const base = await getAppConfig({ baseOnly: true });
+      const dwh = await getAppConfig({ role: 'USER', tenantId: 'dwh-org' });
+      const other = await getAppConfig({ role: 'USER', tenantId: 'other-org' });
+      const staleUserTenant = await tenantStorage.run({ tenantId: 'other-org' }, () =>
+        getAppConfig({ role: 'USER', tenantId: 'dwh-org' }),
+      );
+
+      expect(base.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(dwh.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
+        'Global',
+        'ClickHouse',
+      ]);
+      expect(other.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(other.config.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(staleUserTenant.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
+        'Global',
+      ]);
+      expect(
+        getProviderConfig({ provider: 'ClickHouse', appConfig: dwh }).customEndpointConfig?.baseURL,
+      ).toBe('https://dwh.example');
+      expect(() => getProviderConfig({ provider: 'ClickHouse', appConfig: other })).toThrow(
+        'Provider ClickHouse not supported',
+      );
+      expect(custom).toHaveLength(2);
     });
 
     it('reloads base config when refresh is true', async () => {

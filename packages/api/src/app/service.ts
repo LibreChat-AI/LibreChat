@@ -15,6 +15,37 @@ import type { CustomConfigLoadMode } from './loader';
 
 const BASE_CONFIG_KEY = '_BASE_';
 
+function scopeEndpointList<T extends { tenantId?: string }>(
+  endpoints: T[] | undefined,
+  tenantId?: string,
+): T[] | undefined {
+  if (!endpoints?.some((endpoint) => endpoint.tenantId)) {
+    return endpoints;
+  }
+  return endpoints.filter((endpoint) => !endpoint.tenantId || endpoint.tenantId === tenantId);
+}
+
+/** Keep tenant-scoped YAML endpoints out of every other tenant's effective config. */
+function scopeCustomEndpoints(config: AppConfig, tenantId?: string): AppConfig {
+  const custom = config.endpoints?.custom;
+  const scoped = scopeEndpointList(custom, tenantId);
+  const sourceCustom = config.config?.endpoints?.custom;
+  const scopedSource = scopeEndpointList(sourceCustom, tenantId);
+  if (scoped === custom && scopedSource === sourceCustom) {
+    return config;
+  }
+  return {
+    ...config,
+    ...(scoped !== custom && { endpoints: { ...config.endpoints, custom: scoped } }),
+    ...(scopedSource !== sourceCustom && {
+      config: {
+        ...config.config,
+        endpoints: { ...config.config.endpoints, custom: scopedSource },
+      },
+    }),
+  };
+}
+
 export type AppConfigPrincipal = {
   principalType: string;
   principalId?: string | Types.ObjectId;
@@ -294,9 +325,11 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     } = options;
 
     const baseConfig = await ensureBaseConfig(refresh);
+    // The request-scoped tenant is authoritative when a user document carries a stale ID.
+    const effectiveTenantId = getTenantId() ?? tenantId;
 
     if (baseOnly) {
-      return baseConfig;
+      return scopeCustomEndpoints(baseConfig);
     }
 
     const principals =
@@ -307,7 +340,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
         return null;
       }));
     if (principals === null) {
-      return baseConfig;
+      return scopeCustomEndpoints(baseConfig, effectiveTenantId);
     }
 
     // Strict isolation + no tenant anywhere (neither param nor ALS) is pathological: a
@@ -316,7 +349,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     // without caching it under the shared `__default__` bucket. When ALS has a tenant,
     // overrideCacheKey scopes the key to it, so we fall through and cache per-tenant.
     if (principals.length === 0 && !tenantId && !getTenantId() && isStrictOverrideMode()) {
-      return baseConfig;
+      return scopeCustomEndpoints(baseConfig);
     }
 
     if (!tenantId && !getTenantId() && isStrictOverrideMode() && !_warnedNoTenantInStrictMode) {
@@ -328,13 +361,17 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
 
     const augment = async (appConfig: AppConfig): Promise<AppConfig> => {
-      if (augmentConfig == null || skipRuntimeAugmentation === true) return appConfig;
+      const scopedConfig = scopeCustomEndpoints(appConfig, effectiveTenantId);
+      if (augmentConfig == null || skipRuntimeAugmentation === true) return scopedConfig;
       try {
-        return await augmentConfig({ appConfig, baseConfig, principals, options });
+        return scopeCustomEndpoints(
+          await augmentConfig({ appConfig: scopedConfig, baseConfig, principals, options }),
+          effectiveTenantId,
+        );
       } catch (error) {
         if (failClosed) throw error;
         logger.error('[getAppConfig] Error augmenting principal config:', error);
-        return appConfig;
+        return scopedConfig;
       }
     };
 
@@ -355,7 +392,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     } catch (error) {
       if (failClosed) throw error;
       logger.error('[getAppConfig] Error resolving config overrides, falling back to base:', error);
-      return baseConfig;
+      return scopeCustomEndpoints(baseConfig, effectiveTenantId);
     }
 
     await cache.set(cacheKey, merged, overrideCacheTtl);
