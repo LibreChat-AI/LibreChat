@@ -56,13 +56,18 @@
     "global.color.background.default": "#ffffff",
     "global.color.background.muted": "#f6f7fa",
     "global.color.background.split": "#f6f7fa",
+    "global.color.chart.default.babyblue": "#00cbeb",
     "global.color.chart.default.blue": "#437eef",
     "global.color.chart.default.fuchsia": "#fb32c9",
+    "global.color.chart.default.green": "#00e513",
+    "global.color.chart.default.orange": "#ff7729",
     "global.color.chart.default.teal": "#089b83",
     "global.color.chart.default.violet": "#bb33ff",
+    "global.color.chart.default.yellow": "#eef400",
     "global.color.feedback.danger.background": "#ffdddd",
     "global.color.feedback.danger.foreground": "#c10000",
     "global.color.feedback.info.background": "#e7effd",
+    "global.color.feedback.info.foreground": "#437eef",
     "global.color.feedback.neutral.background": "#f6f7fa",
     "global.color.feedback.neutral.foreground": "#53575f",
     "global.color.feedback.neutral.stroke": "#e6e7e9",
@@ -75,6 +80,7 @@
     "global.color.stroke.intense": "#b3b6bd",
     "global.color.text.default": "#161517",
     "global.color.text.disabled": "#a0a0a0",
+    "global.color.text.link.default": "#437eef",
     "global.color.text.link.hover": "#104ec6",
     "global.color.text.muted": "#696e79",
     "palette.babyblue.600": "#008599",
@@ -114,7 +120,8 @@
     "typography.font.sizes.2": "0.875rem",
     "typography.font.sizes.3": "1rem",
     "typography.font.sizes.4": "1.125rem",
-    "typography.font.sizes.5": "1.25rem"
+    "typography.font.sizes.5": "1.25rem",
+    "typography.font.sizes.6": "2rem"
   },
   "dark": {
     "border.radii.1": "0.25rem",
@@ -225,6 +232,7 @@
     "typography.font.sizes.2": "0.875rem",
     "typography.font.sizes.3": "1rem",
     "typography.font.sizes.4": "1.125rem",
-    "typography.font.sizes.5": "1.25rem"
+    "typography.font.sizes.5": "1.25rem",
+    "typography.font.sizes.6": "2rem"
   }
 }

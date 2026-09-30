@@ -1,5 +1,7 @@
 import { createElement } from 'react';
-import { cleanup, render } from '@testing-library/react';
+import { join } from 'path';
+import { readFileSync } from 'fs';
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import type { IThemeAppearance, IThemeRGB, ThemeMode } from '../types';
 import {
@@ -39,6 +41,15 @@ type Rgba = [number, number, number, number];
 type Snapshot = Record<ThemeMode, Record<string, string | number>>;
 
 const tokens: Snapshot = { light: snapshot.light, dark: snapshot.dark };
+
+/** A cited Click UI token, failing by name when the snapshot no longer carries it. */
+function clickToken(mode: ThemeMode, token: string): string {
+  const value = tokens[mode][token];
+  if (value === undefined) {
+    throw new Error(`Click UI token ${token} is not in the ${mode} snapshot`);
+  }
+  return String(value);
+}
 const modes: ThemeMode[] = ['light', 'dark'];
 
 const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
@@ -273,18 +284,159 @@ const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>
 };
 
 /**
+ * How close a role lands on Click UI: `match` holds the token that names the role's job, `near` is
+ * within deltaE2000 5 of it, and `mismatch` is further off.
+ */
+type RoleStatus = 'match' | 'near' | 'mismatch';
+
+interface Departure {
+  /** The Click UI token that names the role's job, which the theme's value departs from. */
+  counterpart: string;
+  status: Exclude<RoleStatus, 'match'>;
+  reason: string;
+}
+
+/**
+ * Roles whose value is not the Click UI token that names the same job, and why. Each one cites a
+ * step on the same Click UI ramp in `colorSources`; the status pins how far that step sits from
+ * the counterpart. Every other role holds its counterpart, so its status is `match`.
+ */
+const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>> = {
+  light: {
+    'rgb-text-secondary': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: 'text.muted is 4.05:1 on feedback.danger.background, where secondary copy also sits',
+    },
+    'rgb-text-secondary-alt': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: 'text.muted is 4.05:1 on feedback.danger.background, where secondary copy also sits',
+    },
+    'rgb-text-tertiary': {
+      counterpart: 'global.color.text.muted',
+      status: 'mismatch',
+      reason: 'text.muted is 4.05:1 on feedback.danger.background, where secondary copy also sits',
+    },
+    'rgb-link': {
+      counterpart: 'global.color.text.link.default',
+      status: 'mismatch',
+      reason: 'text.link.default is 3.84:1 on white',
+    },
+    'rgb-link-prose': {
+      counterpart: 'global.color.text.link.default',
+      status: 'mismatch',
+      reason: 'text.link.default is 3.84:1 on white',
+    },
+    'rgb-border-xheavy': {
+      counterpart: 'global.color.stroke.intense',
+      status: 'mismatch',
+      reason: 'stroke.intense is 2.03:1 on white, under the 3:1 a heavy edge carries',
+    },
+    'rgb-border-control': {
+      counterpart: 'click.field.color.stroke.default',
+      status: 'mismatch',
+      reason: 'field.color.stroke.default misses the 3:1 non-text floor for a control edge',
+    },
+    'rgb-status-success': {
+      counterpart: 'global.color.feedback.success.foreground',
+      status: 'mismatch',
+      reason: 'feedback.success.foreground is 4.27:1 on its own fill',
+    },
+    'rgb-status-info': {
+      counterpart: 'global.color.feedback.info.foreground',
+      status: 'mismatch',
+      reason: 'feedback.info.foreground is 3.32:1 on its own fill',
+    },
+    'rgb-series-2': {
+      counterpart: 'global.color.chart.default.orange',
+      status: 'mismatch',
+      reason: 'chart.default.orange is 2.65:1 on white, under the 3:1 a chart mark needs',
+    },
+    'rgb-series-3': {
+      counterpart: 'global.color.chart.default.green',
+      status: 'mismatch',
+      reason: 'chart.default.green is 1.72:1 on white, under the 3:1 a chart mark needs',
+    },
+    'rgb-series-5': {
+      counterpart: 'global.color.chart.default.yellow',
+      status: 'mismatch',
+      reason: 'chart.default.yellow is 1.19:1 on white, under the 3:1 a chart mark needs',
+    },
+    'rgb-series-7': {
+      counterpart: 'global.color.chart.default.babyblue',
+      status: 'mismatch',
+      reason: 'chart.default.babyblue is 1.95:1 on white, under the 3:1 a chart mark needs',
+    },
+    'rgb-switch-unchecked': {
+      counterpart: 'click.switch.color.background.default',
+      status: 'mismatch',
+      reason: 'switch.color.background.default misses the 3:1 non-text floor for the off track',
+    },
+  },
+  dark: {
+    'rgb-border-xheavy': {
+      counterpart: 'global.color.stroke.intense',
+      status: 'mismatch',
+      reason: 'stroke.intense is 1.62:1 on the canvas, under the 3:1 a heavy edge carries',
+    },
+    'rgb-border-control': {
+      counterpart: 'click.field.color.stroke.default',
+      status: 'mismatch',
+      reason: 'field.color.stroke.default misses the 3:1 non-text floor for a control edge',
+    },
+    'rgb-switch-unchecked': {
+      counterpart: 'click.switch.color.background.default',
+      status: 'mismatch',
+      reason: 'switch.color.background.default misses the 3:1 non-text floor for the off track',
+    },
+    'rgb-surface-overlay': {
+      counterpart: 'click.dialog.color.opaqueBackground.default',
+      status: 'mismatch',
+      reason: 'the dark scrim is a #606060 gray that lifts the page instead of dimming it',
+    },
+  },
+};
+
+interface AppearanceDecision {
+  /** The value the decision was made for; a theme that moves it has to revisit the decision. */
+  value: string;
+  /** The Click UI token the decision departs from, when it departs from one. */
+  token?: string;
+  status: RoleStatus;
+  reason: string;
+}
+
+/**
  * Appearance choices that are a reading of Click UI rather than one of its values, and the
  * evidence for each. Click UI gives every disabled control a fixed fill, ink and edge
  * (`button.basic.color.primary.*.disabled`, `field.color.*.disabled`, `global.color.text.disabled`)
  * and never fades one, so the theme paints them instead of dimming.
  */
-const appearanceDecisions: Partial<Record<keyof IThemeAppearance, string>> = {
-  disabledStyle: 'fill: Click UI paints disabled controls in fixed disabled tokens, never opacity',
-  text2xl:
-    "1.5rem: Click UI's next size, font.sizes.6 (2rem), would pass Tailwind's unthemed text-3xl (1.875rem)",
-  buttonHeight:
-    '2rem: Click UI sizes its button by content, button.basic.space.y (0.2813rem) twice, a 0.875rem/1.5 label and a 1px stroke each side',
-  buttonHeightSm: '2rem: Click UI draws one button size, so the small step matches the default',
+const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDecision>> = {
+  disabledStyle: {
+    value: 'fill',
+    status: 'match',
+    reason: 'fill: Click UI paints disabled controls in fixed disabled tokens, never opacity',
+  },
+  text2xl: {
+    value: '1.5rem',
+    token: 'typography.font.sizes.6',
+    status: 'mismatch',
+    reason:
+      "1.5rem: Click UI's next size, font.sizes.6 (2rem), would pass Tailwind's unthemed text-3xl (1.875rem)",
+  },
+  buttonHeight: {
+    value: '2rem',
+    status: 'match',
+    reason:
+      '2rem: Click UI sizes its button by content, button.basic.space.y (0.2813rem) twice, a 0.875rem/1.5 label and a 1px stroke each side',
+  },
+  buttonHeightSm: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one button size, so the small step matches the default',
+  },
 };
 
 const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
@@ -413,6 +565,64 @@ const sameRgb = (theme: string, source: Rgba) => {
   );
 };
 
+/** sRGB channels to CIE L*a*b* under D65. */
+function toLab([r, g, b]: Rgba): [number, number, number] {
+  const linear = (value: number) => {
+    const c = value / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const [lr, lg, lb] = [linear(r), linear(g), linear(b)];
+  const f = (t: number) => (t > 216 / 24389 ? Math.cbrt(t) : ((24389 / 27) * t + 16) / 116);
+  const x = f((0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / 0.95047);
+  const y = f(0.2126729 * lr + 0.7151522 * lg + 0.072175 * lb);
+  const z = f((0.0193339 * lr + 0.119192 * lg + 0.9503041 * lb) / 1.08883);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+
+/** CIEDE2000 color difference; under 5 reads as the same color at a glance. */
+function deltaE(first: Rgba, second: Rgba): number {
+  const [l1, a1, b1] = toLab(first);
+  const [l2, a2, b2] = toLab(second);
+  const rad = Math.PI / 180;
+  const chromaMean = (Math.hypot(a1, b1) + Math.hypot(a2, b2)) / 2;
+  const g = 0.5 * (1 - Math.sqrt(chromaMean ** 7 / (chromaMean ** 7 + 25 ** 7)));
+  const c1 = Math.hypot(a1 * (1 + g), b1);
+  const c2 = Math.hypot(a2 * (1 + g), b2);
+  const hue = (b: number, a: number) => (((Math.atan2(b, a) / rad) % 360) + 360) % 360;
+  const h1 = c1 === 0 ? 0 : hue(b1, a1 * (1 + g));
+  const h2 = c2 === 0 ? 0 : hue(b2, a2 * (1 + g));
+  const hueStep = c1 * c2 === 0 ? 0 : ((h2 - h1 + 540) % 360) - 180;
+  const deltaH = 2 * Math.sqrt(c1 * c2) * Math.sin((hueStep / 2) * rad);
+  const lMean = (l1 + l2) / 2;
+  const cMean = (c1 + c2) / 2;
+  const wraps = c1 * c2 !== 0 && Math.abs(h1 - h2) > 180;
+  const hMean = c1 * c2 === 0 ? h1 + h2 : (h1 + h2 + (wraps ? 360 : 0)) / 2;
+  const t =
+    1 -
+    0.17 * Math.cos((hMean - 30) * rad) +
+    0.24 * Math.cos(2 * hMean * rad) +
+    0.32 * Math.cos((3 * hMean + 6) * rad) -
+    0.2 * Math.cos((4 * hMean - 63) * rad);
+  const sl = 1 + (0.015 * (lMean - 50) ** 2) / Math.sqrt(20 + (lMean - 50) ** 2);
+  const sc = 1 + 0.045 * cMean;
+  const sh = 1 + 0.015 * cMean * t;
+  const rotation =
+    -2 *
+    Math.sqrt(cMean ** 7 / (cMean ** 7 + 25 ** 7)) *
+    Math.sin(60 * Math.exp(-(((hMean - 275) / 25) ** 2)) * rad);
+  const dl = (l2 - l1) / sl;
+  const dc = (c2 - c1) / sc;
+  const dh = deltaH / sh;
+  return Math.sqrt(dl ** 2 + dc ** 2 + dh ** 2 + rotation * dc * dh);
+}
+
+const NEAR = 5;
+
+const tripletRgba = (triplet: string): Rgba => {
+  const [r, g, b] = triplet.split(' ').map(Number);
+  return [r, g, b, 1];
+};
+
 /** Every color function in a shadow list, rewritten to one form so both sides compare. */
 const normalizeShadow = (value: string) =>
   value
@@ -458,8 +668,11 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
  * nothing for a decision reads as transparent, no border or square, and text with no color of its
  * own inherits the body copy (`text-primary`).
  *
- * The score is how many decisions match, per mode. Run with `CLICKUI_PARITY_REPORT=1` to print
- * every decision; the floors below only move up.
+ * Every decision is pinned per mode: `match`, `near` (a color within deltaE2000 5), `deviation` (a
+ * departure the theme makes on purpose, with its reason), or `not expressible` (listed in
+ * `notExpressible` with the issue that tracks the missing role). A decision that improves or
+ * regresses fails by name, so move its pin when a change closes a gap. Run with
+ * `CLICKUI_PARITY_REPORT=1` to print every decision and every role's status.
  */
 type ParityKind = 'color' | 'shape';
 type Utility = 'bg' | 'text' | 'border' | 'rounded' | 'w' | 'h' | 'py' | 'px' | 'gap';
@@ -472,9 +685,13 @@ interface ParityProbe {
   /** A state the utility is written under, such as `data-[state=checked]:`. */
   variant?: string;
   /** Renders the primitive and returns the element that paints the decision. */
-  element: () => Element;
-  /** Why the theme departs from Click UI on purpose, when it does. */
-  deviation?: string;
+  element?: () => Element;
+  /** The value a stylesheet draws for the decision, when no class a theme role backs does. */
+  literal?: () => string;
+  /** The modes where the theme lands within deltaE2000 5 of Click UI rather than on it. */
+  near?: ThemeMode[];
+  /** Why the theme departs from Click UI on purpose, per mode. */
+  deviation?: Partial<Record<ThemeMode, string>>;
 }
 
 function mount(tree: ReactElement, selector: string): Element {
@@ -534,6 +751,45 @@ const dropdownProbe = () =>
     '[role="combobox"]',
   );
 
+/** The value of `property` in the first `selector` rule of a primitive's stylesheet. */
+const stylesheetValue = (file: string, selector: string, property: string) => () => {
+  const css = readFileSync(join(__dirname, '../../components', file), 'utf8');
+  const start = css.indexOf(`${selector} {`);
+  const rule = start === -1 ? '' : css.slice(start, css.indexOf('}', start));
+  const value = new RegExp(`${property}:\\s*([^;]+);`).exec(rule)?.[1];
+  if (value === undefined) {
+    throw new Error(`${file} has no ${property} in a ${selector} rule`);
+  }
+  return value;
+};
+
+/**
+ * The open Dropdown menu's corner. jsdom loads no stylesheet, so the rendered popover is checked
+ * to take its corner from `.popover-ui` alone (no radius utility or inline radius overrides it)
+ * before the rule's value is read.
+ */
+const popoverCorner = () => {
+  try {
+    fireEvent.click(dropdownProbe());
+    const popover = document.querySelector<HTMLElement>('[role="listbox"]');
+    if (!popover?.classList.contains('popover-ui')) {
+      throw new Error('The open Dropdown menu no longer carries .popover-ui');
+    }
+    const override = [...popover.classList].find((name) => /^rounded(-|$)/.test(name));
+    if (override !== undefined || popover.style.borderRadius !== '') {
+      throw new Error(`The open Dropdown menu sets its own corner (${override ?? 'inline'})`);
+    }
+    return stylesheetValue('Dropdown.css', '.popover-ui', 'border-radius')();
+  } finally {
+    cleanup();
+  }
+};
+
+const bothModes = (reason: string): Partial<Record<ThemeMode, string>> => ({
+  light: reason,
+  dark: reason,
+});
+
 const buttonProbe = (variant: 'default' | 'outline') => () =>
   mount(createElement(Button, { variant }, 'Save'), 'button');
 
@@ -559,6 +815,7 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'border',
     element: buttonProbe('outline'),
+    near: ['dark'],
   },
   'Button corner': {
     token: 'border.radii.1',
@@ -571,7 +828,6 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'shape',
     utility: 'h',
     element: buttonProbe('default'),
-    deviation: 'Click UI sizes its button by content; the 32px it draws is the menu row height',
   },
   'Button inline padding': {
     token: 'click.button.basic.space.x',
@@ -596,7 +852,9 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'border',
     element: inputProbe,
-    deviation: 'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
+    deviation: bothModes(
+      'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
+    ),
   },
   'Field text': {
     token: 'click.field.color.text.default',
@@ -615,13 +873,21 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'border',
     element: dropdownProbe,
-    deviation: 'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
+    deviation: bothModes(
+      'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
+    ),
   },
   'Dropdown trigger corner': {
     token: 'border.radii.1',
     kind: 'shape',
     utility: 'rounded',
     element: dropdownProbe,
+  },
+  'Dropdown menu corner': {
+    token: 'border.radii.1',
+    kind: 'shape',
+    utility: 'rounded',
+    literal: popoverCorner,
   },
   'Dialog surface': {
     token: 'click.dialog.color.background.default',
@@ -640,12 +906,16 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'text',
     element: dialogProbe('h2'),
+    near: ['light', 'dark'],
   },
   'Dialog scrim': {
     token: 'click.dialog.color.opaqueBackground.default',
     kind: 'color',
     utility: 'bg',
     element: dialogProbe('.inset-0'),
+    deviation: {
+      dark: 'surface-overlay keeps the dark scrim black; Click UI #606060 lifts the page it covers',
+    },
   },
   'Dialog corner': {
     token: 'click.dialog.radii.all',
@@ -666,7 +936,10 @@ const parityProbes: Record<string, ParityProbe> = {
     utility: 'bg',
     variant: 'data-[state=unchecked]:',
     element: switchProbe(false),
-    deviation: 'switch-unchecked holds the off track to the 3:1 non-text floor #cccfd3 misses',
+    deviation: {
+      light: 'switch-unchecked holds the off track to the 3:1 non-text floor #cccfd3 misses',
+      dark: 'switch-unchecked holds the off track to the 3:1 non-text floor #606060 misses',
+    },
   },
   'Switch thumb': {
     token: 'click.switch.color.indicator.default',
@@ -740,13 +1013,16 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'shape',
     utility: 'rounded',
     element: tableProbe('div'),
-    deviation: 'the table has no frame of its own; each consumer draws the panel it sits in',
+    deviation: bothModes(
+      'the table has no frame of its own; each consumer draws the panel it sits in',
+    ),
   },
   'Badge fill': {
     token: 'click.badge.opaque.color.background.default',
     kind: 'color',
     utility: 'bg',
     element: badgeProbe,
+    near: ['light'],
   },
   'Badge label': {
     token: 'click.badge.opaque.color.text.default',
@@ -768,11 +1044,63 @@ const parityProbes: Record<string, ParityProbe> = {
   },
 };
 
-/** The fewest decisions per mode that must match; raise a floor when a change closes a gap. */
-const parityFloors: Record<ThemeMode, Record<ParityKind, number>> = {
-  light: { color: 10, shape: 13 },
-  dark: { color: 10, shape: 13 },
+interface NotExpressible {
+  /** The parity decisions the gap leaves unmatched, per mode. */
+  decisions: Partial<Record<ThemeMode, string[]>>;
+  /** Why no theme can reach Click UI's value today. */
+  reason: string;
+  /** The berry-13/LibreChat issue that tracks the role or change that closes it. */
+  issue: string;
+}
+
+/**
+ * Every Click UI decision the theme engine cannot express, and why. Each one needs a role or a
+ * primitive change that keeps the default theme pixel-identical; a theme's values alone cannot
+ * close it. Remove an entry when the change that closes it lands, and pin its decisions to what
+ * they then measure.
+ */
+const notExpressible: Record<string, NotExpressible> = {
+  'Field fill and ink': {
+    decisions: { light: ['Field fill', 'Field text'], dark: ['Field fill', 'Field text'] },
+    reason:
+      'the field is transparent and inks with text-primary; a color role is an opaque triplet, so no role can default to no fill, and no role holds field ink apart from body copy',
+    issue: 'https://github.com/berry-13/LibreChat/issues/206',
+  },
+  'Dialog edge': {
+    decisions: { light: ['Dialog stroke'], dark: ['Dialog stroke'] },
+    reason:
+      'the dialog draws no border and no role sets a dialog stroke width, so a 1px edge would change the default dialog',
+    issue: 'https://github.com/berry-13/LibreChat/issues/138',
+  },
+  'Badge label': {
+    decisions: { light: ['Badge label'], dark: ['Badge label'] },
+    reason:
+      'Badge inks with text-primary; Click UI labels badges in text.muted, and no role holds badge ink apart from body copy',
+    issue: 'https://github.com/berry-13/LibreChat/issues/143',
+  },
+  'Dropdown menu corner': {
+    decisions: { light: ['Dropdown menu corner'], dark: ['Dropdown menu corner'] },
+    reason:
+      'the popover corner is a 0.7rem literal in Dropdown.css, and no radius role defaults to 0.7rem',
+    issue: 'https://github.com/berry-13/LibreChat/issues/196',
+  },
 };
+
+type Verdict = 'match' | 'near' | 'deviation' | 'not expressible';
+
+const notExpressibleGap = (mode: ThemeMode, decision: string) =>
+  Object.entries(notExpressible).find(([, gap]) => gap.decisions[mode]?.includes(decision))?.[0];
+
+/** What a decision is pinned to in `mode`. */
+function pinnedVerdict(mode: ThemeMode, decision: string, probe: ParityProbe): Verdict {
+  if (notExpressibleGap(mode, decision) !== undefined) {
+    return 'not expressible';
+  }
+  if (probe.deviation?.[mode] !== undefined) {
+    return 'deviation';
+  }
+  return probe.near?.includes(mode) ? 'near' : 'match';
+}
 
 const radiusRoles: Record<string, keyof IThemeAppearance> = {
   sm: 'radiusSm',
@@ -844,6 +1172,11 @@ function roleColor(resolved: Resolved, name: string): Rgba | undefined {
   if (role === 'transparent') {
     return [0, 0, 0, 0];
   }
+  /** `bg-scrim` is `surface-overlay` at the theme's scrim opacity (`--color-scrim` in tokens.css). */
+  if (role === 'scrim') {
+    const [r, g, b] = tripletRgba(resolved.colors['rgb-surface-overlay']);
+    return [r, g, b, Number(resolved.appearance.scrimOpacity)];
+  }
   const triplet = resolved.colors[`rgb-${role}` as keyof IThemeRGB];
   if (triplet === undefined) {
     return undefined;
@@ -898,40 +1231,107 @@ function shapeValue(utility: Utility, role: string | undefined, resolved: Resolv
   if (role === undefined) {
     return utility === 'rounded' ? '0px' : 'auto';
   }
-  if (isSizeUtility(utility)) {
-    return sizeValue(utility, role, resolved) ?? 'auto';
+  const value = isSizeUtility(utility)
+    ? sizeValue(utility, role, resolved)
+    : (fixedRadii[role] ?? resolved.appearance[radiusRoles[role]]);
+  if (value === undefined) {
+    throw new Error(`No theme role or scale step resolves ${utility}-${role}`);
   }
-  return fixedRadii[role] ?? resolved.appearance[radiusRoles[role]];
+  return value;
 }
+
+/** `off` is any departure past near; the pin says whether it is a deviation or a gap. */
+type Measured = 'match' | 'near' | 'off';
 
 interface ParityResult {
   decision: string;
-  kind: ParityKind;
-  match: boolean;
+  measured: Measured;
   theme: string;
   clickUi: string;
-  deviation?: string;
 }
 
+const nearColor = (a: Rgba, b: Rgba) => Math.abs(a[3] - b[3]) < 0.01 && deltaE(a, b) < NEAR;
+
 function measure(mode: ThemeMode, decision: string, probe: ParityProbe): ParityResult {
+  const source = clickToken(mode, probe.token);
+  const base = { decision, clickUi: source };
+  if (probe.literal) {
+    const value = probe.literal();
+    return { ...base, theme: `literal = ${value}`, measured: value === source ? 'match' : 'off' };
+  }
+  if (!probe.element) {
+    throw new Error(`Parity probe ${decision} has neither an element nor a literal`);
+  }
   const resolved = resolveTheme(clickHouseTheme, mode);
   const element = probe.element();
-  const source = tokens[mode][probe.token];
   const role =
     probe.utility === 'text'
       ? inheritedTextRole(element, probe, resolved)
       : paintedRole(element, probe, resolved);
   cleanup();
-  const base = { decision, kind: probe.kind, clickUi: source, deviation: probe.deviation };
+  const painted = role === undefined ? 'unpainted' : `${probe.utility}-${role}`;
   if (probe.kind === 'shape') {
     const theme = shapeValue(probe.utility, role, resolved);
-    const painted = role === undefined ? 'unpainted' : `${probe.utility}-${role}`;
-    return { ...base, theme: `${painted} = ${theme}`, match: theme === source };
+    return {
+      ...base,
+      theme: `${painted} = ${theme}`,
+      measured: theme === source ? 'match' : 'off',
+    };
   }
   const color = role === undefined ? ([0, 0, 0, 0] as Rgba) : roleColor(resolved, role);
-  const painted = role === undefined ? 'unpainted' : `${probe.utility}-${role}`;
   const theme = `${painted} = ${color ? formatRgba(color) : 'unresolved'}`;
-  return { ...base, theme, match: color !== undefined && sameColor(color, clickColor(source)) };
+  if (color === undefined) {
+    return { ...base, theme, measured: 'off' };
+  }
+  const clickUi = clickColor(source);
+  if (sameColor(color, clickUi)) {
+    return { ...base, theme, measured: 'match' };
+  }
+  return { ...base, theme, measured: nearColor(color, clickUi) ? 'near' : 'off' };
+}
+
+/** The status of every color role against the Click UI token that names its job. */
+function roleStatuses(mode: ThemeMode): Array<[keyof IThemeRGB, RoleStatus, string]> {
+  const colors = clickHouseTheme.modes[mode]?.colors ?? {};
+  return (Object.keys(colors) as Array<keyof IThemeRGB>).map((key) => {
+    const departure = departures[mode][key];
+    const token = departure?.counterpart ?? colorSources[mode][key];
+    if (token === undefined) {
+      return [key, 'mismatch', 'unsourced'];
+    }
+    const theme = tripletRgba(colors[key] ?? '');
+    const counterpart = clickColor(clickToken(mode, token));
+    const distance = deltaE(theme, counterpart);
+    const departed: RoleStatus = distance < NEAR ? 'near' : 'mismatch';
+    const status = sameRgb(colors[key] ?? '', counterpart) ? 'match' : departed;
+    const why = departure === undefined ? '' : `: ${departure.reason}`;
+    return [key, status, `${token} dE ${distance.toFixed(2)}${why}`];
+  });
+}
+
+/** The status of every appearance role the theme sets. */
+function appearanceStatuses(mode: ThemeMode): Array<[keyof IThemeAppearance, RoleStatus, string]> {
+  const appearance = clickHouseTheme.modes[mode]?.appearance ?? {};
+  return (Object.keys(appearance) as Array<keyof IThemeAppearance>).map((key) => {
+    const decision = appearanceDecisions[key];
+    if (decision?.token !== undefined) {
+      const source = clickToken(mode, decision.token);
+      const same = comparable(key, String(appearance[key])) === comparable(key, source);
+      return [key, same ? 'match' : 'mismatch', `${decision.token} ${source}: ${decision.reason}`];
+    }
+    if (decision !== undefined) {
+      return [key, decision.status, decision.reason];
+    }
+    const token = appearanceSources[key] ?? 'unsourced';
+    const theme = String(appearance[key]);
+    const source = clickToken(mode, token);
+    if (comparable(key, theme) !== comparable(key, source)) {
+      return [key, 'mismatch', token];
+    }
+    /** The mono stack leads with Click UI's face and keeps the default theme's tail. */
+    const verbatim = theme.replace(/;$/, '').trim() === source.replace(/;$/, '').trim();
+    return [key, verbatim || key !== 'monoFontFamily' ? 'match' : 'near', token];
+  });
 }
 
 describe('ClickHouse theme drift against Click UI', () => {
@@ -1000,7 +1400,9 @@ describe('ClickHouse theme drift against Click UI', () => {
   it.each(modes)('keeps only the %s tokens the theme cites in the snapshot', (mode) => {
     const cited = new Set([
       ...Object.values(colorSources[mode]),
+      ...Object.values(departures[mode]).map((departure) => departure.counterpart),
       ...Object.values(appearanceSources),
+      ...Object.values(appearanceDecisions).flatMap(({ token }) => (token ? [token] : [])),
       ...Object.values(parityProbes).map((probe) => probe.token),
     ]);
 
@@ -1009,36 +1411,115 @@ describe('ClickHouse theme drift against Click UI', () => {
 });
 
 describe('ClickHouse primitive parity against Click UI components', () => {
-  it.each(modes)('matches at least the recorded number of %s decisions', (mode) => {
-    const results = Object.entries(parityProbes).map(([decision, probe]) =>
-      measure(mode, decision, probe),
-    );
-    const score = (kind: ParityKind) => {
-      const scoped = results.filter((result) => result.kind === kind);
-      const matched = scoped.filter((result) => result.match).length;
-      return { matched, total: scoped.length };
-    };
-    const color = score('color');
-    const shape = score('shape');
-
+  const report = (lines: string[]) => {
     if (process.env.CLICKUI_PARITY_REPORT) {
-      const verdict = ({ match, deviation }: ParityResult) => {
-        if (match) {
-          return 'match';
-        }
-        return deviation ? 'deviation' : 'gap';
-      };
-      const rows = results.map(
-        (result) => `${verdict(result)}\t${result.decision}\t${result.theme}\t${result.clickUi}`,
-      );
-      const percent = ({ matched, total }: { matched: number; total: number }) =>
-        `${matched}/${total} (${((matched / total) * 100).toFixed(1)}%)`;
-      console.info(
-        [`${mode}: color ${percent(color)}, shape ${percent(shape)}`, ...rows].join('\n'),
-      );
+      console.info(lines.join('\n'));
     }
+  };
 
-    expect(color.matched).toBeGreaterThanOrEqual(parityFloors[mode].color);
-    expect(shape.matched).toBeGreaterThanOrEqual(parityFloors[mode].shape);
+  it.each(modes)('lands every %s decision on its pinned verdict', (mode) => {
+    const rows = Object.entries(parityProbes).map(([decision, probe]) => {
+      const pinned = pinnedVerdict(mode, decision, probe);
+      const result = measure(mode, decision, probe);
+      const why = probe.deviation?.[mode] ?? notExpressibleGap(mode, decision) ?? '';
+      return { pinned, result, why };
+    });
+    const tally = rows.reduce<Record<string, number>>(
+      (counts, { pinned }) => ({ ...counts, [pinned]: (counts[pinned] ?? 0) + 1 }),
+      {},
+    );
+    report([
+      `${mode}: ${rows.length} decisions ${JSON.stringify(tally)}`,
+      ...rows.map(
+        ({ pinned, result, why }) =>
+          `${pinned}\t${result.decision}\t${result.theme}\t${result.clickUi}\t${why}`,
+      ),
+    ]);
+
+    const expected = (pinned: Verdict): Measured =>
+      pinned === 'match' || pinned === 'near' ? pinned : 'off';
+    const moved = rows
+      .filter(({ pinned, result }) => result.measured !== expected(pinned))
+      .map(
+        ({ pinned, result }) =>
+          `${result.decision}: pinned ${pinned}, measures ${result.measured} (${result.theme}, Click UI ${result.clickUi})`,
+      );
+    expect(moved).toEqual([]);
+  });
+
+  it('keeps the not-expressible list to real, tracked, unmatched decisions', () => {
+    const problems = Object.entries(notExpressible).flatMap(
+      ([gap, { decisions, reason, issue }]) => [
+        ...(reason.trim() === '' ? [`${gap}: no reason`] : []),
+        ...(Object.values(decisions).some((listed) => (listed?.length ?? 0) > 0)
+          ? []
+          : [`${gap}: names no decision`]),
+        ...(/^https:\/\/github\.com\/berry-13\/LibreChat\/issues\/\d+$/.test(issue)
+          ? []
+          : [`${gap}: ${issue} is not a berry-13/LibreChat issue`]),
+        ...modes.flatMap((mode) =>
+          (decisions[mode] ?? []).flatMap((decision) => {
+            const probe = parityProbes[decision];
+            if (probe === undefined) {
+              return [`${gap}: ${decision} is not a parity decision`];
+            }
+            if (notExpressibleGap(mode, decision) !== gap) {
+              return [`${gap}: ${mode} ${decision} is listed under another gap too`];
+            }
+            return probe.deviation?.[mode] === undefined && probe.near?.includes(mode) !== true
+              ? []
+              : [`${gap}: ${mode} ${decision} is also pinned near or deviation`];
+          }),
+        ),
+      ],
+    );
+    report([
+      `not expressible: ${Object.keys(notExpressible).length}`,
+      ...Object.entries(notExpressible).map(
+        ([gap, { reason, issue }]) => `${gap}\t${issue}\t${reason}`,
+      ),
+    ]);
+
+    expect(problems).toEqual([]);
+  });
+
+  it.each(modes)('pins the %s status of every color role against Click UI', (mode) => {
+    const statuses = roleStatuses(mode);
+    const count = (status: RoleStatus) => statuses.filter(([, value]) => value === status).length;
+    report([
+      `${mode} roles: match ${count('match')}, near ${count('near')}, mismatch ${count('mismatch')}`,
+      ...statuses.map(([key, status, detail]) => `${status}\t${key}\t${detail}`),
+    ]);
+
+    const moved = statuses.flatMap(([key, status]) => {
+      const pinned = departures[mode][key]?.status ?? 'match';
+      return status === pinned ? [] : [`${key}: pinned ${pinned}, measures ${status}`];
+    });
+    const stale = Object.keys(departures[mode]).filter(
+      (key) => !statuses.some(([role]) => role === key),
+    );
+    expect({ moved, stale }).toEqual({ moved: [], stale: [] });
+  });
+
+  it.each(modes)('pins the %s status of every appearance role against Click UI', (mode) => {
+    const statuses = appearanceStatuses(mode);
+    report([
+      `${mode} appearance:`,
+      ...statuses.map(([key, status, detail]) => `${status}\t${key}\t${detail}`),
+    ]);
+
+    const appearance = clickHouseTheme.modes[mode]?.appearance ?? {};
+    const moved = Object.entries(appearanceDecisions).flatMap(([key, { value }]) => {
+      const theme = String(appearance[key as keyof IThemeAppearance]);
+      return theme === value ? [] : [`${key}: decided at ${value}, the theme sets ${theme}`];
+    });
+
+    expect(moved).toEqual([]);
+    expect(statuses.filter(([, status]) => status === 'mismatch').map(([key]) => key)).toEqual([
+      'text2xl',
+    ]);
+    expect(statuses.filter(([, status]) => status === 'near').map(([key]) => key)).toEqual([
+      'monoFontFamily',
+    ]);
   });
 });
