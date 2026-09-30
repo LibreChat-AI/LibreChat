@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { Constants, promptCategoryValueSchema } from 'librechat-data-provider';
 
-export const promptGroupCategorySchema = z.union([z.literal(''), promptCategoryValueSchema]);
+type TPromptGroupCategorySchema = z.ZodUnion<[z.ZodLiteral<''>, typeof promptCategoryValueSchema]>;
+
+export const promptGroupCategorySchema: TPromptGroupCategorySchema = z.union([
+  z.literal(''),
+  promptCategoryValueSchema,
+]);
 
 /**
  * Schema for validating prompt group update payloads.
@@ -75,6 +80,8 @@ export function safeValidatePromptGroupUpdate(data: unknown): z.SafeParseReturnT
   return updatePromptGroupSchema.safeParse(data);
 }
 
-export function safeValidatePromptGroupCategory(category: unknown) {
+export function safeValidatePromptGroupCategory(
+  category: unknown,
+): z.SafeParseReturnType<unknown, string> {
   return promptGroupCategorySchema.safeParse(category);
 }
