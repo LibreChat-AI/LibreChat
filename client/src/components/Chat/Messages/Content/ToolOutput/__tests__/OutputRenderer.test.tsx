@@ -44,6 +44,24 @@ describe('OutputRenderer', () => {
     expect(shown).toHaveLength(15);
   });
 
+  it('keeps whitespace-only terminal output', () => {
+    const { container } = render(<OutputRenderer text={'\n\n'} variant="terminal" />);
+    expect(container.querySelector('pre')?.textContent).toBe('\n\n');
+  });
+
+  it('does not count a final newline as a line when collapsing terminal output', () => {
+    const numbered = (n: number) =>
+      Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+    const { unmount } = render(<OutputRenderer text={numbered(20)} variant="terminal" />);
+    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
+    unmount();
+
+    render(<OutputRenderer text={numbered(30)} variant="terminal" />);
+    const shown = screen.getByText(/line 30/).textContent?.split('\n') ?? [];
+    expect(shown).toHaveLength(15);
+    expect(shown[0]).toBe('line 16');
+  });
+
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
   });

@@ -50,14 +50,15 @@ interface ExtractedText {
 }
 
 function extractText(raw: string, verbatim = false): ExtractedText {
+  /** Command output keeps its exact bytes, whitespace-only output included:
+   *  indentation and blank lines are part of it. */
+  if (verbatim) {
+    return { text: raw, rawError: '', error: isError(raw.trim()), isJson: false };
+  }
+
   const trimmed = raw.trim();
   if (!trimmed) {
     return { text: '', rawError: '', error: false, isJson: false };
-  }
-
-  /** Command output keeps its exact bytes: indentation and blank lines are part of it. */
-  if (verbatim) {
-    return { text: raw, rawError: '', error: isError(trimmed), isJson: false };
   }
 
   if (isError(trimmed)) {
@@ -137,7 +138,9 @@ export default function OutputRenderer({
     return null;
   }
 
-  const lines = displayText.split('\n');
+  /** A final newline ends the last line; it does not start an empty one. */
+  const body = displayText.endsWith('\n') ? displayText.slice(0, -1) : displayText;
+  const lines = body.split('\n');
   const needsTruncation = lines.length > TRUNCATE_LINES;
   const collapsedLines = terminal ? lines.slice(-VISIBLE_LINES) : lines.slice(0, VISIBLE_LINES);
   const visibleText = needsTruncation && !isExpanded ? collapsedLines.join('\n') : displayText;
