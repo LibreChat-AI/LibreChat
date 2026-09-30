@@ -1,6 +1,9 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { createBashProgrammaticToolCallingTool } from '@librechat/agents';
+import type { createBashProgrammaticToolCallingSchema } from '@librechat/agents';
 import type { AddressInfo } from 'node:net';
+import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeBridgeFetch } from './bridge';
 import {
   ATTACHED_WORKSPACE_BASH_DESCRIPTION,
@@ -130,6 +133,71 @@ describe('programmatic Bash Git identity', () => {
       await once(server, 'close');
     }
   });
+
+  test.each([false, true])(
+    'preserves the complete attached SDK schema with configured defaults and identity=%s',
+    (withIdentity) => {
+      const context: CodeExecutionContext = {
+        baseUrl: 'http://127.0.0.1:9999/v1',
+        codeSessionKey: 'execute_code:stateful:attached',
+        executionProfile: 'stateful',
+        environmentType: 'attached',
+        statefulSessions: true,
+        codeWorkspace: {
+          environmentId: 'machine',
+          workspaceId: 'project-a',
+          workspaceInstanceId: 'a'.repeat(64),
+          operations: ['execute_command'],
+          maxCommandTimeoutMs: 80_000,
+        },
+        codeEnvironmentConfigSchema: {
+          limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 },
+        },
+      };
+      const baseline = createBashProgrammaticToolCallingTool({
+        baseUrl: context.baseUrl,
+        authHeaders: () => ({}),
+        executionProfile: context.executionProfile,
+        workspaceId: context.codeWorkspace?.workspaceId,
+        workspaceInstanceId: context.codeWorkspace?.workspaceInstanceId,
+        runTimeoutMs: 80_000,
+      });
+      const originalSchema = structuredClone(baseline.schema) as ReturnType<
+        typeof createBashProgrammaticToolCallingSchema
+      >;
+      const configured = createContextProgrammaticBashTool(
+        () => ({}),
+        context,
+        withIdentity ? { name: 'Lia', email: 'lia@example.com' } : undefined,
+      );
+      const schema = configured.schema as ReturnType<
+        typeof createBashProgrammaticToolCallingSchema
+      >;
+      expect(schema.properties.code).toEqual(originalSchema.properties.code);
+      expect(schema.properties.code.description).toContain('ATTACHED WORKSPACE EXECUTION');
+      expect(schema.properties.code.description).toContain('${LIBRECHAT_CODE_DATA_DIR:-/mnt/data}');
+      expect(schema).toEqual({
+        ...originalSchema,
+        properties: {
+          ...originalSchema.properties,
+          timeout: {
+            ...originalSchema.properties.timeout,
+            default: 60_000,
+            description: expect.stringContaining('when timeout is omitted'),
+          },
+        },
+      });
+      expect(configured.description).toBe(baseline.description);
+      expect(configured.schema).not.toBe(baseline.schema);
+      expect(baseline.schema).toEqual(originalSchema);
+      expect(
+        createContextProgrammaticBashTool(() => ({}), {
+          ...context,
+          codeEnvironmentConfigSchema: { limits: { maxCommandTimeoutMs: 80_000 } },
+        }).schema,
+      ).toEqual(originalSchema);
+    },
+  );
 
   test('uses the foreground default only when the real SDK programmatic call omits timeout', async () => {
     const received: { timeout: number; code: string }[] = [];

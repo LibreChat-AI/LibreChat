@@ -5,13 +5,13 @@ import {
   BashExecutionToolDefinition,
   BashToolOutputReferencesGuide,
   createBashProgrammaticToolCallingTool,
-  createBashProgrammaticToolCallingSchema,
 } from '@librechat/agents';
 import type {
   AgentGitIdentity,
   CodeEnvironmentUserConfigSchema,
   CodeWorkspaceDescriptor,
 } from 'librechat-data-provider';
+import type { createBashProgrammaticToolCallingSchema } from '@librechat/agents';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { LCTool } from '@librechat/agents';
 import type { WorkspaceExecuteCommandResult } from './workspace';
@@ -357,7 +357,9 @@ export function createContextProgrammaticBashTool(
   if (configuredDefault == null) return bashTool;
 
   const maxTimeoutMs = options.runTimeoutMs ?? WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS;
-  const schema = createBashProgrammaticToolCallingSchema(maxTimeoutMs);
+  const schema = structuredClone(bashTool.schema) as ReturnType<
+    typeof createBashProgrammaticToolCallingSchema
+  >;
   const minimumTimeoutMs = schema.properties.timeout.minimum;
   if (maxTimeoutMs < minimumTimeoutMs) {
     throw new Error(
