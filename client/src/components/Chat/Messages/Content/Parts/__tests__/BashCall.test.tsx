@@ -447,6 +447,12 @@ describe('BashCall output pane', () => {
     expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument();
   });
 
+  it('keeps leading whitespace and blank lines verbatim', () => {
+    const output = '\n  indented\n\n    deeper';
+    finished(output);
+    expect(screen.getByText(/indented/).textContent).toBe(output);
+  });
+
   it('copies the raw output', () => {
     const output = 'ok 1\nok 2\n';
     finished(output);

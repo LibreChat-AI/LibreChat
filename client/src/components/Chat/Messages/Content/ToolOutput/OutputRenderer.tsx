@@ -55,11 +55,16 @@ function extractText(raw: string, verbatim = false): ExtractedText {
     return { text: '', rawError: '', error: false, isJson: false };
   }
 
+  /** Command output keeps its exact bytes: indentation and blank lines are part of it. */
+  if (verbatim) {
+    return { text: raw, rawError: '', error: isError(trimmed), isJson: false };
+  }
+
   if (isError(trimmed)) {
     return { text: cleanError(trimmed), rawError: trimmed, error: true, isJson: false };
   }
 
-  if (!verbatim && (trimmed.startsWith('[') || trimmed.startsWith('{'))) {
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     try {
       const parsed: unknown = JSON.parse(trimmed);
 
