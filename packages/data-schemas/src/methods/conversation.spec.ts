@@ -8953,6 +8953,33 @@ describe('stampForcedRetention', () => {
     expect((await ConversationTag.findOne({ user: userId, tag: 'work' }).lean())?.count).toBe(0);
   });
 
+  it('gives a stamped message the deadline a concurrent stamp stored first', async () => {
+    const winningDeadline = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const originalUpdateOne = Conversation.updateOne.bind(Conversation);
+    const updateOne = jest
+      .spyOn(Conversation, 'updateOne')
+      .mockImplementationOnce(((filter, update, options) =>
+        originalUpdateOne(
+          { conversationId },
+          { $set: { isTemporary: true, expiredAt: winningDeadline, tags: [] } },
+          { timestamps: false },
+        ).then(() => originalUpdateOne(filter, update, options))) as typeof Conversation.updateOne);
+
+    try {
+      await methods.stampForcedRetention(
+        { userId, interfaceConfig: ephemeral },
+        { conversationId, messageIds: [messageId] },
+      );
+    } finally {
+      updateOne.mockRestore();
+    }
+
+    const convo = await Conversation.findOne({ conversationId }).lean();
+    const message = await MessageModel().findOne({ messageId }).lean();
+    expect(convo?.expiredAt).toEqual(winningDeadline);
+    expect(message?.expiredAt).toEqual(winningDeadline);
+  });
+
   it('does not release the bookmark count again when the converted chat is deleted', async () => {
     await Conversation.create({
       conversationId: uuidv4(),

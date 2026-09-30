@@ -2311,6 +2311,7 @@ export function createConversationMethods(
       }
     }
 
+    let stampedDeadline = stored.expiredAt != null;
     if (stored.isTemporary !== true) {
       /**
        * Conditional on the transition, so concurrent stamps release the bookmark counts once;
@@ -2321,19 +2322,28 @@ export function createConversationMethods(
         { $set: { isTemporary: true, expiredAt, tags: [] } },
         { timestamps: false },
       );
+      stampedDeadline ||= converted.modifiedCount > 0;
       if (converted.modifiedCount > 0 && stored.tags?.length) {
         await decrementTagCounts(mongoose, userId, stored.tags);
       }
     } else if (stored.expiredAt == null) {
-      await Conversation.updateOne(
+      const stamped = await Conversation.updateOne(
         { _id: stored._id, expiredAt: null },
         { $set: { expiredAt } },
         { timestamps: false },
       );
+      stampedDeadline = stamped.modifiedCount > 0;
     }
 
     if (messageIds.length === 0) {
       return;
+    }
+    if (!stampedDeadline) {
+      /** A concurrent stamp set the conversation's deadline first; its messages share that one. */
+      const current = await Conversation.findOne({ _id: stored._id })
+        .select({ expiredAt: 1 })
+        .lean<{ expiredAt?: Date | null } | null>();
+      expiredAt = current?.expiredAt ?? expiredAt;
     }
     const Message = mongoose.models.Message as Model<IMessage>;
     await Message.updateMany(
