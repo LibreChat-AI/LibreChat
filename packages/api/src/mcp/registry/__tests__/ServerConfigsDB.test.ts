@@ -1049,6 +1049,101 @@ describe('ServerConfigsDB', () => {
       ).not.toContain('another-users-secret');
     });
 
+    it.each([
+      'MCP_API_KEY_EXTRA',
+      `MCP_API_KEY_${'a'.repeat(63)}`,
+      `MCP_API_KEY_${'g'.repeat(64)}`,
+      `MCP_API_KEY_${'a'.repeat(64)}_EXTRA`,
+    ])('preserves explicit variable %s across add, update, and upsert', async (explicitField) => {
+      const staleField = `MCP_API_KEY_${'c'.repeat(64)}`;
+      const declaration = { title: 'Explicit setting', description: 'Required per-user setting' };
+      const original: typeof config = {
+        ...config,
+        customUserVars: {
+          [explicitField]: declaration,
+          MCP_API_KEY: { title: 'API Key', description: 'Legacy generated key' },
+          [staleField]: { title: 'API Key', description: 'Stale generated key' },
+        },
+        headers: { 'X-Setting': `{{${explicitField}}}` },
+        requestHeaders: { 'X-Chat-Setting': `{{${explicitField}}}` },
+      };
+      const created = await serverConfigsDB.add('temp-name', original, userId);
+      const field = Object.keys(created.config.customUserVars!).find(
+        (name) => name !== explicitField,
+      )!;
+      expect(field).toMatch(/^MCP_API_KEY_[a-f0-9]{64}$/);
+      const savedKey = await saveUserKey(created.serverName, field);
+      expect(created.config.customUserVars).toEqual({
+        [explicitField]: declaration,
+        [field]: { title: 'API Key', description: 'Your API key for this MCP server' },
+      });
+      expect(getMissingCustomUserVars(created.config, savedKey)).toEqual([explicitField]);
+      await dbMethods.updatePluginAuth({
+        userId: userId2,
+        pluginKey: `mcp_${created.serverName}`,
+        authField: explicitField,
+        value: await encrypt('explicit-setting'),
+      });
+      const loadVars = async () => {
+        const authMap = await getUserMCPAuthMap({
+          userId: userId2,
+          servers: [created.serverName],
+          findPluginAuthsByKeys: dbMethods.findPluginAuthsByKeys,
+        });
+        return authMap[`mcp_${created.serverName}`];
+      };
+      const assertResolved = async (current: ParsedServerConfig) => {
+        const vars = await loadVars();
+        expect(current.customUserVars).toEqual({
+          [explicitField]: declaration,
+          [field]: { title: 'API Key', description: 'Your API key for this MCP server' },
+        });
+        expect(getMissingCustomUserVars(current, vars)).toEqual([]);
+        expect(processMCPEnv({ options: current, customUserVars: vars })).toMatchObject({
+          headers: {
+            Authorization: 'Bearer another-users-secret',
+            'X-Setting': 'explicit-setting',
+          },
+        });
+      };
+      await assertResolved(created.config);
+      await serverConfigsDB.update(
+        created.serverName,
+        { ...original, description: 'Updated' },
+        userId,
+      );
+      await assertResolved((await serverConfigsDB.get(created.serverName, userId))!);
+      await serverConfigsDB.upsert(
+        created.serverName,
+        { ...original, description: 'Upserted' },
+        userId,
+      );
+      await assertResolved((await serverConfigsDB.get(created.serverName, userId))!);
+
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...original,
+          url: 'https://replacement.example.com/mcp',
+          customUserVars: { ...original.customUserVars, [field]: { title: 'API Key' } },
+          headers: { ...original.headers, 'X-Old-Key': `{{${field}}}` },
+        },
+        userId,
+      );
+      const rebound = (await serverConfigsDB.get(created.serverName, userId))!;
+      const vars = await loadVars();
+      const reboundField = Object.keys(rebound.customUserVars!).find(
+        (name) => name !== explicitField,
+      )!;
+      expect(reboundField).not.toBe(field);
+      expect(rebound.customUserVars?.[explicitField]).toEqual(declaration);
+      expect(Object.keys(rebound.customUserVars!)).toHaveLength(2);
+      expect(getMissingCustomUserVars(rebound, vars)).toEqual([reboundField]);
+      const resolved = processMCPEnv({ options: rebound, customUserVars: vars });
+      expect(resolved).toMatchObject({ headers: { 'X-Setting': 'explicit-setting' } });
+      expect(JSON.stringify(resolved)).not.toContain('another-users-secret');
+    });
+
     it('preserves saved keys for equivalent and cosmetic updates', async () => {
       const created = await serverConfigsDB.add('temp-name', config, userId);
       const field = Object.keys(created.config.customUserVars!)[0];

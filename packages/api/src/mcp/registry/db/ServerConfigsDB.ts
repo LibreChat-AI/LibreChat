@@ -14,6 +14,7 @@ import { getUserApiKeyVariable, requireApiKeyReentryForRebinding } from '~/mcp/r
 import { normalizeLegacyHeaderMaps } from '~/mcp/registry/compat';
 import { MCPOAuthSecretReentryRequiredError } from '~/mcp/errors';
 import { AccessControlService } from '~/acl/accessControlService';
+import { isGeneratedUserApiKeyVariable } from '~/mcp/headers';
 
 /**
  * Regex patterns for credential/env placeholders that should not be allowed in user-provided configs.
@@ -685,7 +686,7 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
       ...result.customUserVars,
     };
     for (const name of Object.keys(customUserVars)) {
-      if (name === 'MCP_API_KEY' || name.startsWith('MCP_API_KEY_')) {
+      if (isGeneratedUserApiKeyVariable(name)) {
         delete customUserVars[name];
       }
     }
