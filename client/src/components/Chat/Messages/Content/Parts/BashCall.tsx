@@ -15,6 +15,7 @@ import useFollowScroll from './useFollowScroll';
 import { OutputRenderer } from '../ToolOutput';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
+import { parseCommandOutput } from './command';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
@@ -58,8 +59,37 @@ export default function BashCall({
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
   const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
 
+  /** Attached-workspace runs report their exit status; the sandbox tool does
+   *  not, and keeps the text heuristic. */
+  const result = useMemo(() => parseCommandOutput(output), [output]);
   const outputHasError = useMemo(() => ERROR_PATTERNS.test(output), [output]);
   const outputIsEmpty = output.trim() === SANDBOX_EMPTY_OUTPUT;
+  const verdict = (() => {
+    if (result?.timedOut === true) {
+      return localize('com_ui_command_timed_out');
+    }
+    if (result?.signal != null) {
+      return localize('com_ui_command_terminated', { 0: result.signal });
+    }
+    if (result?.failed === true && result.exitCode != null) {
+      return localize('com_ui_command_exit_code', { 0: String(result.exitCode) });
+    }
+    return undefined;
+  })();
+  const outputSegments = useMemo(
+    () =>
+      result == null
+        ? undefined
+        : [
+            { text: result.head },
+            {
+              text: result.stderr,
+              className: result.failed ? 'text-status-error' : 'text-text-secondary',
+            },
+            { text: result.trailer, className: 'text-text-tertiary' },
+          ],
+    [result],
+  );
   /** A backgrounded call's persisted output stays the dispatch handle until
    *  the detached run settles and patches it; render a background state
    *  instead of the handle JSON. Completion arrives live as the status marker
@@ -91,7 +121,7 @@ export default function BashCall({
     hasInput: !!command,
     onExpand,
     runStepStatus,
-    extraError: backgroundFailed,
+    extraError: backgroundFailed || result?.failed === true,
     extraCancelled: cancelledInBackground,
   });
 
@@ -163,6 +193,7 @@ export default function BashCall({
           }
           hasInput={!!command || hasOutput}
           isExpanded={showCode}
+          verdict={verdict}
         />
       </div>
       <div style={expandStyle}>
@@ -220,7 +251,8 @@ export default function BashCall({
                   <OutputRenderer
                     text={output}
                     copyText={output}
-                    error={outputHasError}
+                    error={result == null && outputHasError}
+                    segments={outputSegments}
                     variant="terminal"
                   />
                 )}

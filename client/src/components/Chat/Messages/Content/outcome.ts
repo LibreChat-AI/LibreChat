@@ -12,6 +12,7 @@ import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { isMemoryFailureOutput } from './Parts/MemoryCall';
 import { filterAttachmentsForPart } from '~/utils/map';
 import { isBashProgrammaticToolCall } from './routing';
+import { parseCommandOutput } from './Parts/command';
 import { isError } from './ToolOutput';
 
 /**
@@ -122,7 +123,9 @@ export function getToolMeta(
       name === 'set_memory' || name === 'delete_memory'
         ? isMemoryFailureOutput(name, tc.output ?? '') ||
           (ownAttachments ?? []).some((attachment) => attachment[Tools.memory]?.type === 'error')
-        : hasFailedOutput(tc.output);
+        : hasFailedOutput(tc.output) ||
+          /** `BashCall` fails a command that reports a non-zero exit. */
+          (iconName === Tools.bash_tool && parseCommandOutput(tc.output ?? '')?.failed === true);
     /** A backgrounded bash/code task reports its verdict through a
      *  `background_task_status` attachment, not its output: the dispatch step
      *  keeps a benign handle and usually closes as `completed`. The child card

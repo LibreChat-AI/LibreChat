@@ -103,6 +103,35 @@ function extractText(raw: string, verbatim = false): ExtractedText {
 const TRUNCATE_LINES = 20;
 const VISIBLE_LINES = 15;
 
+export interface OutputSegment {
+  text: string;
+  className?: string;
+}
+
+/** The last `count` lines of `segments`, keeping each line's own styling. */
+function tailSegments(segments: OutputSegment[], count: number): OutputSegment[] {
+  const tail: OutputSegment[] = [];
+  let newlines = 0;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const { text, className } = segments[i];
+    let cut = text.length;
+    while (cut > 0) {
+      const at = text.lastIndexOf('\n', cut - 1);
+      if (at < 0) {
+        break;
+      }
+      newlines++;
+      if (newlines >= count) {
+        tail.unshift({ text: text.slice(at + 1), className });
+        return tail;
+      }
+      cut = at;
+    }
+    tail.unshift({ text, className });
+  }
+  return tail;
+}
+
 interface OutputRendererProps {
   text: string;
   copyText?: string;
@@ -111,6 +140,9 @@ interface OutputRendererProps {
   /** `terminal` renders command output: monospace, verbatim (no JSON reformatting), and the
    *  collapsed view keeps the LAST lines, where failures and stack traces land. */
   variant?: 'default' | 'terminal';
+  /** Terminal output split into styled runs whose texts join to `text` (for example stdout,
+   *  stderr and an exit trailer). Rendered in place of the plain text. */
+  segments?: OutputSegment[];
 }
 
 export default function OutputRenderer({
@@ -118,6 +150,7 @@ export default function OutputRenderer({
   copyText,
   error: forceError = false,
   variant = 'default',
+  segments,
 }: OutputRendererProps) {
   const localize = useLocalize();
   const terminal = variant === 'terminal';
@@ -145,6 +178,9 @@ export default function OutputRenderer({
   const collapsedLines = terminal ? lines.slice(-VISIBLE_LINES) : lines.slice(0, VISIBLE_LINES);
   const visibleText = needsTruncation && !isExpanded ? collapsedLines.join('\n') : displayText;
   const structured = !isJson && (terminal || isStructuredText(displayText));
+  const styled = terminal && segments != null && !error;
+  const visibleSegments =
+    styled && needsTruncation && !isExpanded ? tailSegments(segments, VISIBLE_LINES) : segments;
 
   return (
     <div>
@@ -165,7 +201,15 @@ export default function OutputRenderer({
               !error && !structured && 'text-text-primary font-sans text-sm',
             )}
           >
-            {visibleText}
+            {styled
+              ? visibleSegments?.map((segment, i) =>
+                  segment.text === '' ? null : (
+                    <span key={i} className={segment.className}>
+                      {segment.text}
+                    </span>
+                  ),
+                )
+              : visibleText}
           </pre>
         )}
         <div className="absolute top-1/2 right-0 -translate-y-1/2">

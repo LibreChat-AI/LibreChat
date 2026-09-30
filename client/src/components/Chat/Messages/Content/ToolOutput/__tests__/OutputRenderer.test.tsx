@@ -62,6 +62,29 @@ describe('OutputRenderer', () => {
     expect(shown[0]).toBe('line 16');
   });
 
+  it('keeps segment styling when collapsing terminal output to its tail', () => {
+    const out = Array.from({ length: 25 }, (_, i) => `out ${i + 1}`).join('\n') + '\n';
+    const err = 'stderr:\nboom\n';
+    const trailer = '[exit code: 1]';
+    render(
+      <OutputRenderer
+        text={out + err + trailer}
+        variant="terminal"
+        segments={[
+          { text: out },
+          { text: err, className: 'text-status-error' },
+          { text: trailer, className: 'text-text-tertiary' },
+        ]}
+      />,
+    );
+    const pre = screen.getByText(/out 25/).closest('pre') as HTMLElement;
+    const shown = (pre.textContent ?? '').split('\n');
+    expect(shown).toHaveLength(15);
+    expect(shown[0]).toBe('out 14');
+    expect(screen.getByText(/boom/)).toHaveClass('text-status-error');
+    expect(screen.getByText('[exit code: 1]')).toHaveClass('text-text-tertiary');
+  });
+
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
   });

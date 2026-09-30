@@ -8,8 +8,11 @@ import store from '~/store';
 jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
-    (key: string): string => {
+    (key: string, values?: Record<string, string>): string => {
       const translations: Record<string, string> = {
+        com_ui_command_exit_code: `exit code ${values?.[0]}`,
+        com_ui_command_terminated: `terminated by ${values?.[0]}`,
+        com_ui_command_timed_out: 'timed out',
         com_ui_writing_command: 'Writing command',
         com_ui_running_command: 'Running command',
         com_ui_command_finished: 'Finished running',
@@ -44,14 +47,17 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
     phase,
     inProgressText,
     finishedText,
+    verdict,
   }: {
     phase: 'running' | 'completed' | 'cancelled' | 'failed';
     inProgressText: string;
     finishedText: string;
+    verdict?: string;
   }) => (
     <div data-testid="progress-text">
       {phase === 'running' ? inProgressText : finishedText}
       {phase === 'failed' ? ' — tool failed' : ''}
+      {phase === 'failed' && verdict ? ` · ${verdict}` : ''}
     </div>
   ),
 }));
@@ -496,5 +502,56 @@ describe('BashCall output pane', () => {
     const { container } = finished('done', 'echo a-very-long-command');
     const code = container.querySelector('code.hljs') as HTMLElement;
     expect(code).toHaveClass('!text-xs', '!whitespace-pre-wrap', '!break-words');
+  });
+});
+
+describe('BashCall exit status', () => {
+  const renderSettled = (output: string) =>
+    render(
+      <RecoilRoot>
+        <BashCall
+          initialProgress={1}
+          isSubmitting={false}
+          runStepStatus="completed"
+          args={{ command: 'make test' }}
+          output={output}
+        />
+      </RecoilRoot>,
+    );
+
+  it('fails a non-zero exit even when the output matches no error pattern', () => {
+    renderSettled('stdout:\n1 test failed\n\n[exit code: 2]');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 2$/);
+  });
+
+  it('keeps a zero exit successful even when stderr reads like an error', () => {
+    const { container } = renderSettled(
+      'stdout:\nok\n\nstderr:\nError: deprecated flag\n\n[exit code: 0]',
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+    const stderr = screen.getByText(/deprecated flag/);
+    expect(stderr).toHaveClass('text-text-secondary');
+    expect(container.querySelectorAll('pre')[1]).toHaveClass('text-text-primary');
+    expect(container.querySelectorAll('pre')[1]).toHaveTextContent('stdout: ok');
+  });
+
+  it('marks stderr as an error on a failed run', () => {
+    renderSettled('stderr:\nboom\n\n[exit code: 1]');
+    expect(screen.getByText(/boom/)).toHaveClass('text-status-error');
+  });
+
+  it.each([
+    ['stdout:\nsleeping\n\n[terminated by SIGKILL][timed out]', 'timed out'],
+    ['Command completed with no output.\n[terminated by SIGTERM]', 'terminated by SIGTERM'],
+  ])('names the reason for a stopped command: %s', (output, reason) => {
+    renderSettled(output);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(`tool failed · ${reason}`);
+  });
+
+  it('keeps the text heuristic for sandbox output without an exit trailer', () => {
+    const { container } = renderSettled('stdout:\nTraceback (most recent call last)\n');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+    expect(container.querySelectorAll('pre')[1]).toHaveClass('text-status-error');
   });
 });
