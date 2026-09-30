@@ -836,6 +836,19 @@ describe('theme registry', () => {
     });
   });
 
+  it('does not count the dialog title ink among the surfaces the verified mark sits on', () => {
+    const { colors } = resolveTheme(
+      {
+        version: 1,
+        name: 'title-ink-reference',
+        modes: { light: { colors: { 'rgb-dialog-title': '200 30 90' } } },
+      },
+      'light',
+    );
+
+    expect(colors['rgb-status-verified']).toBe(defaultTheme['rgb-status-verified']);
+  });
+
   it('rejects dialog chrome values the shared validators refuse', () => {
     const issues = (appearance: Record<string, string>) =>
       validateThemeDefinition({

@@ -72,7 +72,6 @@ export const MARK_NEIGHBOURHOOD: readonly (keyof IThemeRGB)[] = Object.freeze([
   'rgb-status-success-strong',
   'rgb-text-on-status',
   'rgb-surface-dialog',
-  'rgb-dialog-title',
   'rgb-surface-secondary',
   'rgb-surface-tertiary',
 ]);
