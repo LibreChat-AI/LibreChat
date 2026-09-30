@@ -4741,6 +4741,30 @@ describe('createToolExecuteHandler', () => {
       );
     });
 
+    it.each([[], '[]', null, {}, 'not json', [null]].map((edits) => [edits]))(
+      'rejects invalid supplied edits %# without loading or writing the file',
+      async (edits) => {
+        const getSkillByName = jest.fn();
+        const saveSkillFileContent = jest.fn();
+        const handler = makeAuthoringHandler({ getSkillByName, saveSkillFileContent });
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'call_invalid_edit_batch',
+            name: 'edit_file',
+            args: {
+              path: 'skills/edit-skill/references/a.md',
+              edits,
+              old_text: 'original',
+              new_text: 'replacement',
+            },
+          },
+        ]);
+        expect(result.status).toBe('error');
+        expect(getSkillByName).not.toHaveBeenCalled();
+        expect(saveSkillFileContent).not.toHaveBeenCalled();
+      },
+    );
+
     it('still rejects an unparseable edits string with the explicit error', async () => {
       const saveSkillFileContent = jest.fn();
       const handler = makeAuthoringHandler({
