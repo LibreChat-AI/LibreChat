@@ -21,6 +21,7 @@ import {
 import { SetupPhase, QRPhase, VerifyPhase, BackupPhase, DisablePhase } from './TwoFactorPhases';
 import { DisableTwoFactorToggle } from './DisableTwoFactorToggle';
 import { useAuthContext, useLocalize } from '~/hooks';
+import { useTwoFactorError } from './errors';
 import store from '~/store';
 
 export type Phase = 'setup' | 'qr' | 'verify' | 'backup' | 'disable';
@@ -36,6 +37,7 @@ const TwoFactorAuthentication: React.FC = () => {
   const { user } = useAuthContext();
   const setUser = useSetRecoilState(store.user);
   const { showToast } = useToastContext();
+  const showError = useTwoFactorError();
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const [secret, setSecret] = useState<string>('');
@@ -66,8 +68,7 @@ const TwoFactorAuthentication: React.FC = () => {
   const resetState = useCallback(() => {
     if (user?.twoFactorEnabled && otpauthUrl) {
       disable2FAMutate(undefined, {
-        onError: () =>
-          showToast({ message: localize('com_ui_2fa_disable_error'), status: 'error' }),
+        onError: (error) => showError(error, 'com_ui_2fa_disable_error'),
       });
     }
 
@@ -78,7 +79,7 @@ const TwoFactorAuthentication: React.FC = () => {
     setDisableToken('');
     setPhase(user?.twoFactorEnabled ? 'disable' : 'setup');
     setDownloaded(false);
-  }, [user, otpauthUrl, disable2FAMutate, localize, showToast]);
+  }, [user, otpauthUrl, disable2FAMutate, showError]);
 
   const handleGenerateQRCode = useCallback(() => {
     enable2FAMutate(undefined, {
@@ -88,9 +89,9 @@ const TwoFactorAuthentication: React.FC = () => {
         setBackupCodes(backupCodes);
         setPhase('qr');
       },
-      onError: () => showToast({ message: localize('com_ui_2fa_generate_error'), status: 'error' }),
+      onError: (error) => showError(error, 'com_ui_2fa_generate_error'),
     });
-  }, [enable2FAMutate, localize, showToast]);
+  }, [enable2FAMutate, showError]);
 
   const handleVerify = useCallback(() => {
     if (!verificationToken) {
@@ -106,15 +107,14 @@ const TwoFactorAuthentication: React.FC = () => {
             { token: verificationToken },
             {
               onSuccess: () => setPhase('backup'),
-              onError: () =>
-                showToast({ message: localize('com_ui_2fa_invalid'), status: 'error' }),
+              onError: (error) => showError(error, 'com_ui_2fa_invalid'),
             },
           );
         },
-        onError: () => showToast({ message: localize('com_ui_2fa_invalid'), status: 'error' }),
+        onError: (error) => showError(error, 'com_ui_2fa_invalid'),
       },
     );
-  }, [verificationToken, verify2FAMutate, confirm2FAMutate, localize, showToast]);
+  }, [verificationToken, verify2FAMutate, confirm2FAMutate, localize, showToast, showError]);
 
   const handleDownload = useCallback(() => {
     if (!backupCodes.length) {
@@ -184,10 +184,10 @@ const TwoFactorAuthentication: React.FC = () => {
           setPhase('setup');
           setOtpauthUrl('');
         },
-        onError: () => showToast({ message: localize('com_ui_2fa_invalid'), status: 'error' }),
+        onError: (error) => showError(error, 'com_ui_2fa_invalid'),
       });
     },
-    [disable2FAMutate, showToast, localize, setUser],
+    [disable2FAMutate, showToast, localize, setUser, showError],
   );
 
   return (

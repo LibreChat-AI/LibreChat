@@ -25,7 +25,10 @@ export function createTwoFactorManagementLimiter({
       return JSON.stringify([user?.tenantId ?? null, user?.id ?? user?._id?.toString()]);
     },
     handler: (_req, res) => {
-      res.status(429).json({ message: 'Too many verification attempts. Try again later.' });
+      res.status(429).json({
+        code: 'TWO_FACTOR_RATE_LIMITED',
+        message: 'Too many verification attempts. Try again later.',
+      });
     },
     store,
   });

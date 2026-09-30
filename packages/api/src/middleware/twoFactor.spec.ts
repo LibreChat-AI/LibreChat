@@ -32,7 +32,10 @@ describe('createTwoFactorManagementLimiter', () => {
     await request(app).post('/').set('x-user', 'account').expect(400);
     await request(app).post('/').set('x-user', 'account').expect(400);
     const blocked = await request(app).post('/').set('x-user', 'account').expect(429);
-    expect(blocked.body).toEqual({ message: 'Too many verification attempts. Try again later.' });
+    expect(blocked.body).toEqual({
+      code: 'TWO_FACTOR_RATE_LIMITED',
+      message: 'Too many verification attempts. Try again later.',
+    });
   });
 
   it('rejects missing identity without consulting configuration', async () => {
