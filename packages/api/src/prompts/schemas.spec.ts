@@ -1,5 +1,6 @@
 import {
   updatePromptGroupSchema,
+  safeValidatePromptGroupCategory,
   validatePromptGroupUpdate,
   safeValidatePromptGroupUpdate,
 } from './schemas';
@@ -198,5 +199,29 @@ describe('safeValidatePromptGroupUpdate', () => {
     if (!result.success) {
       expect(result.error.errors.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('safeValidatePromptGroupCategory', () => {
+  it.each([['a'.repeat(101)], ['sys__x'], ['a\u0007b']])('should reject %j', (category) => {
+    expect(safeValidatePromptGroupCategory(category).success).toBe(false);
+  });
+
+  it('should accept an empty string', () => {
+    const result = safeValidatePromptGroupCategory('');
+    expect(result.success && result.data).toBe('');
+  });
+
+  it('should trim surrounding whitespace', () => {
+    const result = safeValidatePromptGroupCategory('  Onboarding  ');
+    expect(result.success && result.data).toBe('Onboarding');
+  });
+
+  it('should accept a 100 character category', () => {
+    expect(safeValidatePromptGroupCategory('a'.repeat(100)).success).toBe(true);
+  });
+
+  it('should reject a sys__ category on update', () => {
+    expect(safeValidatePromptGroupUpdate({ category: 'sys__x' }).success).toBe(false);
   });
 });

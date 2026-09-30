@@ -7,6 +7,7 @@ const {
   buildPromptGroupFilter,
   formatPromptGroupsResponse,
   safeValidatePromptGroupUpdate,
+  safeValidatePromptGroupCategory,
   createEmptyPromptGroupsResponse,
   filterAccessibleIdsBySharedLogic,
   inspectPromptContent,
@@ -254,6 +255,17 @@ const createNewPromptGroup = async (req, res) => {
 
     if (!prompt || !group || !group.name) {
       return res.status(400).send({ error: 'Prompt and group name are required' });
+    }
+
+    if (group.category !== undefined) {
+      const categoryResult = safeValidatePromptGroupCategory(group.category);
+      if (!categoryResult.success) {
+        return res.status(400).send({
+          error: 'Invalid request body',
+          details: categoryResult.error.errors,
+        });
+      }
+      group.category = categoryResult.data;
     }
 
     if (blockFilteredPromptContent(req, res, { prompt, group })) {

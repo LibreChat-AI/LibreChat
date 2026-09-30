@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { Constants } from 'librechat-data-provider';
+import { Constants, promptCategoryValueSchema } from 'librechat-data-provider';
+
+export const promptGroupCategorySchema = z.union([z.literal(''), promptCategoryValueSchema]);
 
 /**
  * Schema for validating prompt group update payloads.
@@ -13,7 +15,7 @@ export const updatePromptGroupSchema: z.ZodObject<
     /** Short description/oneliner for the prompt group */
     oneliner: z.ZodOptional<z.ZodString>;
     /** Category for organizing prompt groups */
-    category: z.ZodOptional<z.ZodString>;
+    category: z.ZodOptional<typeof promptGroupCategorySchema>;
     /** Command shortcut for the prompt group */
     command: z.ZodNullable<z.ZodOptional<z.ZodString>>;
   },
@@ -25,7 +27,7 @@ export const updatePromptGroupSchema: z.ZodObject<
     /** Short description/oneliner for the prompt group */
     oneliner: z.string().max(500).optional(),
     /** Category for organizing prompt groups */
-    category: z.string().max(100).optional(),
+    category: promptGroupCategorySchema.optional(),
     /** Command shortcut for the prompt group */
     command: z
       .string()
@@ -71,4 +73,8 @@ export function safeValidatePromptGroupUpdate(data: unknown): z.SafeParseReturnT
   }
 > {
   return updatePromptGroupSchema.safeParse(data);
+}
+
+export function safeValidatePromptGroupCategory(category: unknown) {
+  return promptGroupCategorySchema.safeParse(category);
 }
