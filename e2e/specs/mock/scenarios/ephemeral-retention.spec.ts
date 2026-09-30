@@ -265,14 +265,15 @@ test.describe('ephemeral retention', () => {
         timeout: 30000,
       });
 
-      /** Streamed text can render before the resumed turn finishes its database writes. */
+      /** The resume converts the conversation before the turn runs and saves the response
+       *  after its text streams, so wait on the response row, not on the conversation. */
       await expect(async () => {
         expectForcedTemporary(await readConversation(conversationId));
+        const storedMessages = await readMessages(conversationId);
+        const responseMessage = storedMessages.find((message) => message.isTemporary === true);
+        expect(responseMessage, 'the resumed response must be saved temporary').toBeDefined();
+        expectForcedTemporary(responseMessage ?? null);
       }).toPass({ timeout: 10000 });
-      const storedMessages = await readMessages(conversationId);
-      const responseMessage = storedMessages.find((message) => message.isTemporary === true);
-      expect(responseMessage, 'the resumed response must be saved temporary').toBeDefined();
-      expectForcedTemporary(responseMessage ?? null);
       const history = await requestResult(request, { path: '/api/convos?limit=25', token });
       expect(history.ok).toBe(true);
       expect(history.text).not.toContain(conversationId);
