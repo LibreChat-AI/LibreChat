@@ -5,6 +5,8 @@ import {
   isOpenIDTokenValid,
   processOpenIDPlaceholders,
   isAccessTokenJwt,
+  extractSubFromAccessToken,
+  decodeJwtSegment,
 } from './oidc';
 
 describe('OpenID Token Utilities', () => {
@@ -848,6 +850,125 @@ describe('OpenID Token Utilities', () => {
       expect(isAccessTokenJwt(undefined, { aud: 'api://resource-app' }, audiences)).toBe(false);
       expect(isAccessTokenJwt('a.b.c', undefined, audiences)).toBe(false);
       expect(isAccessTokenJwt('not-a-jwt', { aud: 'client-id' }, audiences)).toBe(false);
+    });
+  });
+
+  describe('extractSubFromAccessToken', () => {
+    it('should extract sub claim from valid JWT access token', () => {
+      const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
+      const payload = Buffer.from(
+        JSON.stringify({ sub: 'cognito-sub-12345', aud: 'test-client-id' }),
+      ).toString('base64');
+      const signature = 'mock-signature';
+      const mockJWT = `${header}.${payload}.${signature}`;
+
+      const result = extractSubFromAccessToken(mockJWT);
+
+      expect(result.sub).toBe('cognito-sub-12345');
+      expect(result.error).toBeUndefined();
+    });
+
+    it('should return null when access token is undefined', () => {
+      const result = extractSubFromAccessToken(undefined);
+
+      expect(result.sub).toBeNull();
+      expect(result.error).toBe('No access token provided');
+    });
+
+    it('should return null when access token is empty string', () => {
+      const result = extractSubFromAccessToken('');
+
+      expect(result.sub).toBeNull();
+      expect(result.error).toBe('No access token provided');
+    });
+
+    it('should return null when JWT format is invalid (not 3 parts)', () => {
+      const invalidJWT = 'invalid.jwt';
+
+      const result = extractSubFromAccessToken(invalidJWT);
+
+      expect(result.sub).toBeNull();
+      expect(result.error).toBe('Invalid JWT format');
+    });
+
+    it('should return null when JWT has no sub claim', () => {
+      const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
+      const payload = Buffer.from(JSON.stringify({ aud: 'test-client-id' })).toString('base64');
+      const signature = 'mock-signature';
+      const mockJWT = `${header}.${payload}.${signature}`;
+
+      const result = extractSubFromAccessToken(mockJWT);
+
+      expect(result.sub).toBeNull();
+      expect(result.error).toBe('No sub claim in access token');
+    });
+
+    it('should handle decode errors gracefully', () => {
+      const invalidJWT = 'header.!!!invalid-base64!!!.signature';
+
+      const result = extractSubFromAccessToken(invalidJWT);
+
+      expect(result.sub).toBeNull();
+      expect(result.error).toBeDefined();
+    });
+
+    it('should handle JWT with empty sub claim', () => {
+      const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
+      const payload = Buffer.from(JSON.stringify({ sub: '', aud: 'test-client-id' })).toString(
+        'base64',
+      );
+      const signature = 'mock-signature';
+      const mockJWT = `${header}.${payload}.${signature}`;
+
+      const result = extractSubFromAccessToken(mockJWT);
+
+      expect(result.sub).toBeNull();
+      expect(result.error).toBe('No sub claim in access token');
+    });
+
+    it('should extract sub claim when JWT has additional claims', () => {
+      const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64');
+      const payload = Buffer.from(
+        JSON.stringify({
+          sub: 'user-sub-xyz',
+          aud: 'test-client',
+          iss: 'https://cognito.amazonaws.com',
+          exp: 1234567890,
+          iat: 1234567800,
+          email: 'user@example.com',
+        }),
+      ).toString('base64');
+      const signature = 'mock-signature';
+      const mockJWT = `${header}.${payload}.${signature}`;
+
+      const result = extractSubFromAccessToken(mockJWT);
+
+      expect(result.sub).toBe('user-sub-xyz');
+      expect(result.error).toBeUndefined();
+    });
+  });
+
+  describe('decodeJwtSegment', () => {
+    it('returns undefined for undefined, null, or empty string', () => {
+      expect(decodeJwtSegment(undefined)).toBeUndefined();
+      expect(decodeJwtSegment('')).toBeUndefined();
+    });
+
+    it('decodes standard base64 JSON', () => {
+      const data = { hello: 'world', num: 42 };
+      const segment = Buffer.from(JSON.stringify(data)).toString('base64');
+      expect(decodeJwtSegment(segment)).toEqual(data);
+    });
+
+    it('decodes base64url JSON without padding', () => {
+      const data = { sub: 'user-xyz', typ: 'JWT' };
+      const segment = Buffer.from(JSON.stringify(data)).toString('base64url');
+      expect(decodeJwtSegment(segment)).toEqual(data);
+    });
+
+    it('returns undefined for non-JSON string', () => {
+      const segment = Buffer.from('plain non-json text').toString('base64');
+      expect(decodeJwtSegment(segment)).toBeUndefined();
     });
   });
 });

@@ -140,6 +140,7 @@ describe('banViolation', () => {
     errorMessage.violation_count = 39;
     await banViolation(req, res, errorMessage);
     expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+    expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
   });
 
   it('should not ban if violation_count does not change', async () => {

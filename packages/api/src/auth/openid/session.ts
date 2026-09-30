@@ -1378,6 +1378,7 @@ export function createOpenIDSessionRefreshService(
         'openid_id_token',
         'openid_user_id',
         'token_provider',
+        'openid_sub',
       ]) {
         res?.clearCookie?.(name);
       }

@@ -57,6 +57,7 @@ const banViolation = async (req, res, errorMessage) => {
   res.clearCookie('openid_id_token');
   res.clearCookie('openid_user_id');
   res.clearCookie('token_provider');
+  res.clearCookie('openid_sub');
 
   const banLogs = getLogStores(ViolationTypes.BAN);
   const duration = errorMessage.duration || banLogs.opts.ttl;

@@ -64,13 +64,27 @@ export interface AccessTokenAudiences {
 /** RFC 9068 media type for a JWT access token, as it appears in the `typ` header (compared case-insensitively). */
 const ACCESS_TOKEN_JWT_TYPES = new Set(['at+jwt', 'application/at+jwt']);
 
-function decodeJwtHeaderType(token: string): string | undefined {
+/**
+ * Safely decodes and parses a base64url- or base64-encoded JWT segment (header or payload).
+ * Returns undefined if decoding or JSON parsing fails.
+ */
+export function decodeJwtSegment<T = Record<string, unknown>>(
+  segment: string | undefined,
+): T | undefined {
+  if (!segment) {
+    return undefined;
+  }
   try {
-    const header = JSON.parse(Buffer.from(token.split('.')[0], 'base64').toString());
-    return typeof header?.typ === 'string' ? header.typ.toLowerCase() : undefined;
+    const json = Buffer.from(segment, 'base64').toString('utf-8');
+    return JSON.parse(json) as T;
   } catch {
     return undefined;
   }
+}
+
+function decodeJwtHeaderType(token: string): string | undefined {
+  const header = decodeJwtSegment<{ typ?: unknown }>(token.split('.')[0]);
+  return typeof header?.typ === 'string' ? header.typ.toLowerCase() : undefined;
 }
 
 function audienceList(aud: string | string[] | undefined): string[] {
@@ -192,17 +206,18 @@ export function extractOpenIDTokenInfo(
 
     if (tokenInfo.idToken) {
       try {
-        const payload = JSON.parse(
-          Buffer.from(tokenInfo.idToken.split('.')[1], 'base64').toString(),
-        );
-        tokenInfo.claims = payload;
+        const payload = decodeJwtSegment<Record<string, unknown>>(tokenInfo.idToken.split('.')[1]);
+        if (payload) {
+          tokenInfo.claims = payload;
 
-        /** Cached profile claims, not an authentication assertion: stale claims stay usable for identity fields even when the ID token itself is expired */
-        if (payload.sub) tokenInfo.userId = payload.sub;
-        if (payload.email) tokenInfo.userEmail = payload.email;
-        if (payload.name) tokenInfo.userName = payload.name;
-        if (typeof payload.exp === 'number') {
-          tokenInfo.idTokenExpiresAt = payload.exp;
+          /** Cached profile claims, not an authentication assertion: stale claims stay usable for identity fields even when the ID token itself is expired */
+          if (payload.sub && typeof payload.sub === 'string') tokenInfo.userId = payload.sub;
+          if (payload.email && typeof payload.email === 'string')
+            tokenInfo.userEmail = payload.email;
+          if (payload.name && typeof payload.name === 'string') tokenInfo.userName = payload.name;
+          if (typeof payload.exp === 'number') {
+            tokenInfo.idTokenExpiresAt = payload.exp;
+          }
         }
       } catch (jwtError) {
         logger.warn('Could not parse ID token claims:', jwtError);
@@ -318,4 +333,40 @@ export function isOpenIDAvailable(): boolean {
   const openidIssuer = process.env.OPENID_ISSUER;
 
   return !!(openidClientId && openidClientSecret && openidIssuer);
+}
+
+export interface ExtractedSubClaim {
+  sub: string | null;
+  error?: string;
+}
+
+/**
+ * Extracts the OpenID 'sub' claim from a JWT access token.
+ * Used for exposing the identity provider's user identifier in cookies for callbacks (e.g. 3LO).
+ */
+export function extractSubFromAccessToken(accessToken: string | undefined): ExtractedSubClaim {
+  if (!accessToken) {
+    logger.debug('[extractSubFromAccessToken] No access token provided');
+    return { sub: null, error: 'No access token provided' };
+  }
+
+  const parts = accessToken.split('.');
+  if (parts.length !== 3) {
+    logger.debug('[extractSubFromAccessToken] Invalid JWT format');
+    return { sub: null, error: 'Invalid JWT format' };
+  }
+
+  const payload = decodeJwtSegment<{ sub?: unknown }>(parts[1]);
+  if (!payload) {
+    logger.debug('[extractSubFromAccessToken] Failed to decode access token payload');
+    return { sub: null, error: 'Failed to decode access token' };
+  }
+
+  if (typeof payload.sub !== 'string' || !payload.sub) {
+    logger.debug('[extractSubFromAccessToken] No sub claim in access token');
+    return { sub: null, error: 'No sub claim in access token' };
+  }
+
+  logger.debug(`[extractSubFromAccessToken] Successfully extracted sub claim: ${payload.sub}`);
+  return { sub: payload.sub };
 }

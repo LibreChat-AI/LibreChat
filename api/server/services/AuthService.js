@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { webcrypto } = require('node:crypto');
+const crypto = require('node:crypto');
+const { webcrypto } = crypto;
 const {
   logger,
   getTenantId,
@@ -25,6 +26,7 @@ const {
   normalizeExpiresIn,
   createOpenIDSessionIdentity,
   resolveAppConfigForUser,
+  extractSubFromAccessToken,
 } = require('@librechat/api');
 const {
   findUser,
@@ -205,6 +207,7 @@ const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
     'openid_id_token',
     'openid_user_id',
     'token_provider',
+    'openid_sub',
   ]) {
     res.clearCookie?.(name);
   }
@@ -690,6 +693,58 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
 };
 
 /**
+ * Sets the optional openid_sub cookie containing a JWT-signed OpenID sub claim.
+ * Exposed with sameSite: 'lax' for cross-site OAuth callback flows (e.g., 3LO).
+ * Bound to the session's refreshToken via refreshTokenHash to prevent session substitution.
+ * Signed with OPENID_SUB_SECRET (isolated secret) or falls back to JWT_REFRESH_SECRET.
+ * @param {ServerResponse} res
+ * @param {string | null | undefined} sub
+ * @param {Date | null | undefined} expirationDate
+ * @param {Object} [options={}]
+ * @param {string | null | undefined} [options.refreshToken]
+ */
+const setOpenIDSubCookie = (res, sub, expirationDate, options = {}) => {
+  if (!isEnabled(process.env.OPENID_EXPOSE_SUB_COOKIE)) {
+    res.clearCookie('openid_sub');
+    return;
+  }
+  const secret = process.env.OPENID_SUB_SECRET || process.env.JWT_REFRESH_SECRET;
+  if (!secret) {
+    logger.error(
+      '[setOpenIDSubCookie] Neither OPENID_SUB_SECRET nor JWT_REFRESH_SECRET configured for openid_sub cookie',
+    );
+    return;
+  }
+  if (!sub) {
+    res.clearCookie('openid_sub');
+    return;
+  }
+  const expiryInMilliseconds = expirationDate
+    ? Math.max(0, expirationDate.getTime() - Date.now())
+    : math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY);
+  const expiresInSeconds = Math.max(1, Math.floor(expiryInMilliseconds / 1000));
+  const { refreshToken } = options;
+  const payload = {
+    sub,
+    typ: 'openid_sub',
+    ...(refreshToken
+      ? {
+          refreshTokenHash: crypto.createHash('sha256').update(refreshToken).digest('base64url'),
+        }
+      : {}),
+  };
+  const signedSub = jwt.sign(payload, secret, {
+    expiresIn: expiresInSeconds,
+  });
+  res.cookie('openid_sub', signedSub, {
+    expires: expirationDate || new Date(Date.now() + expiryInMilliseconds),
+    httpOnly: true,
+    secure: shouldUseSecureCookie(),
+    sameSite: 'lax',
+  });
+};
+
+/**
  * Set Auth Tokens
  * @param {String | ObjectId} userId
  * @param {ServerResponse} res
@@ -729,6 +784,11 @@ const setAuthTokens = async (userId, res, _session = null, req = null) => {
       httpOnly: true,
       secure: shouldUseSecureCookie(),
       sameSite: 'strict',
+    });
+
+    const openidSubject = user?.openidId || req?.user?.openidId;
+    setOpenIDSubCookie(res, openidSubject, new Date(refreshTokenExpires), {
+      refreshToken,
     });
 
     setCloudFrontAuthCookies(req, res, user, { userId: user?._id ?? userId });
@@ -933,6 +993,12 @@ const setOpenIDAuthTokens = (
       refreshToken,
     });
 
+    const sub =
+      sessionIdentity?.openidSubject || extractSubFromAccessToken(tokenset?.access_token)?.sub;
+    setOpenIDSubCookie(res, sub, expirationDate, {
+      refreshToken,
+    });
+
     setCloudFrontAuthCookies(req, res, req.user, { userId, tenantId });
 
     return appAuthToken;
@@ -1020,6 +1086,7 @@ module.exports = {
   clearOpenIDAuthTokens,
   getOpenIDAppAuthToken,
   setOpenIDAuthTokens,
+  setOpenIDSubCookie,
   storeOpenIDSession,
   setCloudFrontAuthCookies,
   requestPasswordReset,

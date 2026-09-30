@@ -92,6 +92,18 @@ jest.mock(
       })),
       parseCloudFrontCookieScope: jest.fn(() => null),
       CLOUDFRONT_SCOPE_COOKIE: 'LibreChat-CloudFront-Scope',
+      extractSubFromAccessToken: jest.fn((token) => {
+        if (!token) {
+          return { sub: null, error: 'No access token provided' };
+        }
+        if (token === 'the-access-token' || token === 'test-access-token') {
+          return { sub: 'cognito-sub-12345' };
+        }
+        if (token === 'token-without-sub') {
+          return { sub: null, error: 'No sub claim in access token' };
+        }
+        return { sub: null, error: 'Failed to decode access token' };
+      }),
     };
   },
   { virtual: true },
@@ -167,6 +179,10 @@ let resendVerificationEmail;
 let setAuthTokens;
 let setCloudFrontAuthCookies;
 let verifyEmail;
+let extractSubFromAccessToken;
+let clearOpenIDAuthTokens;
+let setOpenIDSubCookie;
+let crypto;
 
 jest.isolateModules(() => {
   ({
@@ -179,8 +195,10 @@ jest.isolateModules(() => {
     getCloudFrontConfig,
     parseCloudFrontCookieScope,
     storeOpenIdSession,
+    extractSubFromAccessToken,
   } = require('@librechat/api'));
   jwt = require('jsonwebtoken');
+  crypto = require('crypto');
   ({ logger, getTenantId } = require('@librechat/data-schemas'));
   ({
     findUser,
@@ -202,6 +220,8 @@ jest.isolateModules(() => {
   bcrypt = require('bcryptjs');
   ({
     setOpenIDAuthTokens,
+    setOpenIDSubCookie,
+    clearOpenIDAuthTokens,
     storeOpenIDSession,
     requestPasswordReset,
     registerUser,
@@ -220,6 +240,7 @@ function mockResponse() {
     cookie: jest.fn((name, value, options) => {
       cookies[name] = { value, options };
     }),
+    clearCookie: jest.fn(),
     _cookies: cookies,
   };
   return res;
@@ -643,6 +664,189 @@ describe('setOpenIDAuthTokens', () => {
           sameSite: 'strict',
         }),
       );
+    });
+  });
+
+  describe('OPENID_EXPOSE_SUB_COOKIE', () => {
+    const validTokenset = {
+      id_token: 'the-id-token',
+      access_token: 'the-access-token',
+      refresh_token: 'the-refresh-token',
+    };
+
+    it('sets JWT-signed openid_sub cookie with sameSite lax when OPENID_EXPOSE_SUB_COOKIE is true', () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(validTokenset, req, res, 'user-123');
+
+      expect(extractSubFromAccessToken).toHaveBeenCalledWith('the-access-token');
+      expect(res.cookie).toHaveBeenCalledWith(
+        'openid_sub',
+        expect.any(String),
+        expect.objectContaining({
+          expires: expect.any(Date),
+          httpOnly: true,
+          sameSite: 'lax',
+        }),
+      );
+
+      const subCookieCall = res.cookie.mock.calls.find((call) => call[0] === 'openid_sub');
+      const decoded = jwt.verify(subCookieCall[1], process.env.JWT_REFRESH_SECRET);
+      expect(decoded.sub).toBe('cognito-sub-12345');
+      expect(decoded.typ).toBe('openid_sub');
+      const expectedHash = crypto
+        .createHash('sha256')
+        .update('the-refresh-token')
+        .digest('base64url');
+      expect(decoded.refreshTokenHash).toBe(expectedHash);
+    });
+
+    it('clears openid_sub cookie when OPENID_EXPOSE_SUB_COOKIE is not enabled', () => {
+      delete process.env.OPENID_EXPOSE_SUB_COOKIE;
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(validTokenset, req, res, 'user-123');
+
+      expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+      expect(res._cookies['openid_sub']).toBeUndefined();
+    });
+
+    it('prioritizes OPENID_SUB_SECRET over JWT_REFRESH_SECRET for signing openid_sub', () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      process.env.JWT_REFRESH_SECRET = 'internal-refresh-secret';
+      process.env.OPENID_SUB_SECRET = 'dedicated-sub-secret';
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(validTokenset, req, res, 'user-123');
+
+      const subCookieCall = res.cookie.mock.calls.find((call) => call[0] === 'openid_sub');
+      expect(subCookieCall).toBeDefined();
+      const decoded = jwt.verify(subCookieCall[1], 'dedicated-sub-secret');
+      expect(decoded.sub).toBe('cognito-sub-12345');
+      expect(decoded.typ).toBe('openid_sub');
+      expect(() => jwt.verify(subCookieCall[1], 'internal-refresh-secret')).toThrow();
+    });
+
+    it('logs an error and does not set openid_sub cookie when both secrets are missing', () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      delete process.env.JWT_REFRESH_SECRET;
+      delete process.env.OPENID_SUB_SECRET;
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(validTokenset, req, res, 'user-123');
+
+      expect(res._cookies['openid_sub']).toBeUndefined();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Neither OPENID_SUB_SECRET nor JWT_REFRESH_SECRET configured for openid_sub cookie',
+        ),
+      );
+    });
+
+    it('does not set openid_sub cookie when token has no sub claim', () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      const tokensetWithoutSub = {
+        id_token: 'the-id-token',
+        access_token: 'token-without-sub',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokensetWithoutSub, req, res, 'user-123');
+
+      expect(res._cookies['openid_sub']).toBeUndefined();
+    });
+
+    it('leaves all other cookies with sameSite strict', () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      const req = { session: null };
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(validTokenset, req, res, 'user-123');
+
+      const calls = res.cookie.mock.calls;
+      const refreshTokenCall = calls.find((call) => call[0] === 'refreshToken');
+      const openidAccessTokenCall = calls.find((call) => call[0] === 'openid_access_token');
+      const tokenProviderCall = calls.find((call) => call[0] === 'token_provider');
+      const openidSubCall = calls.find((call) => call[0] === 'openid_sub');
+
+      expect(refreshTokenCall[2].sameSite).toBe('strict');
+      expect(openidAccessTokenCall[2].sameSite).toBe('strict');
+      expect(tokenProviderCall[2].sameSite).toBe('strict');
+      expect(openidSubCall[2].sameSite).toBe('lax');
+    });
+
+    it('uses sessionIdentity openidSubject for openid_sub cookie when access token is opaque', () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      const opaqueTokenset = {
+        id_token: 'the-id-token',
+        access_token: 'opaque-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(opaqueTokenset, req, res, {
+        userId: 'user-123',
+        openidSubject: 'canonical-sub-from-claims',
+      });
+
+      const subCookieCall = res.cookie.mock.calls.find((call) => call[0] === 'openid_sub');
+      expect(subCookieCall).toBeDefined();
+      const decoded = jwt.verify(subCookieCall[1], process.env.JWT_REFRESH_SECRET);
+      expect(decoded.sub).toBe('canonical-sub-from-claims');
+      expect(decoded.typ).toBe('openid_sub');
+    });
+
+    it('clears openid_sub cookie in clearOpenIDAuthTokens', () => {
+      const req = mockRequest({ openidTokens: { some: 'token' } });
+      const res = mockResponse();
+
+      clearOpenIDAuthTokens(req, res, 'user-123', 'tenant-a');
+
+      expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+      expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+      expect(res.clearCookie).toHaveBeenCalledWith('openid_access_token');
+    });
+
+    describe('setOpenIDSubCookie', () => {
+      it('clears cookie if sub is null or undefined', () => {
+        process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+        const res = mockResponse();
+        setOpenIDSubCookie(res, null);
+        expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+        setOpenIDSubCookie(res, undefined);
+        expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+      });
+
+      it('clears cookie if OPENID_EXPOSE_SUB_COOKIE is disabled', () => {
+        delete process.env.OPENID_EXPOSE_SUB_COOKIE;
+        const res = mockResponse();
+        setOpenIDSubCookie(res, 'some-sub');
+        expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+      });
+
+      it('sets cookie with custom expiration date, typ claim, and refreshTokenHash', () => {
+        process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+        const res = mockResponse();
+        const expires = new Date(Date.now() + 3600000);
+        const refreshToken = 'test-refresh-token';
+        setOpenIDSubCookie(res, 'sub-custom-exp', expires, { refreshToken });
+        const subCookieCall = res.cookie.mock.calls.find((call) => call[0] === 'openid_sub');
+        expect(subCookieCall).toBeDefined();
+        expect(subCookieCall[2].expires).toEqual(expires);
+        const decoded = jwt.verify(subCookieCall[1], process.env.JWT_REFRESH_SECRET);
+        expect(decoded.sub).toBe('sub-custom-exp');
+        expect(decoded.typ).toBe('openid_sub');
+        const expectedHash = crypto.createHash('sha256').update(refreshToken).digest('base64url');
+        expect(decoded.refreshTokenHash).toBe(expectedHash);
+      });
     });
   });
 
@@ -1616,6 +1820,74 @@ describe('CloudFront cookie integration', () => {
       const result = await setAuthTokens('user-123', res);
 
       expect(result).toBe('mock-access-token');
+    });
+
+    it('sets openid_sub cookie when user has openidId and OPENID_EXPOSE_SUB_COOKIE is true', async () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      getUserById.mockResolvedValueOnce({
+        _id: 'user-123',
+        openidId: 'auth0|user_12345',
+        tenantId: 'tenantA',
+      });
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res);
+
+      const subCookieCall = res.cookie.mock.calls.find((call) => call[0] === 'openid_sub');
+      expect(subCookieCall).toBeDefined();
+      expect(subCookieCall[2].sameSite).toBe('lax');
+      expect(subCookieCall[2].httpOnly).toBe(true);
+      const decoded = jwt.verify(subCookieCall[1], process.env.JWT_REFRESH_SECRET);
+      expect(decoded.sub).toBe('auth0|user_12345');
+    });
+
+    it('sets openid_sub cookie when req.user has openidId and OPENID_EXPOSE_SUB_COOKIE is true', async () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      getUserById.mockResolvedValueOnce({
+        _id: 'user-123',
+        tenantId: 'tenantA',
+      });
+      const req = mockRequest();
+      req.user = { openidId: 'req-openid-sub-999' };
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res, null, req);
+
+      const subCookieCall = res.cookie.mock.calls.find((call) => call[0] === 'openid_sub');
+      expect(subCookieCall).toBeDefined();
+      const decoded = jwt.verify(subCookieCall[1], process.env.JWT_REFRESH_SECRET);
+      expect(decoded.sub).toBe('req-openid-sub-999');
+      expect(decoded.typ).toBe('openid_sub');
+      expect(decoded.refreshTokenHash).toBeDefined();
+    });
+
+    it('clears openid_sub cookie in setAuthTokens when user has no openidId', async () => {
+      process.env.OPENID_EXPOSE_SUB_COOKIE = 'true';
+      getUserById.mockResolvedValueOnce({
+        _id: 'user-123',
+        tenantId: 'tenantA',
+      });
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res);
+
+      expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+      expect(res._cookies['openid_sub']).toBeUndefined();
+    });
+
+    it('clears openid_sub cookie in setAuthTokens when OPENID_EXPOSE_SUB_COOKIE is not enabled', async () => {
+      delete process.env.OPENID_EXPOSE_SUB_COOKIE;
+      getUserById.mockResolvedValueOnce({
+        _id: 'user-123',
+        openidId: 'auth0|user_12345',
+        tenantId: 'tenantA',
+      });
+      const res = mockResponse();
+
+      await setAuthTokens('user-123', res);
+
+      expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+      expect(res._cookies['openid_sub']).toBeUndefined();
     });
   });
 });

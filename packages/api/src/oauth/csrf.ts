@@ -51,6 +51,7 @@ export function shouldUseSecureCookie(): boolean {
 export const REFRESH_TOKEN_COOKIE = 'refreshToken';
 export const TOKEN_PROVIDER_COOKIE = 'token_provider';
 export const OPENID_USER_ID_COOKIE = 'openid_user_id';
+export const OPENID_SUB_COOKIE = 'openid_sub';
 
 /**
  * Writes the IdP refresh token to the `refreshToken` cookie. Single source of

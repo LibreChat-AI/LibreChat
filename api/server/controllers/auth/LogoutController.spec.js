@@ -374,6 +374,17 @@ describe('LogoutController', () => {
         tenantId: 'tenantA',
       });
     });
+
+    it('clears openid_sub cookie unconditionally on logout', async () => {
+      mockIsEnabled.mockImplementation(() => false);
+      delete process.env.OPENID_EXPOSE_SUB_COOKIE;
+      const req = buildReq();
+      const res = buildRes();
+
+      await logoutController(req, res);
+
+      expect(res.clearCookie).toHaveBeenCalledWith('openid_sub');
+    });
   });
 
   describe('URL length limit and logout_hint fallback', () => {
