@@ -49,4 +49,13 @@ describe('Badge', () => {
     expect(selected).toHaveClass('text-text-primary');
     expect(selected).not.toHaveClass('text-badge-label');
   });
+
+  /** A disabled badge keeps its resting ink on hover, as it keeps its resting shadow. */
+  it('keeps a disabled badge in its resting ink on hover', () => {
+    render(<Badge id="1" label="Tools" isAvailable={true} isInChat />);
+    const badge = screen.getByRole('button', { name: 'Tools' });
+
+    expect(badge).toHaveClass('hover:text-badge-label');
+    expect(badge).not.toHaveClass('hover:text-text-primary');
+  });
 });

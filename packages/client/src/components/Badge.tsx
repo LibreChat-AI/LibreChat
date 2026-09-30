@@ -80,7 +80,7 @@ export default function Badge({
       : 'bg-surface-chat text-badge-label shadow-xs hover:bg-surface-hover hover:text-text-primary hover:shadow-md',
     'active:scale-95 active:shadow-inner',
     isMoveable && 'cursor-move',
-    isDisabled && 'cursor-not-allowed opacity-50 hover:shadow-xs',
+    isDisabled && 'cursor-not-allowed opacity-50 hover:shadow-xs hover:text-badge-label',
     className,
   );
   const badgeContent = (
