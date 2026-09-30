@@ -19,6 +19,7 @@ const mockUseActiveJobs = jest.fn();
 const mockUseAgentQueuedTurns = jest.fn();
 const mockExtendActiveJobsGrace = jest.fn();
 let mockStartupConfig: { interface?: { retentionMode?: string } } | undefined;
+let mockStartupConfigSettled = true;
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
 jest.mock('~/Providers', () => ({
@@ -40,7 +41,7 @@ jest.mock('~/data-provider', () => ({
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS: jest.requireActual('~/data-provider/SSE/queries')
     .ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
   extendActiveJobsGrace: () => mockExtendActiveJobsGrace(),
-  useGetStartupConfig: () => ({ data: mockStartupConfig }),
+  useGetStartupConfig: () => ({ data: mockStartupConfig, isFetched: mockStartupConfigSettled }),
   streamStatusQueryKey: (conversationId: string) => ['streamStatus', conversationId],
 }));
 
@@ -449,6 +450,41 @@ describe('useResumeOnLoad', () => {
         expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
       } finally {
         mockStartupConfig = undefined;
+      }
+    });
+
+    /** A status snapshot that lands before the startup config would otherwise be
+     *  rebuilt without knowing the retention mode, and the conversation would then
+     *  be marked processed so the arriving config could never correct it. */
+    it('waits for the startup config before rebuilding the submission', async () => {
+      mockStartupConfigSettled = false;
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        const { rerender } = renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(observedSubmissions.filter(Boolean)).toHaveLength(0);
+
+        mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+        mockStartupConfigSettled = true;
+        rerender();
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+        mockStartupConfigSettled = true;
       }
     });
 

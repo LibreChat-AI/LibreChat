@@ -307,7 +307,7 @@ export default function useResumeOnLoad(
   const endpointType = currentConversation?.endpointType;
   const actualEndpoint = endpointType ?? endpoint;
   const resumableEnabled = !isAssistantsEndpoint(actualEndpoint);
-  const { data: startupConfig } = useGetStartupConfig();
+  const { data: startupConfig, isFetched: startupConfigSettled } = useGetStartupConfig();
   const isRetentionForced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
   // Track conversations we've already processed (either resumed or skipped)
   const processedConvoRef = useRef<string | null>(null);
@@ -834,6 +834,7 @@ export default function useResumeOnLoad(
   const shouldCheck =
     resumableEnabled &&
     messagesLoaded && // Wait for messages to load before checking
+    startupConfigSettled && // The forced retention mode decides the rebuilt submission's temporary state
     !hasActiveSubmissionForThisConvo && // Allow if no submission or a confirmed stale submission
     !!conversationId &&
     conversationId !== Constants.NEW_CONVO &&
@@ -868,6 +869,10 @@ export default function useResumeOnLoad(
     // Wait for messages to load to avoid race condition where sync overwrites then DB overwrites
     if (!messagesLoaded) {
       console.log('[ResumeOnLoad] Waiting for messages to load');
+      return;
+    }
+
+    if (!startupConfigSettled) {
       return;
     }
 
@@ -1119,6 +1124,7 @@ export default function useResumeOnLoad(
     jotaiStore,
     externalRunArm,
     isRetentionForced,
+    startupConfigSettled,
   ]);
 
   // Reset processedConvoRef when conversation changes to allow re-checking
