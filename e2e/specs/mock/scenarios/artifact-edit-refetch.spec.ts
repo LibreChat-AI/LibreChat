@@ -3,6 +3,7 @@ import type { Page, Response } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
+  escapeRegExp,
   getAccessToken,
   messagesView,
   requestJson,
@@ -20,6 +21,10 @@ import {
  */
 
 const HTML_ARTIFACT = 'E2E HTML Artifact';
+
+/* The phone sheet is modal and its new-chat control lives in the collapsed
+ * navigation; the refetch this case needs is reached from the desktop layout. */
+test.use({ viewport: { width: 1280, height: 800 } });
 
 type ArtifactSave = { index: number; original: string; updated: string };
 
@@ -73,11 +78,11 @@ test('an edit saves after another session changed the artifact @scenario:an-edit
 
   /* Leaving and coming back refetches the conversation without a reload, so
    * this tab's record of its own save is still there. */
-  const conversationUrl = page.url();
+  const conversationPath = new URL(page.url()).pathname;
   await page.getByTestId('new-chat-button').click();
   await expect(page).toHaveURL(/\/c\/new/);
   await page.goBack();
-  await expect(page).toHaveURL(conversationUrl);
+  await expect(page).toHaveURL(new RegExp(escapeRegExp(conversationPath)));
 
   const second = await openCode(page);
   await expect(second.panel.locator('#artifacts-code')).toContainText('other-session', {

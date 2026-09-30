@@ -19,6 +19,11 @@ import {
  * user returns to lands on its own unsaved text and sends it.
  */
 
+/* On a phone the pane is a modal sheet: reaching another artifact's trigger
+ * means closing it, which ends the pane session, so an edit can only be
+ * displaced by another artifact's edit where the pane sits beside the chat. */
+test.use({ viewport: { width: 1280, height: 800 } });
+
 const FIRST_ARTIFACT = 'E2E First Artifact';
 const SECOND_ARTIFACT = 'E2E Second Artifact';
 

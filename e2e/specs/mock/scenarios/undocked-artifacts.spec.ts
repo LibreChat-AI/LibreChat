@@ -40,8 +40,9 @@ const artifactTrigger = (page: Page, title: string) =>
 async function openHtmlArtifact(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-  const response = await sendMessage(page, 'E2E_HTML_ARTIFACT_REPLY');
-  expect(response.ok()).toBeTruthy();
+  /* Opened while the reply is still finalizing, the pane follows the stream
+   * onto the code tab; these cases start from a settled reply. */
+  await sendMessageAndWaitForCompletion(page, 'E2E_HTML_ARTIFACT_REPLY', { timeout: 60000 });
 
   await artifactTrigger(page, HTML_ARTIFACT).click();
   const panel = page.getByRole('region', { name: HTML_ARTIFACT });
