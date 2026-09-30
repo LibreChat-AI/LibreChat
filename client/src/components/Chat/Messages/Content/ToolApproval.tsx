@@ -1,10 +1,12 @@
-import { useEffect, useMemo } from 'react';
+import { useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
-import { Check, X, Pencil, MessageSquare, TriangleAlert } from 'lucide-react';
+import { Check, X, Pencil, MessageSquare, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
 import { boundApprovalLabel } from '~/components/Chat/approval/preview';
 import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
+import { ChatContext } from '~/Providers/ChatContext';
 import { useLocalize } from '~/hooks';
 import { cn, logger } from '~/utils';
 
@@ -69,22 +71,28 @@ function seedArgs(args: string | Record<string, unknown> | undefined): string {
  * Renders approve / reject / edit / respond controls for a paused tool call,
  * scoped to the decisions the server allows. Records its decision in the
  * batch {@link useApprovalContext}; the lead card additionally renders the
- * single submit button covering every paused call in the action.
+ * single submit button covering every paused call in the action. While the
+ * composer's review panel is open on the same action, a thread card renders
+ * only the record of the request: the panel owns the decisions and the submit,
+ * and it overlays the tail of the thread where this card sits.
  */
 export default function ToolApproval({
   approval,
   toolCallId,
   args,
-  showSubmit = true,
+  surface = 'thread',
 }: {
   approval: NonNullable<Agents.ToolCall['approval']>;
   toolCallId: string;
   args: string | Record<string, unknown> | undefined;
-  /** The composer owns one batch submit; timeline cards keep the historical lead button. */
-  showSubmit?: boolean;
+  /** The composer panel owns one batch submit; thread cards keep the lead button. */
+  surface?: 'thread' | 'composer';
 }) {
   const localize = useLocalize();
   const { actionId, allowed_decisions: allowedDecisions, description } = approval;
+  const conversationId = useContext(ChatContext)?.conversation?.conversationId;
+  const composerPresents = useComposerPresentsApproval(conversationId, actionId);
+  const deferToComposer = surface === 'thread' && composerPresents;
   const {
     registerToolCall,
     unregisterToolCall,
@@ -209,15 +217,33 @@ export default function ToolApproval({
     return null;
   }
 
+  const descriptionNode = safeDescription != null && safeDescription.length > 0 && (
+    <p className="text-sm text-text-secondary">{safeDescription}</p>
+  );
+
+  if (deferToComposer) {
+    return (
+      <div
+        className="my-2 flex w-full flex-col gap-2 rounded-lg border border-border-light bg-surface-secondary p-3"
+        data-testid="tool-approval"
+        data-tool-call-id={toolCallId}
+      >
+        {descriptionNode}
+        <p className="flex items-center gap-1.5 text-xs text-text-secondary">
+          <ShieldQuestion className="size-4 shrink-0" aria-hidden="true" />
+          {localize('com_ui_approval_review_in_composer')}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
       className="my-2 flex w-full flex-col gap-2 rounded-lg border border-border-light bg-surface-secondary p-3"
       data-testid="tool-approval"
       data-tool-call-id={toolCallId}
     >
-      {safeDescription != null && safeDescription.length > 0 && (
-        <p className="text-sm text-text-secondary">{safeDescription}</p>
-      )}
+      {descriptionNode}
       <div className="flex flex-wrap gap-2">
         {allowedDecisions.map((decision) => {
           const Icon = DECISION_ICON[decision];
@@ -281,7 +307,7 @@ export default function ToolApproval({
         />
       )}
 
-      {showSubmit && isLead && (
+      {surface === 'thread' && isLead && (
         <div className="mt-1 flex items-center gap-3">
           <Button
             size="sm"
