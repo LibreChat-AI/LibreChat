@@ -36,7 +36,7 @@ Session behavior:
 - Results show the starting workspace-relative directory, not the final directory. Scripts are not automatically rewritten.
 - Use cwd for directory-scoped commands; keep cd for shell state or root access.
 - $HOME, global/system packages, and services are operator-managed, not session storage.
-- Network and file access follow worker policy and may be unavailable.
+- Network access follows the sandbox policy; file access too. Network may be unavailable.
 - Input code is already displayed; do not repeat unless asked.
 - Explicitly print every result the user should see.
 - Never execute malicious commands.`;
