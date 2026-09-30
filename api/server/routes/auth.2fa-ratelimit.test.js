@@ -83,6 +83,9 @@ describe('authenticated 2FA management budget', () => {
   let app;
   const paths = ['enable', 'verify', 'confirm', 'disable', 'backup/regenerate'];
   beforeEach(() => {
+    require('~/server/services/Config').getAppConfig.mockResolvedValue({
+      config: { rateLimits: {} },
+    });
     app = express();
     app.use(express.json());
     app.use('/api/auth', authRouter);
@@ -150,6 +153,23 @@ describe('authenticated 2FA management budget', () => {
     );
     expect(responses.filter(({ status }) => status === 204)).toHaveLength(7);
     expect(responses.filter(({ status }) => status === 429)).toHaveLength(13);
+  });
+
+  it('admits the entire setup sequence with the minimum configured budget', async () => {
+    require('~/server/services/Config').getAppConfig.mockResolvedValue({
+      config: { rateLimits: { twoFactorManagement: { requestsPerFiveMinutes: 3 } } },
+    });
+    for (const operation of ['enable', 'verify', 'confirm']) {
+      await request(app)
+        .post(`/api/auth/2fa/${operation}`)
+        .set('x-user', 'minimum-budget-user')
+        .expect(204);
+    }
+    const blocked = await request(app)
+      .post('/api/auth/2fa/verify')
+      .set('x-user', 'minimum-budget-user')
+      .expect(429);
+    expect(blocked.headers['ratelimit-limit']).toBe('3');
   });
 });
 

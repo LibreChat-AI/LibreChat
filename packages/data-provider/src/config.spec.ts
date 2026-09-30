@@ -41,7 +41,7 @@ describe('authenticated 2FA management rate limits', () => {
     }
   });
 
-  it.each([0, -1, 1.5, Infinity, '7'])('rejects an invalid budget: %s', (value) => {
+  it.each([0, -1, 1, 2, 1.5, Infinity, '7'])('rejects an invalid budget: %s', (value) => {
     expect(
       configSchema.safeParse({
         version: '1.0',
