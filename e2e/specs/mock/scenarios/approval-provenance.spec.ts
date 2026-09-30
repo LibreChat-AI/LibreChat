@@ -7,7 +7,7 @@ import {
   createApprovalAgent,
   expectApprovalInvocationCount,
   expectCompletedApprovalToolOutput,
-} from '../tool-approvals.helpers';
+} from '../approvals.helpers';
 import { cleanupAgent } from '../agents.helpers';
 import { NEW_CHAT_PATH, getAccessToken, requestJson } from '../helpers';
 
