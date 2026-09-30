@@ -3,7 +3,9 @@ import { EToolResources, FileContext } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { ProvisionState } from '~/agents/resources';
 import type { ProvisionToolContext } from './callback';
+import type { CodeFileAgent } from '../code/queued';
 import type { ServerRequest } from '~/types';
+import { prepareQueuedCodeFileContext } from '../code/queued';
 import { createProvisionFilesCallback } from './callback';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -103,6 +105,97 @@ function buildHarness({
 }
 
 describe('createProvisionFilesCallback', () => {
+  it.each(['a', 'b'])(
+    'keeps distinct queued files reachable at their advertised paths when %s runs first',
+    async (firstAgentId) => {
+      const agents = ['a', 'b'].map((id) => {
+        const dynamicToolContextMap: Record<string, unknown> = {};
+        return {
+          id,
+          provisionState: state([makeFile({ file_id: id, context: FileContext.agents })], [], [id]),
+          fileConsumers: { executeCode: true, fileSearch: false },
+          dynamicToolContextMap,
+        };
+      });
+      for (const agent of agents) prepareQueuedCodeFileContext(agent, agents, req.user?.id);
+      const names = agents.map((agent) => agent.provisionState.codeEnvDestinations?.get(agent.id));
+      expect(new Set(names).size).toBe(2);
+      for (const [index, agent] of agents.entries()) {
+        const paths = String(agent.dynamicToolContextMap.queued_code_files)
+          .split('\n')
+          .filter((line) => line.includes('/mnt/data/'));
+        expect(paths).toHaveLength(1);
+        expect(paths[0]).toContain(`/mnt/data/${names[index]}`);
+      }
+
+      const { provisionFiles, provisionToCodeEnv } = buildHarness({
+        contexts: agents.map((agent) => [agent.id, agent]),
+      });
+      await provisionFiles([Constants.EXECUTE_CODE], firstAgentId);
+      await provisionFiles([Constants.EXECUTE_CODE], firstAgentId === 'a' ? 'b' : 'a');
+      for (const [args] of provisionToCodeEnv.mock.calls) {
+        const agent = agents.find((candidate) => candidate.id === args.file.file_id);
+        expect(args.sandboxFilename).toBe(agent?.provisionState.codeEnvDestinations?.get(agent.id));
+      }
+    },
+  );
+
+  it('locates queued files in the programmatic data directory for an attached workspace', () => {
+    const agent: CodeFileAgent = {
+      id: 'agent-a',
+      provisionState: state([makeFile()], []),
+      fileConsumers: { executeCode: true, fileSearch: false },
+      codeExecutionContext: {
+        baseUrl: 'https://code.example',
+        codeSessionKey: 'attached',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        codeWorkspace: {
+          environmentId: 'personal-machine',
+          workspaceId: 'project',
+          operations: ['read_file'],
+        },
+      },
+    };
+    prepareQueuedCodeFileContext(agent, [agent], req.user?.id);
+
+    expect(agent.dynamicToolContextMap?.queued_code_files).toContain(
+      '$LIBRECHAT_CODE_DATA_DIR/data.csv',
+    );
+    expect(agent.dynamicToolContextMap?.queued_code_files).toContain('programmatic Bash');
+    expect(agent.dynamicToolContextMap?.queued_code_files).not.toContain('/mnt/data/');
+  });
+
+  it('uploads colliding and converted files at the paths advertised before inference', async () => {
+    const files = [
+      makeFile({ file_id: 'first', filename: 'my dir/data.csv', text: 'preview' }),
+      makeFile({ file_id: 'second', filename: 'data.csv' }),
+      makeFile({ file_id: 'image', filename: 'photo.webp', type: 'image/png' }),
+    ];
+    const agent = {
+      id: 'agent-a',
+      provisionState: state(files, []),
+      fileConsumers: { executeCode: true, fileSearch: false },
+      dynamicToolContextMap: {},
+    };
+    prepareQueuedCodeFileContext(agent, [agent], req.user?.id);
+    const advertised = new Map(agent.provisionState.codeEnvDestinations);
+    const { provisionFiles, provisionToCodeEnv } = buildHarness({
+      contexts: [[agent.id, agent]],
+    });
+    expect(provisionToCodeEnv).not.toHaveBeenCalled();
+    expect(new Set(advertised.values()).size).toBe(3);
+    expect(advertised.get('image')).toBe('photo.png');
+
+    await provisionFiles([Constants.EXECUTE_CODE], agent.id);
+
+    for (const [args] of provisionToCodeEnv.mock.calls) {
+      expect(args.sandboxFilename).toBe(advertised.get(args.file.file_id));
+    }
+    expect(agent.provisionState.codeEnvFiles).toEqual([]);
+  });
+
   it('scopes only the agent own resource files to its identity', async () => {
     /* A user can attach another agent's setup file to this conversation. Uploading it under
      * this agent would place it in a namespace this agent's other users share, so the

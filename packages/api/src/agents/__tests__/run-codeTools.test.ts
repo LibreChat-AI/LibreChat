@@ -1,4 +1,6 @@
+import { FileContext } from 'librechat-data-provider';
 import type { SubagentTaskConfig } from '@librechat/agents';
+import type { TFile } from 'librechat-data-provider';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
@@ -101,6 +103,53 @@ async function captureAgentsRunConfig(
 
 describe('createRun code-tool eager/session wiring', () => {
   beforeEach(() => jest.clearAllMocks());
+
+  it('includes queued paths in model instructions and reserves live paths across agents', async () => {
+    const file: TFile = {
+      file_id: 'uploaded',
+      filename: 'data.csv',
+      filepath: '/uploads/data.csv',
+      type: 'text/csv',
+      user: 'user-1',
+      object: 'file',
+      bytes: 10,
+      embedded: false,
+      usage: 0,
+      context: FileContext.message_attachment,
+    };
+    const agents = ['a', 'b'].map((id) =>
+      makeAgent({
+        id,
+        fileConsumers: { executeCode: true, fileSearch: false },
+        provisionState: {
+          codeEnvFiles: [{ ...file }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set(),
+          agentScopedFileIds: new Set(),
+        },
+        dynamicToolContextMap: { execute_code: 'Previously primed file context' },
+        additional_instructions: 'Agent instructions',
+        tool_resources:
+          id === 'a' ? { execute_code: { files: [{ ...file, file_id: 'existing' }] } } : undefined,
+      }),
+    );
+    const config = await captureAgentsRunConfig(agents);
+    const inputs = (config.graphConfig as { agents: Array<{ additional_instructions: string }> })
+      .agents;
+    const paths = inputs.map(
+      (input) => input.additional_instructions.match(/\/mnt\/data\/\S+/)?.[0],
+    );
+
+    expect(paths[0]).toBeDefined();
+    expect(paths[0]).not.toBe('/mnt/data/data.csv');
+    expect(paths[1]).toBe(paths[0]);
+    for (const input of inputs) {
+      expect(input.additional_instructions).toContain('Previously primed file context');
+      expect(input.additional_instructions).toContain('Agent instructions');
+      expect(input.additional_instructions).toContain('read or edit');
+      expect(input.additional_instructions).not.toContain(file.filepath);
+    }
+  });
 
   it('excludes side-effecting/large-arg tools from eager execution', async () => {
     const runConfig = await captureRunConfig();
