@@ -507,6 +507,20 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     return () => debouncedMutation.cancel();
   }, [artifact.id, debouncedMutation]);
 
+  /* Declared ahead of the drain below: when editing becomes available again,
+   * the persisted content lands first and an inherited buffer the drain is
+   * still holding is written over it, rather than the other way round. */
+  useEffect(() => {
+    if (prevReadOnly.current && !readOnly && artifact.content != null) {
+      const ed = monacoRef.current;
+      if (ed) {
+        writeModelValue(ed, artifact.content);
+        prevContentRef.current = artifact.content;
+      }
+    }
+    prevReadOnly.current = readOnly;
+  }, [readOnly, artifact.content, monacoRef, writeModelValue]);
+
   /* A remount cancels the debounce mid-flight, so text the user typed just
    * before the pane changed hosts lives in the buffer and has never been sent.
    * The request its previous instance started keeps its own callbacks — React
@@ -518,9 +532,12 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * Only the buffer this instance inherited at mount is drained. A buffer
    * picked up by navigating back to an artifact belongs to an editor that is
    * still alive and will send it itself; submitting it here would race that
-   * editor's own `setValue`. */
+   * editor's own `setValue`.
+   *
+   * A read-only editor cannot save, so nothing is drained while a response is
+   * generating: the buffer stays in play and goes out once editing returns. */
   useEffect(() => {
-    if (isMutating) {
+    if (isMutating || readOnly) {
       return;
     }
 
@@ -568,12 +585,16 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     }
     drainedBufferRef.current = inherited;
     prevContentRef.current = inherited;
+    const ed = monacoRef.current;
+    if (ed) {
+      writeModelValue(ed, inherited);
+    }
     const rejected = rejectedCodeRef.current[artifactRef.current.id];
     if (inheritedTarget != null && rejected != null && inherited.trim() === rejected.trim()) {
       return;
     }
     runMutationRef.current(inherited, inheritedOriginal);
-  }, [isMutating, queryClient]);
+  }, [isMutating, readOnly, queryClient, monacoRef, writeModelValue]);
 
   /**
    * Streaming: use model.applyEdits() to append new content.
@@ -650,17 +671,6 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       runMutationRef.current(restored);
     }
   }, [artifact.id, artifact.content, monacoRef, writeModelValue]);
-
-  useEffect(() => {
-    if (prevReadOnly.current && !readOnly && artifact.content != null) {
-      const ed = monacoRef.current;
-      if (ed) {
-        writeModelValue(ed, artifact.content);
-        prevContentRef.current = artifact.content;
-      }
-    }
-    prevReadOnly.current = readOnly;
-  }, [readOnly, artifact.content, monacoRef, writeModelValue]);
 
   /* Monaco reports a write this component made through `onChange` like any
    * other edit. Treating it as typing would key the shared buffer to the

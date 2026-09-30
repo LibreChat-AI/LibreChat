@@ -109,6 +109,7 @@ function SessionProbe() {
 const renderEditor = (initial: Artifact, monacoRef: React.MutableRefObject<any>) => {
   let current = initial;
   let paneOpen = true;
+  let readOnly = false;
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -121,7 +122,9 @@ const renderEditor = (initial: Artifact, monacoRef: React.MutableRefObject<any>)
       >
         <EditorProvider>
           <SessionProbe />
-          {paneOpen ? <ArtifactCodeEditor artifact={current} monacoRef={monacoRef} /> : null}
+          {paneOpen ? (
+            <ArtifactCodeEditor artifact={current} monacoRef={monacoRef} readOnly={readOnly} />
+          ) : null}
         </EditorProvider>
       </ThemeContext.Provider>
     </QueryClientProvider>
@@ -143,6 +146,10 @@ const renderEditor = (initial: Artifact, monacoRef: React.MutableRefObject<any>)
     },
     reopenPane: () => {
       paneOpen = true;
+      rerender();
+    },
+    setReadOnly: (next: boolean) => {
+      readOnly = next;
       rerender();
     },
   };
@@ -555,5 +562,32 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     expect(mockEditArtifact).toHaveBeenLastCalledWith(
       expect.objectContaining({ updated: 'EDIT-NEW' }),
     );
+  });
+
+  /* A response starts while an edit is still waiting on its debounce, and the
+   * pane changes hosts before it saves: the edit is inherited by an editor
+   * that cannot save yet. It has to survive until editing returns, then be
+   * saved and stay on screen rather than give way to the persisted content. */
+  it('saves an inherited edit once a generation ends', async () => {
+    const model = createModel('CONTENT-A');
+    const monacoRef = { current: model.ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('EDIT-A');
+    view.setReadOnly(true);
+    view.closePane();
+    view.reopenPane();
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).not.toHaveBeenCalled();
+
+    view.setReadOnly(false);
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ original: 'CONTENT-A', updated: 'EDIT-A' }),
+    );
+    expect(model.read()).toBe('EDIT-A');
   });
 });
