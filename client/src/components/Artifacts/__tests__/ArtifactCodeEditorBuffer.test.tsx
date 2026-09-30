@@ -671,4 +671,48 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
 
     expect(mockEditArtifact).toHaveBeenCalledTimes(1);
   });
+
+  /* Two saves land before the registry shows either. Once it shows the first
+   * one, the value before it is history: the registry going back there later
+   * is a change made elsewhere, not lag. */
+  it('retires lag values the registry has already passed', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    await saveAndSettle('ONE');
+    await saveAndSettle('TWO');
+    view.select({ ...artifactA, content: 'ONE' });
+    await flush();
+    view.select({ ...artifactA, content: 'CONTENT-A' });
+    await flush();
+
+    type('NEXT');
+    settleDebounce();
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ original: 'CONTENT-A', updated: 'NEXT' }),
+    );
+  });
+
+  /* Only the copy a save wrote is known to be saved. A user who edits away
+   * and back to that same text has made an edit, and it is sent. */
+  it('sends an edit that returns to previously saved text', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    await saveAndSettle('SAVED');
+    view.select({ ...artifactA, content: 'SAVED' });
+    await flush();
+
+    type('DETOUR');
+    type('SAVED');
+    view.select(artifactB);
+    view.select({ ...artifactA, content: 'CHANGED-ELSEWHERE' });
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ original: 'CHANGED-ELSEWHERE', updated: 'SAVED' }),
+    );
+  });
 });

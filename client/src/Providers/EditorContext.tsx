@@ -66,10 +66,12 @@ interface CodeContextType {
 /**
  * A successful save is the server's content before the registry shows it: the
  * edited message propagates afterwards. `base` is the text the last save wrote,
- * and `pending` the values the registry may still show until it catches up.
- * Anything else the registry shows is a change made elsewhere, which wins.
+ * and `pending` the values the registry may still show until it catches up, in
+ * the order they were replaced. Anything else the registry shows is a change
+ * made elsewhere, which wins. `savedBuffer` is the buffer text that save wrote
+ * until the buffer changes again: only that copy is known to be saved.
  */
-type SavedContent = { base: string; pending: string[] };
+type SavedContent = { base: string; pending: string[]; savedBuffer: string | null };
 export type SavedContentLedger = { current: Record<string, SavedContent> };
 
 export function recordSave(
@@ -82,6 +84,7 @@ export function recordSave(
   ledger.current[artifactId] = {
     base: updated,
     pending: [...(previous?.pending ?? []), original],
+    savedBuffer: updated,
   };
 }
 
@@ -100,18 +103,23 @@ export function resolveServerContent(
   if (entry == null || registry == null) {
     return registry ?? entry?.base;
   }
-  if (entry.pending.length > 0 && registry !== entry.base && entry.pending.includes(registry)) {
+  const lagging = registry === entry.base ? -1 : entry.pending.indexOf(registry);
+  if (lagging >= 0) {
+    /* The registry has passed every value before this one. */
+    if (lagging > 0) {
+      ledger.current[artifactId] = { ...entry, pending: entry.pending.slice(lagging) };
+    }
     return entry.base;
   }
   if (entry.pending.length > 0) {
-    ledger.current[artifactId] = { base: entry.base, pending: [] };
+    ledger.current[artifactId] = { ...entry, pending: [] };
   }
   return registry;
 }
 
-/** Whether the text is what this tab last saved for the artifact, so it is not unsaved. */
+/** Whether this buffer text is the copy the last save wrote, so it is not unsaved. */
 export function isSavedText(ledger: SavedContentLedger, artifactId: string, text: string): boolean {
-  return ledger.current[artifactId]?.base === text;
+  return ledger.current[artifactId]?.savedBuffer === text;
 }
 
 const MutationContext = createContext<MutationContextType | undefined>(undefined);
@@ -149,6 +157,13 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
         retained[wasOwner] = wasCode;
       }
       if (owner != null) {
+        const before = wasOwner === owner ? wasCode : previous.retained[owner];
+        const entry = savedContent.current[owner];
+        /* Any change to the text makes it the user's again, even one that
+         * lands back on what was saved. */
+        if (entry != null && before !== code) {
+          savedContent.current[owner] = { ...entry, savedBuffer: null };
+        }
         delete retained[owner];
       }
       return { buffer: { code, artifactId: owner }, retained };
