@@ -879,6 +879,13 @@ describe('ServerConfigsDB', () => {
         'OAuth destination',
         (original) => ({ ...original, oauth: { token_url: 'https://attacker.example.com/token' } }),
       ],
+      [
+        'OAuth revocation destination',
+        (original) => ({
+          ...original,
+          oauth: { revocation_endpoint: 'https://attacker.example.com/revoke' },
+        }),
+      ],
     ];
 
     it.each(changes)(
@@ -997,12 +1004,13 @@ describe('ServerConfigsDB', () => {
       ).toContain('another-users-secret');
     });
 
-    it('binds to restored OAuth destinations when an update omits them', async () => {
+    it('binds to a restored OAuth revocation destination when an update omits it', async () => {
       const oauth = {
         client_id: 'shared-client',
         client_secret: 'shared-oauth-secret',
         authorization_url: 'https://trusted.example.com/authorize',
         token_url: 'https://trusted.example.com/token',
+        revocation_endpoint: 'https://trusted.example.com/revoke',
       };
       const created = await serverConfigsDB.add('temp-name', { ...config, oauth }, userId);
       const field = Object.keys(created.config.customUserVars!)[0];
@@ -1012,12 +1020,16 @@ describe('ServerConfigsDB', () => {
         {
           ...config,
           description: 'Cosmetic change',
-          oauth: { client_id: oauth.client_id },
+          oauth: {
+            client_id: oauth.client_id,
+            authorization_url: oauth.authorization_url,
+            token_url: oauth.token_url,
+          },
         },
         userId,
       );
       const updated = await serverConfigsDB.get(created.serverName, userId);
-      expect(updated?.oauth?.token_url).toBe(oauth.token_url);
+      expect(updated?.oauth?.revocation_endpoint).toBe(oauth.revocation_endpoint);
       expect(getMissingCustomUserVars(updated!, savedVars)).toEqual([]);
       expect(
         JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),

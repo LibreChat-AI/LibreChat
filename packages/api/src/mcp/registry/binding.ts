@@ -69,6 +69,7 @@ function userApiKeyBinding(config: MCPOptions): string {
     normalizeUrl(config.oauth?.authorization_url),
     normalizeUrl(config.oauth?.token_url),
     normalizeUrl(config.oauth?.redirect_uri),
+    normalizeUrl(config.oauth?.revocation_endpoint),
     config.oauth?.client_id,
   ]);
 }
