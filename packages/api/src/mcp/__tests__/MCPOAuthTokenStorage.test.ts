@@ -8,6 +8,7 @@
 import { Keyv } from 'keyv';
 import type { TokenMethods } from '@librechat/data-schemas';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
+import type { FlowLease } from '~/flow/manager';
 import {
   MCPTokenStorage,
   MCPTokenRefreshUnavailableError,
@@ -94,6 +95,123 @@ describe('MCPTokenStorage', () => {
           validateClientBinding,
         }),
       ).resolves.toBe(true);
+    });
+
+    it.each([false, true])(
+      'rejects a known-rejected generation even with usable refresh credentials (access removed: %s)',
+      async (removeAccess) => {
+        await createBoundToken(store, {
+          userId: 'u1',
+          type: 'mcp_oauth',
+          identifier: 'mcp:srv1',
+          token: 'enc:rejected-access',
+          expiresIn: 3600,
+        });
+        await createBoundToken(store, {
+          userId: 'u1',
+          type: 'mcp_oauth_refresh',
+          identifier: 'mcp:srv1:refresh',
+          token: 'enc:usable-refresh',
+          expiresIn: 3600,
+        });
+        await storeClient();
+        await MCPTokenStorage.markAuthorizationRejected({
+          userId: 'u1',
+          serverName: 'srv1',
+          credentialSetId,
+          findToken: store.findToken,
+          updateToken: store.updateToken,
+        });
+        if (removeAccess) {
+          await store.deleteToken({ userId: 'u1', type: 'mcp_oauth', identifier: 'mcp:srv1' });
+        }
+
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName: 'srv1',
+            findToken: store.findToken,
+            validateClientBinding,
+          }),
+        ).resolves.toBe(false);
+        const client = await store.findToken({
+          userId: 'u1',
+          type: 'mcp_oauth_client',
+          identifier: 'mcp:srv1:client',
+        });
+        expect(client?.metadata).toMatchObject({
+          ...storedBindingMetadata,
+          rejected_credential_set_id: credentialSetId,
+        });
+      },
+    );
+
+    it('does not poison a newer authorization while recording an older rejection', async () => {
+      await storeClient();
+      const updateToken: TokenMethods['updateToken'] = async (query, update) => {
+        await storeClient({ ...storedBindingMetadata, credential_set_id: 'new-generation' });
+        return store.updateToken(query, update);
+      };
+      await MCPTokenStorage.markAuthorizationRejected({
+        userId: 'u1',
+        serverName: 'srv1',
+        credentialSetId,
+        findToken: store.findToken,
+        updateToken,
+      });
+      const client = await store.findToken({
+        userId: 'u1',
+        type: 'mcp_oauth_client',
+        identifier: 'mcp:srv1:client',
+      });
+      expect(client?.metadata).toEqual({
+        ...storedBindingMetadata,
+        credential_set_id: 'new-generation',
+      });
+    });
+
+    it('accepts replacement credentials despite a carried-over older rejection marker', async () => {
+      await createBoundToken(store, {
+        userId: 'u1',
+        type: 'mcp_oauth',
+        identifier: 'mcp:srv1',
+        token: 'enc:current-access',
+        expiresIn: 3600,
+      });
+      await storeClient({
+        ...storedBindingMetadata,
+        rejected_credential_set_id: 'older-generation',
+      });
+      await expect(
+        MCPTokenStorage.hasStoredAuthorization({
+          userId: 'u1',
+          serverName: 'srv1',
+          findToken: store.findToken,
+          validateClientBinding,
+        }),
+      ).resolves.toBe(true);
+    });
+
+    it('waits for credential persistence before recording rejection', async () => {
+      await storeClient();
+      let grantLease: ((lease: FlowLease) => void) | undefined;
+      const release = jest.fn(async () => undefined);
+      const flowManager = {
+        acquireLease: jest.fn(() => new Promise<FlowLease>((resolve) => (grantLease = resolve))),
+      };
+      const findToken = jest.fn(store.findToken);
+      const pending = MCPTokenStorage.markAuthorizationRejected({
+        userId: 'u1',
+        serverName: 'srv1',
+        credentialSetId,
+        findToken,
+        updateToken: store.updateToken,
+        flowManager,
+      });
+      expect(findToken).not.toHaveBeenCalled();
+      grantLease?.({ generation: 0, release });
+      await pending;
+      expect(release).toHaveBeenCalledTimes(1);
     });
 
     it('rejects legacy credentials without binding metadata', async () => {

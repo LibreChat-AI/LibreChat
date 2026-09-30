@@ -2349,6 +2349,9 @@ describe('MCPConnectionFactory', () => {
         await handler(challenge);
 
         expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledTimes(1);
+        expect(mockMCPTokenStorage.markAuthorizationRejected).toHaveBeenCalledWith(
+          expect.objectContaining({ credentialSetId: 'grant-1' }),
+        );
         expect(mockMCPTokenStorage.isCurrentAccessToken).toHaveBeenCalledWith(
           expect.objectContaining({ accessToken: 'renewed-access', credentialSetId: 'grant-1' }),
         );
@@ -2801,10 +2804,13 @@ describe('MCPConnectionFactory', () => {
       // persistent `mockImplementation`) ensures this never-resolving promise
       // does not leak into later tests' default mock behavior.
       let resolveRefresh: ((tokens: MCPOAuthTokens) => void) | undefined;
+      let started: (() => void) | undefined;
+      const refreshStarted = new Promise<void>((resolve) => (started = resolve));
       mockMCPTokenStorage.forceRefreshTokens.mockImplementationOnce(
         () =>
           new Promise<MCPOAuthTokens>((res) => {
             resolveRefresh = res;
+            started?.();
           }),
       );
       mockConnectionInstance.isConnected.mockResolvedValue(false);
@@ -2829,7 +2835,7 @@ describe('MCPConnectionFactory', () => {
       const second = oauthRequiredHandler!({ serverUrl: 'https://api.example.com' });
 
       // Let the in-flight lock register, then resolve the single redemption.
-      await Promise.resolve();
+      await refreshStarted;
       resolveRefresh!(refreshedTokens);
       await Promise.all([first, second]);
 
@@ -5187,6 +5193,42 @@ describe('MCPConnectionFactory', () => {
       expect(upstreamTokenProvider).toHaveBeenCalledTimes(1);
       expect(upstreamTokenProvider).not.toHaveBeenCalledWith({ forceRefresh: true });
       expect(mockMCPConnection).toHaveBeenCalledTimes(1);
+    });
+
+    it('records OAuth rejection when tools/list fails after a successful handshake', async () => {
+      mockFlowManager.createFlowWithHandler.mockResolvedValue({
+        access_token: 'rejected-access',
+        token_type: 'Bearer',
+        obtained_at: Date.now(),
+        credential_set_id: 'rejected-generation',
+      });
+      mockConnectionInstance.connect.mockResolvedValue(undefined);
+      mockConnectionInstance.isConnected.mockResolvedValue(true);
+      mockConnectionInstance.fetchOrderedToolsSnapshot = jest.fn().mockResolvedValue({
+        tools: [],
+        complete: false,
+        authenticationError: Object.assign(new Error('unauthorized'), { status: 401 }),
+      });
+      const result = await MCPConnectionFactory.discoverTools(
+        { serverName: 'test-server', serverConfig: mockServerConfig },
+        {
+          useOAuth: true,
+          user: mockUser,
+          flowManager: mockFlowManager,
+          tokenMethods: {
+            findToken: jest.fn(),
+            createToken: jest.fn(),
+            updateToken: jest.fn(),
+            deleteTokens: jest.fn(),
+          },
+        },
+      );
+
+      expect(result.oauthRequired).toBe(true);
+      expect(result.tools).toBeNull();
+      expect(mockMCPTokenStorage.markAuthorizationRejected).toHaveBeenCalledWith(
+        expect.objectContaining({ credentialSetId: 'rejected-generation' }),
+      );
     });
 
     it('does not expose an incomplete discovery snapshot as authoritative', async () => {

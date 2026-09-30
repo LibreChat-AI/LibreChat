@@ -413,6 +413,7 @@ export class MCPConnectionFactory {
 
     let connection: MCPConnection | null = null;
     let oauthHandler: (() => void) | null = null;
+    let rejectionRecorded: Promise<void> | undefined;
     if (shouldAttemptAuthenticatedDiscovery) {
       connection = new MCPConnection({
         serverName: this.serverName,
@@ -432,6 +433,7 @@ export class MCPConnectionFactory {
           `${this.logPrefix} [Discovery] OAuth required; skipping URL generation in discovery mode`,
         );
         oauthRequired = true;
+        rejectionRecorded = this.recordRejectedOAuthAuthorization(oauthTokens?.credential_set_id);
         connection?.emit('oauthFailed', new Error('OAuth required during tool discovery'));
       };
 
@@ -445,10 +447,14 @@ export class MCPConnectionFactory {
         if (await connection.isConnected(abortSignal)) {
           const snapshot = await connection.fetchOrderedToolsSnapshot(this.deadlineMs, abortSignal);
           connection.removeListener('oauthRequired', oauthHandler);
+          const rejectedOAuth = this.useOAuth && snapshot.authenticationError != null;
+          if (rejectedOAuth) {
+            await this.recordRejectedOAuthAuthorization(oauthTokens?.credential_set_id);
+          }
           return {
             tools: snapshot.complete ? snapshot.tools : null,
             connection,
-            oauthRequired: false,
+            oauthRequired: rejectedOAuth,
             oauthUrl: null,
             ...(snapshot.authenticationError != null && {
               authenticationError: snapshot.authenticationError,
@@ -467,6 +473,7 @@ export class MCPConnectionFactory {
        *  discovery never holds two concurrent connects to the same server. */
       connection.removeListener('oauthRequired', oauthHandler);
       await this.disposeQuietly(connection);
+      await rejectionRecorded;
       connection = null;
       oauthHandler = null;
     }
@@ -1753,6 +1760,27 @@ export class MCPConnectionFactory {
     connection.emit('oauthFailed', error);
   }
 
+  private async recordRejectedOAuthAuthorization(credentialSetId?: string | null): Promise<void> {
+    if (!credentialSetId || !this.tokenMethods?.findToken || !this.tokenMethods.updateToken) {
+      return;
+    }
+    try {
+      await this.runWithCapturedTenant(() =>
+        MCPTokenStorage.markAuthorizationRejected({
+          userId: this.userId!,
+          serverName: this.serverName,
+          credentialSetId,
+          findToken: this.tokenMethods!.findToken!,
+          updateToken: this.tokenMethods!.updateToken!,
+          flowManager: this.flowManager,
+          persistenceWaitTimeoutMs: this.serverConfig.oauthPersistenceWaitTimeout,
+        }),
+      );
+    } catch (error) {
+      logger.warn(`${this.logPrefix} Failed to record upstream OAuth rejection`, error);
+    }
+  }
+
   /** Sets up OAuth event handlers for the connection */
   protected handleOAuthEvents(
     connection: MCPConnection,
@@ -1802,6 +1830,8 @@ export class MCPConnectionFactory {
         connection.emit('oauthFailed', new Error('OAuth recovery phase budget exhausted'));
         return;
       }
+
+      await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
 
       if (!isRequestRecovery || recoveryPhase === 'silent-refresh') {
         recoveryPhase = 'interactive';

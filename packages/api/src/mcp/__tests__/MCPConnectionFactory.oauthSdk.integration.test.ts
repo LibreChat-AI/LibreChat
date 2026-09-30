@@ -230,6 +230,48 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     expect(postHeaders).toEqual([undefined]);
   });
 
+  it('keeps rejected refreshed credentials unauthorized across discovery and status reads', async () => {
+    server = await createOAuthMCPServer({ issueRefreshTokens: true, rejectRefreshTokens: 1 });
+    const initial = await issueTokens(server);
+    await storeTokens(tokenStore, server, { ...initial, expires_at: Date.now() - 1000 });
+    const tokenMethods = {
+      findToken: tokenStore.findToken,
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      deleteTokens: tokenStore.deleteTokens,
+    };
+    const result = await MCPConnectionFactory.discoverTools(
+      {
+        serverName: SERVER_NAME,
+        serverConfig: { type: 'streamable-http', url: server.url, requiresOAuth: true },
+      },
+      {
+        useOAuth: true,
+        user: { id: USER_ID } as IUser,
+        flowManager: createFlowManager(),
+        tokenMethods,
+      },
+    );
+    connection = result.connection;
+    const hasStoredAuthorization = () =>
+      MCPTokenStorage.hasStoredAuthorization({
+        userId: USER_ID,
+        serverName: SERVER_NAME,
+        findToken: tokenStore.findToken,
+        validateClientBinding: (clientInfo, metadata) =>
+          MCPOAuthHandler.assertStoredClientBinding(SERVER_NAME, server.url, clientInfo, metadata),
+      });
+
+    expect(result.oauthRequired).toBe(true);
+    expect(
+      server.tokenRequests.filter((request) => request.grantType === 'refresh_token'),
+    ).toHaveLength(1);
+    await expect(hasStoredAuthorization()).resolves.toBe(false);
+
+    await storeTokens(tokenStore, server, await issueTokens(server));
+    await expect(hasStoredAuthorization()).resolves.toBe(true);
+  });
+
   it('does not cancel finished SDK requests when a shared run signal is aborted', async () => {
     let resourcePosts = 0;
     server = await createOAuthMCPServer({
@@ -904,6 +946,15 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     expect(oauthStart).toHaveBeenCalledTimes(1);
     const authorizationUrl = new URL(oauthStart.mock.calls[0][0]);
     expect(authorizationUrl.searchParams.get('resource')).toBe(server.resourceUrl);
+    await expect(
+      MCPTokenStorage.hasStoredAuthorization({
+        userId: USER_ID,
+        serverName: SERVER_NAME,
+        findToken: tokenStore.findToken,
+        validateClientBinding: (clientInfo, metadata) =>
+          MCPOAuthHandler.assertStoredClientBinding(SERVER_NAME, server.url, clientInfo, metadata),
+      }),
+    ).resolves.toBe(false);
   });
 
   it('does not silently refresh an SDK insufficient_scope challenge before starting OAuth', async () => {

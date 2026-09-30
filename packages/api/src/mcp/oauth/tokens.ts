@@ -362,7 +362,56 @@ export class MCPTokenStorage {
     };
   }
 
-  /** Returns whether storage contains a currently usable, generation-bound authorization. */
+  /** Records upstream rejection without invalidating a newer refresh or interactive authorization. */
+  static async markAuthorizationRejected({
+    userId,
+    serverName,
+    credentialSetId,
+    findToken,
+    updateToken,
+    flowManager,
+    persistenceWaitTimeoutMs,
+  }: {
+    userId: string;
+    serverName: string;
+    credentialSetId: string;
+    findToken: TokenMethods['findToken'];
+    updateToken: TokenMethods['updateToken'];
+    flowManager?: Pick<FlowStateManager, 'acquireLease'>;
+    persistenceWaitTimeoutMs?: number;
+  }): Promise<void> {
+    const lease = flowManager
+      ? await flowManager.acquireLease(getMCPOAuthLeaseId(userId, serverName), {
+          waitMs: this.resolvePersistenceWaitMs(persistenceWaitTimeoutMs),
+        })
+      : undefined;
+    if (flowManager && !lease) {
+      throw new MCPTokenStorageUnavailableError(
+        serverName,
+        new Error('OAuth persistence fence unavailable'),
+      );
+    }
+    const scope = {
+      userId,
+      type: 'mcp_oauth_client',
+      identifier: `mcp:${serverName}:client`,
+      metadataCredentialSetId: credentialSetId,
+    };
+    try {
+      const client = await findToken(scope);
+      if (!client || getTokenMetadata(client).rejected_credential_set_id === credentialSetId) {
+        return;
+      }
+      await updateToken(
+        { ...scope, token: client.token },
+        { metadata: { ...getTokenMetadata(client), rejected_credential_set_id: credentialSetId } },
+      );
+    } finally {
+      if (lease) await this.releaseRefreshFlight(lease, this.getLogPrefix(userId, serverName));
+    }
+  }
+
+  /** Returns whether storage contains a usable, generation-bound authorization not rejected upstream. */
   static async hasStoredAuthorization({
     userId,
     serverName,
@@ -384,6 +433,12 @@ export class MCPTokenStorage {
         findToken({ userId, type: 'mcp_oauth_client', identifier: `${identifier}:client` }),
       ]);
       const clientCredentialSetId = getCredentialSetId(clientInfoData);
+      if (
+        clientCredentialSetId &&
+        getTokenMetadata(clientInfoData).rejected_credential_set_id === clientCredentialSetId
+      ) {
+        return false;
+      }
       const accessCredentialSetId = getCredentialSetId(accessTokenData);
       let hasUsableAuthorization = false;
       if (accessTokenData) {
