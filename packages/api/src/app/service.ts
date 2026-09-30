@@ -266,7 +266,7 @@ function overrideCacheKey(
   tenantId: string | undefined,
   scopeVersion: string,
 ): string {
-  const tenant = tenantId || '__default__';
+  const tenant = tenantId ? `${tenantId}:tenant` : '__default__:global';
   const principal =
     userId && role ? `${role}:${userId}` : userId || role || BASE_CONFIG_PRINCIPAL_ID;
   return `_OVERRIDE_:${tenant}:${principal}:tenant-v1:${scopeVersion}`;
@@ -535,12 +535,12 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
 
   /**
    * Clear per-principal override caches. When `tenantId` is provided, only caches
-   * matching `_OVERRIDE_:${tenantId}:*` are deleted. When omitted, ALL override
+   * matching `_OVERRIDE_:${tenantId}:tenant:*` are deleted. When omitted, ALL override
    * caches are cleared.
    */
   async function clearOverrideCache(tenantId?: string): Promise<void> {
     const namespace = cacheKeys.APP_CONFIG;
-    const overrideSegment = tenantId ? `_OVERRIDE_:${tenantId}:` : '_OVERRIDE_:';
+    const overrideSegment = tenantId ? `_OVERRIDE_:${tenantId}:tenant:` : '_OVERRIDE_:';
 
     // In-memory store — enumerate keys directly.
     // APP_CONFIG defaults to FORCED_IN_MEMORY_CACHE_NAMESPACES, so this is the

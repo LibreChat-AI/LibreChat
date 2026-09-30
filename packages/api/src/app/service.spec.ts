@@ -313,6 +313,28 @@ describe('createAppConfigService', () => {
         expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(3);
       });
 
+      it('separates a real __default__ tenant from requests without a tenant, including invalidation', async () => {
+        const deps = createDeps({
+          getApplicableConfigs: jest
+            .fn()
+            .mockImplementation(async () => [
+              { priority: 10, overrides: { x: getTenantId() ?? 'global' }, isActive: true },
+            ]),
+        });
+        const { getAppConfig, clearOverrideCache } = createAppConfigService(deps);
+        const global = () => getAppConfig({ role: 'USER' });
+        const tenant = () => getAppConfig({ role: 'USER', tenantId: '__default__' });
+        expect(((await global()) as TestConfig).x).toBe('global');
+        expect(((await tenant()) as TestConfig).x).toBe('__default__');
+        expect(((await global()) as TestConfig).x).toBe('global');
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+        await clearOverrideCache('__default__');
+        await global();
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
+        expect(((await tenant()) as TestConfig).x).toBe('__default__');
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(3);
+      });
+
       it('ignores override cache entries written by heads with stale tenant-key selection', async () => {
         const deps = createDeps();
         await deps._cache.set('_OVERRIDE_:tenant-a:USER', { x: 'tenant-b' });
@@ -750,7 +772,7 @@ describe('createAppConfigService', () => {
       const cachedKeys = [...deps._cache._store.keys()];
       const overrideKey = cachedKeys.find((k) => k.includes('_OVERRIDE_:'));
       expect(overrideKey).toMatch(
-        /^app_config:_OVERRIDE_:__default__:uid1:tenant-v1:[a-f0-9]{64}$/,
+        /^app_config:_OVERRIDE_:__default__:global:uid1:tenant-v1:[a-f0-9]{64}$/,
       );
     });
 
@@ -916,7 +938,9 @@ describe('createAppConfigService', () => {
         const overrideKey = [...deps._cache._store.keys()].find((k: string) =>
           k.includes('_OVERRIDE_:'),
         );
-        expect(overrideKey).toMatch(/^app_config:_OVERRIDE_:tenant-a:USER:tenant-v1:[a-f0-9]{64}$/);
+        expect(overrideKey).toMatch(
+          /^app_config:_OVERRIDE_:tenant-a:tenant:USER:tenant-v1:[a-f0-9]{64}$/,
+        );
         expect(overrideKey).not.toContain('__default__');
       });
 
@@ -1120,7 +1144,7 @@ describe('createAppConfigService', () => {
       expect([...deps._cache._store.keys()]).toEqual(
         expect.arrayContaining([
           expect.stringMatching(
-            /^app_config:_OVERRIDE_:__default__:USER:uid1:tenant-v1:[a-f0-9]{64}$/,
+            /^app_config:_OVERRIDE_:__default__:global:USER:uid1:tenant-v1:[a-f0-9]{64}$/,
           ),
         ]),
       );
