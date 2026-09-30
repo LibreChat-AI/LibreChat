@@ -18,8 +18,10 @@ interface VirtualizedAgentGridProps {
   scrollElement?: HTMLElement | null;
 }
 
-// Constants for layout calculations
-const CARD_HEIGHT = 160; // h-40 in pixels
+// Constants for layout calculations.
+// CARD_HEIGHT must track the tallest AgentCard, which is lg:h-44. Reserving the taller
+// height leaves a gap on smaller screens; reserving less would overlap rows.
+const CARD_HEIGHT = 176; // lg:h-44 in pixels
 const GAP_SIZE = 24; // gap-6 in pixels
 const ROW_HEIGHT = CARD_HEIGHT + GAP_SIZE;
 const CARDS_PER_ROW_MOBILE = 1;

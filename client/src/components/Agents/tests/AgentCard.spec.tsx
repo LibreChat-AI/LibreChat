@@ -368,6 +368,64 @@ describe('AgentCard', () => {
     );
   });
 
+  it('keeps long names clear of the category badge without squeezing the card', () => {
+    const longName = 'Customer Support Escalation Specialist With Extended Coverage';
+    const longDescription =
+      'A deliberately long description that exercises every available line in the marketplace card.';
+    const agentWithLongContent = {
+      ...mockAgent,
+      name: longName,
+      description: longDescription,
+      category: 'general',
+    };
+
+    render(
+      <Wrapper>
+        <AgentCard agent={agentWithLongContent} onSelect={mockOnSelect} />
+      </Wrapper>,
+    );
+
+    const card = screen.getByRole('button');
+    const title = screen.getByText(longName);
+    const description = screen.getByText(longDescription);
+
+    /** Fixed heights only. A min-height under a fixed height would never apply. */
+    expect(card).toHaveClass('h-40', 'lg:h-44');
+    expect(card.className).not.toMatch(/min-h-/);
+
+    /** Title and description are clamped, and the column stops flex from slicing lines */
+    expect(title).toHaveClass('line-clamp-2');
+    expect(description).toHaveClass('line-clamp-2', 'lg:line-clamp-3');
+    expect(title.parentElement).toHaveClass('[&>*]:shrink-0');
+
+    /**
+     * The name must not render through the shared Label component. Label hardcodes
+     * `block`, which overrides the `display: -webkit-box` that line-clamp needs and
+     * leaves the clamp inert, plus `break-all`, which splits names mid-word.
+     */
+    expect(title.tagName).toBe('SPAN');
+    expect(title).toHaveClass('break-words');
+    expect(title.className).not.toMatch(/\bbreak-all\b/);
+
+    /** A floated spacer reserves badge room on the first title line only */
+    const spacer = title.querySelector('[aria-hidden="true"]');
+    expect(spacer).toHaveClass('float-right');
+  });
+
+  it('omits the badge spacer when the agent has no category', () => {
+    const uncategorizedName = 'Agent Without A Category';
+    const agentWithoutCategory = { ...mockAgent, name: uncategorizedName, category: '' };
+
+    render(
+      <Wrapper>
+        <AgentCard agent={agentWithoutCategory} onSelect={mockOnSelect} />
+      </Wrapper>,
+    );
+
+    const title = screen.getByText(uncategorizedName);
+    expect(title.querySelector('[aria-hidden="true"]')).toBeNull();
+  });
+
   it('displays localized category label', () => {
     const agentWithCategory = {
       ...mockAgent,

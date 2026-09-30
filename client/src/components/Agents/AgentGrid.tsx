@@ -181,10 +181,13 @@ const AgentGrid: React.FC<AgentGridProps> = ({
             })}
           </div>
 
-          {/* Agent grid - 2 per row with proper semantic structure */}
+          {/* Agent grid with proper semantic structure. Columns are sized from the grid's
+              own width rather than a `md:` viewport breakpoint: the marketplace sits beside
+              the nav, so the viewport is far wider than this container and a viewport-keyed
+              breakpoint packed two columns into a space too narrow for either of them. */}
           {currentAgents && currentAgents.length > 0 && (
             <div
-              className="mx-4 grid grid-cols-1 gap-6 md:grid-cols-2"
+              className="mx-4 grid grid-cols-[repeat(auto-fill,minmax(min(20rem,100%),1fr))] gap-6"
               role="grid"
               aria-label={localize('com_agents_grid_announcement', {
                 count: currentAgents.length,
