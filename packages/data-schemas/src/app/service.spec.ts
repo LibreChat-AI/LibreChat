@@ -321,3 +321,24 @@ describe('AppService memory capability', () => {
     );
   });
 });
+
+describe('AppService prompts config', () => {
+  it('loads the prompts section into the app config', async () => {
+    const config = {
+      prompts: {
+        categories: {
+          enableDefaultCategories: false,
+          allowCustom: true,
+          list: [{ value: 'support', label: 'Support' }],
+        },
+      },
+    } as DeepPartial<TCustomConfig>;
+    const result = await AppService({ config });
+    expect(result.prompts).toEqual(config.prompts);
+  });
+
+  it('leaves prompts undefined when the section is absent', async () => {
+    const result = await AppService({ config: {} });
+    expect(result.prompts).toBeUndefined();
+  });
+});
