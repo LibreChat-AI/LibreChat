@@ -2092,15 +2092,24 @@ describe('interface theme config', () => {
     expect(parseTheme({ ...inlineTheme, version: 2 }).success).toBe(false);
   });
 
-  it('rejects unknown keys and color names without the rgb- prefix', () => {
+  it('rejects unknown keys and color names that are not plain tokens', () => {
     expect(parseTheme({ ...inlineTheme, css: 'body {}' }).success).toBe(false);
     expect(parseTheme({ ...inlineTheme, modes: { sepia: { colors: {} } } }).success).toBe(false);
     expect(
       parseTheme({
         ...inlineTheme,
-        modes: { light: { colors: { 'surface-primary': '255 255 255' } } },
+        modes: { light: { colors: { 'Surface Primary': '255 255 255' } } },
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts an unknown color token name so the loader can ignore it', () => {
+    expect(
+      parseTheme({
+        ...inlineTheme,
+        modes: { light: { colors: { 'surface-primary': '255 255 255' } } },
+      }).success,
+    ).toBe(true);
   });
 
   it('accepts the ceilings and rejects values above them', () => {
