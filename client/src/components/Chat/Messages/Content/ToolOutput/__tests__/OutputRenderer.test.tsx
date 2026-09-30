@@ -32,6 +32,18 @@ describe('OutputRenderer', () => {
     expect(copy).toHaveBeenCalledWith(raw, { format: 'text/plain' });
   });
 
+  it('keeps the head by default and the tail for terminal output when collapsed', () => {
+    const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
+    const { unmount } = render(<OutputRenderer text={text} />);
+    expect(screen.getByText(/line 1/).textContent?.split('\n')[0]).toBe('line 1');
+    unmount();
+
+    render(<OutputRenderer text={text} variant="terminal" />);
+    const shown = screen.getByText(/line 30/).textContent?.split('\n') ?? [];
+    expect(shown[0]).toBe('line 16');
+    expect(shown).toHaveLength(15);
+  });
+
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
   });

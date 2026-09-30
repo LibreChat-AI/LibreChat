@@ -12,6 +12,7 @@ import { sandboxStartingByToolCallId } from '~/store';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import useFollowScroll from './useFollowScroll';
+import { OutputRenderer } from '../ToolOutput';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
@@ -19,6 +20,9 @@ import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+
+/** The SDK's sandbox executors emit this line in place of empty stdout. */
+const SANDBOX_EMPTY_OUTPUT = "stdout: Empty. Ensure you're writing output explicitly.";
 
 export default function BashCall({
   isSubmitting,
@@ -55,6 +59,7 @@ export default function BashCall({
   const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
 
   const outputHasError = useMemo(() => ERROR_PATTERNS.test(output), [output]);
+  const outputIsEmpty = output.trim() === SANDBOX_EMPTY_OUTPUT;
   /** A backgrounded call's persisted output stays the dispatch handle until
    *  the detached run settles and patches it; render a background state
    *  instead of the handle JSON. Completion arrives live as the status marker
@@ -190,7 +195,12 @@ export default function BashCall({
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
                     </span>
-                    <code className="hljs language-bash">{highlighted ?? command}</code>
+                    {/* `code.hljs` in style.css sets `white-space: pre`, `word-wrap: normal`
+                        and 0.85rem, which would stop long commands wrapping and size the
+                        command larger than the `$` prompt. */}
+                    <code className="hljs language-bash !text-xs !break-words !whitespace-pre-wrap">
+                      {highlighted ?? command}
+                    </code>
                   </pre>
                 </div>
               </div>
@@ -201,15 +211,19 @@ export default function BashCall({
               className={cn(command && 'border-border-light border-t')}
             />
             {hasOutput && backgroundHandle == null && (
-              <div className={cn(command && 'border-border-light border-t')}>
-                <pre
-                  className={cn(
-                    'max-h-[300px] overflow-auto px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap',
-                    outputHasError ? 'text-status-error' : 'text-text-primary',
-                  )}
-                >
-                  {output}
-                </pre>
+              <div className={cn('px-3 py-2.5', command && 'border-border-light border-t')}>
+                {outputIsEmpty ? (
+                  <p className="text-text-secondary text-xs italic">
+                    {localize('com_ui_no_output')}
+                  </p>
+                ) : (
+                  <OutputRenderer
+                    text={output}
+                    copyText={output}
+                    error={outputHasError}
+                    variant="terminal"
+                  />
+                )}
               </div>
             )}
           </div>

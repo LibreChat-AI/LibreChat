@@ -49,7 +49,7 @@ interface ExtractedText {
   isJson: boolean;
 }
 
-function extractText(raw: string): ExtractedText {
+function extractText(raw: string, verbatim = false): ExtractedText {
   const trimmed = raw.trim();
   if (!trimmed) {
     return { text: '', rawError: '', error: false, isJson: false };
@@ -59,7 +59,7 @@ function extractText(raw: string): ExtractedText {
     return { text: cleanError(trimmed), rawError: trimmed, error: true, isJson: false };
   }
 
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+  if (!verbatim && (trimmed.startsWith('[') || trimmed.startsWith('{'))) {
     try {
       const parsed: unknown = JSON.parse(trimmed);
 
@@ -100,11 +100,24 @@ const VISIBLE_LINES = 15;
 interface OutputRendererProps {
   text: string;
   copyText?: string;
+  /** Forces error styling when the caller detected a failure the text itself does not mark. */
+  error?: boolean;
+  /** `terminal` renders command output: monospace, verbatim (no JSON reformatting), and the
+   *  collapsed view keeps the LAST lines, where failures and stack traces land. */
+  variant?: 'default' | 'terminal';
 }
 
-export default function OutputRenderer({ text, copyText }: OutputRendererProps) {
+export default function OutputRenderer({
+  text,
+  copyText,
+  error: forceError = false,
+  variant = 'default',
+}: OutputRendererProps) {
   const localize = useLocalize();
-  const { text: displayText, rawError, error, isJson } = useMemo(() => extractText(text), [text]);
+  const terminal = variant === 'terminal';
+  const extracted = useMemo(() => extractText(text, terminal), [text, terminal]);
+  const { text: displayText, rawError, isJson } = extracted;
+  const error = extracted.error || forceError;
   const [isExpanded, setIsExpanded] = useState(false);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
@@ -121,9 +134,9 @@ export default function OutputRenderer({ text, copyText }: OutputRendererProps) 
 
   const lines = displayText.split('\n');
   const needsTruncation = lines.length > TRUNCATE_LINES;
-  const visibleText =
-    needsTruncation && !isExpanded ? lines.slice(0, VISIBLE_LINES).join('\n') : displayText;
-  const structured = !isJson && isStructuredText(displayText);
+  const collapsedLines = terminal ? lines.slice(-VISIBLE_LINES) : lines.slice(0, VISIBLE_LINES);
+  const visibleText = needsTruncation && !isExpanded ? collapsedLines.join('\n') : displayText;
+  const structured = !isJson && (terminal || isStructuredText(displayText));
 
   return (
     <div>
@@ -139,7 +152,8 @@ export default function OutputRenderer({ text, copyText }: OutputRendererProps) 
             className={cn(
               'max-h-[300px] overflow-auto text-xs break-words whitespace-pre-wrap',
               error && 'text-status-error font-mono',
-              !error && structured && 'text-text-secondary font-mono',
+              !error && structured && 'font-mono',
+              !error && structured && (terminal ? 'text-text-primary' : 'text-text-secondary'),
               !error && !structured && 'text-text-primary font-sans text-sm',
             )}
           >
