@@ -46,6 +46,7 @@ const {
   // Structured Tools
   DALLE3,
   FluxAPI,
+  AzureSora,
   OpenWeather,
   StructuredSD,
   StructuredACS,
@@ -64,6 +65,7 @@ const {
 } = require('~/server/services/MCP');
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
+const { saveBase64Video } = require('~/server/services/Files/process');
 const { createFileSearchTool, primeFiles: primeSearchFiles } = require('./fileSearch');
 const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/process');
 const { getUserPluginAuthValue } = require('~/server/services/PluginService');
@@ -212,6 +214,7 @@ const loadTools = async ({
 }) => {
   const toolConstructors = {
     flux: FluxAPI,
+    azure_sora: AzureSora,
     calculator: Calculator,
     google: GoogleSearchAPI,
     open_weather: OpenWeather,
@@ -293,6 +296,7 @@ const loadTools = async ({
   const toolOptions = {
     flux: imageGenOptions,
     dalle: imageGenOptions,
+    azure_sora: { ...imageGenOptions, saveBase64Video },
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,
   };
