@@ -32,6 +32,7 @@ describe('tenant-scoped custom endpoints', () => {
     name: 'Private Gateway',
     apiKey: 'test-key',
     baseURL: 'https://gateway.example',
+    models: { default: ['test-model'] },
   };
 
   it('keeps unscoped endpoints backward compatible', () => {
