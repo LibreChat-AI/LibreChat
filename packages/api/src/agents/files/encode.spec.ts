@@ -2,7 +2,11 @@ import { FileContext, FileSources, ImageDetail } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { RunFileEncodingAgent, RunFileMessageEncoderDeps } from './encode';
 import type { ServerRequest } from '~/types';
-import { AgentAttachmentLimitError, AgentAttachmentPolicyError } from '../attachments';
+import {
+  AgentAttachmentLimitError,
+  AgentAttachmentPolicyError,
+  AgentAttachmentUnsupportedError,
+} from '../attachments';
 import { resolveTurnDeliveryRouting } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
 
@@ -359,19 +363,41 @@ describe('createRunFileMessageEncoder', () => {
     metadata: { destinationChosen: true },
   });
 
-  it('keeps archives out of the document encoder under the inherited MIME list', async () => {
-    const harness = setup();
-    await harness.encode(
+  it.each([
+    ['an archive-only share', [providerChosen('zip', 'application/zip')]],
+    [
+      'a share that mixes an archive with a document',
       [providerChosen('zip', 'application/zip'), providerChosen('sql', 'application/sql')],
-      'child',
-    );
-    expect(harness.encodeDocuments).toHaveBeenCalledTimes(1);
-    expect(harness.encodeDocuments).toHaveBeenCalledWith(
-      harness.req,
-      [expect.objectContaining({ file_id: 'sql' })],
-      expect.anything(),
-      harness.getStrategyFunctions,
-    );
+    ],
+  ])('rejects %s under the inherited MIME list before reading bytes', async (_label, files) => {
+    const harness = setup();
+    expect(() => harness.validate(files, 'child')).toThrow(AgentAttachmentUnsupportedError);
+    const rejection = harness.encode(files, 'child');
+    await expect(rejection).rejects.toBeInstanceOf(AgentAttachmentUnsupportedError);
+    await expect(rejection).rejects.toMatchObject({
+      code: 'AGENT_ATTACHMENT_UNSUPPORTED',
+      attachments: [expect.objectContaining({ file_id: 'zip', reason: 'unsupported_type' })],
+    });
+    expect(harness.encodeDocuments).not.toHaveBeenCalled();
+  });
+
+  it('rejects the share when the document encoder omits a file', async () => {
+    const harness = setup();
+    const omitted = {
+      file_id: 'docx',
+      filename: 'report.docx',
+      type: 'application/msword',
+      reason: 'unsupported_type' as const,
+    };
+    jest.mocked(harness.encodeDocuments).mockResolvedValueOnce({
+      documents: [],
+      omitted: [omitted],
+    });
+
+    await expect(harness.encode([pdf], 'child')).rejects.toMatchObject({
+      code: 'AGENT_ATTACHMENT_UNSUPPORTED',
+      attachments: [omitted],
+    });
   });
 
   it('sends a binary type to the document encoder when the endpoint lists it', async () => {

@@ -869,6 +869,12 @@
  */
 
 /**
+ * @exports OmittedAttachment
+ * @typedef {import('@librechat/api').OmittedAttachment} OmittedAttachment
+ * @memberof typedefs
+ */
+
+/**
  * @exports ISession
  * @typedef {import('@librechat/data-schemas').ISession} ISession
  * @memberof typedefs

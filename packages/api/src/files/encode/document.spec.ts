@@ -1063,32 +1063,88 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       expect(result.files).toHaveLength(1);
     });
 
-    it('should format XLSX for Google/VertexAI as media block when the endpoint lists it', async () => {
-      const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-      const req = createOptInRequest([mimeType], Providers.GOOGLE) as ServerRequest;
-      const file = createMockDocFile(2, mimeType, 'report.xlsx');
+    describe('native Google/Vertex ignores the upload allowlist', () => {
+      const officeTypes = [
+        ['XLSX', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'r.xlsx'],
+        [
+          'DOCX',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'r.docx',
+        ],
+      ] as const;
 
-      const mockContent = Buffer.from('xlsx-binary').toString('base64');
-      mockedGetFileStream.mockResolvedValue({
-        file,
-        content: mockContent,
-        metadata: file,
-      });
+      it.each(
+        [Providers.GOOGLE, Providers.VERTEXAI].flatMap((provider) =>
+          officeTypes.map(
+            ([label, mimeType, filename]) =>
+              [provider, label, mimeType, filename] as [Providers, string, string, string],
+          ),
+        ),
+      )(
+        'omits %s %s even when the endpoint lists it',
+        async (provider, _label, mimeType, filename) => {
+          const req = createOptInRequest([mimeType], provider) as ServerRequest;
+          const file = createMockDocFile(1, mimeType, filename);
 
-      const result = await encodeAndFormatDocuments(
-        req,
-        [file],
-        { provider: Providers.GOOGLE },
-        mockStrategyFunctions,
+          const result = await encodeAndFormatDocuments(
+            req,
+            [file],
+            { provider },
+            mockStrategyFunctions,
+          );
+
+          expect(result.documents).toHaveLength(0);
+          expect(result.files).toHaveLength(0);
+          expect(result.omitted).toEqual([
+            { file_id: file.file_id, filename, type: mimeType, reason: 'unsupported_type' },
+          ]);
+          expect(mockedGetFileStream).not.toHaveBeenCalled();
+        },
       );
 
-      expect(result.documents).toHaveLength(1);
-      expect(result.documents[0]).toMatchObject({
-        type: 'media',
-        mimeType,
-        data: mockContent,
+      it.each([Providers.GOOGLE, Providers.VERTEXAI])(
+        'sends a listed application/sql to %s as a text part, not inline media',
+        async (provider) => {
+          const req = createOptInRequest(['^application/sql$'], provider) as ServerRequest;
+          const file = createMockDocFile(1, 'application/sql', 'query.sql');
+          const content = Buffer.from('SELECT 1;').toString('base64');
+          mockedGetFileStream.mockResolvedValue({ file, content, metadata: file });
+
+          const result = await encodeAndFormatDocuments(
+            req,
+            [file],
+            { provider },
+            mockStrategyFunctions,
+          );
+
+          expect(result.documents).toEqual([
+            { type: 'text', text: 'File: "query.sql"\n\nSELECT 1;' },
+          ]);
+        },
+      );
+
+      it('keeps a listed XLSX as a file part for Gemini behind a gateway', async () => {
+        const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        const req = createOptInRequest([mimeType]) as ServerRequest;
+        const file = createMockDocFile(1, mimeType, 'report.xlsx');
+        const content = Buffer.from('xlsx-binary').toString('base64');
+        mockedGetFileStream.mockResolvedValue({ file, content, metadata: file });
+
+        const result = await encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.OPENAI, model: 'gemini-auto-latest' },
+          mockStrategyFunctions,
+        );
+
+        expect(result.documents).toEqual([
+          {
+            type: 'file',
+            file: { filename: 'report.xlsx', file_data: `data:${mimeType};base64,${content}` },
+          },
+        ]);
+        expect(result.omitted).toBeUndefined();
       });
-      expect(result.files).toHaveLength(1);
     });
 
     it('should format text/plain for standard OpenAI-like provider as file block', async () => {
@@ -1366,6 +1422,89 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
           expect(result.documents).toEqual([{ type: 'text', text: 'File: "app.coffee"\n\nx = 1' }]);
         },
       );
+    });
+
+    describe('decoded text budgets', () => {
+      const createBudgetRequest = (fileTokenLimit?: number, fileContextCharLimit?: number) =>
+        ({
+          body: fileTokenLimit != null ? { fileTokenLimit } : {},
+          config: { fileConfig: { fileContextCharLimit } },
+        }) as unknown as ServerRequest;
+
+      const mockSqlFile = (filename: string, bytes: number) => {
+        const file = createMockDocFile(bytes / (1024 * 1024), 'application/sql', filename);
+        const content = Buffer.from('SELECT 1;\n'.repeat(bytes / 10)).toString('base64');
+        mockedGetFileStream.mockResolvedValueOnce({ file, content, metadata: file });
+        return file;
+      };
+
+      it('bounds a 2 MB SQL text part by the token and character limits', async () => {
+        const req = createBudgetRequest(8, 100);
+        const file = mockSqlFile('big.sql', 2_000_000);
+
+        const result = await encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.OPENAI },
+          mockStrategyFunctions,
+        );
+
+        expect(result.documents).toHaveLength(1);
+        const block = result.documents[0] as { type: string; text: string };
+        expect(block.type).toBe('text');
+        expect(block.text.startsWith('File: "big.sql"')).toBe(true);
+        expect(block.text.length).toBeLessThanOrEqual(100);
+        expect(result.files).toHaveLength(1);
+      });
+
+      it('shares the character limit across calls of one request and omits past it', async () => {
+        const req = createBudgetRequest(undefined, 100);
+
+        const first = await encodeAndFormatDocuments(
+          req,
+          [mockSqlFile('a.sql', 1000)],
+          { provider: Providers.OPENAI },
+          mockStrategyFunctions,
+        );
+        const secondFile = mockSqlFile('b.sql', 1000);
+        const second = await encodeAndFormatDocuments(
+          req,
+          [secondFile],
+          { provider: Providers.OPENAI },
+          mockStrategyFunctions,
+        );
+
+        expect((first.documents[0] as { text: string }).text).toHaveLength(100);
+        expect(second.documents).toHaveLength(0);
+        expect(second.files).toHaveLength(0);
+        expect(second.omitted).toEqual([
+          {
+            file_id: secondFile.file_id,
+            filename: 'b.sql',
+            type: 'application/sql',
+            reason: 'text_limit',
+          },
+        ]);
+      });
+
+      it('bounds the plain-text source of a native Anthropic document', async () => {
+        const req = createBudgetRequest(undefined, 50);
+        const file = createMockDocFile(1, 'text/plain', 'notes.txt');
+        const content = Buffer.from('x'.repeat(500)).toString('base64');
+        mockedGetFileStream.mockResolvedValue({ file, content, metadata: file });
+
+        const result = await encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.ANTHROPIC },
+          mockStrategyFunctions,
+        );
+
+        expect(result.documents[0]).toMatchObject({
+          type: 'document',
+          source: { type: 'text', data: 'x'.repeat(50) },
+        });
+      });
     });
 
     it('should skip non-Bedrock-document types for Bedrock provider', async () => {
