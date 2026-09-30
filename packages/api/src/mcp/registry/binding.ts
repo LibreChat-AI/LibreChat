@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import type { MCPOptions } from '~/mcp/types';
 import { MCPApiKeyReentryRequiredError } from '~/mcp/errors';
 
@@ -32,40 +33,58 @@ function normalizeCustomHeader(apiKey: MCPOptions['apiKey']): string | undefined
   return (apiKey.custom_header || 'X-Api-Key').toLowerCase();
 }
 
+function apiKeyBinding(config: MCPOptions): Record<string, string | undefined> {
+  return {
+    url: normalizeUrl(getUrl(config)),
+    type: normalizeTransport(config.type),
+    proxy: normalizeUrl(getProxy(config)),
+    'apiKey.authorization_type': config.apiKey?.authorization_type,
+    'apiKey.custom_header': normalizeCustomHeader(config.apiKey),
+  };
+}
+
 /** Returns fields that would move an omitted, stored admin key to a new request boundary. */
 export function getChangedApiKeyBindingFields(
   existingConfig: MCPOptions,
   updatedConfig: MCPOptions,
 ): string[] {
-  const existingApiKey = existingConfig.apiKey;
-  const updatedApiKey = updatedConfig.apiKey;
   const preservesStoredKey =
-    existingApiKey?.source === 'admin' &&
-    !!existingApiKey.key &&
-    updatedApiKey?.source === 'admin' &&
-    !updatedApiKey.key;
+    existingConfig.apiKey?.source === 'admin' &&
+    !!existingConfig.apiKey.key &&
+    updatedConfig.apiKey?.source === 'admin' &&
+    !updatedConfig.apiKey.key;
 
   if (!preservesStoredKey) {
     return [];
   }
 
-  const fields = [
-    ['url', normalizeUrl(getUrl(existingConfig)), normalizeUrl(getUrl(updatedConfig))],
-    ['type', normalizeTransport(existingConfig.type), normalizeTransport(updatedConfig.type)],
-    ['proxy', normalizeUrl(getProxy(existingConfig)), normalizeUrl(getProxy(updatedConfig))],
-    [
-      'apiKey.authorization_type',
-      existingApiKey.authorization_type,
-      updatedApiKey.authorization_type,
-    ],
-    [
-      'apiKey.custom_header',
-      normalizeCustomHeader(existingApiKey),
-      normalizeCustomHeader(updatedApiKey),
-    ],
-  ] as const;
+  const existing = apiKeyBinding(existingConfig);
+  const updated = apiKeyBinding(updatedConfig);
+  return Object.keys(existing).filter((field) => existing[field] !== updated[field]);
+}
 
-  return fields.filter(([, existing, updated]) => existing !== updated).map(([field]) => field);
+function userApiKeyBinding(config: MCPOptions): string {
+  return JSON.stringify([
+    apiKeyBinding(config),
+    normalizeUrl(config.oauth?.authorization_url),
+    normalizeUrl(config.oauth?.token_url),
+    normalizeUrl(config.oauth?.redirect_uri),
+    config.oauth?.client_id,
+  ]);
+}
+
+/** Uses the existing auth-field storage to bind each user's key to the request destination.
+ *  Legacy keys stay usable only while their original boundary is unchanged. */
+export function getUserApiKeyVariable(config: MCPOptions, existingConfig?: MCPOptions): string {
+  const binding = userApiKeyBinding(config);
+  if (
+    existingConfig?.apiKey?.source === 'user' &&
+    existingConfig.customUserVars?.MCP_API_KEY &&
+    binding === userApiKeyBinding(existingConfig)
+  ) {
+    return 'MCP_API_KEY';
+  }
+  return `MCP_API_KEY_${createHash('sha256').update(binding).digest('hex')}`;
 }
 
 /** Requires a replacement key before a stored admin credential can cross request boundaries. */
