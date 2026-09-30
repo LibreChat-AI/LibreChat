@@ -50,7 +50,7 @@ const seedArtifacts = ({ set }: MutableSnapshot) => {
   set(store.currentArtifactId, artifact.id);
 };
 
-const renderUndocked = (detached: FakeWindow) => {
+const renderUndocked = (detached: FakeWindow, hidden = false) => {
   const jotaiStore = createStore();
   jotaiStore.set(undockedArtifacts, {
     window: detached,
@@ -59,7 +59,7 @@ const renderUndocked = (detached: FakeWindow) => {
   const view = render(
     <RecoilRoot initializeState={seedArtifacts}>
       <Provider store={jotaiStore}>
-        <UndockedArtifacts>
+        <UndockedArtifacts hidden={hidden}>
           <div data-testid="artifact-pane" />
         </UndockedArtifacts>
       </Provider>
@@ -84,6 +84,16 @@ describe('UndockedArtifacts', () => {
     expect(detached.document.title).toBe('dashboard.html');
     expect(detached.document.head.querySelector('style')).not.toBeNull();
     expect(jotaiStore.get(undockedArtifacts)?.window).toBe(detached);
+  });
+
+  /* The host hides its conversation while the route loads another one; the
+   * window must not keep the previous conversation's pane usable. */
+  it('hides the pane while its host hides the conversation', () => {
+    const detached = createFakeWindow();
+    renderUndocked(detached, true);
+
+    const pane = detached.document.querySelector('[data-testid="artifact-pane"]');
+    expect(pane?.parentElement?.hidden).toBe(true);
   });
 
   it('closes the window when the pane docks back', () => {

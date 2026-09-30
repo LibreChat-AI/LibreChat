@@ -28,7 +28,14 @@ const CLOSED_POLL_MS = 500;
  * prepared by the header before this mounts — so the pane never spends a
  * commit unmounted, which is what keeps its artifact registry alive.
  */
-export default function UndockedArtifacts({ children }: { children: React.ReactNode }) {
+export default function UndockedArtifacts({
+  children,
+  hidden = false,
+}: {
+  children: React.ReactNode;
+  /** The host is hiding the conversation this pane belongs to. */
+  hidden?: boolean;
+}) {
   const localize = useLocalize();
   const artifacts = useRecoilValue(store.artifactsState);
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
@@ -110,7 +117,12 @@ export default function UndockedArtifacts({ children }: { children: React.ReactN
    * toast state is shared, so the same notice shows wherever the user is. */
   return createPortal(
     <RadixToast.Provider>
-      {children}
+      {/* The portal escapes the host's tree, so a host that hides its
+       * conversation while the route loads (or fails to) hides the pane here
+       * too, instead of leaving the previous conversation editable. */}
+      <div hidden={hidden} className={hidden ? 'hidden' : 'contents'}>
+        {children}
+      </div>
       <Toast />
       <ToastViewport />
     </RadixToast.Provider>,

@@ -20,7 +20,13 @@ import store from '~/store';
 const Artifacts = lazy(() => import('~/components/Artifacts/Artifacts'));
 const SubagentThreadPanel = lazy(() => import('~/components/Chat/Subagents/SubagentThreadPanel'));
 
-export default function Presentation({ children }: { children: React.ReactNode }) {
+export default function Presentation({
+  children,
+  routePending = false,
+}: {
+  children: React.ReactNode;
+  routePending?: boolean;
+}) {
   const artifacts = useRecoilValue(store.artifactsState);
   const artifactsVisibility = useRecoilValue(store.artifactsVisibility);
   // Render-gating the panel on `currentArtifactId != null` (in addition
@@ -175,7 +181,7 @@ export default function Presentation({ children }: { children: React.ReactNode }
             </SidePanelGroup>
           </ParentSubagentsProvider>
           {isUndocked && artifactsElement != null && (
-            <UndockedArtifacts>{artifactsElement}</UndockedArtifacts>
+            <UndockedArtifacts hidden={routePending}>{artifactsElement}</UndockedArtifacts>
           )}
         </EditorProvider>
       </AppChatSurface>

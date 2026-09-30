@@ -383,7 +383,11 @@ export default function ChatRoute() {
         </div>
       )}
       <div hidden={routeState.pending} className={routeState.pending ? 'hidden' : 'contents'}>
-        <ChatView index={index} project={verifiedChatProjectId ? projectQuery.data : undefined} />
+        <ChatView
+          index={index}
+          project={verifiedChatProjectId ? projectQuery.data : undefined}
+          routePending={routeState.pending}
+        />
       </div>
     </ToolCallsMapProvider>
   );
