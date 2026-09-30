@@ -4,6 +4,8 @@ import { act, renderHook } from '@testing-library/react';
 import { ContentTypes, QueryKeys, StepEvents } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import {
+  reduceSubagentProgress,
+  closeParentSubagentProgress,
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   subagentProgressKey,
@@ -74,6 +76,49 @@ describe('useSubagentActivityStream', () => {
     streams.length = 0;
     mockInvalidateQueries.mockClear();
     takeRegisteredSubagentProgressKeys();
+  });
+
+  it('backfills a late foreground bucket even when its coverage was marked complete', () => {
+    const { result } = renderHook(
+      () => {
+        const progressAtom = subagentProgressByToolCallId(
+          subagentProgressKey(selection.parentMessageId, selection.toolCallId, selection.partIndex),
+        );
+        const setProgress = useSetAtom(progressAtom);
+        useSubagentActivityStream(selection);
+        return { progress: useAtomValue(progressAtom), setProgress };
+      },
+      { wrapper },
+    );
+    const event = (sequence: number) => ({
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: selection.toolCallId,
+        activityEventId: `task:${sequence}`,
+        activitySequence: sequence,
+        phase: 'message_delta' as const,
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data: { delta: { content: [{ type: 'text', text: `${sequence}` }] } },
+      },
+    });
+    act(() =>
+      result.current.setProgress(
+        closeParentSubagentProgress(reduceSubagentProgress(null, [event(2).data], 'parent', true)),
+      ),
+    );
+    expect(result.current.progress?.coverage).toBe('complete');
+    expect(result.current.progress?.firstActivitySequence).toBe(2);
+    act(() =>
+      streams[0].emit('message', {
+        event: 'subagent_activity_replay',
+        data: [event(0), event(1), event(2)],
+      }),
+    );
+    expect(result.current.progress?.contentParts).toEqual([{ type: 'text', text: '012' }]);
   });
 
   it('opens one authorized task stream and closes after terminal delivery', () => {

@@ -142,10 +142,7 @@ export default function useSubagentActivityStream(
               previous?.firstActivitySequence != null &&
               firstSequence != null &&
               firstSequence < previous.firstActivitySequence;
-            const base =
-              sameRun && (previous?.coverage === 'complete' || !addsEarlierActivity)
-                ? previous
-                : null;
+            const base = sameRun && !addsEarlierActivity ? previous : null;
             const progress = reduceSubagentProgress(base, events, 'detached', false);
             if (progress == null) return previous;
             const droppedCount = replay.reduce((count, entry) => {
