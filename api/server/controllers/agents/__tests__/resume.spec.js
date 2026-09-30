@@ -2976,6 +2976,26 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       );
     });
 
+    it('approves once without storing when a hook registered after the pause applies', async () => {
+      const { setPluginHookSource } = jest.requireActual('@librechat/api');
+      const hasToolApprovalHooks = jest.fn(() => true);
+      setPluginHookSource({ hasHooks: () => true, hasToolApprovalHooks, register: () => 0 });
+      try {
+        mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeToolApprovalJob()));
+        const client = makeClient();
+        mockInitializeClient.mockResolvedValue({ client, userMCPAuthMap: {} });
+        const res = await post(allowAlwaysBody());
+        await settled;
+        await flush();
+        expect(res.status).toBe(200);
+        expect(hasToolApprovalHooks).toHaveBeenCalledWith(['search_mcp_github']);
+        expect(mockAddConvoToolApprovalAllows).not.toHaveBeenCalled();
+        expect(client.resumeCompletion).toHaveBeenCalledTimes(1);
+      } finally {
+        setPluginHookSource(undefined);
+      }
+    });
+
     it('still resumes once when storing the remembered tool fails', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeToolApprovalJob()));
       mockAddConvoToolApprovalAllows.mockRejectedValue(new Error('db down'));

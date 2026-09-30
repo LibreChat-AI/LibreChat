@@ -325,6 +325,10 @@ export interface RecordToolApprovalAllowsInput {
   resolutions: unknown;
   /** Reachable agents of the rebuilt run; eligibility heals against their MCP aliases. */
   agents?: readonly (ToolAllowAlwaysAgent | null | undefined)[];
+  /** Request context the rebuilt run resolves programmatic approval hooks with. */
+  hookContext?: ToolApprovalHookContext;
+  /** Deployment plugin hooks the rebuilt run registers after the policy hooks. */
+  pluginHookSource?: PluginHookSource;
   /** Request-scoped conversation reused by the resumed run's initialization. */
   request: {
     resolvedConversation?: { conversationId?: string; toolApprovalAllows?: unknown } | null;
@@ -340,7 +344,9 @@ export interface RecordToolApprovalAllowsInput {
 /**
  * Persist the tools a claimed resume approved for the rest of the conversation and
  * expose them to the run rebuilt by the same request. Call only after every resume
- * fence passed. The approval itself is already claimed, so a storage failure is logged
+ * fence passed. A tool is stored only when the rebuilt run would auto-approve it: the
+ * live healed policy allows it and no programmatic or plugin hook can apply to it, so a
+ * hook registered after the pause turns the choice into a one-time approval. The approval itself is already claimed, so a storage failure is logged
  * and degrades to a one-time approval: later calls prompt again, the safe direction.
  */
 export async function recordToolApprovalAllows({
@@ -350,6 +356,8 @@ export async function recordToolApprovalAllows({
   pendingAction,
   resolutions,
   agents,
+  hookContext = {},
+  pluginHookSource,
   request,
   addConvoToolApprovalAllows,
 }: RecordToolApprovalAllowsInput): Promise<string[]> {
@@ -358,12 +366,25 @@ export async function recordToolApprovalAllows({
     return [];
   }
   const aliases = collectAgentAliases(agents);
-  const toolNames = collectToolApprovalAllows(
+  const eligible = collectToolApprovalAllows(
     payload,
     resolutions as Agents.ToolApprovalResolution[],
     buildEffectiveToolApprovalPolicy(policy, aliases),
     aliases,
   );
+  const toolNames = eligible.filter(
+    (name) =>
+      !toolApprovalHookCanApply(
+        getEquivalentToolNames(name, aliases),
+        hookContext,
+        pluginHookSource,
+      ),
+  );
+  if (toolNames.length < eligible.length) {
+    logger.info(
+      '[recordToolApprovalAllows] An approval hook now applies to a remembered tool; approved once',
+    );
+  }
   if (toolNames.length === 0) {
     return [];
   }

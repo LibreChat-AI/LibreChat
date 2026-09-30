@@ -322,6 +322,51 @@ describe('recordToolApprovalAllows', () => {
     expect(request.resolvedConversation).toEqual({ conversationId: 'c1' });
   });
 
+  it('approves once and stores nothing when a hook registered after the pause applies', async () => {
+    const addConvoToolApprovalAllows = jest.fn().mockResolvedValue(true);
+    const pluginHookSource = {
+      hasHooks: () => true,
+      hasToolApprovalHooks: (names?: readonly string[]) => names?.includes(GITHUB_SEARCH) === true,
+      register: () => 0,
+    };
+    const request = { resolvedConversation: { conversationId: 'c1' } };
+    const viaPlugin = await recordToolApprovalAllows({
+      userId: 'u1',
+      conversationId: 'c1',
+      policy: enabled(),
+      pendingAction: { payload: offered },
+      resolutions,
+      pluginHookSource,
+      request,
+      addConvoToolApprovalAllows,
+    });
+    expect(viaPlugin).toEqual([]);
+
+    const hookContexts: unknown[] = [];
+    registerToolApprovalHook((context) => {
+      hookContexts.push(context);
+      return async () => ({ decision: 'ask' as const });
+    });
+    try {
+      const viaProgrammatic = await recordToolApprovalAllows({
+        userId: 'u1',
+        conversationId: 'c1',
+        policy: enabled(),
+        pendingAction: { payload: offered },
+        resolutions,
+        hookContext: { userId: 'u1', conversationId: 'c1', tenantId: 't1' },
+        request,
+        addConvoToolApprovalAllows,
+      });
+      expect(viaProgrammatic).toEqual([]);
+    } finally {
+      clearToolApprovalHooks();
+    }
+    expect(hookContexts).toEqual([{ userId: 'u1', conversationId: 'c1', tenantId: 't1' }]);
+    expect(addConvoToolApprovalAllows).not.toHaveBeenCalled();
+    expect(request.resolvedConversation).toEqual({ conversationId: 'c1' });
+  });
+
   it('does nothing for ask-user-question resumes', async () => {
     const addConvoToolApprovalAllows = jest.fn();
     await recordToolApprovalAllows({
@@ -363,6 +408,8 @@ describe('invariant: Always allow is offered only when the next identical call i
     stored?: string[];
     programmaticHook?: boolean;
     pluginHook?: boolean;
+    /** The hook is registered after the pause (restart or deploy) instead of before it. */
+    hookAfterPause?: boolean;
     offered: boolean;
   }
 
@@ -396,6 +443,24 @@ describe('invariant: Always allow is offered only when the next identical call i
       next: [STRIPPED],
       pluginHook: true,
       offered: false,
+    },
+    {
+      label: 'programmatic hook registered after the pause',
+      policy: enabled(),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      programmaticHook: true,
+      hookAfterPause: true,
+      offered: true,
+    },
+    {
+      label: 'plugin hook registered after the pause',
+      policy: enabled(),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      pluginHook: true,
+      hookAfterPause: true,
+      offered: true,
     },
     {
       label: 'admin deny',
@@ -486,18 +551,23 @@ describe('invariant: Always allow is offered only when the next identical call i
   }
 
   it.each(cases)('$label', async (row) => {
-    if (row.programmaticHook) {
-      registerToolApprovalHook(() => askHook);
-    }
+    const registerHooks = () => {
+      if (row.programmaticHook) {
+        registerToolApprovalHook(() => askHook);
+      }
+      return row.pluginHook ? askPluginSource : undefined;
+    };
     const agents = [{ mcpToolAliases: [alias] }];
+    const hooksAtPause = row.hookAfterPause ? undefined : registerHooks();
     const marked = markToolApprovalAllowAlways(payloadFor(row.paused), {
       policy: row.policy,
       agents,
       storedTools: row.stored,
-      pluginHookSource: row.pluginHook ? askPluginSource : undefined,
+      pluginHookSource: hooksAtPause,
     });
     const offered = marked.review_configs[0].allow_always === true;
     expect(offered).toBe(row.offered);
+    const pluginHookSource = row.hookAfterPause ? registerHooks() : hooksAtPause;
 
     const addConvoToolApprovalAllows = jest.fn().mockResolvedValue(true);
     const recorded = await recordToolApprovalAllows({
@@ -507,10 +577,12 @@ describe('invariant: Always allow is offered only when the next identical call i
       pendingAction: { payload: marked },
       resolutions: [{ tool_call_id: 'call-0', decision: 'approve', scope: 'session' }],
       agents,
+      pluginHookSource,
       request: {},
       addConvoToolApprovalAllows,
     });
-    expect(recorded).toEqual(offered ? [row.paused] : []);
+    const remembered = offered && row.hookAfterPause !== true;
+    expect(recorded).toEqual(remembered ? [row.paused] : []);
     const allows = resolveRunToolApprovalAllows(
       row.policy,
       { conversationId: 'c1', toolApprovalAllows: [...(row.stored ?? []), ...recorded] },
@@ -518,13 +590,13 @@ describe('invariant: Always allow is offered only when the next identical call i
     );
     for (const spelling of row.next) {
       const decision = await runDecision(row, allows, spelling);
-      if (offered) {
+      if (remembered) {
         expect(decision).toBe('allow');
       } else if (row.policy.enabled === true && row.policy.mode !== 'dontAsk') {
         expect(decision).not.toBe('allow');
       }
     }
-    if (offered) {
+    if (remembered) {
       expect(await runDecision(row, allows, GITLAB_SEARCH)).toBe('ask');
       expect(
         canAgentGraphPause({

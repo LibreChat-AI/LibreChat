@@ -15,6 +15,8 @@ const {
   isPendingActionStale,
   resolveToolApprovalResume,
   recordToolApprovalAllows,
+  resolveRequestTenantId,
+  getPluginHookSource,
   resolveAskUserQuestionResume,
   buildResolvedAskUserQuestion,
   appendResolvedAskUserQuestion,
@@ -2023,6 +2025,13 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         pendingAction,
         resolutions: req.body.decisions,
         agents: reachableAgents,
+        hookContext: {
+          userId,
+          conversationId,
+          tenantId: resolveRequestTenantId(req),
+          appConfig: req.config,
+        },
+        pluginHookSource: getPluginHookSource(),
         request: req,
         addConvoToolApprovalAllows,
       });

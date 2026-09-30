@@ -1099,7 +1099,9 @@ export const toolApprovalPolicySchema = z
      * (MCP names include their server) for the rest of the conversation. The server stores
      * and enforces the choice; `deny` and `ask` rules and programmatic hooks still win, and
      * stored choices are ignored under `mode: 'dontAsk'` or once this is turned off.
-     * Defaults to `false`: every paused call keeps prompting.
+     * Defaults to `false`: every paused call keeps prompting. Enable it only once every
+     * replica runs a version that supports it: older replicas ignore the choice and keep
+     * prompting, so during a rolling upgrade it may not stick.
      */
     allowAlways: z.boolean().optional(),
     /**
