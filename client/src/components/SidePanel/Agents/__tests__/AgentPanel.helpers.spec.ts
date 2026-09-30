@@ -15,6 +15,7 @@ import {
   isAvatarUploadOnlyDirty,
   hasPersistedDirtyFields,
   mayHavePersistedChange,
+  shouldSyncSavedStarters,
 } from '../AgentPanel';
 
 test('the create identity contract excludes the update-only clear sentinel', () => {
@@ -510,5 +511,42 @@ describe('mayHavePersistedChange', () => {
     expect(
       mayHavePersistedChange({ name: 'Agent' }, agent({ description: 'before' }), agent()),
     ).toBe(false);
+  });
+});
+
+describe('shouldSyncSavedStarters', () => {
+  const submitted = { agentId: 'agent_a', starters: ['  Plan my week', ''] };
+
+  it('syncs when the rows still hold what the save sent for the same agent', () => {
+    expect(shouldSyncSavedStarters(submitted, { ...submitted }, 'agent_a')).toBe(true);
+  });
+
+  it('keeps starter edits made while the save was in flight', () => {
+    const current = { agentId: 'agent_a', starters: ['  Plan my week', 'Typed during save'] };
+    expect(shouldSyncSavedStarters(submitted, current, 'agent_a')).toBe(false);
+  });
+
+  it('leaves the rows alone after switching to another agent during the save', () => {
+    const current = { agentId: 'agent_b', starters: submitted.starters };
+    expect(shouldSyncSavedStarters(submitted, current, 'agent_a')).toBe(false);
+  });
+
+  it('syncs a create once the form carries the new id, but not another agent', () => {
+    const created = { agentId: '', starters: ['Hi'] };
+    expect(shouldSyncSavedStarters(created, { agentId: '', starters: ['Hi'] }, 'agent_new')).toBe(
+      true,
+    );
+    expect(
+      shouldSyncSavedStarters(created, { agentId: 'agent_new', starters: ['Hi'] }, 'agent_new'),
+    ).toBe(true);
+    expect(
+      shouldSyncSavedStarters(created, { agentId: 'agent_b', starters: ['Hi'] }, 'agent_new'),
+    ).toBe(false);
+  });
+
+  it('does nothing without a submitted snapshot', () => {
+    expect(shouldSyncSavedStarters(null, { agentId: 'agent_a', starters: [] }, 'agent_a')).toBe(
+      false,
+    );
   });
 });

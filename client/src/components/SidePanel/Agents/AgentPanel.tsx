@@ -80,6 +80,28 @@ export function resolveConversationStarters(
   return starters.map((starter) => starter.trim()).filter((starter) => starter !== '');
 }
 
+/** The starters a save was submitted with, and the agent they belong to (empty for a create). */
+export type SubmittedStarters = { agentId: string; starters: string[] | undefined };
+
+/**
+ * Whether a finished save may replace the starter rows with the stored list.
+ * Only when the form still shows the agent the save was for and the rows still
+ * hold what was submitted; edits made while the request was in flight, or rows
+ * of another agent selected meanwhile, stay as they are.
+ */
+export function shouldSyncSavedStarters(
+  submitted: SubmittedStarters | null,
+  current: SubmittedStarters,
+  savedId: string,
+): boolean {
+  if (!submitted) {
+    return false;
+  }
+  const sameAgent =
+    current.agentId === submitted.agentId || (!submitted.agentId && current.agentId === savedId);
+  return sameAgent && isEqual(current.starters ?? [], submitted.starters ?? []);
+}
+
 /**
  * Normalizes the payload sent to the agent update/create endpoints.
  * Handles avatar reset requests for persistent agents independently of avatar uploads.
@@ -410,11 +432,22 @@ export default function AgentPanel() {
     resetField,
     formState: { dirtyFields },
   } = methods;
+  const submittedStartersRef = useRef<SubmittedStarters | null>(null);
   /** The save may trim or drop starters; show what was stored, not what was typed. */
   const syncSavedStarters = useCallback(
-    (saved: Agent) =>
-      resetField('conversation_starters', { defaultValue: saved.conversation_starters ?? [] }),
-    [resetField],
+    (saved: Agent) => {
+      const submitted = submittedStartersRef.current;
+      submittedStartersRef.current = null;
+      const current = {
+        agentId: getValues('id') ?? '',
+        starters: getValues('conversation_starters'),
+      };
+      if (!shouldSyncSavedStarters(submitted, current, saved.id)) {
+        return;
+      }
+      resetField('conversation_starters', { defaultValue: saved.conversation_starters ?? [] });
+    },
+    [getValues, resetField],
   );
   const [isAvatarUploadInFlight, setIsAvatarUploadInFlight] = useState(false);
 
@@ -669,6 +702,7 @@ export default function AgentPanel() {
           }
           return;
         }
+        submittedStartersRef.current = { agentId: agent_id, starters: data.conversation_starters };
         update.mutate({ agent_id, data: { ...basePayload, tools } });
         return;
       }
@@ -698,6 +732,7 @@ export default function AgentPanel() {
         });
       }
 
+      submittedStartersRef.current = { agentId: '', starters: data.conversation_starters };
       create.mutate({
         ...basePayload,
         git_identity: basePayload.git_identity ?? undefined,

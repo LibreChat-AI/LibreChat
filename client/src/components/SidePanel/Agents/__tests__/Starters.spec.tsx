@@ -127,6 +127,18 @@ describe('Agent conversation starters', () => {
     expect(draftInput()).toHaveValue('Keep me');
   });
 
+  it('accepts starters longer than 64 characters in the draft and existing rows', async () => {
+    const user = userEvent.setup();
+    const long = 'Summarize the attached quarterly report and list the three largest risks';
+    render(<StartersHarness initial={['Short']} />);
+
+    await user.type(draftInput(), `${long}{Enter}`);
+    const row = screen.getByLabelText('com_assistants_conversation_starters 1');
+    await user.type(row, ` ${long}`);
+
+    expect(latest).toEqual([`Short ${long}`, long]);
+  });
+
   it('locks the draft input at the maximum', () => {
     const full = Array.from({ length: Number(Constants.MAX_CONVO_STARTERS) }, (_, i) => `S${i}`);
     render(<StartersHarness initial={full} />);

@@ -5,8 +5,6 @@ import { Input, Label, Button, TooltipAnchor } from '@librechat/client';
 import type { AgentForm } from '~/common';
 import { useLocalize } from '~/hooks';
 
-const MAX_STARTER_LENGTH = 64;
-
 function StartersField({
   value,
   onChange,
@@ -39,7 +37,6 @@ function StartersField({
         <Input
           id="conversation-starters"
           value={draft}
-          maxLength={MAX_STARTER_LENGTH}
           disabled={hasReachedMax}
           className="h-9 flex-1"
           type="text"
@@ -85,7 +82,6 @@ function StartersField({
           <div key={index} className="flex items-center gap-1">
             <Input
               value={starter}
-              maxLength={MAX_STARTER_LENGTH}
               className="h-9 flex-1"
               type="text"
               aria-label={`${localize('com_assistants_conversation_starters')} ${index + 1}`}

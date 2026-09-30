@@ -274,4 +274,62 @@ test.describe('agent conversation starters', () => {
       await cleanupAgent(page, agentId);
     }
   });
+
+  test('a starter edited while a save is in flight is kept @scenario:starter-edits-during-save-survive', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const name = uniqueAgentName('E2E Starters In Flight');
+    let agentId: string | undefined;
+
+    try {
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      const agent = await createAgentViaApi(page, name, ['One']);
+      agentId = agent.id;
+      const id = agentId;
+
+      let releaseSave: () => void = () => undefined;
+      const saveHeld = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      await page.route(`**/api/agents/${id}`, async (route) => {
+        if (route.request().method() !== 'PATCH') {
+          return route.fallback();
+        }
+        await saveHeld;
+        return route.fallback();
+      });
+
+      const form = await selectAgentInBuilder(page, name);
+      const rows = form.getByRole('textbox', { name: /^Conversation Starters \d+$/ });
+      await addStarter(form, 'Sent with the save');
+
+      const saved = page.waitForResponse(
+        (candidate) =>
+          candidate.request().method() === 'PATCH' &&
+          new URL(candidate.url()).pathname === `/api/agents/${id}` &&
+          candidate.ok(),
+        { timeout: 30000 },
+      );
+      await form.getByRole('button', { name: 'Save', exact: true }).click();
+      await addStarter(form, 'Typed during the save');
+      releaseSave();
+      await saved;
+
+      expect(await fetchStarters(page, id)).toEqual(['One', 'Sent with the save']);
+      await expect(page.getByText(`Successfully updated ${name}`).first()).toBeVisible();
+      await expect(rows).toHaveCount(3);
+      await expect(rows.nth(2)).toHaveValue('Typed during the save');
+      await page.unroute(`**/api/agents/${id}`);
+
+      await saveAgent(form, id);
+      expect(await fetchStarters(page, id)).toEqual([
+        'One',
+        'Sent with the save',
+        'Typed during the save',
+      ]);
+    } finally {
+      await cleanupAgent(page, agentId);
+    }
+  });
 });
