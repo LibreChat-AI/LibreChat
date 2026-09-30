@@ -106,6 +106,8 @@ describe('LibreChat Tailwind preset', () => {
       ['h-theme-switch', '--theme-switch-height', defaultAppearance.switchHeight],
       ['h-theme-button', '--theme-button-height', defaultAppearance.buttonHeight],
       ['h-theme-button-sm', '--theme-button-height-sm', defaultAppearance.buttonHeightSm],
+      ['h-theme-field', '--theme-field-height', defaultAppearance.fieldHeight],
+      ['py-theme-field-y', '--theme-field-padding-y', defaultAppearance.fieldPaddingY],
       ['font-theme-control', '--theme-control-font-weight', defaultAppearance.controlFontWeight],
       ['px-theme-dialog-x', '--theme-dialog-padding-x', defaultAppearance.dialogPaddingX],
       [

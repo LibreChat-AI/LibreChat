@@ -10,7 +10,7 @@ import { disabledFillClasses } from '~/utils/theme';
  * A theme whose `fieldFocusStyle` is `border` focuses the field by swapping that edge to
  * `border-field-focus` instead of drawing the ring.
  */
-export const fieldBase: string = `lc-field flex w-full rounded-lg border border-border-control px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control theme-field-border:focus:border-border-field-focus theme-field-border:focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50 ${disabledFillClasses}`;
+export const fieldBase: string = `lc-field flex w-full rounded-lg border border-border-control px-3 py-theme-field-y text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control theme-field-border:focus:border-border-field-focus theme-field-border:focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50 ${disabledFillClasses}`;
 
 /** A single-line control sized to sit in a form row, matching `Input`. */
 export const fieldControl: string = `${fieldBase} h-theme-field bg-transparent`;

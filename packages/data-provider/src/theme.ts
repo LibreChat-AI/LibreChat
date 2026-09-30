@@ -329,8 +329,10 @@ const appearanceValidators = {
   controlFontWeight: isFontWeight,
   buttonHeight: isLength,
   buttonHeightSm: isLength,
-  /** A form field's height, and whether focus draws a ring or swaps the field's edge color. */
+  /** A form field's height and vertical padding, and whether focus draws a ring or swaps the
+   *  field's edge color. */
   fieldHeight: isLength,
+  fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
   /** A field label's size, leading and weight; `inherit` keeps the weight of the text around it. */
   labelSize: isLength,

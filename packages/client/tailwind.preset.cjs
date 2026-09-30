@@ -45,6 +45,8 @@ module.exports = {
         'theme-control-gap': 'var(--theme-control-gap, var(--theme-space-compact, 0.375rem))',
         /** A dialog's inline padding and the gap between its title and description. */
         'theme-dialog-x': 'var(--theme-dialog-padding-x, 1.5rem)',
+        /** A form field's vertical padding. */
+        'theme-field-y': 'var(--theme-field-padding-y, 0.5rem)',
         'theme-dialog-header': 'var(--theme-dialog-header-gap, 0.375rem)',
         /**
          * The comfortable tap target (2.75rem / 44px), held against the theme's

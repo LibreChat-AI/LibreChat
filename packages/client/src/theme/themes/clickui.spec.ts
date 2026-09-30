@@ -505,6 +505,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   dialogTitleLeading: 'click.dialog.typography.title.default',
   dialogTitleFontWeight: 'click.dialog.typography.title.default',
   dialogTitleFontFamily: 'click.dialog.typography.title.default',
+  fieldPaddingY: 'click.field.space.y',
   labelSize: 'click.field.typography.label.default',
   labelLeading: 'click.field.typography.label.default',
   labelFontWeight: 'click.field.typography.label.default',
@@ -1181,7 +1182,7 @@ const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
     'theme-button': 'buttonHeight',
     'theme-button-sm': 'buttonHeightSm',
   },
-  py: { 'theme-table-cell': 'tableCellSpaceY' },
+  py: { 'theme-table-cell': 'tableCellSpaceY', 'theme-field-y': 'fieldPaddingY' },
   px: { 'theme-control-x': 'controlPaddingX', 'theme-dialog-x': 'dialogPaddingX' },
   gap: { 'theme-control-gap': 'controlGap' },
 };

@@ -465,6 +465,8 @@ export interface IThemeAppearance {
    * `border` swaps the field's edge to `border-field-focus` on any focus and draws no ring.
    */
   fieldHeight: string;
+  /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
+  fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
   /** A field label's size, leading and weight. The size follows `textSm` when a theme omits it,
    *  and the default weight is `inherit`. */

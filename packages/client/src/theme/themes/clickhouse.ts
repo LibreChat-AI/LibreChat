@@ -384,6 +384,7 @@ const clickHouseShape = {
    *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to
    *  `field.color.stroke.active` and draws no ring (InputWrapper). */
   fieldHeight: '2rem',
+  fieldPaddingY: '0.2813rem', // field.space.y
   fieldFocusStyle: 'border' as const,
   /** `field.typography.label.default`: 500 0.75rem/1.5. */
   labelSize: '0.75rem',

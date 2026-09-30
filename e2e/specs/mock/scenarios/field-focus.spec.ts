@@ -138,6 +138,11 @@ test.describe('theme field focus', () => {
     /** `field.typography.label.default`: 500 0.75rem/1.5. */
     expect(label).toEqual({ size: '12px', leading: '18px', weight: '500' });
 
+    /** `field.space.y` on both sides of a 0.875rem/1.5 line and a 1px stroke fills the 32px. */
+    const padding = await field.evaluate((node: HTMLElement) =>
+      parseFloat(getComputedStyle(node).paddingTop),
+    );
+    expect(padding).toBeCloseTo(4.5, 0);
     const edgeOnly = { edge: active, ring: 'none', outline: 'none', height: 32 };
     await field.click();
     expect(await focusOf(field)).toEqual(edgeOnly);

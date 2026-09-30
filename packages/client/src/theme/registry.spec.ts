@@ -839,6 +839,7 @@ describe('theme registry', () => {
   it('keeps LibreChat’s field and label by default', () => {
     expect(defaultAppearance).toMatchObject({
       fieldHeight: '2.5rem',
+      fieldPaddingY: '0.5rem',
       fieldFocusStyle: 'ring',
       labelSize: defaultAppearance.textSm,
       labelLeading: '1',
@@ -880,6 +881,7 @@ describe('theme registry', () => {
             colors: { 'rgb-border-field-focus': '200 30 90' },
             appearance: {
               fieldHeight: '3rem',
+              fieldPaddingY: '0.75rem',
               fieldFocusStyle: 'border',
               labelSize: '1rem',
               labelLeading: '1.25',
@@ -896,6 +898,7 @@ describe('theme registry', () => {
     expect(appearance.textSm).toBe(defaultAppearance.textSm);
     expect(appearance).toMatchObject({
       fieldHeight: '3rem',
+      fieldPaddingY: '0.75rem',
       fieldFocusStyle: 'border',
       labelSize: '1rem',
       labelLeading: '1.25',
@@ -915,6 +918,7 @@ describe('theme registry', () => {
     [
       { fieldFocusStyle: 'glow' },
       { fieldHeight: 'tall' },
+      { fieldPaddingY: '4' },
       { labelSize: '12' },
       { labelLeading: 'calc(1 / 0)' },
       { labelFontWeight: 'bold' },
