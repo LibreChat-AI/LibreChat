@@ -33,6 +33,7 @@ jest.mock('@librechat/api', () => ({
   isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
+  stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
