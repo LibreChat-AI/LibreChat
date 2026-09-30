@@ -58,4 +58,12 @@ describe('Badge', () => {
     expect(badge).toHaveClass('hover:text-badge-label');
     expect(badge).not.toHaveClass('hover:text-text-primary');
   });
+
+  it('keeps a disabled selected badge in the primary ink on hover', () => {
+    render(<Badge id="1" label="Tools" isAvailable={true} isInChat isActive />);
+    const badge = screen.getByRole('button', { name: 'Tools' });
+
+    expect(badge).toHaveClass('text-text-primary');
+    expect(badge).not.toHaveClass('hover:text-badge-label');
+  });
 });
