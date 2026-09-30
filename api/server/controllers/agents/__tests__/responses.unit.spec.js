@@ -134,6 +134,8 @@ const mockCanAuthorSkillFiles = jest.fn(
     scopedEditableSkillIds.length > 0 || skillCreateAllowed === true,
 );
 const mockGetSkillToolDeps = jest.fn(() => ({}));
+const mockAddTitle = jest.fn().mockResolvedValue(undefined);
+const mockGenerateRunTitle = jest.fn().mockResolvedValue('Generated Title');
 const mockBuildAgentScopedContext = jest.fn().mockResolvedValue(new Map());
 const mockBuildAgentContextAttachmentsByAgentId = jest.fn().mockReturnValue(new Map());
 const mockBuildInlineMemoryContext = jest.fn().mockResolvedValue('');
@@ -518,6 +520,11 @@ jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   enrichLoadedToolsWithAgentContext: mockEnrichLoadedToolsWithAgentContext,
 }));
 
+jest.mock('~/server/services/Endpoints/agents/title', () => mockAddTitle);
+jest.mock('~/server/services/Endpoints/agents/runTitle', () => ({
+  generateRunTitle: mockGenerateRunTitle,
+}));
+
 jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
@@ -743,6 +750,86 @@ describe('createResponse controller', () => {
     expect(saved).toEqual(expect.objectContaining({ conversationId: 'previous' }));
     expect(saved).not.toHaveProperty('codeEnvironmentMode');
     expect(saved).not.toHaveProperty('codeWorkspaces');
+  });
+
+  describe('conversation title generation', () => {
+    it('generates an LLM title from the first exchange of a new stored conversation', async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream: false, store: true },
+      });
+
+      await createResponse(req, res);
+
+      expect(db.saveConvo).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          /** Placeholder (the agent name) until the generated title overwrites it */
+          title: 'Test Agent',
+          conversationId: expect.any(String),
+        }),
+        expect.anything(),
+      );
+      expect(mockAddTitle).toHaveBeenCalledTimes(1);
+      const [titleReq, titleParams] = mockAddTitle.mock.calls[0];
+      expect(titleReq).toBe(req);
+      expect(titleParams).toEqual(
+        expect.objectContaining({
+          text: 'Hello',
+          conversationId: expect.any(String),
+          signal: expect.anything(),
+        }),
+      );
+      expect(typeof titleParams.client.titleConvo).toBe('function');
+    });
+
+    it('does not clobber the title when continuing an existing conversation', async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Follow-up',
+          stream: false,
+          store: true,
+          previous_response_id: 'previous',
+        },
+      });
+      db.getConvo.mockResolvedValueOnce({ conversationId: 'previous', user: 'user-123' });
+
+      await createResponse(req, res);
+
+      expect(mockAddTitle).not.toHaveBeenCalled();
+      const saved = db.saveConvo.mock.calls.at(-1)[1];
+      expect(saved).not.toHaveProperty('title');
+    });
+
+    it('does not fail the response when title generation rejects', async () => {
+      const api = require('@librechat/api');
+      mockAddTitle.mockRejectedValueOnce(new Error('title model unavailable'));
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream: false, store: true },
+      });
+
+      await expect(createResponse(req, res)).resolves.toBeUndefined();
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'resp_123', status: 'completed' }),
+      );
+      expect(mockAddTitle).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not generate a title when the response is not stored', async () => {
+      const api = require('@librechat/api');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream: false },
+      });
+
+      await createResponse(req, res);
+
+      expect(mockAddTitle).not.toHaveBeenCalled();
+    });
   });
 
   it('enrolls, starts, and settles the remote execution lifecycle', async () => {
