@@ -131,10 +131,6 @@ import {
   isContentFilterError,
 } from '~/middleware/contentFilter';
 import {
-  resolveAttachedWorkspaceQueueWaitMs,
-  resolveAttachedWorkspaceRequestTimeoutMs,
-} from '~/code/command';
-import {
   hasIntentArg,
   stripIntentArg,
   stripIntentLabelsFromToolDefinitions,
