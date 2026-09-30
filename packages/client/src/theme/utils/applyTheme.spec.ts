@@ -417,6 +417,22 @@ describe('applyTheme', () => {
     }
   });
 
+  it('reads the mode off a dark ancestor of a scoped root', () => {
+    const scoped = document.createElement('div');
+    document.documentElement.classList.add('dark');
+    document.body.append(scoped);
+    try {
+      applyTheme(
+        { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' },
+        scoped,
+      );
+      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
+    } finally {
+      scoped.remove();
+      document.documentElement.classList.remove('dark');
+    }
+  });
+
   it('leaves an explicit avatar backdrop alone', () => {
     const root = document.documentElement;
 

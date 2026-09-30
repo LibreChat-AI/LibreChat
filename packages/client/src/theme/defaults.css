@@ -77,8 +77,8 @@
 html {
   --brand-purple: 126 34 206;
   --avatar-fill: 121 137 255;
-  --avatar-text: 33 33 33;
-  --avatar-placeholder: 247 247 248;
+  --avatar-text: var(--text-primary);
+  --avatar-placeholder: var(--surface-secondary);
   --presentation: var(--white);
   --text-primary: var(--gray-800);
   --text-secondary: var(--gray-600);
@@ -266,8 +266,8 @@ html {
 .dark {
   --brand-purple: 171 104 255;
   --avatar-fill: 121 137 255;
-  --avatar-text: 236 236 236;
-  --avatar-placeholder: 47 47 47;
+  --avatar-text: var(--text-primary);
+  --avatar-placeholder: var(--surface-tertiary);
   --presentation: var(--gray-800);
   --text-primary: var(--gray-100);
   --focus-outline: 255 255 255;
