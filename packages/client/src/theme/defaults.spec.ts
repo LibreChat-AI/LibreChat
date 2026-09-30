@@ -77,12 +77,21 @@ describe.each([
   });
 });
 
+/** Control roles split out of the shared spacing alias it, so a stylesheet that sets only the
+ *  shared role still spaces its controls. */
+const stockAliases: Partial<
+  Record<keyof typeof defaultAppearance, keyof typeof defaultAppearance>
+> = { controlPaddingX: 'spaceNormal', controlGap: 'spaceCompact' };
+
 describe('the stock appearance and brands', () => {
   it('declares every appearance property with the registry default', () => {
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
+      const role = key as keyof typeof defaultAppearance;
+      const value = defaultAppearance[role].replace(/\s+/g, ' ');
+      const source = stockAliases[role];
       expect([property, light.get(property)]).toEqual([
         property,
-        defaultAppearance[key as keyof typeof defaultAppearance].replace(/\s+/g, ' '),
+        source ? `var(${themeAppearanceProperties[source]}, ${value})` : value,
       ]);
     });
   });

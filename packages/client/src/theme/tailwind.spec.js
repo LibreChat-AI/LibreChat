@@ -219,8 +219,13 @@ describe('LibreChat Tailwind preset', () => {
 
     /** Prettier wraps a long font stack, so declarations compare with whitespace collapsed. */
     const collapsed = stockStyles.replace(/\s+/g, ' ');
+    /** The control spacing roles alias the shared spacing they were split from. */
+    const aliases = { controlPaddingX: 'spaceNormal', controlGap: 'spaceCompact' };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
-      expect(collapsed).toContain(`${property}: ${defaultAppearance[key]};`);
+      const value = aliases[key]
+        ? `var(${themeAppearanceProperties[aliases[key]]}, ${defaultAppearance[key]})`
+        : defaultAppearance[key];
+      expect(collapsed).toContain(`${property}: ${value};`);
     });
   });
 });
