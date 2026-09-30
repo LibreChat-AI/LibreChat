@@ -213,6 +213,76 @@ describe('useSubagentActivityStream', () => {
     expect(result.current?.lastActivitySequence).toBe(6);
   });
 
+  it('preserves a displayed tool and text when a capped reconnect snapshot starts later', () => {
+    const { result } = renderHook(
+      () => {
+        useSubagentActivityStream(selection);
+        return useAtomValue(
+          subagentProgressByToolCallId(
+            subagentProgressKey(
+              selection.parentMessageId,
+              selection.toolCallId,
+              selection.partIndex,
+            ),
+          ),
+        );
+      },
+      { wrapper },
+    );
+    const event = (sequence: number) => ({
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: selection.toolCallId,
+        activityEventId: `task:${sequence}`,
+        activitySequence: sequence,
+        phase: sequence === 10 ? 'run_step' : 'message_delta',
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data:
+          sequence === 10
+            ? {
+                id: 'step',
+                stepDetails: {
+                  type: 'tool_calls',
+                  tool_calls: [{ id: 'old-tool', name: 'execute_code', args: {} }],
+                },
+              }
+            : { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+      },
+    });
+    act(() => {
+      streams[0].emit('message', {
+        event: 'subagent_activity_replay',
+        data: Array.from({ length: 100 }, (_, i) => event(i + 10)),
+      });
+    });
+    for (let sequence = 110; sequence < 120; sequence++)
+      act(() => {
+        streams[0].emit('message', event(sequence));
+      });
+    const before = result.current?.contentParts;
+    expect(result.current?.firstActivitySequence).toBe(10);
+    act(() => {
+      streams[0].emit('message', {
+        event: 'subagent_activity_replay',
+        data: Array.from({ length: 100 }, (_, i) => event(i + 20)),
+      });
+    });
+    expect(result.current?.contentParts).toEqual(before);
+    expect(result.current?.contentParts[0]).toMatchObject({
+      type: 'tool_call',
+      tool_call: { id: 'old-tool' },
+    });
+    expect(result.current?.firstActivitySequence).toBe(10);
+    act(() => {
+      streams[0].emit('message', event(120));
+    });
+    expect(result.current?.lastActivitySequence).toBe(120);
+  });
+
   it('replaces an incomplete suffix with the retained snapshot on reconnect', () => {
     const { result } = renderHook(
       () => {

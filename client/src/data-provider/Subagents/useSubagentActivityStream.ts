@@ -134,11 +134,16 @@ export default function useSubagentActivityStream(
           if (events.length === 0) return;
           registerSubagentProgressKey(key);
           setProgress((previous) => {
-            /** A suffix-only bucket cannot backfill older parts incrementally. The Redis
-             * snapshot replaces it; future activity follows on the same ordered stream. */
+            /** Replace a suffix only when replay actually backfills earlier activity.
+             * A later capped snapshot must not erase parts already held by the client. */
+            const firstSequence = events[0].activitySequence;
+            const sameRun = previous?.subagentRunId === events[0].subagentRunId;
+            const addsEarlierActivity =
+              previous?.firstActivitySequence != null &&
+              firstSequence != null &&
+              firstSequence < previous.firstActivitySequence;
             const base =
-              previous?.coverage === 'complete' &&
-              previous.subagentRunId === events[0].subagentRunId
+              sameRun && (previous?.coverage === 'complete' || !addsEarlierActivity)
                 ? previous
                 : null;
             const progress = reduceSubagentProgress(base, events, 'detached', false);

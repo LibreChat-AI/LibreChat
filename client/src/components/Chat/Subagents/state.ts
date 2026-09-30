@@ -63,6 +63,8 @@ export interface SubagentProgress {
   recentEventKeys?: string[];
   /** Highest host sequence folded for this child run. Older overlap frames are ignored. */
   lastActivitySequence?: number;
+  /** Earliest folded host sequence, used to distinguish backfill from a newer capped snapshot. */
+  firstActivitySequence?: number;
   /** Bounded future frames waiting for an earlier sequence at the parent/detached handoff. */
   pendingSequencedEvents?: SubagentUpdateEvent[];
   /** Whether the folded events cover the run from its beginning or only the
@@ -620,6 +622,11 @@ const foldAcceptedSubagentEvents = (
     contentParts,
     aggregatorState,
     tickerState,
+    firstActivitySequence:
+      previous?.subagentRunId === last.subagentRunId
+        ? (previous.firstActivitySequence ??
+          events.find((event) => validActivitySequence(event.activitySequence))?.activitySequence)
+        : events.find((event) => validActivitySequence(event.activitySequence))?.activitySequence,
     status: last.phase,
     droppedCount: previous?.droppedCount,
     latestLabel: last.label ?? previous?.latestLabel,

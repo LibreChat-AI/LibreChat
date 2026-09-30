@@ -306,7 +306,7 @@ export class SubagentActivityStream {
          * its panel closes meanwhile; a surviving local subscriber still needs release. */
         await subscription.syncReorderBuffer?.();
       }
-      if (closed || replayable) return;
+      if (closed) return;
       await this.renewDemand(streamId, () => !closed);
       if (closed) {
         this.demandCache.delete(streamId);

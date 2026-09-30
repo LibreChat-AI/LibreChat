@@ -196,6 +196,36 @@ describe('bounded cross-replica subagent replay (real Redis)', () => {
     expect(attached.events.map((event) => event.data.activitySequence)).toEqual([0, 1, 2]);
   });
 
+  it('renews demand for an older publisher during a rolling deployment', async () => {
+    const owner = await replica();
+    const viewer = await replica();
+    const thread = randomUUID();
+    const task = randomUUID();
+    const attached = collect(viewer.stream, thread, task);
+    await attached.subscription.ready;
+    const streamId = subagentActivityStreamId(thread, task);
+    const publishLegacy = async (sequence: number) => {
+      if (!(await owner.transport.hasDemand(streamId))) return;
+      await owner.transport.emitChunk(streamId, {
+        event: 'on_subagent_update',
+        data: update(sequence),
+      });
+    };
+    expect(await owner.transport.hasDemand(streamId)).toBe(true);
+    await publishLegacy(0);
+    await waitUntil(() => attached.events.length === 1);
+    expect(await owner.publisher.pttl(`stream:{${streamId}}:demand`)).toBeGreaterThan(0);
+    if (await owner.transport.hasDemand(streamId)) {
+      await owner.transport.emitDone(streamId, {
+        final: true,
+        subagentActivity: true,
+        status: 'completed',
+      });
+    }
+    await waitUntil(() => attached.onDone.mock.calls.length === 1);
+    expect(attached.events[0].data.activitySequence).toBe(0);
+  });
+
   it('caps retained items and encoded bytes, expires them, and preserves the shared sequence', async () => {
     const owner = await replica();
     const streamId = subagentActivityStreamId(randomUUID(), randomUUID());
