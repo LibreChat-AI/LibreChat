@@ -73,9 +73,11 @@ export default function Badge({
     'group relative inline-flex items-center gap-1.5 rounded-full px-4 py-1.5',
     'border border-border-medium text-sm font-medium transition-shadow',
     '@container-[600px]:w-full size-9 p-2',
+    /** A resting badge takes the badge label ink; a hovered or selected one moves to the primary
+     *  ink, which holds AA on the hover and active fills where a muted label may not. */
     isActive
-      ? 'bg-surface-active shadow-md'
-      : 'bg-surface-chat shadow-xs hover:bg-surface-hover hover:shadow-md',
+      ? 'bg-surface-active text-text-primary shadow-md'
+      : 'bg-surface-chat text-badge-label shadow-xs hover:bg-surface-hover hover:text-text-primary hover:shadow-md',
     'active:scale-95 active:shadow-inner',
     isMoveable && 'cursor-move',
     isDisabled && 'cursor-not-allowed opacity-50 hover:shadow-xs',

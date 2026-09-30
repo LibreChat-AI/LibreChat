@@ -351,6 +351,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `theme-field-border:` variant `applyTheme` enables with `data-theme-field-focus`.
   `Label` reads `labelSize` (follows `textSm`), `labelLeading` and
   `labelFontWeight` (`inherit` by default, so a label keeps the weight around it).
+- `text-badge-label` - The shared `Badge`'s resting label ink; a hovered or selected
+  badge moves to `text-primary`. Follows `text-primary` when a theme names only that.
 - `text-dialog-title` - An OGDialog title's ink. Follows `text-primary` when a
   theme names only that.
 - OGDialog chrome - `border-(length:--theme-dialog-stroke)` (`dialogStroke`, painted in

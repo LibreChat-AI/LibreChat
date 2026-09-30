@@ -81,6 +81,8 @@
   --color-text-secondary-alt: rgb(var(--text-secondary-alt));
   --color-text-tertiary: rgb(var(--text-tertiary));
   --color-text-muted: rgb(var(--text-muted));
+  /* Falls back to the ink badges were labeled in, for a stylesheet that predates it. */
+  --color-badge-label: rgb(var(--badge-label, var(--text-primary)));
   --color-text-warning: rgb(var(--text-warning));
   --color-text-destructive: rgb(var(--text-destructive));
   --color-text-inverted: rgb(var(--text-inverted));

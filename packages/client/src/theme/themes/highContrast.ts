@@ -37,6 +37,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-text-secondary-alt': '0 0 0', // #000000
   'rgb-text-tertiary': '0 0 0', // #000000
   'rgb-text-muted': '0 0 0', // #000000
+  'rgb-badge-label': '0 0 0', // #000000 (matching text-primary)
   'rgb-text-warning': '122 61 0', // #7a3d00
   'rgb-text-destructive': '161 0 0', // #a10000
   'rgb-shimmer-base': '0 0 0', // #000000, 21:1 on white
@@ -202,6 +203,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-text-secondary-alt': '255 255 255', // #ffffff
   'rgb-text-tertiary': '255 255 255', // #ffffff
   'rgb-text-muted': '255 255 255', // #ffffff
+  'rgb-badge-label': '255 255 255', // #ffffff (matching text-primary)
   'rgb-text-warning': '255 201 77', // #ffc94d
   'rgb-text-destructive': '255 143 143', // #ff8f8f
   'rgb-shimmer-base': '255 255 255', // #ffffff, 21:1 on black

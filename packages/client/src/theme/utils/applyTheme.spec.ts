@@ -359,6 +359,7 @@ describe('applyTheme', () => {
     applyTheme({ 'rgb-text-primary': '30 31 32' }, root, defaultTheme);
 
     expect(root.style.getPropertyValue('--dialog-title')).toBe('30 31 32');
+    expect(root.style.getPropertyValue('--badge-label')).toBe('30 31 32');
   });
 
   it('fills the primary button with the inverted surface of a theme that predates the role', () => {

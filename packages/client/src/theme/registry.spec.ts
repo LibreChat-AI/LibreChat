@@ -762,6 +762,29 @@ describe('theme registry', () => {
     );
   });
 
+  it('keeps badge labels on the primary ink of a theme that predates the role', () => {
+    const light = resolveTheme(
+      {
+        version: 1,
+        name: 'ink-reference',
+        modes: { light: { colors: { 'rgb-text-primary': '10 20 30' } } },
+      },
+      'light',
+    );
+    const own = resolveTheme(
+      {
+        version: 1,
+        name: 'badge-ink-reference',
+        modes: { light: { colors: { 'rgb-badge-label': '200 30 90' } } },
+      },
+      'light',
+    );
+
+    expect(light.colors['rgb-badge-label']).toBe('10 20 30');
+    expect(own.colors['rgb-badge-label']).toBe('200 30 90');
+    expect(own.colors['rgb-text-primary']).toBe(defaultTheme['rgb-text-primary']);
+  });
+
   it('keeps LibreChat’s dialog chrome by default', () => {
     expect(defaultAppearance).toMatchObject({
       dialogStroke: '0px',

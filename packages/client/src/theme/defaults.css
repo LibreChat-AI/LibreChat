@@ -85,6 +85,7 @@ html {
   --text-secondary-alt: var(--gray-500);
   --text-tertiary: var(--gray-500);
   --text-muted: 105 110 121; /* Click UI global.color.text.muted #696e79 */
+  --badge-label: var(--text-primary);
   --shimmer-dip: 129 130 134;
   --shimmer-dip-alpha: 0.18;
   --text-warning: var(--amber-700);
@@ -290,6 +291,7 @@ html {
   --text-secondary-alt: var(--gray-400);
   --text-tertiary: var(--gray-400);
   --text-muted: 179 182 189; /* Click UI global.color.text.muted #b3b6bd */
+  --badge-label: var(--text-primary);
   --shimmer-base: 255 255 255;
   --shimmer-base-alpha: 0.8;
   --shimmer-dip: 179 179 179;

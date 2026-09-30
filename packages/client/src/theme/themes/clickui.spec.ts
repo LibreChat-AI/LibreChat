@@ -92,6 +92,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-tertiary-alt': 'global.color.background.default',
     'rgb-surface-dialog': 'global.color.background.default',
     'rgb-dialog-title': 'click.dialog.color.title.default',
+    'rgb-badge-label': 'click.badge.opaque.color.text.default',
     'rgb-surface-overlay': 'click.dialog.color.opaqueBackground.default',
     'rgb-surface-submit': 'global.color.accent.default',
     'rgb-surface-submit-hover': 'palette.neutral.712',
@@ -207,6 +208,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-tertiary-alt': 'palette.neutral.712',
     'rgb-surface-dialog': 'global.color.background.default',
     'rgb-dialog-title': 'click.dialog.color.title.default',
+    'rgb-badge-label': 'click.badge.opaque.color.text.default',
     'rgb-surface-submit': 'global.color.accent.default',
     'rgb-surface-submit-hover': 'palette.brand.200',
     'rgb-surface-destructive': 'palette.danger.300',
@@ -1127,12 +1129,7 @@ const notExpressible: Record<string, NotExpressible> = {
       'the field is transparent and inks with text-primary; a color role is an opaque triplet, so no role can default to no fill, and no role holds field ink apart from body copy',
     issue: 'https://github.com/berry-13/LibreChat/issues/206',
   },
-  'Badge label': {
-    decisions: { light: ['Badge label'], dark: ['Badge label'] },
-    reason:
-      'Badge inks with text-primary; Click UI labels badges in text.muted, and no role holds badge ink apart from body copy',
-    issue: 'https://github.com/berry-13/LibreChat/issues/143',
-  },
+
   'Dropdown menu corner': {
     decisions: { light: ['Dropdown menu corner'], dark: ['Dropdown menu corner'] },
     reason:

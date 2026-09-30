@@ -35,4 +35,18 @@ describe('Badge', () => {
     fireEvent.mouseDown(badge);
     expect(onMouseDown).toHaveBeenCalledTimes(1);
   });
+
+  /** The label reads its own ink role, which a theme can set apart from body copy. */
+  it('labels a resting badge in the badge label ink and a hovered or selected one in the primary ink', () => {
+    const { rerender } = render(<Badge label="Tools" isAvailable={true} />);
+    expect(screen.getByRole('button', { name: 'Tools' })).toHaveClass(
+      'text-badge-label',
+      'hover:text-text-primary',
+    );
+
+    rerender(<Badge label="Tools" isAvailable={true} isActive />);
+    const selected = screen.getByRole('button', { name: 'Tools' });
+    expect(selected).toHaveClass('text-text-primary');
+    expect(selected).not.toHaveClass('text-badge-label');
+  });
 });

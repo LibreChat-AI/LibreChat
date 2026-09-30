@@ -11,6 +11,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-text-secondary-alt': '89 89 89', // #595959 (gray-500)
   'rgb-text-tertiary': '89 89 89', // #595959 (gray-500)
   'rgb-text-muted': '105 110 121', // #696e79 (Click UI text.muted)
+  'rgb-badge-label': '33 33 33', // #212121 (gray-800, matching text-primary)
   'rgb-text-warning': '180 83 9', // #b45309 (amber-700)
   'rgb-text-destructive': '220 38 38', // #dc2626 (red-600)
   'rgb-shimmer-base': '33 33 33', // #212121 (gray-800), matching text-primary

@@ -9,6 +9,8 @@ export interface IThemeRGB {
   'rgb-text-secondary-alt'?: string;
   'rgb-text-tertiary'?: string;
   'rgb-text-muted'?: string;
+  /** The shared Badge's label ink; follows `rgb-text-primary` when a theme omits it. */
+  'rgb-badge-label'?: string;
   'rgb-text-warning'?: string;
   'rgb-text-destructive'?: string;
   /** Bright and dipped stops of the in-flight label sweep (`.shimmer`). Their
@@ -199,6 +201,7 @@ export interface IThemeVariables {
   '--text-secondary-alt': string;
   '--text-tertiary': string;
   '--text-muted': string;
+  '--badge-label': string;
   '--text-warning': string;
   '--text-destructive': string;
   '--shimmer-base': string;
@@ -326,6 +329,7 @@ export interface IThemeColors {
   'text-secondary-alt'?: string;
   'text-tertiary'?: string;
   'text-muted'?: string;
+  'badge-label'?: string;
   'text-warning'?: string;
   'text-destructive'?: string;
   link?: string;

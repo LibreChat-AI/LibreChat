@@ -788,8 +788,29 @@ describe('state role defaults', () => {
     ['default dark', darkTheme],
     ['high contrast light', highContrastLightTheme],
     ['high contrast dark', highContrastDarkTheme],
-  ])('sets %s dialog titles in the primary ink', (_name, theme: IThemeRGB) => {
+  ])('sets %s dialog titles and badge labels in the primary ink', (_name, theme: IThemeRGB) => {
     expect(theme['rgb-dialog-title']).toBe(theme['rgb-text-primary']);
+    expect(theme['rgb-badge-label']).toBe(theme['rgb-text-primary']);
+  });
+
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+    ['clickhouse light', clickHouseLightTheme],
+    ['clickhouse dark', clickHouseDarkTheme],
+  ])('keeps %s badge labels at AA on the resting badge fill', (_name, theme: IThemeRGB) => {
+    const ink = toRgb(theme, 'rgb-badge-label');
+    /** A hovered or selected badge is labeled in the primary ink, so only the resting fill counts. */
+    const fills: Array<keyof IThemeRGB> = ['rgb-surface-chat'];
+
+    const failures = fills.flatMap((fill) => {
+      const ratio = contrast(ink, toRgb(theme, fill));
+      return ratio < 4.5 ? [`${fill}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
   });
 
   it.each([

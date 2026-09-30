@@ -63,7 +63,7 @@ describe.each([
   const tokens = Object.keys(theme) as Array<keyof IThemeRGB>;
 
   it('covers every registry color', () => {
-    expect(tokens).toHaveLength(113);
+    expect(tokens).toHaveLength(114);
   });
 
   it('resolves every registry color to the runtime theme value', () => {
@@ -95,6 +95,7 @@ const colorAliases: Array<[string, string]> = [
   ['--button-primary', '--surface-inverted'],
   ['--button-primary-hover', '--surface-inverted-hover'],
   ['--dialog-title', '--text-primary'],
+  ['--badge-label', '--text-primary'],
   ['--border-field-focus', '--focus-control'],
 ];
 

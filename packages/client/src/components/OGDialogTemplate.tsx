@@ -116,11 +116,7 @@ const OGDialogTemplate: ForwardRefExoticComponent<
           selectClasses ?? defaultSelect
         } h-theme-button flex items-center justify-center rounded-lg border-none px-4 py-2 text-sm disabled:opacity-80 max-sm:order-first max-sm:w-full sm:order-none`}
       >
-        {isLoading === true ? (
-          <Spinner className="text-text-primary size-4" />
-        ) : (
-          (selectText as React.JSX.Element)
-        )}
+        {isLoading === true ? <Spinner className="size-4" /> : (selectText as React.JSX.Element)}
       </OGDialogClose>
     );
   } else if (selection) {

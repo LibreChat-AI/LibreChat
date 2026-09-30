@@ -19,6 +19,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-text-secondary-alt',
   'rgb-text-tertiary',
   'rgb-text-muted',
+  'rgb-badge-label',
   'rgb-text-warning',
   'rgb-text-destructive',
   'rgb-shimmer-base',

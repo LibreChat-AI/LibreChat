@@ -118,10 +118,21 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
   };
 }
 
-/** Dialog titles were set in the primary ink, so a theme that repaints it keeps its titles on it. */
-export function dialogTitleFallback(colors: IThemeRGB): IThemeRGB {
-  const title = colors['rgb-dialog-title'] ?? colors['rgb-text-primary'];
-  return title !== undefined ? { 'rgb-dialog-title': title } : {};
+/** Inks split out of the primary one: dialog titles and badge labels were set in it. */
+export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
+  'rgb-dialog-title',
+  'rgb-badge-label',
+];
+
+/** A theme that repaints the primary ink keeps the inks split out of it on it, unless it names them. */
+export function primaryInkFallbacks(colors: IThemeRGB): IThemeRGB {
+  const primary = colors['rgb-text-primary'];
+  return Object.fromEntries(
+    primaryInkRoles.flatMap((role) => {
+      const ink = colors[role] ?? primary;
+      return ink === undefined ? [] : [[role, ink]];
+    }),
+  );
 }
 
 /**
@@ -562,7 +573,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const focusFallback = customColors != null ? focusFallbacks(customColors) : {};
   const pressedFallback = customColors != null ? pressedFallbacks(customColors) : {};
   const primaryButtonFallback = customColors != null ? primaryButtonFallbacks(customColors) : {};
-  const dialogTitleColor = customColors != null ? dialogTitleFallback(customColors) : {};
+  const primaryInks = customColors != null ? primaryInkFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -632,7 +643,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...focusFallback,
       ...pressedFallback,
       ...primaryButtonFallback,
-      ...dialogTitleColor,
+      ...primaryInks,
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,

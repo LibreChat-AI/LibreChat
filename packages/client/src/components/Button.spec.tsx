@@ -227,4 +227,25 @@ describe('Button', () => {
     );
     expect(confirm).not.toHaveClass('h-10');
   });
+
+  /** The spinner stood in text-primary on the primary fill, dark on dark; it now paints in the
+   *  action's own foreground, whatever fill the caller gives it. */
+  it('draws a templated dialog’s legacy loading spinner in the action’s own ink', () => {
+    render(
+      <OGDialog open={true}>
+        <OGDialogTemplate
+          title="Delete"
+          selection={{ selectHandler: jest.fn(), selectText: 'Delete', isLoading: true }}
+        />
+      </OGDialog>,
+    );
+
+    const spinner = document.querySelector('svg.spinner');
+    expect(spinner).not.toBeNull();
+    expect(spinner?.getAttribute('class')).not.toMatch(/\btext-/);
+    expect(spinner?.closest('button')).toHaveClass('text-text-inverted');
+    spinner
+      ?.querySelectorAll('circle')
+      .forEach((circle) => expect(circle).toHaveAttribute('stroke', 'currentColor'));
+  });
 });
