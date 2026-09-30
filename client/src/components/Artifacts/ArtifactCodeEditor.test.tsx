@@ -50,14 +50,21 @@ jest.mock('~/Providers/EditorContext', () => {
     useMutationState: () => ({ isMutating: false }),
     useCodeState: () => {
       const [currentCode, setCurrentCode] = ReactModule.useState('');
-      const [rejectedCode, setRejectedCodeState] = ReactModule.useState<string | undefined>();
-      const [rejectedCodeArtifactId, setRejectedCodeArtifactId] = ReactModule.useState<
-        string | undefined
-      >();
+      const [rejectedCode, setRejectedState] = ReactModule.useState<Record<string, string>>({});
       const setRejectedCode = ReactModule.useCallback(
         (code: string | undefined, artifactId?: string) => {
-          setRejectedCodeState(code);
-          setRejectedCodeArtifactId(artifactId);
+          setRejectedState((previous) => {
+            if (artifactId == null) {
+              return code === undefined ? {} : previous;
+            }
+            const next = { ...previous };
+            if (code === undefined) {
+              delete next[artifactId];
+            } else {
+              next[artifactId] = code;
+            }
+            return next;
+          });
         },
         [],
       );
@@ -70,7 +77,6 @@ jest.mock('~/Providers/EditorContext', () => {
         setCurrentCode,
         retainedCode: {},
         rejectedCode,
-        rejectedCodeArtifactId,
         setRejectedCode,
         codeSession,
         endCodeSession,

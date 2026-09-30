@@ -53,11 +53,8 @@ jest.mock('~/components/Messages/Content/Mermaid/Mermaid', () => {
 });
 
 jest.mock('~/Providers/EditorContext', () => ({
-  useCodeState: () => ({
-    currentCode: mockCurrentCode,
-    codeArtifactId: mockCodeArtifactId,
-    setCurrentCode: jest.fn(),
-  }),
+  useArtifactCode: (artifactId: string) =>
+    mockCodeArtifactId === artifactId ? mockCurrentCode : undefined,
 }));
 
 jest.mock('~/Providers', () => ({

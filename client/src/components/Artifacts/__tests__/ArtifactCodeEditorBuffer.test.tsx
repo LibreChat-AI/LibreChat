@@ -427,6 +427,72 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     );
   });
 
+  /* The registry can also move past this session's save from the outside:
+   * another tab or session edits the artifact and the messages query
+   * refetches what they wrote. The local save is then the older truth, and
+   * preferring it would have the endpoint refuse every further edit. */
+  it('rebases on content that moved past the local save', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('LOCAL-SAVE');
+    settleDebounce();
+    await flush();
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    /* The messages query brings what another session wrote. */
+    view.select({ ...artifactA, content: 'FOREIGN-CONTENT' });
+    await flush();
+
+    type('AFTER-REFRESH');
+    settleDebounce();
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ original: 'FOREIGN-CONTENT', updated: 'AFTER-REFRESH' }),
+    );
+  });
+
+  /* Two artifacts can both have a refusal on file: one marker must not be
+   * overwritten by the other's, or the older refusal is forgotten and its
+   * text goes back on the wire when the user returns to it. */
+  it('keeps a refusal for each artifact that was refused', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    type('REJECTED-A');
+    settleDebounce();
+    await flush();
+    await act(async () => {
+      inFlight?.reject({ status: 400 });
+      await Promise.resolve();
+    });
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    view.select(artifactB);
+    type('REJECTED-B');
+    settleDebounce();
+    await flush();
+    await act(async () => {
+      inFlight?.reject({ status: 400 });
+      await Promise.resolve();
+    });
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(2);
+
+    /* B's refusal must not make A's text eligible again. */
+    view.select(artifactA);
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(2);
+  });
+
   /* Clearing the editor is mid-edit, not a deletion: typing never saves an
    * empty buffer, so no path that resubmits retained text may either — a host
    * change would otherwise persist the removal of the whole artifact. */

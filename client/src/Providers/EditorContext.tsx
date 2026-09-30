@@ -25,9 +25,10 @@ interface MutationContextType {
  * buffer is this artifact's unsaved text cannot be decided from a mount.
  *
  * `rejectedCode` is session state rather than editor-instance state because a
- * remount is a host change, not a new decision by the user. It carries the
- * artifact identity for the same reason as the code buffer: a rejection for
- * one artifact must not suppress a save for another.
+ * remount is a host change, not a new decision by the user. It is recorded per
+ * artifact for the same reason as the code buffer: a rejection for one
+ * artifact must neither suppress a save for another nor be overwritten by
+ * another's refusal.
  *
  * A buffer another artifact displaces is retained under the artifact it
  * belongs to: the edit's debounce died with the selection change, so the
@@ -49,8 +50,7 @@ interface CodeContextType {
   codeArtifactId?: string;
   retainedCode: Record<string, string>;
   setCurrentCode: (code: string | undefined, artifactId?: string) => void;
-  rejectedCode?: string;
-  rejectedCodeArtifactId?: string;
+  rejectedCode: Record<string, string>;
   setRejectedCode: (code: string | undefined, artifactId?: string) => void;
   codeSession: { current: number };
   endCodeSession: () => void;
@@ -71,10 +71,7 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
     buffer: { code?: string; artifactId?: string };
     retained: Record<string, string>;
   }>({ buffer: {}, retained: {} });
-  const [rejectedBuffer, setRejectedBuffer] = useState<{
-    code?: string;
-    artifactId?: string;
-  }>({});
+  const [rejectedCode, setRejectedState] = useState<Record<string, string>>({});
   const codeSession = useRef(0);
 
   const setCurrentCode = useCallback((code: string | undefined, artifactId?: string) => {
@@ -100,13 +97,24 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setRejectedCode = useCallback((code: string | undefined, artifactId?: string) => {
-    setRejectedBuffer(code === undefined ? {} : { code, artifactId });
+    setRejectedState((previous) => {
+      if (artifactId == null) {
+        return code === undefined ? {} : previous;
+      }
+      const next = { ...previous };
+      if (code === undefined) {
+        delete next[artifactId];
+      } else {
+        next[artifactId] = code;
+      }
+      return next;
+    });
   }, []);
 
   const endCodeSession = useCallback(() => {
     codeSession.current += 1;
     setCodeState({ buffer: {}, retained: {} });
-    setRejectedBuffer({});
+    setRejectedState({});
   }, []);
 
   const mutationValue = useMemo(() => ({ isMutating }), [isMutating]);
@@ -116,13 +124,12 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
       codeArtifactId: codeState.buffer.artifactId,
       retainedCode: codeState.retained,
       setCurrentCode,
-      rejectedCode: rejectedBuffer.code,
-      rejectedCodeArtifactId: rejectedBuffer.artifactId,
+      rejectedCode,
       setRejectedCode,
       codeSession,
       endCodeSession,
     }),
-    [codeState, endCodeSession, rejectedBuffer, setCurrentCode, setRejectedCode],
+    [codeState, endCodeSession, rejectedCode, setCurrentCode, setRejectedCode],
   );
 
   return (
@@ -164,4 +171,17 @@ export function useEditorContext() {
   const mutation = useMutationState();
   const code = useCodeState();
   return { ...mutation, ...code };
+}
+
+/**
+ * The text an artifact's editing surface should show: its active buffer when
+ * the artifact owns it, the copy retained when another artifact's edit
+ * displaced it, and nothing when the artifact never had unsaved text. Every
+ * consumer of the buffer (the editor, both tab hosts, download) resolves it
+ * the same way, so the code tab, the preview and an export can never disagree
+ * about which text is the artifact's own.
+ */
+export function useArtifactCode(artifactId: string): string | undefined {
+  const { currentCode, codeArtifactId, retainedCode } = useCodeState();
+  return codeArtifactId === artifactId ? currentCode : retainedCode[artifactId];
 }

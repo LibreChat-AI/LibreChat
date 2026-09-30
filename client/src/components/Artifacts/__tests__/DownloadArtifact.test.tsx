@@ -24,7 +24,8 @@ jest.mock('~/hooks/Artifacts/useArtifactProps', () => ({
 }));
 
 jest.mock('~/Providers/EditorContext', () => ({
-  useCodeState: () => ({ currentCode: mockCurrentCode, codeArtifactId: mockCodeArtifactId }),
+  useArtifactCode: (artifactId: string) =>
+    mockCodeArtifactId === artifactId ? mockCurrentCode : undefined,
 }));
 
 const mockShowToast = jest.fn();

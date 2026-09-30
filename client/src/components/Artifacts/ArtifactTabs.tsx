@@ -6,8 +6,8 @@ import type { editor } from 'monaco-editor';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { MermaidRenderer } from '~/components/Messages/Content/Mermaid/Mermaid';
 import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
+import { useArtifactCode } from '~/Providers/EditorContext';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
-import { useCodeState } from '~/Providers/EditorContext';
 import { useLocalize } from '~/hooks';
 
 const SandboxArtifactTabs = lazy(() => import('./SandboxArtifactTabs'));
@@ -39,15 +39,14 @@ function MermaidArtifactTabs({
   onMermaidExportReady,
 }: Omit<ArtifactTabsProps, 'previewRef'>) {
   const localize = useLocalize();
-  const { currentCode, codeArtifactId } = useCodeState();
+  const editedCode = useArtifactCode(artifact.id);
   const monacoRef = useRef<editor.IStandaloneCodeEditor | null>(null);
 
   /* The buffer belongs to whichever artifact last wrote it: a freshly keyed
    * renderer must not show (or export) the diagram we navigated away from,
-   * while a pane that remounted for another host keeps its unsaved text. */
-  const hasCurrentArtifactCode = codeArtifactId === artifact.id;
-
-  const content = (hasCurrentArtifactCode ? currentCode : undefined) ?? artifact.content ?? '';
+   * while a pane that remounted for another host keeps its unsaved text and a
+   * displaced copy is just as much this artifact's own. */
+  const content = editedCode ?? artifact.content ?? '';
   const isReadOnly = isSharedConvo === true || artifact.index == null;
 
   return (

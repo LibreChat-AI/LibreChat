@@ -189,6 +189,9 @@ type PendingUpdate = ArtifactEditTarget & {
 type ArtifactMutationVars = {
   messageId: string;
   index: number;
+  /** What the save replaced, which is how the chain of this session's saves
+   *  is reconstructed from the mutation cache. */
+  original: string;
   updated: string;
 };
 
@@ -228,11 +231,23 @@ function isSameMutationTarget(target: ArtifactEditTarget, vars: ArtifactMutation
  * what the server now holds. The registry catches up only when the edited
  * message propagates, so an edit sent between those two moments has to be
  * rebased on the request's own record rather than on `artifact.content`.
+ *
+ * That record is only the truth while the content on screen is still one of
+ * the states this session's saves moved it through. A refetch that brings
+ * content from anywhere else (another tab or session edited the artifact) is
+ * newer than every save here, and preferring the local record over it would
+ * send an `original` the endpoint has already moved past, refusing every
+ * further edit until the mutation cache is collected.
  */
-function getSavedContent(queryClient: QueryClient, target: ArtifactEditTarget): string | undefined {
+function getSavedContent(
+  queryClient: QueryClient,
+  target: ArtifactEditTarget,
+  registryContent: string | undefined,
+): string | undefined {
   /** Mutation ids increase, so the highest one is the most recent save. */
   let latestId = -1;
   let latest: string | undefined;
+  const chain = new Set<string>();
   for (const mutation of queryClient
     .getMutationCache()
     .findAll({ mutationKey: [MutationKeys.editArtifact] })) {
@@ -244,12 +259,17 @@ function getSavedContent(queryClient: QueryClient, target: ArtifactEditTarget): 
     ) {
       continue;
     }
+    chain.add(vars.original);
+    chain.add(vars.updated);
     if (mutation.mutationId > latestId) {
       latestId = mutation.mutationId;
       latest = vars.updated;
     }
   }
-  return latest;
+  if (latest == null || registryContent == null || chain.has(registryContent)) {
+    return latest;
+  }
+  return undefined;
 }
 
 export const ArtifactCodeEditor = function ArtifactCodeEditor({
@@ -271,7 +291,6 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     retainedCode,
     setCurrentCode,
     rejectedCode,
-    rejectedCodeArtifactId,
     setRejectedCode,
     codeSession,
   } = useCodeState();
@@ -279,7 +298,9 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
    * undocked window). The buffer outlives that remount, so unsaved text is
    * restored here instead of falling back to the persisted content. An edit
    * another artifact displaced from the active slot is retained under this
-   * artifact, so coming back to it lands on its own unsaved text too. */
+   * artifact, so coming back to it lands on its own unsaved text too. The
+   * same resolution serves the preview and the export, so every surface of
+   * the artifact shows one text. */
   const restoredCode = codeArtifactId === artifact.id ? currentCode : retainedCode[artifact.id];
   const [currentUpdate, setCurrentUpdate] = useState<string | null>(null);
   const { isMutating } = useMutationState();
@@ -288,7 +309,6 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   const currentUpdateRef = useRef(currentUpdate);
   const setCurrentCodeRef = useRef(setCurrentCode);
   const rejectedCodeRef = useRef(rejectedCode);
-  const rejectedCodeArtifactIdRef = useRef(rejectedCodeArtifactId);
   const pendingUpdateRef = useRef<PendingUpdate | null>(null);
   const runMutationRef = useRef<(code: string, original?: string) => void>(() => {});
   /** Read by the mount effect below, which must not re-run as the user types. */
@@ -330,9 +350,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       /* Only this save's own artifact is cleared: another artifact's refusal
        * is still a refusal. */
       const savedArtifactId = mutationArtifactIdRef.current ?? artifactRef.current.id;
-      if (rejectedCodeArtifactIdRef.current === savedArtifactId) {
-        setRejectedCode(undefined);
-      }
+      setRejectedCode(undefined, savedArtifactId);
       const currentTarget = getArtifactEditTarget(artifactRef.current);
       if (
         pending == null ||
@@ -390,7 +408,6 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   editArtifactRef.current = editArtifact;
   setCurrentCodeRef.current = setCurrentCode;
   rejectedCodeRef.current = rejectedCode;
-  rejectedCodeArtifactIdRef.current = rejectedCodeArtifactId;
   restoredCodeRef.current = restoredCode;
 
   const runMutation = useCallback(
@@ -419,7 +436,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
        * registry that has not caught up has the endpoint refuse the newest
        * text, and three of those paths have had to learn that separately. */
       const original =
-        originalOverride ?? getSavedContent(queryClient, target) ?? art.content ?? '';
+        originalOverride ?? getSavedContent(queryClient, target, art.content) ?? art.content ?? '';
       /* Anything this instance sends is newer than the buffer it inherited at
        * mount, so that older text stops being a candidate for the drain —
        * whether this goes out now or waits behind a running save. Left in
@@ -446,11 +463,8 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         return;
       }
 
-      if (
-        rejectedCodeArtifactIdRef.current === art.id &&
-        rejectedCodeRef.current != null &&
-        code.trim() === rejectedCodeRef.current.trim()
-      ) {
+      const rejected = rejectedCodeRef.current[art.id];
+      if (rejected != null && code.trim() === rejected.trim()) {
         return;
       }
 
@@ -527,7 +541,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       const currentTarget = getArtifactEditTarget(artifactRef.current);
       if (currentTarget != null && isSameArtifactTarget(queued, currentTarget)) {
         const original =
-          getSavedContent(queryClient, currentTarget) ??
+          getSavedContent(queryClient, currentTarget, artifactRef.current.content) ??
           artifactRef.current.content ??
           queued.original;
         if (queued.code.trim() !== original.trim()) {
@@ -544,7 +558,9 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     }
     const inheritedTarget = getArtifactEditTarget(artifactRef.current);
     const inheritedOriginal =
-      (inheritedTarget != null ? getSavedContent(queryClient, inheritedTarget) : undefined) ??
+      (inheritedTarget != null
+        ? getSavedContent(queryClient, inheritedTarget, artifactRef.current.content)
+        : undefined) ??
       artifactRef.current.content ??
       '';
     if (inherited === inheritedOriginal) {
@@ -552,12 +568,8 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     }
     drainedBufferRef.current = inherited;
     prevContentRef.current = inherited;
-    if (
-      inheritedTarget != null &&
-      rejectedCodeArtifactIdRef.current === artifactRef.current.id &&
-      rejectedCodeRef.current != null &&
-      inherited.trim() === rejectedCodeRef.current.trim()
-    ) {
+    const rejected = rejectedCodeRef.current[artifactRef.current.id];
+    if (inheritedTarget != null && rejected != null && inherited.trim() === rejected.trim()) {
       return;
     }
     runMutationRef.current(inherited, inheritedOriginal);

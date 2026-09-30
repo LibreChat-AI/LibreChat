@@ -45,6 +45,9 @@ test('an edit another artifact displaced is kept for its own @scenario:a-displac
   await firstEditor.click();
   await page.keyboard.press('End');
   await page.keyboard.type('<!-- displaced-keep -->');
+  await expect(first.locator('#artifacts-code')).toContainText('displaced-keep', {
+    timeout: 15000,
+  });
 
   /* Editing the second artifact is what displaces the first one's buffer. */
   await artifactTrigger(page, SECOND_ARTIFACT).click();

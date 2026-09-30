@@ -11,7 +11,7 @@ import {
   isLocallyStoredSource,
 } from '~/components/Chat/Messages/Content/Parts/LogLink';
 import useArtifactProps from '~/hooks/Artifacts/useArtifactProps';
-import { useCodeState } from '~/Providers/EditorContext';
+import { useArtifactCode } from '~/Providers/EditorContext';
 import useLocalize from '~/hooks/useLocalize';
 
 export interface ArtifactDownload {
@@ -37,10 +37,11 @@ export interface ArtifactDownload {
  * bytes should be.
  */
 export default function useArtifactDownload(artifact: Artifact): ArtifactDownload {
-  const { currentCode, codeArtifactId } = useCodeState();
   /* The buffer outlives a pane remount and belongs to whichever artifact last
-   * wrote it, so downloading another artifact must not export those edits. */
-  const editedCode = codeArtifactId === artifact.id ? currentCode : undefined;
+   * wrote it, so downloading another artifact must not export those edits; a
+   * copy this artifact left behind when another displaced it is still its own
+   * unsaved text and exports with it. */
+  const editedCode = useArtifactCode(artifact.id);
   const { showToast } = useToastContext();
   const localize = useLocalize();
   const [isDownloaded, setIsDownloaded] = useState(false);
