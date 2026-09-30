@@ -1,7 +1,7 @@
 /**
  * @jest-environment @happy-dom/jest-environment
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { createMemoryRouter, MemoryRouter, RouterProvider, useNavigate } from 'react-router-dom';
 import {
@@ -142,6 +142,25 @@ describe('TwoFactorSetupScreen', () => {
       { tempToken: 'refreshed-token' },
       expect.any(Object),
     );
+  });
+
+  it('adopts a setup token handed off before its listener was installed', () => {
+    function LateHandOff() {
+      useLayoutEffect(() => {
+        persistTwoFactorSetupToken('late-token');
+      }, []);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={['/login/2fa/setup']}>
+        <TwoFactorSetupScreen />
+        <LateHandOff />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('generate'));
+    expect(mockEnableMutate).toHaveBeenCalledWith({ tempToken: 'late-token' }, expect.any(Object));
   });
 
   it('keeps the token it started with when another is handed off mid-flow', () => {

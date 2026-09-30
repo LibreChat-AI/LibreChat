@@ -89,13 +89,12 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
     phaseRef.current?.focus();
   }, [phase]);
 
-  useEffect(
-    () =>
-      subscribeTwoFactorSetupToken(() =>
-        setTempToken((current) => current || readTwoFactorSetupToken()),
-      ),
-    [],
-  );
+  useEffect(() => {
+    const adoptToken = () => setTempToken((current) => current || readTwoFactorSetupToken());
+    const unsubscribe = subscribeTwoFactorSetupToken(adoptToken);
+    adoptToken();
+    return unsubscribe;
+  }, []);
 
   const restartLogin = useCallback(() => {
     clearTwoFactorSetupToken();
