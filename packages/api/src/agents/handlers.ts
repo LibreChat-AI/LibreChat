@@ -55,6 +55,7 @@ import type {
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
+import type { SandboxTextReader } from '~/files/code/text';
 import type { WorkspaceEditMatching } from '~/code/edits';
 import type { CodeExecutionContext } from './execution';
 import type { TextContentFragment } from '~/protection';
@@ -688,29 +689,8 @@ export interface ToolExecuteOptions {
     maxRequestTimeoutMs?: number;
     deadlineAtMs?: number;
   }) => Promise<WorkspaceEditResult>;
-  /**
-   * Reads a code-execution sandbox file by shelling `cat` through the
-   * sandbox `/exec` endpoint. The host implementation supplies the
-   * codeapi base URL + auth and forwards the seeded `session_id` and
-   * `files` so the read lands in the same sandbox session that holds
-   * the agent's prior-turn artifacts. Returns `null` when codeapi is
-   * unavailable; throws on transport errors so the handler can surface
-   * a meaningful error message to the model.
-   */
-  readSandboxFile?: (params: {
-    file_path: string;
-    session_id?: string;
-    files?: SandboxFileRef[];
-    /** Per-conversation stateful runtime-session hint (thread_id); forwarded so a
-     *  host file op that is the first sandbox call joins the same runtime session
-     *  as bash_tool instead of the Code API's default session. */
-    runtime_session_hint?: string;
-    codeApiBaseUrl?: string;
-    executionProfile?: CodeExecutionContext['executionProfile'];
-    bridgeWorkerId?: string;
-    executionRouteKey?: string;
-    req?: ServerRequest;
-  }) => Promise<{ content: string } | null>;
+  /** Bounded reads return complete text; omitted maxBytes retains the legacy stdout path. */
+  readSandboxFile?: SandboxTextReader;
   /**
    * Reads a small image file out of the code-execution sandbox as base64 so
    * `read_file` can surface it to vision-capable models. The `readSandboxFile`
@@ -2623,6 +2603,10 @@ async function handleSandboxFileFallback(
     };
   }
 
+  const rangeArgs = tc.args as ReadFileRangeArguments;
+  const ranged = rangeArgs.start_line !== undefined || rangeArgs.max_lines !== undefined;
+  if (ranged && resolveReadFileRange(rangeArgs) == null)
+    return errorResult(tc, READ_FILE_RANGE_ERROR);
   const ctx = tc.codeSessionContext as SandboxSessionContext | undefined;
   try {
     const result = await readSandboxFile({
@@ -2631,7 +2615,20 @@ async function handleSandboxFileFallback(
       files: ctx?.files,
       ...codeExecutionRequestParams(codeExecutionContext),
       ...(req ? { req } : {}),
+      ...(ranged ? { maxBytes: MAX_READABLE_BYTES, ...(signal ? { signal } : {}) } : {}),
     });
+    if (result != null && 'tooLarge' in result) {
+      return errorResult(
+        tc,
+        `Sandbox file could not be retrieved completely within the ${MAX_READABLE_BYTES}-byte read budget. Use bash_tool to inspect it.`,
+      );
+    }
+    if (ranged && result != null && result.complete !== true) {
+      return errorResult(
+        tc,
+        'Sandbox text retrieval was incomplete. Use bash_tool to inspect the file.',
+      );
+    }
     if (!result || result.content == null) {
       return {
         toolCallId: tc.id,
@@ -2661,8 +2658,7 @@ async function handleSandboxFileFallback(
      * and surface the truncation to the model so it can use
      * `bash_tool head` / `tail` for the rest.
      */
-    const rangeArgs = tc.args as ReadFileRangeArguments;
-    if (rangeArgs.start_line !== undefined || rangeArgs.max_lines !== undefined) {
+    if (ranged) {
       const rangedResult = localTextReadResult(tc, filePath, result.content);
       if (rangedResult.status === 'success') onSuccess?.();
       return rangedResult;
@@ -2684,6 +2680,7 @@ async function handleSandboxFileFallback(
       content: numbered,
     };
   } catch (error) {
+    if (signal?.aborted === true && isAbortError(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     logger.warn('[handleReadFileCall] Sandbox fallback failed', getSafeErrorMetadata(error));
     return {
@@ -3152,6 +3149,12 @@ async function loadSandboxTextForAuthoring({
       ...codeExecutionRequestParams(codeExecutionContext),
       ...(req ? { req } : {}),
     });
+    if (result != null && 'tooLarge' in result) {
+      return {
+        status: 'error',
+        message: 'Sandbox file could not be retrieved completely. Use bash_tool to inspect it.',
+      };
+    }
     if (!result || result.content == null) {
       return {
         status: 'error',

@@ -7242,7 +7242,18 @@ describe('createToolExecuteHandler', () => {
       }));
       const getDownloadStream = jest.fn(async () => Readable.from([Buffer.from(content)]));
       const updateSkillFileContent = jest.fn(async () => undefined);
-      const readSandboxFile = jest.fn(async () => ({ content }));
+      const readSandboxFile: NonNullable<ToolExecuteOptions['readSandboxFile']> = jest.fn(
+        async ({ maxBytes }) => {
+          if (maxBytes != null && Buffer.byteLength(content) > maxBytes) {
+            return {
+              tooLarge: true as const,
+              reason: 'size' as const,
+              bytes: Buffer.byteLength(content),
+            };
+          }
+          return { content, ...(maxBytes == null ? {} : { complete: true as const }) };
+        },
+      );
       const handler = createToolExecuteHandler({
         loadTools: async () => ({
           loadedTools: [],
@@ -7415,7 +7426,7 @@ describe('createToolExecuteHandler', () => {
       },
     );
 
-    it.each(['body', 'cached', 'sandbox'] as const)(
+    it.each(['body', 'cached'] as const)(
       'bounds UTF-8 %s range output and continues at the first omitted line',
       async (source) => {
         const content = ['skip', '界'.repeat(80_000), '界'.repeat(10_000)].join('\n');
@@ -7429,7 +7440,7 @@ describe('createToolExecuteHandler', () => {
       },
     );
 
-    it.each(['body', 'cached', 'sandbox'] as const)(
+    it.each(['body', 'cached'] as const)(
       'does not advertise a non-progressing continuation for an oversized %s line',
       async (source) => {
         const result = await readFixture(source, '界'.repeat(100_000)).read({ max_lines: 1 });
@@ -7487,6 +7498,35 @@ describe('createToolExecuteHandler', () => {
         expect(results[1].content).toEqual(results[0].content);
         expect(results[1].artifact).toEqual(results[0].artifact);
       }
+    });
+
+    it('refuses incomplete or oversized sandbox text instead of reporting a false EOF', async () => {
+      const original = text;
+      const readSandboxFile: NonNullable<ToolExecuteOptions['readSandboxFile']> = jest.fn(
+        async () => ({ content: original.slice(0, 100) }),
+      );
+      const handler = createToolExecuteHandler({
+        loadTools: async () => ({ loadedTools: [], configurable: { codeEnvAvailable: true } }),
+        readSandboxFile,
+      });
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'incomplete-prefix',
+          name: Constants.READ_FILE,
+          args: { path: '/mnt/data/catalogue.txt', start_line: 650, max_lines: 1 },
+        },
+      ]);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('retrieval was incomplete');
+      expect(result.content).toBe('');
+      expect(readSandboxFile).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: 262_144 }));
+      const tooLarge = await readFixture('sandbox', 'x'.repeat(262_145)).read({
+        start_line: 100,
+        max_lines: 1,
+      });
+      expect(tooLarge.status).toBe('error');
+      expect(tooLarge.errorMessage).toContain('retrieved completely');
+      expect(tooLarge.content).toBe('');
     });
 
     it('preserves streamed oversized-file metadata and avoids a download even with an explicit range', async () => {
