@@ -1,6 +1,7 @@
 import {
   PrincipalType,
   materializeModelSpecEndpoints,
+  normalizeEndpointName,
   setMaxSubagents,
 } from 'librechat-data-provider';
 import {
@@ -8,6 +9,7 @@ import {
   getTenantId,
   mergeConfigOverrides,
   BASE_CONFIG_PRINCIPAL_ID,
+  SYSTEM_TENANT_ID,
 } from '@librechat/data-schemas';
 import type { AppConfig, IConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
@@ -25,22 +27,66 @@ function scopeEndpointList<T extends { tenantId?: string }>(
   return endpoints.filter((endpoint) => !endpoint.tenantId || endpoint.tenantId === tenantId);
 }
 
+function scopeModelSpecs(
+  specs: AppConfig['modelSpecs'],
+  hiddenEndpoints: Set<string>,
+): AppConfig['modelSpecs'] {
+  if (!specs || hiddenEndpoints.size === 0) {
+    return specs;
+  }
+  const list = specs.list?.filter(
+    (spec) => !hiddenEndpoints.has(normalizeEndpointName(spec.preset?.endpoint ?? '')),
+  );
+  const addedEndpoints = specs.addedEndpoints?.filter(
+    (endpoint) => !hiddenEndpoints.has(normalizeEndpointName(endpoint)),
+  );
+  if (
+    list?.length === specs.list?.length &&
+    addedEndpoints?.length === specs.addedEndpoints?.length
+  ) {
+    return specs;
+  }
+  if (specs.list?.length && list?.length === 0) {
+    return undefined;
+  }
+  return { ...specs, list, addedEndpoints };
+}
+
 /** Keep tenant-scoped YAML endpoints out of every other tenant's effective config. */
 function scopeCustomEndpoints(config: AppConfig, tenantId?: string): AppConfig {
   const custom = config.endpoints?.custom;
   const scoped = scopeEndpointList(custom, tenantId);
   const sourceCustom = config.config?.endpoints?.custom;
   const scopedSource = scopeEndpointList(sourceCustom, tenantId);
-  if (scoped === custom && scopedSource === sourceCustom) {
+  const hiddenEndpoints = new Set(
+    (custom ?? sourceCustom)
+      ?.filter((endpoint) => endpoint.tenantId && endpoint.tenantId !== tenantId)
+      .map((endpoint) => normalizeEndpointName(endpoint.name ?? '')),
+  );
+  for (const endpoint of scoped ?? scopedSource ?? []) {
+    hiddenEndpoints.delete(normalizeEndpointName(endpoint.name ?? ''));
+  }
+  const modelSpecs = scopeModelSpecs(config.modelSpecs, hiddenEndpoints);
+  const sourceModelSpecs = scopeModelSpecs(config.config?.modelSpecs, hiddenEndpoints);
+  if (
+    scoped === custom &&
+    scopedSource === sourceCustom &&
+    modelSpecs === config.modelSpecs &&
+    sourceModelSpecs === config.config?.modelSpecs
+  ) {
     return config;
   }
   return {
     ...config,
+    ...(modelSpecs !== config.modelSpecs && { modelSpecs }),
     ...(scoped !== custom && { endpoints: { ...config.endpoints, custom: scoped } }),
-    ...(scopedSource !== sourceCustom && {
+    ...((scopedSource !== sourceCustom || sourceModelSpecs !== config.config?.modelSpecs) && {
       config: {
         ...config.config,
-        endpoints: { ...config.config.endpoints, custom: scopedSource },
+        ...(scopedSource !== sourceCustom && {
+          endpoints: { ...config.config.endpoints, custom: scopedSource },
+        }),
+        ...(sourceModelSpecs !== config.config?.modelSpecs && { modelSpecs: sourceModelSpecs }),
       },
     }),
   };
@@ -308,7 +354,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
    * `getApplicableConfigs` queries the DB for matching overrides and merges them by priority.
    *
    * When `baseOnly` is true, returns the YAML-derived config without any DB queries.
-   * `role`, `userId`, and `tenantId` are ignored in this mode.
+   * `role` and `userId` are ignored; tenantId still scopes YAML custom endpoints.
    * Use this for startup, auth strategies, and other pre-tenant code paths.
    */
   async function getAppConfig(options: GetAppConfigOptions = {}): Promise<AppConfig> {
@@ -326,10 +372,12 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
 
     const baseConfig = await ensureBaseConfig(refresh);
     // The request-scoped tenant is authoritative when a user document carries a stale ID.
-    const effectiveTenantId = getTenantId() ?? tenantId;
+    const ambientTenantId = getTenantId();
+    const effectiveTenantId =
+      ambientTenantId && ambientTenantId !== SYSTEM_TENANT_ID ? ambientTenantId : tenantId;
 
     if (baseOnly) {
-      return scopeCustomEndpoints(baseConfig);
+      return scopeCustomEndpoints(baseConfig, effectiveTenantId);
     }
 
     const principals =

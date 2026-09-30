@@ -109,15 +109,24 @@ describe('createAppConfigService', () => {
           baseURL: 'https://dwh.example',
         },
       ];
+      const modelSpecs = {
+        list: [
+          { name: 'global-spec', preset: { endpoint: 'Global' } },
+          { name: 'dwh-spec', softDefault: true, preset: { endpoint: 'ClickHouse' } },
+        ],
+        addedEndpoints: ['agents', 'ClickHouse'],
+      };
       const deps = createDeps({
         loadBaseConfig: jest.fn().mockResolvedValue({
           endpoints: { custom },
-          config: { endpoints: { custom } },
+          modelSpecs,
+          config: { endpoints: { custom }, modelSpecs },
         }),
       });
       const { getAppConfig } = createAppConfigService(deps);
 
       const base = await getAppConfig({ baseOnly: true });
+      const tenantBase = await getAppConfig({ baseOnly: true, tenantId: 'dwh-org' });
       const dwh = await getAppConfig({ role: 'USER', tenantId: 'dwh-org' });
       const other = await getAppConfig({ role: 'USER', tenantId: 'other-org' });
       const staleUserTenant = await tenantStorage.run({ tenantId: 'other-org' }, () =>
@@ -125,12 +134,24 @@ describe('createAppConfigService', () => {
       );
 
       expect(base.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(tenantBase.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
+        'Global',
+        'ClickHouse',
+      ]);
       expect(dwh.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
         'Global',
         'ClickHouse',
       ]);
       expect(other.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
       expect(other.config.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual(['Global']);
+      expect(base.modelSpecs?.list?.map((spec) => spec.name)).toEqual(['global-spec']);
+      expect(tenantBase.modelSpecs?.list?.map((spec) => spec.name)).toEqual([
+        'global-spec',
+        'dwh-spec',
+      ]);
+      expect(other.modelSpecs?.addedEndpoints).toEqual(['agents']);
+      expect(other.config.modelSpecs?.list?.map((spec) => spec.name)).toEqual(['global-spec']);
+      expect(staleUserTenant.modelSpecs?.list?.map((spec) => spec.name)).toEqual(['global-spec']);
       expect(staleUserTenant.endpoints?.custom?.map((endpoint) => endpoint.name)).toEqual([
         'Global',
       ]);
@@ -141,6 +162,24 @@ describe('createAppConfigService', () => {
         'Provider ClickHouse not supported',
       );
       expect(custom).toHaveLength(2);
+    });
+
+    it('removes a prioritized spec when its only endpoint belongs to another tenant', async () => {
+      const deps = createDeps({
+        loadBaseConfig: jest.fn().mockResolvedValue({
+          endpoints: { custom: [{ name: 'ClickHouse', tenantId: 'dwh-org' }] },
+          modelSpecs: {
+            prioritize: true,
+            list: [{ name: 'dwh-spec', preset: { endpoint: 'ClickHouse' } }],
+          },
+        }),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ role: 'USER', tenantId: 'other-org' });
+
+      expect(config.endpoints?.custom).toEqual([]);
+      expect(config.modelSpecs).toBeUndefined();
     });
 
     it('reloads base config when refresh is true', async () => {
