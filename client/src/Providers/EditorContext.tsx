@@ -198,6 +198,11 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
     codeSession.current += 1;
     setCodeState({ buffer: {}, retained: {} });
     setRejectedState({});
+    /* With the buffers gone, an entry only matters while the registry may
+     * still lag behind a save. */
+    savedContent.current = Object.fromEntries(
+      Object.entries(savedContent.current).filter(([, entry]) => entry.pending.length > 0),
+    );
   }, []);
 
   const mutationValue = useMemo(() => ({ isMutating }), [isMutating]);
