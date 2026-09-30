@@ -58,7 +58,7 @@ describe('mobile drawer Scrim', () => {
       'focus-visible:outline-hidden',
       'focus-visible:ring-2',
       'focus-visible:ring-inset',
-      'focus-visible:ring-text-primary',
+      'focus-visible:ring-focus-control',
     );
   });
 

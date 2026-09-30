@@ -50,7 +50,9 @@ export const InputCombobox: React.FC<ComboboxProps> = ({
           {label}
         </Ariakit.ComboboxLabel>
       )}
-      <div className={cn('relative', isKeyboardFocus ? 'ring-ring-primary rounded-md ring-2' : '')}>
+      <div
+        className={cn('relative', isKeyboardFocus ? 'ring-focus-control rounded-md ring-2' : '')}
+      >
         <Ariakit.Combobox
           placeholder={placeholder}
           className={cn(

@@ -144,6 +144,15 @@ describe('shared field and dropdown interaction styles', () => {
     );
     expect(secretInput).not.toMatch(/(?:hover|focus-visible):border-/);
 
+    /** `ring-primary` is decorative and measures about 2.3:1 on the dark canvas. */
+    ['SecretInput.tsx', 'MultiSearch.tsx', 'InputWithDropDown.tsx', 'InputCombobox.tsx'].forEach(
+      (component) => {
+        const source = readFileSync(join(__dirname, '..', 'components', component), 'utf8');
+        expect(source).toMatch(/\bring-focus-control\b/);
+        expect(source).not.toMatch(/\bring-ring-primary\b/);
+      },
+    );
+
     const appStyles = readFileSync(
       join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
       'utf8',
@@ -370,6 +379,32 @@ describe.each([
     );
 
     expect([...dotFailures, ...belowAA(theme, ['rgb-text-secondary'], hosts)]).toEqual([]);
+  });
+});
+
+describe.each([
+  ['default', defaultTheme],
+  ['dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s control focus', (_name, theme: IThemeRGB) => {
+  it('keeps the keyboard focus ring at the 3:1 floor on every control canvas', () => {
+    const ring = toRgb(theme, 'rgb-focus-control');
+    const surfaces: Array<keyof IThemeRGB> = [
+      'rgb-surface-primary',
+      'rgb-presentation',
+      'rgb-surface-secondary',
+      'rgb-surface-dialog',
+    ];
+
+    const failures = surfaces.flatMap((surface) => {
+      const ratio = contrast(ring, toRgb(theme, surface));
+      return ratio < WCAG_MARK_MIN ? [`${surface}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
   });
 });
 

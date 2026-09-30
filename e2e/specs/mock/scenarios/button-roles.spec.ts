@@ -7,7 +7,7 @@ import { probeStyle } from './style.helpers';
 
 /**
  * The shared Button reads its label weight, its default and small heights and its primary fill
- * from theme roles. The Data controls tab's "Archive" button is a plain default-size Button with
+ * from theme roles. The Data & Privacy tab's "Archive all chats" button is a plain default-size Button with
  * no weight or height of its own, so it shows what the primitive draws.
  */
 test.describe.configure({ timeout: 120_000 });
@@ -47,7 +47,7 @@ async function archiveButton(page: Page): Promise<Locator> {
   await expect(dialog.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible({
     timeout: 15000,
   });
-  await dialog.getByRole('tab', { name: 'Data controls' }).click();
+  await dialog.getByRole('tab', { name: 'Data & Privacy' }).click();
   const button = dialog.getByRole('button', { name: 'Archive all chats' });
   await expect(button).toBeVisible();
   return button;

@@ -116,7 +116,7 @@ const SecretInput: React.ForwardRefExoticComponent<
               onClick={handleCopy}
               disabled={disabled || !value}
               className={cn(
-                'text-text-secondary focus-visible:ring-ring-primary inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden [&>svg]:block',
+                'text-text-secondary focus-visible:ring-focus-control inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden [&>svg]:block',
                 disabled || !value
                   ? 'cursor-not-allowed opacity-50'
                   : 'hover:bg-surface-hover hover:text-text-primary',
@@ -133,7 +133,7 @@ const SecretInput: React.ForwardRefExoticComponent<
             onClick={toggleVisibility}
             disabled={disabled}
             className={cn(
-              'text-text-secondary focus-visible:ring-ring-primary inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden [&>svg]:block',
+              'text-text-secondary focus-visible:ring-focus-control inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden [&>svg]:block',
               disabled
                 ? 'cursor-not-allowed opacity-50'
                 : 'hover:bg-surface-hover hover:text-text-primary',

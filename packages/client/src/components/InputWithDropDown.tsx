@@ -97,7 +97,7 @@ const InputWithDropdown: React.ForwardRefExoticComponent<
           />
           <button
             type="button"
-            className="text-text-tertiary hover:text-text-secondary focus-visible:ring-ring-primary absolute inset-y-0 right-0 flex items-center rounded-md px-2 focus-visible:ring-1 focus-visible:outline-hidden"
+            className="text-text-tertiary hover:text-text-secondary focus-visible:ring-focus-control absolute inset-y-0 right-0 flex items-center rounded-md px-2 focus-visible:ring-1 focus-visible:outline-hidden"
             onClick={() => setIsOpen(!isOpen)}
             aria-label={isOpen ? 'Close dropdown' : 'Open dropdown'}
           >
@@ -121,7 +121,7 @@ const InputWithDropdown: React.ForwardRefExoticComponent<
           <ul
             id="dropdown-list"
             role="listbox"
-            className="border-border-medium bg-surface-secondary focus:ring-ring-primary absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border shadow-lg focus:ring-1 focus:ring-inset"
+            className="border-border-medium bg-surface-secondary focus:ring-focus-control absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border shadow-lg focus:ring-1 focus:ring-inset"
           >
             {options.map((option, index) => (
               <li
@@ -130,7 +130,7 @@ const InputWithDropdown: React.ForwardRefExoticComponent<
                 aria-selected={index === highlightedIndex}
                 className={cn(
                   'cursor-pointer rounded-md px-3 py-2',
-                  'focus:bg-surface-tertiary focus:ring-ring-primary focus:ring-1 focus:outline-hidden focus:ring-inset',
+                  'focus:bg-surface-tertiary focus:ring-focus-control focus:ring-1 focus:outline-hidden focus:ring-inset',
                   index === highlightedIndex
                     ? 'bg-surface-active text-text-primary'
                     : 'text-text-secondary hover:bg-surface-tertiary',

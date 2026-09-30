@@ -47,7 +47,7 @@ export default function MultiSearch({
         onChange={onChangeHandler}
         placeholder={String(placeholder ?? 'Search...')}
         aria-label="Search Model"
-        className="placeholder-text-secondary focus:ring-ring-primary flex-1 rounded-md border-none bg-transparent px-2.5 py-2 text-sm focus:ring-1 focus:outline-hidden"
+        className="placeholder-text-secondary focus:ring-focus-control flex-1 rounded-md border-none bg-transparent px-2.5 py-2 text-sm focus:ring-1 focus:outline-hidden"
       />
       <button
         className={cn(
