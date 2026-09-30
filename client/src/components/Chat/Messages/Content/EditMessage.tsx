@@ -24,6 +24,10 @@ const EditMessage = ({
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const submitButtonRef = useRef<HTMLButtonElement | null>(null);
   const [saveError, setSaveError] = useState(false);
+  /** Editable copy of the message's attachments: the rerun submission replays
+   *  these instead of the original list, so a bad or incompatible file can be
+   *  removed instead of locking the message out of being resubmitted. */
+  const [editedFiles, setEditedFiles] = useState(message.files ?? []);
   const { conversation } = useMessagesConversation();
   const { getMessages, setMessages } = useMessagesOperations();
 
@@ -78,7 +82,7 @@ const EditMessage = ({
         conversationId,
       },
       {
-        overrideFiles: message.files,
+        overrideFiles: editedFiles,
         /** Pills on the edited user message stay visible after save-and-submit;
          *  carry the picks forward so the new turn primes the same skills
          *  instead of running unprimed. */
@@ -202,7 +206,7 @@ const EditMessage = ({
   const { ref, ...registerProps } = register('text', {
     /** Retained attachments make an otherwise empty edit submittable, matching
      *  the composer; `ask` replays them through `overrideFiles`. */
-    required: (message.files?.length ?? 0) === 0,
+    required: (editedFiles?.length ?? 0) === 0,
     onChange: (e) => {
       setValue('text', e.target.value, { shouldDirty: true, shouldValidate: true });
     },
@@ -230,6 +234,34 @@ const EditMessage = ({
         className="mt-2 flex w-full flex-col gap-2"
       >
         {saveError && <Alert variant="error">{localize('com_ui_save_message_error')}</Alert>}
+        {editedFiles.length > 0 && (
+          <div className="flex flex-wrap gap-2" data-testid="message-editor-files">
+            {editedFiles.map((file, idx) => (
+              <span
+                key={`${file.file_id ?? file.filename}-${idx}`}
+                className="flex items-center gap-1.5 rounded-lg border border-border-medium bg-surface-tertiary-alt px-2 py-1 text-xs text-text-primary"
+              >
+                <span
+                  className="max-w-48 truncate"
+                  title={file.filename ?? file.file_id ?? undefined}
+                >
+                  {file.filename ?? file.file_id ?? file.type ?? 'file'}
+                </span>
+                <button
+                  type="button"
+                  aria-label={localize('com_ui_delete')}
+                  disabled={isSubmitting || updateMessageMutation.isLoading}
+                  className="shrink-0 rounded-full text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+                  onClick={() =>
+                    setEditedFiles((files) => files.filter((_, current) => current !== idx))
+                  }
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <TextareaAutosize
           {...registerProps}
           ref={(e) => {
