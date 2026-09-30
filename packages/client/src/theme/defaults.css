@@ -184,8 +184,8 @@ html {
   --surface-inverted: var(--gray-850);
   --surface-inverted-hover: var(--gray-700);
   --surface-inverted-pressed: var(--gray-700);
-  --button-primary: var(--gray-850);
-  --button-primary-hover: var(--gray-700);
+  --button-primary: var(--surface-inverted);
+  --button-primary-hover: var(--surface-inverted-hover);
   --surface-disabled: var(--gray-100);
   --text-inverted: var(--white);
   --surface-fixed: var(--white);
@@ -372,8 +372,8 @@ html {
   --surface-inverted: var(--white);
   --surface-inverted-hover: var(--gray-100);
   --surface-inverted-pressed: var(--gray-100);
-  --button-primary: var(--white);
-  --button-primary-hover: var(--gray-100);
+  --button-primary: var(--surface-inverted);
+  --button-primary-hover: var(--surface-inverted-hover);
   --surface-disabled: var(--gray-700);
   --text-inverted: var(--gray-850);
   --surface-fixed: var(--white);

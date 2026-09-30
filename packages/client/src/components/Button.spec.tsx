@@ -1,7 +1,13 @@
 import '@testing-library/jest-dom';
 import { render, screen } from '@testing-library/react';
 import { Button, buttonVariants } from './Button';
+import OGDialogTemplate from './OGDialogTemplate';
+import { OGDialog } from './OriginalDialog';
 import { cn } from '~/utils';
+
+jest.mock('react-i18next', () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
 
 describe('Button', () => {
   it('exposes theme-owned shape and density recipes', () => {
@@ -197,5 +203,28 @@ describe('Button', () => {
     expect(cn(buttonVariants({ variant: 'section-header', size: 'sm' }))).toContain(
       'h-theme-button-sm',
     );
+  });
+
+  /** A templated dialog's legacy `selection` action sits beside the shared cancel Button, so it
+   *  has to take the same height and primary fill roles or the two part under a theme. */
+  it('draws a templated dialog’s legacy confirm action from the Button roles', () => {
+    render(
+      <OGDialog open={true}>
+        <OGDialogTemplate
+          title="Delete"
+          selection={{ selectHandler: jest.fn(), selectText: 'Delete' }}
+        />
+      </OGDialog>,
+    );
+
+    const cancel = screen.getByRole('button', { name: 'com_ui_cancel' });
+    const confirm = screen.getByRole('button', { name: 'Delete' });
+    expect(cancel).toHaveClass('h-theme-button');
+    expect(confirm).toHaveClass(
+      'h-theme-button',
+      'bg-button-primary',
+      'hover:bg-button-primary-hover',
+    );
+    expect(confirm).not.toHaveClass('h-10');
   });
 });

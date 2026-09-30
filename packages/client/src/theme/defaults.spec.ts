@@ -83,6 +83,20 @@ const stockAliases: Partial<
   Record<keyof typeof defaultAppearance, keyof typeof defaultAppearance>
 > = { controlPaddingX: 'spaceNormal', controlGap: 'spaceCompact' };
 
+/** Color roles split out of a broader one read it in the stylesheet, in both modes, so a
+ *  stylesheet that overrides only the broader role still reaches what the split role paints. */
+const colorAliases: Array<[string, string]> = [
+  ['--button-primary', '--surface-inverted'],
+  ['--button-primary-hover', '--surface-inverted-hover'],
+];
+
+describe('the stock color aliases', () => {
+  it.each(colorAliases)('declares %s as the %s it split from', (property, source) => {
+    expect(light.get(property)).toBe(`var(${source})`);
+    expect(dark.get(property) ?? light.get(property)).toBe(`var(${source})`);
+  });
+});
+
 describe('the stock appearance and brands', () => {
   it('declares every appearance property with the registry default', () => {
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
