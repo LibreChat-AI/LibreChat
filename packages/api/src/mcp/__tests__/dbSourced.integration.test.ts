@@ -23,6 +23,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { Socket } from 'net';
+import { applyRequestHeaders, hasCustomUserVars, getMissingCustomUserVars } from '~/mcp/utils';
 import { getUserApiKeyVariable } from '~/mcp/registry/binding';
 import { MCPConnection } from '~/mcp/connection';
 import { processMCPEnv } from '~/utils/env';
@@ -244,6 +245,72 @@ describe('dbSourced header security – integration', () => {
     const captured = JSON.stringify(server.getLastHeaders());
     expect(captured).not.toContain('another-users-secret');
     expect(captured).not.toContain('legacy-secret');
+  });
+
+  it('does not require or send a bound key shadowed by request authentication', async () => {
+    const options: MCPOptions = {
+      type: 'streamable-http',
+      url: server.url,
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+    };
+    const field = getUserApiKeyVariable(options);
+    const declared: MCPOptions = {
+      ...options,
+      customUserVars: { [field]: { title: 'API Key', description: 'Per-user key' } },
+      headers: { Authorization: `Bearer {{${field}}}` },
+      requestHeaders: { authorization: 'Bearer request-secret' },
+    };
+    expect(hasCustomUserVars(declared)).toBe(false);
+    expect(getMissingCustomUserVars(declared)).toEqual([]);
+    const resolved = processMCPEnv({
+      options: applyRequestHeaders(declared),
+      dbSourced: true,
+      customUserVars: { [field]: 'unused-user-secret' },
+    });
+    conn = new MCPConnection({
+      serverName: 'shadowed-bound-key',
+      serverConfig: resolved,
+      useSSRFProtection: false,
+    });
+    if ('headers' in resolved) {
+      conn.setRequestHeaders(resolved.headers || {});
+    }
+    await conn.connect();
+    await conn.fetchTools();
+    const captured = server.getLastHeaders();
+    expect(captured.authorization).toBe('Bearer request-secret');
+    expect(JSON.stringify(captured)).not.toContain('unused-user-secret');
+  });
+
+  it('sends the saved bound key after a fragment-only URL edit', async () => {
+    const original: MCPOptions = {
+      type: 'streamable-http',
+      url: `${server.url}#old`,
+      apiKey: { source: 'user', authorization_type: 'bearer' },
+    };
+    const field = getUserApiKeyVariable(original);
+    const updated: MCPOptions = { ...original, url: `${server.url}#new` };
+    expect(getUserApiKeyVariable(updated)).toBe(field);
+    const resolved = processMCPEnv({
+      options: {
+        ...updated,
+        customUserVars: { [field]: { title: 'API Key', description: 'Per-user key' } },
+        headers: { Authorization: `Bearer {{${field}}}` },
+      },
+      dbSourced: true,
+      customUserVars: { [field]: 'saved-user-secret' },
+    });
+    conn = new MCPConnection({
+      serverName: 'fragment-bound-key',
+      serverConfig: resolved,
+      useSSRFProtection: false,
+    });
+    if ('headers' in resolved) {
+      conn.setRequestHeaders(resolved.headers || {});
+    }
+    await conn.connect();
+    await conn.fetchTools();
+    expect(server.getLastHeaders().authorization).toBe('Bearer saved-user-secret');
   });
 
   it('DB-sourced: resolves {{MCP_API_KEY}} via customUserVars', async () => {
