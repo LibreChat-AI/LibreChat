@@ -1,15 +1,18 @@
 const express = require('express');
-const router = express.Router();
-const { requireJwtAuth } = require('~/server/middleware');
-const { getCategories } = require('~/models');
+const { createGetPromptCategoriesHandler } = require('@librechat/api');
+const { requireJwtAuth, configMiddleware } = require('~/server/middleware');
+const { getPromptGroupAccessContext, getDistinctPromptGroupCategories } = require('~/models');
 
-router.get('/', requireJwtAuth, async (req, res) => {
-  try {
-    const categories = await getCategories();
-    res.status(200).send(categories);
-  } catch (error) {
-    res.status(500).send({ message: 'Failed to retrieve categories', error: error.message });
-  }
-});
+const router = express.Router();
+
+router.get(
+  '/',
+  requireJwtAuth,
+  configMiddleware,
+  createGetPromptCategoriesHandler({
+    getPromptGroupAccessContext,
+    getDistinctPromptGroupCategories,
+  }),
+);
 
 module.exports = router;

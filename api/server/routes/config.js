@@ -15,6 +15,7 @@ const {
   resolveCodeEnvironmentDecisionVersion,
   resolveCodeEnvironmentMoveCapabilities,
   resolveCodeEnvironmentTransitionVersion,
+  getPromptCategoriesStartupConfig,
 } = require('@librechat/api');
 const { EModelEndpoint, defaultSocialLogins } = require('librechat-data-provider');
 const { logger, getTenantId, SystemCapabilities } = require('@librechat/data-schemas');
@@ -301,6 +302,7 @@ router.get('/', async function (req, res) {
         appConfig,
         endpoint: EModelEndpoint.agents,
       }),
+      promptCategories: getPromptCategoriesStartupConfig(appConfig),
       turnstile: appConfig?.turnstileConfig,
       modelSpecs: sanitizeModelSpecs(excludeHiddenModelSpecs(appConfig?.modelSpecs)),
       balance: balanceConfig,
