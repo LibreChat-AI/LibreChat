@@ -202,7 +202,7 @@ describe('createAppConfigService', () => {
               enforce: true,
               prioritize: true,
               list: [
-                { name: 'private-spec', label: 'Private', preset: { endpoint: 'private gateway' } },
+                { name: 'private-spec', label: 'Private', preset: { endpoint: 'Private Gateway' } },
               ],
             },
           },
@@ -403,7 +403,7 @@ describe('createAppConfigService', () => {
                     {
                       name: 'injected',
                       label: 'Injected',
-                      preset: { endpoint: 'private gateway' },
+                      preset: { endpoint: 'Private Gateway' },
                     },
                   ],
                 },
