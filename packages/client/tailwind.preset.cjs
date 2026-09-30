@@ -4,10 +4,16 @@ module.exports = {
     extend: {
       fontFamily: {
         'theme-ui': ['var(--theme-font-family, Inter, sans-serif)'],
+        /** A dialog title's family, the display family unless a theme names its own. */
+        'theme-dialog-title': [
+          'var(--theme-dialog-title-font-family, var(--theme-display-font-family, inherit))',
+        ],
       },
       fontWeight: {
         /** A theme-sized control's label weight. */
         'theme-control': 'var(--theme-control-font-weight, 500)',
+        /** A dialog title's weight; `-weight` keeps it apart from the family of the same name. */
+        'theme-dialog-title-weight': 'var(--theme-dialog-title-font-weight, 600)',
       },
       height: {
         'theme-control': 'var(--theme-control-height, 2.25rem)',
@@ -33,6 +39,9 @@ module.exports = {
          *  read before, for a stylesheet that predates the roles. */
         'theme-control-x': 'var(--theme-control-padding-x, var(--theme-space-normal, 0.75rem))',
         'theme-control-gap': 'var(--theme-control-gap, var(--theme-space-compact, 0.375rem))',
+        /** A dialog's inline padding and the gap between its title and description. */
+        'theme-dialog-x': 'var(--theme-dialog-padding-x, 1.5rem)',
+        'theme-dialog-header': 'var(--theme-dialog-header-gap, 0.375rem)',
         /**
          * The comfortable tap target (2.75rem / 44px), held against the theme's
          * own control height with `max()` so a theme that already draws larger

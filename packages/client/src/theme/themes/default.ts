@@ -51,6 +51,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-tertiary': '236 236 236', // #ececec (gray-100)
   'rgb-surface-tertiary-alt': '255 255 255', // #fff (white)
   'rgb-surface-dialog': '255 255 255', // #fff (white)
+  'rgb-dialog-title': '33 33 33', // #212121 (gray-800, matching text-primary)
   'rgb-surface-overlay': '89 89 89', // #595959 (gray-500)
   'rgb-surface-submit': '4 120 87', // #047857 (green-700)
   'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)

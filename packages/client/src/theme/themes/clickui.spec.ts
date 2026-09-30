@@ -91,6 +91,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-tertiary': 'global.color.background.muted',
     'rgb-surface-tertiary-alt': 'global.color.background.default',
     'rgb-surface-dialog': 'global.color.background.default',
+    'rgb-dialog-title': 'click.dialog.color.title.default',
     'rgb-surface-overlay': 'click.dialog.color.opaqueBackground.default',
     'rgb-surface-submit': 'global.color.accent.default',
     'rgb-surface-submit-hover': 'palette.neutral.712',
@@ -204,6 +205,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-tertiary': 'global.color.background.muted',
     'rgb-surface-tertiary-alt': 'palette.neutral.712',
     'rgb-surface-dialog': 'global.color.background.default',
+    'rgb-dialog-title': 'click.dialog.color.title.default',
     'rgb-surface-submit': 'global.color.accent.default',
     'rgb-surface-submit-hover': 'palette.brand.200',
     'rgb-surface-destructive': 'palette.danger.300',
@@ -482,6 +484,13 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   controlPaddingX: 'click.button.basic.space.x',
   controlGap: 'click.button.basic.space.gap',
   controlFontWeight: 'click.button.basic.typography.label.default',
+  dialogStroke: 'click.dialog.stroke.default',
+  dialogPaddingX: 'click.dialog.space.x',
+  dialogHeaderGap: 'click.dialog.title.space.gap',
+  dialogTitleSize: 'click.dialog.typography.title.default',
+  dialogTitleLeading: 'click.dialog.typography.title.default',
+  dialogTitleFontWeight: 'click.dialog.typography.title.default',
+  dialogTitleFontFamily: 'click.dialog.typography.title.default',
   scrimOpacity: 'click.dialog.color.opaqueBackground.default',
   alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
@@ -645,6 +654,16 @@ const scrimKeys: ReadonlySet<keyof IThemeAppearance> = new Set([
   'modalScrimOpacity',
 ]);
 
+/** Roles read out of a Click UI `font` shorthand, and the part each one is. */
+const fontShorthandParts: Partial<
+  Record<keyof IThemeAppearance, 'weight' | 'size' | 'leading' | 'family'>
+> = {
+  dialogTitleFontWeight: 'weight',
+  dialogTitleSize: 'size',
+  dialogTitleLeading: 'leading',
+  dialogTitleFontFamily: 'family',
+};
+
 function comparable(key: keyof IThemeAppearance, raw: string | number): string {
   const value = String(raw);
   /** A scrim role is the alpha of Click UI's scrim color; the color itself is `surface-overlay`. */
@@ -661,6 +680,16 @@ function comparable(key: keyof IThemeAppearance, raw: string | number): string {
   }
   /** Click UI writes the label as a `font` shorthand; the role is its leading weight. */
   if (key === 'controlFontWeight') {
+    return value.trim().split(/\s+/)[0];
+  }
+  /** A title or label is a `weight size/leading family` shorthand, one part per role. */
+  if (fontShorthandParts[key] !== undefined) {
+    const [, weight, size, leading, family] =
+      /^(\d+)\s+([^/\s]+)\/(\S+)\s+(.+?);?$/.exec(value.trim()) ?? [];
+    return { weight, size, leading, family }[fontShorthandParts[key]] ?? value;
+  }
+  /** A stroke is `width style color`; the role is its width, and its color is `border-light`. */
+  if (key === 'dialogStroke') {
     return value.trim().split(/\s+/)[0];
   }
   return value.replace(/;$/, '').trim();
@@ -912,7 +941,6 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'text',
     element: dialogProbe('h2'),
-    near: ['light', 'dark'],
   },
   'Dialog scrim': {
     token: 'click.dialog.color.opaqueBackground.default',
@@ -922,6 +950,12 @@ const parityProbes: Record<string, ParityProbe> = {
     deviation: {
       dark: 'surface-overlay keeps the dark scrim black; Click UI #606060 lifts the page it covers',
     },
+  },
+  'Dialog inline padding': {
+    token: 'click.dialog.space.x',
+    kind: 'shape',
+    utility: 'px',
+    element: dialogProbe('[role="dialog"]'),
   },
   'Dialog corner': {
     token: 'click.dialog.radii.all',
@@ -1072,12 +1106,6 @@ const notExpressible: Record<string, NotExpressible> = {
       'the field is transparent and inks with text-primary; a color role is an opaque triplet, so no role can default to no fill, and no role holds field ink apart from body copy',
     issue: 'https://github.com/berry-13/LibreChat/issues/206',
   },
-  'Dialog edge': {
-    decisions: { light: ['Dialog stroke'], dark: ['Dialog stroke'] },
-    reason:
-      'the dialog draws no border and no role sets a dialog stroke width, so a 1px edge would change the default dialog',
-    issue: 'https://github.com/berry-13/LibreChat/issues/138',
-  },
   'Badge label': {
     decisions: { light: ['Badge label'], dark: ['Badge label'] },
     reason:
@@ -1134,7 +1162,7 @@ const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
     'theme-button-sm': 'buttonHeightSm',
   },
   py: { 'theme-table-cell': 'tableCellSpaceY' },
-  px: { 'theme-control-x': 'controlPaddingX' },
+  px: { 'theme-control-x': 'controlPaddingX', 'theme-dialog-x': 'dialogPaddingX' },
   gap: { 'theme-control-gap': 'controlGap' },
 };
 
@@ -1153,7 +1181,9 @@ const drawsBorder = (classes: string[], resolved: Resolved) =>
     (name) =>
       /^border(-[0-9]+|-[xytblrse](-[0-9]+)?)?$/.test(name) ||
       (/^border(-[xytblrse])?-\(length:--theme-table-row-stroke\)$/.test(name) &&
-        parseFloat(resolved.appearance.tableRowStroke) > 0),
+        parseFloat(resolved.appearance.tableRowStroke) > 0) ||
+      (name === 'border-(length:--theme-dialog-stroke)' &&
+        parseFloat(resolved.appearance.dialogStroke) > 0),
   );
 
 type Resolved = ReturnType<typeof resolveTheme>;

@@ -4,6 +4,7 @@ import {
   focusFallbacks,
   pressedFallbacks,
   primaryButtonFallbacks,
+  dialogTitleFallback,
   MARK_NEIGHBOURHOOD,
   themeAppearanceProperties,
   themeBrandTokens,
@@ -124,6 +125,11 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     primary['rgb-button-primary-hover'] !== undefined
   ) {
     variables.push(['--button-primary-hover', primary['rgb-button-primary-hover']]);
+  }
+
+  const title = dialogTitleFallback(colors)['rgb-dialog-title'];
+  if (colors['rgb-dialog-title'] === undefined && title !== undefined) {
+    variables.push(['--dialog-title', title]);
   }
 
   /**

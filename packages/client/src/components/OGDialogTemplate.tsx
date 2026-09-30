@@ -136,12 +136,7 @@ const OGDialogTemplate: ForwardRefExoticComponent<
       onEscapeKeyDown={onEscapeKeyDown}
       onInteractOutside={onInteractOutside}
       ref={ref}
-      className={cn(
-        /** `border-none` clears the default edge; the contrast variant has to
-         *  restore the style as well as the width to survive it. */
-        'bg-surface-dialog text-text-primary high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none w-11/12 border-none',
-        className ?? '',
-      )}
+      className={cn('bg-surface-dialog text-text-primary w-11/12', className ?? '')}
       onClick={(e) => e.stopPropagation()}
     >
       <OGDialogHeader className={cn(headerClassName ?? '')}>

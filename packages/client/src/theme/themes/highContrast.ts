@@ -87,6 +87,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-surface-tertiary': '255 255 255', // #ffffff
   'rgb-surface-tertiary-alt': '255 255 255', // #ffffff
   'rgb-surface-dialog': '255 255 255', // #ffffff
+  'rgb-dialog-title': '0 0 0', // #000000 (matching text-primary)
   'rgb-surface-overlay': '0 0 0', // #000000
   'rgb-surface-submit': '0 92 46', // #005c2e
   'rgb-surface-submit-hover': '0 61 30', // #003d1e
@@ -246,6 +247,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-surface-tertiary': '0 0 0', // #000000
   'rgb-surface-tertiary-alt': '0 0 0', // #000000
   'rgb-surface-dialog': '0 0 0', // #000000
+  'rgb-dialog-title': '255 255 255', // #ffffff (matching text-primary)
   'rgb-surface-overlay': '0 0 0', // #000000
   'rgb-surface-submit': '127 240 179', // #7ff0b3
   'rgb-surface-submit-hover': '163 245 204', // #a3f5cc

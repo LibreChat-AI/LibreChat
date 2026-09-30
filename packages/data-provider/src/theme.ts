@@ -51,6 +51,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-surface-tertiary',
   'rgb-surface-tertiary-alt',
   'rgb-surface-dialog',
+  'rgb-dialog-title',
   'rgb-surface-overlay',
   'rgb-surface-submit',
   'rgb-surface-submit-hover',
@@ -350,6 +351,15 @@ const appearanceValidators = {
   leadingLg: isLineHeight,
   leadingXl: isLineHeight,
   leading2xl: isLineHeight,
+  /** A dialog's edge stroke width, inline padding and title-to-description gap, and its title's
+   *  size, leading, weight and family. */
+  dialogStroke: isLength,
+  dialogPaddingX: isLength,
+  dialogHeaderGap: isLength,
+  dialogTitleSize: isLength,
+  dialogTitleLeading: isLineHeight,
+  dialogTitleFontWeight: isFontWeight,
+  dialogTitleFontFamily: isFontFamily,
   /** How much of `surface-overlay` each dialog family's scrim lays over the page. */
   scrimOpacity: isOpacity,
   alertScrimOpacity: isOpacity,

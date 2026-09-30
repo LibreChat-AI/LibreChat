@@ -116,6 +116,7 @@ html {
   --surface-tertiary: var(--gray-100);
   --surface-tertiary-alt: var(--white);
   --surface-dialog: var(--white);
+  --dialog-title: var(--text-primary);
   --surface-overlay: var(--gray-500);
   --surface-submit: var(--green-700);
   --surface-submit-hover: var(--green-800);
@@ -214,6 +215,13 @@ html {
   --theme-space-compact: 0.375rem;
   --theme-space-normal: 0.75rem;
   --theme-disabled-style: dim;
+  --theme-dialog-stroke: 0px;
+  --theme-dialog-padding-x: 1.5rem;
+  --theme-dialog-header-gap: 0.375rem;
+  --theme-dialog-title-size: var(--theme-text-lg, 1.125rem);
+  --theme-dialog-title-leading: 1;
+  --theme-dialog-title-font-weight: 600;
+  --theme-dialog-title-font-family: var(--theme-display-font-family, Inter, sans-serif);
   --theme-scrim-opacity: 0.8;
   --theme-alert-scrim-opacity: 0.9;
   --theme-modal-scrim-opacity: 0.65;
@@ -306,6 +314,7 @@ html {
   --surface-tertiary: var(--gray-700);
   --surface-tertiary-alt: var(--gray-700);
   --surface-dialog: var(--gray-875);
+  --dialog-title: var(--text-primary);
   --surface-overlay: 0 0 0;
   --surface-submit: var(--green-700);
   --surface-submit-hover: var(--green-800);

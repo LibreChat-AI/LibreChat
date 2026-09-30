@@ -762,6 +762,100 @@ describe('theme registry', () => {
     );
   });
 
+  it('keeps LibreChat’s dialog chrome by default', () => {
+    expect(defaultAppearance).toMatchObject({
+      dialogStroke: '0px',
+      dialogPaddingX: '1.5rem',
+      dialogHeaderGap: '0.375rem',
+      dialogTitleSize: defaultAppearance.textLg,
+      dialogTitleLeading: '1',
+      dialogTitleFontWeight: '600',
+      dialogTitleFontFamily: defaultAppearance.displayFontFamily,
+    });
+    expect(defaultTheme['rgb-dialog-title']).toBe(defaultTheme['rgb-text-primary']);
+    expect(darkTheme['rgb-dialog-title']).toBe(darkTheme['rgb-text-primary']);
+  });
+
+  it('keeps the dialog titles of a theme that predates the roles on its type and ink', () => {
+    const { colors, appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'type-reference',
+        modes: {
+          light: {
+            colors: { 'rgb-text-primary': '10 20 30' },
+            appearance: { fontFamily: 'Georgia, serif', textLg: '1.4rem' },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(colors['rgb-dialog-title']).toBe('10 20 30');
+    /** The family chains through the display role, which itself follows `fontFamily`. */
+    expect(appearance.displayFontFamily).toBe('Georgia, serif');
+    expect(appearance.dialogTitleFontFamily).toBe('Georgia, serif');
+    expect(appearance.dialogTitleSize).toBe('1.4rem');
+  });
+
+  it('draws dialog chrome from its own roles apart from the type scale and body ink', () => {
+    const { colors, appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'framed-dialog-reference',
+        modes: {
+          dark: {
+            colors: { 'rgb-dialog-title': '200 30 90' },
+            appearance: {
+              dialogStroke: '3px',
+              dialogPaddingX: '3rem',
+              dialogHeaderGap: '1rem',
+              dialogTitleSize: '2rem',
+              dialogTitleLeading: '1.2',
+              dialogTitleFontWeight: '800',
+              dialogTitleFontFamily: 'Georgia, serif',
+            },
+          },
+        },
+      },
+      'dark',
+    );
+
+    expect(colors['rgb-text-primary']).toBe(darkTheme['rgb-text-primary']);
+    expect(colors['rgb-dialog-title']).toBe('200 30 90');
+    expect(appearance.textLg).toBe(defaultAppearance.textLg);
+    expect(appearance.displayFontFamily).toBe(defaultAppearance.displayFontFamily);
+    expect(appearance).toMatchObject({
+      dialogStroke: '3px',
+      dialogPaddingX: '3rem',
+      dialogHeaderGap: '1rem',
+      dialogTitleSize: '2rem',
+      dialogTitleLeading: '1.2',
+      dialogTitleFontWeight: '800',
+      dialogTitleFontFamily: 'Georgia, serif',
+    });
+  });
+
+  it('rejects dialog chrome values the shared validators refuse', () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'dialog-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(issues({ dialogStroke: '1px', dialogTitleLeading: '1.5' })).toEqual([]);
+    [
+      { dialogStroke: 'thin' },
+      { dialogPaddingX: '2' },
+      { dialogHeaderGap: 'red' },
+      { dialogTitleSize: '1.25rem;' },
+      { dialogTitleLeading: 'calc(1 / 0)' },
+      { dialogTitleFontWeight: '1001' },
+      { dialogTitleFontFamily: 'Inter; color: red' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
+  });
+
   it('reproduces Tailwind’s own type scale by default', () => {
     const tailwind = readFileSync(
       join(__dirname, '..', '..', '..', '..', 'node_modules', 'tailwindcss', 'theme.css'),

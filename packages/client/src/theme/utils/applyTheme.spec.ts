@@ -352,6 +352,14 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--surface-inverted-pressed')).toBe('20 21 22');
   });
 
+  it('sets dialog titles in the primary ink of a theme that predates the role', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-primary': '30 31 32' }, root, defaultTheme);
+
+    expect(root.style.getPropertyValue('--dialog-title')).toBe('30 31 32');
+  });
+
   it('fills the primary button with the inverted surface of a theme that predates the role', () => {
     const root = document.documentElement;
 

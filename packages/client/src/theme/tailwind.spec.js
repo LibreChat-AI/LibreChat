@@ -107,6 +107,12 @@ describe('LibreChat Tailwind preset', () => {
       ['h-theme-button', '--theme-button-height', defaultAppearance.buttonHeight],
       ['h-theme-button-sm', '--theme-button-height-sm', defaultAppearance.buttonHeightSm],
       ['font-theme-control', '--theme-control-font-weight', defaultAppearance.controlFontWeight],
+      ['px-theme-dialog-x', '--theme-dialog-padding-x', defaultAppearance.dialogPaddingX],
+      [
+        'font-theme-dialog-title-weight',
+        '--theme-dialog-title-font-weight',
+        defaultAppearance.dialogTitleFontWeight,
+      ],
       ['w-theme-switch', '--theme-switch-width', defaultAppearance.switchWidth],
       ['size-theme-switch-thumb', '--theme-switch-height', defaultAppearance.switchHeight],
       ['translate-x-theme-switch-travel', '--theme-switch-width', defaultAppearance.switchWidth],
@@ -151,6 +157,8 @@ describe('LibreChat Tailwind preset', () => {
       ...roles.map(([candidate]) => candidate),
       'px-theme-control-x',
       'gap-theme-control-gap',
+      'font-theme-dialog-title',
+      'space-y-theme-dialog-header',
       'font-sans',
       'p-4',
     ]);
@@ -174,6 +182,12 @@ describe('LibreChat Tailwind preset', () => {
     expect(rule(css, 'gap-theme-control-gap')).toContain(
       `gap: var(--theme-control-gap, var(--theme-space-compact, ${defaultAppearance.spaceCompact}))`,
     );
+
+    /** A dialog title falls back to the display family it was set in. */
+    expect(rule(css, 'font-theme-dialog-title')).toContain(
+      'font-family: var(--theme-dialog-title-font-family, var(--theme-display-font-family, inherit))',
+    );
+    expect(css).toContain(`var(--theme-dialog-header-gap, ${defaultAppearance.dialogHeaderGap})`);
 
     /** The preset extends the default theme rather than replacing it. */
     expect(css).toContain('.font-sans');
@@ -222,8 +236,13 @@ describe('LibreChat Tailwind preset', () => {
 
     /** Prettier wraps a long font stack, so declarations compare with whitespace collapsed. */
     const collapsed = stockStyles.replace(/\s+/g, ' ');
-    /** The control spacing roles alias the shared spacing they were split from. */
-    const aliases = { controlPaddingX: 'spaceNormal', controlGap: 'spaceCompact' };
+    /** Roles split out of a broader one alias the role they were split from. */
+    const aliases = {
+      controlPaddingX: 'spaceNormal',
+      controlGap: 'spaceCompact',
+      dialogTitleSize: 'textLg',
+      dialogTitleFontFamily: 'displayFontFamily',
+    };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]
         ? `var(${themeAppearanceProperties[aliases[key]]}, ${defaultAppearance[key]})`

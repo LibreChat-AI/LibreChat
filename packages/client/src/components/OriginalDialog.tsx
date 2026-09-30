@@ -196,10 +196,11 @@ type DialogContentProps = React.ComponentPropsWithoutRef<typeof DialogPrimitive.
 const DIALOG_SURFACE_CLASSES =
   /** `shadow-lg` is a black shadow, which carries no separation against
    *  a pure black surface, so high contrast trades it for a real edge. The
+   *  theme's own edge is `dialogStroke`, none by default. The
    *  centering `translate-*` is the `translate` property, which the enter and
    *  exit keyframes' `transform` composes with instead of replacing, so the
    *  slide names only the 2% the surface travels. */
-  'left-[50%] top-[50%] grid max-h-[90vh] w-full translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-2xl bg-surface-dialog p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-bottom-[2%] data-[state=open]:slide-in-from-bottom-[2%] high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none';
+  'left-[50%] top-[50%] grid max-h-[90vh] w-full translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-2xl border-(length:--theme-dialog-stroke) border-border-light bg-surface-dialog py-6 px-theme-dialog-x shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-bottom-[2%] data-[state=open]:slide-in-from-bottom-[2%] high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none';
 
 const DialogContent: React.ForwardRefExoticComponent<
   Omit<DialogPrimitive.DialogContentProps & React.RefAttributes<HTMLDivElement>, 'ref'> & {
@@ -387,7 +388,10 @@ const DialogHeader: {
   ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element;
   displayName: string;
 } = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>): JSX.Element => (
-  <div className={cn('flex flex-col space-y-1.5 text-center sm:text-left', className)} {...props} />
+  <div
+    className={cn('space-y-theme-dialog-header flex flex-col text-center sm:text-left', className)}
+    {...props}
+  />
 );
 DialogHeader.displayName = 'DialogHeader';
 
@@ -413,7 +417,7 @@ const DialogTitle: React.ForwardRefExoticComponent<
   <DialogPrimitive.Title
     ref={ref}
     className={cn(
-      'font-display text-lg leading-none font-semibold tracking-tight',
+      'font-theme-dialog-title font-theme-dialog-title-weight text-dialog-title text-(length:--theme-dialog-title-size) leading-(--theme-dialog-title-leading) tracking-tight',
       focusOutlineVariants({ focusOutline }),
       className,
     )}

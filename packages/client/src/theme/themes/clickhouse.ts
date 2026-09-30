@@ -76,6 +76,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-tertiary': '246 247 250', // #f6f7fa (background.muted)
   'rgb-surface-tertiary-alt': '255 255 255', // #ffffff (background.default)
   'rgb-surface-dialog': '255 255 255', // #ffffff (background.default)
+  'rgb-dialog-title': '30 29 31', // #1e1d1f (dialog.color.title.default, lch(11.126 1.374 305.43))
   'rgb-surface-overlay': '21 21 21', // #151515 (dialog.color.opaqueBackground, lch(6.7738 0 none))
   'rgb-surface-submit': '21 21 21', // #151515 (accent.default)
   'rgb-surface-submit-hover': '50 50 50', // #323232 (palette.neutral.712)
@@ -216,6 +217,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-tertiary': '40 40 40', // #282828 (background.muted)
   'rgb-surface-tertiary-alt': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-dialog': '31 31 28', // #1f1f1c (background.default)
+  'rgb-dialog-title': '249 249 249', // #f9f9f9 (dialog.color.title.default, rgb(97.5% 97.5% 97.5%))
   /** Not a Click UI value. Its dark scrim, dialog.color.opaqueBackground lch(40.731 0 none), is a
    *  #606060 gray that lifts the page instead of dimming it. A bundled scrim never lifts the page
    *  (`semanticTokens.spec.ts`), so black keeps the dark scrim; the 0.75 alpha is Click UI's. */
@@ -376,6 +378,16 @@ const clickHouseShape = {
    *  0.875rem/1.5 label and a 1px stroke, 32px in all. */
   buttonHeight: '2rem',
   buttonHeightSm: '2rem',
+  dialogStroke: '1px', // dialog.stroke.default, in stroke.default (border-light)
+  dialogPaddingX: '2rem', // dialog.space.x; its space.y is LibreChat's 1.5rem
+  dialogHeaderGap: '0.25rem', // dialog.title.space.gap
+  /** `dialog.typography.title.default`: 700 1.25rem/1.5 in the regular family, not the display
+   *  one Click UI keeps for page titles. */
+  dialogTitleSize: '1.25rem',
+  dialogTitleLeading: '1.5',
+  dialogTitleFontWeight: '700',
+  dialogTitleFontFamily:
+    '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif',
   scrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   alertScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   modalScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha

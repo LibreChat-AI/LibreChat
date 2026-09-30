@@ -55,6 +55,8 @@ export interface IThemeRGB {
   'rgb-surface-tertiary'?: string;
   'rgb-surface-tertiary-alt'?: string;
   'rgb-surface-dialog'?: string;
+  /** An OGDialog title's ink; follows `rgb-text-primary` when a theme omits it. */
+  'rgb-dialog-title'?: string;
   'rgb-surface-overlay'?: string;
   'rgb-surface-submit'?: string;
   'rgb-surface-submit-hover'?: string;
@@ -226,6 +228,7 @@ export interface IThemeVariables {
   '--surface-tertiary': string;
   '--surface-tertiary-alt': string;
   '--surface-dialog': string;
+  '--dialog-title': string;
   '--surface-overlay': string;
   '--surface-submit': string;
   '--surface-submit-hover': string;
@@ -349,6 +352,7 @@ export interface IThemeColors {
   'surface-tertiary'?: string;
   'surface-tertiary-alt'?: string;
   'surface-dialog'?: string;
+  'dialog-title'?: string;
   'surface-overlay'?: string;
   'surface-submit'?: string;
   'surface-submit-hover'?: string;
@@ -461,7 +465,7 @@ export interface IThemeAppearance {
   disabledStyle: 'dim' | 'fill';
   fontFamily: string;
   monoFontFamily: string;
-  /** Headings and dialog titles; follows `fontFamily` when a theme omits it. */
+  /** Headings; follows `fontFamily` when a theme omits it. */
   displayFontFamily: string;
   /** The `text-*` scale: size and line height per step, Tailwind's own values by default. */
   textXs: string;
@@ -476,6 +480,18 @@ export interface IThemeAppearance {
   leadingLg: string;
   leadingXl: string;
   leading2xl: string;
+  /**
+   * An OGDialog's edge stroke width (painted in `border-light`), inline padding and title to
+   * description gap, and its title's size, leading, weight and family. The title follows `textLg`
+   * and `displayFontFamily` when a theme omits its size and family.
+   */
+  dialogStroke: string;
+  dialogPaddingX: string;
+  dialogHeaderGap: string;
+  dialogTitleSize: string;
+  dialogTitleLeading: string;
+  dialogTitleFontWeight: string;
+  dialogTitleFontFamily: string;
   /** Opacity of `surface-overlay` under OGDialog, AlertDialog and Dialog, in that order. */
   scrimOpacity: string;
   alertScrimOpacity: string;

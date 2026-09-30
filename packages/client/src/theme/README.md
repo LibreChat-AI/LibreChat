@@ -339,8 +339,19 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   disabled fill, ink and edge, painted through the `theme-disabled:` variant only
   when the theme's `disabledStyle` appearance role is `fill`. The default `dim`
   keeps the half-opacity treatment every primitive carries.
-- `font-display` - Headings and dialog titles (`displayFontFamily`). Follows the
-  theme's `fontFamily` when it names no display family.
+- `font-display` - Headings (`displayFontFamily`). Follows the theme's
+  `fontFamily` when it names no display family.
+- `text-dialog-title` - An OGDialog title's ink. Follows `text-primary` when a
+  theme names only that.
+- OGDialog chrome - `border-(length:--theme-dialog-stroke)` (`dialogStroke`, painted in
+  `border-light`, none by default), `px-theme-dialog-x` (`dialogPaddingX`),
+  `space-y-theme-dialog-header` (`dialogHeaderGap`), and for the title
+  `text-(length:--theme-dialog-title-size)` and
+  `leading-(--theme-dialog-title-leading)` (`dialogTitleSize`, `dialogTitleLeading`),
+  `font-theme-dialog-title-weight` (`dialogTitleFontWeight`) and
+  `font-theme-dialog-title` (`dialogTitleFontFamily`). The title size and family
+  follow `textLg` and `displayFontFamily` when a theme omits them, and a caller's
+  own padding, size or weight class replaces the role.
 - `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
   `leadingXs`..`leading2xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.

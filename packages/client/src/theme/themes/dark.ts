@@ -51,6 +51,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-surface-tertiary': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-tertiary-alt': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-dialog': '18 18 18', // #121212 (legacy dark dialog)
+  'rgb-dialog-title': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-surface-overlay': '0 0 0', // #000 (black)
   'rgb-surface-submit': '4 120 87', // #047857 (green-700)
   'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)

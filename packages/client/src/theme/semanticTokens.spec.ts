@@ -782,6 +782,24 @@ describe('state role defaults', () => {
     expect(theme['rgb-button-primary']).toBe(theme['rgb-surface-inverted']);
     expect(theme['rgb-button-primary-hover']).toBe(theme['rgb-surface-inverted-hover']);
   });
+
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('sets %s dialog titles in the primary ink', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-dialog-title']).toBe(theme['rgb-text-primary']);
+  });
+
+  it.each([
+    ['clickhouse light', clickHouseLightTheme],
+    ['clickhouse dark', clickHouseDarkTheme],
+  ])('keeps %s dialog titles at AA on the dialog surface', (_name, theme: IThemeRGB) => {
+    expect(
+      contrast(toRgb(theme, 'rgb-dialog-title'), toRgb(theme, 'rgb-surface-dialog')),
+    ).toBeGreaterThanOrEqual(4.5);
+  });
 });
 
 /**

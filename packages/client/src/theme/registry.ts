@@ -72,6 +72,7 @@ export const MARK_NEIGHBOURHOOD: readonly (keyof IThemeRGB)[] = Object.freeze([
   'rgb-status-success-strong',
   'rgb-text-on-status',
   'rgb-surface-dialog',
+  'rgb-dialog-title',
   'rgb-surface-secondary',
   'rgb-surface-tertiary',
 ]);
@@ -116,6 +117,12 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
     ...(fill !== undefined ? { 'rgb-button-primary': fill } : {}),
     ...(hover !== undefined ? { 'rgb-button-primary-hover': hover } : {}),
   };
+}
+
+/** Dialog titles were set in the primary ink, so a theme that repaints it keeps its titles on it. */
+export function dialogTitleFallback(colors: IThemeRGB): IThemeRGB {
+  const title = colors['rgb-dialog-title'] ?? colors['rgb-text-primary'];
+  return title !== undefined ? { 'rgb-dialog-title': title } : {};
 }
 
 /**
@@ -175,6 +182,13 @@ export const themeAppearanceProperties: Readonly<
   leadingLg: '--theme-text-lg-leading',
   leadingXl: '--theme-text-xl-leading',
   leading2xl: '--theme-text-2xl-leading',
+  dialogStroke: '--theme-dialog-stroke',
+  dialogPaddingX: '--theme-dialog-padding-x',
+  dialogHeaderGap: '--theme-dialog-header-gap',
+  dialogTitleSize: '--theme-dialog-title-size',
+  dialogTitleLeading: '--theme-dialog-title-leading',
+  dialogTitleFontWeight: '--theme-dialog-title-font-weight',
+  dialogTitleFontFamily: '--theme-dialog-title-font-family',
   scrimOpacity: '--theme-scrim-opacity',
   alertScrimOpacity: '--theme-alert-scrim-opacity',
   modalScrimOpacity: '--theme-modal-scrim-opacity',
@@ -229,6 +243,13 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   leadingLg: 'calc(1.75 / 1.125)',
   leadingXl: 'calc(1.75 / 1.25)',
   leading2xl: 'calc(2 / 1.5)',
+  dialogStroke: '0px',
+  dialogPaddingX: '1.5rem',
+  dialogHeaderGap: '0.375rem',
+  dialogTitleSize: '1.125rem',
+  dialogTitleLeading: '1',
+  dialogTitleFontWeight: '600',
+  dialogTitleFontFamily: 'Inter, sans-serif',
   scrimOpacity: '0.8',
   alertScrimOpacity: '0.9',
   modalScrimOpacity: '0.65',
@@ -375,23 +396,29 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
 
 /**
  * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
- * family before the display role existed, and theme-sized controls were padded by the shared
- * spacing, so a theme that names the broader role and not the split one keeps what it drew.
+ * family before the display role existed, theme-sized controls were padded by the shared spacing,
+ * and dialog titles were set in the `text-lg` step and the display family, so a theme that names
+ * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
+ * follow one that is itself inherited.
  */
 const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAppearance]> = [
   ['displayFontFamily', 'fontFamily'],
   ['controlPaddingX', 'spaceNormal'],
   ['controlGap', 'spaceCompact'],
+  ['dialogTitleSize', 'textLg'],
+  ['dialogTitleFontFamily', 'displayFontFamily'],
 ];
 
 function withInheritedRoles(appearance?: Partial<IThemeAppearance>): IThemeAppearance {
   const known = knownAppearance(appearance);
-  const inherited = Object.fromEntries(
-    inheritedAppearance
-      .filter(([role, source]) => known[role] === undefined && known[source] !== undefined)
-      .map(([role, source]) => [role, known[source]]),
+  const resolved = inheritedAppearance.reduce<Partial<IThemeAppearance>>(
+    (roles, [role, source]) =>
+      roles[role] === undefined && roles[source] !== undefined
+        ? { ...roles, [role]: roles[source] }
+        : roles,
+    known,
   );
-  return { ...defaultAppearance, ...known, ...inherited };
+  return { ...defaultAppearance, ...resolved };
 }
 
 export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedThemeDefinition {
@@ -521,6 +548,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const focusFallback = customColors != null ? focusFallbacks(customColors) : {};
   const pressedFallback = customColors != null ? pressedFallbacks(customColors) : {};
   const primaryButtonFallback = customColors != null ? primaryButtonFallbacks(customColors) : {};
+  const dialogTitleColor = customColors != null ? dialogTitleFallback(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -590,6 +618,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...focusFallback,
       ...pressedFallback,
       ...primaryButtonFallback,
+      ...dialogTitleColor,
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,

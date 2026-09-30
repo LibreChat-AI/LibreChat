@@ -14,9 +14,11 @@ const twMerge = extendTailwindMerge({
       h: [
         { h: ['theme-table-head', 'theme-table-head-compact', 'theme-button', 'theme-button-sm'] },
       ],
-      px: [{ px: ['theme-control-x'] }],
+      px: [{ px: ['theme-control-x', 'theme-dialog-x'] }],
       gap: [{ gap: ['theme-control-gap'] }],
-      'font-weight': [{ font: ['theme-control'] }],
+      'space-y': [{ 'space-y': ['theme-dialog-header'] }],
+      'font-weight': [{ font: ['theme-control', 'theme-dialog-title-weight'] }],
+      'font-family': [{ font: ['theme-dialog-title'] }],
     },
   },
 });

@@ -63,7 +63,7 @@ describe.each([
   const tokens = Object.keys(theme) as Array<keyof IThemeRGB>;
 
   it('covers every registry color', () => {
-    expect(tokens).toHaveLength(111);
+    expect(tokens).toHaveLength(112);
   });
 
   it('resolves every registry color to the runtime theme value', () => {
@@ -77,11 +77,16 @@ describe.each([
   });
 });
 
-/** Control roles split out of the shared spacing alias it, so a stylesheet that sets only the
- *  shared role still spaces its controls. */
+/** Roles split out of a broader one alias it, so a stylesheet that sets only the broader role
+ *  still reaches what the split role draws. */
 const stockAliases: Partial<
   Record<keyof typeof defaultAppearance, keyof typeof defaultAppearance>
-> = { controlPaddingX: 'spaceNormal', controlGap: 'spaceCompact' };
+> = {
+  controlPaddingX: 'spaceNormal',
+  controlGap: 'spaceCompact',
+  dialogTitleSize: 'textLg',
+  dialogTitleFontFamily: 'displayFontFamily',
+};
 
 /** Color roles split out of a broader one read it in the stylesheet, in both modes, so a
  *  stylesheet that overrides only the broader role still reaches what the split role paints. */
