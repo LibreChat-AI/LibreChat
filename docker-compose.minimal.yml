@@ -1,0 +1,43 @@
+# Minimal LibreChat deployment with only the services required for the core experience.
+# Optional services such as Meilisearch and the RAG API can be configured externally in .env.
+
+services:
+  api:
+    container_name: LibreChat
+    ports:
+      - "${PORT}:${PORT}"
+    depends_on:
+      - mongodb
+    image: registry.librechat.ai/danny-avila/librechat-dev:latest
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+      - LIBRECHAT_TEMP_CREDENTIALS_PATH=/app/data/.env.temp
+      - PROXY=${PROXY:-}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1},${no_proxy:-},mongodb,chat-mongodb,host.docker.internal
+      - http_proxy=${http_proxy:-}
+      - https_proxy=${https_proxy:-}
+      - no_proxy=${no_proxy:-localhost,127.0.0.1,::1},${NO_PROXY:-},mongodb,chat-mongodb,host.docker.internal
+    volumes:
+      - ./images:/app/client/public/images
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      - ./skill:/app/skill
+      - librechat-data:/app/data
+  mongodb:
+    container_name: chat-mongodb
+    image: mongo:8.0.20
+    restart: always
+    volumes:
+      - ./data-node:/data/db
+    command: mongod --noauth
+
+volumes:
+  librechat-data:
