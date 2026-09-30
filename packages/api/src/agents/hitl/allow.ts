@@ -1,6 +1,9 @@
 import { logger } from '@librechat/data-schemas';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
+import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
+import type { ToolApprovalHookContext } from './hooks';
+import { buildToolApprovalHooks, resolvedToolApprovalHooksCanMatch } from './hooks';
 import { healToolApprovalPolicy, isHITLEnabled } from './policy';
 import { isStatefulCodeEnvironmentToolName } from './byom';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -78,9 +81,66 @@ export function isToolAllowAlwaysEligible(
 }
 
 /**
+ * Every spelling the runtime can present for one tool: the name itself plus the other MCP
+ * key spelling of any alias pair it belongs to. Only exact alias pairs are followed, so a
+ * different tool with a similar name is never included.
+ */
+export function getEquivalentToolNames(
+  toolName: string,
+  aliases: readonly MCPToolAlias[] = [],
+): string[] {
+  const names = new Set([toolName]);
+  for (const { name, aliasName } of aliases) {
+    if (name === toolName) {
+      names.add(aliasName);
+    } else if (aliasName === toolName) {
+      names.add(name);
+    }
+  }
+  return [...names];
+}
+
+/** Eligible only when every spelling of the tool is, so a `deny`/`ask` on either spelling wins. */
+function isToolAllowAlwaysGroupEligible(
+  policy: TToolApprovalPolicy | undefined,
+  toolName: unknown,
+  aliases: readonly MCPToolAlias[],
+): toolName is string {
+  if (!isToolAllowAlwaysEligible(policy, toolName)) {
+    return false;
+  }
+  return getEquivalentToolNames(toolName, aliases).every((name) =>
+    isToolAllowAlwaysEligible(policy, name),
+  );
+}
+
+/**
+ * Whether a programmatic or plugin `PreToolUse` hook could decide for any spelling of a tool.
+ * The interrupt payload does not record which hook asked, so a remembered `allow` cannot be
+ * shown to hold whenever such a hook can run for the tool: it folds `ask` over the stored
+ * allow and the next call pauses again. Agent-scoped hooks count regardless of agent here.
+ */
+function toolApprovalHookCanApply(
+  names: readonly string[],
+  hookContext: ToolApprovalHookContext,
+  pluginHookSource: PluginHookSource | undefined,
+): boolean {
+  const hooks = buildToolApprovalHooks(hookContext).map(({ hook, matcher }) => ({ hook, matcher }));
+  if (resolvedToolApprovalHooksCanMatch(hooks, names)) {
+    return true;
+  }
+  if (pluginHookSource == null) {
+    return false;
+  }
+  return pluginHookSource.hasToolApprovalHooks != null
+    ? pluginHookSource.hasToolApprovalHooks(names)
+    : pluginHookSource.hasHooks();
+}
+
+/**
  * The approval policy a run actually evaluates: `deny`/`ask`/`allow` healed against the
  * tools' other MCP key spellings, then the conversation's remembered tools folded in as
- * exact-name allows. Every "Always allow" decision (offer, resume re-check, scheduled
+ * exact-name allows for every spelling of each remembered tool. Every "Always allow" decision (offer, resume re-check, scheduled
  * admission, run) reads this one shape so they cannot drift apart.
  */
 export function buildEffectiveToolApprovalPolicy(
@@ -88,7 +148,11 @@ export function buildEffectiveToolApprovalPolicy(
   aliases: readonly MCPToolAlias[],
   allowedTools?: readonly string[],
 ): TToolApprovalPolicy | undefined {
-  return applyConversationToolAllows(healToolApprovalPolicy(policy, aliases), allowedTools);
+  return applyConversationToolAllows(
+    healToolApprovalPolicy(policy, aliases),
+    allowedTools,
+    aliases,
+  );
 }
 
 export interface MarkToolApprovalAllowAlwaysOptions {
@@ -98,21 +162,34 @@ export interface MarkToolApprovalAllowAlwaysOptions {
   agents?: readonly (ToolAllowAlwaysAgent | null | undefined)[];
   /** Tools the conversation already remembers, to keep offers within the cap. */
   storedTools?: readonly string[];
+  /** Request context the run resolves programmatic approval hooks with. */
+  hookContext?: ToolApprovalHookContext;
+  /** Deployment plugin hooks the run registers after the policy hooks. */
+  pluginHookSource?: PluginHookSource;
 }
 
 /**
  * Mark every review config whose tool the user may approve for the rest of the
- * conversation. Offers stop once the conversation's remembered list would exceed
- * `allowAlwaysMaxTools`, so a choice the server cannot store is never shown.
+ * conversation. The offer is made only when storing the name would auto-approve the next
+ * identical call on the run's own decision path: every spelling passes the healed static
+ * policy, no programmatic or plugin hook can apply to it, and the conversation's remembered
+ * list stays within `allowAlwaysMaxTools`.
  */
 export function markToolApprovalAllowAlways(
   payload: Agents.ToolApprovalInterruptPayload,
-  { policy, agents, storedTools = [] }: MarkToolApprovalAllowAlwaysOptions,
+  {
+    policy,
+    agents,
+    storedTools = [],
+    hookContext = {},
+    pluginHookSource,
+  }: MarkToolApprovalAllowAlwaysOptions,
 ): Agents.ToolApprovalInterruptPayload {
   if (!isToolAllowAlwaysEnabled(policy)) {
     return payload;
   }
-  const effective = buildEffectiveToolApprovalPolicy(policy, collectAgentAliases(agents));
+  const aliases = collectAgentAliases(agents);
+  const effective = buildEffectiveToolApprovalPolicy(policy, aliases);
   const stored = new Set(storedTools);
   let room = getToolAllowAlwaysMaxTools(policy) - stored.size;
   const nameByToolCallId = new Map(
@@ -124,7 +201,8 @@ export function markToolApprovalAllowAlways(
     const name = nameByToolCallId.get(config.tool_call_id);
     if (
       !config.allowed_decisions.includes('approve') ||
-      !isToolAllowAlwaysEligible(effective, name)
+      !isToolAllowAlwaysGroupEligible(effective, name, aliases) ||
+      toolApprovalHookCanApply(getEquivalentToolNames(name, aliases), hookContext, pluginHookSource)
     ) {
       return config;
     }
@@ -150,6 +228,7 @@ export function collectToolApprovalAllows(
   payload: Agents.ToolApprovalInterruptPayload,
   resolutions: readonly Agents.ToolApprovalResolution[],
   policy: TToolApprovalPolicy | undefined,
+  aliases: readonly MCPToolAlias[] = [],
 ): string[] {
   if (!isToolAllowAlwaysEnabled(policy)) {
     return [];
@@ -172,7 +251,7 @@ export function collectToolApprovalAllows(
       continue;
     }
     const name = nameByToolCallId.get(resolution.tool_call_id);
-    if (isToolAllowAlwaysEligible(policy, name)) {
+    if (isToolAllowAlwaysGroupEligible(policy, name, aliases)) {
       names.add(name);
     }
   }
@@ -213,21 +292,26 @@ export function resolveRunToolApprovalAllows(
 
 /**
  * Fold a conversation's remembered tools into the static policy as exact-name `allow`
- * entries. The SDK checks `deny` then `ask` before `allow`, and programmatic hooks fold
+ * entries, one per spelling in `aliases` so a tool keeps its approval across its legacy and
+ * stripped MCP keys. A tool with any `deny`/`ask`-matched spelling adds nothing. The SDK checks `deny` then `ask` before `allow`, and programmatic hooks fold
  * `deny > ask > allow` on top, so a remembered tool can never loosen an admin rule.
  * Call this AFTER alias healing so healed `deny`/`ask` names still take precedence.
  */
 export function applyConversationToolAllows(
   policy: TToolApprovalPolicy | undefined,
   allowedTools: readonly string[] | undefined,
+  aliases: readonly MCPToolAlias[] = [],
 ): TToolApprovalPolicy | undefined {
   if (!isToolAllowAlwaysEnabled(policy) || allowedTools == null || allowedTools.length === 0) {
     return policy;
   }
-  const additions = allowedTools
-    .slice(0, getToolAllowAlwaysMaxTools(policy))
-    .filter((name) => isToolAllowAlwaysEligible(policy, name));
-  if (additions.length === 0) {
+  const additions = new Set<string>();
+  for (const name of allowedTools.slice(0, getToolAllowAlwaysMaxTools(policy))) {
+    if (isToolAllowAlwaysGroupEligible(policy, name, aliases)) {
+      getEquivalentToolNames(name, aliases).forEach((spelling) => additions.add(spelling));
+    }
+  }
+  if (additions.size === 0) {
     return policy;
   }
   return { ...policy, allow: [...(policy.allow ?? []), ...additions] };
@@ -273,10 +357,12 @@ export async function recordToolApprovalAllows({
   if (payload?.type !== 'tool_approval' || !Array.isArray(resolutions)) {
     return [];
   }
+  const aliases = collectAgentAliases(agents);
   const toolNames = collectToolApprovalAllows(
     payload,
     resolutions as Agents.ToolApprovalResolution[],
-    buildEffectiveToolApprovalPolicy(policy, collectAgentAliases(agents)),
+    buildEffectiveToolApprovalPolicy(policy, aliases),
+    aliases,
   );
   if (toolNames.length === 0) {
     return [];

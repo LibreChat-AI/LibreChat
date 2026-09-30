@@ -1,5 +1,6 @@
-import { Constants, createToolPolicyHook } from '@librechat/agents';
+import { Constants, executeHooks, createToolPolicyHook } from '@librechat/agents';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
+import type { HookRegistry } from '@librechat/agents';
 import {
   isToolAllowAlwaysEligible,
   collectToolApprovalAllows,
@@ -10,9 +11,11 @@ import {
   MAX_CONVERSATION_TOOL_ALLOWS,
   buildEffectiveToolApprovalPolicy,
 } from './allow';
+import { registerToolApprovalHook, clearToolApprovalHooks } from './hooks';
 import { buildToolApprovalPayload, mapToolApprovalPolicy } from './policy';
 import { resolveToolApprovalResume } from './resume';
 import { canAgentGraphPause } from './admission';
+import { buildHITLRunWiring } from './runtime';
 
 const GITHUB_SEARCH = 'search_mcp_github';
 const GITLAB_SEARCH = 'search_mcp_gitlab';
@@ -333,5 +336,203 @@ describe('recordToolApprovalAllows', () => {
       addConvoToolApprovalAllows,
     });
     expect(addConvoToolApprovalAllows).not.toHaveBeenCalled();
+  });
+});
+
+describe('invariant: Always allow is offered only when the next identical call is auto-approved', () => {
+  const STRIPPED = GITHUB_SEARCH;
+  const LEGACY = 'legacy_search_mcp_github';
+  const alias = { name: STRIPPED, aliasName: LEGACY };
+  const askHook = async () => ({ decision: 'ask' as const, reason: 'per-argument check' });
+  const askPluginSource = {
+    hasHooks: () => true,
+    hasToolApprovalHooks: () => true,
+    register: ({ registry }: { registry: HookRegistry }) => {
+      registry.register('PreToolUse', { hooks: [askHook] });
+      return 1;
+    },
+  };
+
+  interface InvariantCase {
+    label: string;
+    policy: NonNullable<TToolApprovalPolicy>;
+    /** Spelling the paused call used. */
+    paused: string;
+    /** Spellings the next identical call may arrive under. */
+    next: string[];
+    stored?: string[];
+    programmaticHook?: boolean;
+    pluginHook?: boolean;
+    offered: boolean;
+  }
+
+  const cases: InvariantCase[] = [
+    {
+      label: 'static ask',
+      policy: enabled({ ask: [STRIPPED] }),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      offered: false,
+    },
+    {
+      label: 'default mode ask',
+      policy: enabled({ mode: 'default' }),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      offered: true,
+    },
+    {
+      label: 'programmatic hook ask',
+      policy: enabled(),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      programmaticHook: true,
+      offered: false,
+    },
+    {
+      label: 'plugin hook ask',
+      policy: enabled(),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      pluginHook: true,
+      offered: false,
+    },
+    {
+      label: 'admin deny',
+      policy: enabled({ deny: [STRIPPED] }),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      offered: false,
+    },
+    {
+      label: 'admin ask on the alias spelling',
+      policy: enabled({ ask: [LEGACY] }),
+      paused: STRIPPED,
+      next: [STRIPPED, LEGACY],
+      offered: false,
+    },
+    {
+      label: 'admin deny on the stripped spelling, paused as legacy',
+      policy: enabled({ deny: [STRIPPED] }),
+      paused: LEGACY,
+      next: [LEGACY],
+      offered: false,
+    },
+    {
+      label: 'remembered legacy spelling',
+      policy: enabled(),
+      paused: LEGACY,
+      next: [STRIPPED, LEGACY],
+      offered: true,
+    },
+    {
+      label: 'remembered stripped spelling',
+      policy: enabled(),
+      paused: STRIPPED,
+      next: [LEGACY, STRIPPED],
+      offered: true,
+    },
+    {
+      label: 'dontAsk',
+      policy: enabled({ mode: 'dontAsk' }),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      offered: false,
+    },
+    {
+      label: 'flag off',
+      policy: enabled({ allowAlways: false }),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      offered: false,
+    },
+    {
+      label: 'cap reached',
+      policy: enabled({ allowAlwaysMaxTools: 1 }),
+      paused: STRIPPED,
+      next: [STRIPPED],
+      stored: ['other_tool'],
+      offered: false,
+    },
+  ];
+
+  afterEach(() => clearToolApprovalHooks());
+
+  /** Decide one call exactly as `createRun` wires it: effective policy plus registered hooks. */
+  async function runDecision(row: InvariantCase, allows: string[], toolName: string) {
+    const wiring = buildHITLRunWiring(
+      buildEffectiveToolApprovalPolicy(row.policy, [alias], allows),
+      {},
+      [alias],
+    );
+    if (wiring == null) {
+      return 'allow';
+    }
+    if (row.pluginHook) {
+      askPluginSource.register({ registry: wiring.hooks });
+    }
+    const result = await executeHooks({
+      registry: wiring.hooks,
+      matchQuery: toolName,
+      input: {
+        hook_event_name: 'PreToolUse',
+        runId: 'invariant',
+        toolName,
+        toolInput: {},
+        toolUseId: 'next-call',
+      },
+    });
+    return result.decision ?? 'allow';
+  }
+
+  it.each(cases)('$label', async (row) => {
+    if (row.programmaticHook) {
+      registerToolApprovalHook(() => askHook);
+    }
+    const agents = [{ mcpToolAliases: [alias] }];
+    const marked = markToolApprovalAllowAlways(payloadFor(row.paused), {
+      policy: row.policy,
+      agents,
+      storedTools: row.stored,
+      pluginHookSource: row.pluginHook ? askPluginSource : undefined,
+    });
+    const offered = marked.review_configs[0].allow_always === true;
+    expect(offered).toBe(row.offered);
+
+    const addConvoToolApprovalAllows = jest.fn().mockResolvedValue(true);
+    const recorded = await recordToolApprovalAllows({
+      userId: 'u1',
+      conversationId: 'c1',
+      policy: row.policy,
+      pendingAction: { payload: marked },
+      resolutions: [{ tool_call_id: 'call-0', decision: 'approve', scope: 'session' }],
+      agents,
+      request: {},
+      addConvoToolApprovalAllows,
+    });
+    expect(recorded).toEqual(offered ? [row.paused] : []);
+    const allows = resolveRunToolApprovalAllows(
+      row.policy,
+      { conversationId: 'c1', toolApprovalAllows: [...(row.stored ?? []), ...recorded] },
+      'c1',
+    );
+    for (const spelling of row.next) {
+      const decision = await runDecision(row, allows, spelling);
+      if (offered) {
+        expect(decision).toBe('allow');
+      } else if (row.policy.enabled === true && row.policy.mode !== 'dontAsk') {
+        expect(decision).not.toBe('allow');
+      }
+    }
+    if (offered) {
+      expect(await runDecision(row, allows, GITLAB_SEARCH)).toBe('ask');
+      expect(
+        canAgentGraphPause({
+          policy: row.policy,
+          agents: [{ tools: row.next, mcpToolAliases: [alias] }],
+          toolApprovalAllows: allows,
+        }),
+      ).toBe(false);
+    }
   });
 });

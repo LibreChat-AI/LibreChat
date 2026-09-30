@@ -4362,6 +4362,13 @@ class AgentClient extends BaseClient {
                 this.options.req?.resolvedConversation,
                 this.conversationId,
               ),
+              hookContext: {
+                userId: this.options.req?.user?.id,
+                conversationId: this.conversationId,
+                tenantId: resolveRequestTenantId(this.options.req ?? {}),
+                appConfig,
+              },
+              pluginHookSource: getPluginHookSource(),
             },
           )
         : interrupt.payload;
