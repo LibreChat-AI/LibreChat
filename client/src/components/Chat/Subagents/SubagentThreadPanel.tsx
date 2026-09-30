@@ -824,7 +824,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     }
     return { ...merged, controls: [...(merged.controls ?? []), transientControl] };
   }, [liveActivity, progress, selection.durable, taskView, transientControl]);
-  const panelTitle = selection.event == null ? activity.title : selectedEventActorName;
+  const panelAgent = threadView?.agentId == null ? undefined : agentsMap?.[threadView.agentId];
+  const panelTitle =
+    selection.event == null ? panelAgent?.name || activity.title : selectedEventActorName;
   const actorOptions = useMemo<OptionWithIcon[]>(() => {
     if (selection.event == null) return [];
     return (
@@ -1295,6 +1297,12 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     [conversationTurns, panelState, taskId],
   );
 
+  const droppedNotice =
+    (progress?.droppedCount ?? 0) > 0 ? (
+      <div role="status" className="px-4 py-2 text-sm text-text-secondary">
+        {localize('com_ui_subagent_activity_dropped', { count: progress!.droppedCount! })}
+      </div>
+    ) : null;
   let activityPanel: ReactNode;
   if (hasConversationProjection) {
     activityPanel = (
@@ -1461,6 +1469,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       <ApprovalProvider
         key={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`}
       >
+        {droppedNotice}
         {activityPanel}
       </ApprovalProvider>
       {(showControlFooter || composerMode != null) && (

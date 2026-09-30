@@ -49,6 +49,8 @@ export interface SubagentProgress {
    * runs + reasoning runs + tool calls), not by delta volume.
    */
   contentParts: SubagentContentPart[];
+  /** Activity omitted by the bounded producer buffer during transport pressure. */
+  droppedCount?: number;
   /** Cursor carried across `foldSubagentEvent` calls. */
   aggregatorState: SubagentAggregatorState;
   /** Ticker lines + live-cursor state, built incrementally. */
@@ -619,6 +621,7 @@ const foldAcceptedSubagentEvents = (
     aggregatorState,
     tickerState,
     status: last.phase,
+    droppedCount: previous?.droppedCount,
     latestLabel: last.label ?? previous?.latestLabel,
     recentEventKeys: boundedEventKeys,
     ...(effectiveActivitySequence == null
@@ -720,11 +723,7 @@ export function reduceSubagentProgress(
     }
   }
   drainPending();
-  if (
-    !waitForEarlierSequences &&
-    pending[0]?.activitySequence != null &&
-    pending[0].activitySequence > expected
-  ) {
+  while (!waitForEarlierSequences && pending[0]?.activitySequence != null) {
     expected = pending[0].activitySequence;
     drainPending();
   }

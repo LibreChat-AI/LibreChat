@@ -61,6 +61,7 @@ const subagentThreadTaskStore = createSubagentThreadTaskStore(
     deleteConvos: db.deleteConvos,
     deleteMessages: db.deleteMessages,
     getConvo: db.getConvo,
+    getAgent: db.getAgent,
     getSubagentTaskControlReplay: db.getSubagentTaskControlReplay,
     getMessages: db.getMessages,
     listActiveSubagentThreadLeases: db.listActiveSubagentThreadLeases,
@@ -126,7 +127,11 @@ async function configureSubagentTaskRouting() {
     ioredisClient,
     '[SubagentTaskRouting] activity subscriber',
   );
-  const activityPublisher = duplicateIoRedisClient(ioredisClient, { enableOfflineQueue: false });
+  const activityPublisher = duplicateIoRedisClient(ioredisClient, {
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
+    commandTimeout: 1_000,
+  });
   const transport = new RedisSubagentTaskControlTransport(publisher, subscriber, {
     namespace: cacheConfig.REDIS_KEY_PREFIX,
   });

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { logger } from '@librechat/data-schemas';
 import type { IEventTransport } from '../interfaces/IJobStore';
+import type { ReplayLimits } from '../internal/replay';
 
 interface StreamState {
   emitter: EventEmitter;
@@ -12,6 +13,15 @@ interface StreamState {
  * For horizontal scaling, replace with RedisEventTransport.
  */
 export class InMemoryEventTransport implements IEventTransport {
+  private replay = new Map<
+    string,
+    {
+      events: Array<{ type: 'chunk' | 'done'; data: unknown; bytes: number }>;
+      bytes: number;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+
   private streams = new Map<string, StreamState>();
   private providerDrainProofs = new Map<string, number>();
   private providerDrainWrites = 0;
@@ -41,10 +51,58 @@ export class InMemoryEventTransport implements IEventTransport {
     streamId: string,
     handlers: {
       onChunk: (event: unknown, generationId?: number) => void;
+      onReplay?: (events: unknown[]) => void;
       onDone?: (event: unknown, generationId?: number) => void;
       onError?: (error: string, generationId?: number) => void;
     },
+    options?: { replay?: ReplayLimits },
   ): { unsubscribe: () => void; ready?: Promise<void> } {
+    if (options?.replay != null) {
+      const snapshot = this.replay.get(streamId)?.events.slice() ?? [];
+      let attached = false;
+      let closed = false;
+      let pendingBytes = 0;
+      const pending: Array<{ type: 'chunk' | 'done'; data: unknown }> = [];
+      const deliver = (type: 'chunk' | 'done', data: unknown) => {
+        if (closed) return;
+        if (attached) {
+          if (type === 'chunk') handlers.onChunk(data);
+          else handlers.onDone?.(data);
+          return;
+        }
+        pendingBytes += Buffer.byteLength(JSON.stringify(data), 'utf8');
+        if (pending.length >= options.replay!.items || pendingBytes > options.replay!.bytes) {
+          closed = true;
+          subscription.unsubscribe();
+          handlers.onError?.('Activity replay buffer overflow; reconnect to replay.');
+          return;
+        }
+        pending.push({ type, data });
+      };
+      const subscription = this.subscribe(streamId, {
+        onChunk: (data) => deliver('chunk', data),
+        onDone: (data) => deliver('done', data),
+        onError: handlers.onError,
+      });
+      return {
+        unsubscribe: () => {
+          closed = true;
+          subscription.unsubscribe();
+        },
+        ready: Promise.resolve().then(() => {
+          if (closed) return;
+          const chunks = snapshot
+            .filter((event) => event.type === 'chunk')
+            .map((event) => event.data);
+          if (handlers.onReplay != null) handlers.onReplay(chunks);
+          else chunks.forEach((data) => handlers.onChunk(data));
+          attached = true;
+          for (const event of snapshot) if (event.type === 'done') deliver('done', event.data);
+          for (const event of pending) deliver(event.type, event.data);
+          pending.length = 0;
+        }),
+      };
+    }
     const state = this.getOrCreateStream(streamId);
 
     const chunkHandler = (event: unknown, generationId?: number) => {
@@ -101,6 +159,36 @@ export class InMemoryEventTransport implements IEventTransport {
         }
       },
     };
+  }
+
+  private retainReplay(
+    streamId: string,
+    type: 'chunk' | 'done',
+    data: unknown,
+    limits: ReplayLimits,
+  ): void {
+    const existing = this.replay.get(streamId);
+    if (existing != null) clearTimeout(existing.timer);
+    const bytes = Buffer.byteLength(JSON.stringify({ type, data }), 'utf8');
+    const buffer = existing ?? { events: [], bytes: 0, timer: setTimeout(() => undefined, 0) };
+    buffer.events.push({ type, data, bytes });
+    buffer.bytes += bytes;
+    while (buffer.events.length > limits.items || buffer.bytes > limits.bytes) {
+      buffer.bytes -= buffer.events.shift()!.bytes;
+    }
+    buffer.timer = setTimeout(() => this.replay.delete(streamId), limits.ttlMs);
+    buffer.timer.unref?.();
+    this.replay.set(streamId, buffer);
+  }
+
+  async emitReplayableChunk(streamId: string, event: unknown, limits: ReplayLimits): Promise<void> {
+    this.retainReplay(streamId, 'chunk', event, limits);
+    this.emitChunk(streamId, event);
+  }
+
+  async emitReplayableDone(streamId: string, event: unknown, limits: ReplayLimits): Promise<void> {
+    this.retainReplay(streamId, 'done', event, limits);
+    this.emitDone(streamId, event);
   }
 
   emitChunk(streamId: string, event: unknown, generationId?: number): void {
@@ -240,6 +328,8 @@ export class InMemoryEventTransport implements IEventTransport {
   }
 
   destroy(): void {
+    for (const buffer of this.replay.values()) clearTimeout(buffer.timer);
+    this.replay.clear();
     for (const state of this.streams.values()) {
       state.emitter.removeAllListeners();
     }

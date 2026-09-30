@@ -6,6 +6,7 @@ import type { Response } from 'express';
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
 import type { ServerRequest } from '~/types';
 import { emitObservedChunk } from '~/stream/internal/chunkPublication';
+import { SUBAGENT_ACTIVITY_LIMITS } from './activity';
 
 const STREAM_PREFIX = 'subagent-activity:';
 const MAX_ID_BYTES = 512;
@@ -16,6 +17,9 @@ const HEARTBEAT_MS = 15_000;
 const DEMAND_TTL_MS = 30_000;
 const DEMAND_HEARTBEAT_MS = 10_000;
 const DEMAND_CACHE_MS = 250;
+/** Fixed protocol safety window, like the transport sequence TTL. This cache is not a
+ * configurable alternate persistence tier; payload budgets match the durable public view. */
+const REPLAY_LIMITS = { ...SUBAGENT_ACTIVITY_LIMITS, ttlMs: 5 * 60_000 };
 const SHUTDOWN_SUBSCRIBER_ERROR = 'Server is shutting down';
 
 export type SubagentActivityTerminalStatus = 'completed' | 'failed' | 'cancelled';
@@ -30,6 +34,12 @@ export type SubagentActivityUpdateEvent = SubagentUpdateEvent & {
 export type SubagentActivityEnvelope = {
   event: 'on_subagent_update';
   data: SubagentActivityUpdateEvent;
+  droppedCount?: number;
+};
+
+export type SubagentActivityReplayEnvelope = {
+  event: 'subagent_activity_replay';
+  data: SubagentActivityEnvelope[];
 };
 
 export type SubagentActivitySubscription = {
@@ -38,7 +48,7 @@ export type SubagentActivitySubscription = {
 };
 
 export type SubagentActivitySubscriber = {
-  onEvent: (event: SubagentActivityEnvelope) => void;
+  onEvent: (event: SubagentActivityEnvelope | SubagentActivityReplayEnvelope) => void;
   onDone?: (event: {
     final: true;
     subagentActivity: true;
@@ -213,13 +223,19 @@ export class SubagentActivityStream {
     threadId: string,
     taskId: string,
     event: SubagentActivityUpdateEvent,
+    droppedCount = 0,
   ): Promise<void> {
     const streamId = subagentActivityStreamId(threadId, taskId);
-    if (!(await this.isDemanded(streamId))) return;
+    if (this.transport.emitReplayableChunk == null && !(await this.isDemanded(streamId))) return;
     const envelope: SubagentActivityEnvelope = {
       event: 'on_subagent_update',
       data: boundSubagentActivityUpdate(event),
+      ...(droppedCount > 0 ? { droppedCount } : {}),
     };
+    if (this.transport.emitReplayableChunk != null) {
+      await this.transport.emitReplayableChunk(streamId, envelope, REPLAY_LIMITS);
+      return;
+    }
     await emitObservedChunk(this.transport, streamId, envelope);
   }
 
@@ -239,10 +255,17 @@ export class SubagentActivityStream {
     };
     /** subscribe() registers synchronously. Sampling zero before it distinguishes a fresh
      * local attachment without moving an already-active shared reorder frontier. */
-    const synchronizeAttachment = this.transport.getSubscriberCount(streamId) === 0;
+    const replayable = this.transport.emitReplayableChunk != null;
+    const synchronizeAttachment = !replayable && this.transport.getSubscriberCount(streamId) === 0;
     const subscription = this.transport.subscribe(
       streamId,
       {
+        onReplay: (events) => {
+          subscriber.onEvent({
+            event: 'subagent_activity_replay',
+            data: events.filter(isActivityEnvelope),
+          });
+        },
         onChunk: (event) => {
           if (isActivityEnvelope(event)) subscriber.onEvent(event);
         },
@@ -263,6 +286,7 @@ export class SubagentActivityStream {
         },
       },
       {
+        ...(replayable ? { replay: REPLAY_LIMITS } : {}),
         deferSequenceDelivery: synchronizeAttachment,
         captureSequenceFrontier: synchronizeAttachment,
       },
@@ -282,7 +306,7 @@ export class SubagentActivityStream {
          * its panel closes meanwhile; a surviving local subscriber still needs release. */
         await subscription.syncReorderBuffer?.();
       }
-      if (closed) return;
+      if (closed || replayable) return;
       await this.renewDemand(streamId, () => !closed);
       if (closed) {
         this.demandCache.delete(streamId);
@@ -304,12 +328,13 @@ export class SubagentActivityStream {
     const streamId = subagentActivityStreamId(threadId, taskId);
     this.demandCache.delete(streamId);
     try {
+      const terminal = { final: true, subagentActivity: true, status };
+      if (this.transport.emitReplayableDone != null) {
+        await this.transport.emitReplayableDone(streamId, terminal, REPLAY_LIMITS);
+        return;
+      }
       if (!(await this.isDemanded(streamId))) return;
-      await this.transport.emitDone(streamId, {
-        final: true,
-        subagentActivity: true,
-        status,
-      });
+      await this.transport.emitDone(streamId, terminal);
     } finally {
       this.demandCache.delete(streamId);
     }
@@ -384,10 +409,18 @@ const writeSse = (res: Response, value: unknown): boolean =>
  * identity. Keep that delivery identity behind the parent-authorized API
  * boundary while preserving a stable public identity for the activity UI. */
 const publicActivityEnvelope = (
-  event: SubagentActivityEnvelope,
+  event: SubagentActivityEnvelope | SubagentActivityReplayEnvelope,
   threadId: string,
   eventBound: boolean,
-): SubagentActivityEnvelope => {
+): SubagentActivityEnvelope | SubagentActivityReplayEnvelope => {
+  if (event.event === 'subagent_activity_replay') {
+    return {
+      ...event,
+      data: event.data.map(
+        (entry) => publicActivityEnvelope(entry, threadId, eventBound) as SubagentActivityEnvelope,
+      ),
+    };
+  }
   if (!eventBound) return event;
   const ancestry = (event.data.ancestry ?? []).map((entry) => {
     if (!entry.parentToolCallId?.startsWith('event-binding:')) return entry;

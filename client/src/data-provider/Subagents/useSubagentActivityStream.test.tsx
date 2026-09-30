@@ -142,6 +142,122 @@ describe('useSubagentActivityStream', () => {
     expect(streams[0]?.close).toHaveBeenCalledTimes(1);
   });
 
+  it('folds a replay batch before live activity and deduplicates a reconnect snapshot', () => {
+    const { result } = renderHook(
+      () => {
+        useSubagentActivityStream(selection);
+        return useAtomValue(
+          subagentProgressByToolCallId(
+            subagentProgressKey(
+              selection.parentMessageId,
+              selection.toolCallId,
+              selection.partIndex,
+            ),
+          ),
+        );
+      },
+      { wrapper },
+    );
+    const event = (sequence: number, phase = 'message_delta') => ({
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: selection.toolCallId,
+        activityEventId: `task:${sequence}`,
+        activitySequence: sequence,
+        phase,
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data: (() => {
+          if (phase === 'reasoning_delta')
+            return { delta: { content: [{ type: 'think', think: 'Reasoning' }] } };
+          if (phase === 'run_step')
+            return {
+              id: 'step',
+              stepDetails: {
+                type: 'tool_calls',
+                tool_calls: [{ id: 'call', name: 'execute_code', args: { code: '1' } }],
+              },
+            };
+          return { delta: { content: [{ type: 'text', text: `text-${sequence}` }] } };
+        })(),
+      },
+    });
+    const backlog = [event(0, 'reasoning_delta'), event(1, 'run_step'), event(2)];
+    act(() => {
+      streams[0].emit('message', { event: 'subagent_activity_replay', data: backlog });
+    });
+    expect(result.current?.contentParts.map((part) => part.type)).toEqual([
+      'think',
+      'tool_call',
+      'text',
+    ]);
+    act(() => {
+      streams[0].emit('message', event(3));
+    });
+    expect(result.current?.contentParts[2]).toEqual({ type: 'text', text: 'text-2text-3' });
+    act(() => {
+      streams[0].emit('message', {
+        event: 'subagent_activity_replay',
+        data: [...backlog, event(3)],
+      });
+    });
+    expect(result.current?.contentParts[2]).toEqual({ type: 'text', text: 'text-2text-3' });
+    expect(result.current?.lastActivitySequence).toBe(3);
+    act(() => {
+      streams[0].emit('message', { ...event(6), droppedCount: 2 });
+    });
+    expect(result.current?.droppedCount).toBe(2);
+    expect(result.current?.lastActivitySequence).toBe(6);
+  });
+
+  it('replaces an incomplete suffix with the retained snapshot on reconnect', () => {
+    const { result } = renderHook(
+      () => {
+        useSubagentActivityStream(selection);
+        return useAtomValue(
+          subagentProgressByToolCallId(
+            subagentProgressKey(
+              selection.parentMessageId,
+              selection.toolCallId,
+              selection.partIndex,
+            ),
+          ),
+        );
+      },
+      { wrapper },
+    );
+    const event = (sequence: number) => ({
+      event: StepEvents.ON_SUBAGENT_UPDATE,
+      data: {
+        runId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentToolCallId: selection.toolCallId,
+        activityEventId: `task:${sequence}`,
+        activitySequence: sequence,
+        phase: 'message_delta',
+        timestamp: '2026-09-29T00:00:00.000Z',
+        data: { delta: { content: [{ type: 'text', text: `${sequence}` }] } },
+      },
+    });
+    act(() => {
+      streams[0].emit('message', event(2));
+    });
+    expect(result.current?.coverage).toBe('suffix');
+    act(() => {
+      streams[0].emit('message', {
+        event: 'subagent_activity_replay',
+        data: [event(0), event(1), event(2)],
+      });
+    });
+    expect(result.current?.contentParts).toEqual([{ type: 'text', text: '012' }]);
+    expect(result.current?.coverage).toBe('complete');
+  });
+
   it('accepts an exact task-stream update when older providers omit the optional tool-call id', () => {
     const { result } = renderHook(
       () => {

@@ -20,6 +20,7 @@ type ActivityEnvelope = {
   data?: unknown;
   final?: unknown;
   subagentActivity?: unknown;
+  droppedCount?: unknown;
 };
 
 const INITIAL_RECONNECT_MS = 500;
@@ -39,7 +40,7 @@ const isSubagentUpdate = (value: unknown): value is SubagentUpdateEvent => {
   );
 };
 
-/** Live-only enhancement for the selected durable child; the durable query remains canonical. */
+/** Replay-then-live enhancement for the selected durable child; the durable query remains canonical. */
 export default function useSubagentActivityStream(
   selection: ActiveSubagentPanel,
   enabled = true,
@@ -92,6 +93,7 @@ export default function useSubagentActivityStream(
     let retryAttempt = 0;
     let disposed = false;
     let terminal = false;
+    let replayReceived = false;
 
     const closeCurrent = () => {
       const current = stream;
@@ -121,6 +123,40 @@ export default function useSubagentActivityStream(
           void queryClient.invalidateQueries(queryKey);
           return;
         }
+        if (envelope.event === 'subagent_activity_replay' && Array.isArray(envelope.data)) {
+          replayReceived = true;
+          const replay = envelope.data as ActivityEnvelope[];
+          const events = replay.flatMap((entry) =>
+            entry.event === StepEvents.ON_SUBAGENT_UPDATE && isSubagentUpdate(entry.data)
+              ? [entry.data]
+              : [],
+          );
+          if (events.length === 0) return;
+          registerSubagentProgressKey(key);
+          setProgress((previous) => {
+            /** A suffix-only bucket cannot backfill older parts incrementally. The Redis
+             * snapshot replaces it; future activity follows on the same ordered stream. */
+            const base =
+              previous?.coverage === 'complete' &&
+              previous.subagentRunId === events[0].subagentRunId
+                ? previous
+                : null;
+            const progress = reduceSubagentProgress(base, events, 'detached', false);
+            if (progress == null) return previous;
+            const droppedCount = replay.reduce((count, entry) => {
+              if (
+                !isSubagentUpdate(entry.data) ||
+                (base?.lastActivitySequence != null &&
+                  (entry.data.activitySequence ?? -1) <= base.lastActivitySequence)
+              )
+                return count;
+              return count + (typeof entry.droppedCount === 'number' ? entry.droppedCount : 0);
+            }, base?.droppedCount ?? 0);
+            return { ...progress, droppedCount };
+          });
+          retryAttempt = 0;
+          return;
+        }
         const event = envelope.data;
         if (envelope.event !== StepEvents.ON_SUBAGENT_UPDATE || !isSubagentUpdate(event)) {
           return;
@@ -134,9 +170,21 @@ export default function useSubagentActivityStream(
         }
         retryAttempt = 0;
         registerSubagentProgressKey(key);
-        setProgress((previous) =>
-          reduceSubagentProgress(previous, [event], 'detached', parentStreamOpenRef.current),
-        );
+        setProgress((previous) => {
+          const progress = reduceSubagentProgress(
+            previous,
+            [event],
+            'detached',
+            !replayReceived && parentStreamOpenRef.current,
+          );
+          if (progress == null || progress === previous) return progress;
+          const droppedCount =
+            typeof envelope.droppedCount === 'number' &&
+            (previous?.lastActivitySequence ?? -1) < (event.activitySequence ?? Infinity)
+              ? envelope.droppedCount
+              : 0;
+          return { ...progress, droppedCount: (previous?.droppedCount ?? 0) + droppedCount };
+        });
       });
       next.addEventListener('error', () => {
         if (stream !== next || disposed || terminal || retryTimer != null) return;
