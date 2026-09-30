@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { ObjectId } from 'mongodb';
+import { logger, createModels } from '..';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   SystemRoles,
@@ -10,7 +11,6 @@ import {
 } from 'librechat-data-provider';
 import type { IPromptGroup, AccessRole as TAccessRole, AclEntry as TAclEntry } from '..';
 import { createAclEntryMethods } from './aclEntry';
-import { logger, createModels } from '..';
 import { createMethods } from './index';
 
 // Disable console for tests
@@ -621,5 +621,61 @@ describe('Prompt ACL Permissions', () => {
       expect(prompt).toBeTruthy();
       expect(String(prompt!._id)).toBe(String(legacyPrompt._id));
     });
+  });
+});
+
+describe('distinct categories', () => {
+  const seed = async (categories: string[]) => {
+    const docs = await PromptGroup.insertMany(
+      categories.map((category, i) => ({
+        name: `Distinct Group ${i}`,
+        category,
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+        productionId: new mongoose.Types.ObjectId(),
+      })),
+    );
+    return docs.map((doc) => doc._id as mongoose.Types.ObjectId);
+  };
+
+  afterEach(async () => {
+    await PromptGroup.deleteMany({ name: /^Distinct Group/ });
+  });
+
+  it('reads only groups whose ids are passed', async () => {
+    const [visible] = await seed(['Visible', 'Secret']);
+    expect(await methods.getDistinctPromptGroupCategories([visible])).toEqual(['Visible']);
+  });
+
+  it('excludes empty categories, system-prefixed values and values over 100 characters', async () => {
+    const ids = await seed(['', 'sys__x', 'a'.repeat(101), 'Keep']);
+    expect(await methods.getDistinctPromptGroupCategories(ids)).toEqual(['Keep']);
+  });
+
+  it('trims values and drops duplicates after trimming', async () => {
+    const ids = await seed([' Alpha ', 'Alpha']);
+    expect(await methods.getDistinctPromptGroupCategories(ids)).toEqual(['Alpha']);
+  });
+
+  it('sorts case-insensitively', async () => {
+    const ids = await seed(['beta', 'Alpha', 'gamma']);
+    expect(await methods.getDistinctPromptGroupCategories(ids)).toEqual(['Alpha', 'beta', 'gamma']);
+  });
+
+  it('caps the result at 200 values', async () => {
+    const ids = await seed(
+      Array.from({ length: 250 }, (_, i) => `cat-${String(i).padStart(3, '0')}`),
+    );
+    const result = await methods.getDistinctPromptGroupCategories(ids);
+    expect(result).toHaveLength(200);
+    expect(result[0]).toBe('cat-000');
+    expect(result[199]).toBe('cat-199');
+  });
+
+  it('returns [] without querying when no ids are passed', async () => {
+    const spy = jest.spyOn(PromptGroup, 'distinct');
+    expect(await methods.getDistinctPromptGroupCategories([])).toEqual([]);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
