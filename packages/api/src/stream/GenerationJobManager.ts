@@ -4782,10 +4782,16 @@ class GenerationJobManagerClass {
        * describes the call whose partial output the snapshot above carries.
        * Read it back from the same epoch so the stopped response persists the
        * tier that produced its bytes, not the one seen before the claim. */
+      /** The terminal CAS above closed the provider start fence, so this read is
+       * the final word on whether the claimed resume's decision was ever applied. */
+      let providerStarted = jobData.providerExecutionStartedId != null;
       try {
         const refreshed = await this.jobStore.getJob(streamId);
-        if (refreshed?.createdAt === jobData.createdAt && refreshed.contextMeta != null) {
-          jobData = { ...jobData, contextMeta: refreshed.contextMeta };
+        if (refreshed?.createdAt === jobData.createdAt) {
+          providerStarted = refreshed.providerExecutionStartedId != null;
+          if (refreshed.contextMeta != null) {
+            jobData = { ...jobData, contextMeta: refreshed.contextMeta };
+          }
         }
       } catch (metadataError) {
         logger.warn(
@@ -4816,13 +4822,17 @@ class GenerationJobManagerClass {
 
       /** Final event for abort */
       const userMessageId = jobData.userMessage?.messageId;
+      const provenance =
+        !providerStarted && jobData.preResumeProvenance != null
+          ? jobData.preResumeProvenance
+          : jobData;
       const userSubmittedPaths = [
         ...new Set([
-          ...(jobData.userSubmittedPaths ?? []),
+          ...(provenance.userSubmittedPaths ?? []),
           ...getSteerUserSubmittedPaths(abortContent as TMessageContentParts[]),
         ]),
       ];
-      const userSubmittedMessageFieldPaths = jobData.userSubmittedMessageFieldPaths ?? [];
+      const userSubmittedMessageFieldPaths = provenance.userSubmittedMessageFieldPaths ?? [];
 
       const abortFinalEvent: t.ServerSentEvent = {
         final: true,

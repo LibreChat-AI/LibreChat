@@ -213,6 +213,51 @@ describe('RedisJobStore Integration Tests', () => {
       await store.destroy();
     });
 
+    test('persists user-submitted provenance patched by a resume transition', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const store = new RedisJobStore(ioredisClient);
+      await store.initialize();
+
+      const streamId = `test-transition-provenance-${Date.now()}`;
+      const created = await store.createJob(streamId, 'provenance-user', streamId);
+      await store.transitionStatus(streamId, { from: 'running', to: 'requires_action' });
+      const userSubmittedMessageFieldPaths = [
+        { path: '/content/0/tool_call/output', field: 'answer' as const },
+      ];
+
+      await expect(
+        store.transitionStatus(streamId, {
+          from: 'requires_action',
+          to: 'running',
+          patch: {
+            userSubmittedPaths: ['/content/0/tool_call/args'],
+            userSubmittedMessageFieldPaths,
+            preResumeProvenance: {
+              userSubmittedPaths: ['/content/0/steer'],
+              userSubmittedMessageFieldPaths: [],
+            },
+          },
+          expectCreatedAt: created.createdAt,
+        }),
+      ).resolves.toBe(true);
+
+      await expect(store.getJob(streamId)).resolves.toMatchObject({
+        status: 'running',
+        userSubmittedPaths: ['/content/0/tool_call/args'],
+        userSubmittedMessageFieldPaths,
+        preResumeProvenance: {
+          userSubmittedPaths: ['/content/0/steer'],
+          userSubmittedMessageFieldPaths: [],
+        },
+      });
+
+      await store.destroy();
+    });
+
     test('returns the exact predecessor captured by the atomic replacement script', async () => {
       if (!ioredisClient) {
         return;

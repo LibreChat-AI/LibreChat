@@ -219,6 +219,26 @@ const { captureCodeExecutionApprovalBinding } = require('@librechat/api');
 /** Drain the microtask + immediate queues so the post-ACK continuation settles. */
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+/** Provenance commits in the approval claim's CAS, never in a post-ACK job-store write. */
+const expectProvenanceClaimed = (provenance) => {
+  expect(mockGenerationJobManager.approvals.resolve).toHaveBeenCalledWith(
+    CONVO_ID,
+    expect.anything(),
+    expect.objectContaining(provenance),
+    1000,
+  );
+  expect(mockJobStore.updateJob).not.toHaveBeenCalledWith(
+    CONVO_ID,
+    expect.objectContaining({ userSubmittedPaths: expect.anything() }),
+    expect.anything(),
+  );
+  expect(mockJobStore.updateJob).not.toHaveBeenCalledWith(
+    CONVO_ID,
+    expect.objectContaining({ userSubmittedMessageFieldPaths: expect.anything() }),
+    expect.anything(),
+  );
+};
+
 /** A live, resolvable paused tool-approval job (single tool call `tc1`). */
 function makeToolApprovalJob(overrides = {}) {
   const metaOverrides = overrides.metadata ?? {};
@@ -1257,6 +1277,42 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         expect.objectContaining({ scheduleId: 'schedule-1', status: 'interrupted' }),
       );
       expect(mockDeleteAgentCheckpoint).toHaveBeenCalled();
+    });
+
+    it('aborts a resume the schedule fence rejected after claiming its provenance', async () => {
+      const job = makeScheduledJob();
+      job.metadata.userSubmittedPaths = ['/content/0/steer'];
+      job.metadata.pendingAction.payload.review_configs = [
+        { tool_call_id: 'tc1', allowed_decisions: ['approve', 'edit'] },
+      ];
+      mockGenerationJobManager.getJob.mockResolvedValue(job);
+      mockGenerationJobManager.getResumeState.mockResolvedValue({
+        aggregatedContent: [makeToolCallContent()],
+      });
+      mockFinalizeScheduleResumeClaim.mockResolvedValue(false);
+
+      const res = await post(
+        approveBody({
+          decisions: [{ tool_call_id: 'tc1', decision: 'edit', editedArguments: { q: 'edit' } }],
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: 'SCHEDULE_NO_LONGER_ACTIVE' });
+      expect(mockGenerationJobManager.approvals.resolve).toHaveBeenCalledWith(
+        CONVO_ID,
+        ACTION_ID,
+        expect.objectContaining({
+          userSubmittedPaths: expect.arrayContaining(['/content/0/tool_call/args']),
+        }),
+        1000,
+      );
+      expect(mockGenerationJobManager.abortJob).toHaveBeenCalledWith(CONVO_ID, {
+        expectedCreatedAt: 1000,
+        awaitProviderDrain: true,
+      });
+      expect(mockJobStore.updateJob).not.toHaveBeenCalled();
+      expect(mockInitializeClient).not.toHaveBeenCalled();
     });
 
     it('refuses to settle the stale resume handoff on an unconfirmed stop', async () => {
@@ -3874,15 +3930,9 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         }),
         1000,
       );
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        {
-          userSubmittedMessageFieldPaths: [
-            { path: '/content/1/tool_call/output', field: 'answer' },
-          ],
-        },
-        1000,
-      );
+      expectProvenanceClaimed({
+        userSubmittedMessageFieldPaths: [{ path: '/content/1/tool_call/output', field: 'answer' }],
+      });
       expect(mockSaveMessage).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -3989,11 +4039,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         1000,
       );
       const exactProvenance = [{ path: '/content/0/tool_call/output', field: 'answer' }];
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        { userSubmittedMessageFieldPaths: exactProvenance },
-        1000,
-      );
+      expectProvenanceClaimed({ userSubmittedMessageFieldPaths: exactProvenance });
       expect(mockSaveMessage).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ userSubmittedMessageFieldPaths: exactProvenance }),
@@ -4046,11 +4092,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await flush();
 
       const exactProvenance = [{ path: '/content/0/tool_call/output', field: 'answer' }];
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        { userSubmittedMessageFieldPaths: exactProvenance },
-        1000,
-      );
+      expectProvenanceClaimed({ userSubmittedMessageFieldPaths: exactProvenance });
       expect(mockSaveMessage).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ userSubmittedMessageFieldPaths: exactProvenance }),
@@ -4110,7 +4152,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
               userSubmittedMessageFieldPaths: [{ path: expectedPath, field: expectedField }],
             }
           : { userSubmittedPaths: [expectedPath] };
-        expect(mockJobStore.updateJob).toHaveBeenCalledWith(CONVO_ID, expectedProvenance, 1000);
+        expectProvenanceClaimed(expectedProvenance);
         expect(mockSaveMessage).toHaveBeenCalledWith(
           expect.anything(),
           expect.objectContaining(expectedProvenance),
@@ -4140,6 +4182,9 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await settled;
       await flush();
 
+      expect(mockGenerationJobManager.approvals.resolve.mock.calls[0][2]).not.toHaveProperty(
+        'userSubmittedPaths',
+      );
       expect(mockJobStore.updateJob).not.toHaveBeenCalledWith(
         CONVO_ID,
         expect.objectContaining({ userSubmittedPaths: expect.anything() }),
@@ -4498,15 +4543,11 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockSaveMessage).not.toHaveBeenCalled();
       expect(mockGenerationJobManager.publishTerminalClaim).not.toHaveBeenCalled();
       expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        {
-          userSubmittedMessageFieldPaths: [
-            { path: '/content/0/tool_call/output', field: 'decision_response' },
-          ],
-        },
-        1000,
-      );
+      expectProvenanceClaimed({
+        userSubmittedMessageFieldPaths: [
+          { path: '/content/0/tool_call/output', field: 'decision_response' },
+        ],
+      });
       expect(mockDecrementPendingRequest).toHaveBeenCalledWith(USER_ID);
     });
 
