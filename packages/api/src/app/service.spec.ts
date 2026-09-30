@@ -248,6 +248,68 @@ describe('createAppConfigService', () => {
       expect(config.modelSpecs?.list?.[0]?.preset?.agent_id).toBe('agent_abc');
     });
 
+    it('leaves unknown colors out of a theme a DB override supplies', async () => {
+      const deps = createDeps({
+        getApplicableConfigs: jest.fn().mockResolvedValue([
+          {
+            priority: 10,
+            isActive: true,
+            overrides: {
+              interface: {
+                theme: {
+                  version: 1,
+                  name: 'override',
+                  modes: {
+                    light: {
+                      colors: { 'rgb-surface-primary': '1 2 3', 'surface-future': '4 5 6' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ role: 'USER' });
+
+      expect(config.interfaceConfig?.theme).toEqual({
+        version: 1,
+        name: 'override',
+        modes: { light: { colors: { 'rgb-surface-primary': '1 2 3' } } },
+      });
+      expect(config.interfaceConfig?.modelSelect).toBe(true);
+    });
+
+    it('keeps the base theme when a DB override supplies an invalid one', async () => {
+      const deps = createDeps({
+        loadBaseConfig: jest
+          .fn()
+          .mockResolvedValue({ interfaceConfig: { modelSelect: true, theme: 'clickhouse' } }),
+        getApplicableConfigs: jest.fn().mockResolvedValue([
+          {
+            priority: 10,
+            isActive: true,
+            overrides: {
+              interface: {
+                theme: {
+                  version: 1,
+                  name: 'override',
+                  modes: { dark: { colors: { 'rgb-surface-primary': '300 16 32' } } },
+                },
+              },
+            },
+          },
+        ]),
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+
+      const config = await getAppConfig({ role: 'USER' });
+
+      expect(config.interfaceConfig?.theme).toBe('clickhouse');
+    });
+
     it('caches empty result — does not re-query DB on second call', async () => {
       const deps = createDeps({ getApplicableConfigs: jest.fn().mockResolvedValue([]) });
       const { getAppConfig } = createAppConfigService(deps);

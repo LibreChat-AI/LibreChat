@@ -7,6 +7,7 @@ import {
   collectThemeWarningIssues,
 } from 'librechat-data-provider';
 import type { ThemeIssue } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 
 const THEME_PATH = ['interface', 'theme'];
 
@@ -110,4 +111,28 @@ export function checkConfigTheme(config: unknown): ConfigThemeCheck {
 
   const { theme: _dropped, ...rest } = interfaceConfig;
   return { config: { ...config, interface: rest }, errors, warnings: [] };
+}
+
+export interface AppConfigThemeCheck {
+  /** The assembled config, the input itself unless its theme had to be cleaned or dropped. */
+  appConfig: AppConfig;
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * The same check for an assembled config whose theme a DB override supplied: overrides are
+ * merged after the YAML loader ran, so their theme would otherwise reach the client unchecked.
+ */
+export function checkAppConfigTheme(appConfig: AppConfig): AppConfigThemeCheck {
+  const { interfaceConfig } = appConfig;
+  if (interfaceConfig?.theme === undefined) {
+    return { appConfig, errors: [], warnings: [] };
+  }
+  const { config, errors, warnings } = checkConfigTheme({ interface: interfaceConfig });
+  const checked = (config as { interface: AppConfig['interfaceConfig'] }).interface;
+  if (checked === interfaceConfig) {
+    return { appConfig, errors, warnings };
+  }
+  return { appConfig: { ...appConfig, interfaceConfig: checked }, errors, warnings };
 }

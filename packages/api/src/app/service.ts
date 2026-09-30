@@ -12,6 +12,7 @@ import {
 import type { AppConfig, IConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import type { CustomConfigLoadMode } from './loader';
+import { checkAppConfigTheme } from './theme';
 
 const BASE_CONFIG_KEY = '_BASE_';
 
@@ -19,6 +20,33 @@ export type AppConfigPrincipal = {
   principalType: string;
   principalId?: string | Types.ObjectId;
 };
+
+/**
+ * Applies the loader's theme rules to a theme a DB override replaced. Unknown colors are left
+ * out as they are for the YAML theme; an override theme the client would reject counts as unset,
+ * so the principal keeps the base theme instead of losing its theme to a bad override.
+ */
+function checkOverrideTheme(baseConfig: AppConfig, merged: AppConfig): AppConfig {
+  const baseTheme = baseConfig.interfaceConfig?.theme;
+  if (merged.interfaceConfig?.theme === baseTheme) {
+    return merged;
+  }
+  const { appConfig, errors, warnings } = checkAppConfigTheme(merged);
+  if (warnings.length > 0) {
+    logger.warn(
+      '[getAppConfig] interface.theme from a config override names tokens this version ignores:\n' +
+        warnings.map((warning) => `- ${warning}`).join('\n'),
+    );
+  }
+  if (errors.length === 0) {
+    return appConfig;
+  }
+  logger.warn(
+    '[getAppConfig] Ignoring interface.theme from a config override; the base theme applies instead:\n' +
+      errors.map((error) => `- ${error}`).join('\n'),
+  );
+  return { ...merged, interfaceConfig: { ...merged.interfaceConfig, theme: baseTheme } };
+}
 
 /**
  * Materializes inferable model-spec fields (an omitted `preset.endpoint` for
@@ -384,7 +412,10 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     try {
       const configs = await getApplicableConfigs(principals);
       if (configs.length > 0) {
-        merged = materializeConfigModelSpecs(mergeConfigOverrides(baseConfig, configs));
+        merged = checkOverrideTheme(
+          baseConfig,
+          materializeConfigModelSpecs(mergeConfigOverrides(baseConfig, configs)),
+        );
       }
     } catch (error) {
       if (failClosed) throw error;
