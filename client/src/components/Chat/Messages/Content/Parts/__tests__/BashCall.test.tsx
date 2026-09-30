@@ -551,7 +551,7 @@ describe('BashCall exit status', () => {
 
   it('does not read a trailer the sandbox command printed itself', () => {
     const { container } = renderSettled('stdout:\n[exit code: 1]', false);
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
     expect(container.querySelectorAll('pre')[1]).toHaveTextContent('[exit code: 1]');
   });
@@ -570,7 +570,7 @@ describe('BashCall exit status', () => {
     const { container } = renderSettled(
       'stdout:\nok\n\nstderr:\nError: deprecated flag\n\n[exit code: 0]',
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
     const stderr = screen.getByText(/deprecated flag/);
     expect(stderr).toHaveClass('text-text-secondary');
