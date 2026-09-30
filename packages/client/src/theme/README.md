@@ -346,7 +346,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`
   and `ControlCombobox`. `fieldFocusStyle` picks the focus treatment: `ring` (the
   default) draws the keyboard-only focus ring, and `border` swaps the field's edge
-  to `border-field-focus` on any focus with no ring, through the
+  to `border-field-focus` on any focus, adding a 1px ring in that color on keyboard
+  focus so the indicator keeps the 2px focus floor, through the
   `theme-field-border:` variant `applyTheme` enables with `data-theme-field-focus`.
   `Label` reads `labelSize` (follows `textSm`), `labelLeading` and
   `labelFontWeight` (`inherit` by default, so a label keeps the weight around it).

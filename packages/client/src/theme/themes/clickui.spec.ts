@@ -457,7 +457,7 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     value: 'border',
     status: 'match',
     reason:
-      'border: Click UI InputWrapper swaps the stroke to field.color.stroke.active on focus and draws no ring',
+      'border: Click UI InputWrapper swaps the stroke to field.color.stroke.active on focus; keyboard focus adds a 1px ring in that color to hold the 2px focus floor',
   },
 };
 

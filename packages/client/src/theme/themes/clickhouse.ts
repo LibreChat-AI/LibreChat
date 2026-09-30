@@ -382,7 +382,8 @@ const clickHouseShape = {
   buttonHeightSm: '2rem',
   /** Click UI's field is sized by its content, like its button: 0.2813rem of space.y on both
    *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to
-   *  `field.color.stroke.active` and draws no ring (InputWrapper). */
+   *  `field.color.stroke.active` and draws no ring (InputWrapper); LibreChat adds a 1px ring in
+   *  that color on keyboard focus only, to keep its 2px focus floor. */
   fieldHeight: '2rem',
   fieldPaddingY: '0.2813rem', // field.space.y
   fieldFocusStyle: 'border' as const,

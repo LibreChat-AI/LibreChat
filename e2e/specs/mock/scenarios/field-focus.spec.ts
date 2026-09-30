@@ -115,6 +115,27 @@ test.describe('theme field focus', () => {
     const focused = await focusOf(field);
     expect(focused.edge).toBe(edge);
     expect(focused.ring).toBe('ring');
+
+    /** A border-focus theme applied to a nested root, while the document stays on the ring, still
+     *  keeps its swapped edge on pointer focus. */
+    const classes = (await field.getAttribute('class')) ?? '';
+    await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
+    await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
+      timeout: 15000,
+    });
+    await page.evaluate((className) => {
+      const scope = document.createElement('div');
+      scope.setAttribute('data-theme-field-focus', 'border');
+      scope.style.setProperty('--border-field-focus', '10 20 30');
+      const probe = document.createElement('input');
+      probe.className = className;
+      probe.setAttribute('aria-label', 'scoped field probe');
+      scope.append(probe);
+      document.body.append(scope);
+    }, classes);
+    const scoped = page.getByRole('textbox', { name: 'scoped field probe' });
+    await scoped.click();
+    expect((await focusOf(scoped)).edge).toBe('rgb(10, 20, 30)');
   });
 
   test('ClickHouse fields take Click UI height, edge focus and label type @scenario:clickhouse-fields-follow-click-ui', async ({
@@ -147,9 +168,10 @@ test.describe('theme field focus', () => {
     await field.click();
     expect(await focusOf(field)).toEqual(edgeOnly);
 
-    /** The app's unlayered dark-mode outline must not add a second indicator either. */
+    /** Keyboard focus adds a 1px ring in the edge color for a 2px perimeter, and the app's
+     *  unlayered dark-mode outline must not add another indicator around it. */
     await keyboardFocus(page, field);
-    expect(await focusOf(field)).toEqual(edgeOnly);
+    expect(await focusOf(field)).toEqual({ ...edgeOnly, ring: 'ring' });
 
     /** Forced colors drop the edge color and the ring, so the outline is kept as the indicator. */
     await page.emulateMedia({ forcedColors: 'active' });

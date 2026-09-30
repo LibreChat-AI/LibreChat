@@ -4,15 +4,17 @@
    by useInputModality (mount it once near the app root). Without the hook the
    attribute is absent and the ring always shows, which is the safe fallback.
    A theme that focuses fields by swapping their edge (`fieldFocusStyle: border`)
-   keeps that edge on pointer focus too, so only the edge reset skips it. */
+   keeps that edge on pointer focus too, so only the edge reset skips it, for a
+   field under any root that theme is applied to, not only the document. */
 html[data-input-modality='pointer'] .lc-field:focus,
 html[data-input-modality='pointer'] .lc-field:focus-visible {
   box-shadow: none;
   outline: none;
 }
 
-html[data-input-modality='pointer']:not([data-theme-field-focus='border']) .lc-field:focus,
-html[data-input-modality='pointer']:not([data-theme-field-focus='border']) .lc-field:focus-visible {
+html[data-input-modality='pointer'] .lc-field:not([data-theme-field-focus='border'] *):focus,
+html[data-input-modality='pointer']
+  .lc-field:not([data-theme-field-focus='border'] *):focus-visible {
   border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
 }
 

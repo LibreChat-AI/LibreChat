@@ -462,7 +462,8 @@ export interface IThemeAppearance {
   buttonHeightSm: string;
   /**
    * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,
-   * `border` swaps the field's edge to `border-field-focus` on any focus and draws no ring.
+   * `border` swaps the field's edge to `border-field-focus` on any focus, and keyboard focus adds
+   * a 1px ring in that color so the indicator keeps a 2px perimeter.
    */
   fieldHeight: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
