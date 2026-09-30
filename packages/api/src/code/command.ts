@@ -108,8 +108,14 @@ interface BoundedTimeoutSchema {
   description: string;
 }
 
-function buildAttachedTimeoutSchema(maxTimeoutMs: number): BoundedTimeoutSchema {
-  const defaultTimeoutMs = Math.min(WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS, maxTimeoutMs);
+function buildAttachedTimeoutSchema(
+  maxTimeoutMs: number,
+  foregroundTimeoutMs: number,
+): BoundedTimeoutSchema {
+  const defaultTimeoutMs = resolveAttachedWorkspaceCommandTimeoutDefault(
+    foregroundTimeoutMs,
+    maxTimeoutMs,
+  );
   return {
     type: 'integer',
     minimum: 1,
@@ -123,6 +129,17 @@ function normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs: number): numb
     return WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS;
   }
   return Math.min(WORKSPACE_COMMAND_MAX_TIMEOUT_MS, maxTimeoutMs);
+}
+
+/** Foreground defaults never raise the negotiated execution ceiling. */
+export function resolveAttachedWorkspaceCommandTimeoutDefault(
+  defaultTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+  maxTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+): number {
+  return Math.min(
+    normalizeAttachedWorkspaceCommandTimeoutMax(defaultTimeoutMs),
+    normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs),
+  );
 }
 
 export function resolveAttachedWorkspaceCommandTimeoutMax(
@@ -161,13 +178,20 @@ function fitCommandTimeoutMaxToBudget(
 
 /**
  * Programmatic calls do not currently carry the detached-invocation marker.
- * Preserve their historical foreground default while still enforcing both an
- * explicit administrator override and the live upstream ceiling.
+ * An explicit foreground default uses the negotiated command ceiling. Without
+ * one, preserve the legacy maxCommandTimeoutMs override on this SDK route.
  */
 export function resolveAttachedWorkspaceProgrammaticTimeout(
   configSchema?: CodeEnvironmentUserConfigSchema,
   upstreamMaxTimeoutMs?: number,
 ): number {
+  const defaultTimeoutMs = configSchema?.limits?.defaultCommandTimeoutMs;
+  if (defaultTimeoutMs != null) {
+    return resolveAttachedWorkspaceCommandTimeoutDefault(
+      defaultTimeoutMs,
+      resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs),
+    );
+  }
   const configured = configSchema?.limits?.maxCommandTimeoutMs;
   const requested =
     configured == null
@@ -219,6 +243,7 @@ export function buildAttachedWorkspaceBashSchema(
   maxTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   environment?: CodeWorkspaceDescriptor['environment'],
   linkedWorktrees = false,
+  defaultTimeoutMs: number = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
 ): NonNullable<LCTool['parameters']> {
   const effectiveMaxTimeoutMs = normalizeAttachedWorkspaceCommandTimeoutMax(maxTimeoutMs);
   return {
@@ -230,7 +255,7 @@ export function buildAttachedWorkspaceBashSchema(
         linkedWorktrees === true
           ? linkedWorktreeWorkingDirectorySchema
           : attachedWorkingDirectorySchema,
-      timeoutMs: buildAttachedTimeoutSchema(effectiveMaxTimeoutMs),
+      timeoutMs: buildAttachedTimeoutSchema(effectiveMaxTimeoutMs, defaultTimeoutMs),
       ...(environment?.actions.length
         ? {
             environmentAction: {
@@ -344,7 +369,11 @@ export function createGitIdentityProgrammaticBashTool(
   return bashTool;
 }
 
-function formatCommandResult(result: WorkspaceExecuteCommandResult): string {
+function formatCommandResult(
+  result: WorkspaceExecuteCommandResult,
+  timeoutMs: number,
+  maxTimeoutMs: number,
+): string {
   let output = '';
   if (result.stdout.length > 0) output += `stdout:\n${result.stdout}\n`;
   if (result.stderr.length > 0) output += `stderr:\n${result.stderr}\n`;
@@ -353,6 +382,9 @@ function formatCommandResult(result: WorkspaceExecuteCommandResult): string {
   if (result.signal != null) output += `[terminated by ${result.signal}]`;
   if (result.timedOut) output += '[timed out]';
   if (result.truncated) output += '[output truncated]';
+  if (result.timedOut) {
+    output += `\nCommand reached timeoutMs: ${timeoutMs}. Before retrying, check for partial side effects. Set timeoutMs explicitly up to ${maxTimeoutMs} milliseconds, or use run_in_background: true if available. Background execution uses the same timeout ceiling.`;
+  }
   return output;
 }
 
@@ -364,6 +396,7 @@ export function createAttachedWorkspaceBashTool({
   environment,
   gitIdentity,
   maxTimeoutMs = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
+  defaultTimeoutMs = WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS,
   maxQueueWaitMs,
   codeApiMaxRetryWaitMs,
   maxRequestTimeoutMs,
@@ -381,6 +414,8 @@ export function createAttachedWorkspaceBashTool({
   gitIdentity?: AgentGitIdentity | null;
   /** Effective admin/upstream ceiling already intersected with the protocol hard cap. */
   maxTimeoutMs?: number;
+  /** Foreground timeout when omitted by the model; bounded by the effective ceiling. */
+  defaultTimeoutMs?: number;
   /** Retry horizon across typed queue expirations, not an admission budget. */
   maxQueueWaitMs?: number;
   codeApiMaxRetryWaitMs?: number;
@@ -395,8 +430,17 @@ export function createAttachedWorkspaceBashTool({
     maxRequestTimeoutMs,
     minCommandAdmissionMs,
   );
+  const effectiveDefaultTimeoutMs = resolveAttachedWorkspaceCommandTimeoutDefault(
+    defaultTimeoutMs,
+    effectiveMaxTimeoutMs,
+  );
   const schema = structuredClone(
-    buildAttachedWorkspaceBashSchema(effectiveMaxTimeoutMs, environment, linkedWorktrees),
+    buildAttachedWorkspaceBashSchema(
+      effectiveMaxTimeoutMs,
+      environment,
+      linkedWorktrees,
+      effectiveDefaultTimeoutMs,
+    ),
   );
   const actions = environment?.actions ?? [];
   const bashTool = tool(
@@ -437,7 +481,7 @@ export function createAttachedWorkspaceBashTool({
         rawInput.timeoutMs ??
         (config?.configurable?.[BACKGROUND_TOOL_INVOCATION_CONFIG_KEY] === true
           ? effectiveMaxTimeoutMs
-          : Math.min(WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS, effectiveMaxTimeoutMs));
+          : effectiveDefaultTimeoutMs);
       const signal = config?.signal;
       const trace = {
         runId: config?.metadata?.run_id,
@@ -478,7 +522,7 @@ export function createAttachedWorkspaceBashTool({
           throw new Error('Attached workspace returned an unexpected command result.');
         }
         logger.debug('[BYOMCommand] transport completed', trace);
-        return [formatCommandResult(result), {}];
+        return [formatCommandResult(result, timeoutMs, effectiveMaxTimeoutMs), {}];
       } finally {
         signal?.removeEventListener('abort', onAbort);
         logger.debug('[BYOMCommand] transport settled', {

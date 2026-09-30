@@ -1219,6 +1219,10 @@ const codeEnvironmentPermissionFieldSchema = z
 export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_DEFAULT_MS = 30_000;
 /** Protocol-level ceiling; deployments may only lower this value. */
 export const CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS = 5 * 60_000;
+/** Historical line window for attached workspace reads. */
+export const CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES = 200;
+/** Protocol-v1 read ceiling supported by existing workers. */
+export const CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES = 500;
 /**
  * Client retry horizon across Code API admission windows. Also the hard cap:
  * deployments may only lower it. `0` disables client retries, not the server's
@@ -1253,6 +1257,22 @@ export const codeEnvironmentUserConfigSchema = z
       .optional(),
     limits: z
       .object({
+        /** Foreground Bash timeout when the call omits timeoutMs. Omission keeps 30 seconds;
+         * the effective command ceiling may lower this value. */
+        defaultCommandTimeoutMs: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS)
+          .optional(),
+        /** Attached read_file line window when max_lines is omitted. Omission keeps 200 lines;
+         * the existing byte budget can truncate the result sooner. */
+        defaultReadFileLines: z
+          .number()
+          .int()
+          .min(1)
+          .max(CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES)
+          .optional(),
         /** Maximum timeout a Bash invocation may request. Omission preserves
          * the historical 30-second command budget. */
         maxCommandTimeoutMs: z

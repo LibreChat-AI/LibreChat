@@ -7319,6 +7319,73 @@ describe('createToolExecuteHandler', () => {
       });
     });
 
+    it.each([200, 500])(
+      'reads the configured %i-line window and preserves explicit pagination',
+      async (defaultReadFileLines) => {
+        const lines = Array.from({ length: 450 }, (_, i) => `line ${i + 1}`);
+        const readWorkspaceFile = jest.fn<
+          ReturnType<NonNullable<ToolExecuteOptions['readWorkspaceFile']>>,
+          Parameters<NonNullable<ToolExecuteOptions['readWorkspaceFile']>>
+        >(async ({ start_line = 1, max_lines = 200 }) => {
+          const selected = lines.slice(start_line - 1, start_line - 1 + max_lines);
+          const endLine = start_line + selected.length - 1;
+          return {
+            protocolVersion: 1,
+            operation: 'read_file',
+            workspaceId: 'primary',
+            path: 'notes.txt',
+            content: selected.join('\n'),
+            startLine: start_line,
+            endLine,
+            truncated: endLine < lines.length,
+            ...(endLine < lines.length ? { nextStartLine: endLine + 1 } : {}),
+          };
+        });
+        const handler = makeReadFileHandler({
+          codeEnvAvailable: true,
+          readWorkspaceFile,
+          codeExecutionContext: {
+            baseUrl: 'https://code.example.com/v1',
+            codeSessionKey: 'execute_code:stateful:attached',
+            executionProfile: 'stateful',
+            environmentType: 'attached',
+            statefulSessions: true,
+            codeEnvironmentConfigSchema: { limits: { defaultReadFileLines } },
+          },
+        });
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'call_configured_window',
+            name: Constants.READ_FILE,
+            args: { path: 'workspace/notes.txt' },
+          },
+        ]);
+        expect(readWorkspaceFile).toHaveBeenCalledWith(
+          expect.objectContaining({ start_line: 1, max_lines: defaultReadFileLines }),
+        );
+        expect(result.status).toBe('success');
+        if (defaultReadFileLines === 500) {
+          expect(result.content).toContain('450 | line 450');
+          expect(result.content).not.toContain('more content');
+        } else {
+          expect(result.content).toContain('200 | line 200');
+          expect(result.content).toContain('start_line 201');
+        }
+        const [page] = await invokeHandler(handler, [
+          {
+            id: 'call_explicit_window',
+            name: Constants.READ_FILE,
+            args: { path: 'workspace/notes.txt', start_line: 10, max_lines: 2 },
+          },
+        ]);
+        expect(readWorkspaceFile).toHaveBeenLastCalledWith(
+          expect.objectContaining({ start_line: 10, max_lines: 2 }),
+        );
+        expect(page.content).toContain('10 | line 10\n11 | line 11');
+        expect(page.content).toContain('start_line 12');
+      },
+    );
+
     it('forwards the run abort signal to attached workspace reads', async () => {
       const readWorkspaceFile = jest.fn(async () => ({
         protocolVersion: 1 as const,

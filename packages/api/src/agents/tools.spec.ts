@@ -869,6 +869,66 @@ describe('registerCodeExecutionTools', () => {
       });
     });
 
+    it('advertises configured defaults without changing shared definitions or skill upgrades', () => {
+      const toolRegistry = makeRegistry();
+      const options = {
+        toolRegistry,
+        includeBash: true,
+        includeSkillFileInstructions: false,
+        workspaceTools: true,
+        workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+        workspaceCommandTimeoutMaxMs: 80_000,
+        workspaceCommandTimeoutDefaultMs: 60_000,
+        workspaceReadFileDefaultLines: 500,
+      };
+      const configured = registerCodeExecutionTools({ ...options, toolDefinitions: [] });
+      const upgraded = registerCodeExecutionTools({
+        ...options,
+        toolDefinitions: configured.toolDefinitions,
+        includeBash: false,
+        includeSkillFileInstructions: true,
+      });
+      const readFile = upgraded.toolDefinitions.find(({ name }) => name === 'read_file');
+      expect(readFile?.description).toContain('skills/{skillName}/');
+      expect(readFile?.parameters).toMatchObject({
+        properties: {
+          max_lines: { maximum: 500, description: expect.stringContaining('Defaults to 500') },
+        },
+      });
+      expect(toolRegistry.get('read_file')).toBe(readFile);
+      expect(
+        upgraded.toolDefinitions.find(({ name }) => name === 'bash_tool')?.parameters,
+      ).toMatchObject({
+        properties: {
+          timeoutMs: {
+            maximum: 80_000,
+            description: expect.stringContaining('Defaults to 60000 for foreground calls'),
+          },
+        },
+      });
+      const legacy = registerCodeExecutionTools({
+        toolRegistry: makeRegistry(),
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+      });
+      expect(
+        legacy.toolDefinitions.find(({ name }) => name === 'read_file')?.parameters,
+      ).toMatchObject({
+        properties: { max_lines: { description: expect.stringContaining('Defaults to 200') } },
+      });
+      expect(
+        legacy.toolDefinitions.find(({ name }) => name === 'bash_tool')?.parameters,
+      ).toMatchObject({
+        properties: {
+          timeoutMs: {
+            description: expect.stringContaining('Defaults to 30000 for foreground calls'),
+          },
+        },
+      });
+    });
+
     it('registers only operations advertised by the selected workspace', () => {
       const result = registerCodeExecutionTools({
         toolRegistry: makeRegistry(),

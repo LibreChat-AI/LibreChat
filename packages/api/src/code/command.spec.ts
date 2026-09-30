@@ -9,6 +9,7 @@ import {
   createAttachedWorkspaceBashTool,
   createGitIdentityProgrammaticBashTool,
   resolveAttachedWorkspaceCommandTimeoutMax,
+  resolveAttachedWorkspaceCommandTimeoutDefault,
   resolveAttachedWorkspaceProgrammaticTimeout,
   resolveAttachedWorkspaceQueueWaitMs,
   resolveAttachedWorkspaceRequestTimeoutMs,
@@ -129,6 +130,36 @@ describe('programmatic Bash Git identity', () => {
     }
   });
 
+  test('honors an explicit foreground default on the programmatic route without raising any ceiling', () => {
+    expect(
+      resolveAttachedWorkspaceProgrammaticTimeout(
+        { limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 } },
+        70_000,
+      ),
+    ).toBe(60_000);
+    expect(
+      resolveAttachedWorkspaceProgrammaticTimeout(
+        { limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 } },
+        50_000,
+      ),
+    ).toBe(50_000);
+    expect(
+      resolveAttachedWorkspaceProgrammaticTimeout({ limits: { defaultCommandTimeoutMs: 60_000 } }),
+    ).toBe(30_000);
+    expect(
+      resolveAttachedWorkspaceProgrammaticTimeout(
+        {
+          limits: {
+            defaultCommandTimeoutMs: 60_000,
+            maxCommandTimeoutMs: 80_000,
+            maxRequestTimeoutMs: 65_000,
+          },
+        },
+        80_000,
+      ),
+    ).toBe(45_000);
+  });
+
   test('preserves the foreground timeout while bounding an explicit admin override', () => {
     expect(resolveAttachedWorkspaceProgrammaticTimeout(undefined, 90_000)).toBe(30_000);
     expect(
@@ -164,6 +195,85 @@ function commandResponse(overrides: Record<string, unknown> = {}): Response {
 }
 
 describe('createAttachedWorkspaceBashTool', () => {
+  test.each([
+    [60_000, 80_000, undefined, 60_000],
+    [120_000, 80_000, undefined, 80_000],
+    [60_000, 80_000, 65_000, 45_000],
+    [60_000, 5_000, undefined, 5_000],
+    [1, 80_000, undefined, 1],
+  ])(
+    'bounds foreground default %i by ceiling %i and HTTP budget %s',
+    async (defaultTimeoutMs, maxTimeoutMs, maxRequestTimeoutMs, expected) => {
+      const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+      const bashTool = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        defaultTimeoutMs,
+        maxTimeoutMs,
+        maxRequestTimeoutMs,
+        fetchImpl,
+      });
+      await bashTool.invoke({ command: 'npm test' });
+      expect(JSON.parse(String((fetchImpl as jest.Mock).mock.calls[0][1]?.body))).toMatchObject({
+        timeoutMs: expected,
+      });
+      expect(bashTool.schema).toMatchObject({
+        properties: {
+          timeoutMs: {
+            description: expect.stringContaining(`Defaults to ${expected} for foreground calls`),
+          },
+        },
+      });
+    },
+  );
+
+  test('keeps explicit and background timeouts independent of the foreground default', async () => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      defaultTimeoutMs: 60_000,
+      maxTimeoutMs: 80_000,
+      fetchImpl,
+    });
+    await bashTool.invoke({ command: 'npm test', timeoutMs: 10_000 });
+    await bashTool.invoke(
+      { command: 'npm test' },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+    await bashTool.invoke(
+      { command: 'npm test', timeoutMs: 20_000 },
+      { configurable: { [BACKGROUND_TOOL_INVOCATION_CONFIG_KEY]: true } },
+    );
+    expect(
+      (fetchImpl as jest.Mock).mock.calls.map(
+        ([, init]) => JSON.parse(String(init?.body)).timeoutMs,
+      ),
+    ).toEqual([10_000, 80_000, 20_000]);
+  });
+
+  test.each([0, -1, 1.5, NaN, Infinity])(
+    'falls back safely for invalid foreground default %s',
+    (defaultTimeoutMs) => {
+      expect(resolveAttachedWorkspaceCommandTimeoutDefault(defaultTimeoutMs, 80_000)).toBe(30_000);
+    },
+  );
+
+  test('does not raise the command ceiling when only a foreground default is configured', () => {
+    const maxTimeoutMs = resolveAttachedWorkspaceCommandTimeoutMax({
+      limits: { defaultCommandTimeoutMs: 60_000 },
+    });
+    expect(maxTimeoutMs).toBe(30_000);
+    expect(resolveAttachedWorkspaceCommandTimeoutDefault(60_000, maxTimeoutMs)).toBe(30_000);
+    const upstreamMax = resolveAttachedWorkspaceCommandTimeoutMax(
+      { limits: { defaultCommandTimeoutMs: 60_000 } },
+      50_000,
+    );
+    expect(resolveAttachedWorkspaceCommandTimeoutDefault(60_000, upstreamMax)).toBe(50_000);
+  });
+
   test('honors a zero Code API rate-limit retry budget', async () => {
     const fetchImpl: CodeBridgeFetch = jest.fn(
       async () => new Response(JSON.stringify({ error: 'rate_limited' }), { status: 429 }),
@@ -729,6 +839,31 @@ describe('createAttachedWorkspaceBashTool', () => {
     expect(request.command).not.toContain('git config');
   });
 
+  test('reports the requested timeout and effective retry ceiling after HTTP-budget clamping', async () => {
+    const fetchImpl: CodeBridgeFetch = jest.fn(async () =>
+      commandResponse({ exitCode: null, timedOut: true, stdout: 'partial work', stderr: '' }),
+    );
+    const bashTool = createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      defaultTimeoutMs: 60_000,
+      maxTimeoutMs: 80_000,
+      maxRequestTimeoutMs: 90_000,
+      fetchImpl,
+    });
+    const [content] = await bashTool.func(
+      { command: 'npm test', timeoutMs: 10_000 },
+      undefined,
+      {},
+    );
+    expect(content).toContain('partial work');
+    expect(content).toContain('timeoutMs: 10000');
+    expect(content).toContain('up to 70000 milliseconds');
+    expect(content).not.toContain('up to 80000');
+    expect(content).toContain('partial side effects');
+  });
+
   test('reports termination, timeouts, and truncation without hiding stderr', async () => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () =>
       commandResponse({
@@ -748,7 +883,7 @@ describe('createAttachedWorkspaceBashTool', () => {
     });
 
     await expect(bashTool.func({ command: 'sleep 60' }, undefined, {})).resolves.toEqual([
-      'stderr:\ndeadline reached\n[terminated by SIGKILL][timed out][output truncated]',
+      'stderr:\ndeadline reached\n[terminated by SIGKILL][timed out][output truncated]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects. Set timeoutMs explicitly up to 30000 milliseconds, or use run_in_background: true if available. Background execution uses the same timeout ceiling.',
       {},
     ]);
   });

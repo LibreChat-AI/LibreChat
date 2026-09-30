@@ -1,11 +1,4 @@
 import {
-  Tools,
-  Constants,
-  normalizeActionToolName,
-  normalizeServerName,
-  splitMCPToolKey,
-} from 'librechat-data-provider';
-import {
   Constants as AgentConstants,
   CODE_EXECUTION_TOOLS,
   BashExecutionToolDefinition,
@@ -13,6 +6,15 @@ import {
   SkillToolDefinition,
   buildBashExecutionToolDescription,
 } from '@librechat/agents';
+import {
+  Tools,
+  Constants,
+  CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+  CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
+  normalizeActionToolName,
+  normalizeServerName,
+  splitMCPToolKey,
+} from 'librechat-data-provider';
 import type {
   AgentToolOptions,
   CodeWorkspaceOperation,
@@ -438,6 +440,8 @@ export interface RegisterCodeExecutionToolsParams {
   workspaceOperations?: ReadonlySet<CodeWorkspaceOperation>;
   /** Deployment ceiling advertised on attached Bash tool definitions. */
   workspaceCommandTimeoutMaxMs?: number;
+  workspaceCommandTimeoutDefaultMs?: number;
+  workspaceReadFileDefaultLines?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
@@ -543,8 +547,8 @@ const ATTACHED_WORKSPACE_READ_FILE_PARAMETERS: LCTool['parameters'] = Object.fre
     max_lines: {
       type: 'integer',
       minimum: 1,
-      maximum: 500,
-      description: 'Optional maximum number of workspace text-file lines to return.',
+      maximum: CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
+      description: `Optional maximum number of workspace text-file lines to return. Defaults to ${CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES}; the byte budget may truncate the result sooner.`,
     },
   },
   required: ['path'],
@@ -558,7 +562,10 @@ const CODE_READ_FILE_DEF: LCTool = Object.freeze({
   responseFormat: ReadFileToolDefinition.responseFormat,
 }) as LCTool;
 
-function createAttachedWorkspaceReadFileDef(includeSkillFileInstructions: boolean): LCTool {
+function createAttachedWorkspaceReadFileDef(
+  includeSkillFileInstructions: boolean,
+  defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+): LCTool {
   const baseDescription = includeSkillFileInstructions
     ? SKILL_READ_FILE_DESCRIPTION
     : CODE_READ_FILE_DESCRIPTION;
@@ -566,7 +573,19 @@ function createAttachedWorkspaceReadFileDef(includeSkillFileInstructions: boolea
     name: ReadFileToolDefinition.name,
     toolType: 'builtin',
     description: `${baseDescription}\n\n${ATTACHED_WORKSPACE_READ_FILE_INSTRUCTIONS}`,
-    parameters: ATTACHED_WORKSPACE_READ_FILE_PARAMETERS,
+    parameters:
+      defaultReadFileLines === CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES
+        ? ATTACHED_WORKSPACE_READ_FILE_PARAMETERS
+        : {
+            ...ATTACHED_WORKSPACE_READ_FILE_PARAMETERS,
+            properties: {
+              ...ATTACHED_WORKSPACE_READ_FILE_PARAMETERS?.properties,
+              max_lines: {
+                ...ATTACHED_WORKSPACE_READ_FILE_PARAMETERS?.properties?.max_lines,
+                description: `Optional maximum number of workspace text-file lines to return. Defaults to ${defaultReadFileLines}; the byte budget may truncate the result sooner.`,
+              },
+            },
+          },
     responseFormat: ReadFileToolDefinition.responseFormat,
   }) as LCTool;
 }
@@ -970,8 +989,15 @@ const ATTACHED_SKILL_EDIT_FILE_DEF: LCTool = Object.freeze({
   parameters: attachedFileAuthoringParameters(SKILL_EDIT_FILE_PARAMETERS, true),
 }) as LCTool;
 
-function buildReadFileDef(includeSkillFileInstructions: boolean, workspaceTools: boolean): LCTool {
+function buildReadFileDef(
+  includeSkillFileInstructions: boolean,
+  workspaceTools: boolean,
+  defaultReadFileLines: number = CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
+): LCTool {
   if (workspaceTools) {
+    if (defaultReadFileLines !== CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES) {
+      return createAttachedWorkspaceReadFileDef(includeSkillFileInstructions, defaultReadFileLines);
+    }
     return includeSkillFileInstructions
       ? ATTACHED_SKILL_READ_FILE_DEF
       : ATTACHED_CODE_READ_FILE_DEF;
@@ -1055,6 +1081,7 @@ function createBashToolDef(
   workspaceCommandTimeoutMaxMs?: number,
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'],
   workspaceLinkedWorktrees = false,
+  workspaceCommandTimeoutDefaultMs?: number,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1071,6 +1098,7 @@ function createBashToolDef(
           workspaceCommandTimeoutMaxMs,
           workspaceEnvironment,
           workspaceLinkedWorktrees,
+          workspaceCommandTimeoutDefaultMs,
         )
       : BashExecutionToolDefinition.schema) as unknown as LCTool['parameters'],
   }) as LCTool;
@@ -1084,6 +1112,7 @@ function buildBashToolDef(opts: {
   statefulSessions?: boolean;
   workspaceTools?: boolean;
   workspaceCommandTimeoutMaxMs?: number;
+  workspaceCommandTimeoutDefaultMs?: number;
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
@@ -1098,6 +1127,7 @@ function buildBashToolDef(opts: {
       opts.workspaceCommandTimeoutMaxMs,
       opts.workspaceEnvironment,
       opts.workspaceLinkedWorktrees === true,
+      opts.workspaceCommandTimeoutDefaultMs,
     );
   }
   return opts.enableToolOutputReferences
@@ -1130,6 +1160,8 @@ export function registerCodeExecutionTools(
     workspaceTools = false,
     workspaceOperations,
     workspaceCommandTimeoutMaxMs,
+    workspaceCommandTimeoutDefaultMs,
+    workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     enableToolOutputReferences = false,
@@ -1140,7 +1172,9 @@ export function registerCodeExecutionTools(
     !workspaceTools || workspaceOperations?.has(operation) === true;
   const candidates: LCTool[] = [];
   if (!workspaceTools || supportsWorkspaceOperation('read_file')) {
-    candidates.push(buildReadFileDef(includeSkillFileInstructions, workspaceTools));
+    candidates.push(
+      buildReadFileDef(includeSkillFileInstructions, workspaceTools, workspaceReadFileDefaultLines),
+    );
   } else if (includeSkillFileInstructions) {
     candidates.push(buildReadFileDef(true, false));
   }
@@ -1151,6 +1185,7 @@ export function registerCodeExecutionTools(
         statefulSessions,
         workspaceTools,
         workspaceCommandTimeoutMaxMs,
+        workspaceCommandTimeoutDefaultMs,
         workspaceEnvironment,
         workspaceLinkedWorktrees,
       }),
