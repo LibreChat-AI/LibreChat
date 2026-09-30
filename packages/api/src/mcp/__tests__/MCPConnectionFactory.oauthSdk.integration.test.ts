@@ -1,5 +1,5 @@
 import { Keyv } from 'keyv';
-import type { IUser } from '@librechat/data-schemas';
+import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type {
   OAuthClientInformation,
   OAuthStoredClientMetadata,
@@ -714,6 +714,114 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
       registrySpy.mockRestore();
     }
   });
+
+  it.each([undefined, true])(
+    'coalesces concurrent rejection persistence and refresh (coordination: %s)',
+    async (oauthRefreshCoordination) => {
+      server = await createOAuthMCPServer({
+        issueRefreshTokens: true,
+        refreshGate: async () => {
+          server.issuedTokens.clear();
+        },
+      });
+      const initialTokens = await storeTokens(tokenStore, server, await issueTokens(server));
+      const flowManager = createFlowManager();
+      let rejectionStarted!: () => void;
+      let releaseRejection!: () => void;
+      let firstRecoveryDone!: () => void;
+      const started = new Promise<void>((resolve) => (rejectionStarted = resolve));
+      const blocked = new Promise<void>((resolve) => (releaseRejection = resolve));
+      const recovered = new Promise<void>((resolve) => (firstRecoveryDone = resolve));
+      let holdingRejection = false;
+      const updateToken: TokenMethods['updateToken'] = async (query, update) => {
+        const marker =
+          update.metadata instanceof Map
+            ? update.metadata.get('rejected_credential_set_id')
+            : update.metadata?.rejected_credential_set_id;
+        if (marker === initialTokens.credential_set_id) {
+          holdingRejection = true;
+          rejectionStarted();
+          await blocked;
+          holdingRejection = false;
+        }
+        return tokenStore.updateToken(query, update);
+      };
+      const basic = {
+        serverName: SERVER_NAME,
+        serverConfig: {
+          type: 'streamable-http' as const,
+          url: server.url,
+          requiresOAuth: true,
+          oauthRefreshCoordination,
+        },
+        ephemeralConnection: true,
+      };
+      const options = {
+        useOAuth: true as const,
+        user: { id: USER_ID } as IUser,
+        flowManager,
+        tokenMethods: {
+          findToken: tokenStore.findToken,
+          createToken: tokenStore.createToken,
+          updateToken,
+          deleteTokens: tokenStore.deleteTokens,
+        },
+      };
+      connection = await MCPConnectionFactory.create(basic, options);
+      const second = await MCPConnectionFactory.create(basic, options);
+      const cleanFirst = MCPConnectionFactory.attachRequestOAuthHandler(basic, options, connection);
+      const cleanSecond = MCPConnectionFactory.attachRequestOAuthHandler(basic, options, second);
+      type RecoveryHandler = (challenge: {
+        serverUrl: string;
+        rejectedCredentialSetId?: string;
+      }) => Promise<void>;
+      const firstHandler = connection.listeners(
+        'oauthReauthenticationRequired',
+      )[0] as RecoveryHandler;
+      const secondHandler = second.listeners('oauthReauthenticationRequired')[0] as RecoveryHandler;
+      const acquireLease = flowManager.acquireLease.bind(flowManager);
+      const acquireSpy = jest
+        .spyOn(flowManager, 'acquireLease')
+        .mockImplementation(async (...args) => {
+          if (holdingRejection) await recovered;
+          return acquireLease(...args);
+        });
+      const generationSpy = jest.spyOn(flowManager, 'getLeaseGeneration');
+      const challenge = {
+        serverUrl: server.url,
+        rejectedCredentialSetId: initialTokens.credential_set_id,
+      };
+      try {
+        server.issuedTokens.delete(initialTokens.access_token);
+        const firstRecovery = firstHandler(challenge);
+        void firstRecovery.then(firstRecoveryDone, firstRecoveryDone);
+        await started;
+        const secondRecovery = secondHandler(challenge);
+        await waitFor(() => generationSpy.mock.calls.length >= 2);
+        releaseRejection();
+        await Promise.all([firstRecovery, secondRecovery]);
+
+        expect(
+          server.tokenRequests.filter((request) => request.grantType === 'refresh_token'),
+        ).toHaveLength(1);
+        expect(connection.getOAuthCredentialSetId()).toBe(second.getOAuthCredentialSetId());
+        cleanFirst();
+        cleanSecond();
+        await Promise.all([connection.disconnect(), second.disconnect()]);
+        await Promise.all([connection.connect(), second.connect()]);
+        const tools = await Promise.all([connection.fetchTools(), second.fetchTools()]);
+        expect(tools.every((catalog) => catalog.some((tool) => tool.name === 'echo'))).toBe(true);
+      } finally {
+        releaseRejection();
+        firstRecoveryDone();
+        cleanFirst();
+        cleanSecond();
+        acquireSpy.mockRestore();
+        generationSpy.mockRestore();
+        await safeDisconnect(second);
+      }
+    },
+  );
 
   it('lets an in-flight request finish before a concurrent OAuth reconnect', async () => {
     let markSlowRequestStarted: (() => void) | undefined;

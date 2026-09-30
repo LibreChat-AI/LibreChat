@@ -1222,7 +1222,8 @@ export class MCPConnectionFactory {
    * would hand back stale tokens on a subsequent 401 (e.g. when the freshly
    * minted token is revoked before its local expiry). Caching only the
    * in-flight promise means every fresh 401 after settlement triggers a
-   * fresh redemption.
+   * fresh redemption. Rejection persistence is part of that flight, so a
+   * lease wait cannot delay a concurrent caller until after redemption.
    */
   protected async attemptSilentTokenRefresh(
     rejectedCredentialSetId?: string | null,
@@ -1317,6 +1318,15 @@ export class MCPConnectionFactory {
     rejectedCredentialSetId?: string | null,
   ): Promise<MCPOAuthTokens | null> {
     try {
+      if (rejectedCredentialSetId) {
+        await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
+      }
+      if (signal.aborted) {
+        throw new MCPTokenRefreshUnavailableError(
+          this.serverName,
+          new Error('Silent refresh stopped during rejection persistence'),
+        );
+      }
       const tokens = await this.runWithCapturedTenant(async () =>
         MCPTokenStorage.forceRefreshTokens({
           userId: this.userId!,
@@ -1839,9 +1849,8 @@ export class MCPConnectionFactory {
         return;
       }
 
-      await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
-
       if (isRequestRecovery && recoveryPhase === 'terminal') {
+        await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
         logger.warn(`${this.logPrefix} OAuth recovery phase budget exhausted`);
         connection.emit('oauthFailed', new Error('OAuth recovery phase budget exhausted'));
         return;
@@ -1889,6 +1898,8 @@ export class MCPConnectionFactory {
           }
         }
       }
+
+      await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
 
       if (isRequestRecovery) {
         recoveryPhase = 'terminal';

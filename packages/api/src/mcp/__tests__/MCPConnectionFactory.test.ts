@@ -2911,6 +2911,47 @@ describe('MCPConnectionFactory', () => {
       },
     );
 
+    it('coalesces rejection persistence and never redeems after its silent-refresh budget expires', async () => {
+      jest.useFakeTimers();
+      let releaseRejection!: () => void;
+      const blocked = new Promise<void>((resolve) => (releaseRejection = resolve));
+      mockMCPTokenStorage.markAuthorizationRejected.mockImplementationOnce(() => blocked);
+      const factory = new InspectableMCPConnectionFactory(
+        {
+          serverName: 'test-server',
+          serverConfig: { type: 'sse', url: 'https://api.example.com', initTimeout: 5000 },
+        },
+        {
+          useOAuth: true,
+          user: mockUser,
+          flowManager: mockFlowManager,
+          tokenMethods: {
+            findToken: jest.fn(),
+            createToken: jest.fn(),
+            updateToken: jest.fn(),
+            deleteTokens: jest.fn(),
+          },
+        },
+      );
+      try {
+        const first = factory.attemptSilentTokenRefreshForTest('rejected-generation');
+        const second = factory.attemptSilentTokenRefreshForTest('rejected-generation');
+        void first.catch(() => undefined);
+        void second.catch(() => undefined);
+        expect(mockMCPTokenStorage.markAuthorizationRejected).toHaveBeenCalledTimes(1);
+        expect(mockMCPTokenStorage.forceRefreshTokens).not.toHaveBeenCalled();
+        await jest.advanceTimersByTimeAsync(2001);
+        await expect(first).rejects.toMatchObject({ name: 'MCPTokenRefreshUnavailableError' });
+        await expect(second).rejects.toMatchObject({ name: 'MCPTokenRefreshUnavailableError' });
+        releaseRejection();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(mockMCPTokenStorage.forceRefreshTokens).not.toHaveBeenCalled();
+      } finally {
+        releaseRejection();
+        jest.useRealTimers();
+      }
+    });
+
     it('should keep the in-flight silent-refresh lock until the aborted refresh settles', async () => {
       // A timed-out caller should fall back to interactive OAuth immediately,
       // but the shared lock must remain briefly while the underlying abortable
