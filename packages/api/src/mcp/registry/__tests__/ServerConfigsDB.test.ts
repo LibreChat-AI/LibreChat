@@ -997,6 +997,33 @@ describe('ServerConfigsDB', () => {
       ).toContain('another-users-secret');
     });
 
+    it('binds to restored OAuth destinations when an update omits them', async () => {
+      const oauth = {
+        client_id: 'shared-client',
+        client_secret: 'shared-oauth-secret',
+        authorization_url: 'https://trusted.example.com/authorize',
+        token_url: 'https://trusted.example.com/token',
+      };
+      const created = await serverConfigsDB.add('temp-name', { ...config, oauth }, userId);
+      const field = Object.keys(created.config.customUserVars!)[0];
+      const savedVars = await saveUserKey(created.serverName, field);
+      await serverConfigsDB.update(
+        created.serverName,
+        {
+          ...config,
+          description: 'Cosmetic change',
+          oauth: { client_id: oauth.client_id },
+        },
+        userId,
+      );
+      const updated = await serverConfigsDB.get(created.serverName, userId);
+      expect(updated?.oauth?.token_url).toBe(oauth.token_url);
+      expect(getMissingCustomUserVars(updated!, savedVars)).toEqual([]);
+      expect(
+        JSON.stringify(processMCPEnv({ options: updated!, customUserVars: savedVars })),
+      ).toContain('another-users-secret');
+    });
+
     it('preserves legacy keys until the destination changes, then ignores them', async () => {
       const created = await serverConfigsDB.add('temp-name', config, userId);
       await mongoose.models.MCPServer.updateOne(

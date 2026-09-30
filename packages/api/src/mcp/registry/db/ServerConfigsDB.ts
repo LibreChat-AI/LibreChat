@@ -356,9 +356,6 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
       sanitizeConfigHeaderMaps(config),
     );
 
-    /** Transformed user-provided API key config (adds customUserVars and headers) */
-    configToSave = this.transformUserApiKeyConfig(configToSave, existingServer?.config);
-
     const existingOAuth = existingServer?.config?.oauth;
     const existingOAuthSecret = existingOAuth?.client_secret;
     const preservesOAuthSecret =
@@ -373,6 +370,9 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
         throw new MCPOAuthSecretReentryRequiredError(changedFields);
       }
     }
+
+    /** Transformed user-provided API key config (adds customUserVars and headers) */
+    configToSave = this.transformUserApiKeyConfig(configToSave, existingServer?.config);
 
     /** Encrypted config before storing in database */
     configToSave = await this.encryptConfig(configToSave);
