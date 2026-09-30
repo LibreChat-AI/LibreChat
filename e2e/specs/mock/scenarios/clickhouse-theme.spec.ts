@@ -128,6 +128,26 @@ const titleColor = (page: Page, title: string) =>
     .getByText(title, { exact: true })
     .evaluate((node) => getComputedStyle(node).color);
 
+const MISSING_AVATAR = 'https://avatar.e2e.invalid/missing.png';
+
+/** The e2e user has an avatar seed, so the default avatar only draws once its image fails:
+ *  the user payload points at an address the page refuses to load. */
+async function failUserAvatar(page: Page) {
+  await page.route(`${MISSING_AVATAR}*`, (route) => route.abort());
+  await page.route('**/api/user', async (route) => {
+    const response = await route.fetch();
+    const user = await response.json();
+    await route.fulfill({ response, json: { ...user, avatar: MISSING_AVATAR } });
+  });
+}
+
+/** The default avatar on the sidebar account button, the one a signed-in user always sees. */
+const navAvatarFill = async (page: Page) => {
+  const avatar = page.getByTestId('nav-user').locator('div[aria-hidden="true"]').first();
+  await expect(avatar).toBeVisible({ timeout: 20000 });
+  return avatar.evaluate((node) => getComputedStyle(node).backgroundColor);
+};
+
 test.describe('clickhouse reference theme', () => {
   test('the ClickHouse definition repaints the chat and the settings dialog in both modes @scenario:clickhouse-definition-repaints-chat-sidebar-and-dialog', async ({
     page,
@@ -228,6 +248,59 @@ test.describe('clickhouse reference theme', () => {
         expect(await themeValue(page, '--surface-primary')).toBe(palette['rgb-surface-primary']);
         expect(await titleColor(page, 'LibreChat default look')).toBe(
           rgbCss(palette['rgb-text-primary']),
+        );
+      }
+    } finally {
+      await deleteConversations([conversationId]);
+    }
+  });
+
+  test('the default avatar keeps its fill and the placeholder its surface without a theme @scenario:default-avatar-keeps-its-fill', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    const conversationId = await seedChat('Default avatar');
+    await installThemeBridge(page, null);
+    await failUserAvatar(page);
+
+    try {
+      for (const [mode, placeholder] of [
+        ['light', defaultTheme['rgb-surface-secondary']],
+        ['dark', darkTheme['rgb-surface-tertiary']],
+      ] as const) {
+        await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
+        await expect(page.getByText(REPLY_TEXT, { exact: true }).first()).toBeVisible({
+          timeout: 20000,
+        });
+
+        expect(await navAvatarFill(page)).toBe('rgb(121, 137, 255)');
+        expect(await themeValue(page, '--avatar-placeholder')).toBe(placeholder);
+      }
+    } finally {
+      await deleteConversations([conversationId]);
+    }
+  });
+
+  test('the ClickHouse definition paints the default avatar from Click UI @scenario:clickhouse-avatar-follows-click-ui', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    const conversationId = await seedChat('ClickHouse avatar');
+    await installThemeBridge(page, clickHouseTheme);
+    await failUserAvatar(page);
+
+    try {
+      for (const mode of MODES) {
+        const colors = colorsFor(mode);
+        await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
+        await expect(page.getByText(REPLY_TEXT, { exact: true }).first()).toBeVisible({
+          timeout: 20000,
+        });
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+
+        expect(await navAvatarFill(page)).toBe(rgbCss(colors['rgb-avatar-fill']));
+        expect(await themeValue(page, '--avatar-placeholder')).toBe(
+          colors['rgb-avatar-placeholder'],
         );
       }
     } finally {
