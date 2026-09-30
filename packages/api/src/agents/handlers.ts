@@ -1050,7 +1050,6 @@ type ParsedSkillAuthoringPath = {
   displayPath: string;
 };
 
-
 type MatchedRange = { index: number; length: number };
 
 type MatchStatus =
@@ -1640,7 +1639,6 @@ function getAuthorInfo(req: ServerRequest): {
     ...(user.tenantId ? { tenantId: user.tenantId } : {}),
   };
 }
-
 
 /**
  * Ranges a whitespace-tolerant strategy collects before it stops looking. An

@@ -78,10 +78,7 @@ export function buildHITLRunWiring(
     return normalized;
   };
   const withNormalizedEdits =
-    (
-      hook: HookCallback<'PreToolUse'>,
-      publishNormalizedInput = false,
-    ): HookCallback<'PreToolUse'> =>
+    (hook: HookCallback<'PreToolUse'>): HookCallback<'PreToolUse'> =>
     async (input, signal) => {
       if (
         input.toolName !== EDIT_FILE_TOOL_NAME ||
@@ -92,10 +89,13 @@ export function buildHITLRunWiring(
       }
       const normalized = normalizeInput(input.toolInput);
       if (typeof normalized === 'string') return { decision: 'deny', reason: normalized };
-      const result = await hook({ ...input, toolInput: normalized }, signal);
-      if (result?.updatedInput == null) {
-        return publishNormalizedInput ? { ...result, updatedInput: normalized } : result;
-      }
+      /** A fresh updatedInput would supersede the checkpointed proposal on approval replay. */
+      Object.assign(input.toolInput, normalized);
+      delete input.toolInput.old_text;
+      delete input.toolInput.new_text;
+      delete input.toolInput.replace_all;
+      const result = await hook(input, signal);
+      if (result?.updatedInput == null) return result;
       const updatedInput = normalizeInput(result.updatedInput);
       if (typeof updatedInput === 'string') return { decision: 'deny', reason: updatedInput };
       return { ...result, updatedInput };
@@ -109,10 +109,8 @@ export function buildHITLRunWiring(
   // Static config-driven policy (mode/allow/deny/ask) — the baseline.
   registry.register('PreToolUse', {
     hooks: [
-      withNormalizedEdits(
-        async (input, signal) =>
-          createToolPolicyHook(mapToolApprovalPolicy(activePolicy) ?? {})(input, signal),
-        true,
+      withNormalizedEdits(async (input, signal) =>
+        createToolPolicyHook(mapToolApprovalPolicy(activePolicy) ?? {})(input, signal),
       ),
     ],
   });

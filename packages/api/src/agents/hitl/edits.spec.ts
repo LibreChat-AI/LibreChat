@@ -10,6 +10,7 @@ import {
   StateGraph,
   MessagesAnnotation,
 } from '@langchain/langgraph';
+import type { ToolExecuteBatchRequest } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
 import type { ToolApprovalHook } from './hooks';
 import { buildApprovalPreview } from '../../../../../client/src/components/Chat/approval/preview';
@@ -68,20 +69,18 @@ describe('native edit approval normalization', () => {
   ])('offers the same canonical replacements execution consumes: %#', async (args) => {
     const hook = jest.fn(async () => ({}));
     const wiring = buildHITLRunWiring({ enabled: true }, {}, [], [{ hook }], nativeAgentIds)!;
-    const result = await evaluate(wiring, {
-      path: effectiveInput.path,
-      intent: 'Updating',
-      ...args,
-    });
+    const input = { path: effectiveInput.path, intent: 'Updating', ...args };
+    const result = await evaluate(wiring, input);
     expect(result.decision).toBe('ask');
-    expect(result.updatedInput).toEqual({ ...effectiveInput, intent: 'Updating' });
+    expect(result.updatedInput).toBeUndefined();
+    expect(input).toEqual({ ...effectiveInput, intent: 'Updating' });
     expect(hook.mock.calls[0]).toEqual([
       expect.objectContaining({ toolInput: { ...effectiveInput, intent: 'Updating' } }),
       expect.anything(),
     ]);
-    expect(normalizeEditArgs(result.updatedInput!)).toEqual(effectiveInput.edits);
-    expect(result.updatedInput).not.toHaveProperty('old_text');
-    expect(result.updatedInput).not.toHaveProperty('replace_all');
+    expect(normalizeEditArgs(input)).toEqual(effectiveInput.edits);
+    expect(input).not.toHaveProperty('old_text');
+    expect(input).not.toHaveProperty('replace_all');
   });
 
   test('normalizes hook rewrites and preserves last-writer precedence over abstaining hooks', async () => {
@@ -139,7 +138,12 @@ describe('native edit approval normalization', () => {
     const ids = new Set<string>();
     const wiring = buildHITLRunWiring({ enabled: true }, {}, [], [], ids)!;
     ids.add('native-agent');
-    expect((await evaluate(wiring, effectiveInput)).updatedInput).toEqual(effectiveInput);
+    const input = { path: effectiveInput.path, old_text: 'original', new_text: 'replacement' };
+    expect((await evaluate(wiring, input)).updatedInput).toBeUndefined();
+    expect(input).toEqual({
+      path: effectiveInput.path,
+      edits: [{ old_text: 'original', new_text: 'replacement' }],
+    });
   });
 });
 
@@ -200,6 +204,7 @@ describe('native edit approval interrupt and resume', () => {
       hookRegistry: wiring.hooks,
       humanInTheLoop: wiring.humanInTheLoop,
       executingAgentId: 'native-agent',
+      toolCallStepIds: new Map([['edit-call', 'step-1']]),
     });
     const graph = new StateGraph(MessagesAnnotation)
       .addNode('tools', node)
@@ -243,4 +248,131 @@ describe('native edit approval interrupt and resume', () => {
     expect(captured).toEqual([effectiveInput]);
     expect(JSON.parse(preview.body)).toEqual(captured[0].edits);
   });
+});
+
+describe('reviewed native edit replay', () => {
+  test.each([false, true])(
+    'preserves a one-time hook rewrite after graph reconstruction, event mode: %s',
+    async (eventDrivenMode) => {
+      const captured: (typeof effectiveInput)[] = [];
+      const seen = new Set<string>();
+      const reviewedInput = {
+        ...effectiveInput,
+        edits: [{ ...effectiveInput.edits[0], new_text: 'sanitized' }],
+      };
+      const saver = new MemorySaver();
+      const editTool = tool(
+        async (args) => {
+          captured.push(args);
+          return 'updated';
+        },
+        {
+          name: 'edit_file',
+          description: 'Native edit replay fixture',
+          schema: z.object({
+            path: z.string(),
+            edits: z.array(
+              z.object({
+                old_text: z.string(),
+                new_text: z.string(),
+                replace_all: z.boolean(),
+              }),
+            ),
+          }),
+        },
+      );
+      const createGraph = () => {
+        const wiring = buildHITLRunWiring(
+          { enabled: true },
+          {},
+          [],
+          [
+            {
+              hook: async (input) => {
+                if (seen.has(input.toolUseId)) return {};
+                seen.add(input.toolUseId);
+                return { updatedInput: reviewedInput };
+              },
+            },
+          ],
+          nativeAgentIds,
+        )!;
+        return new StateGraph(MessagesAnnotation)
+          .addNode(
+            'tools',
+            new ToolNode<typeof MessagesAnnotation.State>({
+              tools: [editTool],
+              eventDrivenMode,
+              executingAgentId: 'native-agent',
+              toolCallStepIds: new Map([['edit-call', 'step-1']]),
+              hookRegistry: wiring.hooks,
+              humanInTheLoop: wiring.humanInTheLoop,
+            }),
+          )
+          .addEdge(START, 'tools')
+          .addEdge('tools', END)
+          .compile({ checkpointer: saver });
+      };
+      const config = {
+        configurable: { thread_id: `reviewed-edit-${eventDrivenMode}`, run_id: 'edit-run' },
+        callbacks: [
+          {
+            handleCustomEvent: async (name: string, data: unknown) => {
+              if (name !== 'on_tool_execute') return;
+              const request = data as ToolExecuteBatchRequest;
+              captured.push(request.toolCalls[0].args as typeof effectiveInput);
+              request.resolve(
+                request.toolCalls.map((call) => ({
+                  toolCallId: call.id,
+                  status: 'success' as const,
+                  content: 'updated',
+                })),
+              );
+            },
+          },
+        ],
+      };
+      const graph = createGraph();
+      await graph.invoke(
+        {
+          messages: [
+            new AIMessage({
+              content: '',
+              tool_calls: [
+                {
+                  id: 'edit-call',
+                  name: 'edit_file',
+                  args: { ...effectiveInput },
+                },
+              ],
+            }),
+          ],
+        },
+        config,
+      );
+      const snapshot = await graph.getState(config);
+      const interrupted = snapshot.tasks[0].interrupts[0];
+      const payload = interrupted.value as Agents.ToolApprovalInterruptPayload;
+      expect(payload.action_requests[0].arguments).toEqual(reviewedInput);
+      expect(captured).toEqual([]);
+      const preview = buildApprovalPreview({
+        ...payload.action_requests[0],
+        source: 'librechat_code',
+      });
+      const rebuilt = createGraph();
+      await rebuilt.invoke(
+        new Command({ resume: { [interrupted.id!]: { 'edit-call': { type: 'approve' } } } }),
+        {
+          ...config,
+          configurable: {
+            ...config.configurable,
+            /** Mirrors the checkpoint-derived evidence that Run.resume supplies to ToolNode. */
+            __librechat_tool_approval_review: { interruptId: interrupted.id, payload },
+          },
+        },
+      );
+      expect(captured).toEqual([reviewedInput]);
+      expect(JSON.parse(preview.body)).toEqual(captured[0].edits);
+    },
+  );
 });
