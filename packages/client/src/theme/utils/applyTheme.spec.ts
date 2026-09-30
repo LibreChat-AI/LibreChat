@@ -383,15 +383,28 @@ describe('applyTheme', () => {
     expect(root.hasAttribute(THEME_DISABLED_ATTRIBUTE)).toBe(false);
   });
 
-  it("keeps a legacy theme's avatar backdrop on the surface its mode drew it on", () => {
+  it('leaves the document root backdrop to the stylesheet alias so it follows the mode', () => {
     const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' }, root);
+
+    expect(root.style.getPropertyValue('--surface-secondary')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('');
+  });
+
+  it('derives a scoped root backdrop from the mode it is applied in', () => {
+    const scoped = document.createElement('div');
     const colors = { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' };
+    document.body.append(scoped);
+    try {
+      applyTheme(colors, scoped);
+      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('20 21 22');
 
-    applyTheme(colors, root);
-    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('20 21 22');
-
-    applyTheme(colors, root, undefined, 'dark');
-    expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
+      applyTheme(colors, scoped, undefined, 'dark');
+      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
+    } finally {
+      scoped.remove();
+    }
   });
 
   it("inks a legacy theme's default avatar in its primary text", () => {
@@ -402,19 +415,6 @@ describe('applyTheme', () => {
 
     applyTheme({ 'rgb-text-primary': '10 11 12', 'rgb-avatar-text': '1 2 3' }, root);
     expect(root.style.getPropertyValue('--avatar-text')).toBe('1 2 3');
-  });
-
-  it('reads the mode off the root when a caller does not pass it', () => {
-    const root = document.documentElement;
-    const colors = { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' };
-
-    root.classList.add('dark');
-    try {
-      applyTheme(colors, root);
-      expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
-    } finally {
-      root.classList.remove('dark');
-    }
   });
 
   it('reads the mode off a dark ancestor of a scoped root', () => {

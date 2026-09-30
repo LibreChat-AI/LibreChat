@@ -38,7 +38,7 @@ function validateRGB(rgb: string): boolean {
 function mapColors(
   colors: IThemeRGB,
   base?: IThemeRGB,
-  mode: ThemeMode = 'light',
+  placeholderMode?: ThemeMode,
 ): Array<[string, string]> {
   const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
     const value = colors[token];
@@ -77,9 +77,15 @@ function mapColors(
     variables.push(['--avatar-text', colors['rgb-text-primary']]);
   }
 
-  /** The avatar backdrop was the mode's secondary or tertiary surface, as in `resolveTheme`. */
+  /**
+   * The avatar backdrop was the mode's secondary or tertiary surface, as in `resolveTheme`. On the
+   * document root the stylesheet already aliases it to those surfaces per mode, so it is derived
+   * only for a scoped root, which that alias cannot see.
+   */
   const avatarPlaceholder =
-    mode === 'dark' ? colors['rgb-surface-tertiary'] : colors['rgb-surface-secondary'];
+    placeholderMode === undefined
+      ? undefined
+      : colors[placeholderMode === 'dark' ? 'rgb-surface-tertiary' : 'rgb-surface-secondary'];
   if (colors['rgb-avatar-placeholder'] === undefined && avatarPlaceholder !== undefined) {
     variables.push(['--avatar-placeholder', avatarPlaceholder]);
   }
@@ -218,8 +224,9 @@ export default function applyTheme(
     return;
   }
 
-  const activeMode = mode ?? (root.closest('.dark') ? 'dark' : 'light');
-  mapColors(themeRGB, base, activeMode).forEach(([property, value]) => {
+  const scoped = root !== root.ownerDocument.documentElement;
+  const placeholderMode = scoped ? (mode ?? (root.closest('.dark') ? 'dark' : 'light')) : undefined;
+  mapColors(themeRGB, base, placeholderMode).forEach(([property, value]) => {
     if (!validateRGB(value)) {
       console.error(`Invalid RGB value for ${property}: ${value}`);
       return;
