@@ -65,4 +65,22 @@ test.describe('tool call steps', () => {
     await page.reload({ timeout: 10_000 });
     await expectOneToolCardBeforeReply(page, label);
   });
+
+  test('a lone settled command opens its output without a click and reads Ran command @scenario:lone-tool-call-opens-and-reads-ran', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = uniqueLabel('lone');
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await enableCodeInterpreter(page);
+
+    const response = await sendMessageAndWaitForCompletion(page, `E2E_EXECUTE_CODE:${label}`);
+    expect(response.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+      timeout: 30_000,
+    });
+    await expect(toolCard(page)).toHaveCount(1, { timeout: 30_000 });
+    await expect(toolOutput(page)).toBeVisible();
+  });
 });
