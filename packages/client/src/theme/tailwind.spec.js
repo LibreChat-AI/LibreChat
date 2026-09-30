@@ -165,11 +165,11 @@ describe('LibreChat Tailwind preset', () => {
 
     /** A stylesheet that predates the control spacing roles pads controls with the shared
      *  spacing they read before. */
-    expect(css).toContain(
-      `var(--theme-control-padding-x, var(--theme-space-normal, ${defaultAppearance.spaceNormal}))`,
+    expect(rule(css, 'px-theme-control-x')).toContain(
+      `padding-inline: var(--theme-control-padding-x, var(--theme-space-normal, ${defaultAppearance.spaceNormal}))`,
     );
-    expect(css).toContain(
-      `var(--theme-control-gap, var(--theme-space-compact, ${defaultAppearance.spaceCompact}))`,
+    expect(rule(css, 'gap-theme-control-gap')).toContain(
+      `gap: var(--theme-control-gap, var(--theme-space-compact, ${defaultAppearance.spaceCompact}))`,
     );
 
     /** The preset extends the default theme rather than replacing it. */
