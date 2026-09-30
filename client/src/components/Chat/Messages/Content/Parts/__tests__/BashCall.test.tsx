@@ -506,7 +506,7 @@ describe('BashCall output pane', () => {
 });
 
 describe('BashCall exit status', () => {
-  const renderSettled = (output: string) =>
+  const renderSettled = (output: string, attached = true) =>
     render(
       <RecoilRoot>
         <BashCall
@@ -515,9 +515,22 @@ describe('BashCall exit status', () => {
           runStepStatus="completed"
           args={{ command: 'make test' }}
           output={output}
+          executor={attached ? 'attached_workspace' : undefined}
         />
       </RecoilRoot>,
     );
+
+  it('does not read a trailer the sandbox command printed itself', () => {
+    const { container } = renderSettled('stdout:\n[exit code: 1]', false);
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
+    expect(container.querySelectorAll('pre')[1]).toHaveTextContent('[exit code: 1]');
+  });
+
+  it('fails the same output when the server marked it attached-workspace', () => {
+    renderSettled('stdout:\n[exit code: 1]');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent(/tool failed · exit code 1$/);
+  });
 
   it('fails a non-zero exit even when the output matches no error pattern', () => {
     renderSettled('stdout:\n1 test failed\n\n[exit code: 2]');
@@ -550,7 +563,7 @@ describe('BashCall exit status', () => {
   });
 
   it('keeps the text heuristic for sandbox output without an exit trailer', () => {
-    const { container } = renderSettled('stdout:\nTraceback (most recent call last)\n');
+    const { container } = renderSettled('stdout:\nTraceback (most recent call last)\n', false);
     expect(screen.getByTestId('progress-text')).not.toHaveTextContent('tool failed');
     expect(container.querySelectorAll('pre')[1]).toHaveClass('text-status-error');
   });

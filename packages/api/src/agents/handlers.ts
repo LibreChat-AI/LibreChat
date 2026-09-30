@@ -110,6 +110,11 @@ import {
   getSafeErrorMetadata,
 } from '~/utils';
 import {
+  isAttachedWorkspaceBashTool,
+  resolveAttachedWorkspaceQueueWaitMs,
+  resolveAttachedWorkspaceRequestTimeoutMs,
+} from '~/code/command';
+import {
   ContentFilterError,
   contentFilterModelBoundBlockResponse,
   isContentFilterError,
@@ -119,10 +124,6 @@ import {
   WORKSPACE_EDIT_MAX_COUNT,
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
-import {
-  resolveAttachedWorkspaceQueueWaitMs,
-  resolveAttachedWorkspaceRequestTimeoutMs,
-} from '~/code/command';
 import {
   hasIntentArg,
   stripIntentArg,
@@ -298,6 +299,9 @@ export interface ToolExecuteOptions {
   backgroundCompletionResultMaxChars?: number;
   /** Callback to process tool artifacts (code output files, file citations, etc.) */
   toolEndCallback?: ToolEndCallback;
+  /** Run steps whose call resolved to the attached-workspace `bash_tool`
+   *  instance; the step-completed handler consumes them to stamp `executor`. */
+  attachedCommandStepIds?: Set<string>;
   /** Durable internal-completion adapter, present only for an Event Actor invocation. */
   eventActorDetachedAction?: EventActorDetachedActionLifecycle;
   /** Called once per batch before tool execution to lazily provision files to tool
@@ -5575,6 +5579,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
     foregroundRunId,
     loadTools,
     toolEndCallback,
+    attachedCommandStepIds,
     eventActorDetachedAction,
     persistBackgroundCodeResult,
     backgroundToolCompletion,
@@ -5799,6 +5804,12 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                 void markSandboxReady(sandboxConversationId);
               }
             };
+            /** Provenance is the resolved tool instance, never the output. */
+            const recordAttachedCommand = (tc: ToolCallRequest, tool: unknown): void => {
+              if (tc.stepId && isAttachedWorkspaceBashTool(tool)) {
+                attachedCommandStepIds?.add(tc.stepId);
+              }
+            };
             const authoringQueues = new Map<string, Promise<void>>();
             const sandboxAuthoringContexts = new Map<string, SandboxSessionContext>();
 
@@ -5862,6 +5873,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                   }) ?? missingToolResult
                 );
               }
+              recordAttachedCommand(tc, tool);
               const isCodeCall = isCodeSessionAwareToolCall(tc.name, mergedConfigurable);
               const harvestEnabled = isCodeCall && persistBackgroundCodeResult != null;
               const liveArtifactPollRequired =
@@ -7378,6 +7390,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     );
                     return missingToolResult;
                   }
+                  recordAttachedCommand(tc, tool);
 
                   let normalizedArgs: unknown = tc.args;
                   try {

@@ -31,6 +31,7 @@ export default function BashCall({
   runStepDurationMs,
   backgrounded,
   backgroundCancelled = false,
+  executor,
   initialProgress = 0.1,
   args,
   output = '',
@@ -46,6 +47,7 @@ export default function BashCall({
   runStepDurationMs?: PartMetadata['runStepDurationMs'];
   backgrounded?: PartMetadata['backgrounded'];
   backgroundCancelled?: boolean;
+  executor?: PartMetadata['executor'];
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
@@ -59,9 +61,13 @@ export default function BashCall({
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
   const sandboxStarting = useAtomValue(sandboxStartingByToolCallId(toolCallId ?? ''));
 
-  /** Attached-workspace runs report their exit status; the sandbox tool does
-   *  not, and keeps the text heuristic. */
-  const result = useMemo(() => parseCommandOutput(output), [output]);
+  /** Only a call the server stamped as attached-workspace carries an exit
+   *  status trailer; sandbox output keeps the text heuristic even when it
+   *  prints something that looks like one. */
+  const result = useMemo(
+    () => (executor === 'attached_workspace' ? parseCommandOutput(output) : null),
+    [executor, output],
+  );
   const outputHasError = useMemo(() => ERROR_PATTERNS.test(output), [output]);
   const outputIsEmpty = output.trim() === SANDBOX_EMPTY_OUTPUT;
   const verdict = (() => {

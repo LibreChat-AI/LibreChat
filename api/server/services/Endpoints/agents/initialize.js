@@ -444,6 +444,7 @@ const initializeClientWithProvider = async ({
     // is composed with this authoritative job signal by the handler.
     runSignal: signal,
     foregroundRunId,
+    attachedCommandStepIds: new Set(),
     ordinaryToolCancellation: ordinaryToolCancellationEnabled,
     backgroundCompletionResultMaxChars,
     loadTools: async (

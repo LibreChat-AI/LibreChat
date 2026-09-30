@@ -4,10 +4,11 @@
  *
  *   stdout:\n<out>\n  stderr:\n<err>\n  [exit code: N][terminated by SIG][timed out][output truncated]
  *
- * The trailer always follows the newline that closes the last section, so a
- * command printing the same text itself cannot forge it: its line would be
- * followed by that newline. The sandbox `bash_tool` never writes a trailer, so
- * its output parses to `null` and keeps the text heuristics.
+ * The text alone does not prove where it came from: the sandbox `bash_tool`
+ * shares the name and trims its output, so a sandbox command that prints
+ * `[exit code: 1]` last yields the same shape. Callers must only parse output
+ * of a call whose server-stamped `executor` is `attached_workspace`, and keep
+ * the text heuristics otherwise.
  */
 export interface CommandOutput {
   exitCode: number | null;

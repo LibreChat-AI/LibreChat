@@ -413,6 +413,7 @@ const Part = memo(function Part({
               runStepDurationMs={toolCall.runStepDurationMs}
               backgrounded={toolCall.backgrounded}
               backgroundCancelled={toolCall.backgroundTask?.cancelled === true}
+              executor={toolCall.executor}
               attachments={attachments}
               hideAttachments={hideAttachments}
               onExpand={onToolExpand}

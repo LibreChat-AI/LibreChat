@@ -118,6 +118,8 @@ export namespace Agents {
     };
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
+    /** Server-stamped provenance; see `PartMetadata.executor`. */
+    executor?: 'attached_workspace';
     /** Auth URL */
     auth?: string;
     /** Expiration time */

@@ -25,7 +25,7 @@ import {
 import { markSandboxReady } from './prewarm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { WorkspaceToolHttpError } from '../code/workspace';
-import { createAttachedWorkspaceBashTool } from '../code/command';
+import { createAttachedWorkspaceBashTool, stampCommandExecutor } from '../code/command';
 import { createCodeApiUploadRegistry } from '~/utils';
 
 function createMockTool(
@@ -8990,5 +8990,79 @@ describe('per-call onResult reporting', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe('success');
+  });
+});
+
+type ExecutorPart = { output?: string; executor?: string };
+
+describe('attached-workspace command provenance', () => {
+  const echoTrailer = 'stdout:\n[exit code: 1]';
+
+  function attachedTool() {
+    const fetchImpl = jest.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            protocolVersion: 1,
+            operation: 'execute_command',
+            workspaceId: 'project-a',
+            exitCode: 1,
+            stdout: 'boom\n',
+            stderr: '',
+            truncated: false,
+            timedOut: false,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    return createAttachedWorkspaceBashTool({
+      baseUrl: 'https://code.example.com/v1/',
+      authHeaders: () => ({}),
+      workspaceId: 'project-a',
+      fetchImpl,
+    });
+  }
+
+  async function runStep(bashTool: unknown, stepId: string): Promise<Set<string>> {
+    const attachedCommandStepIds = new Set<string>();
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [bashTool as never] }),
+      attachedCommandStepIds,
+    });
+    await new Promise<ToolExecuteResult[]>((resolve, reject) => {
+      handler.handle('on_tool_execute', {
+        toolCalls: [{ id: `call-${stepId}`, name: 'bash_tool', args: { command: 'x' }, stepId }],
+        resolve,
+        reject,
+      } as ToolExecuteBatchRequest);
+    });
+    return attachedCommandStepIds;
+  }
+
+  it('stamps the executor only for the attached-workspace bash tool', async () => {
+    const attachedSteps = await runStep(attachedTool(), 'step-attached');
+    expect([...attachedSteps]).toEqual(['step-attached']);
+    const attachedEvent = { id: 'step-attached', tool_call: { output: 'x' } as ExecutorPart };
+    const attachedPart: ExecutorPart = {};
+    stampCommandExecutor(attachedSteps, attachedEvent, attachedPart);
+    expect(attachedEvent.tool_call.executor).toBe('attached_workspace');
+    expect(attachedPart.executor).toBe('attached_workspace');
+    expect(attachedSteps.size).toBe(0);
+
+    const sandbox = createMockTool('bash_tool', []);
+    sandbox.invoke.mockResolvedValue({
+      content: echoTrailer,
+      artifact: { session_id: 'sandbox-session', files: [] },
+    });
+    const sandboxSteps = await runStep(sandbox, 'step-sandbox');
+    expect(sandboxSteps.size).toBe(0);
+    const sandboxEvent = {
+      id: 'step-sandbox',
+      tool_call: { output: echoTrailer } as ExecutorPart,
+    };
+    const sandboxPart: ExecutorPart = {};
+    stampCommandExecutor(sandboxSteps, sandboxEvent, sandboxPart);
+    expect(sandboxEvent.tool_call.executor).toBeUndefined();
+    expect(sandboxPart.executor).toBeUndefined();
   });
 });
