@@ -4,8 +4,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
-import { useToolAutoExpand } from '../disclosure';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
+import { useToolAutoExpand } from '../disclosure';
 import ToolCallGroup from '../ToolCallGroup';
 import { ToolAuthWarning } from '../auth';
 
