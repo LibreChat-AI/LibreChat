@@ -1079,6 +1079,79 @@ describe('Conversation Operations', () => {
     });
   });
 
+  describe('code approval persistence', () => {
+    it.each(['ask', 'acceptEdits', 'fullAccess', null, undefined] as const)(
+      'bulkSaveConvos ignores imported approval mode %s on insert',
+      async (codeApprovalMode) => {
+        const imported = {
+          ...mockConversationData,
+          user: mockCtx.userId,
+          endpoint: EModelEndpoint.agents,
+          agent_id: 'imported-agent',
+          codeApprovalMode,
+        };
+
+        await methods.bulkSaveConvos([imported]);
+
+        const stored = await getConvo(mockCtx.userId, imported.conversationId);
+        expect(stored).not.toBeNull();
+        expect(stored).not.toHaveProperty('codeApprovalMode');
+        expect(stored).toMatchObject({
+          title: imported.title,
+          endpoint: EModelEndpoint.agents,
+          agent_id: imported.agent_id,
+        });
+        expect(imported.codeApprovalMode).toBe(codeApprovalMode);
+      },
+    );
+
+    it.each(['ask', 'acceptEdits', 'fullAccess', undefined] as const)(
+      'bulkSaveConvos preserves existing approval mode %s on update',
+      async (codeApprovalMode) => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, {
+          conversationId,
+          endpoint: EModelEndpoint.agents,
+          ...(codeApprovalMode != null && { codeApprovalMode }),
+        });
+
+        await methods.bulkSaveConvos([
+          {
+            conversationId,
+            user: mockCtx.userId,
+            title: 'Imported update',
+            codeApprovalMode: 'fullAccess',
+          },
+        ]);
+
+        const stored = await getConvo(mockCtx.userId, conversationId);
+        expect(stored).not.toBeNull();
+        expect(stored?.codeApprovalMode).toBe(codeApprovalMode);
+        expect(stored?.title).toBe('Imported update');
+      },
+    );
+
+    it('persists explicit user choices through ordinary saves after an import', async () => {
+      const conversationId = uuidv4();
+      await methods.bulkSaveConvos([
+        {
+          conversationId,
+          user: mockCtx.userId,
+          endpoint: EModelEndpoint.agents,
+          codeApprovalMode: 'fullAccess',
+        },
+      ]);
+
+      for (const codeApprovalMode of ['ask', 'acceptEdits', 'fullAccess'] as const) {
+        await saveConvo(mockCtx, { conversationId, codeApprovalMode });
+        await saveConvo(mockCtx, { conversationId, title: 'Ordinary save' });
+        expect((await getConvo(mockCtx.userId, conversationId))?.codeApprovalMode).toBe(
+          codeApprovalMode,
+        );
+      }
+    });
+  });
+
   describe('code environment persistence during ordinary saves', () => {
     const mac = { environmentId: 'code-mac', workspaceId: 'primary' };
     const vm = { environmentId: 'code-vm', workspaceId: 'primary' };
