@@ -2612,8 +2612,12 @@ describe('MCPTokenStorage', () => {
         await peerRotates(serverName, 3);
         const flowManager = new FlowStateManager(new Keyv(), { ttl: 30000, ci: true });
         const acquire = flowManager.acquireLease.bind(flowManager);
+        let flightAcquired = false;
         jest.spyOn(flowManager, 'acquireLease').mockImplementation(async (id, options) => {
-          if (id === getMCPOAuthLeaseId('u1', serverName)) await peerRotates(serverName, 4);
+          if (id === getMCPOAuthRefreshFlightLeaseId('u1', serverName)) flightAcquired = true;
+          if (flightAcquired && id === getMCPOAuthLeaseId('u1', serverName)) {
+            await peerRotates(serverName, 4);
+          }
           return acquire(id, options);
         });
         const onTokensAdopted = jest.fn();
@@ -3502,6 +3506,96 @@ describe('MCPTokenStorage', () => {
         jest.useRealTimers();
       }
     });
+
+    it('never redeems after rejection persistence outlives the common storage flight', async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      let releaseWrite!: () => void;
+      const blocked = new Promise<void>((resolve) => (releaseWrite = resolve));
+      let recording = false;
+      try {
+        const serverName = 'stalled-rejection';
+        await seedRefreshableTokens(serverName);
+        const updateToken: TokenMethods['updateToken'] = async (...args) => {
+          recording = true;
+          await blocked;
+          return store.updateToken(...args);
+        };
+        const refreshTokens = jest.fn().mockResolvedValue(rotatedTokens(2));
+        const params = {
+          ...refreshParams(refreshTokens, serverName),
+          coordinateRefresh: false,
+          updateToken,
+        };
+        const recovering = MCPTokenStorage.forceRefreshTokens({
+          ...params,
+          rejectedCredentialSetId: credentialSetId,
+        });
+        await waitFor(() => recording);
+        const loading = MCPTokenStorage.getTokens(params);
+        await new Promise((resolve) => setImmediate(resolve));
+        jest.advanceTimersByTime(MCPTokenStorage.INFLIGHT_REFRESH_STALE_MS + 1);
+        releaseWrite();
+        await expect(Promise.all([recovering, loading])).resolves.toEqual([null, null]);
+        expect(refreshTokens).not.toHaveBeenCalled();
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName,
+            findToken: store.findToken,
+            validateClientBinding: () => undefined,
+          }),
+        ).resolves.toBe(false);
+      } finally {
+        releaseWrite();
+        jest.useRealTimers();
+      }
+    });
+
+    it.each([false, true])(
+      'records a joiner rejection when the token-loader refresh fails (publication: %s)',
+      async (publicationFailure) => {
+        const serverName = `mixed-refresh-failure-${publicationFailure}`;
+        await seedRefreshableTokens(serverName);
+        let finishRefresh!: (tokens: MCPOAuthTokens) => void;
+        let failRefresh!: (error: Error) => void;
+        const refreshTokens = jest.fn(
+          () =>
+            new Promise<MCPOAuthTokens>((resolve, reject) => {
+              finishRefresh = resolve;
+              failRefresh = reject;
+            }),
+        );
+        const params = {
+          ...refreshParams(refreshTokens, serverName),
+          coordinateRefresh: false,
+          flowManager: new FlowStateManager(new Keyv(), { ttl: 30000, ci: true }),
+          onRefreshSuccess: async () => {
+            if (publicationFailure) throw new Error('publication unavailable');
+          },
+        };
+        const loading = MCPTokenStorage.getTokens(params);
+        void loading.catch(() => undefined);
+        await waitFor(() => refreshTokens.mock.calls.length === 1);
+        const recovering = MCPTokenStorage.forceRefreshTokens({
+          ...params,
+          rejectedCredentialSetId: credentialSetId,
+        });
+        void recovering.catch(() => undefined);
+        if (publicationFailure) finishRefresh(rotatedTokens(2));
+        else failRefresh(new Error('provider unavailable'));
+        await expect(loading).rejects.toBeInstanceOf(MCPTokenRefreshUnavailableError);
+        await expect(recovering).rejects.toBeInstanceOf(MCPTokenRefreshUnavailableError);
+        expect(refreshTokens).toHaveBeenCalledTimes(1);
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName,
+            findToken: store.findToken,
+            validateClientBinding: () => undefined,
+          }),
+        ).resolves.toBe(false);
+      },
+    );
 
     it('runs onRefreshSuccess on the shared redemption even after the initiating waiter aborted', async () => {
       await seedRefreshableTokens('hook-srv');

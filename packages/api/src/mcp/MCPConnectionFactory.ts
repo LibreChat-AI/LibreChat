@@ -1222,8 +1222,8 @@ export class MCPConnectionFactory {
    * would hand back stale tokens on a subsequent 401 (e.g. when the freshly
    * minted token is revoked before its local expiry). Caching only the
    * in-flight promise means every fresh 401 after settlement triggers a
-   * fresh redemption. Rejection persistence is part of that flight, so a
-   * lease wait cannot delay a concurrent caller until after redemption.
+   * fresh redemption. Token storage owns rejection persistence inside the
+   * common flight shared with expired-token loading.
    */
   protected async attemptSilentTokenRefresh(
     rejectedCredentialSetId?: string | null,
@@ -1318,15 +1318,6 @@ export class MCPConnectionFactory {
     rejectedCredentialSetId?: string | null,
   ): Promise<MCPOAuthTokens | null> {
     try {
-      if (rejectedCredentialSetId) {
-        await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
-      }
-      if (signal.aborted) {
-        throw new MCPTokenRefreshUnavailableError(
-          this.serverName,
-          new Error('Silent refresh stopped during rejection persistence'),
-        );
-      }
       const tokens = await this.runWithCapturedTenant(async () =>
         MCPTokenStorage.forceRefreshTokens({
           userId: this.userId!,

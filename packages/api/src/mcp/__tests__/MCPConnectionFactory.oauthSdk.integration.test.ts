@@ -823,6 +823,96 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     },
   );
 
+  it.each([undefined, false, true])(
+    'joins a token-loader refresh during 401 recovery (coordination: %s)',
+    async (oauthRefreshCoordination) => {
+      server = await createOAuthMCPServer({
+        issueRefreshTokens: true,
+        refreshGate: async () => server.issuedTokens.clear(),
+      });
+      const initial = await storeTokens(tokenStore, server, await issueTokens(server));
+      const flowManager = createFlowManager();
+      const basic = {
+        serverName: SERVER_NAME,
+        serverConfig: {
+          type: 'streamable-http' as const,
+          url: server.url,
+          requiresOAuth: true,
+          oauthRefreshCoordination,
+        },
+      };
+      const options = {
+        useOAuth: true as const,
+        user: { id: USER_ID } as IUser,
+        flowManager,
+        tokenMethods: {
+          findToken: tokenStore.findToken,
+          createToken: tokenStore.createToken,
+          updateToken: tokenStore.updateToken,
+          deleteTokens: tokenStore.deleteTokens,
+        },
+      };
+      connection = await MCPConnectionFactory.create(basic, options);
+      const cleanup = MCPConnectionFactory.attachRequestOAuthHandler(basic, options, connection);
+      type RecoveryHandler = (challenge: {
+        serverUrl: string;
+        rejectedCredentialSetId?: string;
+      }) => Promise<void>;
+      const recover = connection.listeners('oauthReauthenticationRequired')[0] as RecoveryHandler;
+      let publicationStarted!: () => void;
+      let releasePublication!: () => void;
+      let rejectionStarted!: () => void;
+      const started = new Promise<void>((resolve) => (publicationStarted = resolve));
+      const blocked = new Promise<void>((resolve) => (releasePublication = resolve));
+      const rejection = new Promise<void>((resolve) => (rejectionStarted = resolve));
+      const acquireLease = flowManager.acquireLease.bind(flowManager);
+      const acquireSpy = jest.spyOn(flowManager, 'acquireLease').mockImplementation((...args) => {
+        rejectionStarted();
+        return acquireLease(...args);
+      });
+      try {
+        server.issuedTokens.delete(initial.access_token);
+        await tokenStore.updateToken(
+          { userId: USER_ID, type: 'mcp_oauth', identifier: `mcp:${SERVER_NAME}` },
+          { expiresIn: -1 },
+        );
+        const loading = new TokenLoadingFactory(basic, {
+          ...options,
+          flowManager: createFlowManager(),
+          onOAuthCredentialsChanging: async () => async () => {
+            publicationStarted();
+            await blocked;
+            return 'loader-publication';
+          },
+        }).loadTokens();
+        void loading.catch(() => undefined);
+        await started;
+        const recovering = recover({
+          serverUrl: server.url,
+          rejectedCredentialSetId: initial.credential_set_id,
+        });
+        void recovering.catch(() => undefined);
+        await rejection;
+        releasePublication();
+        const [loaded] = await Promise.all([loading, recovering]);
+
+        expect(
+          server.tokenRequests.filter((request) => request.grantType === 'refresh_token'),
+        ).toHaveLength(1);
+        expect(server.issuedTokens.has(loaded!.access_token)).toBe(true);
+        cleanup();
+        await connection.disconnect();
+        await connection.connect();
+        expect(loaded?.credential_set_id).toBe(connection.getOAuthCredentialSetId());
+        expect((await connection.fetchTools()).some((tool) => tool.name === 'echo')).toBe(true);
+      } finally {
+        releasePublication();
+        cleanup();
+        acquireSpy.mockRestore();
+      }
+    },
+  );
+
   it('lets an in-flight request finish before a concurrent OAuth reconnect', async () => {
     let markSlowRequestStarted: (() => void) | undefined;
     let releaseFirstSlowRequest: (() => void) | undefined;

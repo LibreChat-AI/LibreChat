@@ -1076,7 +1076,18 @@ export class MCPTokenStorage {
     const inflight = this.inflightRefreshes.get(refreshKey);
     if (inflight) {
       logger.debug(`${logPrefix} Joining in-flight token refresh`);
-      return this.raceWithAbort(inflight, signal);
+      if (!params.rejectedCredentialSetId || !params.updateToken) {
+        return this.raceWithAbort(inflight, signal);
+      }
+      const rejection = this.recordRefreshRejection(params);
+      const joined = (async () => {
+        try {
+          return await inflight;
+        } finally {
+          await rejection;
+        }
+      })();
+      return this.raceWithAbort(joined, signal);
     }
 
     if (!refreshTokens) {
@@ -1111,6 +1122,10 @@ export class MCPTokenStorage {
       if (this.refreshTeardownCounts.has(ownerKey)) {
         logger.debug(`${logPrefix} Skipping token refresh during OAuth teardown`);
         return null;
+      }
+      if (params.rejectedCredentialSetId && params.updateToken) {
+        await this.recordRefreshRejection(params);
+        if (executionController.signal.aborted) return null;
       }
       /** Serialize with the redemptions other replicas may be running for this credential. */
       let flight: MCPRefreshFlight | null = null;
@@ -1249,6 +1264,27 @@ export class MCPTokenStorage {
     this.inflightRefreshControllers.set(refreshKey, executionController);
     this.inflightRefreshOwners.set(refreshKey, ownerKey);
     return this.raceWithAbort(refreshPromise, signal);
+  }
+
+  /** Records rejection inside the common refresh lifetime, without blocking entry-point coalescing. */
+  private static async recordRefreshRejection(params: GetTokensParams): Promise<void> {
+    if (!params.rejectedCredentialSetId || !params.updateToken) return;
+    try {
+      await this.markAuthorizationRejected({
+        userId: params.userId,
+        serverName: params.serverName,
+        credentialSetId: params.rejectedCredentialSetId,
+        findToken: params.findToken,
+        updateToken: params.updateToken,
+        flowManager: params.flowManager,
+        persistenceWaitTimeoutMs: params.persistenceWaitTimeoutMs,
+      });
+    } catch (error) {
+      logger.warn(
+        `${this.getLogPrefix(params.userId, params.serverName)} Failed to record upstream OAuth rejection`,
+        error,
+      );
+    }
   }
 
   /**
