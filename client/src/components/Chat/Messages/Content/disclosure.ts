@@ -55,9 +55,9 @@ export function useToolDisclosure() {
   }, [disclosures, key]);
 }
 
-/** Set by a tool group holding exactly one tool call: the group header is
- *  already the summary, so a second collapsed row inside it adds a click
- *  without adding information. */
+/** Set by a tool group or activity phase holding exactly one tool call: its
+ *  header is already the summary, so a second collapsed row inside it adds a
+ *  click without adding information. */
 export const SoleToolContext = createContext(false);
 
 /** Whether a tool card opens by default: the user's "auto-expand tools"

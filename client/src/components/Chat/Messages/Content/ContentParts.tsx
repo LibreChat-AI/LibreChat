@@ -1150,19 +1150,25 @@ const ContentPartsBody = memo(function ContentPartsBody({
                 absoluteIndexAt(segment.labelIndex) === lastContentIdx
           }
         >
-          {renderSegment(
-            segment.content,
-            absoluteIndexAt(segment.startIndex),
-            segmentIndices,
-            `phase-content-${cardKey}`,
-            /** Opening a live row should show the calls running, so its
-             *  groups keep their own live expansion rather than the
-             *  settled-phase default of staying shut. */
-            !live,
-            ownsCursor,
-            true,
-            true,
-          )}
+          <SoleToolContext.Provider
+            value={
+              segment.content.filter((part) => part?.type === ContentTypes.TOOL_CALL).length === 1
+            }
+          >
+            {renderSegment(
+              segment.content,
+              absoluteIndexAt(segment.startIndex),
+              segmentIndices,
+              `phase-content-${cardKey}`,
+              /** Opening a live row should show the calls running, so its
+               *  groups keep their own live expansion rather than the
+               *  settled-phase default of staying shut. */
+              !live,
+              ownsCursor,
+              true,
+              true,
+            )}
+          </SoleToolContext.Provider>
         </ActivityPhaseGroup>
       );
     });

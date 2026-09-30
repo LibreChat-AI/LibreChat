@@ -22,8 +22,7 @@ const uniqueLabel = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** The code-execution card's status toggle; a slow run appends its duration to the name. */
-const toolCard = (page: Page) =>
-  messagesView(page).getByRole('button', { name: /^Finished running/ });
+const toolCard = (page: Page) => messagesView(page).getByRole('button', { name: /^Ran command/ });
 const toolOutput = (page: Page) => messagesView(page).getByText(TOOL_OUTPUT, { exact: true });
 
 /** True when `first` sits before `second` in document order. */
