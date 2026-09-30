@@ -5121,6 +5121,200 @@ describe('createToolExecuteHandler', () => {
       expect(updateSkill).not.toHaveBeenCalled();
     });
 
+    function makeMatchingHandler(content: string) {
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: content.length,
+        relativePath: 'references/a.md',
+      }));
+      const handler = makeAuthoringHandler({
+        getSkillByName: jest.fn(async () => ({
+          _id: SKILL_ID,
+          name: 'matching-skill',
+          body: '# Existing',
+          fileCount: 1,
+          version: 1,
+        })),
+        getSkillFileByPath: jest.fn(async () => ({
+          content,
+          isBinary: false,
+          mimeType: 'text/markdown',
+          bytes: Buffer.byteLength(content),
+          filepath: '/tmp/a.md',
+          file_id: 'revision-1',
+          source: 'local',
+          relativePath: 'references/a.md',
+        })),
+        saveSkillFileContent,
+      });
+      return { handler, saveSkillFileContent };
+    }
+
+    it.each([
+      {
+        label: 'exact precedence over tolerant duplicates',
+        content: 'alpha\nbeta\nalpha \nbeta \n',
+        oldText: 'alpha\nbeta',
+        expected: 'changed\nalpha \nbeta \n',
+        strategy: 'exact',
+      },
+      {
+        label: 'trimmed precedence over whitespace-normalized duplicates',
+        content: 'alpha \nbeta\t\nalpha\tbeta\n',
+        oldText: 'alpha\nbeta',
+        expected: 'changed\nalpha\tbeta\n',
+        strategy: 'line-trimmed',
+      },
+      {
+        label: 'whitespace-normalized precedence over indentation',
+        content: 'header\n  a\n    b\nfooter\n',
+        oldText: 'a\n  b',
+        expected: 'header\n  changed\nfooter\n',
+        strategy: 'whitespace-normalized',
+      },
+      {
+        label: 'repeated-prefix fallback in the line sequence',
+        content: 'a \nb \na \nb \na \nc \n',
+        oldText: 'a\nb\na\nc',
+        expected: 'a \nb \nchanged\n',
+        strategy: 'line-trimmed',
+      },
+      {
+        label: 'UTF-16 offsets and CRLF line endings',
+        content: '😀 keep\r\nfoo \r\nbar\t\r\nlast',
+        oldText: 'foo\nbar',
+        expected: '😀 keep\r\nchanged\nlast',
+        strategy: 'line-trimmed',
+      },
+      {
+        label: 'whitespace-only lines at EOF',
+        content: 'pre\n\t\n ',
+        oldText: '\t \n\t ',
+        expected: 'pre\nchanged',
+        strategy: 'line-trimmed',
+      },
+      {
+        label: 'window-local indentation with shorter blank lines',
+        content: 'pre\n \n\t   token\n\t\npost',
+        oldText: '\n  token\n',
+        expected: 'pre\nchanged\npost',
+        strategy: 'indentation-flexible',
+      },
+      {
+        label: 'residual whitespace and zero needle indentation',
+        content: 'pre\n\n  token\t\n   ',
+        oldText: '\ntoken\t\n ',
+        expected: 'pre\nchanged',
+        strategy: 'indentation-flexible',
+      },
+      {
+        label: 'overlapping trimmed replace_all ranges',
+        content: 'a \na \na \n',
+        oldText: 'a\na',
+        expected: 'changed\na \n',
+        strategy: 'line-trimmed x1',
+        replaceAll: true,
+      },
+      {
+        label: 'multiple local indentation levels',
+        content: 'pre\n\n  token\n\nmid\n\n\ttoken\n\npost',
+        oldText: '\n    token\n',
+        expected: 'pre\nchanged\nmid\nchanged\npost',
+        strategy: 'indentation-flexible x2',
+        replaceAll: true,
+      },
+    ])(
+      'preserves $label in edit_file',
+      async ({ content, oldText, expected, strategy, ...flags }) => {
+        const { handler, saveSkillFileContent } = makeMatchingHandler(content);
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'call_matching',
+            name: 'edit_file',
+            args: {
+              path: 'skills/matching-skill/references/a.md',
+              old_text: oldText,
+              new_text: 'changed',
+              replace_all: flags.replaceAll === true,
+            },
+          },
+        ]);
+        expect(result.errorMessage).toBeUndefined();
+        expect(result.status).toBe('success');
+        expect(result.artifact).toMatchObject({ strategies: [strategy] });
+        expect(saveSkillFileContent).toHaveBeenCalledWith(
+          expect.objectContaining({ content: expected }),
+        );
+      },
+    );
+
+    it.each([
+      ['a \na \na \n', 'a\na', 'matched 2 locations with line-trimmed', false],
+      [
+        '\n  token\n\n\ttoken\n',
+        '\n    token\n',
+        'matched 2 locations with indentation-flexible',
+        false,
+      ],
+      ['pre\n      \n    token\n      \npost', ' \t \n  token\n \t ', 'did not match', false],
+      ['a\nb', 'a\nb\nc', 'did not match', false],
+      ['\nx\n'.repeat(10_001), '\n x\n', 'limited to 10000 locations', true],
+    ])(
+      'refuses unmatched or ambiguous line windows (%#)',
+      async (content, oldText, error, replaceAll) => {
+        const { handler, saveSkillFileContent } = makeMatchingHandler(content);
+        const [result] = await invokeHandler(handler, [
+          {
+            id: 'call_matching_error',
+            name: 'edit_file',
+            args: {
+              path: 'skills/matching-skill/references/a.md',
+              old_text: oldText,
+              new_text: 'changed',
+              replace_all: replaceAll,
+            },
+          },
+        ]);
+        expect(result.status).toBe('error');
+        expect(result.errorMessage).toContain(error);
+        expect(saveSkillFileContent).not.toHaveBeenCalled();
+      },
+    );
+
+    it('normalizes each line once on a large multiline miss', async () => {
+      const content = ' '.repeat(19).concat('\n').repeat(20_000);
+      const oldText = '\t'.repeat(19).concat('\n').repeat(800) + 'missing';
+      const { handler, saveSkillFileContent } = makeMatchingHandler(content);
+      const trimEnd = String.prototype.trimEnd;
+      const budget = 20_001 + 801;
+      let normalizations = 0;
+      const spy = jest.spyOn(String.prototype, 'trimEnd').mockImplementation(function (
+        this: string,
+      ) {
+        if (++normalizations > budget) throw new Error('Repeated window normalization');
+        return trimEnd.call(this);
+      });
+      let result: ToolExecuteResult;
+      try {
+        [result] = await invokeHandler(handler, [
+          {
+            id: 'call_matching_large_miss',
+            name: 'edit_file',
+            args: {
+              path: 'skills/matching-skill/references/a.md',
+              old_text: oldText,
+              new_text: 'changed',
+            },
+          },
+        ]);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(normalizations).toBe(budget);
+      expect(result.status).toBe('error');
+      expect(result.errorMessage).toContain('old_text did not match');
+      expect(saveSkillFileContent).not.toHaveBeenCalled();
+    });
+
     it('fails loudly when edit_file old_text is ambiguous', async () => {
       const saveSkillFileContent = jest.fn();
       const handler = makeAuthoringHandler({

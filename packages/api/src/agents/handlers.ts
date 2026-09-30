@@ -1762,29 +1762,85 @@ function findLineWindowMatch(
   }
 
   const starts = lineStarts(content);
-  const normalizedNeedle =
-    strategy === 'line-trimmed'
-      ? needleLines.map((line) => line.trimEnd()).join('\n')
-      : stripCommonIndent(needle);
   const matches: Array<{ index: number; length: number }> = [];
-
-  for (
-    let i = 0;
-    i <= contentLines.length - needleLines.length && matches.length <= MAX_EDIT_MATCHES;
-    i++
-  ) {
-    const windowLines = contentLines.slice(i, i + needleLines.length);
-    const candidate =
-      strategy === 'line-trimmed'
-        ? windowLines.map((line) => line.trimEnd()).join('\n')
-        : stripCommonIndent(windowLines.join('\n'));
-    if (candidate !== normalizedNeedle) {
-      continue;
-    }
-    const index = starts[i];
-    const endLine = i + needleLines.length;
+  const addMatch = (startLine: number) => {
+    const index = starts[startLine];
+    const endLine = startLine + needleLines.length;
     const end = endLine < starts.length ? starts[endLine] - 1 : content.length;
     matches.push({ index, length: end - index });
+  };
+
+  if (strategy === 'line-trimmed') {
+    // Intern normalized lines so KMP compares integer IDs, not overlapping strings.
+    const ids = new Map<string, number>();
+    const pattern = needleLines.map((line) => {
+      const normalized = line.trimEnd();
+      let id = ids.get(normalized);
+      if (id == null) {
+        id = ids.size;
+        ids.set(normalized, id);
+      }
+      return id;
+    });
+    const prefixes = new Uint32Array(pattern.length);
+    let matched = 0;
+    for (let i = 1; i < pattern.length; i++) {
+      while (matched > 0 && pattern[i] !== pattern[matched]) {
+        matched = prefixes[matched - 1];
+      }
+      if (pattern[i] === pattern[matched]) matched++;
+      prefixes[i] = matched;
+    }
+
+    matched = 0;
+    for (let i = 0; i < contentLines.length && matches.length <= MAX_EDIT_MATCHES; i++) {
+      const id = ids.get(contentLines[i].trimEnd());
+      while (matched > 0 && id !== pattern[matched]) {
+        matched = prefixes[matched - 1];
+      }
+      if (id === pattern[matched]) matched++;
+      if (matched === pattern.length) {
+        addMatch(i - pattern.length + 1);
+        // Keep overlapping occurrences for ambiguity detection and replace_all.
+        matched = prefixes[matched - 1];
+      }
+    }
+  } else {
+    // This fallback runs only after line-trimmed and whitespace-normalized miss.
+    // Two nonblank needle lines imply at least two tokens: any indentation match
+    // would already have matched whitespace-normalized. An all-blank needle would
+    // already have matched line-trimmed. Only a single nonblank line remains.
+    let anchor = -1;
+    for (let i = 0; i < needleLines.length; i++) {
+      if (needleLines[i].trim().length === 0) continue;
+      if (anchor !== -1) return { status: 'none' };
+      anchor = i;
+    }
+    if (anchor === -1) return { status: 'none' };
+
+    const normalizedNeedle = stripCommonIndent(needle).split('\n');
+    const nonblank = new Uint32Array(contentLines.length + 1);
+    for (let i = 0; i < contentLines.length; i++) {
+      nonblank[i + 1] = nonblank[i] + Number(contentLines[i].trim().length > 0);
+    }
+    for (let i = anchor; i < contentLines.length && matches.length <= MAX_EDIT_MATCHES; i++) {
+      if (nonblank[i + 1] === nonblank[i]) continue;
+      const start = i - anchor;
+      const end = start + needleLines.length;
+      if (end > contentLines.length) break;
+      if (nonblank[end] - nonblank[start] !== 1) continue;
+      const indent = contentLines[i].length - contentLines[i].trimStart().length;
+      let matchesNeedle = true;
+      // Eligible windows have one nonblank line at a fixed offset. Each file line
+      // can belong to at most two of them, so these comparisons stay linear too.
+      for (let j = 0; j < needleLines.length; j++) {
+        if (contentLines[start + j].slice(indent) !== normalizedNeedle[j]) {
+          matchesNeedle = false;
+          break;
+        }
+      }
+      if (matchesNeedle) addMatch(start);
+    }
   }
 
   if (matches.length === 1) {
