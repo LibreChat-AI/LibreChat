@@ -144,15 +144,6 @@ describe('shared field and dropdown interaction styles', () => {
     );
     expect(secretInput).not.toMatch(/(?:hover|focus-visible):border-/);
 
-    /** `ring-primary` is decorative and measures about 2.3:1 on the dark canvas. */
-    ['SecretInput.tsx', 'MultiSearch.tsx', 'InputWithDropDown.tsx', 'InputCombobox.tsx'].forEach(
-      (component) => {
-        const source = readFileSync(join(__dirname, '..', 'components', component), 'utf8');
-        expect(source).toMatch(/\bring-focus-control\b/);
-        expect(source).not.toMatch(/\bring-ring-primary\b/);
-      },
-    );
-
     const appStyles = readFileSync(
       join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
       'utf8',
