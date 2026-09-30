@@ -505,7 +505,9 @@ describe('createAppConfigService', () => {
           apiKey: 'global-key',
         };
         base.endpoints?.custom?.push(global);
-        base.config.endpoints?.custom?.push(global);
+        if (base.config.endpoints?.custom !== base.endpoints?.custom) {
+          base.config.endpoints?.custom?.push(global);
+        }
         const deps = createDeps({ loadBaseConfig: jest.fn().mockResolvedValue(base) });
         const { getAppConfig } = createAppConfigService(deps);
         const config = await getAppConfig({ tenantId: 'tenant-b' });

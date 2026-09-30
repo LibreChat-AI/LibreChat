@@ -267,11 +267,8 @@ function overrideCacheKey(
   scopeVersion: string,
 ): string {
   const tenant = tenantId || '__default__';
-  const principal = userId
-    ? role
-      ? `${role}:${userId}`
-      : userId
-    : role || BASE_CONFIG_PRINCIPAL_ID;
+  const principal =
+    userId && role ? `${role}:${userId}` : userId || role || BASE_CONFIG_PRINCIPAL_ID;
   return `_OVERRIDE_:${tenant}:${principal}:tenant-v1:${scopeVersion}`;
 }
 
@@ -420,12 +417,9 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     } = options;
 
     const ambientTenantId = getTenantId();
+    const requestedTenantId = tenantId === SYSTEM_TENANT_ID ? undefined : tenantId;
     const effectiveTenantId =
-      ambientTenantId && ambientTenantId !== SYSTEM_TENANT_ID
-        ? ambientTenantId
-        : tenantId === SYSTEM_TENANT_ID
-          ? undefined
-          : tenantId;
+      ambientTenantId && ambientTenantId !== SYSTEM_TENANT_ID ? ambientTenantId : requestedTenantId;
     if (effectiveTenantId && effectiveTenantId !== ambientTenantId) {
       return tenantStorage.run({ ...tenantStorage.getStore(), tenantId: effectiveTenantId }, () =>
         getAppConfig(options),
