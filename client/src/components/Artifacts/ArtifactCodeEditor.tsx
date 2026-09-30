@@ -1,15 +1,18 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback, useContext } from 'react';
 import debounce from 'lodash/debounce';
 import MonacoEditor from '@monaco-editor/react';
-import { useQueryClient } from '@tanstack/react-query';
-import { MutationKeys } from 'librechat-data-provider';
 import { ThemeContext, highContrastDarkTheme, highContrastLightTheme } from '@librechat/client';
-import type { QueryClient } from '@tanstack/react-query';
 import type { Monaco } from '@monaco-editor/react';
 import type { IThemeRGB } from '@librechat/client';
 import type { editor } from 'monaco-editor';
 import type { Artifact } from '~/common';
-import { useMutationState, useCodeState } from '~/Providers/EditorContext';
+import {
+  isSavedText,
+  recordSave,
+  useCodeState,
+  useMutationState,
+  resolveServerContent,
+} from '~/Providers/EditorContext';
 import { getResponseStatus } from '~/utils/errors';
 import { useArtifactsContext } from '~/Providers';
 import { useEditArtifact } from '~/data-provider';
@@ -189,8 +192,6 @@ type PendingUpdate = ArtifactEditTarget & {
 type ArtifactMutationVars = {
   messageId: string;
   index: number;
-  /** What the save replaced, which is how the chain of this session's saves
-   *  is reconstructed from the mutation cache. */
   original: string;
   updated: string;
 };
@@ -226,52 +227,6 @@ function isSameMutationTarget(target: ArtifactEditTarget, vars: ArtifactMutation
   return target.messageId === vars.messageId && target.index === vars.index;
 }
 
-/**
- * The text the most recent successful save wrote for this artifact, which is
- * what the server now holds. The registry catches up only when the edited
- * message propagates, so an edit sent between those two moments has to be
- * rebased on the request's own record rather than on `artifact.content`.
- *
- * That record is only the truth while the content on screen is still one of
- * the states this session's saves moved it through. A refetch that brings
- * content from anywhere else (another tab or session edited the artifact) is
- * newer than every save here, and preferring the local record over it would
- * send an `original` the endpoint has already moved past, refusing every
- * further edit until the mutation cache is collected.
- */
-function getSavedContent(
-  queryClient: QueryClient,
-  target: ArtifactEditTarget,
-  registryContent: string | undefined,
-): string | undefined {
-  /** Mutation ids increase, so the highest one is the most recent save. */
-  let latestId = -1;
-  let latest: string | undefined;
-  const chain = new Set<string>();
-  for (const mutation of queryClient
-    .getMutationCache()
-    .findAll({ mutationKey: [MutationKeys.editArtifact] })) {
-    const vars = mutation.state.variables as ArtifactMutationVars | undefined;
-    if (
-      mutation.state.status !== 'success' ||
-      vars == null ||
-      !isSameMutationTarget(target, vars)
-    ) {
-      continue;
-    }
-    chain.add(vars.original);
-    chain.add(vars.updated);
-    if (mutation.mutationId > latestId) {
-      latestId = mutation.mutationId;
-      latest = vars.updated;
-    }
-  }
-  if (latest == null || registryContent == null || chain.has(registryContent)) {
-    return latest;
-  }
-  return undefined;
-}
-
 export const ArtifactCodeEditor = function ArtifactCodeEditor({
   artifact,
   monacoRef,
@@ -282,7 +237,6 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
   readOnly?: boolean;
 }) {
   const { resolvedMode, highContrast } = useContext(ThemeContext);
-  const queryClient = useQueryClient();
   const { isSubmitting } = useArtifactsContext();
   const readOnly = (externalReadOnly ?? false) || isSubmitting;
   const {
@@ -292,7 +246,9 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     setCurrentCode,
     rejectedCode,
     setRejectedCode,
+    clearCode,
     codeSession,
+    savedContent,
   } = useCodeState();
   /* The pane is remounted when it changes hosts (side panel, mobile sheet,
    * undocked window). The buffer outlives that remount, so unsaved text is
@@ -339,6 +295,14 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     },
     onSuccess: (_data, vars) => {
       currentUpdateRef.current = null;
+      /* What the server now holds is true whoever is editing, so it is
+       * recorded before the session check below. */
+      recordSave(
+        savedContent,
+        mutationArtifactIdRef.current ?? artifactRef.current.id,
+        vars.original,
+        vars.updated,
+      );
       /* A save that outlived its session reports to nobody: the buffer and any
        * queued edit belong to whoever is editing now. */
       if (isStaleSession()) {
@@ -436,7 +400,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
        * registry that has not caught up has the endpoint refuse the newest
        * text, and three of those paths have had to learn that separately. */
       const original =
-        originalOverride ?? getSavedContent(queryClient, target, art.content) ?? art.content ?? '';
+        originalOverride ?? resolveServerContent(savedContent, art.id, art.content) ?? '';
       /* Anything this instance sends is newer than the buffer it inherited at
        * mount, so that older text stops being a candidate for the drain —
        * whether this goes out now or waits behind a running save. Left in
@@ -478,7 +442,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         updated: code,
       });
     },
-    [codeSession, queryClient, readOnly],
+    [codeSession, readOnly, savedContent],
   );
 
   runMutationRef.current = runMutation;
@@ -558,9 +522,11 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       const currentTarget = getArtifactEditTarget(artifactRef.current);
       if (currentTarget != null && isSameArtifactTarget(queued, currentTarget)) {
         const original =
-          getSavedContent(queryClient, currentTarget, artifactRef.current.content) ??
-          artifactRef.current.content ??
-          queued.original;
+          resolveServerContent(
+            savedContent,
+            currentTarget.artifactId,
+            artifactRef.current.content,
+          ) ?? queued.original;
         if (queued.code.trim() !== original.trim()) {
           setCurrentCodeRef.current(queued.code, artifactRef.current.id);
           runMutationRef.current(queued.code, original);
@@ -575,17 +541,24 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     }
     const inheritedTarget = getArtifactEditTarget(artifactRef.current);
     const inheritedOriginal =
-      (inheritedTarget != null
-        ? getSavedContent(queryClient, inheritedTarget, artifactRef.current.content)
-        : undefined) ??
-      artifactRef.current.content ??
-      '';
+      resolveServerContent(savedContent, artifactRef.current.id, artifactRef.current.content) ?? '';
     if (inherited === inheritedOriginal) {
       return;
     }
     drainedBufferRef.current = inherited;
-    prevContentRef.current = inherited;
     const ed = monacoRef.current;
+    /* Text this tab already saved is not unsaved: when the server has moved
+     * past it since, the newer content is what the pane shows, and nothing is
+     * sent on the user's behalf. */
+    if (isSavedText(savedContent, artifactRef.current.id, inherited)) {
+      clearCode(artifactRef.current.id);
+      prevContentRef.current = inheritedOriginal;
+      if (ed) {
+        writeModelValue(ed, inheritedOriginal);
+      }
+      return;
+    }
+    prevContentRef.current = inherited;
     if (ed) {
       writeModelValue(ed, inherited);
     }
@@ -594,7 +567,13 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       return;
     }
     runMutationRef.current(inherited, inheritedOriginal);
-  }, [isMutating, readOnly, queryClient, monacoRef, writeModelValue]);
+  }, [isMutating, readOnly, savedContent, clearCode, monacoRef, writeModelValue]);
+
+  /* The registry reaching this tab's last save ends the lag, so a later
+   * change elsewhere (even back to an earlier value) is read as the truth. */
+  useEffect(() => {
+    resolveServerContent(savedContent, artifact.id, artifact.content);
+  }, [artifact.id, artifact.content, savedContent]);
 
   /**
    * Streaming: use model.applyEdits() to append new content.
@@ -658,8 +637,18 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     }
     prevArtifactId.current = artifact.id;
     pendingUpdateRef.current = null;
-    const restored = restoredCodeRef.current;
-    const nextValue = restored ?? artifact.content;
+    const server = resolveServerContent(savedContent, artifact.id, artifact.content);
+    /* A retained copy of text this tab already saved is not an edit to send:
+     * the server's content is the artifact's text again. */
+    const stale =
+      restoredCodeRef.current != null &&
+      restoredCodeRef.current !== server &&
+      isSavedText(savedContent, artifact.id, restoredCodeRef.current);
+    if (stale) {
+      clearCode(artifact.id);
+    }
+    const restored = stale ? undefined : restoredCodeRef.current;
+    const nextValue = restored ?? server;
     prevContentRef.current = nextValue ?? '';
     const ed = monacoRef.current;
     if (ed && nextValue != null) {
@@ -670,7 +659,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
     if (restored != null) {
       runMutationRef.current(restored);
     }
-  }, [artifact.id, artifact.content, monacoRef, writeModelValue]);
+  }, [artifact.id, artifact.content, savedContent, clearCode, monacoRef, writeModelValue]);
 
   /* Monaco reports a write this component made through `onChange` like any
    * other edit. Treating it as typing would key the shared buffer to the

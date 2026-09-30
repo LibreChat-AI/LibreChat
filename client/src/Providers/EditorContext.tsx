@@ -44,6 +44,11 @@ interface MutationContextType {
  *
  * Ending a session leaves a running save alone: the request is not the
  * session's to cancel, and nothing waits on a flag it could clear.
+ *
+ * `savedContent` is what this tab knows the server holds for each artifact,
+ * read and written synchronously because save callbacks run between renders.
+ * It outlives a session: the server's content does not change when the pane
+ * closes.
  */
 interface CodeContextType {
   currentCode?: string;
@@ -52,8 +57,61 @@ interface CodeContextType {
   setCurrentCode: (code: string | undefined, artifactId?: string) => void;
   rejectedCode: Record<string, string>;
   setRejectedCode: (code: string | undefined, artifactId?: string) => void;
+  clearCode: (artifactId: string) => void;
   codeSession: { current: number };
   endCodeSession: () => void;
+  savedContent: SavedContentLedger;
+}
+
+/**
+ * A successful save is the server's content before the registry shows it: the
+ * edited message propagates afterwards. `base` is the text the last save wrote,
+ * and `pending` the values the registry may still show until it catches up.
+ * Anything else the registry shows is a change made elsewhere, which wins.
+ */
+type SavedContent = { base: string; pending: string[] };
+export type SavedContentLedger = { current: Record<string, SavedContent> };
+
+export function recordSave(
+  ledger: SavedContentLedger,
+  artifactId: string,
+  original: string,
+  updated: string,
+): void {
+  const previous = ledger.current[artifactId];
+  ledger.current[artifactId] = {
+    base: updated,
+    pending: [...(previous?.pending ?? []), original],
+  };
+}
+
+/**
+ * The content an edit of this artifact replaces. Only the values the registry
+ * showed before this tab's own saves count as lag; once it reaches the saved
+ * text, or moves anywhere else, it is the truth again, so a later revert to an
+ * earlier value is not mistaken for lag.
+ */
+export function resolveServerContent(
+  ledger: SavedContentLedger,
+  artifactId: string,
+  registry: string | undefined,
+): string | undefined {
+  const entry = ledger.current[artifactId];
+  if (entry == null || registry == null) {
+    return registry ?? entry?.base;
+  }
+  if (entry.pending.length > 0 && registry !== entry.base && entry.pending.includes(registry)) {
+    return entry.base;
+  }
+  if (entry.pending.length > 0) {
+    ledger.current[artifactId] = { base: entry.base, pending: [] };
+  }
+  return registry;
+}
+
+/** Whether the text is what this tab last saved for the artifact, so it is not unsaved. */
+export function isSavedText(ledger: SavedContentLedger, artifactId: string, text: string): boolean {
+  return ledger.current[artifactId]?.base === text;
 }
 
 const MutationContext = createContext<MutationContextType | undefined>(undefined);
@@ -73,6 +131,7 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   }>({ buffer: {}, retained: {} });
   const [rejectedCode, setRejectedState] = useState<Record<string, string>>({});
   const codeSession = useRef(0);
+  const savedContent = useRef<Record<string, SavedContent>>({});
 
   const setCurrentCode = useCallback((code: string | undefined, artifactId?: string) => {
     setCodeState((previous) => {
@@ -111,6 +170,15 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const clearCode = useCallback((artifactId: string) => {
+    setCodeState((previous) => {
+      const retained = { ...previous.retained };
+      delete retained[artifactId];
+      const buffer = previous.buffer.artifactId === artifactId ? {} : previous.buffer;
+      return { buffer, retained };
+    });
+  }, []);
+
   const endCodeSession = useCallback(() => {
     codeSession.current += 1;
     setCodeState({ buffer: {}, retained: {} });
@@ -126,10 +194,12 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
       setCurrentCode,
       rejectedCode,
       setRejectedCode,
+      clearCode,
       codeSession,
       endCodeSession,
+      savedContent,
     }),
-    [codeState, endCodeSession, rejectedCode, setCurrentCode, setRejectedCode],
+    [clearCode, codeState, endCodeSession, rejectedCode, setCurrentCode, setRejectedCode],
   );
 
   return (

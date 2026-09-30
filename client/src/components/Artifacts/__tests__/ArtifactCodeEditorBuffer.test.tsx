@@ -590,4 +590,85 @@ describe('ArtifactCodeEditor unsaved text across a selection change', () => {
     );
     expect(model.read()).toBe('EDIT-A');
   });
+
+  const saveAndSettle = async (text: string) => {
+    type(text);
+    settleDebounce();
+    await flush();
+    await act(async () => {
+      inFlight?.resolve(undefined);
+      await Promise.resolve();
+    });
+    await flush();
+  };
+
+  /* Text this tab saved is not unsaved. When another session moves the
+   * artifact on, a host change must not send the saved text back over it. */
+  it('does not resend saved text over a newer change made elsewhere', async () => {
+    const model = createModel('CONTENT-A');
+    const monacoRef = { current: model.ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    await saveAndSettle('SAVED-HERE');
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    view.select({ ...artifactA, content: 'SAVED-HERE' });
+    view.select({ ...artifactA, content: 'CHANGED-ELSEWHERE' });
+    await flush();
+
+    view.closePane();
+    view.reopenPane();
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+    expect(model.read()).toBe('CHANGED-ELSEWHERE');
+  });
+
+  /* Once the registry has shown this tab's save, a later change back to an
+   * earlier value is made elsewhere, not lag, and the next edit replaces it. */
+  it('rebases on an earlier value restored elsewhere after the save landed', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    const view = renderEditor(artifactA, monacoRef);
+
+    await saveAndSettle('SAVED-HERE');
+    view.select({ ...artifactA, content: 'SAVED-HERE' });
+    await flush();
+    view.select({ ...artifactA, content: 'CONTENT-A' });
+    await flush();
+
+    type('AFTER-REVERT');
+    settleDebounce();
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenLastCalledWith(
+      expect.objectContaining({ original: 'CONTENT-A', updated: 'AFTER-REVERT' }),
+    );
+  });
+
+  /* The user edits away and back to the text of a save that is still open.
+   * When that save is refused, the queued copy of the same text is the refused
+   * text and must not go out again. */
+  it('does not retry a queued edit the running save was refused for', async () => {
+    const monacoRef = { current: createModel('CONTENT-A').ed } as React.MutableRefObject<any>;
+    renderEditor(artifactA, monacoRef);
+
+    type('REFUSED');
+    settleDebounce();
+    await flush();
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+
+    type('DETOUR');
+    settleDebounce();
+    type('REFUSED');
+    settleDebounce();
+    await flush();
+
+    await act(async () => {
+      inFlight?.reject({ status: 400 });
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(mockEditArtifact).toHaveBeenCalledTimes(1);
+  });
 });

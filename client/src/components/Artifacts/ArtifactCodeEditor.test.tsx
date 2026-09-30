@@ -46,7 +46,13 @@ jest.mock('@monaco-editor/react', () => ({
 
 jest.mock('~/Providers/EditorContext', () => {
   const ReactModule = jest.requireActual<typeof import('react')>('react');
+  const actual = jest.requireActual<typeof import('~/Providers/EditorContext')>(
+    '~/Providers/EditorContext',
+  );
   return {
+    isSavedText: actual.isSavedText,
+    recordSave: actual.recordSave,
+    resolveServerContent: actual.resolveServerContent,
     useMutationState: () => ({ isMutating: false }),
     useCodeState: () => {
       const [currentCode, setCurrentCode] = ReactModule.useState('');
@@ -69,6 +75,7 @@ jest.mock('~/Providers/EditorContext', () => {
         [],
       );
       const codeSession = ReactModule.useRef(0);
+      const savedContent = ReactModule.useRef({});
       const endCodeSession = ReactModule.useCallback(() => {
         codeSession.current += 1;
       }, []);
@@ -78,8 +85,10 @@ jest.mock('~/Providers/EditorContext', () => {
         retainedCode: {},
         rejectedCode,
         setRejectedCode,
+        clearCode: () => {},
         codeSession,
         endCodeSession,
+        savedContent,
       };
     },
   };
