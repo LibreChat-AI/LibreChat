@@ -1,5 +1,4 @@
 import { useMemo, useState, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { Globe, ChevronDown, Info } from 'lucide-react';
 import {
@@ -19,9 +18,9 @@ import type {
 } from 'librechat-data-provider';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { toolPanelSpacingClassName, useToolAutoExpand } from './disclosure';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
-import { toolPanelSpacingClassName } from './disclosure';
 import { isError } from './ToolOutput/OutputRenderer';
 import parseJsonField from './Parts/parseJsonField';
 import { useToolCallIntent } from './Parts/intent';
@@ -31,7 +30,6 @@ import SearchVerticals from './verticals';
 import { ROW_GLYPH_SLOT } from './rows';
 import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
-import store from '~/store';
 
 type ProgressKeys =
   | 'com_ui_web_searching'
@@ -204,7 +202,7 @@ export default function WebSearch({
   }, [ownTurn, localize, showSources, finalizing, preparationText]);
   const progressText = preparationText ?? intent ?? genericProgressText;
 
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useToolAutoExpand();
   const sourceCount = allSources.length;
   const [showDetails, setShowDetails] = useState(false);
   const [showSourceList, setShowSourceList] = useState(() => autoExpand && sourceCount > 0);

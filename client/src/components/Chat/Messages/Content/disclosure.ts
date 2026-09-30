@@ -1,6 +1,8 @@
 import { createContext, useContext, useMemo } from 'react';
 import { atom } from 'jotai';
+import { useRecoilValue } from 'recoil';
 import type { PrimitiveAtom } from 'jotai';
+import store from '~/store';
 
 export type ReasoningDisclosures = Map<number, PrimitiveAtom<boolean | undefined>>;
 
@@ -51,4 +53,17 @@ export function useToolDisclosure() {
     }
     return disclosure;
   }, [disclosures, key]);
+}
+
+/** Set by a tool group holding exactly one tool call: the group header is
+ *  already the summary, so a second collapsed row inside it adds a click
+ *  without adding information. */
+export const SoleToolContext = createContext(false);
+
+/** Whether a tool card opens by default: the user's "auto-expand tools"
+ *  preference, or being the only call inside its group. */
+export function useToolAutoExpand() {
+  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const soleTool = useContext(SoleToolContext);
+  return autoExpand || soleTool;
 }

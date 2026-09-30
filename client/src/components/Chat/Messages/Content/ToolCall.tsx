@@ -1,5 +1,4 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import {
   Constants,
@@ -10,13 +9,13 @@ import {
 } from 'librechat-data-provider';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { toolPanelSpacingClassName, useToolAutoExpand } from './disclosure';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
 import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { ToolIcon, getToolIconType, isError } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { toolPanelSpacingClassName } from './disclosure';
 import { useToolCallIntent } from './Parts/intent';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
@@ -24,7 +23,6 @@ import ProgressText from './ProgressText';
 import { TOOL_ROW_CLASSES } from './rows';
 import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
-import store from '~/store';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -66,7 +64,7 @@ export default function ToolCall({
   const localize = useLocalize();
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const [oauthBinding, setOAuthBinding] = useState<'pending' | 'bound' | 'failed'>('pending');
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useToolAutoExpand();
   const hasOutput = (output?.length ?? 0) > 0;
   const [showInfo, setShowInfo] = useState(() => autoExpand && hasOutput);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);

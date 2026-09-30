@@ -24,6 +24,7 @@ import {
   reasoningDisclosure,
   ToolDisclosureContext,
   ToolDisclosureKeyContext,
+  SoleToolContext,
 } from './disclosure';
 import {
   groupActivityPhases,
@@ -1379,7 +1380,10 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
         <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
           <ToolDisclosureContext.Provider value={toolDisclosures}>
             <MCPAppSuppressionContext.Provider value={suppressedAppAttachments}>
-              <ContentPartsBody {...props} />
+              {/* A nested message (a subagent's) is not the sole call of the group around it. */}
+              <SoleToolContext.Provider value={false}>
+                <ContentPartsBody {...props} />
+              </SoleToolContext.Provider>
             </MCPAppSuppressionContext.Provider>
             <MCPAppViews
               key={`message-apps-${appRenderScope}`}

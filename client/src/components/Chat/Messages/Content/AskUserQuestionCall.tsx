@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
 import { MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents, PartMetadata } from 'librechat-data-provider';
 import {
@@ -9,11 +8,11 @@ import {
 } from '~/utils/approval';
 import AskUserQuestionProgress from './AskUserQuestionProgress';
 import { useLocalize, useExpandCollapse } from '~/hooks';
+import { useToolAutoExpand } from './disclosure';
 import ProgressText from './ProgressText';
 import EmptyText from './Parts/EmptyText';
 import { TOOL_ROW_CLASSES } from './rows';
 import Container from './Container';
-import store from '~/store';
 
 /**
  * Static rendering of a COMPLETED (or abandoned) `ask_user_question` tool call —
@@ -48,7 +47,7 @@ export default function AskUserQuestionCall({
   onExpand?: () => void;
 }) {
   const localize = useLocalize();
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useToolAutoExpand();
   const [expanded, setExpanded] = useState(autoExpand);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(expanded);
 

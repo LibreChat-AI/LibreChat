@@ -15,7 +15,7 @@ jest.mock('~/hooks', () => ({
         com_ui_command_timed_out: 'timed out',
         com_ui_writing_command: 'Writing command',
         com_ui_running_command: 'Running command',
-        com_ui_command_finished: 'Finished running',
+        com_ui_command_finished: 'Ran command',
         com_ui_cancelled: 'Cancelled',
         com_ui_copy_code: 'Copy code',
         com_ui_background_running: 'Running in background',
@@ -174,7 +174,7 @@ describe('BashCall intent label', () => {
       </RecoilRoot>,
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Waiting for the task to settle');
-    expect(screen.queryByText('Finished running')).not.toBeInTheDocument();
+    expect(screen.queryByText('Ran command')).not.toBeInTheDocument();
   });
 
   it('falls back to the generic labels when no intent is present', () => {
@@ -317,7 +317,7 @@ describe('BashCall backgrounded calls', () => {
         />
       </RecoilRoot>,
     );
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Finished running');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByText('hi')).toBeInTheDocument();
   });
 });

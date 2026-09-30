@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAtom } from 'jotai';
-import { useRecoilValue } from 'recoil';
 import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
+import { useToolDisclosure, useToolAutoExpand } from '../disclosure';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
-import { useToolDisclosure } from '../disclosure';
-import store from '~/store';
 
 interface ToolCallState {
   showCode: boolean;
@@ -55,7 +53,7 @@ export default function useToolCallState({
   extraError = false,
   extraCancelled = false,
 }: UseToolCallStateInput): ToolCallState {
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useToolAutoExpand();
   const hasOutput = output.length > 0;
   const hasContent = hasInput || hasOutput;
 
