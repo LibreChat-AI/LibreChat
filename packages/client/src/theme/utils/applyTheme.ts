@@ -218,7 +218,8 @@ export default function applyTheme(
     return;
   }
 
-  mapColors(themeRGB, base, mode).forEach(([property, value]) => {
+  const activeMode = mode ?? (root.classList.contains('dark') ? 'dark' : 'light');
+  mapColors(themeRGB, base, activeMode).forEach(([property, value]) => {
     if (!validateRGB(value)) {
       console.error(`Invalid RGB value for ${property}: ${value}`);
       return;

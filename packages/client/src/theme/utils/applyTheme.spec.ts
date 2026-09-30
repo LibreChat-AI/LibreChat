@@ -404,6 +404,19 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--avatar-text')).toBe('1 2 3');
   });
 
+  it('reads the mode off the root when a caller does not pass it', () => {
+    const root = document.documentElement;
+    const colors = { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' };
+
+    root.classList.add('dark');
+    try {
+      applyTheme(colors, root);
+      expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
+    } finally {
+      root.classList.remove('dark');
+    }
+  });
+
   it('leaves an explicit avatar backdrop alone', () => {
     const root = document.documentElement;
 
