@@ -119,7 +119,7 @@ type SubagentThreadMethods = Pick<
   | 'saveConvo'
   | 'saveMessage'
 > &
-  Partial<Pick<AllMethods, 'getAgent'>>;
+  Partial<Pick<AllMethods, 'getAgentName'>>;
 
 interface SubagentThreadScope {
   version: typeof SCOPE_VERSION;
@@ -202,6 +202,7 @@ interface TaskThreadLease {
   execution?: Promise<void>;
   /** Ordered observational tail; canonical child settlement never awaits it. */
   activityTail?: Promise<void>;
+  activityWorkerActive?: boolean;
   activityQueue?: Array<{
     event: SubagentActivityUpdateEvent;
     bytes: number;
@@ -1226,10 +1227,27 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     }
     queue.push({ event: boundedEvent, bytes });
     lease.activityQueuedBytes = (lease.activityQueuedBytes ?? 0) + bytes;
-    if (lease.activityTail != null) return;
-    lease.activityTail = this.drainActivity(lease, threadId, taskId).finally(() => {
-      lease.activityTail = undefined;
+    this.startActivityWorker(lease, threadId, taskId);
+  }
+
+  private hasPendingActivity(lease: TaskThreadLease): boolean {
+    return (lease.activityQueue?.length ?? 0) > 0 || lease.activityDropped != null;
+  }
+
+  private startActivityWorker(lease: TaskThreadLease, threadId: string, taskId: string): void {
+    if (
+      lease.activityWorkerActive === true ||
+      lease.activityAdmissionClosed === true ||
+      !this.hasPendingActivity(lease)
+    )
+      return;
+    lease.activityWorkerActive = true;
+    const worker = this.drainActivity(lease, threadId, taskId).finally(() => {
+      lease.activityWorkerActive = false;
+      if (lease.activityTail === worker) lease.activityTail = undefined;
+      if (this.hasPendingActivity(lease)) this.startActivityWorker(lease, threadId, taskId);
     });
+    lease.activityTail = worker;
   }
 
   private async retryActivity(operation: () => Promise<void>): Promise<boolean> {
@@ -1293,6 +1311,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     lease.activityAdmissionClosed = true;
     const terminal = (lease.activityTail ?? Promise.resolve())
       .then(async () => {
+        if (this.hasPendingActivity(lease)) await this.drainActivity(lease, threadId, taskId);
         await this.retryActivity(() => this.activityStream.complete(threadId, taskId, status));
       })
       .catch((error) => {
@@ -2835,9 +2854,16 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     if (!(await this.isOwnerActive(scope.userId))) {
       throw new SubagentThreadPublicError('The thread owner is unavailable.');
     }
-    const [parent, existing] = await Promise.all([
+    const agentId = childAgentId(request);
+    const [parent, existing, agentName] = await Promise.all([
       this.methods.getConvo(scope.userId, scope.parentConversationId),
       this.methods.getConvo(scope.userId, threadId),
+      isContinuation || agentId == null
+        ? undefined
+        : this.methods.getAgentName?.(agentId, scope.tenantId).catch((error) => {
+            logger.warn('[subagentThreads] Failed to resolve child display name', error);
+            return undefined;
+          }),
     ]);
     if (parent == null || !matchesTenant(parent.tenantId, scope.tenantId)) {
       throw new SubagentThreadPublicError('Parent thread is unavailable.');
@@ -2860,19 +2886,6 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
           );
         }
         const depth = parentDepth + 1;
-        const agentId = childAgentId(request);
-        const agent =
-          agentId == null
-            ? undefined
-            : await this.methods.getAgent?.(
-                {
-                  id: agentId,
-                  ...(scope.tenantId == null
-                    ? { tenantId: { $exists: false } }
-                    : { tenantId: scope.tenantId }),
-                },
-                { name: 1 },
-              );
         const reserved = await this.methods.reserveSubagentThread({
           user: scope.userId,
           conversationId: threadId,
@@ -2880,7 +2893,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
           conversation: {
             conversationId: threadId,
             endpoint: EModelEndpoint.agents,
-            title: (agent?.name || agentId || request.subagentType).slice(0, 120),
+            title: (agentName || agentId || request.subagentType).slice(0, 120),
             ...(agentId == null ? {} : { agent_id: agentId }),
             ...retentionFields(parent),
             subagentThread: {
@@ -3549,7 +3562,7 @@ export function createSubagentThreadTaskStore(
       | 'recordSubagentTaskControlReceipt'
       | 'saveMessage'
     > &
-    Partial<Pick<AllMethods, 'getAgent'>>,
+    Partial<Pick<AllMethods, 'getAgentName'>>,
   options?: SubagentThreadTaskStoreOptions,
 ): SubagentThreadTaskStore {
   /** The host wires this from JavaScript, where the parameter type checks nothing. A

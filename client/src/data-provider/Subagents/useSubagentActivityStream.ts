@@ -124,7 +124,6 @@ export default function useSubagentActivityStream(
           return;
         }
         if (envelope.event === 'subagent_activity_replay' && Array.isArray(envelope.data)) {
-          replayReceived = true;
           const replay = envelope.data as ActivityEnvelope[];
           const events = replay.flatMap((entry) =>
             entry.event === StepEvents.ON_SUBAGENT_UPDATE && isSubagentUpdate(entry.data)
@@ -132,6 +131,7 @@ export default function useSubagentActivityStream(
               : [],
           );
           if (events.length === 0) return;
+          replayReceived = true;
           registerSubagentProgressKey(key);
           setProgress((previous) => {
             /** Replace a suffix only when replay actually backfills earlier activity.

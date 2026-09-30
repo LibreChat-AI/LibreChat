@@ -1307,6 +1307,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   if (hasConversationProjection) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
+        {droppedNotice}
         {showUnavailableHistoryBoundary && (
           <div
             role="status"
@@ -1365,6 +1366,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   ) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
+        {droppedNotice}
         <div data-subagent-thread-timeline>
           {timelinePrefix}
           {visibleEventTasks.map(renderEventTask)}
@@ -1380,6 +1382,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         state={panelState}
         showPrompt={false}
         headerInset
+        notice={droppedNotice}
         onCancelControl={
           controlAvailable && !controlPending
             ? (controlId) => submitControl('cancel_message', controlId)
@@ -1469,7 +1472,6 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       <ApprovalProvider
         key={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`}
       >
-        {droppedNotice}
         {activityPanel}
       </ApprovalProvider>
       {(showControlFooter || composerMode != null) && (

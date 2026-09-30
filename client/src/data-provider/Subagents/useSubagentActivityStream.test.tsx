@@ -431,6 +431,7 @@ describe('useSubagentActivityStream', () => {
     );
 
     act(() => {
+      streams[0]?.emit('message', { event: 'subagent_activity_replay', data: [] });
       streams[0]?.emit('message', {
         event: StepEvents.ON_SUBAGENT_UPDATE,
         data: {

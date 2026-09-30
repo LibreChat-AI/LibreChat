@@ -236,6 +236,11 @@ const ABORT_ACK_TTL_SECONDS = 86400;
 const PROVIDER_DRAIN_TTL_SECONDS = 86400;
 const SUBSCRIPTION_ATTACHMENT_TIMEOUT_MS = 3_000;
 
+interface ReplaySnapshot {
+  frontier: number;
+  events: string[];
+}
+
 interface SubscriptionFrontierWaiter {
   streamId: string;
   resolve: () => void;
@@ -341,7 +346,12 @@ export class RedisEventTransport implements IEventTransport {
     return state;
   }
 
-  private async captureSubscriptionFrontier(streamId: string): Promise<number> {
+  private captureSubscriptionFrontier(streamId: string): Promise<number>;
+  private captureSubscriptionFrontier(streamId: string, replay: true): Promise<ReplaySnapshot>;
+  private async captureSubscriptionFrontier(
+    streamId: string,
+    replay = false,
+  ): Promise<number | ReplaySnapshot> {
     const subscriptionFrontierId = randomUUID();
     let operationTimeout: ReturnType<typeof setTimeout> | undefined;
     const observed = new Promise<void>((resolve, reject) => {
@@ -365,9 +375,10 @@ export class RedisEventTransport implements IEventTransport {
        * admission instead of leaving every surviving local subscriber deferred forever. */
       const operation = Promise.all([
         this.publisher.eval(
-          CAPTURE_SUBSCRIPTION_FRONTIER_LUA,
-          1,
+          replay ? READ_REPLAY_LUA : CAPTURE_SUBSCRIPTION_FRONTIER_LUA,
+          replay ? 2 : 1,
           KEYS.sequence(streamId),
+          ...(replay ? [KEYS.backlog(streamId)] : []),
           CHANNELS.events(streamId),
           JSON.stringify({
             type: EventTypes.SUBSCRIPTION_FRONTIER,
@@ -384,8 +395,10 @@ export class RedisEventTransport implements IEventTransport {
         operationTimeout.unref?.();
       });
       const [raw] = await Promise.race([operation, operationDeadline]);
-      const parsed = raw != null ? parseInt(String(raw), 10) : 0;
-      return Number.isNaN(parsed) ? 0 : parsed;
+      const counter = replay ? (raw as [string, string[]])[0] : raw;
+      const parsed = counter != null ? parseInt(String(counter), 10) : 0;
+      const frontier = Number.isNaN(parsed) ? 0 : parsed;
+      return replay ? { frontier, events: (raw as [string, string[]])[1] } : frontier;
     } catch (error) {
       const waiter = this.subscriptionFrontierWaiters.get(subscriptionFrontierId);
       if (waiter != null) {
@@ -1298,20 +1311,25 @@ export class RedisEventTransport implements IEventTransport {
     });
     const ready = this.ensureChannelSubscription(streamId)
       .then(async () => {
-        const [rawFrontier, rawEvents] = (await this.publisher.eval(
-          READ_REPLAY_LUA,
-          2,
-          KEYS.sequence(streamId),
-          KEYS.backlog(streamId),
-        )) as [string, string[]];
+        const snapshot = await this.captureSubscriptionFrontier(streamId, true);
         if (closed || this.streams.get(streamId) !== state) return;
-        const messages = rawEvents.map((raw) => JSON.parse(raw) as PubSubMessage);
+        const messages = snapshot.events.map((raw) => JSON.parse(raw) as PubSubMessage);
+        const retained = new Set(messages.map((message) => message.seq));
+        /** The observed marker fences all receivable pre-snapshot frames. Older owners
+         * publish without retaining, so their buffered frames are not replay duplicates. */
+        for (const message of pending) {
+          if (message.seq != null && message.seq < snapshot.frontier && !retained.has(message.seq))
+            messages.push(message);
+        }
+        messages.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
         const chunks = messages.filter((message) => message.type === EventTypes.CHUNK);
         if (handlers.onReplay != null) handlers.onReplay(chunks.map((message) => message.data));
         else for (const message of chunks) handlers.onChunk(message.data);
-        frontier = Number(rawFrontier);
+        frontier = snapshot.frontier;
         for (const message of messages) {
           if (message.type === EventTypes.DONE) handlers.onDone?.(message.data);
+          else if (message.type === EventTypes.ERROR)
+            handlers.onError?.(message.error ?? 'Unknown error');
         }
         pending.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
         for (const message of pending) deliver(message);

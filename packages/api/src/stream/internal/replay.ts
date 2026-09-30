@@ -29,5 +29,7 @@ return seq
 /** SUBSCRIBE must be acknowledged first. Every later frame is either in this atomic
  * snapshot or in the viewer's live buffer; the returned :seq frontier removes overlap. */
 export const READ_REPLAY_LUA = `
-return {redis.call('GET', KEYS[1]) or '0', redis.call('LRANGE', KEYS[2], 0, -1)}
+local snapshot = {redis.call('GET', KEYS[1]) or '0', redis.call('LRANGE', KEYS[2], 0, -1)}
+redis.call('PUBLISH', ARGV[1], ARGV[2])
+return snapshot
 `;

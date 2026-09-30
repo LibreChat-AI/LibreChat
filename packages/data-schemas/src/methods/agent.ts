@@ -560,6 +560,7 @@ export function createAgentMethods(
   deps: AgentDeps,
 ): {
   getAgent: GetAgent;
+  getAgentName: (id: string, tenantId?: string) => Promise<string | undefined>;
   getAgentVersions: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent['versions'] | null>;
   getAgentWithVersionCount: (
     searchParameter: FilterQuery<IAgent>,
@@ -759,6 +760,16 @@ export function createAgentMethods(
     const Agent = mongoose.models.Agent as Model<IAgent>;
     return await Agent.findOne(searchParameter, projection).lean<IAgent>();
   };
+
+  /** Storage-neutral display-name lookup for a known execution subject. */
+  async function getAgentName(id: string, tenantId?: string): Promise<string | undefined> {
+    const agent = await getAgent(
+      { id, ...(tenantId == null ? { tenantId: { $exists: false } } : { tenantId }) },
+      { name: 1, tenantId: 1, _id: 0 },
+    );
+    if ((agent?.tenantId ?? undefined) !== tenantId) return undefined;
+    return agent?.name || undefined;
+  }
 
   /**
    * Get an agent's version history only, without the rest of the document.
@@ -1765,6 +1776,7 @@ export function createAgentMethods(
 
   return {
     getAgent,
+    getAgentName,
     getAgentVersions,
     getAgentWithVersionCount,
     getAgents,

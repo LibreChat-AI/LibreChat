@@ -217,8 +217,9 @@ async function waitForSettled(
 async function waitUntil(
   condition: () => boolean | Promise<boolean>,
   description: string,
+  timeoutMs = 4_000,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+  for (let attempt = 0; attempt < Math.ceil(timeoutMs / 10); attempt += 1) {
     if (await condition()) {
       return;
     }
@@ -305,6 +306,43 @@ describe('SubagentThreadTaskStore', () => {
     expect(automaticStore.controlTask).toEqual(expect.any(Function));
     await expect(automaticStore.hasTasks(automatic.scopeId)).resolves.toBe(false);
     await expect(automaticStore.listTasks(automatic.scopeId)).resolves.toEqual([]);
+  });
+
+  it('scopes the plain agent-name lookup to the execution tenant', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const id = 'tenant-name-agent';
+    await tenantStorage.run({ tenantId: 'name-tenant-a', userId }, async () => {
+      await methods.createAgent({
+        id,
+        name: 'Scoped Reviewer',
+        author: userId,
+        provider: 'openAI',
+        model: 'test-model',
+      });
+      expect(await methods.getAgentName(id, 'name-tenant-a')).toBe('Scoped Reviewer');
+      expect(await methods.getAgentName(id, 'name-tenant-b')).toBeUndefined();
+      expect(await methods.getAgentName(id)).toBeUndefined();
+    });
+  });
+
+  it('keeps child execution independent of display-name lookup failure', async () => {
+    const userId = 'name-fallback-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    jest
+      .spyOn(methods, 'getAgentName')
+      .mockRejectedValueOnce(new Error('display-name lookup unavailable'));
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const started = store.start(taskRequest(config.scopeId));
+    await waitForSettled(store, config.scopeId, started);
+    expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
+      'completed',
+    );
+    expect((await methods.getConvo(userId, requireThreadId(started)))?.title).toBe(
+      'researcher-agent',
+    );
+    store.destroyActivityStream();
   });
 
   it('persists the child agent name and falls back to its id', async () => {
@@ -749,6 +787,76 @@ describe('SubagentThreadTaskStore', () => {
     store.destroyActivityStream();
   });
 
+  it.each([true, false])(
+    'drains activity admitted during worker release before DONE (hold run: %s)',
+    async (holdRun) => {
+      const userId = `activity-handoff-${holdRun}`;
+      const parentConversationId = randomUUID();
+      await saveParent(userId, parentConversationId);
+      const store = new SubagentThreadTaskStore(methods);
+      const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+      const defaultRun = taskRequest(config.scopeId).run;
+      let activityRuntime!: SubagentTaskRuntime;
+      let release!: () => void;
+      const finish = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const progress: SubagentUpdateEvent = {
+        runId: 'parent',
+        parentRunId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher-agent',
+        subagentKind: 'agent',
+        subagentAgentId: 'agent-1',
+        depth: 1,
+        ancestry: [],
+        phase: 'message_delta',
+        data: { delta: { content: [{ type: 'text', text: 'first' }] } },
+        timestamp: '2026-09-29T00:00:00.000Z',
+      };
+      const drainStore = store as object as { drainActivity: (typeof store)['drainActivity'] };
+      const originalDrain = drainStore.drainActivity.bind(store);
+      jest.spyOn(drainStore, 'drainActivity').mockImplementationOnce(async (...args) => {
+        await originalDrain(...args);
+        activityRuntime.reportProgress({
+          ...progress,
+          data: { delta: { content: [{ type: 'text', text: 'last' }] } },
+        });
+      });
+      const run = async (...args: Parameters<typeof defaultRun>) => {
+        activityRuntime = args[0];
+        activityRuntime.reportProgress(progress);
+        if (holdRun) await finish;
+        return defaultRun(...args);
+      };
+      const started = store.start(taskRequest(config.scopeId, { run }));
+      const received: Array<number | 'done'> = [];
+      const subscription = store.subscribeActivity(
+        requireThreadId(started),
+        requireAccepted(started).task.taskId,
+        {
+          onEvent: (envelope) => {
+            const events =
+              envelope.event === 'subagent_activity_replay' ? envelope.data : [envelope];
+            for (const event of events)
+              if (event.data.activitySequence != null) received.push(event.data.activitySequence);
+          },
+          onDone: () => {
+            received.push('done');
+          },
+        },
+      );
+      await subscription.ready;
+      await waitUntil(() => received.includes(1), 'activity admitted at the idle handoff');
+      release();
+      await waitUntil(() => received.includes('done'), 'terminal after all admitted activity');
+      expect(received).toEqual([0, 1, 'done']);
+      await waitForSettled(store, config.scopeId, started);
+      subscription.unsubscribe();
+      store.destroyActivityStream();
+    },
+  );
+
   it('keeps activity delivery observational when its transport is unavailable', async () => {
     const userId = 'activity-stream-failure-user';
     const parentConversationId = randomUUID();
@@ -810,7 +918,10 @@ describe('SubagentThreadTaskStore', () => {
     expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
       'completed',
     );
-    await waitUntil(() => emitChunk.mock.calls.length === 3, 'bounded activity retries');
+    await waitUntil(
+      () => emitChunk.mock.calls.length === 6,
+      'bounded activity and gap-marker retries',
+    );
   });
 
   it('bounds stalled activity and still attempts terminal delivery', async () => {
@@ -875,8 +986,8 @@ describe('SubagentThreadTaskStore', () => {
     expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
       'completed',
     );
-    await waitUntil(() => emitDone.mock.calls.length === 1, 'terminal activity delivery');
-    expect(emitChunk).toHaveBeenCalledTimes(3);
+    await waitUntil(() => emitDone.mock.calls.length === 1, 'terminal activity delivery', 10_000);
+    expect(emitChunk).toHaveBeenCalledTimes(6);
   });
 
   it('fails before provider work and keeps the durable failure collectable when registration fails', async () => {

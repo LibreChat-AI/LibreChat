@@ -226,6 +226,28 @@ describe('bounded cross-replica subagent replay (real Redis)', () => {
     expect(attached.events[0].data.activitySequence).toBe(0);
   });
 
+  it('preserves an older owner frame published between SUBSCRIBE and snapshot capture', async () => {
+    const owner = await replica();
+    const viewer = await replica();
+    const thread = randomUUID();
+    const task = randomUUID();
+    const streamId = subagentActivityStreamId(thread, task);
+    const originalEval = viewer.publisher.eval.bind(viewer.publisher);
+    jest
+      .spyOn(viewer.publisher, 'eval')
+      .mockImplementationOnce(async (...args: Parameters<Redis['eval']>) => {
+        expect(args[0]).toBe(READ_REPLAY_LUA);
+        await owner.transport.emitChunk(streamId, { event: 'on_subagent_update', data: update(0) });
+        return originalEval(...args);
+      });
+    const attached = collect(viewer.stream, thread, task);
+    await attached.subscription.ready;
+    expect(attached.events.map((event) => event.data.activitySequence)).toEqual([0]);
+    await owner.transport.emitChunk(streamId, { event: 'on_subagent_update', data: update(1) });
+    await waitUntil(() => attached.events.length === 2);
+    expect(attached.events.map((event) => event.data.activitySequence)).toEqual([0, 1]);
+  });
+
   it('caps retained items and encoded bytes, expires them, and preserves the shared sequence', async () => {
     const owner = await replica();
     const streamId = subagentActivityStreamId(randomUUID(), randomUUID());
@@ -274,10 +296,12 @@ describe('bounded cross-replica subagent replay (real Redis)', () => {
       { replay: limits },
     );
     subscriptions.push(stalled);
+    const readyFailure = stalled.ready?.catch((error: Error) => error.message);
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
     for (let i = 0; i < 4; i++)
       await owner.transport.emitReplayableChunk(streamId, { text: i }, limits);
     await waitUntil(() => onError.mock.calls.length === 1);
     expect(onError.mock.calls[0][0]).toContain('overflow');
+    expect(await readyFailure).toContain('Timed out synchronizing');
   });
 });
