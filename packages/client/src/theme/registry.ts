@@ -477,6 +477,12 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
       ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
       : {};
+  /** The default avatar's glyph inked in `text-primary` before it had a role. */
+  const avatarTextFallback =
+    customColors?.['rgb-avatar-text'] === undefined &&
+    customColors?.['rgb-text-primary'] !== undefined
+      ? { 'rgb-avatar-text': customColors['rgb-text-primary'] }
+      : {};
   const chartWidgetSurfaceFallback =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
@@ -574,6 +580,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...textMutedFallback,
       ...proseLinkFallback,
       ...avatarPlaceholderFallback,
+      ...avatarTextFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,

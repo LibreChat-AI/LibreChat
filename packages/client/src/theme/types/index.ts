@@ -132,7 +132,8 @@ export interface IThemeRGB {
   // Brand colors
   'rgb-brand-purple'?: string;
 
-  /** The default user avatar's fill and glyph, drawn when a user has no image. */
+  /** The default user avatar's fill and glyph, drawn when a user has no image. The glyph follows
+   *  `rgb-text-primary` in a theme that does not set it, as it did before it had a role. */
   'rgb-avatar-fill'?: string;
   'rgb-avatar-text'?: string;
   /** Behind an agent or assistant avatar while its image loads or where it is transparent. */

@@ -381,6 +381,30 @@ describe('theme registry', () => {
     expect(resolveTheme(theme, 'dark').colors['rgb-avatar-placeholder']).toBe('30 31 32');
   });
 
+  it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
+    const inherited = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-avatar-text',
+        modes: { light: { colors: { 'rgb-text-primary': '10 11 12' } } },
+      },
+      'light',
+    );
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-avatar-text',
+        modes: {
+          light: { colors: { 'rgb-text-primary': '10 11 12', 'rgb-avatar-text': '1 2 3' } },
+        },
+      },
+      'light',
+    );
+
+    expect(inherited.colors['rgb-avatar-text']).toBe('10 11 12');
+    expect(explicit.colors['rgb-avatar-text']).toBe('1 2 3');
+  });
+
   it('preserves an explicit avatar backdrop and falls back to the bundled one otherwise', () => {
     const explicit = resolveTheme(
       {

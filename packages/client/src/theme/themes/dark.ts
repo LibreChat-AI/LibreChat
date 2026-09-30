@@ -121,7 +121,7 @@ export const darkTheme: IThemeRGB = {
   // Brand colors
   'rgb-brand-purple': '171 104 255', // #ab68ff
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
-  'rgb-avatar-text': '255 255 255', // #ffffff
+  'rgb-avatar-text': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-avatar-placeholder': '47 47 47', // #2f2f2f (gray-700, matching surface-tertiary)
 
   /** Code syntax highlighting, measured against the `surface-code` fill. The

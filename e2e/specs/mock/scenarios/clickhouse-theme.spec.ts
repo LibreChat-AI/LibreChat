@@ -142,10 +142,13 @@ async function failUserAvatar(page: Page) {
 }
 
 /** The default avatar on the sidebar account button, the one a signed-in user always sees. */
-const navAvatarFill = async (page: Page) => {
+const navAvatarPaint = async (page: Page) => {
   const avatar = page.getByTestId('nav-user').locator('div[aria-hidden="true"]').first();
   await expect(avatar).toBeVisible({ timeout: 20000 });
-  return avatar.evaluate((node) => getComputedStyle(node).backgroundColor);
+  return avatar.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { fill: style.backgroundColor, ink: style.color };
+  });
 };
 
 test.describe('clickhouse reference theme', () => {
@@ -264,16 +267,16 @@ test.describe('clickhouse reference theme', () => {
     await failUserAvatar(page);
 
     try {
-      for (const [mode, placeholder] of [
-        ['light', defaultTheme['rgb-surface-secondary']],
-        ['dark', darkTheme['rgb-surface-tertiary']],
+      for (const [mode, placeholder, ink] of [
+        ['light', defaultTheme['rgb-surface-secondary'], 'rgb(33, 33, 33)'],
+        ['dark', darkTheme['rgb-surface-tertiary'], 'rgb(236, 236, 236)'],
       ] as const) {
         await page.goto(`/c/${conversationId}?${THEME_PARAM}=${mode}`);
         await expect(page.getByText(REPLY_TEXT, { exact: true }).first()).toBeVisible({
           timeout: 20000,
         });
 
-        expect(await navAvatarFill(page)).toBe('rgb(121, 137, 255)');
+        expect(await navAvatarPaint(page)).toEqual({ fill: 'rgb(121, 137, 255)', ink });
         expect(await themeValue(page, '--avatar-placeholder')).toBe(placeholder);
       }
     } finally {
@@ -298,7 +301,10 @@ test.describe('clickhouse reference theme', () => {
         });
         await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
 
-        expect(await navAvatarFill(page)).toBe(rgbCss(colors['rgb-avatar-fill']));
+        expect(await navAvatarPaint(page)).toEqual({
+          fill: rgbCss(colors['rgb-avatar-fill']),
+          ink: rgbCss(colors['rgb-avatar-text']),
+        });
         expect(await themeValue(page, '--avatar-placeholder')).toBe(
           colors['rgb-avatar-placeholder'],
         );

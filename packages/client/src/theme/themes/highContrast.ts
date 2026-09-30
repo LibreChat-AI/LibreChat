@@ -146,7 +146,7 @@ export const highContrastLightTheme: IThemeRGB = {
   // Brand colors
   'rgb-brand-purple': '107 0 179', // #6b00b3
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
-  'rgb-avatar-text': '255 255 255', // #ffffff
+  'rgb-avatar-text': '0 0 0', // #000000 (matching text-primary)
   'rgb-avatar-placeholder': '255 255 255', // #ffffff (matching surface-secondary)
 
   /** Code syntax highlighting at AAA on the white code surface. */
@@ -305,7 +305,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   // Brand colors
   'rgb-brand-purple': '224 179 255', // #e0b3ff
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
-  'rgb-avatar-text': '255 255 255', // #ffffff
+  'rgb-avatar-text': '255 255 255', // #ffffff (matching text-primary)
   'rgb-avatar-placeholder': '0 0 0', // #000000 (matching surface-tertiary)
 
   /** Code syntax highlighting at AAA on the black code surface. */

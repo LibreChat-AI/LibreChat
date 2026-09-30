@@ -55,7 +55,7 @@ const Avatar: React.FC<AvatarProps> = ({
           height: `${size}px`,
           boxShadow: 'rgba(240, 246, 252, 0.1) 0px 0px 0px 1px',
         }}
-        className={`bg-avatar-fill text-text-primary relative flex items-center justify-center rounded-full p-1 ${className}`}
+        className={`bg-avatar-fill text-avatar-text relative flex items-center justify-center rounded-full p-1 ${className}`}
         aria-hidden="true"
       >
         <UserIcon />

@@ -20,6 +20,7 @@ const semanticProperties = [
   '--chart-widget-stroke',
   '--switch-thumb',
   '--avatar-placeholder',
+  '--avatar-text',
   '--table-header-text',
   '--table-header-fill',
   '--border-destructive',
@@ -391,6 +392,16 @@ describe('applyTheme', () => {
 
     applyTheme(colors, root, undefined, 'dark');
     expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
+  });
+
+  it("inks a legacy theme's default avatar in its primary text", () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-text-primary': '10 11 12' }, root);
+    expect(root.style.getPropertyValue('--avatar-text')).toBe('10 11 12');
+
+    applyTheme({ 'rgb-text-primary': '10 11 12', 'rgb-avatar-text': '1 2 3' }, root);
+    expect(root.style.getPropertyValue('--avatar-text')).toBe('1 2 3');
   });
 
   it('leaves an explicit avatar backdrop alone', () => {

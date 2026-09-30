@@ -73,6 +73,10 @@ function mapColors(
     variables.push(['--text-muted', colors['rgb-text-tertiary']]);
   }
 
+  if (colors['rgb-avatar-text'] === undefined && colors['rgb-text-primary'] !== undefined) {
+    variables.push(['--avatar-text', colors['rgb-text-primary']]);
+  }
+
   /** The avatar backdrop was the mode's secondary or tertiary surface, as in `resolveTheme`. */
   const avatarPlaceholder =
     mode === 'dark' ? colors['rgb-surface-tertiary'] : colors['rgb-surface-secondary'];
