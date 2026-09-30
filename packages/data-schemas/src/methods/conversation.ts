@@ -319,6 +319,12 @@ export interface ConversationMethods {
     IConversation,
     'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
   > | null>;
+  addConvoToolApprovalAllows(input: {
+    user: string;
+    conversationId: string;
+    toolNames: string[];
+    max: number;
+  }): Promise<boolean>;
   readAdmittedConvoCodeEnvironmentDecision(
     user: string,
     conversationId: string,
@@ -2410,6 +2416,8 @@ export function createConversationMethods(
       delete update.lastResponseAt;
       delete update.lastResponseMessageId;
       delete update.initial_agent_id;
+      /* Remembered tool approvals are granted only by a validated resume. */
+      delete update.toolApprovalAllows;
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
         ...(convo.codeEnvironmentMode != null && {
@@ -2431,6 +2439,7 @@ export function createConversationMethods(
       delete unsetFields.lastResponseMessageId;
       delete unsetFields.lastResponseAt;
       delete unsetFields.initial_agent_id;
+      delete unsetFields.toolApprovalAllows;
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -2899,6 +2908,41 @@ export function createConversationMethods(
    * return the post-update decision in one round trip. A run that wins invalidates an in-flight
    * transition's revision; a transition that wins is observed by this read.
    */
+  /**
+   * Remember tools the owner approved for the rest of one conversation. Owner-scoped,
+   * idempotent (`$addToSet`), and bounded: the write matches only while the stored list
+   * has room, so concurrent resumes cannot grow it past `max`. Returns whether it applied.
+   */
+  async function addConvoToolApprovalAllows({
+    user,
+    conversationId,
+    toolNames,
+    max,
+  }: {
+    user: string;
+    conversationId: string;
+    toolNames: string[];
+    max: number;
+  }): Promise<boolean> {
+    const names = [...new Set(toolNames.filter((name) => typeof name === 'string' && name))];
+    if (names.length === 0 || names.length > max) {
+      return false;
+    }
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const result = await withoutMeiliIndexing(
+      Conversation.updateOne(
+        {
+          user,
+          conversationId,
+          [`toolApprovalAllows.${max - names.length}`]: { $exists: false },
+        },
+        { $addToSet: { toolApprovalAllows: { $each: names } } },
+        { timestamps: false },
+      ),
+    );
+    return result.matchedCount === 1;
+  }
+
   async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     return withoutMeiliIndexing(
@@ -3044,6 +3088,7 @@ export function createConversationMethods(
         delete sanitized.lastSeenAt;
         delete sanitized.codeApprovalMode;
         delete sanitized.initial_agent_id;
+        delete sanitized.toolApprovalAllows;
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
@@ -4103,6 +4148,7 @@ export function createConversationMethods(
     setConvoPinned,
     appendConvoMessageReference,
     getConvoCodeEnvironmentDecision,
+    addConvoToolApprovalAllows,
     readAdmittedConvoCodeEnvironmentDecision,
     replaceConvoCodeEnvironmentDecision,
     bulkSaveConvos,

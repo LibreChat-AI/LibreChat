@@ -14,6 +14,7 @@ const {
   GENERATION_RECOVERY_FAILED_ERROR,
   isPendingActionStale,
   resolveToolApprovalResume,
+  recordToolApprovalAllows,
   resolveAskUserQuestionResume,
   buildResolvedAskUserQuestion,
   appendResolvedAskUserQuestion,
@@ -68,6 +69,7 @@ const {
   saveMessage,
   getConvo,
   getChatProject,
+  addConvoToolApprovalAllows,
   getMessages,
   getProjectFiles,
   getFiles,
@@ -1723,6 +1725,15 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         generationProtocolVersion,
       );
     }
+    await recordToolApprovalAllows({
+      userId,
+      conversationId,
+      policy: req.config?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
+      pendingAction,
+      resolutions: req.body.decisions,
+      request: req,
+      addConvoToolApprovalAllows,
+    });
     let client = null;
     /** Re-pause progress failures use the action/epoch-scoped terminal CAS. The
      * generic resume catch must not subsequently call completeJob, because the

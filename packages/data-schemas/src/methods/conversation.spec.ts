@@ -8990,6 +8990,71 @@ describe('Conversation Operations', () => {
       expect(result.conversations.map((c) => c.conversationId)).toEqual([convo.conversationId]);
     });
   });
+
+  describe('addConvoToolApprovalAllows', () => {
+    const seed = async (user = 'allow-user') => {
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user, title: 'Allow test' });
+      return conversationId;
+    };
+
+    it('stores tools owner-scoped and idempotently', async () => {
+      const conversationId = await seed();
+      const input = { conversationId, toolNames: ['search_mcp_github'], max: 64 };
+      expect(await methods.addConvoToolApprovalAllows({ ...input, user: 'intruder' })).toBe(false);
+      expect(await methods.addConvoToolApprovalAllows({ ...input, user: 'allow-user' })).toBe(true);
+      expect(await methods.addConvoToolApprovalAllows({ ...input, user: 'allow-user' })).toBe(true);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['search_mcp_github']);
+    });
+
+    it('refuses a write that would exceed the bound', async () => {
+      const conversationId = await seed();
+      const user = 'allow-user';
+      expect(
+        await methods.addConvoToolApprovalAllows({
+          user,
+          conversationId,
+          toolNames: ['a', 'b'],
+          max: 2,
+        }),
+      ).toBe(true);
+      expect(
+        await methods.addConvoToolApprovalAllows({
+          user,
+          conversationId,
+          toolNames: ['c'],
+          max: 2,
+        }),
+      ).toBe(false);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['a', 'b']);
+    });
+
+    it('cannot be written or cleared through generic saves or bulk imports', async () => {
+      const conversationId = await seed();
+      const user = 'allow-user';
+      await methods.addConvoToolApprovalAllows({
+        user,
+        conversationId,
+        toolNames: ['kept'],
+        max: 64,
+      });
+      await saveConvo(
+        { userId: user },
+        { conversationId, toolApprovalAllows: ['*'] },
+        { unsetFields: { toolApprovalAllows: 1 } },
+      );
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        { conversationId: imported, user, title: 'Imported', toolApprovalAllows: ['*'] },
+      ]);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['kept']);
+      const importedDoc = await Conversation.findOne({ conversationId: imported }).lean();
+      expect(importedDoc?.toolApprovalAllows).toBeUndefined();
+    });
+  });
 });
 
 describe('stampForcedRetention', () => {

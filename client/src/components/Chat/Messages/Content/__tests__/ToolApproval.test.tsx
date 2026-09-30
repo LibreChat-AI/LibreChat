@@ -7,8 +7,8 @@ import {
   approvalPanelOpenFamily,
   pendingApprovalActionFamily,
 } from '~/components/Chat/approval/state';
+import ApprovalProvider, { useApprovalContext } from '../ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';
-import ApprovalProvider from '../ApprovalContext';
 import ToolApproval from '../ToolApproval';
 
 jest.mock('~/hooks', () => ({
@@ -18,6 +18,8 @@ jest.mock('~/hooks', () => ({
     }
     const map: Record<string, string> = {
       com_ui_approve: 'Approve',
+      com_ui_approve_always: 'Always allow',
+      com_ui_approve_always_hint: 'Runs without asking for this conversation',
       com_ui_reject: 'Reject',
       com_ui_edit: 'Edit',
       com_ui_respond: 'Respond',
@@ -55,7 +57,52 @@ const renderCards = (cards: React.ReactNode) =>
     </RecoilRoot>,
   );
 
+function DecisionProbe() {
+  const { getDecisions } = useApprovalContext();
+  return <output data-testid="decisions">{JSON.stringify(getDecisions('action-1'))}</output>;
+}
+
+const decisions = () => JSON.parse(screen.getByTestId('decisions').textContent ?? '[]');
+
 describe('ToolApproval', () => {
+  test('hides Always allow unless the server offered it', () => {
+    renderCards(<ToolApproval approval={approval()} toolCallId="call-1" args={{}} />);
+    expect(screen.queryByRole('button', { name: 'Always allow' })).not.toBeInTheDocument();
+  });
+
+  test('Always allow submits a session-scoped approve and is mutually exclusive with Approve', () => {
+    renderCards(
+      <>
+        <ToolApproval
+          approval={{ ...approval(), allow_always: true }}
+          toolCallId="call-1"
+          args={{}}
+        />
+        <DecisionProbe />
+      </>,
+    );
+    const always = screen.getByRole('button', { name: 'Always allow' });
+    const approve = screen.getByRole('button', { name: 'Approve' });
+    expect(always).toHaveAccessibleDescription('Runs without asking for this conversation');
+
+    fireEvent.click(always);
+    expect(always).toHaveAttribute('aria-pressed', 'true');
+    expect(approve).toHaveAttribute('aria-pressed', 'false');
+    expect(decisions()).toEqual([
+      { tool_call_id: 'call-1', decision: 'approve', scope: 'session' },
+    ]);
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+
+    fireEvent.click(approve);
+    expect(always).toHaveAttribute('aria-pressed', 'false');
+    expect(approve).toHaveAttribute('aria-pressed', 'true');
+    expect(decisions()).toEqual([{ tool_call_id: 'call-1', decision: 'approve' }]);
+
+    fireEvent.click(always);
+    fireEvent.click(always);
+    expect(decisions()).toEqual([]);
+  });
+
   test('enables Submit immediately after Approve is the first decision (#14390)', () => {
     renderCards(<ToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />);
 

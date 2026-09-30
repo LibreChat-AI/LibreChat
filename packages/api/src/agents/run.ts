@@ -121,6 +121,7 @@ import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
+import { applyConversationToolAllows } from '~/agents/hitl/allow';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
@@ -2124,6 +2125,7 @@ export async function createRun({
   eventActorCheckpointing = false,
   hitlCapable = false,
   resolvedToolApprovalHooks,
+  toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2146,6 +2148,12 @@ export async function createRun({
    * run. Tenant fanout can still export when tenant routing is available.
    */
   centralTraceExportEnabled?: boolean;
+  /**
+   * Exact tool names the owner approved for the rest of this conversation, read from the
+   * stored conversation (never from the request body). Honored only when
+   * `toolApproval.allowAlways` is on; admin `deny`/`ask` rules and hooks still win.
+   */
+  toolApprovalAllows?: readonly string[];
   /**
    * Request values the deployment may export as Langfuse trace metadata
    * (`langfuse.trace.conversationMetadataFields`). The conversation id,
@@ -2737,7 +2745,10 @@ export async function createRun({
   );
   const effectiveToolApprovalPolicy = () =>
     exemptAskUserQuestionFromApproval(
-      healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
+      applyConversationToolAllows(
+        healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
+        toolApprovalAllows,
+      ),
       ASK_USER_QUESTION_TOOL_NAME,
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
