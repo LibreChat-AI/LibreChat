@@ -340,6 +340,21 @@ interface:
   # retentionMode: "all"; non-agent files still expire.
   # retainAgentFiles: false
 
+# Prompt library categories (optional)
+# Without this section the nine built-in categories are shown, as before.
+# prompts:
+#   categories:
+#     enableDefaultCategories: true # false hides the built-ins; list entries still show
+#     allowCustom: false # true lets authors create categories when saving a prompt
+#     list: # up to 50 entries; values must be unique and cannot start with "sys__"
+#       - value: "hr"
+#         label: "Human Resources" # "com_" labels are translated; others show as written
+#         icon: "users" # dices, box, file-text, pen-line, lightbulb, line-chart, shopping-bag,
+#                       # plane-takeoff, graduation-cap, terminal-square, users, beaker, settings
+#         color: "series-7" # series-1 … series-8
+#       - value: "code" # matching a built-in overrides its label, icon and color in place
+#         label: "Engineering"
+
 # Example Cloudflare turnstile (optional)
 #turnstile:
 #  siteKey: "your-site-key-here"
