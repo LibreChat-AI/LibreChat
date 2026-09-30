@@ -294,7 +294,7 @@
     },
     "packages/api": {
       "name": "@librechat/api",
-      "version": "1.7.50",
+      "version": "1.7.51",
       "dependencies": {
         "@langchain/langgraph-checkpoint": "^1.1.2",
         "@langchain/langgraph-checkpoint-mongodb": "^1.4.0",
@@ -407,7 +407,7 @@
     },
     "packages/client": {
       "name": "@librechat/client",
-      "version": "0.4.80",
+      "version": "0.4.81",
       "devDependencies": {
         "@babel/core": "^7.28.5",
         "@babel/preset-env": "^7.29.5",
@@ -490,7 +490,7 @@
     },
     "packages/data-provider": {
       "name": "librechat-data-provider",
-      "version": "0.8.525",
+      "version": "0.8.526",
       "dependencies": {
         "axios": "^1.16.0",
         "dayjs": "^1.11.13",
@@ -525,7 +525,7 @@
     },
     "packages/data-schemas": {
       "name": "@librechat/data-schemas",
-      "version": "0.0.72",
+      "version": "0.0.73",
       "dependencies": {
         "mdast-util-directive": "^3.0.0",
         "mdast-util-from-markdown": "^2.0.1",
