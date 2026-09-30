@@ -1,10 +1,4 @@
-import type {
-  ResolvedThemeDefinition,
-  IThemeAppearance,
-  IThemeBrands,
-  IThemeRGB,
-  ThemeMode,
-} from '../types';
+import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
 import {
   controlBorderFallback,
   focusFallbacks,
@@ -35,11 +29,7 @@ function validateRGB(rgb: string): boolean {
 /** `base` is the bundled palette for the mode being applied. The adapter writes
  *  only the keys a theme names, so a derivation whose source the theme inherits
  *  rather than restates has nothing to read without it. */
-function mapColors(
-  colors: IThemeRGB,
-  base?: IThemeRGB,
-  placeholderMode?: ThemeMode,
-): Array<[string, string]> {
+function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]> {
   const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
     const value = colors[token];
     if (value !== undefined) {
@@ -75,19 +65,6 @@ function mapColors(
 
   if (colors['rgb-avatar-text'] === undefined && colors['rgb-text-primary'] !== undefined) {
     variables.push(['--avatar-text', colors['rgb-text-primary']]);
-  }
-
-  /**
-   * The avatar backdrop was the mode's secondary or tertiary surface, as in `resolveTheme`. On the
-   * document root the stylesheet already aliases it to those surfaces per mode, so it is derived
-   * only for a scoped root, which that alias cannot see.
-   */
-  const avatarPlaceholder =
-    placeholderMode === undefined
-      ? undefined
-      : colors[placeholderMode === 'dark' ? 'rgb-surface-tertiary' : 'rgb-surface-secondary'];
-  if (colors['rgb-avatar-placeholder'] === undefined && avatarPlaceholder !== undefined) {
-    variables.push(['--avatar-placeholder', avatarPlaceholder]);
   }
 
   if (
@@ -183,10 +160,18 @@ function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
  */
 export const THEME_DISABLED_ATTRIBUTE = 'data-theme-disabled';
 
+/**
+ * Marks a root other than the document one that a legacy palette themes. The stylesheet points
+ * the avatar backdrop at that root's own secondary surface, or its tertiary one under a `.dark`
+ * ancestor, as the document root's alias does, so the backdrop follows a later mode change.
+ */
+export const THEME_SCOPE_ATTRIBUTE = 'data-theme-scope';
+
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
   root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_SCOPE_ATTRIBUTE);
 }
 
 export function applyResolvedTheme(
@@ -218,15 +203,15 @@ export default function applyTheme(
   themeRGB?: IThemeRGB,
   root: HTMLElement = document.documentElement,
   base?: IThemeRGB,
-  mode?: ThemeMode,
 ): void {
   if (!themeRGB) {
     return;
   }
 
-  const scoped = root !== root.ownerDocument.documentElement;
-  const placeholderMode = scoped ? (mode ?? (root.closest('.dark') ? 'dark' : 'light')) : undefined;
-  mapColors(themeRGB, base, placeholderMode).forEach(([property, value]) => {
+  if (root !== root.ownerDocument.documentElement) {
+    root.setAttribute(THEME_SCOPE_ATTRIBUTE, '');
+  }
+  mapColors(themeRGB, base).forEach(([property, value]) => {
     if (!validateRGB(value)) {
       console.error(`Invalid RGB value for ${property}: ${value}`);
       return;

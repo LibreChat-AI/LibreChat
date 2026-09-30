@@ -4,6 +4,7 @@ import applyTheme, {
   clearAppliedTheme,
   themeOwnedProperties,
   THEME_DISABLED_ATTRIBUTE,
+  THEME_SCOPE_ATTRIBUTE,
 } from './applyTheme';
 import { defaultAppearance, highContrastTheme, resolveTheme } from '../registry';
 import { defaultTheme } from '../themes/default';
@@ -392,16 +393,21 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('');
   });
 
-  it('derives a scoped root backdrop from the mode it is applied in', () => {
+  it('marks a scoped root so the stylesheet derives its backdrop from its own surfaces', () => {
     const scoped = document.createElement('div');
-    const colors = { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' };
     document.body.append(scoped);
     try {
-      applyTheme(colors, scoped);
-      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('20 21 22');
+      applyTheme(
+        { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' },
+        scoped,
+      );
 
-      applyTheme(colors, scoped, undefined, 'dark');
-      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
+      expect(scoped.hasAttribute(THEME_SCOPE_ATTRIBUTE)).toBe(true);
+      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('');
+      expect(document.documentElement.hasAttribute(THEME_SCOPE_ATTRIBUTE)).toBe(false);
+
+      clearAppliedTheme(scoped);
+      expect(scoped.hasAttribute(THEME_SCOPE_ATTRIBUTE)).toBe(false);
     } finally {
       scoped.remove();
     }
@@ -417,31 +423,10 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--avatar-text')).toBe('1 2 3');
   });
 
-  it('reads the mode off a dark ancestor of a scoped root', () => {
-    const scoped = document.createElement('div');
-    document.documentElement.classList.add('dark');
-    document.body.append(scoped);
-    try {
-      applyTheme(
-        { 'rgb-surface-secondary': '20 21 22', 'rgb-surface-tertiary': '30 31 32' },
-        scoped,
-      );
-      expect(scoped.style.getPropertyValue('--avatar-placeholder')).toBe('30 31 32');
-    } finally {
-      scoped.remove();
-      document.documentElement.classList.remove('dark');
-    }
-  });
-
   it('leaves an explicit avatar backdrop alone', () => {
     const root = document.documentElement;
 
-    applyTheme(
-      { 'rgb-surface-tertiary': '30 31 32', 'rgb-avatar-placeholder': '1 2 3' },
-      root,
-      undefined,
-      'dark',
-    );
+    applyTheme({ 'rgb-surface-tertiary': '30 31 32', 'rgb-avatar-placeholder': '1 2 3' }, root);
 
     expect(root.style.getPropertyValue('--avatar-placeholder')).toBe('1 2 3');
   });

@@ -389,3 +389,14 @@ html {
   --provider-bedrock: #268672;
   --provider-foreground: #ffffff;
 }
+
+/* A root other than the document one that a legacy palette themes (`THEME_SCOPE_ATTRIBUTE` in
+   utils/applyTheme.ts) keeps its avatar backdrop on its own surfaces, following the mode, as the
+   document root's alias above does. An explicit avatar-placeholder set inline still wins. */
+[data-theme-scope] {
+  --avatar-placeholder: var(--surface-secondary);
+}
+.dark [data-theme-scope],
+[data-theme-scope].dark {
+  --avatar-placeholder: var(--surface-tertiary);
+}

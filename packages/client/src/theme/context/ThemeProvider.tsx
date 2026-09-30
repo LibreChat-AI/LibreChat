@@ -750,7 +750,7 @@ export function ThemeProvider({
       }
 
       if (!highContrast && legacyThemeRGB) {
-        applyTheme(legacyThemeRGB, root, mode === 'dark' ? darkTheme : defaultTheme, mode);
+        applyTheme(legacyThemeRGB, root, mode === 'dark' ? darkTheme : defaultTheme);
         root.dataset.theme = definition.name;
         return;
       }

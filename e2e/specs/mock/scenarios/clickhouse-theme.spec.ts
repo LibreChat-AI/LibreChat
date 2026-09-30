@@ -313,4 +313,53 @@ test.describe('clickhouse reference theme', () => {
       await deleteConversations([conversationId]);
     }
   });
+
+  test('a legacy backdrop follows a dark toggle on the document root and on a scoped root @scenario:legacy-avatar-backdrop-follows-mode', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    const conversationId = await seedChat('Legacy avatar backdrop');
+    await installThemeBridge(page, null);
+
+    try {
+      await page.goto(`/c/${conversationId}?${THEME_PARAM}=light`);
+      await expect(page.getByText(REPLY_TEXT, { exact: true }).first()).toBeVisible({
+        timeout: 20000,
+      });
+
+      /** What a legacy palette leaves behind: surfaces set inline, applied once in light, and a
+       *  scoped root marked the way `applyTheme` marks one. The mode then flips with no reapply. */
+      const painted = await page.evaluate(() => {
+        const html = document.documentElement;
+        const read = (node: Element) => getComputedStyle(node).backgroundColor;
+        const backdrop = (host: Element) => {
+          const node = document.createElement('div');
+          node.className = 'bg-avatar-placeholder';
+          host.append(node);
+          return node;
+        };
+        html.classList.remove('dark');
+        html.style.setProperty('--surface-secondary', '20 21 22');
+        html.style.setProperty('--surface-tertiary', '30 31 32');
+        const scope = document.createElement('section');
+        scope.setAttribute('data-theme-scope', '');
+        scope.style.setProperty('--surface-secondary', '40 41 42');
+        scope.style.setProperty('--surface-tertiary', '50 51 52');
+        document.body.append(scope);
+        const onRoot = backdrop(document.body);
+        const onScope = backdrop(scope);
+        const light = { root: read(onRoot), scoped: read(onScope) };
+        html.classList.add('dark');
+        const dark = { root: read(onRoot), scoped: read(onScope) };
+        return { light, dark };
+      });
+
+      expect(painted).toEqual({
+        light: { root: 'rgb(20, 21, 22)', scoped: 'rgb(40, 41, 42)' },
+        dark: { root: 'rgb(30, 31, 32)', scoped: 'rgb(50, 51, 52)' },
+      });
+    } finally {
+      await deleteConversations([conversationId]);
+    }
+  });
 });
