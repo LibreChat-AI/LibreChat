@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   PrincipalType,
   materializeModelSpecEndpoints,
@@ -259,14 +260,19 @@ export function _resetOverrideStrictCache(): void {
 }
 
 /** Versioned so older heads cannot supply override entries built under a stale tenant ID. */
-function overrideCacheKey(role?: string, userId?: string, tenantId?: string): string {
+function overrideCacheKey(
+  role: string | undefined,
+  userId: string | undefined,
+  tenantId: string | undefined,
+  scopeVersion: string,
+): string {
   const tenant = tenantId || '__default__';
   const principal = userId
     ? role
       ? `${role}:${userId}`
       : userId
     : role || BASE_CONFIG_PRINCIPAL_ID;
-  return `_OVERRIDE_:${tenant}:${principal}:tenant-v1`;
+  return `_OVERRIDE_:${tenant}:${principal}:tenant-v1:${scopeVersion}`;
 }
 
 // ── Service factory ──────────────────────────────────────────────────
@@ -482,7 +488,20 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       }
     };
 
-    const cacheKey = overrideCacheKey(role, userId, ambientTenantId ?? effectiveTenantId);
+    const scopeVersion = createHash('sha256')
+      .update(
+        JSON.stringify([
+          baseConfig.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
+          baseConfig.config?.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
+        ]),
+      )
+      .digest('hex');
+    const cacheKey = overrideCacheKey(
+      role,
+      userId,
+      ambientTenantId ?? effectiveTenantId,
+      scopeVersion,
+    );
     if (!refresh) {
       const cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
       if (cachedMerged) {

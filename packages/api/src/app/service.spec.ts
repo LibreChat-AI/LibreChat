@@ -466,7 +466,12 @@ describe('createAppConfigService', () => {
         expect(revoked.endpoints?.custom).toEqual([]);
         expect(revoked.modelSpecs).toBeUndefined();
         expect(JSON.stringify(revoked)).not.toContain('private-gateway-key');
-        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+        expect(revoked.interfaceConfig).toMatchObject({
+          modelSelect: true,
+          parameters: true,
+          presets: true,
+        });
+        expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(2);
       });
 
       it('passes only scoped inputs to augmentation and blocks hidden endpoint resurrection', async () => {
@@ -742,7 +747,9 @@ describe('createAppConfigService', () => {
 
       const cachedKeys = [...deps._cache._store.keys()];
       const overrideKey = cachedKeys.find((k) => k.includes('_OVERRIDE_:'));
-      expect(overrideKey).toBe('app_config:_OVERRIDE_:__default__:uid1:tenant-v1');
+      expect(overrideKey).toMatch(
+        /^app_config:_OVERRIDE_:__default__:uid1:tenant-v1:[a-f0-9]{64}$/,
+      );
     });
 
     it('tenantId is included in cache key to prevent cross-tenant contamination', async () => {
@@ -907,7 +914,7 @@ describe('createAppConfigService', () => {
         const overrideKey = [...deps._cache._store.keys()].find((k: string) =>
           k.includes('_OVERRIDE_:'),
         );
-        expect(overrideKey).toBe('app_config:_OVERRIDE_:tenant-a:USER:tenant-v1');
+        expect(overrideKey).toMatch(/^app_config:_OVERRIDE_:tenant-a:USER:tenant-v1:[a-f0-9]{64}$/);
         expect(overrideKey).not.toContain('__default__');
       });
 
@@ -1109,7 +1116,11 @@ describe('createAppConfigService', () => {
       expect(deps.getUserPrincipals).toHaveBeenCalledTimes(2);
       expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
       expect([...deps._cache._store.keys()]).toEqual(
-        expect.arrayContaining(['app_config:_OVERRIDE_:__default__:USER:uid1:tenant-v1']),
+        expect.arrayContaining([
+          expect.stringMatching(
+            /^app_config:_OVERRIDE_:__default__:USER:uid1:tenant-v1:[a-f0-9]{64}$/,
+          ),
+        ]),
       );
     });
 
