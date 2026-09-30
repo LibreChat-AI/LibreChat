@@ -5,6 +5,7 @@ import {
   BashExecutionToolDefinition,
   BashToolOutputReferencesGuide,
   createBashProgrammaticToolCallingTool,
+  createBashProgrammaticToolCallingSchema,
 } from '@librechat/agents';
 import type {
   AgentGitIdentity,
@@ -178,8 +179,9 @@ function fitCommandTimeoutMaxToBudget(
 
 /**
  * Programmatic calls do not currently carry the detached-invocation marker.
- * An explicit foreground default uses the negotiated command ceiling. Without
- * one, preserve the legacy maxCommandTimeoutMs override on this SDK route.
+ * The SDK's runTimeoutMs is a ceiling, not an omission-only default. When the
+ * environment configures a foreground default, resolve its ceiling separately;
+ * otherwise retain the legacy maxCommandTimeoutMs behavior on this SDK route.
  */
 export function resolveAttachedWorkspaceProgrammaticTimeout(
   configSchema?: CodeEnvironmentUserConfigSchema,
@@ -187,10 +189,7 @@ export function resolveAttachedWorkspaceProgrammaticTimeout(
 ): number {
   const defaultTimeoutMs = configSchema?.limits?.defaultCommandTimeoutMs;
   if (defaultTimeoutMs != null) {
-    return resolveAttachedWorkspaceCommandTimeoutDefault(
-      defaultTimeoutMs,
-      resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs),
-    );
+    return resolveAttachedWorkspaceCommandTimeoutMax(configSchema, upstreamMaxTimeoutMs);
   }
   const configured = configSchema?.limits?.maxCommandTimeoutMs;
   const requested =
@@ -351,7 +350,33 @@ export function createContextProgrammaticBashTool(
         }
       : {}),
   };
-  return createGitIdentityProgrammaticBashTool(options, attached ? identity : undefined);
+  const bashTool = createGitIdentityProgrammaticBashTool(options, attached ? identity : undefined);
+  const configuredDefault = attached
+    ? context.codeEnvironmentConfigSchema?.limits?.defaultCommandTimeoutMs
+    : undefined;
+  if (configuredDefault == null) return bashTool;
+
+  const maxTimeoutMs = options.runTimeoutMs ?? WORKSPACE_COMMAND_DEFAULT_TIMEOUT_MS;
+  const schema = createBashProgrammaticToolCallingSchema(maxTimeoutMs);
+  const minimumTimeoutMs = schema.properties.timeout.minimum;
+  if (maxTimeoutMs < minimumTimeoutMs) {
+    throw new Error(
+      `Attached programmatic execution requires a timeout ceiling of at least ${minimumTimeoutMs} milliseconds. Use bash_tool for shorter command budgets.`,
+    );
+  }
+  const defaultTimeoutMs = Math.max(
+    minimumTimeoutMs,
+    resolveAttachedWorkspaceCommandTimeoutDefault(configuredDefault, maxTimeoutMs),
+  );
+  schema.properties.timeout.default = defaultTimeoutMs;
+  schema.properties.timeout.description = `Maximum wall-clock time in milliseconds for one sandbox run or replay iteration, not the total multi-round-trip task budget. Default: ${defaultTimeoutMs} milliseconds when timeout is omitted. Accepted values above the configured cap are clamped before execution. Configured cap: ${maxTimeoutMs} milliseconds.`;
+  bashTool.schema = schema;
+  const execute = bashTool.func.bind(bashTool);
+  bashTool.func = (input, ...args) => {
+    const params = input as { timeout?: number };
+    return execute({ ...params, timeout: params.timeout ?? defaultTimeoutMs }, ...args);
+  };
+  return bashTool;
 }
 
 /** Apply authorship before the SDK prepares the script and its replay requests. */

@@ -7,6 +7,7 @@ import {
   ATTACHED_WORKSPACE_BASH_SCHEMA,
   buildAttachedWorkspaceBashSchema,
   createAttachedWorkspaceBashTool,
+  createContextProgrammaticBashTool,
   createGitIdentityProgrammaticBashTool,
   resolveAttachedWorkspaceCommandTimeoutMax,
   resolveAttachedWorkspaceCommandTimeoutDefault,
@@ -130,13 +131,155 @@ describe('programmatic Bash Git identity', () => {
     }
   });
 
-  test('honors an explicit foreground default on the programmatic route without raising any ceiling', () => {
+  test('uses the foreground default only when the real SDK programmatic call omits timeout', async () => {
+    const received: { timeout: number; code: string }[] = [];
+    const server = createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      received.push(JSON.parse(body));
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ status: 'completed', stdout: 'done', stderr: '', files: [] }));
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const { port } = server.address() as AddressInfo;
+    try {
+      const bashTool = createContextProgrammaticBashTool(
+        () => ({}),
+        {
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          codeSessionKey: 'execute_code:stateful:attached',
+          executionProfile: 'stateful',
+          environmentType: 'attached',
+          statefulSessions: true,
+          codeWorkspace: {
+            environmentId: 'machine',
+            workspaceId: 'project-a',
+            operations: ['execute_command'],
+            maxCommandTimeoutMs: 80_000,
+          },
+          codeEnvironmentConfigSchema: {
+            limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 },
+          },
+        },
+        { name: 'Lia', email: 'lia@example.com' },
+      );
+      const invocationConfig = {
+        tags: [],
+        toolCall: { name: 'run_tools_with_bash', args: {}, toolDefs: [] },
+      };
+      for (const timeout of [undefined, 75_000, 10_000, 90_000]) {
+        await bashTool.invoke(
+          { code: 'printf done', tool_manifest: [], ...(timeout == null ? {} : { timeout }) },
+          invocationConfig,
+        );
+      }
+      expect(received.map(({ timeout }) => timeout)).toEqual([60_000, 75_000, 10_000, 80_000]);
+      expect(received.every(({ code }) => code.includes("GIT_AUTHOR_NAME='Lia'"))).toBe(true);
+      expect(bashTool.schema).toMatchObject({
+        properties: {
+          timeout: {
+            default: 60_000,
+            description: expect.stringContaining('Default: 60000 milliseconds'),
+          },
+        },
+      });
+      expect(bashTool.schema).toMatchObject({
+        properties: {
+          timeout: { description: expect.stringContaining('Configured cap: 80000 milliseconds') },
+        },
+      });
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  test.each([
+    [60_000, 80_000, 50_000, undefined, 50_000, 50_000],
+    [60_000, 80_000, 80_000, 65_000, 45_000, 45_000],
+    [120_000, 80_000, 80_000, undefined, 80_000, 75_000],
+    [1, 80_000, 80_000, undefined, 1_000, 75_000],
+    [undefined, 80_000, 80_000, undefined, 80_000, 75_000],
+    [undefined, undefined, 90_000, undefined, 30_000, 30_000],
+  ])(
+    'keeps real SDK defaults and explicit calls within admin/worker/HTTP ceilings (%s, %s, %s, %s)',
+    async (
+      defaultCommandTimeoutMs,
+      maxCommandTimeoutMs,
+      upstreamMaxTimeoutMs,
+      maxRequestTimeoutMs,
+      expectedDefault,
+      expectedExplicit,
+    ) => {
+      const received: { timeout: number }[] = [];
+      const server = createServer(async (req, res) => {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        received.push(JSON.parse(body));
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'completed', stdout: 'done', stderr: '', files: [] }));
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const { port } = server.address() as AddressInfo;
+      try {
+        const bashTool = createContextProgrammaticBashTool(() => ({}), {
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+          codeSessionKey: 'execute_code:stateful:attached',
+          executionProfile: 'stateful',
+          environmentType: 'attached',
+          statefulSessions: true,
+          codeWorkspace: {
+            environmentId: 'machine',
+            workspaceId: 'project-a',
+            operations: ['execute_command'],
+            maxCommandTimeoutMs: upstreamMaxTimeoutMs,
+          },
+          codeEnvironmentConfigSchema: {
+            limits: { defaultCommandTimeoutMs, maxCommandTimeoutMs, maxRequestTimeoutMs },
+          },
+        });
+        const config = { tags: [], toolCall: { toolDefs: [] } };
+        await bashTool.func({ code: 'printf done', tool_manifest: [] }, undefined, config);
+        await bashTool.func(
+          { code: 'printf done', tool_manifest: [], timeout: 75_000 },
+          undefined,
+          config,
+        );
+        expect(received.map(({ timeout }) => timeout)).toEqual([expectedDefault, expectedExplicit]);
+        expect(bashTool.schema).toMatchObject({
+          properties: { timeout: { default: expectedDefault } },
+        });
+      } finally {
+        server.close();
+        await once(server, 'close');
+      }
+    },
+  );
+
+  test('refuses a newly configured programmatic ceiling below the SDK floor instead of raising it', () => {
+    expect(() =>
+      createContextProgrammaticBashTool(() => ({}), {
+        baseUrl: 'http://127.0.0.1:9999/v1',
+        codeSessionKey: 'execute_code:stateful:attached',
+        executionProfile: 'stateful',
+        environmentType: 'attached',
+        statefulSessions: true,
+        codeEnvironmentConfigSchema: {
+          limits: { defaultCommandTimeoutMs: 1, maxCommandTimeoutMs: 500 },
+        },
+      }),
+    ).toThrow('requires a timeout ceiling of at least 1000 milliseconds');
+  });
+
+  test('resolves the programmatic ceiling independently of the foreground default', () => {
     expect(
       resolveAttachedWorkspaceProgrammaticTimeout(
         { limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 } },
         70_000,
       ),
-    ).toBe(60_000);
+    ).toBe(70_000);
     expect(
       resolveAttachedWorkspaceProgrammaticTimeout(
         { limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 80_000 } },
