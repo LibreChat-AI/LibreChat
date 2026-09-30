@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { SoleToolContext } from '../../disclosure';
 import BashCall from '../BashCall';
 import store from '~/store';
 
@@ -319,6 +320,34 @@ describe('BashCall backgrounded calls', () => {
     );
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');
     expect(screen.getByText('hi')).toBeInTheDocument();
+  });
+});
+
+describe('BashCall sole tool disclosure', () => {
+  const renderCall = (soleTool: boolean) =>
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={soleTool}>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ command: 'echo hi' }}
+            output="hi"
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+  const panel = (container: HTMLElement) =>
+    container.querySelector('[style*="grid-template-rows"]') as HTMLElement;
+
+  it('opens the card when it is the only call, with autoExpandTools off', () => {
+    const { container } = renderCall(true);
+    expect(panel(container).style.gridTemplateRows).toBe('1fr');
+  });
+
+  it('keeps the card collapsed when it is one of several calls', () => {
+    const { container } = renderCall(false);
+    expect(panel(container).style.gridTemplateRows).toBe('0fr');
   });
 });
 
