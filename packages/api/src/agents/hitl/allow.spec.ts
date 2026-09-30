@@ -8,9 +8,11 @@ import {
   applyConversationToolAllows,
   resolveRunToolApprovalAllows,
   MAX_CONVERSATION_TOOL_ALLOWS,
+  buildEffectiveToolApprovalPolicy,
 } from './allow';
 import { buildToolApprovalPayload, mapToolApprovalPolicy } from './policy';
 import { resolveToolApprovalResume } from './resume';
+import { canAgentGraphPause } from './admission';
 
 const GITHUB_SEARCH = 'search_mcp_github';
 const GITLAB_SEARCH = 'search_mcp_gitlab';
@@ -101,13 +103,49 @@ describe('isToolAllowAlwaysEligible', () => {
 describe('markToolApprovalAllowAlways', () => {
   it('offers the choice only for eligible tools that can be approved', () => {
     const payload = payloadFor(GITHUB_SEARCH, 'pay');
-    const marked = markToolApprovalAllowAlways(payload, enabled({ ask: ['pay'] }));
+    const marked = markToolApprovalAllowAlways(payload, { policy: enabled({ ask: ['pay'] }) });
     expect(marked.review_configs.map((config) => config.allow_always)).toEqual([true, undefined]);
+  });
+
+  it('does not offer the choice for a tool a healed ask rule matches by its other spelling', () => {
+    const payload = payloadFor(GITHUB_SEARCH);
+    const policy = enabled({ ask: ['legacy_search_mcp_github'] });
+    const agents = [
+      { mcpToolAliases: [{ name: GITHUB_SEARCH, aliasName: 'legacy_search_mcp_github' }] },
+    ];
+    expect(markToolApprovalAllowAlways(payload, { policy }).review_configs[0].allow_always).toBe(
+      true,
+    );
+    expect(markToolApprovalAllowAlways(payload, { policy, agents })).toBe(payload);
+  });
+
+  it('stops offering new tools once the configured cap is reached', () => {
+    const payload = payloadFor(GITHUB_SEARCH, GITLAB_SEARCH, GITHUB_SEARCH);
+    const policy = enabled({ allowAlwaysMaxTools: 2 });
+    const offers = (storedTools: string[]) =>
+      markToolApprovalAllowAlways(payload, { policy, storedTools }).review_configs.map(
+        (config) => config.allow_always,
+      );
+    expect(offers([])).toEqual([true, true, true]);
+    expect(offers(['other'])).toEqual([true, undefined, true]);
+    expect(offers(['other', 'another'])).toEqual([undefined, undefined, undefined]);
+    // A tool already remembered costs no room, so it is still offered at the cap.
+    expect(offers(['other', GITLAB_SEARCH])).toEqual([undefined, true, undefined]);
+  });
+
+  it('uses the configured tool name length cap', () => {
+    const policy = enabled({ allowAlwaysMaxToolNameLength: 8 });
+    expect(isToolAllowAlwaysEligible(policy, 'short')).toBe(true);
+    expect(isToolAllowAlwaysEligible(policy, GITHUB_SEARCH)).toBe(false);
+    expect(isToolAllowAlwaysEligible(enabled(), 'x'.repeat(256))).toBe(true);
+    expect(isToolAllowAlwaysEligible(enabled(), 'x'.repeat(257))).toBe(false);
   });
 
   it('returns the payload untouched when the feature is off', () => {
     const payload = payloadFor(GITHUB_SEARCH);
-    expect(markToolApprovalAllowAlways(payload, enabled({ allowAlways: false }))).toBe(payload);
+    expect(markToolApprovalAllowAlways(payload, { policy: enabled({ allowAlways: false }) })).toBe(
+      payload,
+    );
   });
 });
 
@@ -115,7 +153,7 @@ describe('resume validation of remembered approvals', () => {
   const policy = enabled();
 
   it('accepts scope session only where the pause offered it', () => {
-    const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH), policy);
+    const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH), { policy });
     expect(
       resolveToolApprovalResume(offered, [
         { tool_call_id: 'call-0', decision: 'approve', scope: 'session' },
@@ -131,7 +169,7 @@ describe('resume validation of remembered approvals', () => {
   });
 
   it('rejects the reserved always scope and session scope on non-approve decisions', () => {
-    const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH), policy);
+    const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH), { policy });
     for (const resolution of [
       { tool_call_id: 'call-0', decision: 'approve' as const, scope: 'always' as const },
       { tool_call_id: 'call-0', decision: 'reject' as const, scope: 'session' as const },
@@ -143,7 +181,7 @@ describe('resume validation of remembered approvals', () => {
 
 describe('collectToolApprovalAllows', () => {
   it('re-checks eligibility against the live policy', () => {
-    const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH), enabled());
+    const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH), { policy: enabled() });
     const resolutions: Agents.ToolApprovalResolution[] = [
       { tool_call_id: 'call-0', decision: 'approve', scope: 'session' },
     ];
@@ -157,8 +195,56 @@ describe('collectToolApprovalAllows', () => {
   });
 });
 
+describe('buildEffectiveToolApprovalPolicy', () => {
+  const alias = { name: GITHUB_SEARCH, aliasName: 'legacy_search_mcp_github' };
+
+  it('heals ask rules before folding remembered tools, so a healed ask still wins', async () => {
+    const policy = buildEffectiveToolApprovalPolicy(
+      enabled({ ask: ['legacy_search_mcp_github'] }),
+      [alias],
+      [GITHUB_SEARCH],
+    );
+    expect(policy?.allow ?? []).not.toContain(GITHUB_SEARCH);
+    expect(await decide(policy, GITHUB_SEARCH)).toBe('ask');
+  });
+
+  it('lets scheduled admission skip a run whose every known tool is remembered', () => {
+    const agents = [{ tools: [GITHUB_SEARCH, GITLAB_SEARCH] }];
+    expect(canAgentGraphPause({ policy: enabled(), agents })).toBe(true);
+    expect(
+      canAgentGraphPause({ policy: enabled(), agents, toolApprovalAllows: [GITHUB_SEARCH] }),
+    ).toBe(true);
+    expect(
+      canAgentGraphPause({
+        policy: enabled(),
+        agents,
+        toolApprovalAllows: [GITHUB_SEARCH, GITLAB_SEARCH],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy: enabled({ allowAlways: false }),
+        agents,
+        toolApprovalAllows: [GITHUB_SEARCH, GITLAB_SEARCH],
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps admission paused for a remembered tool a healed ask rule matches', () => {
+    expect(
+      canAgentGraphPause({
+        policy: enabled({ ask: ['legacy_search_mcp_github'] }),
+        agents: [{ tools: [GITHUB_SEARCH], mcpToolAliases: [alias] }],
+        toolApprovalAllows: [GITHUB_SEARCH],
+      }),
+    ).toBe(true);
+  });
+});
+
 describe('recordToolApprovalAllows', () => {
-  const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH, GITLAB_SEARCH), enabled());
+  const offered = markToolApprovalAllowAlways(payloadFor(GITHUB_SEARCH, GITLAB_SEARCH), {
+    policy: enabled(),
+  });
   const resolutions = [
     { tool_call_id: 'call-0', decision: 'approve', scope: 'session' },
     { tool_call_id: 'call-1', decision: 'approve' },
@@ -186,6 +272,36 @@ describe('recordToolApprovalAllows', () => {
       max: MAX_CONVERSATION_TOOL_ALLOWS,
     });
     expect(request.resolvedConversation.toolApprovalAllows).toEqual(['other_tool', GITHUB_SEARCH]);
+  });
+
+  it('passes the configured cap to storage and rechecks against healed rules', async () => {
+    const addConvoToolApprovalAllows = jest.fn().mockResolvedValue(true);
+    await recordToolApprovalAllows({
+      userId: 'u1',
+      conversationId: 'c1',
+      policy: enabled({ allowAlwaysMaxTools: 5 }),
+      pendingAction: { payload: offered },
+      resolutions,
+      request: {},
+      addConvoToolApprovalAllows,
+    });
+    expect(addConvoToolApprovalAllows).toHaveBeenCalledWith(expect.objectContaining({ max: 5 }));
+
+    addConvoToolApprovalAllows.mockClear();
+    const stored = await recordToolApprovalAllows({
+      userId: 'u1',
+      conversationId: 'c1',
+      policy: enabled({ ask: ['legacy_search_mcp_github'] }),
+      pendingAction: { payload: offered },
+      resolutions,
+      agents: [
+        { mcpToolAliases: [{ name: GITHUB_SEARCH, aliasName: 'legacy_search_mcp_github' }] },
+      ],
+      request: {},
+      addConvoToolApprovalAllows,
+    });
+    expect(stored).toEqual([]);
+    expect(addConvoToolApprovalAllows).not.toHaveBeenCalled();
   });
 
   it('degrades to a one-time approval when storage fails', async () => {

@@ -4354,7 +4354,15 @@ class AgentClient extends BaseClient {
       interrupt.payload?.type === 'tool_approval'
         ? markToolApprovalAllowAlways(
             markNativeCodeToolApprovalRequests(interrupt.payload, reachableAgents),
-            appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
+            {
+              policy: appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
+              agents: reachableAgents,
+              storedTools: resolveRunToolApprovalAllows(
+                appConfig?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
+                this.options.req?.resolvedConversation,
+                this.conversationId,
+              ),
+            },
           )
         : interrupt.payload;
     const codeExecutionBinding =
@@ -4521,6 +4529,11 @@ class AgentClient extends BaseClient {
         resolvedProgrammaticHooks: admissionToolApprovalHooks,
         pluginHookSource: getPluginHookSource(),
         askUserQuestionAdminDisabled,
+        toolApprovalAllows: resolveRunToolApprovalAllows(
+          agentsEConfig?.toolApproval,
+          this.options.req?.resolvedConversation,
+          this.conversationId,
+        ),
       });
       const runUsesCheckpointer = agentRunUsesCheckpointer({
         policy: effectiveToolApprovalPolicy,

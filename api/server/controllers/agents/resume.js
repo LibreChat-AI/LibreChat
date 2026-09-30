@@ -1725,15 +1725,6 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         generationProtocolVersion,
       );
     }
-    await recordToolApprovalAllows({
-      userId,
-      conversationId,
-      policy: req.config?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
-      pendingAction,
-      resolutions: req.body.decisions,
-      request: req,
-      addConvoToolApprovalAllows,
-    });
     let client = null;
     /** Re-pause progress failures use the action/epoch-scoped terminal CAS. The
      * generic resume catch must not subsequently call completeJob, because the
@@ -1976,11 +1967,12 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       });
       client = result.client;
 
+      const reachableAgents = collectReachableAgents([
+        client.options?.agent,
+        ...(client.agentConfigs?.values() ?? []),
+      ]);
       // Re-resolve the approved code target before provider/tool execution on this replica.
-      assertCodeExecutionApprovalBinding(
-        pendingAction.codeExecutionBinding,
-        collectReachableAgents([client.options?.agent, ...(client.agentConfigs?.values() ?? [])]),
-      );
+      assertCodeExecutionApprovalBinding(pendingAction.codeExecutionBinding, reachableAgents);
 
       // Bind the rebuilt client to the in-flight turn's identity (no new user message).
       client.conversationId = streamId;
@@ -2024,6 +2016,16 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           code: 'RUN_REPLACED',
         });
       }
+      await recordToolApprovalAllows({
+        userId,
+        conversationId,
+        policy: req.config?.endpoints?.[EModelEndpoint.agents]?.toolApproval,
+        pendingAction,
+        resolutions: req.body.decisions,
+        agents: reachableAgents,
+        request: req,
+        addConvoToolApprovalAllows,
+      });
       if (eventActorResumePromise == null) {
         await resumeClient();
       } else {

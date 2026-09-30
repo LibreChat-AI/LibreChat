@@ -1,13 +1,34 @@
 import { logger } from '@librechat/data-schemas';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
+import type { MCPToolAlias } from '~/tools/classification';
+import { healToolApprovalPolicy, isHITLEnabled } from './policy';
 import { isStatefulCodeEnvironmentToolName } from './byom';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { isHITLEnabled } from './policy';
 
-/** Upper bound on remembered tools per conversation; later choices are not stored. */
+/** Default for `toolApproval.allowAlwaysMaxTools`: remembered tools per conversation. */
 export const MAX_CONVERSATION_TOOL_ALLOWS = 64;
-/** Longest tool name accepted as a remembered allow. */
-const MAX_ALLOWED_TOOL_NAME_LENGTH = 256;
+/** Default for `toolApproval.allowAlwaysMaxToolNameLength`. */
+export const MAX_ALLOWED_TOOL_NAME_LENGTH = 256;
+
+/** Configured cap on remembered tools per conversation. */
+export function getToolAllowAlwaysMaxTools(policy: TToolApprovalPolicy | undefined): number {
+  return policy?.allowAlwaysMaxTools ?? MAX_CONVERSATION_TOOL_ALLOWS;
+}
+
+/** Agent shape that carries the MCP key-spelling aliases createRun heals against. */
+export interface ToolAllowAlwaysAgent {
+  readonly mcpToolAliases?: readonly MCPToolAlias[];
+}
+
+function collectAgentAliases(
+  agents: readonly (ToolAllowAlwaysAgent | null | undefined)[] | undefined,
+): MCPToolAlias[] {
+  const aliases: MCPToolAlias[] = [];
+  for (const agent of agents ?? []) {
+    aliases.push(...(agent?.mcpToolAliases ?? []));
+  }
+  return aliases;
+}
 
 /** Anchored glob match, identical to the SDK's `createToolPolicyHook` semantics. */
 function matchesAny(patterns: readonly string[] | undefined, name: string): boolean {
@@ -45,7 +66,7 @@ export function isToolAllowAlwaysEligible(
   if (
     typeof toolName !== 'string' ||
     toolName.length === 0 ||
-    toolName.length > MAX_ALLOWED_TOOL_NAME_LENGTH ||
+    toolName.length > (policy.allowAlwaysMaxToolNameLength ?? MAX_ALLOWED_TOOL_NAME_LENGTH) ||
     toolName.includes('*')
   ) {
     return false;
@@ -56,22 +77,63 @@ export function isToolAllowAlwaysEligible(
   return !matchesAny(policy.deny, toolName) && !matchesAny(policy.ask, toolName);
 }
 
-/** Mark every review config whose tool the user may approve for the rest of the conversation. */
+/**
+ * The approval policy a run actually evaluates: `deny`/`ask`/`allow` healed against the
+ * tools' other MCP key spellings, then the conversation's remembered tools folded in as
+ * exact-name allows. Every "Always allow" decision (offer, resume re-check, scheduled
+ * admission, run) reads this one shape so they cannot drift apart.
+ */
+export function buildEffectiveToolApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  aliases: readonly MCPToolAlias[],
+  allowedTools?: readonly string[],
+): TToolApprovalPolicy | undefined {
+  return applyConversationToolAllows(healToolApprovalPolicy(policy, aliases), allowedTools);
+}
+
+export interface MarkToolApprovalAllowAlwaysOptions {
+  /** Endpoint `toolApproval` policy, before healing. */
+  policy: TToolApprovalPolicy | undefined;
+  /** Reachable agents of the paused run; their MCP aliases heal `deny`/`ask`. */
+  agents?: readonly (ToolAllowAlwaysAgent | null | undefined)[];
+  /** Tools the conversation already remembers, to keep offers within the cap. */
+  storedTools?: readonly string[];
+}
+
+/**
+ * Mark every review config whose tool the user may approve for the rest of the
+ * conversation. Offers stop once the conversation's remembered list would exceed
+ * `allowAlwaysMaxTools`, so a choice the server cannot store is never shown.
+ */
 export function markToolApprovalAllowAlways(
   payload: Agents.ToolApprovalInterruptPayload,
-  policy: TToolApprovalPolicy | undefined,
+  { policy, agents, storedTools = [] }: MarkToolApprovalAllowAlwaysOptions,
 ): Agents.ToolApprovalInterruptPayload {
   if (!isToolAllowAlwaysEnabled(policy)) {
     return payload;
   }
+  const effective = buildEffectiveToolApprovalPolicy(policy, collectAgentAliases(agents));
+  const stored = new Set(storedTools);
+  let room = getToolAllowAlwaysMaxTools(policy) - stored.size;
   const nameByToolCallId = new Map(
     payload.action_requests.map((request) => [request.tool_call_id, request.name]),
   );
+  const offeredNames = new Set<string>();
   let changed = false;
   const review_configs = payload.review_configs.map((config) => {
     const name = nameByToolCallId.get(config.tool_call_id);
-    if (!config.allowed_decisions.includes('approve') || !isToolAllowAlwaysEligible(policy, name)) {
+    if (
+      !config.allowed_decisions.includes('approve') ||
+      !isToolAllowAlwaysEligible(effective, name)
+    ) {
       return config;
+    }
+    if (!stored.has(name) && !offeredNames.has(name)) {
+      if (room <= 0) {
+        return config;
+      }
+      room--;
+      offeredNames.add(name);
     }
     changed = true;
     return { ...config, allow_always: true };
@@ -163,7 +225,7 @@ export function applyConversationToolAllows(
     return policy;
   }
   const additions = allowedTools
-    .slice(0, MAX_CONVERSATION_TOOL_ALLOWS)
+    .slice(0, getToolAllowAlwaysMaxTools(policy))
     .filter((name) => isToolAllowAlwaysEligible(policy, name));
   if (additions.length === 0) {
     return policy;
@@ -177,6 +239,8 @@ export interface RecordToolApprovalAllowsInput {
   policy: TToolApprovalPolicy | undefined;
   pendingAction: Pick<Agents.PendingAction, 'payload'>;
   resolutions: unknown;
+  /** Reachable agents of the rebuilt run; eligibility heals against their MCP aliases. */
+  agents?: readonly (ToolAllowAlwaysAgent | null | undefined)[];
   /** Request-scoped conversation reused by the resumed run's initialization. */
   request: {
     resolvedConversation?: { conversationId?: string; toolApprovalAllows?: unknown } | null;
@@ -191,9 +255,9 @@ export interface RecordToolApprovalAllowsInput {
 
 /**
  * Persist the tools a claimed resume approved for the rest of the conversation and
- * expose them to the run rebuilt by the same request. The approval itself is already
- * claimed, so a storage failure is logged and degrades to a one-time approval: later
- * calls prompt again, which is the safe direction.
+ * expose them to the run rebuilt by the same request. Call only after every resume
+ * fence passed. The approval itself is already claimed, so a storage failure is logged
+ * and degrades to a one-time approval: later calls prompt again, the safe direction.
  */
 export async function recordToolApprovalAllows({
   userId,
@@ -201,6 +265,7 @@ export async function recordToolApprovalAllows({
   policy,
   pendingAction,
   resolutions,
+  agents,
   request,
   addConvoToolApprovalAllows,
 }: RecordToolApprovalAllowsInput): Promise<string[]> {
@@ -211,7 +276,7 @@ export async function recordToolApprovalAllows({
   const toolNames = collectToolApprovalAllows(
     payload,
     resolutions as Agents.ToolApprovalResolution[],
-    policy,
+    buildEffectiveToolApprovalPolicy(policy, collectAgentAliases(agents)),
   );
   if (toolNames.length === 0) {
     return [];
@@ -222,7 +287,7 @@ export async function recordToolApprovalAllows({
       user: userId,
       conversationId,
       toolNames,
-      max: MAX_CONVERSATION_TOOL_ALLOWS,
+      max: getToolAllowAlwaysMaxTools(policy),
     });
   } catch (error) {
     logger.warn(
@@ -232,6 +297,7 @@ export async function recordToolApprovalAllows({
     return [];
   }
   if (!stored) {
+    logger.warn('[recordToolApprovalAllows] Remembered tool limit reached; approved once');
     return [];
   }
   const resolved = request.resolvedConversation;

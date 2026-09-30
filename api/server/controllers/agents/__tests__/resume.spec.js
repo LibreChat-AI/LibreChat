@@ -97,6 +97,7 @@ const mockCheckPermission = jest.fn();
 const mockDecryptMetadata = jest.fn();
 const mockStampConvoLastResponse = jest.fn().mockResolvedValue(undefined);
 const mockStampForcedRetention = jest.fn().mockResolvedValue(undefined);
+const mockAddConvoToolApprovalAllows = jest.fn();
 const mockDisposeClient = jest.fn();
 const mockGetMCPRequestContext = jest.fn();
 const mockCleanupMCPRequestContextForReq = jest.fn();
@@ -180,6 +181,7 @@ jest.mock('~/models', () => ({
   settleAgentEventActorDetachedAction: (...args) =>
     mockSettleAgentEventActorDetachedAction(...args),
   stampConvoLastResponse: (...args) => mockStampConvoLastResponse(...args),
+  addConvoToolApprovalAllows: (...args) => mockAddConvoToolApprovalAllows(...args),
 }));
 
 jest.mock('~/server/services/Endpoints/agents/eventChildLease', () => ({
@@ -489,6 +491,29 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     decisions: [{ tool_call_id: 'tc1', decision: 'approve' }],
     ...extra,
   });
+
+  /** Enable "Always allow" and offer it on the paused `tc1` call. */
+  const withAllowAlways = (job) => {
+    requestConfigOverrides = {
+      endpoints: {
+        agents: {
+          checkpointer: { type: 'mongo' },
+          toolApproval: { enabled: true, allowAlways: true },
+        },
+      },
+    };
+    job.metadata.pendingAction.payload = {
+      type: 'tool_approval',
+      action_requests: [{ tool_call_id: 'tc1', name: 'search_mcp_github', arguments: {} }],
+      review_configs: [
+        { tool_call_id: 'tc1', allowed_decisions: ['approve', 'reject'], allow_always: true },
+      ],
+    };
+    mockAddConvoToolApprovalAllows.mockResolvedValue(true);
+    return job;
+  };
+  const allowAlwaysBody = () =>
+    approveBody({ decisions: [{ tool_call_id: 'tc1', decision: 'approve', scope: 'session' }] });
 
   const configureEventActorResume = (expiredAt = new Date(Date.now() + 60_000)) => {
     requestStateOverrides = {
@@ -1368,6 +1393,17 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         error: 'Schedule was disabled, changed, or deleted before approval',
       });
       expect(mockInitializeClient).not.toHaveBeenCalled();
+    });
+
+    it('does not remember an approval when the schedule fence rejects the resume', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeScheduledJob()));
+      mockFinalizeScheduleResumeClaim.mockResolvedValue(false);
+
+      const res = await post(allowAlwaysBody());
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: 'SCHEDULE_NO_LONGER_ACTIVE' });
+      expect(mockAddConvoToolApprovalAllows).not.toHaveBeenCalled();
     });
 
     it('settles a scheduled continuation stopped during its resumed segment', async () => {
@@ -2337,6 +2373,16 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockInitializeClient).toHaveBeenCalled();
     });
 
+    it('does not remember an approval when the project context fence rejects the resume', async () => {
+      withProject(4, 3);
+      const job = await mockGenerationJobManager.getJob();
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(job));
+      const res = await post(allowAlwaysBody());
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: 'PROJECT_CONTEXT_CHANGED' });
+      expect(mockAddConvoToolApprovalAllows).not.toHaveBeenCalled();
+    });
+
     it('rejects a resume whose Project no longer exists', async () => {
       withProject(3, 3);
       mockGetChatProject.mockResolvedValue(null);
@@ -2910,6 +2956,36 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(res.status).toBe(500);
       expect(mockDecrementPendingRequest).toHaveBeenCalledWith(USER_ID);
       expect(mockInitializeClient).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remembered tool approvals', () => {
+    it('stores the approved tool only after the resume fences pass', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeToolApprovalJob()));
+      const res = await post(allowAlwaysBody());
+      await settled;
+      expect(res.status).toBe(200);
+      expect(mockAddConvoToolApprovalAllows).toHaveBeenCalledWith({
+        user: USER_ID,
+        conversationId: CONVO_ID,
+        toolNames: ['search_mcp_github'],
+        max: 64,
+      });
+      expect(mockInitializeClient.mock.invocationCallOrder[0]).toBeLessThan(
+        mockAddConvoToolApprovalAllows.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('still resumes once when storing the remembered tool fails', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeToolApprovalJob()));
+      mockAddConvoToolApprovalAllows.mockRejectedValue(new Error('db down'));
+      const client = makeClient();
+      mockInitializeClient.mockResolvedValue({ client, userMCPAuthMap: {} });
+      const res = await post(allowAlwaysBody());
+      await settled;
+      await flush();
+      expect(res.status).toBe(200);
+      expect(client.resumeCompletion).toHaveBeenCalledTimes(1);
     });
   });
 

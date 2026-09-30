@@ -1103,6 +1103,13 @@ export const toolApprovalPolicySchema = z
      */
     allowAlways: z.boolean().optional(),
     /**
+     * Most tools one conversation may remember with "Always allow". Once reached, the card
+     * stops offering the choice for new tools. Defaults to 64.
+     */
+    allowAlwaysMaxTools: z.number().int().min(1).max(1024).optional(),
+    /** Longest tool name that may be remembered. Defaults to 256. */
+    allowAlwaysMaxToolNameLength: z.number().int().min(1).max(1024).optional(),
+    /**
      * Programmatic policy hooks loaded from modules at startup. They layer on top of the
      * static lists above for dynamic, context-aware decisions the lists can't express
      * (per-args, per-agent, per-user). See {@link toolApprovalHookConfigSchema}.
