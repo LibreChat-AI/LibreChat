@@ -54,6 +54,7 @@ const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
 const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
+const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
@@ -743,7 +744,13 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
     this.streamSleep = sleep ?? CHUNK_DELAY_MS;
   }
 
-  async *streamScriptedResponseChunks({ response, toolCalls, textDeltaBlocks, runManager }) {
+  async *streamScriptedResponseChunks({
+    response,
+    toolCalls,
+    textDeltaBlocks,
+    beforeToolsDelayMs,
+    runManager,
+  }) {
     if (this.emitCustomEvent) {
       await runManager?.handleCustomEvent('some_test_event', {
         someval: true,
@@ -766,7 +773,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
     }
 
     if (toolCalls?.length) {
-      await new Promise((resolve) => setTimeout(resolve, this.streamSleep));
+      await new Promise((resolve) => setTimeout(resolve, beforeToolsDelayMs ?? this.streamSleep));
       if (!toolCalls.some((toolCall) => toolCall.streamArgs)) {
         const toolCallChunks = toolCalls.map((toolCall, index) => ({
           name: toolCall.name,
@@ -838,6 +845,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
         response: scriptedResponse.response ?? '',
         toolCalls: scriptedResponse.toolCalls,
         textDeltaBlocks: scriptedResponse.textDeltaBlocks === true,
+        beforeToolsDelayMs: scriptedResponse.beforeToolsDelayMs,
         runManager,
       });
     } else if (dynamicResponse) {
@@ -1497,6 +1505,43 @@ function activityPhaseReplyResponses(label, toolNames) {
         };
       }
       return { response: `${ACTIVITY_PHASE_FINAL_TEXT} ${label}` };
+    },
+  };
+}
+
+/** Short prose remains visible while the real tool/label pipeline forms and
+ * dissolves folds. The pause before calls lets the browser finish the initial
+ * word fade and install its identity/animation observer before that transition. */
+function activityProseReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    throw new Error('Activity prose fixture requires the memory MCP tool');
+  }
+  const prose = [
+    "Let me establish today's date and gather independent signals in parallel.",
+    'Today is **2026-09-29 23:20 UTC**. Two things stand out immediately: a config-structure PR landed yesterday, and an image bump went in today. Let me dig into both.',
+    "Important finding: PR #4079 ships the config **disabled by default**. Let me check today's actual runtime state and the image bump.",
+  ];
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      const batch = invocation++;
+      if (batch < prose.length) {
+        return {
+          response: prose[batch],
+          beforeToolsDelayMs: 2000,
+          toolCalls: [
+            {
+              id: `call_e2e_activity_prose_${label}_${batch}`,
+              name: toolName,
+              args: { fact: `activity prose ${label} ${batch}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E activity prose complete ${label}` };
     },
   };
 }
@@ -3087,6 +3132,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const activityPhaseLabel = getMarkerValue(text, ACTIVITY_PHASE_REPLY_MARKER);
   if (activityPhaseLabel) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
+  }
+
+  const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);
+  if (activityProseLabel) {
+    return activityProseReplyResponses(activityProseLabel, toolNames);
   }
 
   const activityFailedLabel = getMarkerValue(text, ACTIVITY_FAILED_REPLY_MARKER);

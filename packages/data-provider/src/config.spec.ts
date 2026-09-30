@@ -9,6 +9,7 @@ import {
   codeEnvironmentUserConfigSchema,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
+  endpointSchema,
   resolveEndpointType,
   webSearchSchema,
 } from './config';
@@ -25,6 +26,52 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('tenant-scoped custom endpoints', () => {
+  const endpoint = {
+    name: 'Private Gateway',
+    apiKey: 'test-key',
+    baseURL: 'https://gateway.example',
+    models: { default: ['test-model'] },
+  };
+
+  it('keeps unscoped endpoints backward compatible', () => {
+    expect(endpointSchema.parse(endpoint)).not.toHaveProperty('tenantId');
+  });
+
+  it.each(['tenant-a', 'tenant_123.example', '-tenant', 'a'.repeat(128)])(
+    'preserves the exact valid tenant ID %s',
+    (tenantId) => {
+      expect(endpointSchema.parse({ ...endpoint, tenantId }).tenantId).toBe(tenantId);
+      expect(
+        configSchema.parse({ version: '1.2.1', endpoints: { custom: [{ ...endpoint, tenantId }] } })
+          .endpoints?.custom?.[0].tenantId,
+      ).toBe(tenantId);
+    },
+  );
+
+  it.each([
+    '',
+    ' ',
+    ' tenant-a',
+    'tenant-a ',
+    'tenant a',
+    'tenant/a',
+    'tenant:a',
+    'tenant\\a',
+    'tenant😀',
+    '__SYSTEM__',
+    'a'.repeat(129),
+  ])('rejects the unreachable tenant ID %j', (tenantId) => {
+    expect(endpointSchema.safeParse({ ...endpoint, tenantId }).success).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        endpoints: { custom: [{ ...endpoint, tenantId }] },
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe('agent model response timeouts', () => {
   it('ships finite defaults and accepts explicit overrides including disabled timeouts', () => {
@@ -579,6 +626,19 @@ describe('attached code environment user config schema', () => {
       ).toBe(false);
     },
   );
+
+  it('accepts an explicit tolerant-matching opt-in and nothing else under edits', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ edits: { tolerantMatching: true } })).toEqual({
+      edits: { tolerantMatching: true },
+    });
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(
+      codeEnvironmentUserConfigSchema.safeParse({ edits: { tolerantMatching: 'yes' } }).success,
+    ).toBe(false);
+    expect(codeEnvironmentUserConfigSchema.safeParse({ edits: { fuzzy: true } }).success).toBe(
+      false,
+    );
+  });
 
   it('keeps an omitted admission budget backward compatible', () => {
     expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });

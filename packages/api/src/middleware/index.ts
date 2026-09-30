@@ -5,6 +5,7 @@ export * from './email';
 export * from './notFound';
 export * from './origin';
 export * from './balance';
+export * from './ban';
 export * from './json';
 export * from './capabilities';
 export * from './auth';

@@ -492,7 +492,7 @@ export default function McpSection({ item }: Props) {
                   size="md"
                   pressed={allDeferred}
                   label={localize(allDeferred ? 'com_ui_mcp_undefer_all' : 'com_ui_mcp_defer_all')}
-                  activeBorderClass="border-series-4"
+                  activeClass="border-series-4 text-series-4 hover:text-series-4"
                   onToggle={() => toggleDeferAll(tools)}
                 />
               )}
@@ -502,7 +502,7 @@ export default function McpSection({ item }: Props) {
                   size="md"
                   pressed={allProgrammatic}
                   label={programmaticBulkLabel}
-                  activeBorderClass="border-series-6"
+                  activeClass="border-series-6 text-series-6 hover:text-series-6"
                   tooltip={programmaticBulkTooltip}
                   disabled={!programmaticToolsAvailable && !allProgrammatic}
                   onToggle={() => toggleProgrammaticAll(tools)}
@@ -516,7 +516,7 @@ export default function McpSection({ item }: Props) {
                   label={localize(
                     allBackground ? 'com_ui_mcp_unbackground_all' : 'com_ui_mcp_background_all',
                   )}
-                  activeBorderClass="border-series-1"
+                  activeClass="border-series-1 text-series-1 hover:text-series-1"
                   onToggle={() => toggleBackgroundAll(tools)}
                 />
               )}
@@ -527,7 +527,7 @@ export default function McpSection({ item }: Props) {
                   pressed={allIntent}
                   disabled={intentEligibleTools.length === 0}
                   label={localize(allIntent ? 'com_ui_mcp_unintent_all' : 'com_ui_mcp_intent_all')}
-                  activeBorderClass="border-series-3"
+                  activeClass="border-series-3 text-series-3 hover:text-series-3"
                   onToggle={() => toggleIntentAll(intentEligibleTools)}
                 />
               )}

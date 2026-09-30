@@ -51,17 +51,21 @@
   </a>
 </p>
 
-## 🚀 What's New in v0.8.8-rc4
+## 🚀 What's New in v0.8.8
 
-- **Public Agents API docs:** Serve an OpenAPI specification and interactive Swagger UI for inference, events, Agent management, and Skill management.
-- **Attached workspaces (highly experimental):** Isolate workspaces by conversation, load repository instructions, and use bounded queue waits and command timeouts.
-- **Trace Viewer:** Inspect model conversations as ordered steps with roles, Agent identity, tool rounds, previews, and cost.
-- **Skills:** Author or import a Skill and invoke it in the same Agent run, with safer rollback for failed imports.
-- **Agent activity:** Render system events as distinct turns and hold live activity to one stable row.
-- **MCP reliability:** Send per-request headers without hiding tools, coordinate OAuth refresh across replicas, and preserve credentials through provider outages.
-- **Performance:** Stream Markdown incrementally, virtualize model search, and reduce completed Agent message rendering work.
+- **Agent Management API (beta):** Create, discover, update, and delete Agents; manage Agent files and Skills; and authenticate machine clients through deployment-bound OIDC identities while preserving existing role and Agent access controls. Public OpenAPI and Swagger UI cover inference, events, Agent management, and Skill management.
+- **Attached workspaces (highly experimental):** Select or save a per-Agent default workspace for each managed or personal code worker, then let Agents inspect trees, read and search files, author changes, and run Bash with bounded timeouts. Personal workers support bounded self-service enrollment, readiness status, and per-Agent Git identity.
+- **Background tool controls:** Optionally cancel ordinary background tools, including attached Bash, while keeping detached Subagent execution independent.
+- **Code approval controls:** Choose **Ask**, **Allow**, or **Deny** for file writes and command execution where administrators permit it, including a **Full access** mode for trusted attached environments. File Search and Run Code also honor role grants.
+- **Manual context compaction:** Start a summarize-only turn before the context window fills while preserving recent conversation content according to the deployment's summarization policy.
+- **Context Usage:** Inspect dialogue, retained tool traffic, Agent instructions, cache, cost, and runway pressure without double-counting category subsets.
+- **Unified attachments:** Upload once and let LibreChat route content to the model or extracted text, then provision File Search and Code tools only when needed.
+- **Models:** Added GPT-6 Astra and GPT-6.1 Sol, with Responses API routing and tool-call support.
+- **Agent and chat UI:** Unified tool activity, reasoning, search, and Agent workflows; added one draggable Pinned section for chats and favorites, morphing state icons, high-contrast themes, rich-text message copying, clearer sidebar titles, and refined live phase layouts.
+- **Observability:** Inspect ordered model conversations, tool rounds, and costs in the Trace Viewer; export correlated application logs through OpenTelemetry, configure allowlisted Langfuse trace identity and metadata, tag browser diagnostics with client build IDs, and scope Insights to authorized Agents.
+- **Reliability and security:** Strengthened Agent continuation and checkpoint recovery, Redis liveness detection, DocumentDB coordination, OpenID and MCP OAuth sessions, shared-link throttling, tenant isolation, attachment bounds, and upload error handling.
 
-Read the [full v0.8.8-rc4 changelog](https://www.librechat.ai/changelog/v0.8.8-rc4).
+Read the [full v0.8.8 changelog](https://www.librechat.ai/changelog/v0.8.8).
 
 # ✨ Features
 

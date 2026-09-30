@@ -2813,6 +2813,7 @@ export function createConversationMethods(
       const affectedProjectStats = new Map<string, { user: string; projectId: string }>();
       const bulkOps = conversations.map((convo) => {
         const { codeEnvironmentMode, codeWorkspaces, ...sanitized } = convo;
+        delete sanitized.codeApprovalMode;
         delete sanitized.initial_agent_id;
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
