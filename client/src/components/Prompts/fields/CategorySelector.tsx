@@ -56,11 +56,11 @@ const CategorySelector: React.FC<CategorySelectorProps> = ({
     if (found) {
       return found;
     }
-    if (selected) {
+    if (selected && allowCustom) {
       return { value: selected, label: selected, icon: <CategoryIcon category={selected} /> };
     }
     return emptyCategory;
-  }, [watchedCategory, categories, currentCategory, emptyCategory]);
+  }, [watchedCategory, categories, currentCategory, emptyCategory, allowCustom]);
 
   const displayCategory = useMemo(() => {
     if (!categoryOption.value && !('icon' in categoryOption)) {
