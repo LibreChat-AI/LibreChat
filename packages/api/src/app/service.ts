@@ -1,6 +1,7 @@
 import {
   PrincipalType,
   materializeModelSpecEndpoints,
+  getConfigDefaults,
   normalizeEndpointName,
   setMaxSubagents,
 } from 'librechat-data-provider';
@@ -8,6 +9,8 @@ import {
   logger,
   getTenantId,
   mergeConfigOverrides,
+  loadDefaultInterface,
+  tenantStorage,
   BASE_CONFIG_PRINCIPAL_ID,
   SYSTEM_TENANT_ID,
 } from '@librechat/data-schemas';
@@ -17,19 +20,47 @@ import type { CustomConfigLoadMode } from './loader';
 
 const BASE_CONFIG_KEY = '_BASE_';
 
-function scopeEndpointList<T extends { tenantId?: string }>(
-  endpoints: T[] | undefined,
+function hiddenCustomEndpoints(
+  config: AppConfig,
   tenantId?: string,
-): T[] | undefined {
-  if (!endpoints?.some((endpoint) => endpoint.tenantId)) {
-    return endpoints;
+  inherited?: ReadonlySet<string>,
+): Set<string> {
+  const hidden = new Set(inherited);
+  const custom = config.endpoints?.custom;
+  const sourceCustom = config.config?.endpoints?.custom;
+  for (const endpoints of [custom, sourceCustom]) {
+    for (const endpoint of endpoints ?? []) {
+      if (endpoint.tenantId && endpoint.tenantId !== tenantId) {
+        hidden.add(normalizeEndpointName(endpoint.name ?? ''));
+      }
+    }
   }
-  return endpoints.filter((endpoint) => !endpoint.tenantId || endpoint.tenantId === tenantId);
+  for (const endpoint of custom ?? sourceCustom ?? []) {
+    const name = normalizeEndpointName(endpoint.name ?? '');
+    if ((!endpoint.tenantId || endpoint.tenantId === tenantId) && !inherited?.has(name)) {
+      hidden.delete(name);
+    }
+  }
+  return hidden;
+}
+
+function scopeEndpointList<T extends { name?: string; tenantId?: string }>(
+  endpoints: T[] | undefined,
+  tenantId: string | undefined,
+  hiddenEndpoints: ReadonlySet<string>,
+): T[] | undefined {
+  if (!endpoints) return endpoints;
+  const scoped = endpoints.filter(
+    (endpoint) =>
+      (!endpoint.tenantId || endpoint.tenantId === tenantId) &&
+      !hiddenEndpoints.has(normalizeEndpointName(endpoint.name ?? '')),
+  );
+  return scoped.length === endpoints.length ? endpoints : scoped;
 }
 
 function scopeModelSpecs(
   specs: AppConfig['modelSpecs'],
-  hiddenEndpoints: Set<string>,
+  hiddenEndpoints: ReadonlySet<string>,
 ): AppConfig['modelSpecs'] {
   if (!specs || hiddenEndpoints.size === 0) {
     return specs;
@@ -53,19 +84,16 @@ function scopeModelSpecs(
 }
 
 /** Keep tenant-scoped YAML endpoints out of every other tenant's effective config. */
-function scopeCustomEndpoints(config: AppConfig, tenantId?: string): AppConfig {
+function scopeCustomEndpoints(
+  config: AppConfig,
+  tenantId?: string,
+  inherited?: ReadonlySet<string>,
+): AppConfig {
+  const hiddenEndpoints = hiddenCustomEndpoints(config, tenantId, inherited);
   const custom = config.endpoints?.custom;
-  const scoped = scopeEndpointList(custom, tenantId);
+  const scoped = scopeEndpointList(custom, tenantId, hiddenEndpoints);
   const sourceCustom = config.config?.endpoints?.custom;
-  const scopedSource = scopeEndpointList(sourceCustom, tenantId);
-  const hiddenEndpoints = new Set(
-    (custom ?? sourceCustom)
-      ?.filter((endpoint) => endpoint.tenantId && endpoint.tenantId !== tenantId)
-      .map((endpoint) => normalizeEndpointName(endpoint.name ?? '')),
-  );
-  for (const endpoint of scoped ?? scopedSource ?? []) {
-    hiddenEndpoints.delete(normalizeEndpointName(endpoint.name ?? ''));
-  }
+  const scopedSource = scopeEndpointList(sourceCustom, tenantId, hiddenEndpoints);
   const modelSpecs = scopeModelSpecs(config.modelSpecs, hiddenEndpoints);
   const sourceModelSpecs = scopeModelSpecs(config.config?.modelSpecs, hiddenEndpoints);
   if (
@@ -89,6 +117,27 @@ function scopeCustomEndpoints(config: AppConfig, tenantId?: string): AppConfig {
         ...(sourceModelSpecs !== config.config?.modelSpecs && { modelSpecs: sourceModelSpecs }),
       },
     }),
+  };
+}
+
+/** Re-derive only spec-dependent controls before principal overrides are applied. */
+async function scopeBaseConfig(config: AppConfig, tenantId?: string): Promise<AppConfig> {
+  const scoped = scopeCustomEndpoints(config, tenantId);
+  if (scoped.modelSpecs === config.modelSpecs || !config.interfaceConfig) {
+    return scoped;
+  }
+  const defaults = await loadDefaultInterface({
+    config: { ...scoped.config, modelSpecs: scoped.modelSpecs },
+    configDefaults: getConfigDefaults(),
+  });
+  return {
+    ...scoped,
+    interfaceConfig: {
+      ...config.interfaceConfig,
+      modelSelect: defaults?.modelSelect,
+      parameters: defaults?.parameters,
+      presets: defaults?.presets,
+    },
   };
 }
 
@@ -209,21 +258,15 @@ export function _resetOverrideStrictCache(): void {
   _warnedNoTenantInStrictMode = false;
 }
 
+/** Versioned so older heads cannot supply override entries built under a stale tenant ID. */
 function overrideCacheKey(role?: string, userId?: string, tenantId?: string): string {
-  // Fall back to the ALS tenant context before `__default__`: callers that rely on the
-  // tenant middleware (the common path) pass no explicit tenantId, so without this the
-  // entry is keyed under the shared `__default__` bucket and leaks across tenants.
-  const tenant = tenantId || getTenantId() || '__default__';
-  if (userId) {
-    if (role) {
-      return `_OVERRIDE_:${tenant}:${role}:${userId}`;
-    }
-    return `_OVERRIDE_:${tenant}:${userId}`;
-  }
-  if (role) {
-    return `_OVERRIDE_:${tenant}:${role}`;
-  }
-  return `_OVERRIDE_:${tenant}:${BASE_CONFIG_PRINCIPAL_ID}`;
+  const tenant = tenantId || '__default__';
+  const principal = userId
+    ? role
+      ? `${role}:${userId}`
+      : userId
+    : role || BASE_CONFIG_PRINCIPAL_ID;
+  return `_OVERRIDE_:${tenant}:${principal}:tenant-v1`;
 }
 
 // ── Service factory ──────────────────────────────────────────────────
@@ -370,14 +413,24 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       skipRuntimeAugmentation,
     } = options;
 
-    const baseConfig = await ensureBaseConfig(refresh);
-    // The request-scoped tenant is authoritative when a user document carries a stale ID.
     const ambientTenantId = getTenantId();
     const effectiveTenantId =
-      ambientTenantId && ambientTenantId !== SYSTEM_TENANT_ID ? ambientTenantId : tenantId;
+      ambientTenantId && ambientTenantId !== SYSTEM_TENANT_ID
+        ? ambientTenantId
+        : tenantId === SYSTEM_TENANT_ID
+          ? undefined
+          : tenantId;
+    if (effectiveTenantId && effectiveTenantId !== ambientTenantId) {
+      return tenantStorage.run({ ...tenantStorage.getStore(), tenantId: effectiveTenantId }, () =>
+        getAppConfig(options),
+      );
+    }
 
+    const baseConfig = await ensureBaseConfig(refresh);
+    const scopedBaseConfig = await scopeBaseConfig(baseConfig, effectiveTenantId);
+    const hiddenEndpoints = hiddenCustomEndpoints(baseConfig, effectiveTenantId);
     if (baseOnly) {
-      return scopeCustomEndpoints(baseConfig, effectiveTenantId);
+      return scopedBaseConfig;
     }
 
     const principals =
@@ -388,7 +441,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
         return null;
       }));
     if (principals === null) {
-      return scopeCustomEndpoints(baseConfig, effectiveTenantId);
+      return scopedBaseConfig;
     }
 
     // Strict isolation + no tenant anywhere (neither param nor ALS) is pathological: a
@@ -397,7 +450,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     // without caching it under the shared `__default__` bucket. When ALS has a tenant,
     // overrideCacheKey scopes the key to it, so we fall through and cache per-tenant.
     if (principals.length === 0 && !tenantId && !getTenantId() && isStrictOverrideMode()) {
-      return scopeCustomEndpoints(baseConfig);
+      return scopedBaseConfig;
     }
 
     if (!tenantId && !getTenantId() && isStrictOverrideMode() && !_warnedNoTenantInStrictMode) {
@@ -409,12 +462,18 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
 
     const augment = async (appConfig: AppConfig): Promise<AppConfig> => {
-      const scopedConfig = scopeCustomEndpoints(appConfig, effectiveTenantId);
+      const scopedConfig = scopeCustomEndpoints(appConfig, effectiveTenantId, hiddenEndpoints);
       if (augmentConfig == null || skipRuntimeAugmentation === true) return scopedConfig;
       try {
         return scopeCustomEndpoints(
-          await augmentConfig({ appConfig: scopedConfig, baseConfig, principals, options }),
+          await augmentConfig({
+            appConfig: scopedConfig,
+            baseConfig: scopedBaseConfig,
+            principals,
+            options: { ...options, tenantId: effectiveTenantId },
+          }),
           effectiveTenantId,
+          hiddenEndpoints,
         );
       } catch (error) {
         if (failClosed) throw error;
@@ -423,7 +482,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       }
     };
 
-    const cacheKey = overrideCacheKey(role, userId, tenantId);
+    const cacheKey = overrideCacheKey(role, userId, ambientTenantId ?? effectiveTenantId);
     if (!refresh) {
       const cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
       if (cachedMerged) {
@@ -431,16 +490,20 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       }
     }
 
-    let merged = baseConfig;
+    let merged = scopedBaseConfig;
     try {
       const configs = await getApplicableConfigs(principals);
       if (configs.length > 0) {
-        merged = materializeConfigModelSpecs(mergeConfigOverrides(baseConfig, configs));
+        merged = scopeCustomEndpoints(
+          materializeConfigModelSpecs(mergeConfigOverrides(scopedBaseConfig, configs)),
+          effectiveTenantId,
+          hiddenEndpoints,
+        );
       }
     } catch (error) {
       if (failClosed) throw error;
       logger.error('[getAppConfig] Error resolving config overrides, falling back to base:', error);
-      return scopeCustomEndpoints(baseConfig, effectiveTenantId);
+      return scopedBaseConfig;
     }
 
     await cache.set(cacheKey, merged, overrideCacheTtl);

@@ -1732,7 +1732,13 @@ export const endpointSchema = baseEndpointSchema.merge(
       ).join(', ')}`,
     }),
     /** Limit this YAML custom endpoint to one tenant. Omit for deployment-wide endpoints. */
-    tenantId: z.string().min(1).optional(),
+    tenantId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[-a-zA-Z0-9_.]+$/, 'must be a valid tenant id without whitespace')
+      .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed')
+      .optional(),
     apiKey: z.string(),
     /** Masked preview of the API key, stored at write time so admin
      * reads can show which key is configured without returning the secret. */
