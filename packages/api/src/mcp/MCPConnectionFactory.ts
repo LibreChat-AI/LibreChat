@@ -449,7 +449,9 @@ export class MCPConnectionFactory {
           connection.removeListener('oauthRequired', oauthHandler);
           const rejectedOAuth = this.useOAuth && snapshot.authenticationError != null;
           if (rejectedOAuth) {
-            await this.recordRejectedOAuthAuthorization(oauthTokens?.credential_set_id);
+            await this.waitForDiscoveryRejection(
+              this.recordRejectedOAuthAuthorization(oauthTokens?.credential_set_id),
+            );
           }
           return {
             tools: snapshot.complete ? snapshot.tools : null,
@@ -473,7 +475,7 @@ export class MCPConnectionFactory {
        *  discovery never holds two concurrent connects to the same server. */
       connection.removeListener('oauthRequired', oauthHandler);
       await this.disposeQuietly(connection);
-      await rejectionRecorded;
+      await this.waitForDiscoveryRejection(rejectionRecorded);
       connection = null;
       oauthHandler = null;
     }
@@ -1760,6 +1762,13 @@ export class MCPConnectionFactory {
     connection.emit('oauthFailed', error);
   }
 
+  /** Cancellation ends discovery's wait, never the generation-guarded persistence operation. */
+  private async waitForDiscoveryRejection(pending?: Promise<void>): Promise<void> {
+    if (!pending) return;
+    const recorded = await waitUntilDeadline(pending, this.deadlineMs, this.signal);
+    if (!recorded.settled) this.onDiscoveryDetached?.(pending);
+  }
+
   private async recordRejectedOAuthAuthorization(credentialSetId?: string | null): Promise<void> {
     if (!credentialSetId || !this.tokenMethods?.findToken || !this.tokenMethods.updateToken) {
       return;
@@ -1804,6 +1813,11 @@ export class MCPConnectionFactory {
           return;
         }
         logger.info(`${this.logPrefix} Cached connection requires a live OAuth request handler`);
+        await this.recordRejectedOAuthAuthorization(
+          data.rejectedCredentialSetId !== undefined
+            ? data.rejectedCredentialSetId
+            : connection.getOAuthCredentialSetId(),
+        );
         connection.emit('oauthFailed', new Error('OAuth reauthentication required'));
         return;
       }
@@ -1825,13 +1839,13 @@ export class MCPConnectionFactory {
         return;
       }
 
+      await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
+
       if (isRequestRecovery && recoveryPhase === 'terminal') {
         logger.warn(`${this.logPrefix} OAuth recovery phase budget exhausted`);
         connection.emit('oauthFailed', new Error('OAuth recovery phase budget exhausted'));
         return;
       }
-
-      await this.recordRejectedOAuthAuthorization(rejectedCredentialSetId);
 
       if (!isRequestRecovery || recoveryPhase === 'silent-refresh') {
         recoveryPhase = 'interactive';

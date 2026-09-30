@@ -3573,6 +3573,69 @@ describe('MCPTokenStorage', () => {
       expect(onRefreshPreparing).toHaveBeenCalledTimes(1);
     });
 
+    it.each([false, true])(
+      'preserves a rejection recorded during redemption when publication rolls back (refresh only: %s)',
+      async (refreshOnly) => {
+        const serverName = `rejected-rollback-${refreshOnly}`;
+        await seedRefreshableTokens(serverName);
+        if (refreshOnly) {
+          await store.deleteToken({
+            userId: 'u1',
+            type: 'mcp_oauth',
+            identifier: `mcp:${serverName}`,
+          });
+        } else {
+          await store.updateToken(
+            { userId: 'u1', type: 'mcp_oauth', identifier: `mcp:${serverName}` },
+            { expiresIn: 3600 },
+          );
+        }
+        const flowManager = new FlowStateManager(new Keyv(), { ttl: 30000, ci: true });
+        let resolveRefresh!: (tokens: MCPOAuthTokens) => void;
+        const refreshTokens = jest.fn(
+          () => new Promise<MCPOAuthTokens>((resolve) => (resolveRefresh = resolve)),
+        );
+        const pending = MCPTokenStorage.forceRefreshTokens({
+          ...refreshParams(refreshTokens, serverName),
+          flowManager,
+          onRefreshSuccess: async () => {
+            throw new Error('generation publication failed');
+          },
+        });
+        void pending.catch(() => undefined);
+        await waitFor(() => refreshTokens.mock.calls.length === 1);
+        await MCPTokenStorage.markAuthorizationRejected({
+          userId: 'u1',
+          serverName,
+          credentialSetId,
+          flowManager,
+          findToken: store.findToken,
+          updateToken: store.updateToken,
+        });
+
+        resolveRefresh(rotatedTokens(2));
+        await expect(pending).rejects.toBeInstanceOf(MCPTokenRefreshUnavailableError);
+
+        const client = await store.findToken({
+          userId: 'u1',
+          type: 'mcp_oauth_client',
+          identifier: `mcp:${serverName}:client`,
+        });
+        expect(client?.metadata).toMatchObject({
+          credential_set_id: credentialSetId,
+          rejected_credential_set_id: credentialSetId,
+        });
+        await expect(
+          MCPTokenStorage.hasStoredAuthorization({
+            userId: 'u1',
+            serverName,
+            findToken: store.findToken,
+            validateClientBinding: () => undefined,
+          }),
+        ).resolves.toBe(false);
+      },
+    );
+
     it('removes refreshed credentials when their authorization fence cannot be published', async () => {
       await seedRefreshableTokens('unfenced-srv');
       const onRefreshSuccess = jest.fn().mockRejectedValue(new Error('generation unavailable'));

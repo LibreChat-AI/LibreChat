@@ -3445,9 +3445,22 @@ describe('MCPConnectionFactory', () => {
         error: new Error('Non-200 status code (401)'),
       };
 
-      await Promise.all([requestOAuthHandler!(challenge), requestOAuthHandler!(challenge)]);
-      await requestOAuthHandler!(challenge);
-      await requestOAuthHandler!(challenge);
+      const rejection = (rejectedCredentialSetId: string) => ({
+        ...challenge,
+        rejectedCredentialSetId,
+      });
+      await Promise.all([
+        requestOAuthHandler!(rejection('original-generation')),
+        requestOAuthHandler!(rejection('original-generation')),
+      ]);
+      await requestOAuthHandler!(rejection('refreshed-generation'));
+      await requestOAuthHandler!(rejection('interactive-generation'));
+
+      expect(
+        mockMCPTokenStorage.markAuthorizationRejected.mock.calls.map(
+          ([params]) => params.credentialSetId,
+        ),
+      ).toEqual(['original-generation', 'refreshed-generation', 'interactive-generation']);
 
       expect(mockMCPTokenStorage.forceRefreshTokens).toHaveBeenCalledTimes(1);
       expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalledTimes(1);
@@ -3528,6 +3541,9 @@ describe('MCPConnectionFactory', () => {
       expect(mockFlowManager.createFlow).not.toHaveBeenCalled();
       expect(oauthStart).not.toHaveBeenCalled();
       expect(oauthEnd).not.toHaveBeenCalled();
+      expect(mockMCPTokenStorage.markAuthorizationRejected).toHaveBeenCalledWith(
+        expect.objectContaining({ credentialSetId: 'rejected-generation' }),
+      );
       expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
         'oauthFailed',
         expect.objectContaining({ message: 'OAuth reauthentication required' }),
@@ -5661,6 +5677,89 @@ describe('MCPConnectionFactory', () => {
 
         expect(result.tools).toBeNull();
         expect(Date.now() - start).toBeLessThan(2000);
+      });
+
+      describe('OAuth rejection persistence', () => {
+        it.each([
+          ['handshake', 'deadline'],
+          ['handshake', 'abort'],
+          ['tools/list', 'deadline'],
+          ['tools/list', 'abort'],
+        ])('hands off %s rejection persistence when discovery stops at %s', async (phase, stop) => {
+          jest.useFakeTimers();
+          let finishRecording!: () => void;
+          let recordingStarted!: () => void;
+          const started = new Promise<void>((resolve) => (recordingStarted = resolve));
+          const pendingWrite = new Promise<void>((resolve) => (finishRecording = resolve));
+          mockMCPTokenStorage.markAuthorizationRejected.mockImplementationOnce(() => {
+            recordingStarted();
+            return pendingWrite;
+          });
+          const controller = new AbortController();
+          const onDiscoveryDetached = jest.fn();
+          mockFlowManager.createFlowWithHandler.mockResolvedValue({
+            access_token: 'rejected-access',
+            token_type: 'Bearer',
+            obtained_at: Date.now(),
+            credential_set_id: 'rejected-generation',
+          });
+          let oauthHandler: (() => void) | undefined;
+          mockConnectionInstance.once.mockImplementation((event, handler) => {
+            if (event === 'oauthRequired') oauthHandler = handler as () => void;
+            return mockConnectionInstance;
+          });
+          mockConnectionInstance.connect.mockImplementation(async () => {
+            if (phase === 'handshake') {
+              oauthHandler?.();
+              throw new Error('OAuth required');
+            }
+          });
+          mockConnectionInstance.isConnected.mockResolvedValue(true);
+          mockConnectionInstance.fetchOrderedToolsSnapshot = jest.fn().mockResolvedValue({
+            tools: [],
+            complete: false,
+            authenticationError: Object.assign(new Error('unauthorized'), { status: 401 }),
+          });
+          try {
+            const discovery = MCPConnectionFactory.discoverTools(
+              { serverName: 'test-server', serverConfig: mockServerConfig },
+              {
+                useOAuth: true,
+                user: mockUser,
+                flowManager: mockFlowManager,
+                tokenMethods: {
+                  findToken: jest.fn(),
+                  createToken: jest.fn(),
+                  updateToken: jest.fn(),
+                  deleteTokens: jest.fn(),
+                },
+                ...(stop === 'deadline'
+                  ? { deadlineMs: Date.now() + 100 }
+                  : { signal: controller.signal }),
+                onDiscoveryDetached,
+              },
+            );
+            await started;
+            if (stop === 'deadline') await jest.advanceTimersByTimeAsync(100);
+            else controller.abort();
+            const result = await discovery;
+            expect(result.tools).toBeNull();
+            expect(result.oauthRequired).toBe(true);
+            expect(mockMCPConnection).toHaveBeenCalledTimes(1);
+            expect(onDiscoveryDetached).toHaveBeenCalledTimes(1);
+            const [detached] = onDiscoveryDetached.mock.calls[0] as [Promise<void>];
+            let finished = false;
+            void detached.then(() => (finished = true));
+            await Promise.resolve();
+            expect(finished).toBe(false);
+            finishRecording();
+            await detached;
+            expect(finished).toBe(true);
+          } finally {
+            finishRecording();
+            jest.useRealTimers();
+          }
+        });
       });
 
       describe('OAuth token loading', () => {

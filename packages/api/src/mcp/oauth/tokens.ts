@@ -1765,10 +1765,10 @@ export class MCPTokenStorage {
           deleteTokens,
           findToken,
           clientInfo,
+          /** Rejection evidence may change during redemption; read its rollback snapshot under the lease. */
           existingTokens: {
             accessToken: existingAccessToken ?? undefined,
             refreshToken: refreshTokenData,
-            clientInfoToken: clientInfoData,
           },
           metadata: storedClientMetadata,
           expectedCredentialSetId: refreshCredentialSetId,
