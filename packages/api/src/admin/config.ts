@@ -656,16 +656,15 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       const filteredOverrides = {
         ...(overrides as Record<string, unknown>),
       } as Partial<TCustomConfig>;
-      for (const section of BASE_ONLY_OVERRIDE_SECTIONS) {
-        if (section in filteredOverrides) {
-          delete (filteredOverrides as Record<string, unknown>)[section];
-          logger.warn(
-            `[adminConfig] Stripping base-only config section "${section}" - configure it in librechat.yaml instead`,
-          );
-        }
-      }
       for (const key of Object.keys(filteredOverrides)) {
         const section = getTopLevelSection(key);
+        if (BASE_ONLY_OVERRIDE_SECTIONS.has(section)) {
+          delete (filteredOverrides as Record<string, unknown>)[key];
+          logger.warn(
+            `[adminConfig] Stripping base-only config section "${key}" - configure it in librechat.yaml instead`,
+          );
+          continue;
+        }
         if (BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(section)) {
           delete (filteredOverrides as Record<string, unknown>)[key];
           logger.warn(

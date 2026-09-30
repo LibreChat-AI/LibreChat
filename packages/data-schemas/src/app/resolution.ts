@@ -785,7 +785,7 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
       const applied: AnyObject = {};
       for (const [key, value] of Object.entries(stripInvalidOverrides(config, raw))) {
         if (
-          BASE_ONLY_OVERRIDE_SECTIONS.has(key) ||
+          BASE_ONLY_OVERRIDE_SECTIONS.has(key.split('.')[0]) ||
           (!isBasePrincipal && BASE_PRINCIPAL_OVERRIDE_SECTIONS.has(key))
         ) {
           continue;

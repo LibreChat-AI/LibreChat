@@ -515,6 +515,27 @@ actions:
 #     - 'host.docker.internal:8080'
 #     - '127.0.0.1:8080'
 
+# Classification provider settings are YAML-only. Admin config overrides cannot
+# redirect the backend to another host. No requests are made until a consumer
+# and the classification SDK are integrated; this block is disabled by default.
+# Self-hosted Laya needs its full /v1/systemone URL. Omitting `model` lets its
+# server choose a checkpoint; no API key is required unless the operator sets
+# apiKeyEnv. Other presets, such as typesafe (Jev), require credentials.
+# Store only the environment variable NAME in YAML, never its value.
+# Jev and Laya use the same wire format but their confidence measures differ.
+# Evaluate probability thresholds per backend, checkpoint, and use case.
+# Strict structured chat requires an injected model and cannot be selected here.
+# classification:
+#   enabled: false
+#   provider: laya
+#   providers:
+#     laya:
+#       baseURL: http://localhost:8000/v1/systemone
+#       timeoutMs: 4000  # Whole request, including retries and backoff.
+#       # apiKeyEnv: LAYA_API_KEY  # Optional bearer authentication.
+#   # Custom HTTP hosts can also set model, dialect, requestKey, responseKey,
+#   # maxRetries and requiresAuth; SDK presets enforce required authentication.
+
 # Example MCP Servers Object Structure
 # mcpServers:
 #   everything:

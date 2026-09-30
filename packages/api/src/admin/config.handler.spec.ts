@@ -563,6 +563,32 @@ describe('createAdminConfigHandlers', () => {
       expect(savedOverrides.interface).toEqual({ modelSelect: false });
     });
 
+    it('strips classifier hosts from nested and dotted admin overrides', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          overrides: {
+            classification: {
+              enabled: true,
+              provider: 'inhouse',
+              providers: {
+                inhouse: { baseURL: 'https://untrusted.example.com/classify', apiKey: 'literal' },
+              },
+            },
+            'classification.providers.inhouse.baseURL': 'https://untrusted.example.com/classify',
+            interface: { modelSelect: false },
+          },
+        },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(deps.upsertConfig.mock.calls[0][3]).toEqual({ interface: { modelSelect: false } });
+    });
+
     it('does not allow tenant-wide Langfuse settings through the generic config API', async () => {
       const { handlers, deps } = createHandlers();
       const req = mockReq({
@@ -1013,20 +1039,23 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.tombstoneConfigField).not.toHaveBeenCalled();
     });
 
-    it('ignores tombstones for base-only filter policy', async () => {
-      const { handlers, deps } = createHandlers();
-      const req = mockReq({
-        params: { principalType: 'role', principalId: 'admin' },
-        body: { fieldPath: 'filters.messages.pii' },
-      });
-      const res = mockRes();
+    it.each(['filters.messages.pii', 'classification.providers.laya'])(
+      'ignores tombstones for base-only config field %s',
+      async (fieldPath) => {
+        const { handlers, deps } = createHandlers();
+        const req = mockReq({
+          params: { principalType: 'role', principalId: 'admin' },
+          body: { fieldPath },
+        });
+        const res = mockRes();
 
-      await handlers.tombstoneConfigField(req, res);
+        await handlers.tombstoneConfigField(req, res);
 
-      expect(res.statusCode).toBe(200);
-      expect(res.body!.message).toBeDefined();
-      expect(deps.tombstoneConfigField).not.toHaveBeenCalled();
-    });
+        expect(res.statusCode).toBe(200);
+        expect(res.body!.message).toBeDefined();
+        expect(deps.tombstoneConfigField).not.toHaveBeenCalled();
+      },
+    );
 
     it('rejects unsafe field paths', async () => {
       const { handlers, deps } = createHandlers();
@@ -1057,6 +1086,30 @@ describe('createAdminConfigHandlers', () => {
       await handlers.patchConfigField(req, res);
 
       expect(res.statusCode).toBe(403);
+    });
+
+    it('keeps classifier host patches YAML-only while applying unrelated settings', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          entries: [
+            {
+              fieldPath: 'classification.providers.laya.baseURL',
+              value: 'https://untrusted.example.com/classify',
+            },
+            { fieldPath: 'interface.modelSelect', value: false },
+          ],
+        },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(deps.patchConfigFields.mock.calls[0][3]).toEqual({
+        'interface.modelSelect': false,
+      });
     });
 
     it('strips interface permission field entries but keeps UI field entries', async () => {

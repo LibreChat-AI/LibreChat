@@ -1,6 +1,7 @@
 import {
   AgentCapabilities,
   EModelEndpoint,
+  classificationSchema,
   filtersConfigSchema,
   hasActiveFiltersConfig,
   getConfigDefaults,
@@ -76,6 +77,22 @@ export function loadSkillSyncConfig(config: DeepPartial<TCustomConfig>): AppConf
   return parsed.data;
 }
 
+export function loadClassificationConfig(
+  config: DeepPartial<TCustomConfig>,
+): AppConfig['classification'] {
+  if (config.classification === undefined) {
+    return null;
+  }
+
+  const parsed = classificationSchema.safeParse(config.classification);
+  if (!parsed.success) {
+    logger.warn('[AppService] Invalid classification config', parsed.error.flatten());
+    return null;
+  }
+
+  return parsed.data;
+}
+
 export function loadLangfuseConfig(config: DeepPartial<TCustomConfig>): AppConfig['langfuse'] {
   const raw = config.langfuse;
   if (!raw || typeof raw !== 'object') {
@@ -139,6 +156,7 @@ export const AppService = async (params?: {
   const memory = loadMemoryConfig(config.memory);
   const summarization = loadSummarizationConfig(config);
   const skillSync = loadSkillSyncConfig(config);
+  const classification = loadClassificationConfig(config);
   const filteredTools = config.filteredTools;
   const includedTools = config.includedTools;
   const fileStrategy = (config.fileStrategy ?? configDefaults.fileStrategy) as
@@ -181,6 +199,7 @@ export const AppService = async (params?: {
     skillSync,
     webSearch,
     mcpSettings,
+    classification,
     fileStrategy,
     registration,
     transactions,

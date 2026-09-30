@@ -4,7 +4,12 @@ import {
   defaultAssistantsVersion,
 } from 'librechat-data-provider';
 import type { DeepPartial, TCustomConfig } from 'librechat-data-provider';
-import { AppService, loadFiltersConfig, loadSummarizationConfig } from './service';
+import {
+  AppService,
+  loadFiltersConfig,
+  loadClassificationConfig,
+  loadSummarizationConfig,
+} from './service';
 import logger from '~/config/winston';
 
 jest.mock('~/config/winston', () => ({
@@ -16,6 +21,56 @@ jest.mock('~/config/winston', () => ({
     debug: jest.fn(),
   },
 }));
+
+describe('loadClassificationConfig', () => {
+  const warnSpy = logger.warn as jest.Mock;
+
+  beforeEach(() => {
+    warnSpy.mockClear();
+  });
+
+  it('returns null when no classification block is configured', async () => {
+    expect(loadClassificationConfig({})).toBeNull();
+    expect((await AppService({ config: {} })).classification).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('validates the block when loaded from YAML through AppService', async () => {
+    const config = {
+      classification: {
+        enabled: true,
+        provider: 'laya',
+        providers: { laya: { baseURL: 'http://localhost:8000/v1/systemone' } },
+      },
+    };
+
+    const appConfig = await AppService({ config });
+
+    expect(appConfig.classification).toEqual({
+      enabled: true,
+      provider: 'laya',
+      providers: { laya: { baseURL: 'http://localhost:8000/v1/systemone' } },
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('fails closed and warns on invalid endpoint settings', async () => {
+    const config = {
+      classification: {
+        enabled: true,
+        provider: 'laya',
+        providers: { laya: { baseURL: 'not-a-url' } },
+      },
+    };
+
+    expect(loadClassificationConfig(config)).toBeNull();
+    expect((await AppService({ config })).classification).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[AppService] Invalid classification config',
+      expect.any(Object),
+    );
+  });
+});
 
 describe('loadSummarizationConfig', () => {
   const warnSpy = logger.warn as jest.Mock;

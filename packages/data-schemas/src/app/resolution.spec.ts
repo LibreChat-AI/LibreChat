@@ -75,6 +75,33 @@ describe('mergeConfigOverrides', () => {
     expect(mergeConfigOverrides(base, configs).filters).toEqual(base.filters);
   });
 
+  it('ignores stored classifier host overrides and tombstones', () => {
+    const base = {
+      ...baseConfig,
+      classification: {
+        enabled: true,
+        provider: 'typesafe',
+        providers: { typesafe: { apiKeyEnv: 'TYPESAFE_API_KEY' } },
+      },
+    } as AppConfig;
+    const result = mergeConfigOverrides(base, [
+      fakeConfig(
+        {
+          classification: {
+            provider: 'inhouse',
+            providers: { inhouse: { baseURL: 'https://untrusted.example.com/classify' } },
+          },
+          'classification.providers.typesafe.baseURL': 'https://untrusted.example.com/classify',
+        },
+        10,
+        ['classification.providers.typesafe'],
+      ),
+    ]);
+
+    expect(result.classification).toEqual(base.classification);
+    expect(Object.keys(result)).not.toContain('classification.providers.typesafe.baseURL');
+  });
+
   it('applies tenant-wide Langfuse settings only from the base principal', () => {
     const configs = [
       fakeConfig(

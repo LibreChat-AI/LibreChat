@@ -62,7 +62,8 @@ export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'd
 /** How long a started social login may take to return to its callback before its `state` expires. */
 export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-export const BASE_ONLY_CONFIG_SECTIONS = ['filters'] as const;
+/** Security policy and outbound classifier hosts are configured only in YAML. */
+export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'classification'] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
@@ -3116,12 +3117,56 @@ export type TOpenIdDiscoveryConfig = z.infer<typeof openIdDiscoverySchema>;
 /** Maximum CAS attempts per ACL document, including the initial attempt. */
 export const permissionWriteAttemptsSchema = z.number().int().min(1).max(100).default(3);
 
+export const classificationProviderSchema = z
+  .object({
+    baseURL: z
+      .string()
+      .url()
+      .refine((value) => {
+        try {
+          const { protocol, username, password } = new URL(value);
+          return (protocol === 'http:' || protocol === 'https:') && !username && !password;
+        } catch {
+          return false;
+        }
+      }, 'Expected an HTTP(S) URL without embedded credentials')
+      .optional(),
+    model: z.string().min(1).optional(),
+    dialect: z.enum(['port', 'systemone']).optional(),
+    requestKey: z.string().min(1).optional(),
+    responseKey: z.string().min(1).optional(),
+    timeoutMs: z.number().int().positive().max(60_000).optional(),
+    maxRetries: z.number().int().min(0).max(5).optional(),
+    /** The SDK keeps authentication mandatory for presets that require it. */
+    requiresAuth: z.boolean().optional(),
+    /** Name of an environment variable, never the credential itself. */
+    apiKeyEnv: z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+      .max(128)
+      .optional(),
+  })
+  .strict();
+
+export type TClassificationProviderConfig = z.infer<typeof classificationProviderSchema>;
+
+export const classificationSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    provider: z.string().min(1).default('http'),
+    providers: z.record(z.string(), classificationProviderSchema).default({}),
+  })
+  .strict();
+
+export type TClassificationConfig = z.infer<typeof classificationSchema>;
+
 export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
+  classification: classificationSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),
