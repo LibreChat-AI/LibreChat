@@ -20,14 +20,14 @@ import type {
 import type { CallbackInterface } from 'recoil';
 import type {
   RunEnd,
-  PendingSteer,
   QueuedMessage,
   QueuedMessageOrigin,
   SettledQueuedTurnReceipt,
-} from '~/store/families';
+} from '~/hooks/Chat/queue';
 import type { AgentQueuedTurnReceipt, GenerationProtocolVersion } from '~/data-provider';
 import type { QueueSendLock } from '~/utils/queueIntent';
 import type { ExtendedFile, FileSetter } from '~/common';
+import type { PendingSteer } from '~/store/families';
 import type { DuringRunAction } from './contract';
 import {
   useGetStartupConfig,

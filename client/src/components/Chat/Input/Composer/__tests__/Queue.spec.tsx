@@ -6,7 +6,7 @@ import { ReasoningEffort } from 'librechat-data-provider';
 import { act, render, screen, within, fireEvent } from '@testing-library/react';
 import { getDefaultStore, useSetAtom, createStore, Provider as JotaiProvider } from 'jotai';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 import {
   QueuedTurnPortalProvider,
   useQueuedTurnPortal,

@@ -16,7 +16,7 @@ import {
   ReasoningEffort,
 } from 'librechat-data-provider';
 import type { CodeApprovalMode, TConversation, TFile, TMessage } from 'librechat-data-provider';
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 import type { ExtendedFile } from '~/common';
 import {
   pendingQueuedTurnEnqueueIdsByConvoId,

@@ -41,11 +41,12 @@ import type {
   TContextUsageEvent,
   ChatStreamConnection,
 } from 'librechat-data-provider';
-import type { DrainAfterAbort, QueuedMessageOrigin, PendingSteer } from '~/store/families';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
+import type { DrainAfterAbort, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
+import type { PendingSteer } from '~/store/families';
 import {
   logger,
   clearComposerDrafts,

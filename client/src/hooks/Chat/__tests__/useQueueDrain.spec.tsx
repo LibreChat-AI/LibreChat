@@ -9,7 +9,7 @@ import type {
   RunEnd,
   QueuedMessage,
   SettledQueuedTurnReceipt,
-} from '~/store/families';
+} from '~/hooks/Chat/queue';
 import {
   settledQueuedTurnReceiptsByConvoId,
   queuedMessagesByConvoId,

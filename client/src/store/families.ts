@@ -29,14 +29,6 @@ import {
 } from '~/utils';
 import { useSetConvoContext } from '~/Providers/SetConvoContext';
 
-export type {
-  SettledQueuedTurnReceipt,
-  QueuedMessageOrigin,
-  DrainAfterAbort,
-  QueuedMessage,
-  RunEnd,
-} from '~/hooks/Chat/queue';
-
 const submissionKeysAtom = atom<(string | number)[]>({
   key: 'submissionKeys',
   default: [],

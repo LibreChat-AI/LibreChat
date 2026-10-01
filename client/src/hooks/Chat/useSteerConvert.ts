@@ -3,7 +3,7 @@ import { v4 } from 'uuid';
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import type { TPendingSteer } from 'librechat-data-provider';
-import type { QueuedMessage, QueuedMessageOrigin } from '~/store/families';
+import type { QueuedMessage, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { SteerCarriedContext } from '~/utils';
 import {
