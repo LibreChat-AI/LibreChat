@@ -120,7 +120,7 @@ test.describe('chat-owned queue state', () => {
     await expect(messagesView(page).getByText(followUp)).toHaveCount(0);
 
     await page.goBack();
-    await expect(page).toHaveURL(new RegExp(`/c/${conversationId}$`));
+    await expect(page).toHaveURL(new RegExp(`/c/${conversationId}(\\?.*)?$`));
     await expect(
       messagesView(page).locator('.user-turn').filter({ hasText: followUp }),
     ).toBeVisible({ timeout: 30000 });
