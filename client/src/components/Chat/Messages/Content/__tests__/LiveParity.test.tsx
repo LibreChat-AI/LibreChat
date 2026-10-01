@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, useSetAtom } from 'jotai';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
@@ -162,6 +163,7 @@ const mount = (
         />
       </RecoilRoot>
     </QueryClientProvider>,
+    { wrapper: MemoryRouter },
   );
 
 /** What the real card says, read the way a user would, in the real English
@@ -1631,6 +1633,7 @@ describe('preparation labels across rendered tool cards', () => {
     'file_search',
     Constants.SUBAGENT,
     'image_gen_oai',
+    'ask_user_question',
     Constants.CHECK_BACKGROUND_TASK,
   ])('does not present %s as executing while its args are streaming', (name) => {
     const part = toPart({ name, args: '{"intent":"Checking a record","value":"unfinished' });
