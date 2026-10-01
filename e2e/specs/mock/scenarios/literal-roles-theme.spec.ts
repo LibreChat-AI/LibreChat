@@ -77,7 +77,7 @@ async function failUserAvatar(page: Page) {
 }
 
 /** Drags a file over the composer and reads the three fills of the drop zone's artwork. */
-async function dropZoneArtwork(page: Page): Promise<string[]> {
+async function dropZoneArtwork(page: Page, capture: string): Promise<string[]> {
   const input = page.getByRole('textbox', { name: 'Message input' });
   await expect(input).toBeVisible({ timeout: 20000 });
   const dataTransfer = await page.evaluateHandle(() => {
@@ -89,6 +89,7 @@ async function dropZoneArtwork(page: Page): Promise<string[]> {
   await input.dispatchEvent('dragover', { dataTransfer });
   const prompt = page.getByText(DROP_PROMPT, { exact: true });
   await expect(prompt).toBeVisible();
+  await test.info().attach(capture, { body: await page.screenshot(), contentType: 'image/png' });
   const fills = await prompt.evaluate((node) =>
     Array.from(node.parentElement?.querySelectorAll('svg > g > path, svg > path') ?? []).map(
       (path) => getComputedStyle(path).fill,
@@ -134,7 +135,7 @@ test.describe('roles for former colour literals', () => {
 
     for (const mode of MODES) {
       await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=${mode}`);
-      expect(await dropZoneArtwork(page)).toEqual(STOCK_ARTWORK);
+      expect(await dropZoneArtwork(page, `drop-zone-default-${mode}`)).toEqual(STOCK_ARTWORK);
     }
   });
 
@@ -148,7 +149,7 @@ test.describe('roles for former colour literals', () => {
       const colors = clickHouseTheme.modes[mode]?.colors ?? {};
       await page.goto(`${NEW_CHAT_PATH}?${THEME_PARAM}=${mode}`);
       await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
-      expect(await dropZoneArtwork(page)).toEqual([
+      expect(await dropZoneArtwork(page, `drop-zone-clickhouse-${mode}`)).toEqual([
         rgbCss(colors['rgb-illustration-subtle']),
         rgbCss(colors['rgb-illustration']),
         rgbCss(colors['rgb-illustration-strong']),
