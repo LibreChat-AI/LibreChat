@@ -88,13 +88,18 @@ describe('RunCode animation lifecycle', () => {
 });
 
 describe('RunCode retention flag', () => {
-  it('sends the temporary-chat setting current at execution, without rebuilding the run', async () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('sends the temporary-chat flag current when each run executes', async () => {
     const callTool = jest
       .mocked(dataService.callTool)
       .mockResolvedValue({ result: '1', attachments: [] } as ToolCallResponse);
+    callTool.mockClear();
     const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     const code = document.createElement('code');
     code.textContent = 'print(1)';
+    const codeRef = { current: code };
     const tree = (isTemporary: boolean) => (
       <QueryClientProvider client={queryClient}>
         <RecoilRoot>
@@ -103,7 +108,7 @@ describe('RunCode retention flag', () => {
               <MessageContext.Provider
                 value={{ messageId: 'message', conversationId: 'conversation', isExpanded: false }}
               >
-                <RunCode lang="python" codeRef={{ current: code }} blockIndex={0} />
+                <RunCode lang="python" codeRef={codeRef} blockIndex={0} />
               </MessageContext.Provider>
             </ChatSettingsContext.Provider>
           </ToastProvider>
@@ -111,9 +116,23 @@ describe('RunCode retention flag', () => {
       </QueryClientProvider>
     );
     const { rerender } = render(tree(false));
-    rerender(tree(true));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_run_code' }));
+    const button = screen.getByRole('button', { name: 'com_ui_run_code' });
+
+    await act(async () => {
+      fireEvent.click(button);
+      await jest.advanceTimersByTimeAsync(0);
+    });
     await waitFor(() => expect(callTool).toHaveBeenCalledTimes(1));
-    expect(JSON.stringify(callTool.mock.calls[0])).toContain('"isTemporary":true');
+    await waitFor(() => expect(button).toBeEnabled());
+
+    rerender(tree(true));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1100);
+      fireEvent.click(button);
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await waitFor(() => expect(callTool).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(callTool.mock.calls[0])).toContain('"isTemporary":false');
+    expect(JSON.stringify(callTool.mock.calls[1])).toContain('"isTemporary":true');
   });
 });
