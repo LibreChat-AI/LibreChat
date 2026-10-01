@@ -570,7 +570,11 @@ const performEntraGroupMembershipSync = async (user, accessToken, session = null
 
     const missingGroupIds = allGroupIds.filter((id) => !existingGroupIds.has(id));
 
-    if (missingGroupIds.length > 0) {
+    if (missingGroupIds.length > 0 && isEnabled(process.env.ENTRA_ID_SYNC_ONLY_EXISTING_GROUPS)) {
+      logger.debug(
+        `[PermissionService.syncUserEntraGroupMemberships] Skipping ${missingGroupIds.length} groups not in database`,
+      );
+    } else if (missingGroupIds.length > 0) {
       logger.info(
         `[PermissionService.syncUserEntraGroupMemberships] Found ${missingGroupIds.length} groups that don't exist, fetching details...`,
       );
