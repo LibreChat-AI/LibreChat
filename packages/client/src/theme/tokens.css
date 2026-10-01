@@ -196,20 +196,41 @@
 }
 
 /* A theme whose `disabledStyle` is `fill` paints a disabled control in the
- * disabled roles instead of fading it; `ThemeProvider` mirrors that choice as
- * `data-theme-disabled` on the root. The default `dim` style keeps the
- * `disabled:opacity-50` every primitive already carries. `:is()` carries the
- * attribute's weight, so the fill outranks a checked or variant fill. Radix
- * marks a disabled part that is not a form control (a slider thumb, a menu
- * item) with `data-disabled`, and a composite widget row with `aria-disabled`;
- * both count too. */
-@custom-variant theme-disabled (&:is([data-theme-disabled='fill'] *):is(:disabled, [data-disabled], [aria-disabled='true']));
+ * disabled roles instead of fading it. The choice is read from the
+ * `--theme-disabled-style` property `applyTheme` writes on every root it themes,
+ * so a control inherits it from the nearest themed root: a `dim` root nested in
+ * a `fill` one fades its controls again. The default `dim` style keeps the
+ * `disabled:opacity-50` every primitive already carries. `:is(:root *)` matches
+ * every element and carries a pseudo-class's weight, so the fill outranks a
+ * checked or variant fill. Radix marks a disabled part that is not a form
+ * control (a slider thumb, a menu item) with `data-disabled`, and a composite
+ * widget row with `aria-disabled`; both count too. */
+@custom-variant theme-disabled {
+  @container style(--theme-disabled-style: fill) {
+    &:is(:root *):is(:disabled, [data-disabled], [aria-disabled='true']) {
+      @slot;
+    }
+  }
+}
 
 /* The same fill for a wrapper whose disabled control sits inside it, as
  * `rc-input-number` renders its input inside the element that takes the
  * component's classes. */
-@custom-variant theme-disabled-within (&:is([data-theme-disabled='fill'] *):has(:disabled));
+@custom-variant theme-disabled-within {
+  @container style(--theme-disabled-style: fill) {
+    &:is(:root *):has(:disabled) {
+      @slot;
+    }
+  }
+}
 
 /* A theme whose `fieldFocusStyle` is `border` swaps a focused field's edge color instead of
- * drawing a ring; `applyTheme` mirrors that choice as `data-theme-field-focus` on the root. */
-@custom-variant theme-field-border (&:is([data-theme-field-focus='border'] *));
+ * drawing a ring. Read, like the disabled style, from the `--theme-field-focus-style` property
+ * the nearest themed root carries. */
+@custom-variant theme-field-border {
+  @container style(--theme-field-focus-style: border) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}

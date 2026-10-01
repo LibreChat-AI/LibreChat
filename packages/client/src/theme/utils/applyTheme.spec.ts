@@ -460,6 +460,34 @@ describe('applyTheme', () => {
     expect(root.hasAttribute(THEME_FIELD_FOCUS_ATTRIBUTE)).toBe(false);
   });
 
+  it('writes the default focus and disabled styles on a nested root, so it overrides its ancestor', () => {
+    const outer = document.createElement('div');
+    const inner = document.createElement('div');
+    outer.append(inner);
+    document.body.append(outer);
+    const edge: ThemeDefinition = {
+      version: 1,
+      name: 'edge-fill-reference',
+      modes: { light: { appearance: { fieldFocusStyle: 'border', disabledStyle: 'fill' } } },
+    };
+    try {
+      applyResolvedTheme(resolveTheme(edge, 'light'), outer);
+      applyResolvedTheme(resolveTheme({ ...edge, modes: {} }, 'light'), inner);
+
+      /** The style queries read these inherited properties, so the nearest root decides. */
+      expect(outer.style.getPropertyValue('--theme-field-focus-style')).toBe('border');
+      expect(outer.style.getPropertyValue('--theme-disabled-style')).toBe('fill');
+      expect(inner.style.getPropertyValue('--theme-field-focus-style')).toBe('ring');
+      expect(inner.style.getPropertyValue('--theme-disabled-style')).toBe('dim');
+
+      clearAppliedTheme(inner);
+      expect(inner.style.getPropertyValue('--theme-field-focus-style')).toBe('');
+      expect(inner.style.getPropertyValue('--theme-disabled-style')).toBe('');
+    } finally {
+      outer.remove();
+    }
+  });
+
   it('focuses the fields of a legacy theme in the focus color it names', () => {
     const root = document.documentElement;
 

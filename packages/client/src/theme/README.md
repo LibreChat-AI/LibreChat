@@ -351,7 +351,12 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   default) draws the keyboard-only focus ring, and `border` swaps the field's edge
   to `border-field-focus` on any focus, adding a 1px ring in that color on keyboard
   focus so the indicator keeps the 2px focus floor, through the
-  `theme-field-border:` variant `applyTheme` enables with `data-theme-field-focus`.
+  `theme-field-border:` variant.
+- Nested theme roots - `fieldFocusStyle` and `disabledStyle` are read from the
+  `--theme-field-focus-style` and `--theme-disabled-style` properties
+  `applyTheme` writes on every root it themes, through CSS style queries, so a
+  control follows the nearest themed root. A browser without style queries
+  (Firefox before 151) keeps the default `ring` and `dim` treatment.
   `Label` reads `labelSize` (follows `textSm`), `labelLeading` and
   `labelFontWeight` (`inherit` by default, so a label keeps the weight around it).
 - `text-badge-label` - The shared `Badge`'s resting label ink; a hovered or selected

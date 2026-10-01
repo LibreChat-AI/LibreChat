@@ -167,8 +167,9 @@ function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
 }
 
 /**
- * Mirrors the applied theme's `disabledStyle` on the root, where the
- * `theme-disabled:` variant reads it. Absent means the default `dim` style.
+ * Mirrors the applied theme's `disabledStyle` on the root for host stylesheets and tests. Absent
+ * means the default `dim` style. The `theme-disabled:` variants read the inherited
+ * `--theme-disabled-style` property instead, so the nearest themed root decides.
  */
 export const THEME_DISABLED_ATTRIBUTE = 'data-theme-disabled';
 
@@ -180,8 +181,9 @@ export const THEME_DISABLED_ATTRIBUTE = 'data-theme-disabled';
 export const THEME_SCOPE_ATTRIBUTE = 'data-theme-scope';
 
 /**
- * Mirrors the applied theme's `fieldFocusStyle` on the root, where the `theme-field-border:`
- * variant reads it. Absent means the default `ring` style.
+ * Mirrors the applied theme's `fieldFocusStyle` on the root, like `THEME_DISABLED_ATTRIBUTE`.
+ * The `theme-field-border:` variant and `Field.css` read the inherited
+ * `--theme-field-focus-style` property instead, so the nearest themed root decides.
  */
 export const THEME_FIELD_FOCUS_ATTRIBUTE = 'data-theme-field-focus';
 

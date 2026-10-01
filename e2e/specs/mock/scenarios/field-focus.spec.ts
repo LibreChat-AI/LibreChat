@@ -126,6 +126,7 @@ test.describe('theme field focus', () => {
     await page.evaluate((className) => {
       const scope = document.createElement('div');
       scope.setAttribute('data-theme-field-focus', 'border');
+      scope.style.setProperty('--theme-field-focus-style', 'border');
       scope.style.setProperty('--border-field-focus', '10 20 30');
       const probe = document.createElement('input');
       probe.className = className;
