@@ -179,7 +179,7 @@ const Dropdown: React.FC<DropdownProps> = ({
             ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
             : 'w-fit gap-2 px-3',
           variant === 'field' && fieldControl,
-          variant === 'compact' && 'h-8 px-2.5 py-0 text-xs transition-none',
+          variant === 'compact' && 'h-theme-button-compact px-2.5 py-0 text-xs transition-none',
           triggerClassName,
         )}
         data-testid={testId}

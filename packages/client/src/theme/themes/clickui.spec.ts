@@ -511,6 +511,11 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason: '2rem: Click UI draws one button size, so the small step matches the default',
   },
+  buttonHeightCompact: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one button size, so the compact step matches the default',
+  },
   buttonHeightLg: {
     value: '2rem',
     status: 'match',
@@ -627,6 +632,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   switchHeight: 'click.switch.size.height',
   checkboxSize: 'click.checkbox.size.all',
   iconSize: 'click.image.sm.size.width',
+  iconSizeMd: 'click.image.md.size.width',
   iconSizeLg: 'click.image.lg.size.width',
   tableCellSpaceY: 'click.table.body.cell.space.md.y',
   tableRowStroke: 'click.table.cell.stroke',

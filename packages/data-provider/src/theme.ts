@@ -376,6 +376,7 @@ const appearanceValidators = {
   /** An icon's size (0.75 to 1.25rem), and the larger one a dialog's close button draws (1 to
    *  2rem). */
   iconSize: lengthWithin(12, 20),
+  iconSizeMd: lengthWithin(20, 24),
   iconSizeLg: lengthWithin(16, 32),
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: isFontWeight,
@@ -384,6 +385,7 @@ const appearanceValidators = {
   /** The Button's `xs` and `lg` heights and the `icon-sm` square, each a pointer target. */
   buttonHeightXs: isTargetSize,
   buttonHeightLg: isTargetSize,
+  buttonHeightCompact: isTargetSize,
   iconButtonSizeSm: isTargetSize,
   /** A form field's height and vertical padding, and whether focus draws a ring or swaps the
    *  field's edge color. */
@@ -504,6 +506,46 @@ const switchLength = (value: unknown): [number, 'px' | 'rem'] | undefined => {
  * pair is compared in its own unit and a mixed pair is rejected. A rem height of at least 0.5rem
  * clears the border at any root above 8px; below that the preset clamps the knob at zero.
  */
+/** A plain px or rem length in px on a 16px root, or `undefined` for anything else. */
+function plainPx(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !/^\d*\.?\d+(px|rem)$/.test(value)) {
+    return undefined;
+  }
+  return parseFloat(value) * (value.endsWith('rem') ? 16 : 1);
+}
+
+/**
+ * The target floor holds icon buttons up to it; a floor above the button or field height would
+ * pull them out of line with the fields and buttons drawn beside them, so it may not exceed
+ * either. Roles a theme leaves out read their defaults.
+ */
+function collectTargetIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
+  if (appearance.minTargetSize === undefined) {
+    return [];
+  }
+  const target = plainPx(appearance.minTargetSize);
+  const [role, value, height] = (['buttonHeight', 'fieldHeight'] as const)
+    .map((name) => {
+      const raw = appearance[name] ?? defaultControlHeights[name];
+      return [name, raw, plainPx(raw)] as const;
+    })
+    .reduce((lowest, next) =>
+      next[2] !== undefined && (lowest[2] === undefined || next[2] < lowest[2]) ? next : lowest,
+    );
+  if (target === undefined || height === undefined || target <= height) {
+    return [];
+  }
+  return [
+    issue(
+      [...base, 'minTargetSize'],
+      `minTargetSize must not exceed ${role}: ${String(appearance.minTargetSize)}, ${String(value)}`,
+    ),
+  ];
+}
+
+/** The control heights the target floor is checked against when a theme leaves them out. */
+const defaultControlHeights = { buttonHeight: '2.5rem', fieldHeight: '2.5rem' } as const;
+
 function collectSwitchIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
   if (appearance.switchWidth === undefined && appearance.switchHeight === undefined) {
     return [];
@@ -649,6 +691,7 @@ function collectModeIssues(mode: 'light' | 'dark', definition: unknown): ThemeIs
     });
     if (isPlainThemeRecord(appearance)) {
       issues.push(...collectSwitchIssues(appearance, [...base, 'appearance']));
+      issues.push(...collectTargetIssues(appearance, [...base, 'appearance']));
     }
   }
 

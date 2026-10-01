@@ -368,8 +368,10 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   input, and `h-theme-target` (`minTargetSize`, never under 24px) the switch's hit
   area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
   trigger. Every default is the size the primitive drew before. The icon and checkbox roles
-  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeLg` 1 to
-  2rem, `checkboxSize` 1 to 1.5rem.
+  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
+  exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
+  1.5rem. `minTargetSize` may not exceed `buttonHeight` or `fieldHeight`, so the floor never
+  pulls an icon button out of line with the field beside it.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's

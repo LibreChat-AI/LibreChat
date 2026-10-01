@@ -162,7 +162,7 @@ const BookmarkForm = ({
                   {...field}
                   checked={field.value}
                   onCheckedChange={field.onChange}
-                  className="size-4 cursor-pointer"
+                  className="cursor-pointer"
                   value={field.value?.toString()}
                   aria-label={localize('com_ui_bookmarks_add_to_conversation')}
                 />

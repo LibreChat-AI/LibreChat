@@ -422,8 +422,10 @@ const clickHouseShape = {
    *  a 1rem icon in 0.25rem of `iconButton.sm` space on each side, 1.5rem in all, which still meets
    *  the 24px target minimum; its `xs` (no space) would not, so `icon-xs` keeps LibreChat's. */
   buttonHeightLg: '2rem',
+  buttonHeightCompact: '2rem',
   iconButtonSizeSm: '1.5rem',
   iconSize: '1rem', // image.sm.size.width
+  iconSizeMd: '1.25rem', // image.md.size.width
   iconSizeLg: '1.5rem', // image.lg.size.width, the dialog close icon
   /** Click UI's field is sized by its content, like its button: 0.2813rem of space.y on both
    *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to

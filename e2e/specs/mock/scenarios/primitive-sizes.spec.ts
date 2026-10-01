@@ -42,6 +42,7 @@ async function sizes(page: Page): Promise<Record<string, string>> {
   const probes: Array<[string, string]> = [
     ['h-theme-button-xs', 'height'],
     ['h-theme-button-lg', 'height'],
+    ['h-theme-button-compact', 'height'],
     ['size-theme-button', 'width'],
     ['size-theme-icon-button-sm', 'width'],
     ['size-theme-checkbox', 'width'],
@@ -75,6 +76,7 @@ const REFERENCE_SIZE_THEME = {
 const DEFAULT_SIZES = {
   'h-theme-button-xs': '28px',
   'h-theme-button-lg': '44px',
+  'h-theme-button-compact': '32px',
   'size-theme-button': '40px',
   'size-theme-icon-button-sm': '32px',
   'size-theme-checkbox': '16px',

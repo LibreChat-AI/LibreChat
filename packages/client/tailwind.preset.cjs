@@ -25,6 +25,7 @@ module.exports = {
         'theme-button-sm': 'var(--theme-button-height-sm, 2.25rem)',
         'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
         'theme-button-lg': 'var(--theme-button-height-lg, 2.75rem)',
+        'theme-button-compact': 'var(--theme-button-height-compact, 2rem)',
         /** A form field's height, and the large `title` field's. */
         'theme-field': 'var(--theme-field-height, 2.5rem)',
         'theme-field-lg': 'var(--theme-field-height-lg, 3rem)',
@@ -60,6 +61,7 @@ module.exports = {
         'theme-icon-button-sm': 'var(--theme-icon-button-size-sm, 2rem)',
         'theme-checkbox': 'var(--theme-checkbox-size, 1rem)',
         'theme-icon': 'var(--theme-icon-size, 1rem)',
+        'theme-icon-md': 'var(--theme-icon-size-md, 1.25rem)',
         'theme-icon-lg': 'var(--theme-icon-size-lg, 1.5rem)',
         /** A theme-sized control's inline padding and gap, falling back to the shared spacing it
          *  read before, for a stylesheet that predates the roles. */

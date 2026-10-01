@@ -1152,6 +1152,9 @@ describe('theme registry', () => {
       { checkboxSize: 'auto' },
       { buttonHeightLg: '-2rem' },
       { buttonHeightXs: '1px' },
+      { minTargetSize: '3rem' },
+      { minTargetSize: '2rem', fieldHeight: '1.75rem' },
+      { iconSizeMd: '1rem' },
       { iconButtonSizeSm: '20px' },
       { iconButtonSizeSm: 'calc(2rem + 2px)' },
     ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));

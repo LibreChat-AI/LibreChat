@@ -31,7 +31,7 @@ describe('Button', () => {
 
     const button = screen.getByRole('button', { name: 'My agents' });
     expect(button).toHaveClass(
-      'h-8',
+      'h-theme-button-compact',
       'gap-1.5',
       'px-2.5',
       'text-xs',

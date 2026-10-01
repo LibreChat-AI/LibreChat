@@ -529,6 +529,8 @@ export interface IThemeAppearance {
   /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
    *  close button draws (1 to 2rem). */
   iconSize: string;
+  /** The medium icon (1.25 to 1.5rem), such as the exported Dialog's close glyph. */
+  iconSizeMd: string;
   iconSizeLg: string;
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: string;
@@ -538,6 +540,8 @@ export interface IThemeAppearance {
    *  default, and `icon-sm` takes its own size. */
   buttonHeightXs: string;
   buttonHeightLg: string;
+  /** The compact toolbar step the Button and Dropdown `compact` recipes share. */
+  buttonHeightCompact: string;
   iconButtonSizeSm: string;
   /**
    * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,

@@ -155,7 +155,7 @@ const buttonVariantRecipe = cva(
         /** Default-height actions with less horizontal padding, such as Copy link. */
         dense: 'h-theme-button px-3 py-2',
         /** Compact text controls that share a toolbar row with a compact dropdown. */
-        compact: 'h-8 gap-1.5 px-2.5 py-2 text-xs',
+        compact: 'h-theme-button-compact gap-1.5 px-2.5 py-2 text-xs',
         /**
          * A chip, the text counterpart of `icon-xs`: the reset beside a list that
          * matched nothing, and anything else that offers a way out without asking

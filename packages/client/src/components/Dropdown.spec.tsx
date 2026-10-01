@@ -104,7 +104,7 @@ describe('Dropdown compact recipe', () => {
 
     const trigger = screen.getByRole('combobox', { name: 'Sort 12-hour' });
     expect(trigger).toHaveClass(
-      'h-8',
+      'h-theme-button-compact',
       'px-2.5',
       'py-0',
       'text-xs',
