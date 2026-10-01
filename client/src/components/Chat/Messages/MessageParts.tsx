@@ -162,7 +162,6 @@ function MessageParts(props: TMessageProps) {
                 isEditing={edit}
                 message={message}
                 enterEdit={enterEdit}
-                isSubmitting={isSubmitting}
                 conversation={conversation ?? null}
                 regenerate={() => regenerateMessage()}
                 copyToClipboard={copyToClipboard}

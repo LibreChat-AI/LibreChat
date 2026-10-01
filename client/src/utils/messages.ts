@@ -667,21 +667,59 @@ const RELATIVE_TIME_DIVISIONS: { amount: number; unit: Intl.RelativeTimeFormatUn
   { amount: Number.POSITIVE_INFINITY, unit: 'year' },
 ];
 
+/**
+ * Intl formatters are expensive to construct and every message row formats its
+ * timestamp on each render, so they are built once per locale (and clock format).
+ */
+const resolvedLocales = new Map<string, string | undefined>();
+const relativeFormatters = new Map<string, Intl.RelativeTimeFormat>();
+const absoluteFormatters = new Map<string, Intl.DateTimeFormat>();
+
 /** Returns the locale only when it is a syntactically valid BCP-47 tag, else undefined. */
 const resolveLocale = (locale?: string): string | undefined => {
   if (!locale) {
     return undefined;
   }
+  if (resolvedLocales.has(locale)) {
+    return resolvedLocales.get(locale);
+  }
+  let resolved: string | undefined;
   try {
     Intl.DateTimeFormat.supportedLocalesOf(locale);
-    return locale;
+    resolved = locale;
   } catch {
-    return undefined;
+    resolved = undefined;
   }
+  resolvedLocales.set(locale, resolved);
+  return resolved;
+};
+
+const getRelativeFormatter = (locale?: string): Intl.RelativeTimeFormat => {
+  const key = locale ?? '';
+  let formatter = relativeFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+    relativeFormatters.set(key, formatter);
+  }
+  return formatter;
+};
+
+const getAbsoluteFormatter = (locale?: string, hour12?: boolean): Intl.DateTimeFormat => {
+  const key = `${locale ?? ''}|${String(hour12)}`;
+  let formatter = absoluteFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      hour12,
+    });
+    absoluteFormatters.set(key, formatter);
+  }
+  return formatter;
 };
 
 const formatRelativeTime = (from: Date, to: Date, locale?: string): string => {
-  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  const formatter = getRelativeFormatter(locale);
   let duration = (from.getTime() - to.getTime()) / 1000;
   for (const division of RELATIVE_TIME_DIVISIONS) {
     if (Math.abs(duration) < division.amount) {
@@ -713,11 +751,7 @@ export const getMessageTimestamp = (
   return {
     iso: date.toISOString(),
     relative: formatRelativeTime(date, now, safeLocale),
-    absolute: new Intl.DateTimeFormat(safeLocale, {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      hour12,
-    }).format(date),
+    absolute: getAbsoluteFormatter(safeLocale, hour12).format(date),
     isRecent: Math.abs(now.getTime() - date.getTime()) < RECENT_THRESHOLD_MS,
   };
 };
@@ -871,6 +905,28 @@ export function areMessageFieldsEqual(
     (prevMsg.manualSkills?.length ?? 0) === (nextMsg.manualSkills?.length ?? 0) &&
     (prevMsg.alwaysAppliedSkills?.length ?? 0) === (nextMsg.alwaysAppliedSkills?.length ?? 0) &&
     (prevMsg.quotes?.length ?? 0) === (nextMsg.quotes?.length ?? 0)
+  );
+}
+
+type TailRelationProps = {
+  message?: TMessage | null;
+  latestMessageId?: string;
+  latestMessageDepth?: number;
+};
+
+/**
+ * True when moving the thread's tail leaves a row's rendering unchanged. Rows read
+ * `latestMessageId` and `latestMessageDepth` only by comparing them to their own id
+ * and depth, and for whether a tail is known at all, so a submission or a server id
+ * hydration re-renders just the rows entering or leaving the tail.
+ */
+export function isSameTailRelation(prev: TailRelationProps, next: TailRelationProps): boolean {
+  return (
+    (prev.latestMessageId == null) === (next.latestMessageId == null) &&
+    (prev.latestMessageId === prev.message?.messageId) ===
+      (next.latestMessageId === next.message?.messageId) &&
+    (prev.latestMessageDepth === prev.message?.depth) ===
+      (next.latestMessageDepth === next.message?.depth)
   );
 }
 
