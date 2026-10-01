@@ -1,4 +1,5 @@
-import type { TPrincipal } from 'librechat-data-provider';
+import type { TCustomConfig, TPrincipal } from 'librechat-data-provider';
+import { isEnabled } from '~/utils';
 
 export interface DirectoryPrincipalUser {
   id: string;
@@ -46,3 +47,9 @@ export const ensureDirectoryPrincipalUser = async (
     idOnTheSource: principal.idOnTheSource,
   });
 };
+
+/** `permissions.syncOnlyExistingEntraGroups` in `librechat.yaml` takes precedence over the env flag. */
+export const syncsOnlyExistingEntraGroups = (
+  permissions: TCustomConfig['permissions'],
+  envValue: string | undefined,
+): boolean => permissions?.syncOnlyExistingEntraGroups ?? isEnabled(envValue);

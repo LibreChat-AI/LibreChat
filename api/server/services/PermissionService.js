@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
-const { AccessControlService, isEnabled, ensureDirectoryPrincipalUser } = require('@librechat/api');
+const {
+  isEnabled,
+  AccessControlService,
+  ensureDirectoryPrincipalUser,
+  syncsOnlyExistingEntraGroups,
+} = require('@librechat/api');
 const {
   tenantStorage,
   getTenantId,
@@ -483,7 +488,8 @@ const ensureGroupPrincipalExists = async function (principal, authContext = null
 
 /**
  * Sync user's Entra ID group memberships with auto-creation of missing groups
- * Optimized approach:
+ * Optimized approach (steps 4-6 are skipped when `permissions.syncOnlyExistingEntraGroups`
+ * or `ENTRA_ID_SYNC_ONLY_EXISTING_GROUPS` is enabled, so only existing groups are synced):
  * 1. Get all group IDs user should be member of from Entra
  * 2. Try to add user to existing groups (fast, no Graph API calls)
  * 3. Query DB to identify which groups don't exist (indexed query, fast)
@@ -498,12 +504,13 @@ const ensureGroupPrincipalExists = async function (principal, authContext = null
  * @param {string} user.provider - Authentication provider ('openid')
  * @param {string} accessToken - Access token for Graph API calls
  * @param {mongoose.ClientSession} [session] - Optional MongoDB session for transactions
+ * @param {AppConfig} [appConfig] - Resolved app config for the user
  * @returns {Promise<void>}
  */
-const syncUserEntraGroupMemberships = async (user, accessToken, session = null) => {
+const syncUserEntraGroupMemberships = async (user, accessToken, session = null, appConfig) => {
   const tenantId = user?.tenantId ? String(user.tenantId) : undefined;
   if (!tenantId || getTenantId() != null) {
-    return performEntraGroupMembershipSync(user, accessToken, session);
+    return performEntraGroupMembershipSync(user, accessToken, session, appConfig);
   }
   /**
    * The OAuth callback runs before `tenantContextMiddleware`, so establish the
@@ -511,11 +518,11 @@ const syncUserEntraGroupMemberships = async (user, accessToken, session = null) 
    * cache invalidation are then scoped exactly like authenticated reads.
    */
   return tenantStorage.run({ tenantId, userId: user._id?.toString() }, async () =>
-    performEntraGroupMembershipSync(user, accessToken, session),
+    performEntraGroupMembershipSync(user, accessToken, session, appConfig),
   );
 };
 
-const performEntraGroupMembershipSync = async (user, accessToken, session = null) => {
+const performEntraGroupMembershipSync = async (user, accessToken, session = null, appConfig) => {
   try {
     if (!entraIdPrincipalFeatureEnabled(user) || !accessToken || !user.idOnTheSource) {
       return;
@@ -570,7 +577,12 @@ const performEntraGroupMembershipSync = async (user, accessToken, session = null
 
     const missingGroupIds = allGroupIds.filter((id) => !existingGroupIds.has(id));
 
-    if (missingGroupIds.length > 0 && isEnabled(process.env.ENTRA_ID_SYNC_ONLY_EXISTING_GROUPS)) {
+    const syncOnlyExisting = syncsOnlyExistingEntraGroups(
+      appConfig?.config?.permissions,
+      process.env.ENTRA_ID_SYNC_ONLY_EXISTING_GROUPS,
+    );
+
+    if (missingGroupIds.length > 0 && syncOnlyExisting) {
       logger.debug(
         `[PermissionService.syncUserEntraGroupMemberships] Skipping ${missingGroupIds.length} groups not in database`,
       );

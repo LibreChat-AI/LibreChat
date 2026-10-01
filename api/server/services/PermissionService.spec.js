@@ -2839,5 +2839,28 @@ describe('syncUserEntraGroupMemberships - $pullAll on Group.memberIds', () => {
       expect(left.memberIds).not.toContain(userEntraId);
       expect(await Group.countDocuments({ idOnTheSource: 'entra-unused' })).toBe(0);
     });
+
+    it('creates missing groups when librechat.yaml turns the setting off', async () => {
+      getUserEntraGroups.mockResolvedValue(['entra-unused']);
+      getEntraGroupDetailsBatch.mockResolvedValue([{ id: 'entra-unused', name: 'Unused' }]);
+      const appConfig = { config: { permissions: { syncOnlyExistingEntraGroups: false } } };
+
+      await syncUserEntraGroupMemberships(user, 'fake-token', null, appConfig);
+
+      const created = await Group.findOne({ idOnTheSource: 'entra-unused' }).lean();
+      expect(created.memberIds).toContain(userEntraId);
+    });
+  });
+
+  it('skips missing groups when only librechat.yaml enables the setting', async () => {
+    const { getEntraGroupDetailsBatch } = require('~/server/services/GraphApiService');
+    getUserEntraGroups.mockResolvedValue(['entra-unused']);
+    getEntraGroupDetailsBatch.mockResolvedValue([{ id: 'entra-unused', name: 'Unused' }]);
+    const appConfig = { config: { permissions: { syncOnlyExistingEntraGroups: true } } };
+
+    await syncUserEntraGroupMemberships(user, 'fake-token', null, appConfig);
+
+    expect(await Group.countDocuments({ idOnTheSource: 'entra-unused' })).toBe(0);
+    getEntraGroupDetailsBatch.mockResolvedValue([]);
   });
 });
