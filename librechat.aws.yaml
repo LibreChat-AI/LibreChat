@@ -58,6 +58,8 @@ endpoints:
   bedrock:
     models:
       - 'eu.anthropic.claude-sonnet-5'
+      # eu-west-2 serves Nova Lite on-demand only; it has no `eu.` inference profile there.
+      - 'amazon.nova-lite-v1:0'
 
 modelSpecs:
   list:
@@ -67,3 +69,9 @@ modelSpecs:
       preset:
         endpoint: 'bedrock'
         model: 'eu.anthropic.claude-sonnet-5'
+    - name: 'bedrock-nova-lite'
+      label: 'Nova Lite (Bedrock)'
+      description: 'Amazon Nova Lite v1 via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'amazon.nova-lite-v1:0'
