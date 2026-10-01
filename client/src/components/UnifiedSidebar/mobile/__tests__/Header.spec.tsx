@@ -124,13 +124,11 @@ describe('mobile drawer header', () => {
   });
 
   /**
-   * The toggle keeps the far-left slot and the icon it shares with the chat
-   * header's OpenSidebar, so the drawer reads as the one persistent control
-   * flipping state rather than a new X appearing elsewhere. It wears `ghost`
-   * rather than `header-action`, whose bordered plate is drawn for a scrolling
-   * chat header and reads as an odd box beside the flat icons here.
+   * The toggle mirrors the chat header's OpenSidebar (same icon, same shared
+   * Button variant, same far-left slot), so the drawer reads as the one
+   * persistent control flipping state rather than a new X appearing elsewhere.
    */
-  it('leads the row with a toggle styled like its neighbours', () => {
+  it('leads the row with the shared header-action toggle', () => {
     const { container } = render(
       <Header links={links} expanded={true} onClose={jest.fn()} onNewChat={jest.fn()} />,
       {
@@ -140,7 +138,7 @@ describe('mobile drawer header', () => {
 
     const toggle = screen.getByTestId('close-sidebar-button');
     expect(container.firstElementChild?.firstElementChild).toBe(toggle);
-    expect(toggle).toHaveAttribute('variant', 'ghost');
+    expect(toggle).toHaveAttribute('variant', 'header-action');
     expect(toggle.querySelector('[data-testid="sidebar-icon"]')).not.toBeNull();
   });
 

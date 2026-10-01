@@ -59,17 +59,14 @@ function Header({
         id={expanded ? CLOSE_SIDEBAR_ID : undefined}
         data-testid={expanded ? 'close-sidebar-button' : undefined}
         size="icon"
-        /** `ghost`, like the controls it shares the strip with. `header-action`
-         *  carries the chat header's bordered plate, which reads over a scrolling
-         *  gradient and reads as an odd box beside two flat icons here. */
-        variant="ghost"
+        variant="header-action"
         aria-label={localize('com_nav_close_sidebar')}
         aria-expanded={expanded}
         aria-controls="chat-history-nav"
         /** The only close control while open, so its binding must be discoverable here. */
         aria-keyshortcuts={toggleSidebarAriaKey}
         tabIndex={expanded ? 0 : -1}
-        className="h-9 w-9 shrink-0"
+        className="shrink-0"
         onClick={onClose}
       >
         <Sidebar className="icon-md" aria-hidden="true" />
