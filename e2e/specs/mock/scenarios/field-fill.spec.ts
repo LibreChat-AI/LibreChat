@@ -101,6 +101,36 @@ test.describe('field fill and ink', () => {
     });
   }
 
+  test('an open field trigger paints its state fill over the field fill @scenario:field-fill-yields-to-state-fill', async ({
+    page,
+  }) => {
+    await openChat(page, 'light', clickHouseTheme);
+
+    const fills = await page.evaluate((classes) => {
+      const paint = (state?: string) => {
+        const field = document.createElement('button');
+        field.className = `${classes} data-[state=open]:bg-surface-hover`;
+        if (state) {
+          field.dataset.state = state;
+        }
+        document.body.append(field);
+        const fill = getComputedStyle(field).backgroundColor;
+        field.remove();
+        return fill;
+      };
+      const hover = document.createElement('div');
+      hover.className = 'bg-surface-hover';
+      document.body.append(hover);
+      const surfaceHover = getComputedStyle(hover).backgroundColor;
+      hover.remove();
+      return { rest: paint(), open: paint('open'), surfaceHover };
+    }, FIELD_CLASSES);
+
+    expect(fills.rest).toBe('rgb(251, 252, 255)');
+    expect(fills.open).toBe(fills.surfaceHover);
+    expect(fills.open).not.toBe(fills.rest);
+  });
+
   test('a transparent root nested in a filled one keeps its fields clear @scenario:field-fill-nested-transparent-root', async ({
     page,
   }) => {

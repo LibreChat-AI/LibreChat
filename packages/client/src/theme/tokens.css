@@ -254,11 +254,10 @@
 
 /* A theme whose `fieldFillStyle` is `fill` paints its fields in `field-fill` instead of leaving
  * them on the surface they sit on, read like the focus style from the nearest themed root. The
- * default `transparent` style, and a browser without style queries, keep the fields clear. */
+ * default `transparent` style, and a browser without style queries, keep the fields clear. The
+ * fill carries a single class's weight, so a hover, open or disabled fill still paints over it. */
 @custom-variant theme-field-fill {
   @container style(--theme-field-fill-style: fill) {
-    &:is(:root *) {
-      @slot;
-    }
+    @slot;
   }
 }
