@@ -43,13 +43,16 @@ const fetchStarters = async (page: Page, agentId: string) => {
   return agent.conversation_starters ?? [];
 };
 
-const selectAgentInBuilder = async (page: Page, name: string) => {
-  const form = await openAgentBuilder(page);
+/** Picks another agent in the open builder, without navigating away. */
+const switchAgent = async (form: Locator, name: string) => {
   await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
-  await page.getByRole('option', { name, exact: true }).click();
+  await form.page().getByRole('option', { name, exact: true }).click();
   await expect(form.getByLabel('Agent name')).toHaveValue(name);
   return form;
 };
+
+const selectAgentInBuilder = async (page: Page, name: string) =>
+  switchAgent(await openAgentBuilder(page), name);
 
 const saveAgent = async (form: Locator, agentId: string) => {
   const page = form.page();
@@ -362,7 +365,7 @@ test.describe('agent conversation starters', () => {
         return route.fallback();
       });
 
-      let form = await selectAgentInBuilder(page, firstName);
+      const form = await selectAgentInBuilder(page, firstName);
       await form.getByLabel('Agent description').fill('First agent saved slowly.');
       const saved = page.waitForResponse(
         (candidate) =>
@@ -373,7 +376,8 @@ test.describe('agent conversation starters', () => {
       );
       await form.getByRole('button', { name: 'Save', exact: true }).click();
 
-      form = await selectAgentInBuilder(page, secondName);
+      /** A navigation would abort the held save, so the switch stays in place. */
+      await switchAgent(form, secondName);
       releaseSave();
       await saved;
       await page.unroute(`**/api/agents/${id}`);
