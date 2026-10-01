@@ -22,6 +22,7 @@ function Header({
   expanded,
   onClose,
   onNewChat,
+  switchToHistory,
   onLeaveInsights,
   routeActiveId,
 }: {
@@ -29,6 +30,7 @@ function Header({
   expanded: boolean;
   onClose: () => void;
   onNewChat: (afterSlide?: () => void) => void;
+  switchToHistory: boolean;
   onLeaveInsights?: () => void;
   routeActiveId?: string;
 }) {
@@ -77,7 +79,7 @@ function Header({
         onNavigate={onClose}
         routeActiveId={routeActiveId}
       />
-      <NewChat onNewChat={onNewChat} />
+      <NewChat onNewChat={onNewChat} switchToHistory={switchToHistory} />
       <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
         <AccountSettings collapsed />
       </Suspense>
