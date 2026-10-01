@@ -764,6 +764,10 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
+          /** A compaction's `userMessage` is the already-persisted leaf
+           *  projected for identity only; upserting it would erase a user
+           *  leaf's text or turn an assistant leaf into an empty user row. */
+          const shouldPersistAnchor = jobData?.compact !== true;
 
           if (
             jobData?.userMessage?.messageId &&
@@ -827,16 +831,19 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
              * with neither row stored. Both writes are idempotent upserts;
              * await the user prerequisite first, but still attempt the child
              * write and checkpoint cleanup so every independently useful
-             * operation gets a chance to succeed. */
-            try {
-              const persistedRequest = await saveMessage(messageContext, requestMessage, {
-                context: 'api/server/routes/agents/index.js - abort user prerequisite',
-              });
-              if (!persistedRequest) {
-                throw new Error('Abort user prerequisite was not persisted');
+             * operation gets a chance to succeed. A compaction skips the
+             * prerequisite: its anchor is the persisted leaf itself. */
+            if (shouldPersistAnchor) {
+              try {
+                const persistedRequest = await saveMessage(messageContext, requestMessage, {
+                  context: 'api/server/routes/agents/index.js - abort user prerequisite',
+                });
+                if (!persistedRequest) {
+                  throw new Error('Abort user prerequisite was not persisted');
+                }
+              } catch (error) {
+                persistenceErrors.push(error);
               }
-            } catch (error) {
-              persistenceErrors.push(error);
             }
 
             try {

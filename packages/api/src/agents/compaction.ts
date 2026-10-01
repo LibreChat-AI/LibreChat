@@ -197,6 +197,73 @@ export function resolveFailedTurnContent(
 }
 
 /**
+ * The content an aborted compaction persists: the run's stream-aggregated
+ * parts, carrying the marker that keeps the turn identifiable as a compaction.
+ * The abort path owns a cancelled run's row (a stopped turn is unfinished, not
+ * failed) and nothing else on that path knows the request was a compaction, so
+ * without this the row reads as an answer to the message it hangs off and keeps
+ * that message's rerun controls: on a branch ending in a user message,
+ * Regenerate would answer the user turn behind the compaction instead of
+ * redoing it.
+ *
+ * A terminal abort (Stop) settles the turn, so it applies the completed run's
+ * outcome rules: a usable summary is marked as the outcome; a partial one
+ * keeps its text but is marked `failed`, or its label would present the
+ * truncated prefix as a finished checkpoint; a placeholder that never streamed
+ * text goes, leaving the typed failure as the row's outcome. A non-terminal
+ * snapshot (`synthesizeFailure: false`, the disconnect save the run may still
+ * complete and overwrite) marks what is there and rewrites nothing else.
+ * Content from a turn that was not a compaction is returned unchanged.
+ */
+export function markAbortedCompactionContent(
+  contentParts: TMessageContentParts[],
+  isCompaction: boolean,
+  { synthesizeFailure = true }: { synthesizeFailure?: boolean } = {},
+): TMessageContentParts[] {
+  if (!isCompaction) {
+    return contentParts;
+  }
+  let hasOutcome = false;
+  for (let index = contentParts.length - 1; index >= 0; index -= 1) {
+    const part = contentParts[index];
+    if (part == null) {
+      continue;
+    }
+    if (part.type === ContentTypes.ERROR) {
+      part.initiatedBy = 'user';
+      hasOutcome = true;
+      continue;
+    }
+    if (part.type !== ContentTypes.SUMMARY) {
+      continue;
+    }
+    /** The usability predicate's false side narrows the part's type away, so
+     *  the reference is taken before it runs. */
+    const summary = part;
+    if (isUsableSummaryPart(part)) {
+      summary.initiatedBy = 'user';
+      hasOutcome = true;
+      continue;
+    }
+    if (!synthesizeFailure) {
+      summary.initiatedBy = 'user';
+      continue;
+    }
+    if (isSummaryPartWithText(summary)) {
+      summary.initiatedBy = 'user';
+      summary.failed = true;
+      hasOutcome = true;
+      continue;
+    }
+    contentParts.splice(index, 1);
+  }
+  if (!hasOutcome && synthesizeFailure) {
+    contentParts.push(...compactionFailureContent());
+  }
+  return contentParts;
+}
+
+/**
  * Stamps `initiatedBy: 'user'` on the part that carries a manual compaction's
  * outcome, which is the turn's only record of having been one: the run emits no
  * text of its own, and a compaction hangs off whatever leaf the branch ends
