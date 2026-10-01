@@ -1527,10 +1527,13 @@ function createToolInstance({
       });
 
       // Elicitation is enabled by default; a server config sets `elicitation: false`
-      // to opt out. When disabled, we pass no `elicitationStart`, so MCPManager's
+      // to opt out. Callers without a resumable stream (OpenAI-compatible and
+      // Responses API ingress) have no surface to answer a card, so they also get
+      // no `elicitationStart` and the -32042 fails closed instead of holding the
+      // call for the flow TTL. Without it, MCPManager's
       // `if (elicitationStart && userId)` guards skip all elicitation handling.
       const elicitationStart =
-        capturedServerConfig?.elicitation === false
+        capturedServerConfig?.elicitation === false || !streamId
           ? undefined
           : createElicitationStart({
               res,
