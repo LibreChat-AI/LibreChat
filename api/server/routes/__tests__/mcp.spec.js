@@ -633,6 +633,45 @@ describe('MCP Routes', () => {
     });
   });
 
+  describe('POST /:serverName/oauth/bind', () => {
+    it.each([
+      { name: 'absent', cookies: [], refresh: true },
+      { name: 'invalid', cookies: ['oauth_session=invalid'], refresh: true },
+      {
+        name: 'previous account',
+        cookies: [`oauth_session=${generateTestCsrfToken('previous-user-id')}`],
+        refresh: true,
+      },
+      {
+        name: 'current account',
+        cookies: [`oauth_session=${generateTestCsrfToken('test-user-id')}`],
+        refresh: false,
+      },
+    ])(
+      'handles a $name session binding before issuing the flow cookie',
+      async ({ cookies, refresh }) => {
+        const response = await request(app)
+          .post('/api/mcp/test-server/oauth/bind')
+          .set('Cookie', cookies)
+          .expect(200);
+        const issuedCookies = response.headers['set-cookie'];
+        expect(issuedCookies).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining(
+              `oauth_csrf=${generateTestCsrfToken('test-user-id:test-server')}`,
+            ),
+          ]),
+        );
+        const sessionCookie = issuedCookies.find((cookie) => cookie.startsWith('oauth_session='));
+        if (refresh) {
+          expect(sessionCookie).toContain(`oauth_session=${generateTestCsrfToken('test-user-id')}`);
+        } else {
+          expect(sessionCookie).toBeUndefined();
+        }
+      },
+    );
+  });
+
   describe('GET /:serverName/oauth/callback', () => {
     const { MCPOAuthHandler, MCPTokenStorage } = require('@librechat/api');
     const { getLogStores } = require('~/cache');
@@ -921,7 +960,7 @@ describe('MCP Routes', () => {
       expect(mockFlowManager.completeFlow).not.toHaveBeenCalled();
     });
 
-    it('should let the current tab complete after a stale callback burned the CSRF cookie', async () => {
+    it('refreshes a previous account binding and recovers after a stale callback consumes CSRF', async () => {
       const flowId = 'test-user-id:test-server';
       const mockFlowManager = {
         getFlowState: jest.fn().mockResolvedValue({
@@ -955,11 +994,20 @@ describe('MCP Routes', () => {
       });
       require('~/server/services/Config/mcp').updateMCPServerTools.mockResolvedValue();
 
+      const browser = request.agent(app);
+      const binding = await browser
+        .post('/api/mcp/test-server/oauth/bind')
+        .set('Cookie', [`oauth_session=${generateTestCsrfToken('previous-user-id')}`])
+        .expect(200);
+      expect(binding.headers['set-cookie']).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(`oauth_session=${generateTestCsrfToken('test-user-id')}`),
+        ]),
+      );
+
       MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(flowId);
-      const csrfToken = generateTestCsrfToken(flowId);
-      const staleResponse = await request(app)
+      const staleResponse = await browser
         .get('/api/mcp/test-server/oauth/callback')
-        .set('Cookie', [`oauth_csrf=${csrfToken}`])
         .query({ code: 'stale-auth-code', state: 'superseded-attempt-state' });
 
       const basePath = getBasePath();
@@ -968,9 +1016,8 @@ describe('MCP Routes', () => {
       expect(MCPOAuthHandler.completeOAuthFlow).not.toHaveBeenCalled();
 
       /** The stale callback consumed the CSRF cookie; the initiating browser retains its session binding. */
-      const legitResponse = await request(app)
+      const legitResponse = await browser
         .get('/api/mcp/test-server/oauth/callback')
-        .set('Cookie', [`oauth_session=${generateTestCsrfToken('test-user-id')}`])
         .query({ code: 'current-auth-code', state: flowId });
 
       expect(legitResponse.status).toBe(302);

@@ -173,7 +173,7 @@ export function validateOAuthCsrf(
  */
 export function setOAuthSession(req: Request, res: Response, next: NextFunction): void {
   const user = (req as Request & { user?: { id?: string } }).user;
-  if (user?.id && !(req.cookies as Record<string, string> | undefined)?.[OAUTH_SESSION_COOKIE]) {
+  if (user?.id && !validateOAuthSession(req, user.id)) {
     setOAuthSessionCookie(res, user.id);
   }
   next();
