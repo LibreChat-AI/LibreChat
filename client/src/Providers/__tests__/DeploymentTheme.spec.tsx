@@ -571,4 +571,59 @@ describe('DeploymentTheme cache', () => {
     });
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
   });
+
+  const runMutation = (key: string, mutationFn: () => Promise<unknown>) =>
+    act(async () => {
+      await queryClient
+        .getMutationCache()
+        .build(queryClient, { mutationKey: [key], mutationFn })
+        .execute()
+        .catch(() => undefined);
+    });
+
+  it('keeps the cache when an account deletion fails, and drops it when one succeeds', async () => {
+    cacheTheme();
+    pending();
+    renderTheme(queryClient, user);
+
+    await runMutation(MutationKeys.deleteUser, () => Promise.reject(new Error('bad 2FA code')));
+    expect(cachedEntry()?.source).toBe('clickhouse');
+
+    await runMutation(MutationKeys.deleteUser, () => Promise.resolve({}));
+    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+  });
+
+  it.each([
+    ['fails', () => Promise.reject(new Error('expired'))],
+    ['returns no token', () => Promise.resolve(undefined)],
+  ])('clears the cache when the silent refresh %s before any user is set', async (_, refresh) => {
+    cacheTheme();
+    pending();
+    renderTheme(queryClient);
+
+    await runMutation(MutationKeys.refreshToken, refresh);
+    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+  });
+
+  it('keeps the cache when the silent refresh restores a session', async () => {
+    cacheTheme();
+    pending();
+    renderTheme(queryClient);
+
+    await runMutation(MutationKeys.refreshToken, () => Promise.resolve({ token: 't', user }));
+    expect(cachedEntry()?.source).toBe('clickhouse');
+  });
+
+  it('clears the cache when the user query fails', async () => {
+    cacheTheme();
+    pending();
+    renderTheme(queryClient);
+
+    await act(() =>
+      queryClient
+        .fetchQuery([QueryKeys.user], () => Promise.reject(new Error('401')))
+        .catch(() => undefined),
+    );
+    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+  });
 });

@@ -80,7 +80,7 @@
         /* Same list as `isPublicRoute`: auth pages and shared links never render
          * under the viewer's signed-in config. */
         const publicRoute =
-          /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/.test(
+          /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/i.test(
             path,
           );
         if (!contrast && !publicRoute) {

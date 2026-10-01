@@ -111,7 +111,7 @@ describe('index.html deployment theme boot script', () => {
     expect(document.head.textContent).toContain('background-color: #000000');
   });
 
-  it.each(['/login', '/register', '/share/abc', '/reset-password', '/oauth/success'])(
+  it.each(['/login', '/register', '/share/abc', '/Share/abc', '/reset-password', '/oauth/success'])(
     'does not replay the cache on %s, which never renders the signed-in config',
     (path) => {
       window.history.pushState({}, '', path);

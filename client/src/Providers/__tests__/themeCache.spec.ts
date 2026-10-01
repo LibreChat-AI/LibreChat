@@ -83,6 +83,11 @@ describe('reconcileThemeCache', () => {
 describe('theme cache storage', () => {
   beforeEach(() => localStorage.clear());
 
+  it('matches public routes case-insensitively, as the router does', () => {
+    expect(isPublicRoute('/Share/abc')).toBe(true);
+    expect(isPublicRoute('/LOGIN')).toBe(true);
+  });
+
   it('recognizes public routes under a subdirectory base path', () => {
     expect(isPublicRoute('/chat/login', '/chat/')).toBe(true);
     expect(isPublicRoute('/chat/share/abc', '/chat/')).toBe(true);

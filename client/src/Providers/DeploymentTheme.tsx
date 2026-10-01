@@ -18,7 +18,11 @@ import {
   fromLegacyTheme,
   validateThemeDefinition,
 } from '@librechat/client';
-import type { TInterfaceConfig, BundledThemeName } from 'librechat-data-provider';
+import type {
+  TInterfaceConfig,
+  BundledThemeName,
+  TRefreshTokenResponse,
+} from 'librechat-data-provider';
 import type { IThemeRGB, ThemeDefinition } from '@librechat/client';
 import type { ComponentProps } from 'react';
 import {
@@ -140,14 +144,9 @@ function useRebindOnStartupConfigRebuild() {
 /**
  * The cached deployment theme, as last read or written. Losing the signed-in user drops
  * it, whichever way the session ended (logout, an empty silent refresh, a failed user
- * query, account deletion), and so does starting a logout or an account deletion, so the next person on this browser does not get the
+ * query, account deletion), so the next person on this browser does not get the
  * previous identity's theme painted before their own config answers.
  */
-const SESSION_ENDING_MUTATIONS: readonly unknown[] = [
-  MutationKeys.logoutUser,
-  MutationKeys.deleteUser,
-];
-
 function useThemeCache(owner?: string) {
   const queryClient = useQueryClient();
   const [cached, setCached] = useState(() =>
@@ -161,21 +160,48 @@ function useThemeCache(owner?: string) {
     }
     signedIn.current = owner;
   }, [owner]);
-  /** A logout that redirects to an identity provider unloads the page without clearing the
-   *  user, so the cache goes as soon as the logout (or account deletion) starts. */
-  useEffect(
-    () =>
-      queryClient.getMutationCache().subscribe((event) => {
-        if (
-          event?.type === 'added' &&
-          SESSION_ENDING_MUTATIONS.includes(event.mutation.options.mutationKey?.[0])
-        ) {
-          clearThemeCache();
-          setCached(undefined);
-        }
-      }),
-    [queryClient],
-  );
+  /**
+   * The session also ends where no user was ever set, or before it is cleared: a silent
+   * refresh that fails or returns no token, a failed user query, and a logout, which goes
+   * as soon as it starts because an identity-provider logout unloads the page first. An
+   * account deletion only counts once it succeeds.
+   */
+  useEffect(() => {
+    const drop = () => {
+      clearThemeCache();
+      setCached(undefined);
+    };
+    const unsubscribeMutations = queryClient.getMutationCache().subscribe((event) => {
+      const key = event?.mutation?.options.mutationKey?.[0];
+      if (event?.type === 'added' && key === MutationKeys.logoutUser) {
+        return drop();
+      }
+      if (event?.type !== 'updated') {
+        return;
+      }
+      const { status, data } = event.mutation.state;
+      const tokenless = status === 'success' && !(data as TRefreshTokenResponse | undefined)?.token;
+      if (
+        (key === MutationKeys.deleteUser && status === 'success') ||
+        (key === MutationKeys.refreshToken && (status === 'error' || tokenless))
+      ) {
+        drop();
+      }
+    });
+    const unsubscribeQueries = queryClient.getQueryCache().subscribe((event) => {
+      if (
+        event?.type === 'updated' &&
+        event.query.queryKey[0] === QueryKeys.user &&
+        event.query.state.status === 'error'
+      ) {
+        drop();
+      }
+    });
+    return () => {
+      unsubscribeMutations();
+      unsubscribeQueries();
+    };
+  }, [queryClient]);
   return [cached, setCached] as const;
 }
 

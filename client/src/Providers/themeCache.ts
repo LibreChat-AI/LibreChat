@@ -39,7 +39,7 @@ export type ThemeAnswer = { theme: DeploymentThemeValue; current: boolean };
  * commit replays the cache there; `client/index.html` keeps the same list.
  */
 const PUBLIC_ROUTE =
-  /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/;
+  /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/i;
 
 /** The `<base href>` path, which a subdirectory deployment moves off `/`. */
 export function appBasePath(): string {
