@@ -33,6 +33,10 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
     const { messageId, conversationId, partIndex } = useMessageContext();
     const normalizedLang = useMemo(() => normalizeLanguage(lang), [lang]);
     const { isTemporary } = useChatSettings();
+    /** Read at execution time, so toggling temporary chat neither rebuilds the debounced run
+     *  (cancelling one already clicked) nor sends the flag the click was made under. */
+    const isTemporaryRef = useRef(isTemporary);
+    isTemporaryRef.current = isTemporary;
 
     const handleExecute = useCallback(async () => {
       const codeString: string = codeRef.current?.textContent ?? '';
@@ -52,18 +56,9 @@ const RunCode: React.FC<CodeBarProps & { iconOnly?: boolean }> = React.memo(
         conversationId: conversationId ?? '',
         lang: normalizedLang,
         code: codeString,
-        isTemporary,
+        isTemporary: isTemporaryRef.current,
       });
-    }, [
-      codeRef,
-      execute,
-      partIndex,
-      messageId,
-      blockIndex,
-      conversationId,
-      normalizedLang,
-      isTemporary,
-    ]);
+    }, [codeRef, execute, partIndex, messageId, blockIndex, conversationId, normalizedLang]);
 
     const debouncedExecute = useMemo(
       () => debounce(handleExecute, 1000, { leading: true }),
