@@ -11,10 +11,22 @@ import { NEW_CHAT_PATH } from '../helpers';
  */
 
 type Mode = 'light' | 'dark';
+
+/** Fills fields but keeps the default dimmed disabled style, so no disabled fill paints over them. */
+const FILL_DIM_THEME = {
+  version: 1,
+  name: 'e2e-fill-dim',
+  modes: {
+    light: { colors: { 'rgb-field-fill': '10 20 30' }, appearance: { fieldFillStyle: 'fill' } },
+    dark: { colors: { 'rgb-field-fill': '10 20 30' }, appearance: { fieldFillStyle: 'fill' } },
+  },
+} as const;
 type Paint = { fill: string; ink: string };
 
-/** The fill and ink classes `fieldControl` composes, so nothing but those rules paints the probe. */
-const FIELD_CLASSES = 'lc-field bg-transparent text-field-text theme-field-fill:bg-field-fill';
+/** The fill and ink classes `fieldControl` composes (pinned to it in `semanticTokens.spec.ts`), so
+ *  nothing but those rules paints the probe. */
+const FIELD_CLASSES =
+  'lc-field bg-transparent text-field-text theme-field-fill:bg-field-fill theme-field-fill:disabled:hover:bg-field-fill';
 
 async function openChat(page: Page, mode: Mode, definition?: { name: string }) {
   await page.addInitScript(
@@ -129,6 +141,26 @@ test.describe('field fill and ink', () => {
     expect(fills.rest).toBe('rgb(251, 252, 255)');
     expect(fills.open).toBe(fills.surfaceHover);
     expect(fills.open).not.toBe(fills.rest);
+  });
+
+  test('a disabled field keeps its fill under the pointer in a fill and dim theme @scenario:field-fill-disabled-hover', async ({
+    page,
+  }) => {
+    await openChat(page, 'light', FILL_DIM_THEME);
+
+    await page.evaluate((classes) => {
+      const field = document.createElement('button');
+      field.className = `${classes} hover:bg-surface-hover disabled:hover:bg-transparent`;
+      field.disabled = true;
+      field.textContent = 'Disabled field';
+      field.id = 'disabled-field-probe';
+      document.body.append(field);
+    }, FIELD_CLASSES);
+    const probe = page.locator('#disabled-field-probe');
+    await probe.hover({ force: true });
+    expect(await probe.evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(
+      'rgb(10, 20, 30)',
+    );
   });
 
   test('a transparent root nested in a filled one keeps its fields clear @scenario:field-fill-nested-transparent-root', async ({

@@ -496,7 +496,7 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--border-field-focus')).toBe('30 31 32');
   });
 
-  it('keeps the field fill and ink of a legacy theme on the canvas and ink it repainted', () => {
+  it('maps a legacy theme canvas and ink onto the field fill and ink', () => {
     const root = document.documentElement;
 
     applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-text-primary': '1 2 3' }, root);
