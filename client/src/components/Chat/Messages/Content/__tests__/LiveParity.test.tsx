@@ -1679,3 +1679,23 @@ it('keeps delimiter-bearing MCP server names out of preparation labels', () => {
     names.mockRestore();
   }
 });
+
+it.each(['lookup', 'image_gen_oai'])(
+  'prepares legacy %s function cards while arguments stream',
+  (name) => {
+    const part: TMessageContentParts = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: 'legacy',
+        type: ToolCallTypes.FUNCTION,
+        function: { name, arguments: '{"prompt":"unfinished', output: '' },
+        progress: 0.1,
+      },
+    };
+    const { container } = mount([part], undefined, false);
+    expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
+    for (const announcement of container.querySelectorAll('[aria-live]')) {
+      expect(announcement).toHaveTextContent(/^Preparing /);
+    }
+  },
+);

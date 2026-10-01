@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
@@ -1469,5 +1469,51 @@ describe('grouped tool preparation', () => {
     );
     expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
     expect(screen.queryByText(/^Preparing /)).not.toBeInTheDocument();
+  });
+});
+
+describe('legacy function preparation groups', () => {
+  it('prepares partial function arguments, then runs and settles using each call’s signals', () => {
+    const legacy = (id: string, args: string, progress = 0.1): TMessageContentParts => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id,
+        type: ToolCallTypes.FUNCTION,
+        function: { name: 'lookup', arguments: args, output: '' },
+        progress,
+      },
+    });
+    const props = (firstArgs: string, secondArgs: string, progress = 0.1) => ({
+      parts: [
+        { part: legacy('first', firstArgs, progress), idx: 0 },
+        { part: legacy('second', secondArgs, progress), idx: 1 },
+      ],
+      isSubmitting: true,
+      isLast: true,
+      showThinking: false,
+      lastContentIdx: 1,
+      renderPart: (_part: TMessageContentParts, idx: number) => <div key={idx} />,
+    });
+    const { rerender } = renderGroup(props('{"query":"first', '{"query":"second'));
+    fireEvent.click(screen.getByRole('button', { name: /^Preparing 2 actions/ }));
+    expect(screen.getByRole('button', { name: /^Preparing 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props('{"query":"first"}', '{"query":"second')} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Running 2 actions/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    rerender(
+      <RecoilRoot>
+        <ToolCallGroup {...props('{"query":"first', '{"query":"second', 1)} />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
   });
 });

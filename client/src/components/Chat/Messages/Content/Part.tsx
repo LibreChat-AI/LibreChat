@@ -545,14 +545,27 @@ const Part = memo(function Part({
         );
       }
       return (
-        <ImageGen
-          initialProgress={toolCall.progress ?? 0.1}
-          args={toolCall.function.arguments as string}
+        <ToolPreparation
+          call={{
+            args: toolCall.function.arguments as string,
+            name: toolCall.function.name,
+            output: toolCall.function.output,
+            progress: toolCall.progress,
+            runStepStatus: toolCall.runStepStatus,
+            toolPreparationStartedAt: toolCall.toolPreparationStartedAt,
+            toolDispatchedAt: toolCall.toolDispatchedAt,
+          }}
           isSubmitting={isSubmitting}
-          runStepStatus={toolCall.runStepStatus}
-          toolName={toolCall.function.name}
-          output={toolCall.function.output ?? ''}
-        />
+        >
+          <ImageGen
+            initialProgress={toolCall.progress ?? 0.1}
+            args={toolCall.function.arguments as string}
+            isSubmitting={isSubmitting}
+            runStepStatus={toolCall.runStepStatus}
+            toolName={toolCall.function.name}
+            output={toolCall.function.output ?? ''}
+          />
+        </ToolPreparation>
       );
     } else if (toolCall.type === ToolCallTypes.FUNCTION && ToolCallTypes.FUNCTION in toolCall) {
       if (isImageVisionTool(toolCall)) {
@@ -573,6 +586,12 @@ const Part = memo(function Part({
           args={toolCall.function.arguments as string}
           name={toolCall.function.name}
           output={toolCall.function.output}
+          runStepStatus={toolCall.runStepStatus}
+          runStepDurationMs={toolCall.runStepDurationMs}
+          toolPreparationStartedAt={toolCall.toolPreparationStartedAt}
+          toolDispatchedAt={toolCall.toolDispatchedAt}
+          toolPreparationDurationMs={toolCall.toolPreparationDurationMs}
+          toolExecutionDurationMs={toolCall.toolExecutionDurationMs}
           isLast={isLast}
           hideAttachments={hideAttachments}
           onExpand={onToolExpand}

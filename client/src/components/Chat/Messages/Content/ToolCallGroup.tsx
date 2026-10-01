@@ -413,10 +413,12 @@ export default function ToolCallGroup({
           ? localize('com_ui_tool_preparing', { 0: singleToolLabel })
           : localize('com_assistants_preparing_action');
       }
-      return localize('com_ui_preparing_n_actions', {
-        0: String(activitySummary.preparingCount),
-        count: activitySummary.preparingCount,
-      });
+      return localize(
+        activitySummary.preparingCount === 1
+          ? 'com_ui_preparing_one_action'
+          : 'com_ui_preparing_n_actions',
+        { 0: String(activitySummary.preparingCount) },
+      );
     }
     if (allSubagents) {
       if (count === 1) {
