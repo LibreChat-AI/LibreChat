@@ -694,6 +694,26 @@ describe('ActivityPhaseGroup open header', () => {
     expect(pinned).not.toHaveClass('bg-presentation');
     expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('pl-6');
   });
+
+  test('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    const header = screen.getByRole('button', { name: LABEL });
+    fireEvent.click(header);
+    const rail = screen.getByTestId('fold-rail');
+    expect(rail).toHaveAttribute('aria-hidden', 'true');
+    fireEvent.mouseEnter(rail);
+    expect(header).toContainElement(screen.getByTestId('fold-rail-knob'));
+    fireEvent.mouseLeave(rail);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+  });
 });
 
 describe('ActivityPhaseGroup open live header', () => {

@@ -135,6 +135,7 @@ jest.mock('lucide-react', () => ({
   MessageCircleQuestion: () => <span data-testid="question-icon">{'question'}</span>,
   ListChecks: () => <span data-testid="task-check-icon">{'checks'}</span>,
   TriangleAlert: () => <span>{'warning'}</span>,
+  CircleMinus: () => <span>{'collapse'}</span>,
 }));
 
 const mockSubmittedAskAnswers = new Map<string, string>();
@@ -1418,6 +1419,24 @@ describe('ToolCallGroup failure fast path', () => {
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
     expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+  });
+
+  it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
+    renderGroup(props(jest.fn()));
+    const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
+    fireEvent.click(header);
+    const rail = screen.getByTestId('fold-rail');
+    expect(rail).toHaveAttribute('tabindex', '-1');
+    expect(rail).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    fireEvent.mouseEnter(rail);
+    expect(header).toContainElement(screen.getByTestId('fold-rail-knob'));
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    /** Still drawn while the panel animates shut: a second click is a no-op. */
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 });
 

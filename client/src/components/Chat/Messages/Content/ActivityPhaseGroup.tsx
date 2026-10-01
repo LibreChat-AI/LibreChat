@@ -5,6 +5,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import { Check, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
+import type { RailHover } from './rail';
 import {
   useLocalize,
   useExpandCollapse,
@@ -21,6 +22,7 @@ import {
 } from './live';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import { FoldRail, RailGlyph, revealFoldHeader, useRailHover } from './rail';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
@@ -273,6 +275,7 @@ function LivePhaseHeader({
   detailId,
   attachments,
   onAnnounce,
+  railHover,
 }: {
   parts: ReadonlyArray<TMessageContentParts | undefined>;
   animate: boolean;
@@ -284,6 +287,7 @@ function LivePhaseHeader({
   detailId: string;
   attachments?: TAttachment[];
   onAnnounce: (text: string) => void;
+  railHover: RailHover;
 }) {
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
@@ -359,28 +363,30 @@ function LivePhaseHeader({
 
   return (
     <>
-      {iconNames.length === 0 ? (
-        /** A span that is only reasoning so far has no tool to show; it takes
-         *  the glyph the reasoning row itself uses. */
-        <span
-          className={cn(ROW_GLYPH_SLOT, 'text-text-primary animate-pulse')}
-          aria-hidden="true"
-          data-testid="live-phase-thinking"
-        >
-          <Lightbulb size={14} />
-        </span>
-      ) : (
-        <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-          <StackedToolIcons
-            toolNames={iconNames}
-            mcpIconMap={mcpIconMap}
-            maxIcons={SPAN_ICONS}
-            sourceDomains={sourceDomains}
-            status={getOutcomeStatus(activity.outcome)}
-            isAnimating
-          />
-        </span>
-      )}
+      <RailGlyph hover={railHover}>
+        {iconNames.length === 0 ? (
+          /** A span that is only reasoning so far has no tool to show; it takes
+           *  the glyph the reasoning row itself uses. */
+          <span
+            className={cn(ROW_GLYPH_SLOT, 'text-text-primary animate-pulse')}
+            aria-hidden="true"
+            data-testid="live-phase-thinking"
+          >
+            <Lightbulb size={14} />
+          </span>
+        ) : (
+          <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+            <StackedToolIcons
+              toolNames={iconNames}
+              mcpIconMap={mcpIconMap}
+              maxIcons={SPAN_ICONS}
+              sourceDomains={sourceDomains}
+              status={getOutcomeStatus(activity.outcome)}
+              isAnimating
+            />
+          </span>
+        )}
+      </RailGlyph>
       {/** The multiplier counts the line it is printed next to, so it travels
        *  with that line instead of sitting out at the row's right edge beside
        *  the chevron, where it read as a property of the row. `Create File ×2`
@@ -586,6 +592,8 @@ export default function ActivityPhaseGroup({
   const [isExpanded, setIsExpanded] = useState(foldsIn);
   const [isSettled, setIsSettled] = useState(!foldsIn);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const railHover = useRailHover();
   const panelId = useId();
   const lineId = useId();
   const comboId = useId();
@@ -663,6 +671,16 @@ export default function ActivityPhaseGroup({
     onExpansionChange?.(!isExpanded);
     setIsExpanded(!isExpanded);
   }, [mountBody, isExpanded, onExpansionChange]);
+
+  /** The rail stays drawn while the panel animates shut, so a second click on
+   *  it must not reopen what the first one closed. */
+  const handleRailCollapse = useCallback(() => {
+    if (!isExpanded) {
+      return;
+    }
+    revealFoldHeader(rootRef.current, headerRef.current);
+    handleToggle();
+  }, [isExpanded, handleToggle]);
 
   /** One click to the error from a closed card: open the card the way a
    *  toggle would, then ask every failed row below to open its own panel. */
@@ -797,6 +815,7 @@ export default function ActivityPhaseGroup({
         {announcement}
       </span>
       <div
+        ref={headerRef}
         style={headerStyle}
         /** Pinned while open, so a run long enough to scroll keeps its name
          *  at the top of the viewport. The containing block is this card, so
@@ -841,14 +860,17 @@ export default function ActivityPhaseGroup({
                 detailId={detailId}
                 attachments={attachments}
                 onAnnounce={setAnnouncement}
+                railHover={railHover}
               />
             ) : (
               <>
-                {outcomeParts != null && !hasFailure ? (
-                  <SpanGlyph parts={outcomeParts} attachments={attachments} />
-                ) : (
-                  <PhaseGlyph failed={hasFailure} />
-                )}
+                <RailGlyph hover={railHover}>
+                  {outcomeParts != null && !hasFailure ? (
+                    <SpanGlyph parts={outcomeParts} attachments={attachments} />
+                  ) : (
+                    <PhaseGlyph failed={hasFailure} />
+                  )}
+                </RailGlyph>
                 <PhaseLabel text={label} failed={hasFailure} animate={smoothStreaming} />
               </>
             )}
@@ -873,6 +895,7 @@ export default function ActivityPhaseGroup({
       >
         {shouldRenderBody && (
           <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
+            <FoldRail hover={railHover} onCollapse={handleRailCollapse} />
             <FailedRevealContext.Provider value={revealValue}>
               {children}
             </FailedRevealContext.Provider>

@@ -26,9 +26,10 @@ const contentClass =
  *  sits under a header and in the gutter when it stands alone, so a failure
  *  is findable by shape before its text is read. A pseudo-element rather than
  *  a border: the row's content is absolutely positioned against the padding
- *  box, so a border would push it and change the row's geometry. */
+ *  box, so a border would push it and change the row's geometry. It lies over
+ *  the rail's hit area, so it lets the pointer through to the rail. */
 const failedStripeClass =
-  "before:absolute before:-left-3 before:top-0 before:h-full before:w-0.5 before:rounded-full before:bg-status-error before:content-['']";
+  "before:pointer-events-none before:absolute before:-left-3 before:top-0 before:h-full before:w-0.5 before:rounded-full before:bg-status-error before:content-['']";
 
 const Wrapper = ({
   popover,

@@ -139,6 +139,38 @@ test.describe('activity fold', () => {
     await expect(panel).toContainText(/error/i);
     await shot(page, 'revealed-by-pill');
 
+    /** Each open fold's rail lights up under the pointer, swaps ITS header's
+     *  glyph for a collapse knob, and collapses only that fold. */
+    const knobs = messagesView(page).getByTestId('fold-rail-knob');
+    const phaseRail = messagesView(page)
+      .getByTestId('activity-phase-panel')
+      .locator('> div > [data-testid="fold-rail"]');
+    const groupPanel = messagesView(page)
+      .getByTestId('tool-call-group-panel')
+      .filter({ has: page.getByTestId('tool-call').filter({ hasText: /^Failed:/ }) });
+    const groupRail = groupPanel.locator('> div > [data-testid="fold-rail"]');
+    const groupHeader = groupPanel.locator('xpath=preceding-sibling::div[1]').getByRole('button');
+    const lineColor = (railLocator: typeof groupRail) =>
+      railLocator.locator('span').evaluate((line) => getComputedStyle(line).backgroundColor);
+    const restingLine = await lineColor(groupRail);
+    await expect(knobs).toHaveCount(0);
+    await groupRail.hover();
+    await expect(knobs).toHaveCount(1);
+    await expect(groupHeader.getByTestId('fold-rail-knob')).toBeVisible();
+    await expect.poll(() => lineColor(groupRail)).not.toBe(restingLine);
+    await shot(page, 'group-rail-hover');
+    await phaseRail.hover();
+    await expect(knobs).toHaveCount(1);
+    await expect(header.getByTestId('fold-rail-knob')).toBeVisible();
+    await shot(page, 'phase-rail-hover');
+    await groupRail.click();
+    await expect(groupHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await phaseRail.click();
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await expect(knobs).toHaveCount(0);
+    await shot(page, 'rail-collapsed');
+
     /** Survives a reload from the persisted message. */
     await page.reload();
     const reloaded = messagesView(page).getByRole('button', { name: PHASE_LABEL, exact: true });
