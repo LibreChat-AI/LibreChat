@@ -51,13 +51,20 @@ test.describe('reload during a reply', () => {
 
     await page.reload();
 
-    expect((await reattached).status()).toBe(200);
+    const resumed = await reattached;
+    expect(resumed.status()).toBe(200);
     const assistantMessage = messagesView(page).locator('.message-render').last();
     await expect(assistantMessage).toContainText(SLOW_REPLY_LAST_CHUNK, { timeout: 90_000 });
     await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
-    /** The reloaded page held none of the reply, so its opening chunks prove the
-     *  reattachment replayed what streamed before the reload, not only what came after. */
-    await expect(assistantMessage).toContainText('chunk-000');
-    await expect(assistantMessage).toContainText('chunk-010');
+
+    /** The terminal frame carries the whole persisted answer, so the page alone
+     *  cannot tell a replay from a final-frame repair. The resumed stream must
+     *  deliver the chunks that streamed before the reload ahead of that frame. */
+    const body = await resumed.text();
+    const terminalAt = body.search(/"final"\s*:\s*true/);
+    expect(terminalAt).toBeGreaterThan(0);
+    const replayed = body.slice(0, terminalAt);
+    expect(replayed).toContain('chunk-000');
+    expect(replayed).toContain('chunk-010');
   });
 });
