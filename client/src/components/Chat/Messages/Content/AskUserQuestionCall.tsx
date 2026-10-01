@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
 import { MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents, PartMetadata } from 'librechat-data-provider';
 import {
@@ -8,7 +8,7 @@ import {
 } from '~/utils/approval';
 import AskUserQuestionProgress from './AskUserQuestionProgress';
 import { useLocalize, useExpandCollapse } from '~/hooks';
-import { useToolAutoExpand } from './disclosure';
+import { useToolExpansion } from './disclosure';
 import ProgressText from './ProgressText';
 import EmptyText from './Parts/EmptyText';
 import { TOOL_ROW_CLASSES } from './rows';
@@ -47,25 +47,15 @@ export default function AskUserQuestionCall({
   onExpand?: () => void;
 }) {
   const localize = useLocalize();
-  const autoExpand = useToolAutoExpand();
-  const [expanded, setExpanded] = useState(autoExpand);
+  const [expanded, setExpanded] = useToolExpansion(true);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(expanded);
 
-  useEffect(() => {
-    if (autoExpand) {
-      setExpanded(true);
-    }
-  }, [autoExpand]);
-
   const toggleExpanded = useCallback(() => {
-    setExpanded((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
-  }, [onExpand]);
+    setExpanded(!expanded);
+    if (!expanded) {
+      onExpand?.();
+    }
+  }, [expanded, onExpand, setExpanded]);
 
   const question = parseAskUserQuestionArgs(args);
   const batch = parseAskUserQuestionsArgs(args);

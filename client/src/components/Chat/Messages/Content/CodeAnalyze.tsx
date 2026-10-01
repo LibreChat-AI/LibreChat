@@ -1,8 +1,7 @@
-import { useState, useEffect } from 'react';
 import { Terminal } from 'lucide-react';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useLocalize } from '~/hooks';
-import { useToolAutoExpand } from './disclosure';
+import { useToolExpansion } from './disclosure';
 import ProgressText from './ProgressText';
 import MarkdownLite from './MarkdownLite';
 import { cn } from '~/utils';
@@ -20,23 +19,13 @@ export default function CodeAnalyze({
 }) {
   const localize = useLocalize();
   const progress = useProgress(initialProgress);
-  const autoExpand = useToolAutoExpand();
-  const [showCode, setShowCode] = useState(autoExpand);
-
-  useEffect(() => {
-    if (autoExpand) {
-      setShowCode(true);
-    }
-  }, [autoExpand]);
+  const [showCode, setShowCode] = useToolExpansion(true);
 
   const handleToggleCode = () => {
-    setShowCode((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
+    setShowCode(!showCode);
+    if (!showCode) {
+      onExpand?.();
+    }
   };
 
   const logs = outputs.reduce((acc, output) => {

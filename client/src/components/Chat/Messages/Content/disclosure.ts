@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo } from 'react';
-import { atom } from 'jotai';
+import { atom, useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import type { PrimitiveAtom } from 'jotai';
 import store from '~/store';
@@ -68,4 +68,15 @@ export function useToolAutoExpand() {
   const autoExpand = useRecoilValue(store.autoExpandTools);
   const soleTool = useContext(SoleToolContext);
   return autoExpand || soleTool === true;
+}
+
+/** A tool card's disclosure. The reader's explicit choice lives in the
+ *  per-tool atom, so it survives the card remounting when a live batch
+ *  regroups. Until they choose, the card follows `useToolAutoExpand` and
+ *  closes again if a sole call's group gains a second call. */
+export function useToolExpansion(canExpand: boolean) {
+  const autoExpand = useToolAutoExpand();
+  const [override, setOverride] = useAtom(useToolDisclosure());
+  const expanded = override ?? (autoExpand && canExpand);
+  return [expanded, setOverride] as const;
 }

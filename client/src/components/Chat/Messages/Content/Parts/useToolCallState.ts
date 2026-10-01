@@ -1,11 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useAtom } from 'jotai';
+import { useCallback } from 'react';
 import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
-import { useToolDisclosure, useToolAutoExpand } from '../disclosure';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
+import { useToolExpansion } from '../disclosure';
 
 interface ToolCallState {
   showCode: boolean;
@@ -53,20 +52,11 @@ export default function useToolCallState({
   extraError = false,
   extraCancelled = false,
 }: UseToolCallStateInput): ToolCallState {
-  const autoExpand = useToolAutoExpand();
   const hasOutput = output.length > 0;
   const hasContent = hasInput || hasOutput;
 
-  const [expansionOverride, setExpansionOverride] = useAtom(useToolDisclosure());
-  const [defaultExpanded, setDefaultExpanded] = useState(() => autoExpand && hasContent);
-  const showCode = expansionOverride ?? defaultExpanded;
+  const [showCode, setExpansionOverride] = useToolExpansion(hasContent);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
-
-  useEffect(() => {
-    if (autoExpand && hasContent) {
-      setDefaultExpanded(true);
-    }
-  }, [autoExpand, hasContent]);
 
   const isClosed = runStepStatus != null;
   /**

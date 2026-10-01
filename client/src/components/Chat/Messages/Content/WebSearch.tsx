@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { Globe, ChevronDown, Info } from 'lucide-react';
 import {
@@ -18,7 +18,7 @@ import type {
 } from 'librechat-data-provider';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
-import { toolPanelSpacingClassName, useToolAutoExpand } from './disclosure';
+import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
@@ -202,28 +202,18 @@ export default function WebSearch({
   }, [ownTurn, localize, showSources, finalizing, preparationText]);
   const progressText = preparationText ?? intent ?? genericProgressText;
 
-  const autoExpand = useToolAutoExpand();
   const sourceCount = allSources.length;
   const [showDetails, setShowDetails] = useState(false);
-  const [showSourceList, setShowSourceList] = useState(() => autoExpand && sourceCount > 0);
+  const [showSourceList, setShowSourceList] = useToolExpansion(sourceCount > 0);
   const { style: sourceExpandStyle, ref: sourceExpandRef } = useExpandCollapse(showSourceList);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showSourceList);
 
-  useEffect(() => {
-    if (autoExpand && sourceCount > 0) {
-      setShowSourceList(true);
-    }
-  }, [autoExpand, sourceCount]);
-
   const handleToggleSources = () => {
     mountBody();
-    setShowSourceList((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
+    setShowSourceList(!showSourceList);
+    if (!showSourceList) {
+      onExpand?.();
+    }
   };
 
   if (error && runStepStatus !== 'cancelled') {

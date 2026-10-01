@@ -9,7 +9,7 @@ import {
 } from 'librechat-data-provider';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
-import { toolPanelSpacingClassName, useToolAutoExpand } from './disclosure';
+import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
 import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { ToolIcon, getToolIconType, isError } from './ToolOutput';
@@ -64,17 +64,6 @@ export default function ToolCall({
   const localize = useLocalize();
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const [oauthBinding, setOAuthBinding] = useState<'pending' | 'bound' | 'failed'>('pending');
-  const autoExpand = useToolAutoExpand();
-  const hasOutput = (output?.length ?? 0) > 0;
-  const [showInfo, setShowInfo] = useState(() => autoExpand && hasOutput);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
-  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
-
-  useEffect(() => {
-    if (autoExpand && hasOutput) {
-      setShowInfo(true);
-    }
-  }, [autoExpand, hasOutput]);
 
   const parsedAuthUrl = useMemo(() => {
     if (!auth) {
@@ -201,6 +190,9 @@ export default function ToolCall({
     () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0,
     [args, output],
   );
+  const [showInfo, setShowInfo] = useToolExpansion(hasInfo);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+  const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   const authDomain = useMemo(() => {
     return parsedAuthUrl?.hostname ?? '';
@@ -297,8 +289,8 @@ export default function ToolCall({
     if (!showInfo) {
       onExpand?.();
     }
-    setShowInfo((prev) => !prev);
-  }, [mountBody, onExpand, showInfo]);
+    setShowInfo(!showInfo);
+  }, [mountBody, onExpand, setShowInfo, showInfo]);
 
   /** A failed row spends its subtitle on the error's first line: what went
    *  wrong is the fact the reader needs from that slot, ahead of which server

@@ -1,9 +1,9 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
-import { toolPanelSpacingClassName, useToolAutoExpand } from './disclosure';
+import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
@@ -380,7 +380,6 @@ export default function RetrievalCall({
     hasError: typeof output === 'string' && isError(output),
   });
   const hasOutput = !!output && !isError(output);
-  const autoExpand = useToolAutoExpand();
 
   const fileSources = useMemo(() => extractFileSources(attachments), [attachments]);
   const parsedResults = useMemo(
@@ -402,7 +401,8 @@ export default function RetrievalCall({
 
   const hasResults = displayResults.length > 0;
   const hasExpandableContent = phase !== 'failed' && hasResults;
-  const [showOutput, setShowOutput] = useState(() => autoExpand && hasExpandableContent);
+  const [expanded, setExpanded] = useToolExpansion(hasExpandableContent);
+  const showOutput = hasExpandableContent && expanded;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showOutput);
 
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -438,25 +438,12 @@ export default function RetrievalCall({
     };
   }, [displayResults, previewIndex]);
 
-  useEffect(() => {
-    if (!hasExpandableContent) {
-      setShowOutput(false);
-      return;
-    }
-    if (autoExpand) {
-      setShowOutput(true);
-    }
-  }, [autoExpand, hasExpandableContent]);
-
   const handleToggleOutput = useCallback(() => {
-    setShowOutput((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
-  }, [onExpand]);
+    setExpanded(!showOutput);
+    if (!showOutput) {
+      onExpand?.();
+    }
+  }, [onExpand, setExpanded, showOutput]);
 
   return (
     <div>
