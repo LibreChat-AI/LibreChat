@@ -6,7 +6,7 @@ import { readFileSync } from 'fs';
  * paint color, radius, border, shadow and size from theme roles alone. Each file is checked for
  * raw palette utilities, hex/rgb/hsl literals, arbitrary corners and shadows, fixed size
  * utilities (`h-4`, `size-10`, `min-w-[8rem]`; a fraction such as `w-11/12`, a viewport unit or a
- * value read from the component library is relative, not a size), literal
+ * value read from the component library is relative, and a `0` is a reset, not a size), literal
  * corners and shadows in its stylesheet, and design-rule suppressions. Move a primitive into
  * `themeDriven` when a change clears it; the remaining values of the others are pinned so a new
  * literal fails by name.
@@ -137,7 +137,7 @@ function hardCoded(file: string): string[] {
     for (const match of text.matchAll(/\b(?:rounded|shadow)(?:-[a-z]{1,2})?-\[[^\]]*\]/g)) {
       found.add(`${file}: arbitrary ${match[0]}`);
     }
-    for (const match of text.matchAll(/\b(?:h|w|size|min-h)-[0-9.]+\b(?!\/)/g)) {
+    for (const match of text.matchAll(/\b(?:h|w|size|min-h)-(?:[1-9][0-9.]*|0\.[0-9]+)\b(?!\/)/g)) {
       found.add(`${file}: fixed size ${match[0]}`);
     }
     for (const match of text.matchAll(
