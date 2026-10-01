@@ -1,10 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
+import { getDefaultStore, useSetAtom } from 'jotai';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { ReasoningEffort } from 'librechat-data-provider';
 import { act, render, screen, within, fireEvent } from '@testing-library/react';
-import { getDefaultStore, useSetAtom, createStore, Provider as JotaiProvider } from 'jotai';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
 import type { QueuedMessage } from '~/hooks/Chat/queue';
 import {
@@ -621,40 +621,34 @@ describe('Queue', () => {
   /* Split view mounts two composers at once. A module-global id duplicated the
      hint element and pointed every handle at whichever copy won. */
   it('scopes the reorder hint to its own rail', () => {
-    /** Two rails with two rows each, as the two-root harness had: one store per rail, so the
-     *  second seed does not overwrite the first. Isolation here comes from the harness. */
-    const leftStore = createStore();
-    const rightStore = createStore();
-    leftStore.set(queuedMessagesByConvoId(CONVO_ID), [
+    /** Split view: both panes share the app's store and differ by conversation. */
+    const store = getDefaultStore();
+    store.set(queuedMessagesByConvoId('left-convo'), [
       queued({ id: 'q1', text: 'left first' }),
       queued({ id: 'q2', text: 'left second' }),
     ]);
-    rightStore.set(queuedMessagesByConvoId(CONVO_ID), [
+    store.set(queuedMessagesByConvoId('right-convo'), [
       queued({ id: 'q3', text: 'right first' }),
       queued({ id: 'q4', text: 'right second' }),
     ]);
     render(
       <DndProvider backend={HTML5Backend}>
-        <JotaiProvider store={leftStore}>
-          <RecoilRoot>
-            <Queue
-              steering={steering}
-              conversationId={CONVO_ID}
-              onRestoreToComposer={jest.fn()}
-              canRestoreToComposer={() => true}
-            />
-          </RecoilRoot>
-        </JotaiProvider>
-        <JotaiProvider store={rightStore}>
-          <RecoilRoot>
-            <Queue
-              steering={steering}
-              conversationId={CONVO_ID}
-              onRestoreToComposer={jest.fn()}
-              canRestoreToComposer={() => true}
-            />
-          </RecoilRoot>
-        </JotaiProvider>
+        <RecoilRoot>
+          <Queue
+            steering={{ ...steering, queueKey: 'left-convo' }}
+            conversationId="left-convo"
+            onRestoreToComposer={jest.fn()}
+            canRestoreToComposer={() => true}
+          />
+        </RecoilRoot>
+        <RecoilRoot>
+          <Queue
+            steering={{ ...steering, queueKey: 'right-convo' }}
+            conversationId="right-convo"
+            onRestoreToComposer={jest.fn()}
+            canRestoreToComposer={() => true}
+          />
+        </RecoilRoot>
       </DndProvider>,
     );
 
@@ -665,6 +659,9 @@ describe('Queue', () => {
     const rails = screen.getAllByTestId('composer-queue');
     expect(within(rails[0]).getAllByTestId('queued-message-grip')).toHaveLength(2);
     expect(within(rails[1]).getAllByTestId('queued-message-grip')).toHaveLength(2);
+    expect(rails[0]).toHaveTextContent('left first');
+    expect(rails[0]).not.toHaveTextContent('right first');
+    expect(rails[1]).toHaveTextContent('right first');
     for (const [railIndex, rail] of rails.entries()) {
       for (const grip of within(rail).getAllByTestId('queued-message-grip')) {
         expect(grip).toHaveAttribute('aria-describedby', hints[railIndex].id);
