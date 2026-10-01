@@ -523,7 +523,9 @@ const defaultControlHeights = {
   buttonHeightLg: '2.75rem',
   buttonHeightCompact: '2rem',
   iconButtonSizeSm: '2rem',
+  controlHeight: '2.25rem',
   fieldHeight: '2.5rem',
+  fieldHeightLg: '3rem',
 } as const;
 type ControlHeightRole = keyof typeof defaultControlHeights;
 
