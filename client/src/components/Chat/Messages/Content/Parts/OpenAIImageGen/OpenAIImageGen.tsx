@@ -9,6 +9,7 @@ import type {
 } from 'librechat-data-provider';
 import { ToolIcon, isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import Image from '~/components/Chat/Messages/Content/Image';
+import { useToolPreparation } from '../../preparation';
 import { useProgress, useLocalize } from '~/hooks';
 import { useToolCallIntent } from '../intent';
 import { ROW_GLYPH_SLOT } from '../../rows';
@@ -248,7 +249,7 @@ export default function OpenAIImageGen({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (progress < 1 && !cancelled && !reportsError) {
-            return '';
+            return preparationText ?? '';
           }
           if (reportsError) {
             return localize('com_ui_image_gen_failed');

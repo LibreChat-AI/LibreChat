@@ -14,6 +14,7 @@ import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
 import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
 import { boundIntentLabel, getToolCallIntent } from './Parts/intent';
+import { isToolCallPreparing } from './preparation';
 import { isError } from './ToolOutput';
 
 /** How often a live fold's header may repaint. A streamed intent moves the
@@ -50,7 +51,11 @@ type Localize = (phraseKey: TranslationKeys, options?: TOptions) => string;
 
 type LiveToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] } & Pick<
     PartMetadata,
-    'runStepStatus' | 'runStepClosedAt' | 'backgrounded'
+    | 'runStepStatus'
+    | 'runStepClosedAt'
+    | 'backgrounded'
+    | 'toolPreparationStartedAt'
+    | 'toolDispatchedAt'
   > & { progress?: number };
 
 /**
@@ -131,6 +136,14 @@ function toolCallLine(
         meta.background === 'running' ? 'com_ui_background_running' : 'com_ui_background_finished',
       ),
       generic: false,
+    };
+  }
+  if (meta?.hasOutput !== true && isToolCallPreparing(toolCall)) {
+    return {
+      text: label
+        ? localize('com_ui_tool_preparing', { 0: label })
+        : localize('com_assistants_preparing_action'),
+      generic: true,
     };
   }
   if (intent != null) {
@@ -273,6 +286,7 @@ function isAwaitingStartup(
     !meta.failed &&
     !meta.cancelled &&
     meta.background == null &&
+    !isToolCallPreparing(toolCall) &&
     getToolCallIntent(toolCall.args) == null
   );
 }

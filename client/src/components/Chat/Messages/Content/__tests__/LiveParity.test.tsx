@@ -1594,3 +1594,45 @@ describe('tool pane identity at finalization', () => {
     expect(toggles(container)[1]).toHaveAttribute('aria-expanded', 'false');
   });
 });
+
+describe('preparation labels across rendered tool cards', () => {
+  it.each([
+    'lookup',
+    Tools.bash_tool,
+    Tools.execute_code,
+    'create_file',
+    'edit_file',
+    'read_file',
+    'set_memory',
+    'skill',
+    Tools.web_search,
+    'file_search',
+    Constants.SUBAGENT,
+    'image_gen_oai',
+  ])('does not present %s as executing while its args are streaming', (name) => {
+    const part = toPart({ name, args: '{"intent":"Checking a record","value":"unfinished' });
+    const { container } = mount([part], undefined, false);
+    expect(container.textContent).toContain('Preparing ');
+    expect(container.querySelector('.shimmer')?.textContent).toMatch(/^Preparing /);
+    expect(container.querySelector('[aria-live]')?.textContent ?? 'Preparing ').not.toMatch(
+      /Running/,
+    );
+  });
+
+  it('keeps collapsed activity in preparation until dispatch, without a sandbox-startup override', () => {
+    const call = {
+      name: Tools.bash_tool,
+      args: '{"command":"echo hi',
+      toolPreparationStartedAt: 100,
+    };
+    const preparing = getLiveActivity([toPart(call)], (key) => key, []);
+    expect(preparing.text).toBe('com_ui_tool_preparing');
+    expect(preparing.pendingToolCallId).toBeUndefined();
+    const dispatched = getLiveActivity(
+      [toPart({ ...call, args: '{"command":"echo hi"}', toolDispatchedAt: 200 })],
+      (key) => key,
+      [],
+    );
+    expect(dispatched.text).toBe('com_assistants_running_var');
+  });
+});

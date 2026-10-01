@@ -25,6 +25,7 @@ import { toolPanelSpacingClassName } from './disclosure';
 import { isError } from './ToolOutput/OutputRenderer';
 import parseJsonField from './Parts/parseJsonField';
 import { useToolCallIntent } from './Parts/intent';
+import { useToolPreparation } from './preparation';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
 import { ROW_GLYPH_SLOT } from './rows';
@@ -86,6 +87,7 @@ export default function WebSearch({
   /** Model-authored live label (web_search carries `intent` natively);
    *  persists as the settled label like the other tool cards. */
   const intent = useToolCallIntent(args);
+  const preparationText = useToolPreparation();
   const { searchResults } = useSearchContext();
   const error = (typeof output === 'string' && isError(output)) || runStepStatus === 'failed';
   const legacyError =
@@ -187,6 +189,9 @@ export default function WebSearch({
    *  intent on every delta, so it always gets this value while streaming;
    *  the settled intent is announced once via the completed branch. */
   const genericProgressText = useMemo(() => {
+    if (preparationText != null) {
+      return preparationText;
+    }
     let text: ProgressKeys =
       ownTurn !== '0' ? 'com_ui_web_searching_again' : 'com_ui_web_searching';
     if (showSources) {
@@ -196,8 +201,8 @@ export default function WebSearch({
       text = 'com_ui_web_search_reading';
     }
     return localize(text);
-  }, [ownTurn, localize, showSources, finalizing]);
-  const progressText = intent ?? genericProgressText;
+  }, [ownTurn, localize, showSources, finalizing, preparationText]);
+  const progressText = preparationText ?? intent ?? genericProgressText;
 
   const autoExpand = useRecoilValue(store.autoExpandTools);
   const sourceCount = allSources.length;

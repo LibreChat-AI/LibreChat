@@ -36,6 +36,7 @@ import { getAskUserQuestionPart } from '~/utils/approval';
 import AskUserQuestionCall from './AskUserQuestionCall';
 import { isBashProgrammaticToolCall } from './routing';
 import { isError } from './ToolOutput/OutputRenderer';
+import { ToolPreparation } from './preparation';
 import { useMessageContext } from '~/Providers';
 import { ErrorMessage } from './MessageContent';
 import AskUserQuestion from './AskUserQuestion';
@@ -473,6 +474,11 @@ const Part = memo(function Part({
           />
         );
       })();
+      const preparedCard = (
+        <ToolPreparation call={toolCall} isSubmitting={isSubmitting}>
+          {card}
+        </ToolPreparation>
+      );
 
       /** Render approval controls for ANY paused agent tool — not just the generic
        *  card — so a HITL policy that gates a specialized tool (bash, code, file…)
@@ -481,7 +487,7 @@ const Part = memo(function Part({
       if (toolCall.approval != null && (toolCall.output?.length ?? 0) === 0) {
         return (
           <>
-            {card}
+            {preparedCard}
             <ToolApproval
               approval={toolCall.approval}
               toolCallId={toolCall.id ?? ''}
@@ -490,7 +496,7 @@ const Part = memo(function Part({
           </>
         );
       }
-      return card;
+      return preparedCard;
     } else if (toolCall.type === ToolCallTypes.CODE_INTERPRETER) {
       const code_interpreter = toolCall[ToolCallTypes.CODE_INTERPRETER];
       return (

@@ -11,6 +11,7 @@ import { toolPanelSpacingClassName } from './disclosure';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
 import { useToolCallIntent } from './Parts/intent';
+import { useToolPreparation } from './preparation';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
 import store from '~/store';
@@ -365,6 +366,7 @@ export default function RetrievalCall({
    *  describe_intent); persists as the settled label. The sr-only live
    *  region below deliberately keeps its stable generic value. */
   const intent = useToolCallIntent(args);
+  const preparationText = useToolPreparation();
 
   /**
    * One resolution, read by the label, the live region and the icon alike.
@@ -463,7 +465,7 @@ export default function RetrievalCall({
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (phase === 'running') {
-            return localize('com_ui_searching_files');
+            return preparationText ?? localize('com_ui_searching_files');
           }
           if (phase === 'cancelled') {
             return localize('com_ui_cancelled');

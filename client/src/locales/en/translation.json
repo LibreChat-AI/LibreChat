@@ -269,6 +269,7 @@
   "com_assistants_name_placeholder": "Optional: The name of the assistant",
   "com_assistants_non_retrieval_model": "File search is not enabled on this model. Please select another model.",
   "com_assistants_retrieval": "Retrieval",
+  "com_assistants_preparing_action": "Preparing action",
   "com_assistants_running_action": "Running action",
   "com_assistants_running_var": "Running {{0}}",
   "com_assistants_search_name": "Search assistants by name",
