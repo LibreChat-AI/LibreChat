@@ -2,6 +2,7 @@ import { clickHouseTheme } from '@librechat/client';
 import type { ThemeCacheEntry } from '../themeCache';
 import {
   themeOwner,
+  isPublicRoute,
   readThemeCache,
   buildThemeCache,
   clearThemeCache,
@@ -69,6 +70,12 @@ describe('reconcileThemeCache', () => {
 
 describe('theme cache storage', () => {
   beforeEach(() => localStorage.clear());
+
+  it('recognizes public routes under a subdirectory base path', () => {
+    expect(isPublicRoute('/chat/login', '/chat/')).toBe(true);
+    expect(isPublicRoute('/chat/share/abc', '/chat/')).toBe(true);
+    expect(isPublicRoute('/chat/c/new', '/chat/')).toBe(false);
+  });
 
   it('stamps the owner from the tenant and user id', () => {
     expect(themeOwner({ id: 'user-1', tenantId: 'tenant-a' })).toBe(OWNER);

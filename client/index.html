@@ -71,7 +71,19 @@
          * `deployment-theme` (client/src/Providers/themeCache.ts) to paint it
          * before the bundle runs. High contrast outranks it, as in ThemeProvider,
          * which drops this copy (`data-theme-boot`) once it applies its own. */
-        if (!contrast) {
+        const base = document.querySelector('base');
+        const basePath = base ? new URL(base.href).pathname : '/';
+        const path =
+          location.pathname.indexOf(basePath) === 0
+            ? location.pathname.slice(basePath.length)
+            : location.pathname.replace(/^\//, '');
+        /* Same list as `isPublicRoute`: auth pages and shared links never render
+         * under the viewer's signed-in config. */
+        const publicRoute =
+          /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/.test(
+            path,
+          );
+        if (!contrast && !publicRoute) {
           try {
             const cached = JSON.parse(localStorage.getItem('deployment-theme') || 'null');
             const boot =

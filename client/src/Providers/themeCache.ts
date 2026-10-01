@@ -26,6 +26,28 @@ export type ThemeCacheAction = 'keep' | 'clear' | 'write';
 /** A config answer; `current` is false while `keepPreviousData` shows another identity's answer. */
 export type ThemeAnswer = { theme: DeploymentThemeValue; current: boolean };
 
+/**
+ * Routes that render without the viewer's signed-in config: the auth pages, and shared
+ * links, which paint their own tenant's theme. Neither the boot script nor the first
+ * commit replays the cache there; `client/index.html` keeps the same list.
+ */
+const PUBLIC_ROUTE =
+  /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/;
+
+/** The `<base href>` path, which a subdirectory deployment moves off `/`. */
+export function appBasePath(): string {
+  const base = document.querySelector('base');
+  return base ? new URL(base.href).pathname : '/';
+}
+
+/** `pathname` relative to the app's base path. */
+export function isPublicRoute(pathname: string, basePath = '/'): boolean {
+  const path = pathname.startsWith(basePath)
+    ? pathname.slice(basePath.length)
+    : pathname.replace(/^\//, '');
+  return PUBLIC_ROUTE.test(path);
+}
+
 export const themeOwner = (user?: Pick<TUser, 'id' | 'tenantId'>): string | undefined =>
   user?.id ? `${user.tenantId ?? ''}:${user.id}` : undefined;
 

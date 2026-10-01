@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { render } from '@testing-library/react';
 import { ThemeProvider, applyResolvedTheme, resolveTheme } from '@librechat/client';
 import type { ThemeDefinition } from '@librechat/client';
-import { buildThemeCache, writeThemeCache } from '../themeCache';
+import { isPublicRoute, buildThemeCache, writeThemeCache } from '../themeCache';
 
 /** The inline shell script in `client/index.html`, run as the browser runs it. */
 const bootScript = (() => {
@@ -63,8 +63,12 @@ describe('index.html deployment theme boot script', () => {
         root().removeAttribute(name);
       }
     });
-    document.head.querySelectorAll('style').forEach((style) => style.remove());
+    document.head.querySelectorAll('style, base').forEach((element) => element.remove());
+    const base = document.createElement('base');
+    base.href = '/';
+    document.head.append(base);
     mockMedia(false);
+    window.history.pushState({}, '', '/c/new');
     writeThemeCache(buildThemeCache('tenant-a:user-1', 'acme', acme));
   });
 
@@ -103,6 +107,28 @@ describe('index.html deployment theme boot script', () => {
     expect(root().getAttribute('style')).toBeNull();
     expect(root().hasAttribute('data-theme')).toBe(false);
     expect(document.head.textContent).toContain('background-color: #000000');
+  });
+
+  it.each(['/login', '/register', '/share/abc', '/reset-password', '/oauth/success'])(
+    'does not replay the cache on %s, which never renders the signed-in config',
+    (path) => {
+      window.history.pushState({}, '', path);
+      localStorage.setItem('color-theme', 'dark');
+      boot();
+      expect(root().getAttribute('style')).toBeNull();
+      expect(root().hasAttribute('data-theme')).toBe(false);
+      expect(isPublicRoute(path)).toBe(true);
+    },
+  );
+
+  it('replays the cache on app routes', () => {
+    for (const path of ['/c/new', '/c/login-notes', '/agents', '/']) {
+      window.history.pushState({}, '', path);
+      expect(isPublicRoute(path)).toBe(false);
+    }
+    window.history.pushState({}, '', '/c/new');
+    boot();
+    expect(root().dataset.theme).toBe('acme');
   });
 
   it('paints the stock shell for a corrupt entry', () => {

@@ -424,6 +424,16 @@ describe('DeploymentTheme cache', () => {
     expect(localStorage.getItem('theme-definition')).toBeNull();
   });
 
+  it('does not seed the cache on a shared link, which paints its own tenant', () => {
+    cacheTheme();
+    pending();
+    window.history.pushState({}, '', '/share/abc');
+    renderTheme(queryClient);
+    window.history.pushState({}, '', '/');
+
+    expect(root().dataset.theme).toBeUndefined();
+  });
+
   it('caches the theme served to the signed-in identity', async () => {
     getStartupConfig.mockResolvedValue(configWith(inlineTheme));
     renderTheme(queryClient, user);

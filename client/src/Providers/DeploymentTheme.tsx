@@ -23,6 +23,8 @@ import type { IThemeRGB, ThemeDefinition } from '@librechat/client';
 import type { ComponentProps } from 'react';
 import {
   themeOwner,
+  appBasePath,
+  isPublicRoute,
   readThemeCache,
   clearThemeCache,
   buildThemeCache,
@@ -144,7 +146,9 @@ const SIGN_OUT_MUTATIONS: readonly string[] = [MutationKeys.logoutUser, Mutation
  */
 function useThemeCache() {
   const queryClient = useQueryClient();
-  const [cached, setCached] = useState(readThemeCache);
+  const [cached, setCached] = useState(() =>
+    isPublicRoute(window.location.pathname, appBasePath()) ? undefined : readThemeCache(),
+  );
   useEffect(
     () =>
       queryClient.getMutationCache().subscribe((event) => {
