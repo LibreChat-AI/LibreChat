@@ -27,6 +27,30 @@ const endpointsConfig: TEndpointsConfig = {
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
 
+describe('authenticated 2FA management rate limits', () => {
+  it('accepts an account budget and defaults an empty configuration to seven requests', () => {
+    for (const [input, expected] of [
+      [{}, 7],
+      [{ requestsPerFiveMinutes: 3 }, 3],
+    ] as const) {
+      const result = configSchema.parse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: input },
+      });
+      expect(result.rateLimits?.twoFactorManagement?.requestsPerFiveMinutes).toBe(expected);
+    }
+  });
+
+  it.each([0, -1, 1, 2, 1.5, Infinity, '7'])('rejects an invalid budget: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: { requestsPerFiveMinutes: value } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('tenant-scoped custom endpoints', () => {
   const endpoint = {
     name: 'Private Gateway',

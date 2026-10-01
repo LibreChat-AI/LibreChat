@@ -2053,6 +2053,12 @@ export enum RateLimitPrefix {
 }
 
 export const rateLimitSchema = z.object({
+  twoFactorManagement: z
+    .object({
+      /** Shared budget; setup needs enable, verify, and confirm within five minutes. */
+      requestsPerFiveMinutes: z.number().int().min(3).optional().default(7),
+    })
+    .optional(),
   agentEvents: z
     .object({
       userMax: z.number().int().positive().optional(),

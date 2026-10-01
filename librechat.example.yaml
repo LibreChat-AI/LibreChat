@@ -426,6 +426,11 @@ registration:
 #     - '127.0.0.1:8080'
 
 # rateLimits:
+#   # Shared account budget for all authenticated 2FA management operations.
+#   # Always active; successful and failed requests count. Uses Redis when enabled.
+#   # Minimum 3, so enable -> verify -> confirm can complete within one window.
+#   twoFactorManagement:
+#     requestsPerFiveMinutes: 7
 #   # Authenticated agent-event admission has its own API-key-principal bucket.
 #   agentEvents:
 #     userMax: 40

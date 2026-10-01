@@ -507,6 +507,8 @@
   "com_error_auth_banned": "Access is blocked for this account or address. Ask an administrator to review it.",
   "com_error_auth_failed": "Your session could not be verified. Sign in again, then resend the message.",
   "com_error_auth_rate_limited": "Too many attempts in a short time. Wait a moment and try again.",
+  "com_ui_2fa_rate_limited": "Too many two-factor authentication attempts. Wait a few minutes and try again.",
+  "com_ui_2fa_rate_limited_retry": "Too many two-factor authentication attempts. Try again in {{seconds}} seconds.",
   "com_error_ban": "Your account is temporarily banned for violating the terms of service.",
   "com_error_code_workspace_invalid": "The workspace selection is invalid; select an available workspace.",
   "com_error_code_workspace_locked": "This chat already uses a different code environment. Continue with its original environment or start a new chat.",
