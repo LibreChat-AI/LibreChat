@@ -245,6 +245,19 @@ describe('Button', () => {
     expect(header).not.toMatch(/(^|\s)hover:bg-/);
   });
 
+  /** A tool call's fold header reads as its own label: holding the pointer
+   *  down on it must not flash the ghost pressed fill. */
+  it('gives a disclosure header no hover or pressed fill and no default size', () => {
+    const header = cn(buttonVariants({ variant: 'disclosure' }));
+
+    expect(header).toContain('h-auto');
+    expect(header).toContain('p-0');
+    expect(header).toContain('rounded-none');
+    expect(header).not.toContain('h-theme-button');
+    expect(header).not.toMatch(/(^|\s)hover:bg-/);
+    expect(header).not.toMatch(/(^|\s)(hover:)?active:bg-/);
+  });
+
   it('still takes a size when a caller asks for one', () => {
     expect(cn(buttonVariants({ variant: 'section-header', size: 'sm' }))).toContain(
       'h-theme-button-sm',

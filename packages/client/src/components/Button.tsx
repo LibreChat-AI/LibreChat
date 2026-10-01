@@ -26,6 +26,7 @@ type ButtonVariantOptions =
         | 'header-action'
         | 'inline-edit'
         | 'card'
+        | 'disclosure'
         | null
         | undefined;
       size?:
@@ -148,6 +149,14 @@ const buttonVariantRecipe = cva(
          * around it owns the surface; it adds the hover fill and an inset ring,
          * and left-aligns its content, which the caller lays out.
          */
+        /**
+         * The header row that folds a tool call's details open: it reads as the
+         * line of text it labels, so it takes no fill under the pointer or while
+         * pressed, and a header with nothing to open keeps full opacity. Its ring
+         * is inset because the row sits flush against the panel it opens.
+         */
+        disclosure:
+          'w-full justify-start focus-visible:ring-border-heavy focus-visible:ring-offset-0 disabled:opacity-100',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
@@ -200,6 +209,12 @@ const buttonVariantRecipe = cva(
         variant: 'section-header',
         size: 'default',
         class: 'h-auto px-1 py-2',
+      },
+      /* Sized and shaped by the row it heads, like `section-header`. */
+      {
+        variant: 'disclosure',
+        size: 'default',
+        class: 'h-auto rounded-none p-0',
       },
       /* Sized by the text it stands for, like `section-header`, so the default
        * size recipe must not pad it away from the content it lines up with. */

@@ -3,6 +3,7 @@ import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
 import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import CopyButton from '~/components/Messages/Content/CopyButton';
+import { PANE_COPY_REVEAL } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -100,38 +101,9 @@ function extractText(raw: string, verbatim = false): ExtractedText {
   return { text: trimmed, rawError: '', error: false, isJson: false };
 }
 
-const TRUNCATE_LINES = 20;
-const VISIBLE_LINES = 15;
-
 export interface OutputSegment {
   text: string;
   className?: string;
-}
-
-/** The last `count` lines of `segments`, keeping each line's own styling. */
-function tailSegments(segments: OutputSegment[], count: number): OutputSegment[] {
-  const tail: OutputSegment[] = [];
-  /** Matches the line count: a final newline ends the last line rather than starting one. */
-  const last = segments.findLast((segment) => segment.text !== '');
-  let newlines = last?.text.endsWith('\n') === true ? -1 : 0;
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const { text, className } = segments[i];
-    let cut = text.length;
-    while (cut > 0) {
-      const at = text.lastIndexOf('\n', cut - 1);
-      if (at < 0) {
-        break;
-      }
-      newlines++;
-      if (newlines >= count) {
-        tail.unshift({ text: text.slice(at + 1), className });
-        return tail;
-      }
-      cut = at;
-    }
-    tail.unshift({ text, className });
-  }
-  return tail;
 }
 
 interface OutputRendererProps {
@@ -139,8 +111,7 @@ interface OutputRendererProps {
   copyText?: string;
   /** Forces error styling when the caller detected a failure the text itself does not mark. */
   error?: boolean;
-  /** `terminal` renders command output: monospace, verbatim (no JSON reformatting), and the
-   *  collapsed view keeps the LAST lines, where failures and stack traces land. */
+  /** `terminal` renders command output: monospace and verbatim (no JSON reformatting). */
   variant?: 'default' | 'terminal';
   /** Terminal output split into styled runs whose texts join to `text` (for example stdout,
    *  stderr and an exit trailer). Rendered in place of the plain text. */
@@ -159,7 +130,6 @@ export default function OutputRenderer({
   const extracted = useMemo(() => extractText(text, terminal), [text, terminal]);
   const { text: displayText, rawError, isJson } = extracted;
   const error = extracted.error || forceError;
-  const [isExpanded, setIsExpanded] = useState(false);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
 
@@ -173,24 +143,16 @@ export default function OutputRenderer({
     return null;
   }
 
-  /** A final newline ends the last line; it does not start an empty one. */
-  const body = displayText.endsWith('\n') ? displayText.slice(0, -1) : displayText;
-  const lines = body.split('\n');
-  const needsTruncation = lines.length > TRUNCATE_LINES;
-  const collapsedLines = terminal ? lines.slice(-VISIBLE_LINES) : lines.slice(0, VISIBLE_LINES);
-  const visibleText = needsTruncation && !isExpanded ? collapsedLines.join('\n') : displayText;
   const structured = !isJson && (terminal || isStructuredText(displayText));
   const styled = terminal && segments != null && !error;
-  const visibleSegments =
-    styled && needsTruncation && !isExpanded ? tailSegments(segments, VISIBLE_LINES) : segments;
 
   return (
     <div>
-      <div className="relative pr-10">
+      <div className="group/copy relative">
         {isJson ? (
           <pre className="max-h-[300px] overflow-auto rounded text-xs">
             <code className="hljs language-json !break-words !whitespace-pre-wrap">
-              {visibleText}
+              {displayText}
             </code>
           </pre>
         ) : (
@@ -204,35 +166,24 @@ export default function OutputRenderer({
             )}
           >
             {styled
-              ? visibleSegments?.map((segment, i) =>
+              ? segments?.map((segment, i) =>
                   segment.text === '' ? null : (
                     <span key={i} className={segment.className}>
                       {segment.text}
                     </span>
                   ),
                 )
-              : visibleText}
+              : displayText}
           </pre>
         )}
-        <div className="absolute top-1/2 right-0 -translate-y-1/2">
-          <CopyButton
-            isCopied={isCopied}
-            onClick={handleCopy}
-            iconOnly
-            label={localize('com_ui_copy')}
-          />
-        </div>
+        <CopyButton
+          isCopied={isCopied}
+          onClick={handleCopy}
+          iconOnly
+          label={localize('com_ui_copy')}
+          className={cn('bg-presentation absolute right-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
+        />
       </div>
-      {needsTruncation && (
-        <Button
-          variant="link"
-          size="sm"
-          className="text-text-secondary focus-visible:ring-border-heavy mt-1 h-auto p-0 text-xs underline focus-visible:ring-2"
-          onClick={() => setIsExpanded((prev) => !prev)}
-        >
-          {isExpanded ? localize('com_ui_show_less') : localize('com_ui_show_more')}
-        </Button>
-      )}
       {error && rawError && rawError !== displayText && (
         <Button
           variant="link"

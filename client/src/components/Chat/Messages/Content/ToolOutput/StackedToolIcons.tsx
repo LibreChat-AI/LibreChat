@@ -77,7 +77,7 @@ export default function StackedToolIcons({
   }
 
   return (
-    <div className="flex items-center" aria-hidden="true">
+    <div className="isolate flex items-center" aria-hidden="true">
       {visibleIcons.map((icon, index) => (
         <div
           key={icon.key}
