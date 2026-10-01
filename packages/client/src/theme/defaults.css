@@ -154,6 +154,8 @@ html {
   --border-destructive: var(--red-600);
   --border-control: var(--gray-200);
   --border-field-focus: var(--focus-control);
+  --field-fill: var(--surface-primary);
+  --field-text: var(--text-primary);
   --focus-control: var(--gray-800);
   --border-disabled: var(--gray-200);
   --status-success: var(--green-700);
@@ -231,6 +233,7 @@ html {
   --theme-field-height: 2.5rem;
   --theme-field-padding-y: 0.5rem;
   --theme-field-focus-style: ring;
+  --theme-field-fill-style: transparent;
   --theme-focus-ring-width: 2px;
   --theme-focus-ring-offset: 2px;
   --theme-label-size: var(--theme-text-sm, 0.875rem);
@@ -384,6 +387,8 @@ html {
   --border-destructive: var(--red-500);
   --border-control: var(--gray-800);
   --border-field-focus: var(--focus-control);
+  --field-fill: var(--surface-primary);
+  --field-text: var(--text-primary);
   --focus-control: var(--gray-100);
   --border-disabled: var(--gray-650);
   --status-success: var(--green-300);

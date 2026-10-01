@@ -358,6 +358,11 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - Keyboard focus outline - The global `:focus-visible` outline is drawn in
   `focus-outline`, `focusRingWidth` wide and `focusRingOffset` off the edge (2px
   each by default). The contrast modes keep their own 3px outline.
+- `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
+  ink follows `text-primary` and the fill follows `surface-primary` when a theme
+  names those and not these. Fields stay clear unless the theme's
+  `fieldFillStyle` appearance role is `fill` (the default is `transparent`),
+  read from the nearest themed root through the `theme-field-fill:` variant.
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`

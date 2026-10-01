@@ -118,12 +118,13 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
   };
 }
 
-/** Inks split out of the primary one: dialog titles, badge labels and the default avatar's glyph
- *  were all set in it. */
+/** Inks split out of the primary one: dialog titles, badge labels, the default avatar's glyph and
+ *  a field's typed value were all set in it. */
 export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
   'rgb-dialog-title',
   'rgb-badge-label',
   'rgb-avatar-text',
+  'rgb-field-text',
 ];
 
 /** A theme that repaints the primary ink keeps the inks split out of it on it, unless it names them. */
@@ -180,6 +181,7 @@ export const themeAppearanceProperties: Readonly<
   fieldHeight: '--theme-field-height',
   fieldPaddingY: '--theme-field-padding-y',
   fieldFocusStyle: '--theme-field-focus-style',
+  fieldFillStyle: '--theme-field-fill-style',
   focusRingWidth: '--theme-focus-ring-width',
   focusRingOffset: '--theme-focus-ring-offset',
   labelSize: '--theme-label-size',
@@ -255,6 +257,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   fieldHeight: '2.5rem',
   fieldPaddingY: '0.5rem',
   fieldFocusStyle: 'ring',
+  fieldFillStyle: 'transparent',
   focusRingWidth: '2px',
   focusRingOffset: '2px',
   labelSize: '0.875rem',
@@ -595,6 +598,12 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-switch-thumb': customColors['rgb-surface-primary'] }
       : {};
+  /** A field fill only shows under `fieldFillStyle: 'fill'`, on the theme's own canvas by default. */
+  const fieldFillFallback =
+    customColors?.['rgb-field-fill'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-field-fill': customColors['rgb-surface-primary'] }
+      : {};
   /** Table column names were `text-secondary` before they had a role. */
   const tableHeaderTextFallback =
     customColors?.['rgb-table-header-text'] === undefined &&
@@ -682,6 +691,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
       ...switchThumbFallback,
+      ...fieldFillFallback,
       ...tableHeaderTextFallback,
       ...tableHeaderFillFallback,
       ...borderControlFallback,

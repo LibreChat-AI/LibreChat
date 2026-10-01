@@ -109,6 +109,8 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
   'rgb-border-field-focus': '22 21 23', // #161517 (field.color.stroke.active)
+  'rgb-field-fill': '251 252 255', // #fbfcff (field.color.background.default)
+  'rgb-field-text': '48 46 50', // #302e32 (field.color.text.default)
   'rgb-surface-disabled': '223 223 223', // #dfdfdf (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '160 160 160', // #a0a0a0 (text.disabled)
   'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
@@ -268,6 +270,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
   'rgb-border-field-focus': '250 255 105', // #faff69 (field.color.stroke.active)
+  'rgb-field-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (field.color.background.default)
+  'rgb-field-text': '230 231 233', // #e6e7e9 (field.color.text.default)
   'rgb-surface-disabled': '65 65 65', // #414141 (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '128 128 128', // #808080 (text.disabled)
   'rgb-border-disabled': '65 65 65', // #414141 (field.color.stroke.disabled)
@@ -420,6 +424,8 @@ const clickHouseShape = {
   fieldHeight: '2rem',
   fieldPaddingY: '0.2813rem', // field.space.y
   fieldFocusStyle: 'border' as const,
+  /** Click UI fills its fields in `field.color.background.default`. */
+  fieldFillStyle: 'fill' as const,
   /** Click UI's keyboard focus outline: 2px in `outline.default`, 2px off the edge
    *  (BaseButton.module.css, IconButton, Dropdown and ContextMenu triggers). */
   focusRingWidth: '2px',

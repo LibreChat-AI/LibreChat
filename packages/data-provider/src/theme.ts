@@ -81,6 +81,8 @@ export const themeColorTokens = Object.freeze([
   'rgb-border-destructive',
   'rgb-border-control',
   'rgb-border-field-focus',
+  'rgb-field-fill',
+  'rgb-field-text',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',
@@ -360,6 +362,8 @@ const appearanceValidators = {
   fieldHeight: isLength,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
+  /** Whether a field stays transparent or paints `field-fill`. */
+  fieldFillStyle: (value: unknown) => value === 'transparent' || value === 'fill',
   /** The keyboard focus outline's width and offset. */
   focusRingWidth: isSwitchLength,
   focusRingOffset: isFocusRingOffset,

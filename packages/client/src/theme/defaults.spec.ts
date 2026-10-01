@@ -103,6 +103,8 @@ const colorAliases: Array<[string, string]> = [
   ['--dialog-title', '--text-primary'],
   ['--badge-label', '--text-primary'],
   ['--border-field-focus', '--focus-control'],
+  ['--field-fill', '--surface-primary'],
+  ['--field-text', '--text-primary'],
 ];
 
 describe('the stock color aliases', () => {

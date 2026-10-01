@@ -932,6 +932,62 @@ describe('theme registry', () => {
     });
   });
 
+  describe('field fill and ink', () => {
+    const fieldTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'field-fill-reference',
+      modes,
+    });
+
+    it('keeps fields clear and inked in the primary text by default', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors, appearance } = resolveTheme(fieldTheme({}), mode);
+        const base = mode === 'dark' ? darkTheme : defaultTheme;
+        expect(appearance.fieldFillStyle).toBe('transparent');
+        expect(colors['rgb-field-text']).toBe(base['rgb-text-primary']);
+        expect(colors['rgb-field-fill']).toBe(base['rgb-surface-primary']);
+      }
+    });
+
+    it('keeps a theme that predates the roles on its own ink and canvas', () => {
+      const { colors, appearance } = resolveTheme(
+        fieldTheme({
+          dark: { colors: { 'rgb-text-primary': '10 20 30', 'rgb-surface-primary': '40 50 60' } },
+        }),
+        'dark',
+      );
+      expect(colors['rgb-field-text']).toBe('10 20 30');
+      expect(colors['rgb-field-fill']).toBe('40 50 60');
+      expect(appearance.fieldFillStyle).toBe('transparent');
+    });
+
+    it('paints fields from their own roles when a theme names them', () => {
+      const { colors, appearance } = resolveTheme(
+        fieldTheme({
+          light: {
+            colors: { 'rgb-field-fill': '251 252 255', 'rgb-field-text': '48 46 50' },
+            appearance: { fieldFillStyle: 'fill' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-field-fill']).toBe('251 252 255');
+      expect(colors['rgb-field-text']).toBe('48 46 50');
+      expect(colors['rgb-text-primary']).toBe(defaultTheme['rgb-text-primary']);
+      expect(appearance.fieldFillStyle).toBe('fill');
+    });
+
+    it('rejects a fill style it does not know and a translucent field color', () => {
+      const issues = (mode: ThemeDefinition['modes']['light']) =>
+        validateThemeDefinition(fieldTheme({ light: mode }));
+      expect(issues({ appearance: { fieldFillStyle: 'fill' } })).toEqual([]);
+      expect(issues({ appearance: { fieldFillStyle: 'glass' as 'fill' } })).toEqual([
+        'Invalid appearance value for fieldFillStyle: glass',
+      ]);
+      expect(issues({ colors: { 'rgb-field-fill': '1 2 3 / 0.5' } })).toHaveLength(1);
+    });
+  });
+
   it('rejects field and label values the shared validators refuse', () => {
     const issues = (appearance: Record<string, string>) =>
       validateThemeDefinition({

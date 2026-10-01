@@ -121,6 +121,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-destructive': 'palette.danger.600',
     'rgb-border-control': 'palette.slate.500',
     'rgb-border-field-focus': 'click.field.color.stroke.active',
+    'rgb-field-fill': 'click.field.color.background.default',
+    'rgb-field-text': 'click.field.color.text.default',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
@@ -248,6 +250,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-destructive': 'palette.danger.300',
     'rgb-border-control': 'palette.neutral.500',
     'rgb-border-field-focus': 'click.field.color.stroke.active',
+    'rgb-field-fill': 'click.field.color.background.default',
+    'rgb-field-text': 'click.field.color.text.default',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
@@ -524,6 +528,12 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason:
       'none: Click UI Tooltip.module.css draws its tooltip with no shadow; no token carries it',
+  },
+  fieldFillStyle: {
+    value: 'fill',
+    status: 'match',
+    reason:
+      'fill: Click UI InputWrapper paints every field in field.color.background.default; LibreChat fields stay clear by default',
   },
   focusRingWidth: {
     value: '2px',
@@ -1051,6 +1061,7 @@ const parityProbes: Record<string, ParityProbe> = {
     token: 'click.field.color.background.default',
     kind: 'color',
     utility: 'bg',
+    variant: 'theme-field-fill:',
     element: inputProbe,
   },
   'Field stroke': {
@@ -1294,14 +1305,7 @@ interface NotExpressible {
  * close it. Remove an entry when the change that closes it lands, and pin its decisions to what
  * they then measure.
  */
-const notExpressible: Record<string, NotExpressible> = {
-  'Field fill and ink': {
-    decisions: { light: ['Field fill', 'Field text'], dark: ['Field fill', 'Field text'] },
-    reason:
-      'the field is transparent and inks with text-primary; a color role is an opaque triplet, so no role can default to no fill, and no role holds field ink apart from body copy',
-    issue: 'https://github.com/berry-13/LibreChat/issues/206',
-  },
-};
+const notExpressible: Record<string, NotExpressible> = {};
 
 type Verdict = 'match' | 'near' | 'deviation' | 'not expressible';
 

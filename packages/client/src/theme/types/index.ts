@@ -101,6 +101,11 @@ export interface IThemeRGB {
   /** A field's edge while it holds focus, under `fieldFocusStyle: 'border'`; follows
    *  `rgb-focus-control` when a theme omits it. */
   'rgb-border-field-focus'?: string;
+  /** A field's fill, painted only under `fieldFillStyle: 'fill'`; follows `rgb-surface-primary`
+   *  when a theme omits it. */
+  'rgb-field-fill'?: string;
+  /** A field's typed value; follows `rgb-text-primary` when a theme omits it. */
+  'rgb-field-text'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -287,6 +292,8 @@ export interface IThemeVariables {
   '--border-destructive': string;
   '--border-control': string;
   '--border-field-focus': string;
+  '--field-fill': string;
+  '--field-text': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -526,6 +533,8 @@ export interface IThemeAppearance {
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
+  /** `transparent` leaves a field on the surface it sits on; `fill` paints it `field-fill`. */
+  fieldFillStyle: 'transparent' | 'fill';
   /** The keyboard focus outline's width and its offset from the element's edge, apart from the
    *  heavier outline the contrast modes keep. */
   focusRingWidth: string;
