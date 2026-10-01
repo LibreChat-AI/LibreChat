@@ -120,7 +120,9 @@ export function writeThemeCache(entry: ThemeCacheEntry): void {
       localStorage.setItem(THEME_CACHE_KEY, raw);
     }
   } catch {
-    // A full or denied storage only costs the next reload its pre-paint theme.
+    /** A full storage must not keep the superseded entry for the next reload to paint;
+     *  without one, that reload only loses its pre-paint theme. */
+    clearThemeCache();
   }
 }
 

@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { useRecoilValue } from 'recoil';
 import { notifyManager, useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, MutationKeys, isBundledThemeName } from 'librechat-data-provider';
+import { QueryKeys, isBundledThemeName } from 'librechat-data-provider';
 import {
   ThemeProvider,
   clickHouseTheme,
@@ -137,34 +137,24 @@ function useRebindOnStartupConfigRebuild() {
   );
 }
 
-const SIGN_OUT_MUTATIONS: readonly string[] = [MutationKeys.logoutUser, MutationKeys.deleteUser];
-
 /**
- * The cached deployment theme, as last read or written. Signing out or deleting the
- * account drops it, so the next person on this browser does not get the previous
- * identity's theme painted before their own config answers.
+ * The cached deployment theme, as last read or written. Losing the signed-in user drops
+ * it, whichever way the session ended (logout, an empty silent refresh, a failed user
+ * query, account deletion), so the next person on this browser does not get the
+ * previous identity's theme painted before their own config answers.
  */
-function useThemeCache() {
-  const queryClient = useQueryClient();
+function useThemeCache(owner?: string) {
   const [cached, setCached] = useState(() =>
     isPublicRoute(window.location.pathname, appBasePath()) ? undefined : readThemeCache(),
   );
-  useEffect(
-    () =>
-      queryClient.getMutationCache().subscribe((event) => {
-        const key = event?.mutation?.options.mutationKey?.[0];
-        if (
-          event?.type === 'updated' &&
-          event.mutation.state.status === 'success' &&
-          typeof key === 'string' &&
-          SIGN_OUT_MUTATIONS.includes(key)
-        ) {
-          clearThemeCache();
-          setCached(undefined);
-        }
-      }),
-    [queryClient],
-  );
+  const signedIn = useRef(owner);
+  useEffect(() => {
+    if (signedIn.current && !owner) {
+      clearThemeCache();
+      setCached(undefined);
+    }
+    signedIn.current = owner;
+  }, [owner]);
   return [cached, setCached] as const;
 }
 
@@ -207,7 +197,7 @@ export default function DeploymentTheme({ children }: { children: React.ReactNod
   useRebindOnStartupConfigRebuild();
   const { data: startupConfig, isPreviousData } = useGetStartupConfig({ keepPreviousData: true });
   const owner = themeOwner(useRecoilValue(store.user));
-  const [cached, setCached] = useThemeCache();
+  const [cached, setCached] = useThemeCache(owner);
   const [override, setOverride] = useState<ThemeOverride>(undefined);
   /** A route override is another tenant's theme: it neither reads nor writes the cache. */
   const decision = override

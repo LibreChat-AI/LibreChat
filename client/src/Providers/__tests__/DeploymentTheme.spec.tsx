@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { useTheme, clickHouseTheme } from '@librechat/client';
 import { act, render, waitFor } from '@testing-library/react';
+import { QueryKeys, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { QueryKeys, MutationKeys, dataService } from 'librechat-data-provider';
 import type { TStartupConfig, TUser } from 'librechat-data-provider';
 import type { ThemeDefinition } from '@librechat/client';
 import { buildThemeCache, writeThemeCache, THEME_CACHE_KEY } from '../themeCache';
@@ -530,20 +530,28 @@ describe('DeploymentTheme cache', () => {
     expect(cachedEntry()?.source).toBe('clickhouse');
   });
 
-  it('clears the cache when the user signs out', async () => {
+  it('clears the cache whenever the signed-in user goes away', async () => {
     cacheTheme();
     pending();
-    renderTheme(queryClient, user);
-
-    await act(() =>
-      queryClient
-        .getMutationCache()
-        .build(queryClient, {
-          mutationKey: [MutationKeys.logoutUser],
-          mutationFn: () => Promise.resolve(undefined),
-        })
-        .execute(),
+    let signOut: () => void = () => undefined;
+    function SignOut() {
+      const setUser = useSetRecoilState(store.user);
+      signOut = () => setUser(undefined);
+      return null;
+    }
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.user, user as TUser)}>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignOut />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
     );
-    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+    expect(cachedEntry()?.source).toBe('clickhouse');
+
+    act(() => signOut());
+    await waitFor(() => expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull());
+    expect(root().dataset.theme).toBeUndefined();
   });
 });

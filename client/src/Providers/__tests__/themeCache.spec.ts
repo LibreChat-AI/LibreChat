@@ -110,6 +110,16 @@ describe('theme cache storage', () => {
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
   });
 
+  it('removes the superseded entry when a replacement cannot be stored', () => {
+    writeThemeCache(cached);
+    const setItem = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    writeThemeCache(buildThemeCache(OWNER, 'librechat', clickHouseTheme));
+    setItem.mockRestore();
+    expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+  });
+
   it('drops a corrupt or older entry instead of painting it', () => {
     localStorage.setItem(THEME_CACHE_KEY, '{not json');
     expect(readThemeCache()).toBeUndefined();
