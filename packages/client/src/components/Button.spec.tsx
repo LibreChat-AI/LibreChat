@@ -258,6 +258,15 @@ describe('Button', () => {
     expect(header).not.toMatch(/(^|\s)(hover:)?active:bg-/);
   });
 
+  it('gives an option row an instant fill and its own height', () => {
+    const row = cn(buttonVariants({ variant: 'option' }));
+
+    expect(row).toContain('transition-none');
+    expect(row).toContain('h-auto');
+    expect(row).not.toContain('h-theme-button');
+    expect(row).not.toMatch(/(^|\s)transition-colors(\s|$)/);
+  });
+
   it('still takes a size when a caller asks for one', () => {
     expect(cn(buttonVariants({ variant: 'section-header', size: 'sm' }))).toContain(
       'h-theme-button-sm',

@@ -200,7 +200,7 @@ export default function AskUserQuestions({
                   checked={selectedIndices}
                   selected={item.multiSelect === true ? null : (selectedIndices[0] ?? null)}
                   selectedIsAnswer
-                  locked={form.locked}
+                  locked={form.locked || text.trim().length > 0}
                   onActivate={(optionIndex) => handleSelectOption(item, choices[optionIndex].value)}
                   className="flex flex-col"
                 />

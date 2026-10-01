@@ -875,9 +875,6 @@
   "client/src/components/Chat/ask/options.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 8
     }
   },
   "client/src/components/Conversations/Convo.tsx": {

@@ -27,6 +27,7 @@ type ButtonVariantOptions =
         | 'inline-edit'
         | 'card'
         | 'disclosure'
+        | 'option'
         | null
         | undefined;
       size?:
@@ -157,6 +158,14 @@ const buttonVariantRecipe = cva(
          */
         disclosure:
           'w-full justify-start focus-visible:ring-border-heavy focus-visible:ring-offset-0 disabled:opacity-100',
+        /**
+         * A full-width answer row in an option list, such as the choices of an
+         * `ask_user_question`. The fill follows the pointer instantly rather than
+         * easing, so moving down a list reads as a cursor, and `data-selected`
+         * marks the highlighted or chosen row.
+         */
+        option:
+          'w-full justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
@@ -209,6 +218,12 @@ const buttonVariantRecipe = cva(
         variant: 'section-header',
         size: 'default',
         class: 'h-auto px-1 py-2',
+      },
+      /* Sized by its own label, so a long option wraps instead of clipping. */
+      {
+        variant: 'option',
+        size: 'default',
+        class: 'h-auto px-2.5 py-2',
       },
       /* Sized and shaped by the row it heads, like `section-header`. */
       {

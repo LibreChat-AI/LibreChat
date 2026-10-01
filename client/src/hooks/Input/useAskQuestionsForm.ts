@@ -41,8 +41,10 @@ export default function useAskQuestionsForm(
       setState((previous) => ({
         ...previous,
         text: { ...previous.text, [question.id]: value },
+        /** A typed answer replaces the choices: the rows lock while the field
+         *  has text, so nothing stays selected behind them. */
         selected:
-          question.multiSelect === true || value.length === 0
+          value.trim().length === 0
             ? previous.selected
             : { ...previous.selected, [question.id]: [] },
       }));

@@ -114,6 +114,32 @@ describe('AskUserQuestions', () => {
     expect(screen.getByText('Question 1 of 2')).toBeInTheDocument();
   });
 
+  test('clears and locks the choices once an answer is typed', () => {
+    renderBatch('ask-typed', [
+      {
+        id: 'regions',
+        question: 'Which regions?',
+        multiSelect: true,
+        options: [
+          { label: 'us-east', value: 'us-east' },
+          { label: 'eu-west', value: 'eu-west' },
+        ],
+      },
+    ]);
+
+    const usEast = screen.getByRole('checkbox', { name: /us-east/ });
+    fireEvent.click(usEast);
+    expect(usEast).toHaveAttribute('aria-checked', 'true');
+
+    const field = screen.getByRole('textbox', { name: /Which regions/ });
+    fireEvent.change(field, { target: { value: 'ap-south' } });
+    expect(usEast).toHaveAttribute('aria-checked', 'false');
+    expect(usEast).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: '' } });
+    expect(usEast).toBeEnabled();
+  });
+
   test('submits one answer map after every question is complete', () => {
     renderBatch('ask-batch');
 

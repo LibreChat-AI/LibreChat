@@ -55,20 +55,17 @@ export default function AskOptions({
                 optionRefs.current[index] = el;
               }
             }}
-            variant="ghost"
+            variant="option"
+            data-selected={selected === index || undefined}
             role={multiSelect ? 'checkbox' : undefined}
             aria-checked={multiSelect ? isChecked : undefined}
             aria-pressed={!multiSelect && selectedIsAnswer ? selected === index : undefined}
             disabled={locked}
-            className={cn(
-              'text-text-primary flex h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-left text-sm font-normal whitespace-normal',
-              selected === index && 'bg-surface-active hover:bg-surface-active',
-            )}
             onClick={() => onActivate(index)}
           >
             <span
               className={cn(
-                'flex size-5 shrink-0 items-center justify-center rounded-md text-[11px] font-medium tabular-nums transition-colors',
+                'flex size-5 shrink-0 items-center justify-center rounded-md text-[11px] font-medium tabular-nums',
                 isChecked
                   ? 'bg-surface-submit text-text-on-status'
                   : 'bg-surface-tertiary text-text-secondary',
