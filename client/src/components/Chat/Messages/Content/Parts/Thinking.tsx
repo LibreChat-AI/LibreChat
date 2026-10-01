@@ -41,10 +41,11 @@ function isRectVisible(el: HTMLElement): boolean {
  * CodeBlock pattern: the header copy/collapse controls live at the top, and the
  * floating bottom-right bar only takes over once the header scrolls out of view.
  *
- * The observer keeps up with scrolling, but its first reading can be stale: a
- * header mounted inside a fold that is still opening reports hidden, and that
- * verdict outlives the fold. `recheck` measures the header's real position, so
- * callers run it at the moment they are about to reveal the bar.
+ * The observer is only a trigger. Its entries can be stale: a header mounted
+ * inside a fold that is still opening is first reported hidden, and that report
+ * can land after the pointer has already revealed the bar. So every
+ * notification re-measures the header's real position instead of trusting
+ * `isIntersecting`, and `recheck` does the same for callers about to reveal.
  */
 export function useInViewport(): {
   ref: React.RefObject<HTMLDivElement>;
@@ -59,7 +60,7 @@ export function useInViewport(): {
     if (!el) {
       return;
     }
-    const observer = new IntersectionObserver(([entry]) => setInViewport(entry.isIntersecting), {
+    const observer = new IntersectionObserver(() => setInViewport(isRectVisible(el)), {
       root: null,
       threshold: 0,
     });
