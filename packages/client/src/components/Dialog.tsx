@@ -4,9 +4,10 @@ import { JSX } from 'react/jsx-runtime';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Button, ButtonProps } from './Button';
 import { useMediaQuery } from '~/hooks';
+import DialogRoot from './DialogRoot';
 import { cn } from '~/utils';
 
-const Dialog: React.FC<DialogPrimitive.DialogProps> = DialogPrimitive.Root;
+const Dialog: React.FC<DialogPrimitive.DialogProps> = DialogRoot;
 
 const DialogTrigger: React.ForwardRefExoticComponent<
   DialogPrimitive.DialogTriggerProps & React.RefAttributes<HTMLButtonElement>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Button } from '@librechat/client';
 import { Maximize2, X } from 'lucide-react';
+import { Button, Dialog } from '@librechat/client';
 import { FileSources } from 'librechat-data-provider';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import ProgressCircle from './ProgressCircle';
@@ -163,7 +163,7 @@ const ImagePreview = ({
         <SourceIcon source={source} aria-label={source ? `Source: ${source}` : undefined} />
       </button>
 
-      <DialogPrimitive.Root open={isModalOpen} onOpenChange={handleOpenChange}>
+      <Dialog open={isModalOpen} onOpenChange={handleOpenChange}>
         <DialogPrimitive.Portal>
           <DialogPrimitive.Overlay
             className="fixed inset-0 z-[250] bg-black/90"
@@ -206,7 +206,7 @@ const ImagePreview = ({
             </div>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
-      </DialogPrimitive.Root>
+      </Dialog>
     </>
   );
 };

@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { X, ChevronLeft } from 'lucide-react';
-import { Button, useMediaQuery } from '@librechat/client';
 import { SettingsTabValues } from 'librechat-data-provider';
+import { Button, useMediaQuery, OverlayBack } from '@librechat/client';
 import { Dialog, DialogPanel, DialogTitle, Transition, TransitionChild } from '@headlessui/react';
 import type { TDialogProps } from '~/common';
 import type { SettingsTab } from './types';
@@ -39,7 +39,7 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
     }
   };
 
-  return (
+  const dialog = (
     <Transition appear show={open}>
       <Dialog as="div" className="relative z-50" onClose={() => onOpenChange(false)}>
         <TransitionChild
@@ -138,5 +138,12 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
         </TransitionChild>
       </Dialog>
     </Transition>
+  );
+  return (
+    <OverlayBack open={open} onClose={() => onOpenChange(false)}>
+      <OverlayBack open={open && inDetail} onClose={() => setMobileDetail(false)}>
+        {dialog}
+      </OverlayBack>
+    </OverlayBack>
   );
 }

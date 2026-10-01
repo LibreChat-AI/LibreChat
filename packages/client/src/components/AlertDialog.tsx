@@ -1,9 +1,27 @@
 import * as React from 'react';
 import { JSX } from 'react/jsx-runtime';
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
+import { OverlayBack } from '../Providers/Overlay';
 import { cn } from '~/utils';
 
-const AlertDialog: React.FC<AlertDialogPrimitive.AlertDialogProps> = AlertDialogPrimitive.Root;
+const AlertDialog: React.FC<AlertDialogPrimitive.AlertDialogProps> = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}) => {
+  const [internalOpen, setInternalOpen] = React.useState(defaultOpen ?? false);
+  const isOpen = open ?? internalOpen;
+  const changeOpen = (next: boolean) => {
+    if (open === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
+  return (
+    <OverlayBack open={isOpen} onClose={() => changeOpen(false)}>
+      <AlertDialogPrimitive.Root {...props} open={isOpen} onOpenChange={changeOpen} />
+    </OverlayBack>
+  );
+};
 
 const AlertDialogTrigger: React.ForwardRefExoticComponent<
   AlertDialogPrimitive.AlertDialogTriggerProps & React.RefAttributes<HTMLButtonElement>

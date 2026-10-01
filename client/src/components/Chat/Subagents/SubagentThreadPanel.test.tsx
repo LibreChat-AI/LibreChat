@@ -243,6 +243,7 @@ const mockComposerVerdict = (
 };
 
 jest.mock('@librechat/client', () => ({
+  OverlayBack: jest.requireActual('@librechat/client').OverlayBack,
   Alert: ({ children, ...props }: React.ComponentProps<'div'>) => (
     <div role="alert" {...props}>
       {children}

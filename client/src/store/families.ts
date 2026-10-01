@@ -27,6 +27,7 @@ import {
   logger,
 } from '~/utils';
 import { useSetConvoContext } from '~/Providers/SetConvoContext';
+import { replaceBrowserUrl } from '~/utils/overlays';
 
 const submissionKeysAtom = atom<(string | number)[]>({
   key: 'submissionKeys',
@@ -130,7 +131,7 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
            * `navigate()` calls (useNewConvo), and in-place writers like
            * ProjectLandingChip deliberately replace. Pushing here buried the
            * Back target under one inert entry per draft edit. */
-          window.history.replaceState({}, '', url);
+          replaceBrowserUrl(url);
         }
       });
     },

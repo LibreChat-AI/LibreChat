@@ -2,8 +2,8 @@ import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import copy from 'copy-to-clipboard';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useSetRecoilState, useResetRecoilState } from 'recoil';
-import { Button, Spinner, useMediaQuery, Radio } from '@librechat/client';
 import { Code, Maximize2, Minimize2, Play, RefreshCw, X } from 'lucide-react';
+import { Button, Spinner, useMediaQuery, Radio, OverlayBack } from '@librechat/client';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
@@ -328,7 +328,7 @@ export default function Artifacts() {
       ? (Math.min(blurAmount, MAX_BLUR_AMOUNT) / MAX_BLUR_AMOUNT) * MAX_BACKDROP_OPACITY
       : 0;
 
-  return (
+  const panel = (
     <Tabs.Root value={displayedTab} onValueChange={setActiveTab} asChild>
       <div ref={artifactContainerRef} className="flex h-full w-full flex-col bg-surface-primary">
         {/* Mobile backdrop with dynamic blur */}
@@ -565,5 +565,10 @@ export default function Artifacts() {
         />
       </div>
     </Tabs.Root>
+  );
+  return (
+    <OverlayBack open={isMobile && !isClosing} onClose={closeArtifacts}>
+      {panel}
+    </OverlayBack>
   );
 }

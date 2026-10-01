@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { PanelLeftOpen, PanelLeftClose } from 'lucide';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X, ArrowDownToLine, RotateCcw } from 'lucide-react';
-import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
+import { Button, Dialog, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
 const imageSizeCache = new Map<string, string>();
@@ -251,7 +251,7 @@ export default function DialogImage({
   };
 
   return (
-    <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay
           className="fixed inset-0 z-[100] bg-black/90"
@@ -449,6 +449,6 @@ export default function DialogImage({
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
+    </Dialog>
   );
 }

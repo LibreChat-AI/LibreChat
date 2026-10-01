@@ -161,6 +161,21 @@ describe('conversationByIndex URL mirroring', () => {
     expect(window.location.search).toContain('endpoint=openAI');
   });
 
+  it('preserves the complete history state while mirroring a model edit', async () => {
+    const state = {
+      key: 'chat-entry',
+      idx: 3,
+      usr: { draft: true },
+      extra: { preserved: true },
+    };
+    window.history.replaceState(state, '', `/c/${Constants.NEW_CONVO}`);
+    renderChat();
+    await seed();
+    fireEvent.click(screen.getByRole('button', { name: 'edit-model' }));
+    await waitFor(() => expect(window.location.search).toContain('model=edited-1'));
+    expect(window.history.state).toEqual(state);
+  });
+
   it('keeps the landing project switch in place, as ProjectLandingChip intends', async () => {
     renderChat();
     await seed();
