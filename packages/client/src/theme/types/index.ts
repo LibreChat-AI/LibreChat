@@ -520,8 +520,6 @@ export interface IThemeAppearance {
   radius2xl: string;
   radius3xl: string;
   controlHeight: string;
-  /** The smallest pointer target a control's hit area keeps, 24px by default (WCAG 2.5.8). */
-  minTargetSize: string;
   /** A theme-sized control's inline padding and icon-to-label gap; they follow `spaceNormal` and
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;

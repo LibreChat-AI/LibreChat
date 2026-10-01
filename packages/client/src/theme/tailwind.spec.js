@@ -159,8 +159,6 @@ describe('LibreChat Tailwind preset', () => {
       ],
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
       ['min-w-theme-tab', '--theme-tab-min-width', defaultAppearance.tabMinWidth],
-      ['min-w-theme-target', '--theme-min-target-size', defaultAppearance.minTargetSize],
-      ['min-h-theme-target', '--theme-min-target-size', defaultAppearance.minTargetSize],
       ['h-theme-button-xs', '--theme-button-height-xs', defaultAppearance.buttonHeightXs],
       ['h-theme-button-lg', '--theme-button-height-lg', defaultAppearance.buttonHeightLg],
       [
@@ -169,7 +167,6 @@ describe('LibreChat Tailwind preset', () => {
         defaultAppearance.buttonHeightCompact,
       ],
       ['h-theme-field-lg', '--theme-field-height-lg', defaultAppearance.fieldHeightLg],
-      ['h-theme-target', '--theme-min-target-size', defaultAppearance.minTargetSize],
       ['size-theme-button', '--theme-button-height', defaultAppearance.buttonHeight],
       [
         'size-theme-icon-button-sm',
@@ -203,8 +200,15 @@ describe('LibreChat Tailwind preset', () => {
     /** The tap-target floor is the role's reason to exist, so the floor itself is asserted
      *  rather than only the control-height variable it is built from. */
     expect(css).toContain(
-      `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem, var(--theme-min-target-size, ${defaultAppearance.minTargetSize}))`,
+      `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem)`,
     );
+
+    /** The target floor is WCAG 2.5.8's 24px, not a role a theme could lower. */
+    const target = await generate(['h-theme-target', 'min-h-theme-target', 'min-w-theme-target']);
+    ['height', 'min-height', 'min-width'].forEach((property) =>
+      expect(target).toContain(`${property}: 24px`),
+    );
+    expect(target).not.toContain('--theme-min-target-size');
 
     /** A stylesheet that predates the control spacing roles pads controls with the shared
      *  spacing they read before. */

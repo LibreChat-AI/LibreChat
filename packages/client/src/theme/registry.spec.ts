@@ -1111,7 +1111,6 @@ describe('theme registry', () => {
 
   it('keeps every control and icon size on the size it drew before it had a role', () => {
     expect(defaultAppearance).toMatchObject({
-      minTargetSize: '1.5rem',
       iconSize: '1rem',
       iconSizeLg: '1.5rem',
       buttonHeightXs: '1.75rem',
@@ -1132,16 +1131,16 @@ describe('theme registry', () => {
 
     expect(
       issues({
-        minTargetSize: '24px',
+        fieldHeightLg: '24px',
         checkboxSize: '1.5rem',
         iconSize: '20px',
         iconSizeLg: '2rem',
       }),
     ).toEqual([]);
     [
-      { minTargetSize: '20px' },
-      { minTargetSize: '1rem' },
-      { minTargetSize: '1.5em' },
+      { fieldHeightLg: '20px' },
+      { fieldHeightLg: '1rem' },
+      { fieldHeightLg: '1.5em' },
       { iconSize: '0' },
       { iconSize: '1.5rem' },
       { iconSize: '10px' },
@@ -1152,11 +1151,6 @@ describe('theme registry', () => {
       { checkboxSize: 'auto' },
       { buttonHeightLg: '-2rem' },
       { buttonHeightXs: '1px' },
-      { minTargetSize: '3rem' },
-      { minTargetSize: '2rem' },
-      { minTargetSize: '28px', buttonHeightLg: '24px' },
-      { minTargetSize: '1.75rem', controlHeight: '1.5rem' },
-      { minTargetSize: '2rem', fieldHeight: '1.75rem' },
       { iconSizeMd: '1rem' },
       { iconButtonSizeSm: '20px' },
       { iconButtonSizeSm: 'calc(2rem + 2px)' },

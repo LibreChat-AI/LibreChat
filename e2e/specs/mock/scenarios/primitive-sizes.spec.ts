@@ -62,14 +62,14 @@ async function sizes(page: Page): Promise<Record<string, string>> {
   return result;
 }
 
-/** Names the icon and target sizes apart from every default, so a size still drawn by a fixed
- *  utility shows. */
+/** Names an icon size apart from the default, so a size still drawn by a fixed utility shows, and
+ *  the retired `minTargetSize` role, which must not lower the fixed 24px target floor. */
 const REFERENCE_SIZE_THEME = {
   version: 1,
   name: 'e2e-size-reference',
   modes: {
-    light: { appearance: { iconSize: '1.25rem', minTargetSize: '1.75rem' } },
-    dark: { appearance: { iconSize: '1.25rem', minTargetSize: '1.75rem' } },
+    light: { appearance: { iconSize: '1.25rem', minTargetSize: '1rem' } },
+    dark: { appearance: { iconSize: '1.25rem', minTargetSize: '1rem' } },
   },
 } as const;
 
@@ -126,7 +126,7 @@ test.describe('primitive size roles', () => {
     }
   });
 
-  test('a theme naming its own icon and target sizes resizes a menu glyph and the hit area @scenario:primitive-sizes-reference-theme', async ({
+  test('a theme resizes a menu glyph but cannot lower the 24px target floor @scenario:primitive-sizes-reference-theme', async ({
     page,
   }) => {
     await openChat(page, 'light', REFERENCE_SIZE_THEME);
@@ -156,7 +156,9 @@ test.describe('primitive size roles', () => {
       return width;
     });
     expect(explicit).toBe('20px');
-    expect(await probeStyle(page, 'min-h-theme-target', 'min-height')).toBe('28px');
-    expect(await probeStyle(page, 'h-theme-target', 'height')).toBe('28px');
+    /** WCAG 2.5.8's floor is fixed, so a theme naming a smaller target still draws 24px. */
+    expect(await probeStyle(page, 'min-h-theme-target', 'min-height')).toBe('24px');
+    expect(await probeStyle(page, 'min-w-theme-target', 'min-width')).toBe('24px');
+    expect(await probeStyle(page, 'h-theme-target', 'height')).toBe('24px');
   });
 });

@@ -367,8 +367,6 @@ const appearanceValidators = {
   radius2xl: isLength,
   radius3xl: isLength,
   controlHeight: isLength,
-  /** The smallest pointer target a control keeps; never under 24px. */
-  minTargetSize: isTargetSize,
   /** The inline padding and icon-to-label gap of a theme-sized control, apart from the shared
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
@@ -390,7 +388,7 @@ const appearanceValidators = {
   /** A form field's height and vertical padding, and whether focus draws a ring or swaps the
    *  field's edge color. */
   fieldHeight: isLength,
-  fieldHeightLg: isSwitchLength,
+  fieldHeightLg: isTargetSize,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
   /** Whether a field stays transparent or paints `field-fill`. */
@@ -506,58 +504,6 @@ const switchLength = (value: unknown): [number, 'px' | 'rem'] | undefined => {
  * pair is compared in its own unit and a mixed pair is rejected. A rem height of at least 0.5rem
  * clears the border at any root above 8px; below that the preset clamps the knob at zero.
  */
-/** A plain px or rem length in px on a 16px root, or `undefined` for anything else. */
-function plainPx(value: unknown): number | undefined {
-  if (typeof value !== 'string' || !/^\d*\.?\d+(px|rem)$/.test(value)) {
-    return undefined;
-  }
-  return parseFloat(value) * (value.endsWith('rem') ? 16 : 1);
-}
-
-/** The button and field sizes the target floor is checked against, with the defaults a theme
- *  that leaves one out draws. */
-const defaultControlHeights = {
-  buttonHeight: '2.5rem',
-  buttonHeightSm: '2.25rem',
-  buttonHeightXs: '1.75rem',
-  buttonHeightLg: '2.75rem',
-  buttonHeightCompact: '2rem',
-  iconButtonSizeSm: '2rem',
-  controlHeight: '2.25rem',
-  fieldHeight: '2.5rem',
-  fieldHeightLg: '3rem',
-} as const;
-type ControlHeightRole = keyof typeof defaultControlHeights;
-
-/**
- * A theme that sets the target floor may not draw any button or field below it, so every control
- * it sizes stays a target of at least that size and lines up with the fields beside it. Roles a
- * theme leaves out read their defaults; a theme that leaves the floor out is not checked.
- */
-function collectTargetIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
-  if (appearance.minTargetSize === undefined) {
-    return [];
-  }
-  const target = plainPx(appearance.minTargetSize);
-  const [role, value, height] = (Object.keys(defaultControlHeights) as ControlHeightRole[])
-    .map((name) => {
-      const raw = appearance[name] ?? defaultControlHeights[name];
-      return [name, raw, plainPx(raw)] as const;
-    })
-    .reduce((lowest, next) =>
-      next[2] !== undefined && (lowest[2] === undefined || next[2] < lowest[2]) ? next : lowest,
-    );
-  if (target === undefined || height === undefined || target <= height) {
-    return [];
-  }
-  return [
-    issue(
-      [...base, 'minTargetSize'],
-      `minTargetSize must not exceed ${role}: ${String(appearance.minTargetSize)}, ${String(value)}`,
-    ),
-  ];
-}
-
 function collectSwitchIssues(appearance: Record<string, unknown>, base: string[]): ThemeIssue[] {
   if (appearance.switchWidth === undefined && appearance.switchHeight === undefined) {
     return [];
@@ -703,7 +649,6 @@ function collectModeIssues(mode: 'light' | 'dark', definition: unknown): ThemeIs
     });
     if (isPlainThemeRecord(appearance)) {
       issues.push(...collectSwitchIssues(appearance, [...base, 'appearance']));
-      issues.push(...collectTargetIssues(appearance, [...base, 'appearance']));
     }
   }
 
