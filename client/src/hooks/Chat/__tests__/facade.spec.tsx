@@ -1,10 +1,12 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { act, render, renderHook } from '@testing-library/react';
 import { QueryKeys, ContentTypes } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import { ChatContext } from '~/Providers/ChatContext';
+import { resumeRequestFamily } from '~/store/resume';
 import { useChat, useChatActions } from '../facade';
 
 const userMessage: TMessage = {
@@ -637,6 +639,71 @@ describe('useChat', () => {
     expect(contract.stopGenerating).toHaveBeenCalledTimes(1);
   });
 
+  it('sends an AI SDK user message as the ask call it describes', () => {
+    const contract = createContract();
+    const { result } = renderChat(contract);
+
+    result.current.sendMessage(
+      {
+        parts: [
+          { type: 'text', text: 'Hel' },
+          { type: 'text', text: 'lo' },
+        ],
+        metadata: { parentMessageId: 'user-1' },
+      },
+      { isRegenerate: false },
+    );
+
+    expect(contract.ask).toHaveBeenCalledWith(
+      { text: 'Hello', parentMessageId: 'user-1' },
+      { isRegenerate: false },
+    );
+  });
+
+  it('reports a refused send to the caller', () => {
+    const contract = createContract({ ask: jest.fn(() => false as const) });
+    const { result } = renderChat(contract);
+
+    expect(result.current.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] })).toBe(false);
+  });
+
+  it('rejects stop when the stop request fails', async () => {
+    const failure = new Error('abort failed');
+    const contract = createContract({
+      isSubmitting: true,
+      stopGenerating: jest.fn(() => Promise.reject(failure)),
+    });
+    const { result } = renderChat(contract);
+
+    await expect(result.current.stop()).rejects.toBe(failure);
+  });
+
+  it('requests a resume of the chat it reads', async () => {
+    const store = getDefaultStore();
+    const before = store.get(resumeRequestFamily('convo-1'));
+    const { result } = renderChat(createContract());
+
+    await result.current.resumeStream();
+    await result.current.resumeStream();
+
+    expect(store.get(resumeRequestFamily('convo-1'))).toBe(before + 2);
+  });
+
+  it('requests no resume for a chat that has no conversation yet', async () => {
+    const store = getDefaultStore();
+    const before = store.get(resumeRequestFamily('new'));
+    const { result } = renderChat(
+      createContract({
+        messagesKey: 'new',
+        conversation: { conversationId: 'new' } as TConversation,
+      }),
+    );
+
+    await expect(result.current.resumeStream()).resolves.toBeUndefined();
+    expect(result.current.id).toBe('new');
+    expect(store.get(resumeRequestFamily('new'))).toBe(before);
+  });
+
   it('writes UI messages back onto the stored messages', () => {
     const answered = response({
       text: 'Hello',
@@ -716,7 +783,8 @@ describe('useChatActions', () => {
   it('forwards its actions to the contract', () => {
     const { result, contract } = renderActions([userMessage, response()]);
 
-    expect(result.current.sendMessage).toBe(contract.ask);
+    result.current.sendMessage({ text: 'Hello' });
+    expect(contract.ask).toHaveBeenCalledWith({ text: 'Hello' }, undefined);
     expect(result.current.stop).toBe(contract.stopGenerating);
     result.current.regenerate();
     expect(contract.regenerate).toHaveBeenCalledWith({
