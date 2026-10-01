@@ -458,7 +458,9 @@ const ChatForm = memo(function ChatForm({
     textAreaRef,
     submitButtonRef,
     setIsScrollable,
-    disabled: disableInputs || answerMode.composerLocked,
+    /* Only picks the missing-key placeholder; a batch lock is applied to the
+       textarea itself and keeps its own "answer above" placeholder. */
+    disabled: disableInputs,
     // The composer IS the free-form answer box while a question pause is live.
     placeholder: composerReserved ? answerPlaceholder : placeholder,
     // Enter stays live during a run when it can steer/queue instead of send.

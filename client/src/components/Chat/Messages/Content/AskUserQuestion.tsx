@@ -33,17 +33,20 @@ export default function AskUserQuestion({
   const answerMode = useAskAnswerMode(conversationId);
   const isLivePause = answerMode.liveAsk?.actionId === actionId;
   if (questions != null && questions.length > 0) {
-    if (answerMode.popoverVisible && isLivePause) {
-      return null;
-    }
-    return (
+    /** Same footprint reservation as a single question: while the popover owns
+     *  the batch, a hidden copy of the card holds its place in the thread, so
+     *  moving it between the composer and the chat reflows nothing. */
+    const reserved = answerMode.popoverVisible && isLivePause;
+    const card = (
       <AskUserQuestionsCard
         actionId={actionId}
         questions={questions}
-        live={isLivePause}
+        live={isLivePause && !reserved}
+        reserved={reserved}
         onExpand={answerMode.collapsed && isLivePause ? answerMode.expand : undefined}
       />
     );
+    return reserved ? <AskingPlaceholder>{card}</AskingPlaceholder> : card;
   }
   return <AskUserQuestionSingle actionId={actionId} question={question} answerMode={answerMode} />;
 }
@@ -55,11 +58,13 @@ function AskUserQuestionsCard({
   actionId,
   questions,
   live,
+  reserved,
   onExpand,
 }: {
   actionId: string;
   questions: Agents.AskUserQuestionBatchItem[];
   live: boolean;
+  reserved: boolean;
   onExpand?: () => void;
 }) {
   const localize = useLocalize();
@@ -68,7 +73,10 @@ function AskUserQuestionsCard({
       className={cn(
         'border-border-light bg-surface-secondary my-2 flex max-h-[70vh] w-full flex-col rounded-2xl border',
         live && '[view-transition-name:ask-question]',
+        reserved && 'invisible',
       )}
+      aria-hidden={reserved || undefined}
+      inert={reserved ? '' : undefined}
     >
       <AskUserQuestions
         actionId={actionId}
@@ -305,12 +313,17 @@ function AskUserQuestionSingle({
     return card;
   }
 
-  /** Popover has the question: the reserved card sits hidden underneath the
-   *  same compact in-progress row the other tools use, so the turn still
-   *  shows the call is running. */
+  return <AskingPlaceholder>{card}</AskingPlaceholder>;
+}
+
+/** Popover has the question: the reserved card sits hidden underneath the
+ *  same compact in-progress row the other tools use, so the turn still
+ *  shows the call is running. */
+function AskingPlaceholder({ children }: { children: React.ReactNode }) {
+  const localize = useLocalize();
   return (
     <div className="relative">
-      {card}
+      {children}
       <div className="absolute inset-x-0 top-0 my-1 flex h-5 items-center gap-2.5">
         <MessageCircleQuestion className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         <span className="tool-status-text shimmer text-text-secondary font-medium">
