@@ -39,6 +39,14 @@ describe('getAzureFileStream', () => {
     expect(mockGetBlockBlobClient).toHaveBeenCalledWith('uploads/user/report one.pdf');
   });
 
+  it('throws a clear error when the Azure Blob Service is not initialized', async () => {
+    mockGetAzureContainerClient.mockResolvedValueOnce(null);
+
+    await expect(
+      getAzureFileStream({}, 'https://account.blob.core.windows.net/files/uploads/user/a.png'),
+    ).rejects.toThrow('Azure Blob Service not initialized');
+  });
+
   it('resolves Azurite blobs relative to the configured account and container path', async () => {
     const stream = { pipe: jest.fn() };
     mockDownload.mockResolvedValue({ readableStreamBody: stream });
