@@ -175,7 +175,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
           disabledFillClasses,
           /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */
-          iconOnly ? 'size-10 justify-center px-0' : 'w-fit gap-2 px-3',
+          iconOnly ? 'size-theme-button justify-center px-0' : 'w-fit gap-2 px-3',
           variant === 'field' && fieldControl,
           variant === 'compact' && 'h-8 px-2.5 py-0 text-xs transition-none',
           triggerClassName,
@@ -214,7 +214,7 @@ const Dropdown: React.FC<DropdownProps> = ({
         store={selectProps}
         className={cn(
           // `className` sizes the TRIGGER only (applied above on Select.Select).
-          // Forwarding it here too meant a caller's trigger height (e.g. `h-10`)
+          // Forwarding it here too meant a caller's trigger height (a fixed height utility)
           // became the popover's height as well, clipping every option below the
           // first out of view. `sizeClasses` is the popover's own sizing prop; the
           // shared `.popover-ui` class already caps height to the viewport via
@@ -229,7 +229,7 @@ const Dropdown: React.FC<DropdownProps> = ({
             <div className="sticky -top-2 z-10 -mx-2 -mt-2 mb-1 bg-inherit px-2 pt-2 pb-1.5">
               <div className="relative">
                 <Search
-                  className="text-text-tertiary pointer-events-none absolute top-1/2 left-2 h-4 w-4 -translate-y-1/2"
+                  className="text-text-tertiary size-theme-icon pointer-events-none absolute top-1/2 left-2 -translate-y-1/2"
                   aria-hidden="true"
                 />
                 <Combobox.Combobox

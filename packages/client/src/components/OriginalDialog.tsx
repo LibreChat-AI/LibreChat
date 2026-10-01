@@ -373,7 +373,7 @@ const DialogContent: React.ForwardRefExoticComponent<
           />
           {showCloseButton && (
             <DialogPrimitive.Close className="ring-ring-primary ring-offset-surface-dialog focus:ring-focus-control data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
-              <X className="h-6 w-6" aria-hidden="true" />
+              <X className="size-theme-icon-lg" aria-hidden="true" />
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
           )}

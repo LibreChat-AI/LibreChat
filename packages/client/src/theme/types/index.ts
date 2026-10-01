@@ -518,20 +518,32 @@ export interface IThemeAppearance {
   radius2xl: string;
   radius3xl: string;
   controlHeight: string;
+  /** The smallest pointer target a control's hit area keeps, 24px by default (WCAG 2.5.8). */
+  minTargetSize: string;
   /** A theme-sized control's inline padding and icon-to-label gap; they follow `spaceNormal` and
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
   controlGap: string;
+  /** An icon beside a label or in a menu row, and the larger one a dialog's close button draws. */
+  iconSize: string;
+  iconSizeLg: string;
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: string;
   buttonHeight: string;
   buttonHeightSm: string;
+  /** The Button's `xs` and `lg` heights; `icon-xs` is as wide as `xs` is tall, `icon` as the
+   *  default, and `icon-sm` takes its own size. */
+  buttonHeightXs: string;
+  buttonHeightLg: string;
+  iconButtonSizeSm: string;
   /**
    * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,
    * `border` swaps the field's edge to `border-field-focus` on any focus, and keyboard focus adds
    * a 1px ring in that color so the indicator keeps a 2px perimeter.
    */
   fieldHeight: string;
+  /** The height of the large `title` field. */
+  fieldHeightLg: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
@@ -548,6 +560,8 @@ export interface IThemeAppearance {
   labelFontWeight: string;
   switchWidth: string;
   switchHeight: string;
+  /** A checkbox's box and the check inside it. */
+  checkboxSize: string;
   tableCellSpaceY: string;
   tableRowStroke: string;
   spaceCompact: string;

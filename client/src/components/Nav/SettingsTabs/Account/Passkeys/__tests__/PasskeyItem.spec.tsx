@@ -55,8 +55,8 @@ describe('PasskeyItem rename controls', () => {
 
     expect(input).toHaveClass('h-10');
     expect(input.parentElement?.parentElement).toHaveClass('py-2');
-    expect(saveButton).toHaveClass('size-10');
-    expect(cancelButton).toHaveClass('size-10');
+    expect(saveButton).toHaveClass('size-theme-button');
+    expect(cancelButton).toHaveClass('size-theme-button');
     expect(cancelButton).toHaveClass('bg-surface-secondary');
   });
 

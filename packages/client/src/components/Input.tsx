@@ -6,7 +6,7 @@ import './Field.css';
 /** `title` edits a heading in place, so the field takes the heading's type scale. */
 const INPUT_VARIANTS = {
   default: '',
-  title: 'h-12 text-2xl font-semibold tracking-tight',
+  title: 'h-theme-field-lg text-2xl font-semibold tracking-tight',
   'title-sm': 'text-base font-semibold tracking-tight',
 } as const;
 

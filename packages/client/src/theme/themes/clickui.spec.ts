@@ -511,6 +511,17 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason: '2rem: Click UI draws one button size, so the small step matches the default',
   },
+  buttonHeightLg: {
+    value: '2rem',
+    status: 'match',
+    reason: '2rem: Click UI draws one button size, so the large step matches the default',
+  },
+  iconButtonSizeSm: {
+    value: '1.5rem',
+    status: 'match',
+    reason:
+      '1.5rem: Click UI IconButton sm is a 1rem icon (iconButton.size.medium) in iconButton.sm.space 0.25rem on each side',
+  },
   fieldHeight: {
     value: '2rem',
     status: 'match',
@@ -609,6 +620,9 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   switchWidth: 'click.switch.size.width',
   switchHeight: 'click.switch.size.height',
+  checkboxSize: 'click.checkbox.size.all',
+  iconSize: 'click.image.sm.size.width',
+  iconSizeLg: 'click.image.lg.size.width',
   tableCellSpaceY: 'click.table.body.cell.space.md.y',
   tableRowStroke: 'click.table.cell.stroke',
   motionFast: 'transition.duration.medium',

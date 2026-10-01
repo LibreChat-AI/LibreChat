@@ -229,6 +229,9 @@ const isSwitchLength = (value: unknown): value is string =>
  * never vanishes; its offset may also be zero or negative, drawing the outline on or inside the
  * element's edge.
  */
+/** A pointer target never drops under WCAG 2.5.8's 24px minimum, written in px or rem. */
+const isTargetSize = (value: unknown): value is string =>
+  isSwitchLength(value) && parseFloat(value) >= (value.endsWith('rem') ? 1.5 : 24);
 const isFocusRingOffset = (value: unknown): value is string =>
   typeof value === 'string' && /^(0|-?\d*\.?\d+(px|rem))$/.test(value);
 /** A numeric CSS font weight, 1 to 1000, which is all a label weight needs. */
@@ -349,17 +352,27 @@ const appearanceValidators = {
   radius2xl: isLength,
   radius3xl: isLength,
   controlHeight: isLength,
+  /** The smallest pointer target a control keeps; never under 24px. */
+  minTargetSize: isTargetSize,
   /** The inline padding and icon-to-label gap of a theme-sized control, apart from the shared
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
   controlGap: isLength,
+  /** An icon's size, and the larger one a dialog's close button draws. */
+  iconSize: isSwitchLength,
+  iconSizeLg: isSwitchLength,
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: isFontWeight,
   buttonHeight: isLength,
   buttonHeightSm: isLength,
+  /** The Button's `xs` and `lg` heights and the `icon-sm` square. */
+  buttonHeightXs: isSwitchLength,
+  buttonHeightLg: isSwitchLength,
+  iconButtonSizeSm: isSwitchLength,
   /** A form field's height and vertical padding, and whether focus draws a ring or swaps the
    *  field's edge color. */
   fieldHeight: isLength,
+  fieldHeightLg: isSwitchLength,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
   /** Whether a field stays transparent or paints `field-fill`. */
@@ -373,6 +386,8 @@ const appearanceValidators = {
   labelFontWeight: (value: unknown) => value === 'inherit' || isFontWeight(value),
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
+  /** A checkbox's box and the check inside it. */
+  checkboxSize: isSwitchLength,
   tableCellSpaceY: isTableLength,
   tableRowStroke: isTableLength,
   spaceCompact: isLength,

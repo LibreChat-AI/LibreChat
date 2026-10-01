@@ -27,7 +27,23 @@ const twMerge = extendTailwindMerge({
             'theme-table-head-compact',
             'theme-button',
             'theme-button-sm',
+            'theme-button-xs',
+            'theme-button-lg',
             'theme-field',
+            'theme-field-lg',
+            'theme-target',
+          ],
+        },
+      ],
+      size: [
+        {
+          size: [
+            'theme-button',
+            'theme-button-xs',
+            'theme-icon-button-sm',
+            'theme-checkbox',
+            'theme-icon',
+            'theme-icon-lg',
           ],
         },
       ],

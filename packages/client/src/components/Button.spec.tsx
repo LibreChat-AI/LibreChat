@@ -188,7 +188,12 @@ describe('Button', () => {
 
     const button = screen.getByRole('button', { name: 'Open' });
 
-    expect(button).toHaveClass('size-8', 'p-0', 'rounded-md', 'hover:bg-surface-hover-alt');
+    expect(button).toHaveClass(
+      'size-theme-icon-button-sm',
+      'p-0',
+      'rounded-md',
+      'hover:bg-surface-hover-alt',
+    );
     expect(button).not.toHaveClass('rounded-lg');
   });
 
@@ -205,7 +210,7 @@ describe('Button', () => {
     );
     const button = screen.getByRole('button', { name: 'Filter' });
 
-    expect(button).toHaveClass('size-7', 'rounded-md', 'focus-visible:ring-inset');
+    expect(button).toHaveClass('size-theme-button-xs', 'rounded-md', 'focus-visible:ring-inset');
     expect(button).not.toHaveClass('rounded-lg', 'focus-visible:ring-offset-2');
   });
 

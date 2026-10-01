@@ -358,6 +358,15 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - Keyboard focus outline - The global `:focus-visible` outline is drawn in
   `focus-outline`, `focusRingWidth` wide and `focusRingOffset` off the edge (2px
   each by default). The contrast modes keep their own 3px outline.
+- Control and icon sizes - `h-theme-button-xs` / `h-theme-button-lg`
+  (`buttonHeightXs`, `buttonHeightLg`) size the Button's `xs` and `lg` steps;
+  its `icon`, `icon-sm` and `icon-xs` squares are `size-theme-button`,
+  `size-theme-icon-button-sm` (`iconButtonSizeSm`) and `size-theme-button-xs`.
+  `size-theme-checkbox` (`checkboxSize`) sizes the checkbox, `size-theme-icon` and
+  `size-theme-icon-lg` (`iconSize`, `iconSizeLg`) the icons in menus and selects and
+  the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
+  input, and `h-theme-target` (`minTargetSize`, never under 24px) the switch's hit
+  area. Every default is the size the primitive drew before.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's

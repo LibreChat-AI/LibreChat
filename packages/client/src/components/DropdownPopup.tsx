@@ -124,7 +124,10 @@ const Menu: React.FC<MenuProps> = ({
                 >
                   <span className="flex items-center gap-2">
                     {item.icon != null && (
-                      <span className={cn('mr-2 size-4', iconClassName)} aria-hidden="true">
+                      <span
+                        className={cn('size-theme-icon mr-2', iconClassName)}
+                        aria-hidden="true"
+                      >
                         {item.icon}
                       </span>
                     )}
@@ -174,7 +177,7 @@ const Menu: React.FC<MenuProps> = ({
               }}
             >
               {item.icon != null && (
-                <span className={cn('mr-2 size-4', iconClassName)} aria-hidden="true">
+                <span className={cn('size-theme-icon mr-2', iconClassName)} aria-hidden="true">
                   {item.icon}
                 </span>
               )}
