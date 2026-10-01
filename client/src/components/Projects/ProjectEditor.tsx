@@ -220,7 +220,7 @@ export default function ProjectEditor({
             maxLength={descriptionLimit}
             aria-invalid={errors.description ? 'true' : 'false'}
             aria-describedby={errors.description ? descriptionErrorId : undefined}
-            variant={isWorkspace ? 'transparent' : undefined}
+            variant="transparent"
             className={cn(
               'w-full max-w-full min-w-0 resize-none overflow-y-auto wrap-anywhere',
               isWorkspace ? 'h-24 max-h-32' : 'h-24 max-h-40',
